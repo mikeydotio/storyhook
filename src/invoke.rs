@@ -3081,6 +3081,18 @@ fn resolve_at<S: Store>(store: &S, dir: &Path) -> Result<Option<ProjectId>, AppE
 ///
 /// Listing every `ProjectAction` makes the compiler the thing that notices,
 /// which is what the paragraph above always claimed and only now enforces.
+///
+/// # Why the outer match is exhaustive too (SH-170)
+///
+/// D8 only reached the inner match: the *outer* one, over [`Invocation`], kept
+/// a `_ => None` catch-all, on the reasoning that `New` was the live hazard
+/// and the other 49 arms of the day were already correct. That catch-all is
+/// exactly the shape D8 had just finished removing one layer down — nothing
+/// stops a future top-level verb that creates a project from also falling
+/// through it silently, with the same green build and green suite. Naming
+/// every variant here, rather than defaulting, is the same fix D8 made,
+/// applied to the layer it left alone; [`needs_github_token`] already does
+/// this for the same enum, for the same reason (SH-153), and this mirrors it.
 fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBuf> {
     match invocation {
         Invocation::ImportProject { .. } => Some(cwd.to_path_buf()),
@@ -3110,8 +3122,69 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
             | ProjectAction::Unlink(_)
             | ProjectAction::Settings(_) => None,
         },
-        Invocation::Migrate { path, dry_run } if !dry_run => Some(target_dir(cwd, path.as_deref())),
-        _ => None,
+        Invocation::Migrate {
+            path,
+            dry_run: false,
+        } => Some(target_dir(cwd, path.as_deref())),
+        Invocation::Migrate { dry_run: true, .. } => None,
+        // Everything else, listed rather than defaulted. See above.
+        Invocation::Help
+        | Invocation::New { .. }
+        | Invocation::Publish { .. }
+        | Invocation::MemberAdd { .. }
+        | Invocation::State { .. }
+        | Invocation::List { .. }
+        | Invocation::Search { .. }
+        | Invocation::Next { .. }
+        | Invocation::Summary
+        | Invocation::Report { .. }
+        | Invocation::Doctor { .. }
+        | Invocation::DoctorAbandoned { .. }
+        | Invocation::Show { .. }
+        | Invocation::Comment { .. }
+        | Invocation::Assign { .. }
+        | Invocation::SetState { .. }
+        | Invocation::SetAwaiting { .. }
+        | Invocation::ClearAwaiting { .. }
+        | Invocation::SetPriority { .. }
+        | Invocation::SetLabels { .. }
+        | Invocation::Reopen { .. }
+        | Invocation::Hide { .. }
+        | Invocation::Unhide { .. }
+        | Invocation::HideState { .. }
+        | Invocation::Delete { .. }
+        | Invocation::Purge { .. }
+        | Invocation::BulkUpdate { .. }
+        | Invocation::Import { .. }
+        | Invocation::Decompose { .. }
+        | Invocation::Export
+        | Invocation::Context { .. }
+        | Invocation::Handoff { .. }
+        | Invocation::Phase { .. }
+        | Invocation::Type { .. }
+        | Invocation::Epic { .. }
+        | Invocation::Graph { .. }
+        | Invocation::SetFields { .. }
+        | Invocation::Relate { .. }
+        | Invocation::Hooks { .. }
+        | Invocation::Scaffold { .. }
+        | Invocation::CommitSync { .. }
+        | Invocation::GithubSync { .. }
+        | Invocation::LinkPr { .. }
+        | Invocation::UnlinkPr { .. }
+        | Invocation::PrCheck { .. }
+        | Invocation::HelpTopic { .. }
+        | Invocation::HelpCompact
+        | Invocation::HelpAll
+        | Invocation::Plugin { .. }
+        | Invocation::Web { .. }
+        | Invocation::Daemon { .. }
+        | Invocation::Store { .. }
+        | Invocation::SessionStart
+        | Invocation::Update { .. }
+        | Invocation::Version
+        | Invocation::ProjectSnapshot
+        | Invocation::History { .. } => None,
     }
 }
 
@@ -3815,6 +3888,151 @@ mod creates_a_project_tests {
             assert!(
                 !needs_github_token(&invocation),
                 "{invocation:?} has no GitHub credential to spend"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod project_creation_target_tests {
+    use super::*;
+    use crate::cli::{MemberInput, NewProjectSpec};
+
+    /// The three named creating routes still resolve to a path — pinned
+    /// separately from the exhaustive match below, because this half is
+    /// about *what* they resolve to, not about the wildcard SH-170 removed.
+    #[test]
+    fn every_creating_route_returns_a_target() {
+        assert_eq!(
+            project_creation_target(
+                &Invocation::ImportProject {
+                    file: "export.json".to_string(),
+                    legacy_links: false,
+                },
+                Path::new("/cwd"),
+            ),
+            Some(PathBuf::from("/cwd"))
+        );
+        assert_eq!(
+            project_creation_target(
+                &Invocation::Project {
+                    action: ProjectAction::New(NewProjectRequest::Ask),
+                },
+                Path::new("/cwd"),
+            ),
+            Some(PathBuf::from("/cwd"))
+        );
+        assert_eq!(
+            project_creation_target(
+                &Invocation::Project {
+                    action: ProjectAction::New(NewProjectRequest::Stated(NewProjectSpec {
+                        attach: Attach::Path("elsewhere".to_string()),
+                        prefix: "SH".to_string(),
+                        name: None,
+                        no_agents_md: false,
+                    })),
+                },
+                Path::new("/cwd"),
+            ),
+            Some(PathBuf::from("/cwd/elsewhere"))
+        );
+        assert_eq!(
+            project_creation_target(
+                &Invocation::Migrate {
+                    path: None,
+                    dry_run: false,
+                },
+                Path::new("/cwd"),
+            ),
+            Some(PathBuf::from("/cwd"))
+        );
+    }
+
+    /// `Attach::Nothing` and a dry-run `Migrate` are the two narrowings
+    /// within the creating arms themselves — still `None` despite the arm
+    /// they live in, and worth pinning apart from the wildcard removal.
+    #[test]
+    fn attach_nothing_and_dry_run_migrate_create_no_target() {
+        assert_eq!(
+            project_creation_target(
+                &Invocation::Project {
+                    action: ProjectAction::New(NewProjectRequest::Stated(NewProjectSpec {
+                        attach: Attach::Nothing,
+                        prefix: "SH".to_string(),
+                        name: None,
+                        no_agents_md: false,
+                    })),
+                },
+                Path::new("/cwd"),
+            ),
+            None
+        );
+        assert_eq!(
+            project_creation_target(
+                &Invocation::Migrate {
+                    path: None,
+                    dry_run: true,
+                },
+                Path::new("/cwd"),
+            ),
+            None
+        );
+    }
+
+    /// SH-170: the outer match used to fall through a `_ => None` catch-all
+    /// for every non-creating `Invocation`. That catch-all is gone — this
+    /// samples across unit variants, single-field variants and
+    /// nested-`*Action` variants (the shapes most likely to hide a mistake)
+    /// to pin that removing it changed nothing about today's behaviour.
+    #[test]
+    fn a_representative_sample_of_non_creating_invocations_return_none() {
+        for invocation in [
+            Invocation::Help,
+            Invocation::Summary,
+            Invocation::Export,
+            Invocation::HelpCompact,
+            Invocation::HelpAll,
+            Invocation::SessionStart,
+            Invocation::Version,
+            Invocation::ProjectSnapshot,
+            Invocation::Show {
+                id: "SH-1".to_string(),
+            },
+            Invocation::Publish {
+                id: "SH-1".to_string(),
+            },
+            Invocation::MemberAdd {
+                input: MemberInput::Identity("alice".to_string()),
+            },
+            Invocation::State {
+                action: StateAction::List,
+            },
+            Invocation::Project {
+                action: ProjectAction::List,
+            },
+            Invocation::Project {
+                action: ProjectAction::Show,
+            },
+            Invocation::GithubSync {
+                id: None,
+                dry_run: false,
+                resolve: None,
+                strategy: None,
+                mode: None,
+            },
+            Invocation::Daemon {
+                action: DaemonAction::Status,
+            },
+            Invocation::History {
+                action: HistoryAction::Read {
+                    id: "SH-1".to_string(),
+                },
+            },
+        ] {
+            assert_eq!(
+                project_creation_target(&invocation, Path::new("/cwd")),
+                None,
+                "{invocation:?} must not name a creation target"
             );
         }
     }
