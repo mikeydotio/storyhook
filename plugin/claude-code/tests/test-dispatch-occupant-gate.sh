@@ -155,4 +155,57 @@ case "$(jqf "$out" .display)" in
   *) fail_test "E: a fail-closed gate must print the knob that unsticks it" ;;
 esac
 
+# ---- Family F: the version-named launch binary (SH-239) ---------------------
+# Claude Code's native installer makes ~/.local/bin/claude a SYMLINK to a
+# version-named binary (~/.local/share/claude/versions/2.1.228). tmux's
+# `#{pane_current_command}` on macOS reports the basename of the RESOLVED
+# executable path, so the occupant name is the version string, not "claude" --
+# and the default pattern refused every dispatch on such a machine.
+#
+# The fix must not be a wider name pattern: the version is a MOVING TARGET (it
+# changed under an active session while SH-239 was being written), so the gate
+# resolves the launch binary through its symlink and asks whether the occupant
+# IS that binary. Identity, not spelling.
+
+# mk_versioned_claude lives in lib.sh — test-doctor-capture.sh needs the same
+# install layout to prove doctor reports the drift.
+F_ROOT=$(mk_versioned_claude 2.1.228 2.1.227)
+
+# F1: the field scenario -- the occupant is the version string, and it confirms
+# with NO escape hatch set. This is the whole bug.
+dispatch_run PATH="$F_ROOT/bin:$FAKE_TMUX_DIR:$PATH" \
+        FAKE_TMUX_CAPTURE=marker FAKE_TMUX_PANE_COMMAND=2.1.228
+assert_eq "$(jqf "$out" .ok)" "true" \
+  "F: a version-named claude binary is recognised without an escape hatch"
+assert_eq "$(jqf "$out" .readiness_confirmed)" "true" "F: ...and readiness is confirmed"
+assert_eq "$(submits)" "1" "F: ...and the prompt is delivered exactly once"
+
+# F2: SH-226 SURVIVES. The same versioned install, but a shell sits in the pane.
+# If the fix widened the gate into "anything goes", this is what it would cost.
+dispatch_run PATH="$F_ROOT/bin:$FAKE_TMUX_DIR:$PATH" \
+        FAKE_TMUX_CAPTURE=structural FAKE_TMUX_PANE_COMMAND=zsh \
+        FAKE_TMUX_LAUNCH_MANGLE=1
+assert_eq "$(jqf "$out" .ok)" "false" "F: a shell is STILL refused (SH-226 holds)"
+assert_eq "$(submits)" "0" "F: nothing is typed into a shell"
+assert_eq "$(state_of)" "todo" "F: and the claim is rolled back"
+
+# F3: update skew. The symlink points at 2.1.228, but this pane was launched
+# from 2.1.227 and is still executing it -- exactly what happens when Claude
+# Code auto-updates between launch and poll. A sibling version in the resolved
+# binary's own directory is still that install.
+dispatch_run PATH="$F_ROOT/bin:$FAKE_TMUX_DIR:$PATH" \
+        FAKE_TMUX_CAPTURE=marker FAKE_TMUX_PANE_COMMAND=2.1.227
+assert_eq "$(jqf "$out" .ok)" "true" \
+  "F: a pane still running the PREVIOUS version is recognised after an update"
+
+# F4: the sibling rule is BOUNDED. A version-shaped name that names no file in
+# the install is not a claude -- otherwise "looks like a version" would itself
+# become the escape hatch, and rule 3 would be a hole rather than a repair.
+dispatch_run PATH="$F_ROOT/bin:$FAKE_TMUX_DIR:$PATH" \
+        FAKE_TMUX_CAPTURE=structural FAKE_TMUX_PANE_COMMAND=9.9.9 \
+        FAKE_TMUX_LAUNCH_MANGLE=1
+assert_eq "$(jqf "$out" .ok)" "false" \
+  "F: a version-shaped name with no such binary installed is refused"
+assert_eq "$(submits)" "0" "F: ...and nothing is typed into it"
+
 finish
