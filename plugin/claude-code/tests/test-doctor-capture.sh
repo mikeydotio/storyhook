@@ -65,6 +65,34 @@ assert_eq "$(jqf "$out" .readiness_confirmed)" "true" "doctor: readiness confirm
 assert_eq "$(jqf "$out" .matched_tier)" "marker" "doctor: reports which tier matched"
 assert_eq "$(jqf "$out" .project_integrity.ok)" "true" "doctor: healthy project integrity"
 assert_contains "$(jqf "$out" .display)" "project integrity: OK" "doctor: display carries both halves"
+assert_eq "$(jqf "$out" .occupant.match_rule)" "pattern" "doctor: a plainly-named claude matches by NAME"
+assert_eq "$(jqf "$out" .occupant.matches_name_pattern)" "true" "doctor: ...and says the name pattern covers it"
+
+# --- doctor: SH-239 — it REPORTS a build the name pattern alone would refuse --
+# doctor advertises that it checks "whether this Claude build's readiness/paste
+# path is still recognised", and this is precisely the drift it missed: a native
+# installer install whose binary is version-named. Dispatch works (pane_runs
+# matches it by identity), but an operator must be told that the NAME check no
+# longer covers their build -- and told NOT to pin the pattern to a version that
+# changes on every update.
+d_root=$(mk_versioned_claude 2.1.228)
+out=$(cd "$repo" && PATH="$d_root/bin:$PATH" TMUX=fake TMUX_PANE=%0 \
+       FAKE_TMUX_CAPTURE=marker FAKE_TMUX_PANE_COMMAND=2.1.228 \
+       STORY_DOCTOR_LAUNCH_CMD="claude --permission-mode plan" \
+       bash "$SCRIPT" doctor 2>&1)
+assert_eq "$(jqf "$out" .ok)" "true" "doctor(SH-239): a version-named build is still ok"
+assert_eq "$(jqf "$out" .readiness_confirmed)" "true" "doctor(SH-239): readiness IS confirmed"
+assert_eq "$(jqf "$out" .occupant.match_rule)" "launch-binary" \
+  "doctor(SH-239): recognised by identity, not by name"
+assert_eq "$(jqf "$out" .occupant.matches_name_pattern)" "false" \
+  "doctor(SH-239): and it says the name pattern does NOT cover this build"
+assert_eq "$(jqf "$out" .occupant.name)" "2.1.228" "doctor(SH-239): reports the observed occupant"
+assert_contains "$(jqf "$out" .occupant.launch_binary_resolved)" "versions/2.1.228" \
+  "doctor(SH-239): reports what the launcher resolves THROUGH the symlink to"
+assert_contains "$(jqf "$out" .display)" "does NOT match STORY_READY_PROCESS_PATTERN" \
+  "doctor(SH-239): the display carries the warning, not just the JSON"
+assert_contains "$(jqf "$out" .display)" "changes on every update" \
+  "doctor(SH-239): and warns against pinning the pattern to a version"
 
 # --- doctor: an integrity FINDING is a finding, not a failed probe ---
 # The shell property under test is narrow and important: `story doctor` exits 5

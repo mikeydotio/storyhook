@@ -180,16 +180,26 @@ READY_FALLBACK_DELAY="${STORY_READY_FALLBACK_DELAY:-3}"
 READY_STABLE_POLLS="${STORY_READY_STABLE_POLLS:-3}"
 READY_FRAME_GLYPH="${STORY_READY_FRAME_GLYPH:-─}"
 READY_PROMPT_GLYPH="${STORY_READY_PROMPT_GLYPH:-❯}"
-# The pane's foreground command must match this before ANY text is delivered to
-# it (SH-226). `node` is here because Claude Code installs as a Node wrapper on
-# some paths and tmux reports the foreground process; excluding it would refuse
-# real sessions. It still excludes every shell, which is the discrimination the
-# failure needs. Heuristic, and deliberately overridable: setting this to `.`
-# matches anything and restores the pre-SH-226 behaviour with no code change —
-# the escape hatch for an environment where Claude reports an unexpected name.
-# `story doctor` prints the name it actually observed, so an operator can see
-# what to put here.
+# The pane's foreground command must be the launch binary before ANY text is
+# delivered to it (SH-226). This pattern is the NAME half of that test: `node`
+# is here because Claude Code installs as a Node wrapper on some paths and tmux
+# reports the foreground process; excluding it would refuse real sessions. It
+# still excludes every shell, which is the discrimination the failure needs.
+# Heuristic, and deliberately overridable: setting this to `.` matches anything
+# and restores the pre-SH-226 behaviour with no code change — the escape hatch
+# for an environment where Claude reports an unexpected name. `story doctor`
+# prints the name it actually observed, so an operator can see what to put here.
+#
+# Since SH-239 it is no longer the ONLY way to match — pane_runs also accepts
+# the launch binary by identity, which is what a version-named install needs and
+# what no fixed pattern can keep up with. The hatch stays for genuinely
+# unrecognised names (a wrapper script, a renamed build).
 READY_PROCESS_PATTERN="${STORY_READY_PROCESS_PATTERN:-^(claude|node)$}"
+# The launch command's FIRST WORD, whose resolved binary pane_runs recognises by
+# identity (SH-239). Derived from LAUNCH_TPL rather than configured separately:
+# the process worth recognising is, by definition, the one we launched.
+# cmd_doctor reassigns it around its own probe, which uses a different template.
+READY_LAUNCH_BIN="${LAUNCH_TPL%% *}"
 READY_TAIL_LINES="${STORY_READY_TAIL_LINES:-8}"
 CONFIRM_ATTEMPTS="${STORY_CONFIRM_ATTEMPTS:-8}"
 CONFIRM_DELAY="${STORY_CONFIRM_DELAY:-0.3}"
@@ -1303,11 +1313,24 @@ cmd_doctor() {
   paste_text "$pane" "$DOCTOR_LAUNCH_TPL" || true
   tmux send-keys -t "$pane" Enter 2>/dev/null || true
 
+  # This probe launches DOCTOR_LAUNCH_TPL, which need not be LAUNCH_TPL — so the
+  # binary pane_runs recognises by identity has to follow it, or doctor would
+  # self-test the dispatch launcher's install while running a different one.
+  READY_LAUNCH_BIN="$doctor_bin"
+
   local readiness_confirmed=false tier="none" tail_evidence
   if wait_ready "$pane" "$DOCTOR_LAUNCH_TPL"; then
     readiness_confirmed=true
   fi
   tier="$WAIT_READY_TIER"
+  # SH-239: which of pane_runs' rules answered, and the identity behind it.
+  # `pattern` means the occupant's NAME was recognised; anything else means a
+  # name-only gate would have refused this build, which is the drift doctor
+  # exists to surface BEFORE a dispatch discovers it.
+  local occupant occupant_rule launch_resolved
+  occupant="$WAIT_READY_COMMAND"
+  occupant_rule="$PANE_RUNS_RULE"
+  launch_resolved="$(resolve_exe "$doctor_bin" || printf '')"
   tail_evidence=$(pane_tail "$pane")
 
   # Live multi-line paste probe: paste a 3-line marker through the real
@@ -1341,8 +1364,14 @@ cmd_doctor() {
   local display
   if [ "$readiness_confirmed" = true ]; then
     display="[story] doctor: readiness OK via the '$tier' tier — the installed Claude build is recognised."
+    if [ "$occupant_rule" != "pattern" ]; then
+      display="$display Occupant name \`$occupant\` does NOT match STORY_READY_PROCESS_PATTERN (\`$READY_PROCESS_PATTERN\`); it was recognised as the launch binary itself ($occupant_rule), which resolves to \`$launch_resolved\`. Dispatch works — but a name-only gate would refuse this build, so leave STORY_READY_PROCESS_PATTERN alone rather than pinning it to \`$occupant\`, which changes on every update."
+    fi
   else
     display="[story] doctor: readiness NOT confirmed within the poll budget — the readiness marker may have drifted. See pane_tail."
+    if [ -n "$occupant" ]; then
+      display="$display The pane's occupant was \`$occupant\` and the launch binary resolves to \`${launch_resolved:-<unresolved>}\`."
+    fi
   fi
   if [ "$probe_ran" = true ]; then
     if [ "$probe_first_held" = true ] && [ "$probe_seen" -eq "$probe_total" ]; then
@@ -1358,11 +1387,22 @@ cmd_doctor() {
     --arg tail "$tail_evidence" --arg display "$display" \
     --argjson probe_ran "$probe_ran" --argjson probe_first "$probe_first_held" \
     --argjson probe_seen "$probe_seen" --argjson probe_total "$probe_total" \
-    --argjson integrity_ok "$_INTEGRITY_OK" --arg integrity "$integrity_summary" '
+    --argjson integrity_ok "$_INTEGRITY_OK" --arg integrity "$integrity_summary" \
+    --arg occupant "$occupant" --arg rule "$occupant_rule" \
+    --arg launch_bin "$doctor_bin" --arg launch_resolved "$launch_resolved" \
+    --arg pattern "$READY_PROCESS_PATTERN" '
     {
       ok: true,
       readiness_confirmed: $ready,
       matched_tier: $tier,
+      occupant: {
+        name: $occupant,
+        match_rule: $rule,
+        name_pattern: $pattern,
+        matches_name_pattern: ($rule == "pattern"),
+        launch_binary: $launch_bin,
+        launch_binary_resolved: $launch_resolved
+      },
       project_integrity: { ok: $integrity_ok, summary: $integrity }
     }
     + (if $probe_ran then {multiline_probe: {first_line_held: $probe_first, lines_seen: $probe_seen, lines_total: $probe_total}} else {} end)
