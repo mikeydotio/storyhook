@@ -30,8 +30,16 @@ fi
 # cold daemon start plus the store's own reply may legitimately take 150s
 # (SH-182). 3s leaves 2s for this script itself and gives up loudly instead,
 # which `story session-start` turns into a recoverable {} rather than nothing.
+#
+# The original hook JSON (already captured above, cwd extracted from it) is
+# re-piped into `story`'s OWN stdin rather than consumed only here: its
+# `session_id` field is what SH-231's dispatch sentinel is named with, and
+# `story`'s CLI already has a generic stdin-passthrough seam (`reads_stdin`,
+# used by `import`/`decompose`) rather than needing a bespoke flag for one
+# more field. Piping an empty string when nothing arrived is a no-op — an
+# immediately-closed stdin reads as "".
 if command -v story &>/dev/null; then
-  out=$(story --deadline 3 session-start 2>/dev/null) || out=""
+  out=$(printf '%s' "$stdin_json" | story --deadline 3 session-start 2>/dev/null) || out=""
   case "$out" in "{"*) printf '%s' "$out" ;; *) printf '{}' ;; esac
 else
   printf '{}'

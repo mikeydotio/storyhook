@@ -475,14 +475,25 @@ enter_checkout() {
 # <pre-claim-state>, guarded by --if-state in-progress so a genuine
 # concurrent transition away from in-progress is never clobbered, and
 # echoes a clause for the failure message naming the outcome either way.
-# dispatch_ready_note — one clause naming WHY wait_ready gave up, from the
-# globals it sets. A timeout and "a shell is sitting in that pane" are different
-# situations with different remedies, and the operator needs to be told which.
+# dispatch_ready_note — one clause naming WHY the readiness check gave up, from
+# the globals it sets (wait_ready_sentinel's reasons since SH-231; wait_ready's
+# own "timeout" default survives for cmd_doctor's still-unported call). A
+# timeout and "a shell is sitting in that pane" are different situations with
+# different remedies, and the operator needs to be told which.
 dispatch_ready_note() {
   case "$WAIT_READY_REASON" in
     wrong-process)
       printf 'that pane is running `%s`, not a process matching `%s` — the launch never started. Set STORY_READY_PROCESS_PATTERN if your claude reports a different name; `.` matches anything' \
         "${WAIT_READY_COMMAND:-?}" "$READY_PROCESS_PATTERN"
+      ;;
+    pid-mismatch)
+      printf 'the pane no longer shows the process this dispatch launched — something else now occupies it (a respawn, or a second dispatch racing the same window)'
+      ;;
+    pid-exited)
+      printf 'the launched process exited before its SessionStart hook could publish a dispatch sentinel — check `pane_tail` below for why it quit'
+      ;;
+    no-sentinel)
+      printf 'timed out waiting for its SessionStart hook to publish a dispatch sentinel — either the plugin'\''s hooks are not installed in that worktree, or claude has not started yet'
       ;;
     *)
       if [ -n "$WAIT_READY_COMMAND" ]; then
@@ -866,12 +877,13 @@ cmd_dispatch() {
     fail "failed to open a new tmux window.$(claim_rollback_note "$id" "$pre_claim_state")"
   fi
   window=$(tmux display-message -p -t "$pane" '#{window_id}' 2>/dev/null || printf '')
-  # The pane's pid, captured for its own sake: SH-231 (R2, the sentinel/
-  # SessionStart-hook readiness redesign this story deliberately does not
-  # implement — see .council/sh-227-scoping/) can consume it as an
-  # authoritative identity instead of re-deriving one from an unconfirmed
-  # hook payload. Best-effort — a capture failure here must never fail a
-  # dispatch that has already opened its window.
+  # The pane's pid, captured right after the window opened: SH-231 (R2, the
+  # sentinel/SessionStart-hook readiness redesign) consumes this as the
+  # authoritative identity the readiness gate re-checks liveness against,
+  # instead of re-deriving one from an unconfirmed hook payload — see
+  # wait_ready_sentinel's own doc comment in lib/session.sh. Best-effort — a
+  # capture failure here must never fail a dispatch that has already opened
+  # its window; wait_ready_sentinel refuses on an empty pid on its own.
   local pane_pid
   pane_pid=$(tmux display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || printf '')
 
@@ -883,7 +895,7 @@ cmd_dispatch() {
   # only place the launch failure's own words survive — while the worktree,
   # branch and claim are rolled back so an immediate retry is not answered with
   # "already dispatched?" (the collision guard keys on worktree/branch).
-  if ! wait_ready "$pane" "$launch_cmd"; then
+  if ! wait_ready_sentinel "$pane" "$pane_pid" "$worktree_path"; then
     local ready_tail
     ready_tail=$(pane_tail "$pane")
     git worktree remove --force "$worktree_path" >/dev/null 2>&1 || true

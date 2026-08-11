@@ -29,6 +29,19 @@
 # "mode on", "to cycle", ...) -- i.e. never a real Claude TUI, just something
 # that happens to render the same two glyphs a shell prompt theme supplies.
 #
+# SUPERSEDED MECHANISM, SAME REGRESSION COVERAGE (SH-231). Dispatch no longer
+# calls wait_ready (the tiers described above) at all -- it polls
+# wait_ready_sentinel for a published dispatch sentinel instead, immune to
+# rendered content by construction. FAKE_TMUX_CAPTURE=structural is now inert
+# for dispatch specifically (nothing reads pane content on this path any
+# more) and survives here only because FAKE_TMUX_LAUNCH_MANGLE=1 is what
+# actually drives this scenario: no live claude/node process, so no
+# SessionStart hook, so no sentinel -- this file keeps pinning "the SH-178
+# pane never receives the charter," it just does so via wait_ready_sentinel's
+# own no-sentinel timeout rather than a process-name mismatch on rendered
+# content. wait_ready itself is unchanged and still governs cmd_doctor's
+# scratch-window self-test, which this file does not exercise.
+#
 # THE FAILING ASSERTION: story.sh must never submit the charter into a pane
 # that was never confirmed as an actual Claude session. The fake tmux's
 # private $FAKE_TMUX_STATE/prompt_submits and .../submitted are the ground
@@ -64,8 +77,15 @@ assert_eq "$(jqf "$out" .readiness_confirmed)" "false" \
   "structural-idle-pane: readiness must NOT be confirmed on a pane whose occupant is a shell"
 assert_eq "$(jqf "$out" .reason)" "pane-not-ready" \
   "structural-idle-pane: the refusal names the pane, not some other guard"
-assert_eq "$(jqf "$out" .wait_ready_reason)" "wrong-process" \
-  "structural-idle-pane: the refusal says WHY -- a shell was in the pane, not a timeout"
+# SH-231: readiness moved from a rendered-content check to sentinel
+# existence, so a pane that never actually started claude/node -- exactly
+# this scenario, the SH-178 field cause -- now reads "no-sentinel" (nothing
+# ever published one) rather than "wrong-process" (a real sentinel exists but
+# this pane's occupant doesn't match it). The pane's occupant is still
+# reported below regardless of which reason fires -- an operator
+# investigating a timeout still needs to know what is actually sitting there.
+assert_eq "$(jqf "$out" .wait_ready_reason)" "no-sentinel" \
+  "structural-idle-pane: the refusal says WHY -- a shell that never started claude, not a timeout"
 assert_eq "$(jqf "$out" .pane_command)" "zsh" \
   "structural-idle-pane: the observed occupant is reported, so an operator can set STORY_READY_PROCESS_PATTERN"
 

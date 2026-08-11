@@ -7,6 +7,11 @@
 # issue per-issue git worktrees (ephemeral — never commit)
 .claude/worktrees/
 
+# SessionStart-hook dispatch-readiness sentinel (SH-231). Written on every
+# Claude Code session start, in every worktree (including a dispatched one's
+# own checkout of this file) — a per-machine runtime artifact, never data.
+.claude/dispatch-sentinel.json
+
 # Residue of the retired per-project tracker. Nothing storyhook ships writes
 # here any more — `.storyhook.toml` is the whole repo footprint — but a `story`
 # binary from before the cutover still creates `.storyhook/lock` where it
