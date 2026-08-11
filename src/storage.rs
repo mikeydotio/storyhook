@@ -829,6 +829,11 @@ pub fn export_project(root: &Path) -> Result<ProjectExport, AppError> {
         // rearchitecture — so this leg of the export always answers empty. The
         // store-side restore is the one that carries them; see `ExportedRemote`.
         remotes: Vec::new(),
+        // Placeholder pending the legacy leg's own carry (SH-189, landing as
+        // its own commit) — the store-side path already carries these in
+        // full; see `ProjectExport::github_sync`'s doc comment.
+        github_sync: None,
+        github_bases: BTreeMap::new(),
         states,
         types,
         members,
