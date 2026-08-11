@@ -682,6 +682,16 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains("function bindRovingKeys"));
     assert!(body.contains("function bindRovingFocus"));
     assert!(body.contains(".card:focus-visible"));
+
+    // SH-197: the story context menu -- Copy ID/URL/Description for now,
+    // Dispatch/Set Status/Delete added by later commits onto the same
+    // storyMenuModel.
+    assert!(body.contains(".ctxmenu"));
+    assert!(body.contains("function openStoryMenu"));
+    assert!(body.contains("function storyMenuModel"));
+    assert!(body.contains("function copyText"));
+    assert!(body.contains(r#"execCommand("copy")"#));
+    assert!(body.contains("\"Copy Description\""));
 }
 
 #[test]
@@ -739,6 +749,31 @@ fn web_serve_api_data_with_stories() {
         assert!(s.get("is_blocked").is_some());
         assert!(s["story"]["id"].is_string());
     }
+}
+
+/// SH-197's context menu "Copy Description" reads straight off the summary
+/// record `/data` already returns -- no separate detail fetch -- so this
+/// pins that `description` really is there rather than something only the
+/// single-story `GET .../story/<id>` (`openDrawer`'s own follow-up call)
+/// carries.
+#[test]
+fn web_serve_api_data_carries_story_descriptions() {
+    let fixture = served();
+    fixture.seed(&["new", "Build feature", "--description", "Ship the thing"]);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let resp = fixture
+        .agent()
+        .get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    let stories = json["stories"].as_array().unwrap();
+    assert_eq!(stories.len(), 1);
+    assert_eq!(stories[0]["story"]["description"], "Ship the thing");
 }
 
 #[test]
