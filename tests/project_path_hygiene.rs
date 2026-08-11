@@ -626,6 +626,74 @@ fn doctor_fix_does_not_guess_which_side_of_a_pointer_origin_mismatch_is_wrong() 
     );
 }
 
+// The pointer/prefix mismatch (SH-190) ---------------------------------------
+
+/// A checkout whose pointer file names a different story-id prefix than the
+/// project it actually resolves to. Built by hand-editing the pointer after
+/// `project new` writes it — the shape a copy-pasted or hand-edited
+/// `.storyhook.toml` produces. This is the one case `import_project`'s SH-190
+/// fix deliberately declines to correct on its own: the export document's own
+/// prefix, not the pointer's, has to win a restore (see that function's own
+/// doc comment for why), so a mismatch this leaves behind is reported, not
+/// silently resolved either way.
+#[test]
+fn doctor_reports_a_checkout_whose_pointer_prefix_disagrees_with_its_project() {
+    let f = fixture("pointer-prefix-mismatch");
+    let slug = slug_for(&f, &f.checkout.display().to_string());
+
+    let pointer_path = f.checkout.join(".storyhook.toml");
+    let original = std::fs::read_to_string(&pointer_path).expect("reading the pointer");
+    let edited = original.replacen("prefix = \"PH\"", "prefix = \"ZZ\"", 1);
+    assert_ne!(
+        edited, original,
+        "setup: the pointer must actually name the fixture's prefix"
+    );
+    std::fs::write(&pointer_path, edited).expect("hand-editing the pointer's prefix");
+
+    let out = story(&f.checkout, &f.data_home, &["doctor"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "advice, not an integrity failure; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report = stdout(&out);
+    assert!(
+        report.contains(&slug) && report.contains("ZZ") && report.contains("PH"),
+        "the report must name the project, the pointer's stale prefix, and the project's real \
+         one: {report}"
+    );
+}
+
+/// The one deliberate refusal: `--fix` never picks a side, same as the
+/// pointer/origin mismatch above.
+#[test]
+fn doctor_fix_does_not_guess_which_side_of_a_pointer_prefix_mismatch_is_wrong() {
+    let f = fixture("pointer-prefix-mismatch-fix");
+    let pointer_path = f.checkout.join(".storyhook.toml");
+    let original = std::fs::read_to_string(&pointer_path).expect("reading the pointer");
+    let edited = original.replacen("prefix = \"PH\"", "prefix = \"ZZ\"", 1);
+    assert_ne!(
+        edited, original,
+        "setup: the pointer must name the fixture's prefix"
+    );
+    std::fs::write(&pointer_path, edited).expect("hand-editing the pointer's prefix");
+
+    let fixed = story(&f.checkout, &f.data_home, &["doctor", "--fix"]);
+    assert_eq!(
+        fixed.status.code(),
+        Some(0),
+        "the mismatch is advisory, so --fix must still succeed; stderr={}",
+        String::from_utf8_lossy(&fixed.stderr)
+    );
+
+    let after = stdout(&story(&f.checkout, &f.data_home, &["doctor"]));
+    assert!(
+        after.contains("ZZ") && after.contains("PH"),
+        "the mismatch must survive --fix — there is no default that is obviously right: {after}"
+    );
+}
+
 /// A checkout that does not *own* its origin is silent, even if its pointer
 /// disagrees with what the enclosing repository's origin resolves to. This is
 /// SH-151's exact false positive: the sub-project layout SH-116 was refused
