@@ -17,9 +17,12 @@ use storyhook::github::storage::SyncStorage;
 use storyhook::github::sync_state::{
     GithubRepo, GithubSyncConfig, StoryIssueMapping, SyncMode, SyncSettings,
 };
-use storyhook::service::{Clock, NewStoryInput, StoreSyncStorage, StoryService};
-use storyhook::store::{ReadOps, Store, StoryNo, WriteOps, partition_known};
-use storyhook_test_support::ServiceFixture;
+use storyhook::service::{
+    Clock, NewStoryInput, StoreSyncStorage, StoryService, TransferService, github, project,
+    transfer,
+};
+use storyhook::store::{ReadOps, SqliteStore, Store, StoryNo, WriteOps, partition_known};
+use storyhook_test_support::{ServiceFixture, scratch_dir};
 
 fn config() -> GithubSyncConfig {
     GithubSyncConfig {
@@ -384,4 +387,165 @@ fn walk(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     }
     found.sort();
     found
+}
+
+// --- reconcile_restored_github_remote (SH-189) ------------------------------
+
+/// Runs `git <args>` in `cwd`, asserting success.
+fn git(cwd: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .current_dir(cwd)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .args(args)
+        .output()
+        .expect("running git");
+    assert!(
+        output.status.success(),
+        "`git {}` in {} failed: {}",
+        args.join(" "),
+        cwd.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Restores `document` into a fresh store rooted at a fresh scratch
+/// directory, returning both — the same shape
+/// `reconcile_restored_github_remote` expects to run against afterward.
+fn restore_into_fresh_project(
+    document: &transfer::ProjectExport,
+) -> (SqliteStore, tempfile::TempDir) {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).expect("opening the store");
+    store.migrate().expect("migrating");
+    transfer::import_project(&store, dir.path(), &Clock::System, document, false)
+        .expect("importing");
+    (store, dir)
+}
+
+/// The `GithubSyncConfig` a restored project's `project_settings.github_sync`
+/// row now holds.
+fn restored_config(store: &SqliteStore, root: &std::path::Path) -> GithubSyncConfig {
+    let pointer = project::read_pointer(root)
+        .expect("reading the pointer file")
+        .expect("a restore must leave a pointer file behind");
+    let project = store
+        .read(|tx| tx.project_by_uuid(&pointer.uuid))
+        .expect("reading the store")
+        .expect("the pointer must name the imported project")
+        .id;
+    let document = store
+        .read(|tx| Ok(tx.settings(project)?.github_sync))
+        .expect("reading settings")
+        .expect("github-sync must still be configured");
+    serde_json::from_value(document).expect("parsing the restored configuration")
+}
+
+fn document_with_github_sync(fixture: &ServiceFixture) -> transfer::ProjectExport {
+    fixture
+        .store()
+        .write(|tx| {
+            let mut settings = tx.settings(fixture.project())?;
+            settings.github_sync = Some(serde_json::to_value(config()).expect("serializing"));
+            tx.put_settings(fixture.project(), &settings)
+        })
+        .expect("configuring github-sync");
+    TransferService::new(&fixture.ctx())
+        .export()
+        .expect("exporting")
+}
+
+#[test]
+fn reconciliation_corrects_owner_repo_from_the_destination_checkouts_remote() {
+    let fixture = ServiceFixture::new();
+    create(&fixture, "Restored story");
+    let document = document_with_github_sync(&fixture);
+
+    let (store, dir) = restore_into_fresh_project(&document);
+    git(dir.path(), &["init", "-q"]);
+    git(
+        dir.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/a-fork-owner/widgets.git",
+        ],
+    );
+
+    github::reconcile_restored_github_remote(&store, dir.path()).expect("reconciling");
+
+    let updated = restored_config(&store, dir.path());
+    assert_eq!(updated.github.owner, "a-fork-owner");
+    assert_eq!(updated.github.repo, "widgets");
+    // Everything else in the blob survives untouched — this is a correction
+    // of two fields, not a fresh document.
+    assert_eq!(
+        updated.mappings.len(),
+        config().mappings.len(),
+        "the mappings must survive untouched, not be replaced"
+    );
+    assert_eq!(updated.mappings[0].story_id, config().mappings[0].story_id);
+    assert_eq!(
+        updated.mappings[0].issue_number,
+        config().mappings[0].issue_number
+    );
+    assert_eq!(updated.etags, config().etags);
+}
+
+#[test]
+fn reconciliation_leaves_the_document_alone_when_the_checkout_has_no_origin_yet() {
+    let fixture = ServiceFixture::new();
+    create(&fixture, "Restored story");
+    let document = document_with_github_sync(&fixture);
+
+    // No `git init` at all: restoring into a fresh directory before `git
+    // remote add origin` runs is ordinary, not an error.
+    let (store, dir) = restore_into_fresh_project(&document);
+
+    github::reconcile_restored_github_remote(&store, dir.path()).expect("reconciling");
+
+    let unchanged = restored_config(&store, dir.path());
+    assert_eq!(unchanged.github.owner, "acme");
+    assert_eq!(unchanged.github.repo, "widgets");
+}
+
+#[test]
+fn reconciliation_is_a_noop_when_the_restore_carried_no_github_sync() {
+    let fixture = ServiceFixture::new();
+    create(&fixture, "Unsynced story");
+    let document = TransferService::new(&fixture.ctx())
+        .export()
+        .expect("exporting");
+    assert!(document.github_sync.is_none());
+
+    let (store, dir) = restore_into_fresh_project(&document);
+    git(dir.path(), &["init", "-q"]);
+    git(
+        dir.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/acme/widgets.git",
+        ],
+    );
+
+    // Must not error just because there is nothing to reconcile.
+    github::reconcile_restored_github_remote(&store, dir.path()).expect("reconciling");
+
+    let pointer = project::read_pointer(dir.path())
+        .expect("reading the pointer file")
+        .expect("a restore must leave a pointer file behind");
+    let project_id = store
+        .read(|tx| tx.project_by_uuid(&pointer.uuid))
+        .expect("reading")
+        .expect("the project exists")
+        .id;
+    let settings = store
+        .read(|tx| tx.settings(project_id))
+        .expect("reading settings");
+    assert!(
+        settings.github_sync.is_none(),
+        "reconciliation must not invent a configuration that was never restored"
+    );
 }
