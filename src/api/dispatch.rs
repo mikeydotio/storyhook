@@ -314,18 +314,71 @@ enum StartOutcome {
     AtCapacity,
 }
 
-/// Tracks every dispatch this daemon has started, in memory only. Restarting
-/// the daemon forgets every record — a dispatch that outlives the request
-/// that started it does not need its bookkeeping to outlive the daemon.
+/// Tracks every dispatch this daemon has started. Every record starts life
+/// in memory only; [`Self::load`] (SH-232) is what makes a *finished* one
+/// survive a restart, by seeding fresh in-memory state from
+/// [`Environment::dispatch_history`] rather than by reaching across
+/// restarts some other way — the persisted file is a snapshot [`Self::finish`]
+/// writes, read back exactly once, at the moment a new registry is built.
 pub struct DispatchRegistry {
     inner: Mutex<Inner>,
+    /// `Some` only for a registry built via [`Self::load`] — the real
+    /// daemon's own registry. `None` for every [`Self::new`] (every test in
+    /// this module, and any future caller that wants a registry with no
+    /// filesystem footprint at all): [`Self::finish`] persists nothing when
+    /// this is `None`, so a plain `new()` stays exactly as pure and
+    /// in-memory as it always was.
+    persist_env: Option<Environment>,
 }
 
 impl DispatchRegistry {
     pub fn new() -> Self {
         DispatchRegistry {
             inner: Mutex::new(Inner::default()),
+            persist_env: None,
         }
+    }
+
+    /// A registry seeded from whatever the previous daemon on this store
+    /// last persisted (SH-232), and that itself persists every completion
+    /// from here on — the constructor the real daemon uses; every test in
+    /// this module keeps using the pure in-memory [`Self::new`] instead.
+    ///
+    /// Only ever loads a *terminal* record: [`Environment::dispatch_history`]'s
+    /// own doc explains why a dispatch still
+    /// [`Running`](DispatchState::Running) when the previous daemon exited
+    /// is never in that file to begin with. Defensive rather than trusting
+    /// (skips a `Running` record if one is somehow found anyway) because
+    /// resurrecting a "running" dispatch this daemon never started, with no
+    /// child process behind it, would strand a client polling a handle that
+    /// can never move again.
+    pub fn load(env: &Environment) -> Self {
+        let mut registry = Self::new();
+        {
+            let mut inner = registry.inner.lock().expect("dispatch registry lock");
+            for record in load_dispatch_history(env) {
+                if record.state == DispatchState::Running {
+                    continue;
+                }
+                inner.finished_order.push_back(record.handle.clone());
+                inner.entries.insert(
+                    record.handle.clone(),
+                    Entry {
+                        record,
+                        // The real elapsed time since the *previous*
+                        // daemon's finish is unrecoverable -- `Instant` is
+                        // process-local and does not survive serialization.
+                        // Treating a freshly-loaded record as "just
+                        // finished" only widens its RETAIN_FOR window
+                        // slightly across a restart; RETAIN_FINISHED's
+                        // count-based cap is unaffected either way.
+                        finished_instant: Some(Instant::now()),
+                    },
+                );
+            }
+        }
+        registry.persist_env = Some(env.clone());
+        registry
     }
 
     /// Reserves a slot for a new dispatch of `story` under `project`, or
@@ -400,6 +453,12 @@ impl DispatchRegistry {
     /// directly (rather than four trailing parameters) so a caller passes
     /// through exactly what it got, and so this signature does not grow a
     /// fifth positional argument the next time [`Classification`] does.
+    ///
+    /// Persists the bounded finished set to disk (SH-232) when this
+    /// registry was built via [`Self::load`] — the snapshot is taken, and
+    /// the mutex released, before the write happens, so a slow or full
+    /// filesystem never holds up `try_start`/`get`/`finish` on another
+    /// thread.
     fn finish(
         &self,
         handle: &str,
@@ -408,18 +467,30 @@ impl DispatchRegistry {
         classification: Classification,
     ) {
         let (state, payload, error, reason) = classification;
-        let mut inner = self.inner.lock().expect("dispatch registry lock");
-        if let Some(entry) = inner.entries.get_mut(handle) {
-            entry.record.state = state;
-            entry.record.finished_at = Some(finished_at);
-            entry.record.payload = payload;
-            entry.record.error = error;
-            entry.record.reason = reason;
-            entry.finished_instant = Some(Instant::now());
+        let snapshot = {
+            let mut inner = self.inner.lock().expect("dispatch registry lock");
+            if let Some(entry) = inner.entries.get_mut(handle) {
+                entry.record.state = state;
+                entry.record.finished_at = Some(finished_at);
+                entry.record.payload = payload;
+                entry.record.error = error;
+                entry.record.reason = reason;
+                entry.finished_instant = Some(Instant::now());
+            }
+            inner.running_by_story.remove(story);
+            inner.finished_order.push_back(handle.to_string());
+            Self::evict(&mut inner);
+            self.persist_env.is_some().then(|| {
+                inner
+                    .finished_order
+                    .iter()
+                    .filter_map(|h| inner.entries.get(h).map(|entry| entry.record.clone()))
+                    .collect::<Vec<_>>()
+            })
+        };
+        if let (Some(records), Some(env)) = (snapshot, &self.persist_env) {
+            persist_dispatch_history(env, &records);
         }
-        inner.running_by_story.remove(story);
-        inner.finished_order.push_back(handle.to_string());
-        Self::evict(&mut inner);
     }
 
     /// Drops finished records beyond [`RETAIN_FINISHED`] or older than
@@ -451,6 +522,57 @@ impl Default for DispatchRegistry {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Writes `records` to [`Environment::dispatch_history`], temp-plus-`rename`
+/// and mode 0600 — the same shape as `daemon::lifecycle::publish_inflight`
+/// and for the same reason: a client that read a half-written file mid-write
+/// would see a truncated or torn JSON array.
+///
+/// **Best-effort, and never fatal** (mirrors `publish_inflight`'s own rule):
+/// a state directory that is full, missing or read-only must still let the
+/// dispatch that finished report its OWN result to the caller polling it —
+/// failing here would replace a good answer with a bad diagnostic about a
+/// diagnostic.
+fn persist_dispatch_history(env: &Environment, records: &[DispatchRecord]) {
+    let path = env.dispatch_history();
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let Ok(document) = serde_json::to_string(records) else {
+        return;
+    };
+    let temp = path.with_extension("json.tmp");
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let Ok(mut file) = options.open(&temp) else {
+        return;
+    };
+    if std::io::Write::write_all(&mut file, document.as_bytes()).is_err() {
+        return;
+    }
+    drop(file);
+    let _ = std::fs::rename(&temp, &path);
+}
+
+/// Reads back whatever the previous daemon (if any) last persisted via
+/// [`persist_dispatch_history`]. Absent file (no previous daemon ever
+/// finished a dispatch on this store, or nothing has been written yet) and a
+/// parse failure (a stale format from an older binary — the write above is
+/// atomic, so a torn read is not possible, but an incompatible one is) both
+/// read as "no history" rather than as an error — the same choice
+/// `daemon::lifecycle::read_inflight` makes for the same reason: a fresh
+/// daemon must never refuse to start over a file it no longer understands.
+fn load_dispatch_history(env: &Environment) -> Vec<DispatchRecord> {
+    let Ok(raw) = std::fs::read_to_string(env.dispatch_history()) else {
+        return Vec::new();
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
 }
 
 /// A project slug or story id, validated against the shape `story.sh` itself
@@ -1387,6 +1509,165 @@ mod tests {
         assert!(
             registry.get(handles.last().unwrap()).is_some(),
             "the newest finished record must survive"
+        );
+    }
+
+    /// A plain `new()` — every test above this one — must never touch a
+    /// filesystem at all, even when `finish()` is called: only [`load`]
+    /// wires up `persist_env`. Verified against a home that does not exist,
+    /// same as the `env()` placeholder helper's own doc: if `finish()`
+    /// tried to write here it would have to create directories first, and
+    /// this test would see them.
+    #[test]
+    fn new_never_persists_regardless_of_finish() {
+        let registry = DispatchRegistry::new();
+        let handle = match registry.try_start("proj", "SH-1", false, "t0".to_string()) {
+            StartOutcome::Started(h) => h,
+            other => panic!("expected Started: {other:?}"),
+        };
+        registry.finish(
+            &handle,
+            "SH-1",
+            "t1".to_string(),
+            (
+                DispatchState::Ok,
+                Some(serde_json::json!({"ok": true})),
+                None,
+                None,
+            ),
+        );
+        assert!(
+            !env().dispatch_history().exists(),
+            "a plain new() registry must never write dispatch history to disk"
+        );
+    }
+
+    #[test]
+    fn load_with_no_prior_history_starts_empty() {
+        let home = storyhook_test_support::scratch_dir();
+        let registry = DispatchRegistry::load(&Environment::at(home.path()));
+        match registry.try_start("proj", "SH-1", false, "t0".to_string()) {
+            StartOutcome::Started(_) => {}
+            other => panic!("a freshly loaded registry must start empty: {other:?}"),
+        }
+    }
+
+    /// SH-232's central claim: a finished dispatch survives the daemon that
+    /// finished it. `finish()` on one `load()`-backed registry persists;
+    /// `load()` on a second, independent registry (a fresh daemon, same
+    /// store) reads it back — including the typed `reason`, round-tripped
+    /// rather than degraded to an untyped payload lookup.
+    #[test]
+    fn a_finished_dispatch_survives_across_a_reload() {
+        let home = storyhook_test_support::scratch_dir();
+        let env = Environment::at(home.path());
+        let first = DispatchRegistry::load(&env);
+        let handle = match first.try_start("proj", "SH-1", true, "t0".to_string()) {
+            StartOutcome::Started(h) => h,
+            other => panic!("expected Started: {other:?}"),
+        };
+        first.finish(
+            &handle,
+            "SH-1",
+            "t1".to_string(),
+            (
+                DispatchState::Refused,
+                Some(serde_json::json!({"ok": false, "reason": "pane-not-ready"})),
+                None,
+                Some(DispatchReason::PaneNotReady),
+            ),
+        );
+
+        let second = DispatchRegistry::load(&env);
+        let record = second
+            .get(&handle)
+            .expect("a finished record must survive a fresh registry load");
+        assert_eq!(record.state, DispatchState::Refused);
+        assert_eq!(record.reason, Some(DispatchReason::PaneNotReady));
+        assert!(record.auto, "auto must survive the round trip too");
+        assert_eq!(record.story, "SH-1");
+    }
+
+    /// [`Environment::dispatch_history`]'s own doc: a dispatch still
+    /// `Running` has no thread left to observe it once its daemon exits, so
+    /// it must never appear in a loaded registry even if a corrupted or
+    /// hand-edited history file somehow contains one — resurrecting a
+    /// handle nothing can ever finish would strand a polling client.
+    #[test]
+    fn load_skips_a_running_record_found_in_history() {
+        let home = storyhook_test_support::scratch_dir();
+        let env = Environment::at(home.path());
+        let stray = DispatchRecord {
+            handle: "stray-handle".to_string(),
+            project: "proj".to_string(),
+            story: "SH-9".to_string(),
+            auto: false,
+            state: DispatchState::Running,
+            started_at: "t0".to_string(),
+            finished_at: None,
+            payload: None,
+            error: None,
+            reason: None,
+        };
+        persist_dispatch_history(&env, std::slice::from_ref(&stray));
+
+        let registry = DispatchRegistry::load(&env);
+        assert!(
+            registry.get("stray-handle").is_none(),
+            "a Running record in history must never be resurrected"
+        );
+    }
+
+    /// A daemon restart between two `finish()` calls must not lose the
+    /// first one — the second `load()`'s write has to include what the
+    /// first `load()` already persisted, not just its own record.
+    #[test]
+    fn history_accumulates_across_more_than_one_reload() {
+        let home = storyhook_test_support::scratch_dir();
+        let env = Environment::at(home.path());
+
+        let first = DispatchRegistry::load(&env);
+        let h1 = match first.try_start("proj", "SH-1", false, "t0".to_string()) {
+            StartOutcome::Started(h) => h,
+            other => panic!("expected Started: {other:?}"),
+        };
+        first.finish(
+            &h1,
+            "SH-1",
+            "t1".to_string(),
+            (
+                DispatchState::Ok,
+                Some(serde_json::json!({"ok": true})),
+                None,
+                None,
+            ),
+        );
+
+        let second = DispatchRegistry::load(&env);
+        let h2 = match second.try_start("proj", "SH-2", false, "t2".to_string()) {
+            StartOutcome::Started(h) => h,
+            other => panic!("expected Started: {other:?}"),
+        };
+        second.finish(
+            &h2,
+            "SH-2",
+            "t3".to_string(),
+            (
+                DispatchState::Ok,
+                Some(serde_json::json!({"ok": true})),
+                None,
+                None,
+            ),
+        );
+
+        let third = DispatchRegistry::load(&env);
+        assert!(
+            third.get(&h1).is_some(),
+            "the first daemon's record must survive a second restart"
+        );
+        assert!(
+            third.get(&h2).is_some(),
+            "the second daemon's record must also be present"
         );
     }
 
