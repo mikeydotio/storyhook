@@ -37,8 +37,8 @@ use crate::store::{
 };
 
 use super::project::{
-    DEFAULT_PREFIX, ProjectPointer, Registration, read_pointer, register_origin, unique_slug,
-    write_pointer,
+    DEFAULT_PREFIX, ProjectPointer, Registration, pointer_path, read_pointer, register_origin,
+    unique_slug, write_pointer,
 };
 use super::state_set::write_states_repairing;
 use super::{Clock, Ctx, append_and_fold, project_prefix};
@@ -719,6 +719,22 @@ pub fn import_project<S: Store>(
         )));
     }
 
+    // A pointer whose uuid this store lacks is adopted verbatim by the create
+    // branch below (SH-190) rather than replaced with a fresh one — so a
+    // malformed value has to be caught before the transaction opens, the same
+    // way an orphan base is, rather than written into `projects.uuid` as an
+    // unvalidated string.
+    if let Some(pointer) = &existing_pointer
+        && uuid::Uuid::parse_str(&pointer.uuid).is_err()
+    {
+        return Err(AppError::Validation(format!(
+            "{} names `{}` as this checkout's project, which is not a valid uuid; fix or \
+             remove the file before restoring here",
+            pointer_path(&root).display(),
+            pointer.uuid
+        )));
+    }
+
     let (uuid, skipped_remotes) = store.write(|tx| {
         let existing = match &existing_pointer {
             Some(pointer) => tx.project_by_uuid(&pointer.uuid)?,
@@ -742,7 +758,28 @@ pub fn import_project<S: Store>(
                     .file_name()
                     .map(|name| name.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "project".to_string());
-                let uuid = uuid::Uuid::new_v4().to_string();
+                // A checkout whose pointer already names a uuid this store
+                // lacks is not a fresh repository — it is the disaster-
+                // recovery restore path (SH-190), and the file already
+                // states the identity to create. Minting a random one
+                // instead would leave the committed pointer naming a project
+                // that exists nowhere, exactly as before this restore.
+                //
+                // Unlike `Ctx::init`'s identical adoption of a stale
+                // pointer (`service/project.rs`), the *prefix* is never
+                // taken from the pointer here: `prefix` above is already
+                // `export.prefix`, and every story this transaction writes
+                // parses and renders its id against that same local (see
+                // `StoryNo::parse_id` and `story_no.to_id` below) — adopting
+                // a different prefix from the pointer would corrupt the ids
+                // of the stories just restored. A pointer/project prefix
+                // disagreement left over from this is `story doctor`'s to
+                // report, not this function's to silently resolve either
+                // way.
+                let uuid = existing_pointer.as_ref().map_or_else(
+                    || uuid::Uuid::new_v4().to_string(),
+                    |pointer| pointer.uuid.clone(),
+                );
                 let project = tx.create_project(&NewProject {
                     uuid: uuid.clone(),
                     slug: unique_slug(&*tx, &name)?,
