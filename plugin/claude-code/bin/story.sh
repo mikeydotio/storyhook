@@ -696,9 +696,10 @@ cmd_dispatch() {
         commands: [
           ("story move " + $id + " in-progress --if-state " + $state),
           ("git worktree add --no-track -b " + $wtbranch + " " + $wtpath + " <base-oid>"),
-          ("tmux new-window " + $target + $detach + "-c " + $wtpath + " -n " + $wname + " -P -F #{pane_id}"),
-          ("tmux send-keys -t <pane> -l " + $launch),
-          "tmux send-keys -t <pane> Enter",
+          ("tmux new-window " + $target + $detach + "-c " + $wtpath + " -n " + $wname + " -P -F #{pane_id} " + $launch
+             + " \\; set-window-option -t " + $wname + " remain-on-exit on"
+             + " \\; set-window-option -t " + $wname + " automatic-rename off"
+             + " \\; set-window-option -t " + $wname + " allow-rename off"),
           ("printf %s " + $prompt + " | tmux load-buffer -b story-" + $id + " -"),
           ("tmux paste-buffer -p -d -b story-" + $id + " -t <pane>"),
           "tmux send-keys -t <pane> Enter"
@@ -794,34 +795,87 @@ cmd_dispatch() {
     session_created=true
   fi
 
-  # Step 10: open the window (rooted IN the new worktree). A failure here
-  # rolls back the just-created worktree/branch and the claim so a failed
-  # dispatch leaves no litter.
-  local new_window_args pane window
+  # Step 10: open the window running the launch command directly (rooted IN
+  # the new worktree). A failure here rolls back the just-created
+  # worktree/branch and the claim so a failed dispatch leaves no litter.
+  #
+  # EXEC, DON'T TYPE (SH-226 -> SH-230). The launch command is passed as
+  # `new-window`'s own trailing shell-command argument, which spawns a
+  # DEDICATED, single-purpose shell to run it once, rather than typing it as
+  # keystrokes into an ALREADY-RUNNING interactive login shell whose rc
+  # files (oh-my-zsh's update nag, for one) have already executed and can
+  # still be holding an interactive prompt open to swallow exactly those
+  # keystrokes — the root cause SH-226 traced four accidental story closures
+  # to. Verified empirically against this machine's tmux (3.7b): for the
+  # simple single-command case every shipped launch template actually is,
+  # `#{pane_current_command}` reports the launched binary itself within
+  # 300ms, not an intervening shell — a one-shot `-c` invocation never
+  # sources the interactive-only blocks those nags live in, so the class is
+  # gone at its root here, not narrowed by the process check Part A added on
+  # top of it.
+  #
+  # `remain-on-exit on`, `automatic-rename off` and `allow-rename off` are
+  # chained onto the SAME tmux invocation via `\;` rather than set
+  # afterward in separate `tmux` calls (as this used to do, and as
+  # cmd_doctor's own scratch window below still does): each separate `tmux`
+  # call is a fresh process launch, and with the shell command now
+  # executing AT window-creation time rather than after a later typed step,
+  # that gap is a real window for a title escape to land in before the pin
+  # does — chaining collapses it to one tmux-server-side command batch
+  # instead of N round trips through this script.
+  #
+  # remain-on-exit matters because execing the launch, rather than typing it
+  # into a shell that persists after claude exits, means nothing survives in
+  # that pane once claude's process ends — crashed, refused, or simply
+  # finished without running <reap>. Today's "the shell resumes" behavior is
+  # how an operator inspects pane_tail after a failure; remain-on-exit's
+  # frozen dead pane preserves exactly that diagnostic capability
+  # (tmux capture-pane still reads it) without leaving a LIVE shell a stray
+  # keystroke could execute a command in. This is a deliberate, documented
+  # behavior change: an attended user can no longer keep typing in that same
+  # pane after claude exits normally — `tmux respawn-pane -t <pane>`
+  # reactivates it if that is wanted.
+  # The chained set-window-option calls are BEST-EFFORT, exactly like the
+  # separate `|| true`-guarded calls this replaced: `tmux` reports a single
+  # exit code for the WHOLE `\;`-chained invocation, and that code reflects
+  # the LAST failure in the chain, not specifically new-window's own result
+  # (verified empirically: a later set-window-option targeting a bad target
+  # makes tmux exit 1 even though new-window already succeeded, the window
+  # already exists, and `-P -F` already printed its pane id). Testing the
+  # combined exit code here would roll back — and leak, since the rollback
+  # below never kills a window it believes was never created — a dispatch
+  # that actually succeeded, over a cosmetic option pin failing. The pane id
+  # itself is the only fact that can only be true if new-window succeeded, so
+  # it alone decides failure; stderr is still discarded either way since none
+  # of these calls has a message worth surfacing on the happy path.
+  local new_window_args pane window set_target
   new_window_args=(-c "$worktree_path" -n "$wname" -P -F '#{pane_id}')
   [ -z "$FOREGROUND" ] && new_window_args=(-d "${new_window_args[@]}")
   [ -n "$TARGET_SESSION" ] && new_window_args=(-t "$TARGET_SESSION:" "${new_window_args[@]}")
-  if ! pane=$(tmux new-window "${new_window_args[@]}" 2>/dev/null) || [ -z "$pane" ]; then
+  set_target="$wname"
+  [ -n "$TARGET_SESSION" ] && set_target="$TARGET_SESSION:$wname"
+  pane=$(tmux new-window "${new_window_args[@]}" "$launch_cmd" \; \
+           set-window-option -t "$set_target" remain-on-exit on \; \
+           set-window-option -t "$set_target" automatic-rename off \; \
+           set-window-option -t "$set_target" allow-rename off \
+         2>/dev/null || true)
+  if [ -z "$pane" ]; then
     git worktree remove --force "$worktree_path" >/dev/null 2>&1 || true
     git worktree prune >/dev/null 2>&1 || true
     git branch -D "$worktree_branch" >/dev/null 2>&1 || true
     fail "failed to open a new tmux window.$(claim_rollback_note "$id" "$pre_claim_state")"
   fi
   window=$(tmux display-message -p -t "$pane" '#{window_id}' 2>/dev/null || printf '')
+  # The pane's pid, captured for its own sake: SH-231 (R2, the sentinel/
+  # SessionStart-hook readiness redesign this story deliberately does not
+  # implement — see .council/sh-227-scoping/) can consume it as an
+  # authoritative identity instead of re-deriving one from an unconfirmed
+  # hook payload. Best-effort — a capture failure here must never fail a
+  # dispatch that has already opened its window.
+  local pane_pid
+  pane_pid=$(tmux display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || printf '')
 
-  # Pin the name before launching claude, so an early title escape can't win
-  # the race.
-  if [ -n "$window" ]; then
-    tmux set-window-option -t "$window" automatic-rename off 2>/dev/null || true
-    tmux set-window-option -t "$window" allow-rename off 2>/dev/null || true
-  fi
-
-  # Step 11: launch claude (literal mode). The worktree already exists (Step
-  # 9), so the default launch omits `-w` entirely.
-  paste_text "$pane" "$launch_cmd" || true
-  tmux send-keys -t "$pane" Enter 2>/dev/null || true
-
-  # Step 12: readiness GATE before typing the prompt. This gates (SH-226); it
+  # Step 11: readiness GATE before typing the prompt. This gates (SH-226); it
   # used to only annotate. An unconfirmed pane gets no text at all: the charter
   # is an autonomous instruction document whose backticked spans a shell executes
   # as commands, so "type it anyway and warn" is not a safe default when nobody
@@ -848,7 +902,7 @@ cmd_dispatch() {
   fi
   local readiness_confirmed=true
 
-  # Step 13: type + submit the prompt, confirmed. SEND_PROMPT_PHASE distinguishes
+  # Step 12: type + submit the prompt, confirmed. SEND_PROMPT_PHASE distinguishes
   # a handoff that never left the keyboard from one that may already be in front
   # of a live agent — see the rollback asymmetry below.
   local prompt_confirmed=false prompt_accepted_flag=false
@@ -918,7 +972,8 @@ cmd_dispatch() {
     --arg warning "$warning" --arg tail "$tail_evidence" --arg display "$display" \
     --arg default "$default" --arg base_oid "$base_oid" --argjson base_fresh "$base_fresh" \
     --arg wtbranch "$worktree_branch" --arg wtpath "$worktree_path" \
-    --arg session "$TARGET_SESSION" --argjson session_created "$session_created" '
+    --arg session "$TARGET_SESSION" --argjson session_created "$session_created" \
+    --arg pane_pid "$pane_pid" '
     {
       ok: true,
       id: $id, title: $title,
@@ -933,6 +988,7 @@ cmd_dispatch() {
     + (if $warning == "" then {} else {warning: $warning} end)
     + (if $tail == "" then {} else {pane_tail: $tail} end)
     + (if $session == "" then {} else {session: $session, session_created: $session_created} end)
+    + (if $pane_pid == "" then {} else {pane_pid: $pane_pid} end)
     + {display: $display}'
 }
 
