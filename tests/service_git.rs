@@ -21,7 +21,7 @@ use storyhook::domain::{CommitReference, StoryEvent, StorySnapshot};
 use storyhook::error::AppError;
 use storyhook::service::{Clock, GitService, NewStoryInput, StoryService};
 use storyhook::store::{ProjectSettings, ReadOps, Store, StoryNo, WriteOps, partition_known};
-use storyhook_test_support::ServiceFixture;
+use storyhook_test_support::{ServiceFixture, default_states};
 
 /// Turns the fixture's working directory into a git repository.
 fn git_init(fixture: &ServiceFixture) {
@@ -227,6 +227,52 @@ fn the_project_setting_can_turn_the_transition_off() {
     );
     let events = events_of(&fixture, StoryNo::new(1));
     assert_eq!(events.len(), 2, "creation and the comment, nothing else");
+    // SH-178: the commit DID claim it — the setting is why it did not move,
+    // not a missing claim word. A user who turned auto-transition off should
+    // not be told their commit grammar is wrong.
+    assert!(
+        !message.contains("no claim word"),
+        "the setting is off, not the grammar: {message}"
+    );
+    assert!(
+        message.contains(&format!(
+            "linked without moving: {id} (sync.auto_transition is off for this project)"
+        )),
+        "the report must name the setting as the cause: {message}"
+    );
+}
+
+/// SH-178, reason 4: since SH-125 a project with no `active`-role state is
+/// the *common* shape, not an edge one — three required OPEN states
+/// (`todo`/`in-progress`/`blocked`) mean the old two-open-state guess never
+/// kicks in. A claim over such a project must say so, not blame the grammar.
+#[test]
+fn a_claim_with_no_active_state_configured_reports_why_not_the_grammar() {
+    let mut states = default_states();
+    for state in &mut states {
+        state.role = None;
+    }
+    let fixture = ServiceFixture::with_states(&states);
+    git_init(&fixture);
+    let id = create(&fixture, "No active state to move into");
+    commit(&fixture, &format!("feat: closes {id}"));
+
+    let message = sync(&fixture).expect("syncing");
+    assert!(
+        !message.contains('\u{2192}'),
+        "there is nowhere to move it: {message}"
+    );
+    assert!(
+        !message.contains("no claim word"),
+        "the commit claimed the story; the project has no active state, which is a \
+         configuration fact, not a grammar mistake: {message}"
+    );
+    assert!(
+        message.contains(&format!(
+            "linked without moving: {id} (this project has no active state configured)"
+        )),
+        "the report must name the real cause: {message}"
+    );
 }
 
 #[test]
@@ -452,6 +498,20 @@ fn a_story_already_out_of_the_default_state_is_commented_but_not_moved() {
     );
     assert_eq!(referenced_by_commits_of(&fixture, StoryNo::new(1)).len(), 1);
     assert_eq!(snapshot_of(&fixture, StoryNo::new(1)).state, "in-progress");
+    // SH-178: the commit DID claim it — the reason it did not move is that the
+    // story had already moved on, not that the commit's grammar was wrong.
+    // Asserting the real cause here is the regression test for the report
+    // asserting "no claim word" for every reason a story stayed put.
+    assert!(
+        !message.contains("no claim word"),
+        "the commit claimed the story; blaming its grammar is the SH-178 defect: {message}"
+    );
+    assert!(
+        message.contains(&format!(
+            "linked without moving: {id} (already out of the project's default open state)"
+        )),
+        "the report must name the real cause: {message}"
+    );
 }
 
 // ---------------------------------------------------------------------------
