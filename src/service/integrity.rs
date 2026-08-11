@@ -46,8 +46,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::domain::{
-    StateDef, StoryEvent, StorySnapshot, TypeDef, inverse_relation, normalize_labels,
-    validate_required_states, validate_type_slug,
+    STATE_ROLE_ACTIVE, StateDef, StoryEvent, StorySnapshot, TypeDef, active_state,
+    inverse_relation, normalize_labels, validate_required_states, validate_type_slug,
 };
 use crate::error::AppError;
 use crate::store::{
@@ -103,17 +103,27 @@ impl<'a, S: Store> IntegrityService<'a, S> {
 
     /// Findings that are informational rather than damage.
     ///
-    /// Today's only occupant: an event whose kind this build has never heard
-    /// of, which is a newer storyhook's data (SH-67), not corruption. It never
+    /// Two occupants. An event whose kind this build has never heard of,
+    /// which is a newer storyhook's data (SH-67), not corruption. And a
+    /// project with no state configured `role=active` (SH-242) — not damage
+    /// either, since `active_state`'s "exactly two open states" fallback
+    /// covers a project the required-states floor (SH-125) has already made
+    /// unreachable in practice (the floor alone puts three states OPEN), so
+    /// silence here is the *common* case for anything written before the
+    /// role concept existed, not a rare one. Neither notice
     /// contributes to [`report`](Self::report)'s health verdict,
     /// [`fix`](Self::fix)'s success or failure, or `story doctor`'s exit code
-    /// — SH-185's council put it here specifically so it could not. The caller
-    /// still owes it visibility: see `notice_issues`'s doc comment.
+    /// — SH-185's council put the first one here specifically so it could
+    /// not, and the second follows the same reasoning
+    /// [`crate::domain::with_required_states`] already gives for never
+    /// awarding a role during a floor repair: which state should be active
+    /// is not this command's to guess. The caller still owes both
+    /// visibility: see `notice_issues`'s doc comment.
     pub fn notices(&self) -> Result<Vec<String>, AppError> {
-        Ok(notice_issues(&diff_read_model(
-            self.ctx.store(),
-            self.project(),
-        )?))
+        let mut notices = notice_issues(&diff_read_model(self.ctx.store(), self.project())?);
+        let states = self.ctx.store().read(|tx| tx.states(self.project()))?;
+        notices.extend(active_state_notice(&states));
+        Ok(notices)
     }
 
     /// Repairs what can be repaired, then reports what is left.
@@ -286,13 +296,15 @@ impl<'a, S: Store> IntegrityService<'a, S> {
         // Nothing to fix here, by design — not a repair failure. A notice
         // never enters `remaining` above, so without this it would vanish
         // from `--fix`'s own report the moment nothing else needed repairing.
+        // Deliberately generic: `notices` now holds two unrelated kinds
+        // (SH-242 added the second), so the wrapper can no longer presume
+        // they are all about an unrecognised event the way it once did —
+        // each notice string is already a complete, self-describing sentence.
         if !notices.is_empty() {
             message.push_str(&format!(
-                "\n{} event{} this build does not recognise {} retained by `story export`, but \
-                 will never be foldable here — nothing to fix, by design:\n{}",
+                "\n{} notice{} — nothing to fix, by design:\n{}",
                 notices.len(),
                 if notices.len() == 1 { "" } else { "s" },
-                if notices.len() == 1 { "was" } else { "were" },
                 notices.join("\n")
             ));
         }
@@ -454,6 +466,31 @@ fn notice_issues(drift: &crate::store::ReadModelDiff) -> Vec<String> {
             )
         })
         .collect()
+}
+
+/// Whether the project has a state `is_claimable` can resolve as "active"
+/// (SH-242), and the advice to give when it does not.
+///
+/// Computed unconditionally, same as [`notice_issues`] — a project below the
+/// floor (SH-125) gets this alongside that harder failure rather than after
+/// it, since nothing about this check depends on the floor being met first.
+/// In practice it matters most once the floor *is* met: a conforming project
+/// already has three OPEN states (`todo`, `in-progress`, `blocked`), so
+/// [`active_state`]'s "exactly two open states" fallback can never apply to
+/// one; only an explicit `role=active` resolves anything from there.
+/// `default_states()` sets that role on `in-progress` for every project
+/// `story project new` creates, so this fires only for a project written
+/// before that default existed, or one whose states were hand-edited past it.
+fn active_state_notice(states: &[StateDef]) -> Vec<String> {
+    if active_state(states).is_some() {
+        return Vec::new();
+    }
+    vec![format!(
+        "no state carries role `{STATE_ROLE_ACTIVE}` — `story next` and `is_claimable` cannot \
+         tell that a story already sitting in `in-progress` is claimed, and will keep \
+         recommending it. Run `story state set in-progress --role active` (or name whichever \
+         state means work is underway) to fix it."
+    )]
 }
 
 /// Renders `report()`'s findings for display when the run is unhealthy,
