@@ -9709,3 +9709,53 @@ this run's standing practice.
 
 **Next:** SH-191 — github-sync's wizard may duplicate a local story its
 own guard would catch (low).
+
+### SH-191 — github-sync's wizard may duplicate a local story its own guard would catch — 2026-08-11
+
+**Outcome:** done. PR #261, merged as `77f33be` (`gh pr merge --merge
+--delete-branch`), fast-forwarded onto `main`; stale remote-tracking ref
+pruned with `git fetch --prune`.
+
+**Reproduced, and the story's own reading was right.** `handle_import_all`
+(`src/github/initial.rs`) gives every open issue a placeholder mapping
+(`story_id` empty) with no regard for whether the issue's own body
+already carries a storyhook block naming a story that exists locally —
+the shape a reset-and-re-imported sync config produces. The pull phase's
+truly-unmapped branch (`src/github/mod.rs`) already carried the guard
+that skips an issue whose body names an existing local story; the
+placeholder-mapping branch a few lines above it, reached whenever "Import
+all" was the chosen strategy, had no equivalent and went straight to
+`create_story_from_issue` — a genuine duplicate, not a hypothetical one.
+No council needed: the story's own "first step" already named the fix
+shape (probably one condition), and reading the two branches side by side
+confirmed it without any open design question.
+
+**Reproduction came first.** A new test,
+`import_all_does_not_duplicate_a_story_the_issue_body_already_names`
+(`tests/github_sync_engine.rs`), seeds one local story and one GitHub
+issue whose body already names it via a storyhook block, then runs
+`run_sync_with(strategy: ImportAll)`. Red before the fix — two open
+stories where the fixture seeded one, the second a copy of the first's
+title with the issue's own description attached. Green after.
+
+**Fix, at the same origin the guard already existed at.** The four-line
+predicate the unmapped branch used inline is now a named function,
+`already_has_a_local_story(remote_snap, open_stories)`, called from both
+branches — the placeholder branch (the bug) and the unmapped branch
+(unchanged behavior, now sharing the check instead of repeating it). One
+condition, as the story predicted, plus the extraction DRY asked for
+since the same predicate was about to exist in two places.
+
+**Test plan:** `cargo test --test github_sync_engine --features
+github-sync` (11/11, including the new regression test), `cargo clippy
+--workspace --all-targets -- -D warnings` (clean), `cargo fmt --check`
+(clean), then the full `make test` gate as a harness-tracked background
+command with log-growth heartbeats (60s cadence, 120s stall bound) — no
+stall, full Rust workspace suite, the 29-test plugin suite, and all 45
+Playwright e2e specs green.
+
+**No version bump** — `fix:`, left for the next batched `/semver` pass per
+this run's standing practice.
+
+**Next:** SH-194 — the interactive-prompt allowlist cannot tell a live
+exemption from a stale one (low).
