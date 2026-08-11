@@ -243,7 +243,7 @@ where
             pid: std::process::id(),
             started_at: env.now(),
         },
-        dispatch_registry: Arc::new(crate::api::dispatch::DispatchRegistry::new()),
+        dispatch_registry: Arc::new(crate::api::dispatch::DispatchRegistry::load(env)),
         inflight: Arc::new(crate::daemon::lifecycle::InFlight::new(env.clone())),
         draining: AtomicBool::new(false),
     };

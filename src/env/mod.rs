@@ -301,6 +301,35 @@ impl Environment {
         self.daemon_state_dir().join("daemon.log")
     }
 
+    /// Where this store's daemon persists its finished
+    /// [`crate::api::dispatch::DispatchRecord`]s across a restart (SH-232).
+    ///
+    /// Before this, `DispatchRegistry` was in-memory only: a `--auto`
+    /// dispatch is the one kind nobody is necessarily watching when it
+    /// finishes, and a daemon restart between the finish and the next look
+    /// forgot it entirely. A JSON array of the *same bounded set*
+    /// `DispatchRegistry` already keeps in memory — rewritten whole on
+    /// every finish rather than appended, so this file never outgrows what
+    /// a running daemon would show anyway, and never needs its own
+    /// eviction logic to duplicate the in-memory one.
+    ///
+    /// Deliberately never records a dispatch still
+    /// [`Running`](crate::api::dispatch::DispatchState::Running) when this
+    /// daemon exits: that dispatch's child was launched into its own
+    /// process group ([`crate::api::dispatch`]'s own doc), so it outlives
+    /// the daemon as an orphan, and nothing is left to observe its outcome
+    /// and write it down. Absent from history is the honest answer there,
+    /// not a wrong one manufactured to fill the gap.
+    ///
+    /// Same shape as [`Self::daemon_current`] for the same reason: no
+    /// schema version, because a parse failure (an older binary's format)
+    /// reads as empty rather than as an error — losing dispatch history is
+    /// never worse than a fresh daemon refusing to start over a file it no
+    /// longer understands.
+    pub fn dispatch_history(&self) -> PathBuf {
+        self.daemon_state_dir().join("dispatch-history.json")
+    }
+
     /// Where the daemon publishes everything it is currently serving.
     ///
     /// **The observable the wire does not have.** A daemon writes no bytes at
@@ -598,6 +627,7 @@ mod tests {
             env.daemon_attempt(),
             env.daemon_failure(),
             env.daemon_log(),
+            env.dispatch_history(),
         ] {
             assert_eq!(
                 path.parent(),
@@ -626,6 +656,7 @@ mod tests {
             (one.daemon_attempt(), two.daemon_attempt()),
             (one.daemon_failure(), two.daemon_failure()),
             (one.daemon_log(), two.daemon_log()),
+            (one.dispatch_history(), two.dispatch_history()),
         ] {
             assert_ne!(a, b, "{} is shared between two stores", a.display());
         }
