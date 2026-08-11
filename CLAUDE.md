@@ -111,6 +111,15 @@ Standing rules for every wave:
   `storyhook_test_support::daemon_containment()`. Four Rust test files `env_clear()` on
   purpose and call `daemon_containment()` afterward to reinstate containment, rather than
   hand-copying its two literals a fifth, sixth, seventh and eighth time.
+- **Rendered output is never evidence that a process is running — confirm the process.**
+  Dispatch's readiness gate inferred "Claude is ready" from a frame rule and a prompt glyph,
+  which a shell prompt supplies for free, and typed the autonomous charter into zsh; the
+  shell executed it and closed four stories (SH-226,
+  `docs/rca/dispatch-types-the-agent-charter.md`). `wait_ready` now also requires
+  `#{pane_current_command}` to match `READY_PROCESS_PATTERN`, and an unconfirmed pane is
+  refused rather than warned about. The daemon side already had this right —
+  `await_healthy` wants a portfile, an identity check and a `hello` round trip. Screen-scraping
+  a TUI footer is a heuristic; treat it as one.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
