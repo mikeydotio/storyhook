@@ -852,6 +852,19 @@ fn no_client_process_probes_for_the_host_it_prints() {
 /// `src/service/questionnaire.rs` and `src/service/github_setup.rs` are
 /// deliberately **not** here: both take `impl BufRead` and never name stdin at
 /// all, which is the shape a prompting module is supposed to have.
+///
+/// # A live exemption and a stale one look identical to a name-only list
+///
+/// The original single `ALLOWED` list could check that no file outside it
+/// prompts, and that its length matched a hand-counted expectation — it could
+/// not check whether an entry still *needed* to be there. An allowlisted file
+/// that later lost its last prompt stayed exempted silently; only a human
+/// re-reading the ledger noticed (SH-194). The list is now two: `LEGITIMATE`
+/// for the two sites that prompt by design and will not change without a
+/// design change, and `EXEMPTED` for filed defects awaiting their story. Only
+/// `EXEMPTED` entries are checked for staleness, immediately below the breach
+/// check — removing the last prompt from an exempted file now turns this
+/// suite red until the entry is deleted too.
 #[test]
 fn every_interactive_prompt_is_in_the_allowlist() {
     use std::path::Path;
@@ -871,36 +884,29 @@ fn every_interactive_prompt_is_in_the_allowlist() {
     /// The two ways a file under `src/` can talk to a terminal.
     const PROMPTS: [&str; 3] = ["std::io::stdin", ".interact()", ".interact_text()"];
 
-    /// Every file permitted to, with the story that will remove it.
+    /// Sites that prompt by design and always will — never a story's target.
     ///
     /// * `src/main.rs` — the client, and the one legitimate site. It owns the
     ///   `IsTerminal` decision for every prompt in the program.
     /// * `src/invoke.rs` — `Ctx`'s envelope-stdin fallback, documented as
     ///   deliberate for the TUI and in-process callers.
+    const LEGITIMATE: [&str; 2] = ["src/main.rs", "src/invoke.rs"];
+
+    /// Filed defects awaiting their story, exempted only as long as they still
+    /// prompt. `every_exempted_entry_still_prompts` (below) fails the moment an
+    /// entry's last `PROMPTS` token is removed, so a fix that forgets to delete
+    /// its own exemption turns this suite red instead of leaving a silent,
+    /// unenforced hole (SH-194).
     ///
-    /// `src/service/story.rs` was the third entry, and the third lost:
-    /// `confirm_undelete` prompted from the *service* layer, which runs inside
-    /// the daemon and has no terminal, so `story reopen` of a soft-deleted
-    /// story could never actually ask and always hard-refused. The prompt
-    /// moved to `main.rs`'s `confirm`, in the same `Response::
-    /// ConfirmationRequired` shape `delete`/`purge`/`set-prefix` already use —
-    /// `StoryService::reopen_plan` computes what an undelete would restore and
-    /// returns it as a plan (SH-154).
-    ///
+    /// Empty right now: `src/service/story.rs` was the third entry LEGITIMATE
+    /// ever needed to cover and is gone (SH-154's `reopen_plan`);
     /// `src/github/conflict.rs` was the fourth entry this list ever held, and
-    /// the first it lost: its `.interact().unwrap_or(2)` chose Skip for the
-    /// user whenever there was no terminal, which under the daemon is always.
-    /// The menu was deleted rather than guarded — a conflict the caller has
-    /// not answered comes back as `AppError::SyncConflict` (SH-152).
-    ///
-    /// `src/github/initial.rs` was the second entry lost, three sites at once:
-    /// the strategy menu, the sync-mode menu and the per-pair "Link these?"
-    /// question. None survived as a guarded prompt — `run_initial_setup` now
-    /// computes what setup would do and returns it as a plan; the question
-    /// moved to the one process that has a terminal, in
-    /// `src/service/github_setup.rs`, built to `questionnaire.rs`'s shape
-    /// below and so never a candidate for this list at all (SH-153).
-    const ALLOWED: [&str; 2] = ["src/main.rs", "src/invoke.rs"];
+    /// the first it lost, when its `.interact().unwrap_or(2)` menu was deleted
+    /// rather than guarded (SH-152); `src/github/initial.rs` was the second
+    /// entry lost, three sites at once, replaced by `run_initial_setup`
+    /// returning a plan and `src/service/github_setup.rs` asking the question
+    /// from the one process with a terminal (SH-153).
+    const EXEMPTED: [&str; 0] = [];
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
@@ -911,13 +917,20 @@ fn every_interactive_prompt_is_in_the_allowlist() {
         files.len()
     );
 
+    fn still_prompts(text: &str) -> bool {
+        text.lines().any(|line| {
+            let code = line.trim_start();
+            !code.starts_with("//") && PROMPTS.iter().any(|prompt| code.contains(prompt))
+        })
+    }
+
     let mut breaches = Vec::new();
     for (path, text) in &files {
         let relative = path
             .rsplit_once("/src/")
             .map(|(_, rest)| format!("src/{rest}"))
             .unwrap_or_else(|| path.clone());
-        if ALLOWED.contains(&relative.as_str()) {
+        if LEGITIMATE.contains(&relative.as_str()) || EXEMPTED.contains(&relative.as_str()) {
             continue;
         }
         for (number, line) in text.lines().enumerate() {
@@ -936,19 +949,43 @@ fn every_interactive_prompt_is_in_the_allowlist() {
 
     assert!(
         breaches.is_empty(),
-        "the daemon never prompts, so a prompt under `src/` belongs in `main.rs` or in the \
-         allowlist above with the story that will remove it:\n  {}",
+        "the daemon never prompts, so a prompt under `src/` belongs in `main.rs` or in \
+         LEGITIMATE/EXEMPTED above with the story that will remove it:\n  {}",
         breaches.join("\n  ")
     );
 
-    // Asserted so that *removing* a violation is also a deliberate edit here:
-    // the list is a ledger of two legitimate, documented sites — SH-154
-    // closed the last filed exemption — and it should only ever get shorter.
+    for exempted in EXEMPTED {
+        let (_, text) = files
+            .iter()
+            .find(|(path, _)| {
+                path.rsplit_once("/src/")
+                    .map(|(_, rest)| format!("src/{rest}"))
+                    .as_deref()
+                    == Some(exempted)
+            })
+            .unwrap_or_else(|| panic!("EXEMPTED names {exempted}, which is not under src/"));
+        assert!(
+            still_prompts(text),
+            "{exempted} is in EXEMPTED but no longer contains a PROMPTS token — its defect is \
+             already fixed, so the exemption is stale; delete this entry",
+        );
+    }
+
+    // Asserted so that changing either list is a deliberate edit here.
+    // LEGITIMATE names sites that prompt by design and should not change without
+    // a design change; EXEMPTED is a ledger of filed defects and should only
+    // ever get shorter — SH-154 closed the last one, and SH-194's own fix left
+    // it at zero.
     assert_eq!(
-        ALLOWED.len(),
+        LEGITIMATE.len(),
         2,
-        "the allowlist changed; each entry is a filed exemption, so adding one needs a story \
-         and removing one needs the defect to be gone"
+        "LEGITIMATE changed; it names the sites that prompt by design"
+    );
+    assert_eq!(
+        EXEMPTED.len(),
+        0,
+        "EXEMPTED changed; each entry is a filed exemption, so adding one needs a story and \
+         removing one needs the defect to be gone"
     );
 }
 
