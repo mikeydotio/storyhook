@@ -10038,3 +10038,111 @@ fast-forwarded onto `main` in this checkout via `git pull --ff-only`.
 
 **Next:** run `story next` fresh next cycle rather than naming one here —
 see **Dogfooding `story next`** above.
+
+### SH-242 — done, 2026-08-11
+
+**`story next` handed back an in-progress story, live.** Fresh cycle,
+`story next --count 3` (before touching the installed binary) returned
+SH-197 as its top pick — state `in-progress`, and `tmux list-windows -a`
+confirmed `storyhook:4` was a real live session working it (right-click
+context menu feature, mid-commit, tests passing). Per this run's own "watch
+`story next`" rule, that is filed critical no matter the cause — the same
+rule that produced SH-236.
+
+**First check: was the fix even running?** The installed `story` binary
+(`~/.local/bin/story`) was built Aug 10 23:22 — before SH-236 and SH-239
+both merged today. `story --version` reports the unchanged Cargo package
+version (2.0.0) either way, so a stale install is otherwise invisible.
+Rebuilt via `make install`; the per-store daemon auto-detected the new
+`exe_mtime` and respawned itself on the very next command — confirmed via
+`daemon.json` (fresh `started_at`, `exe_mtime` matching the new binary).
+Re-ran `story next` against the fresh daemon. **Still returned SH-197.**
+
+**Root-caused: not a code bug.** `domain::active_state()` (SH-236's own
+mechanism) only excludes a claimed story when some state carries
+`role=active`, or — fallback — when the project has *exactly* two OPEN
+states. `story state list` showed this project has **four**
+(todo/in-progress/verifying/blocked), so the fallback can't apply, and no
+state had `role=active` set. `active_state()` returned `None`;
+`is_claimable()` degraded to `is_ready()` — exactly what SH-236's own log
+entry predicted for this case ("nothing new excluded rather than a guess").
+Confirmed `default_states()` (src/service/project.rs) sets `role=active` on
+`in-progress` for every project `story project new` creates today — this
+project's own state rows just predate that default and were never
+backfilled. Worked around live: `story state set in-progress --role
+active`; `story next`/`--count 5` immediately started skipping SH-197 and
+returning SH-205.
+
+**Filed two stories from this investigation**, not one — the second is
+unrelated to `story next` but was found while reading around it and belongs
+on the record before being set aside:
+
+- **SH-242** (critical, this story) — the gap above, plus: nothing detects
+  it (no `doctor` check for "does this project have a resolvable active
+  state"), and no other storyhook-tracked project was checked for the same
+  drift.
+- **SH-243** (high) — `story doctor --json` surfaced read-model drift on
+  **109 of ~237 stories** (SH-41..SH-225), found only because `story doctor`
+  was run to look for a check like the one SH-242 needed and its own output
+  turned out to carry a live finding. Scripted a diff across all 109
+  entries rather than trusting the two spot-checked by eye: 100% of them
+  differ on exactly `comments`/`referenced_by_commits`, in exactly one
+  shape — a legacy synthetic `[git] <sha>: <message>` comment surviving in
+  the persisted snapshot that the events-rebuild no longer reproduces
+  (the same commit reference now lives in the structured
+  `referenced_by_commits` field instead). Read as migration debt from a
+  format change, not corruption; not gating anything (`doctor` isn't wired
+  into `make test`, a hook, or dispatch). Deliberately **not** run
+  `--fix` — 109 stories at once on unverified-safe repair logic is exactly
+  what "reproduce before you fix" exists to slow down. Left for its own
+  cycle.
+
+**Fixed SH-242 itself.** `story doctor` now notices a project with no
+`role=active` state, on the same advisory channel SH-185 built for the
+unknown-event-kind notice: informational only, never affecting `report()`'s
+health verdict, `--fix`'s success, or `doctor`'s exit code — deliberately,
+matching `with_required_states`'s existing, on-the-record refusal to award
+a role during a floor repair ("which state should be active is not this
+command's to guess"). `--fix`'s "nothing to fix" message wrapper, previously
+hardcoded to describe only the unknown-event-kind notice, is generalized to
+a neutral "N notice(s)" framing so it doesn't misdescribe the new one.
+
+**TDD, red confirmed before the fix.** Four new tests in
+`tests/required_states.rs`: a project exactly at the SH-125 floor (three
+OPEN states — the two-open-states fallback can never fire above the floor,
+worth stating plainly since it means this notice is the *only* path left
+for any conforming project) with no active role gets the notice and stays
+`report()`-healthy; a project with one configured stays silent; a project
+with five OPEN states still gets exactly one notice; `--fix` never assigns
+a role itself. Ran before implementing and confirmed 2 of 4 failing for the
+right reason (assertion on empty `notices()`), then implemented and got all
+four green.
+
+**The gate, twice, clean.** Both runs supervised (log-growth heartbeat,
+60s poll / 120s stall bound) via a `python3 -c "os.setsid(); …"`-detached
+process — the `nohup`-gets-reaped and `Monitor`-kills-its-own-pipe failure
+modes this file already documents. 141 `test result: ok` blocks both times,
+zero `FAILED`, zero unexpected panics, `cargo fmt --check` and `clippy -D
+warnings` clean, plugin suite 29/29, e2e 45/45, orphan-server postlude
+clean. `cargo doc -p storyhook --no-deps` showed no new warnings from this
+diff (103 pre-existing, unrelated). One supervision false alarm on the
+post-merge run: the stall-detector fired because the poll script checked
+"stalled ≥120s" before checking "process already exited," so a run that
+finished during the last stall window read as stalled. It hadn't — verified
+directly (`pgrep`, log tail identical in shape to the first clean run) —
+but the script itself is now a known sharp edge for the next cycle's
+watchdog, not filed as its own story since it's a one-off inline polling
+script, not shipped code.
+
+**No version bump** — `feat:` per Conventional Commits, but this is an
+internal `doctor` advisory, not a user-facing capability; left for the next
+batched `/semver` pass per this run's standing practice either way.
+
+**PR:** #271, merged as `a537c3d` (`gh pr view` confirmed `MERGED`),
+fast-forwarded onto `main` in this checkout. `Closes SH-242.` in the commit
+body auto-closed the story before `story move` was even attempted (it
+refused: "already closed") — same mechanism SH-236 exercised.
+
+**Next:** SH-243 — 109 stories' read-model drift, once its repair is
+verified lossless rather than assumed from a sample (high); or run `story
+next` fresh if that investigation isn't the next cycle's shape.
