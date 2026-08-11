@@ -50,7 +50,13 @@ test("Delete opens the modal over the still-open drawer", async ({ page }) => {
   await expect(page.locator("#drawer")).toHaveClass(/open/);
   await expect(page.locator("#delete-modal-summary")).toContainText(title);
 
-  await deleteStory(page, title);
+  // Cleanup completes the ALREADY-OPEN modal directly rather than calling
+  // the shared deleteStory() helper, which assumes a clean starting state
+  // (no drawer, no modal) and would otherwise try to click a card that its
+  // own still-open backdrop is covering.
+  await page.locator("#delete-reason").fill("e2e cleanup");
+  await page.locator("#delete-modal-submit").click();
+  await expect(page.locator("#delete-modal")).not.toHaveClass(/open/);
 });
 
 test("submitting with an empty reason shows an in-modal error and deletes nothing", async ({
@@ -76,7 +82,11 @@ test("submitting with an empty reason shows an in-modal error and deletes nothin
   await expect(page.locator("#delete-modal")).toHaveClass(/open/);
   await expect(card).toBeVisible();
 
-  await deleteStory(page, title);
+  // Cleanup completes the ALREADY-OPEN modal directly -- see the identical
+  // comment on the previous test for why deleteStory() can't be used here.
+  await page.locator("#delete-reason").fill("e2e cleanup");
+  await page.locator("#delete-modal-submit").click();
+  await expect(page.locator("#delete-modal")).not.toHaveClass(/open/);
 });
 
 async function openDeleteModal(
@@ -104,6 +114,11 @@ test("Cancel dismisses the modal without deleting; the drawer stays open", async
   await expect(page.locator("#drawer")).toHaveClass(/open/);
   await expect(card).toBeVisible();
 
+  // deleteStory() assumes a clean starting state; the drawer this test
+  // deliberately left open would otherwise block its own card click behind
+  // #drawer-backdrop.
+  await page.locator("#drawer-close").click();
+  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
   await deleteStory(page, title);
 });
 
@@ -124,6 +139,9 @@ test("clicking the backdrop dismisses the modal without deleting; the drawer sta
   await expect(page.locator("#drawer")).toHaveClass(/open/);
   await expect(card).toBeVisible();
 
+  // See the identical comment on the Cancel test above.
+  await page.locator("#drawer-close").click();
+  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
   await deleteStory(page, title);
 });
 
