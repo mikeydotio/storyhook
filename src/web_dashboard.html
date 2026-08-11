@@ -530,6 +530,26 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .drafts-row-id { font-family: var(--mono); font-size: 0.75rem; color: var(--fg-muted); flex-shrink: 0; }
 .drafts-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ---- Story context menu (SH-197) ----
+   `position: fixed`, not `.fdd-panel`'s `absolute` -- this is anchored to
+   the cursor (or the invoking card, for a keyboard-raised menu), not to a
+   fixed button, so it needs its own positioning rather than that class's.
+   z-index 50: above the drawer (41), below every modal (51), since the
+   delete modal a menu item can open must be able to cover it. */
+.ctxmenu {
+  position: fixed; min-width: 12rem; max-height: 20rem; overflow-y: auto;
+  background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg); padding: 0.375rem; z-index: 50;
+}
+.ctxmenu-item {
+  display: flex; align-items: center; gap: 0.5rem; padding: 0.4375rem 0.625rem; border-radius: 0.25rem;
+  font-size: 0.8125rem; cursor: pointer; user-select: none; white-space: nowrap;
+}
+.ctxmenu-item:hover, .ctxmenu-item.focused { background: var(--bg-sunken); }
+.ctxmenu-item[aria-disabled="true"] { cursor: not-allowed; opacity: 0.55; }
+.ctxmenu-item.danger { color: var(--danger); }
+.ctxmenu-sep { height: 1px; background: var(--border); margin: 0.25rem 0.25rem; }
+
 /* ---- Toasts ---- */
 .toast-stack { position: fixed; top: 1rem; right: 1rem; display: flex; flex-direction: column; gap: 0.5rem; z-index: 60; max-width: 22rem; }
 .toast {
@@ -1230,6 +1250,59 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     textarea.style.height = textarea.scrollHeight + "px";
   }
 
+  /** Copies `text`, naming it `label` in the confirmation toast (SH-197's
+   * context menu "Copy ID"/"Copy URL"/"Copy Description").
+   *
+   * Two paths, chosen up front rather than one falling back to the other:
+   * `document.execCommand("copy")` only works synchronously inside the task
+   * a user gesture started, while `navigator.clipboard.writeText`'s promise
+   * resolves on a later microtask that may already have lost that gesture
+   * -- so the async API is used when it exists and any failure is
+   * *reported*, not silently retried with the fallback. The synchronous
+   * textarea path is used when the async API doesn't exist at all, which is
+   * every tailnet URL: `navigator.clipboard` is a secure-context-only API,
+   * and the daemon serves plain http on a MagicDNS name (`dashboard_url()`,
+   * `src/daemon/lifecycle.rs`), never https. Neither path may fail silently
+   * -- a copy the user believes happened and didn't is worse than a
+   * visible refusal. */
+  function copyText(text, label) {
+    if (!text) { toast("Nothing to copy for " + label, "info"); return; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text)
+        .then(function() { toast(label + " copied", "success"); })
+        .catch(function(err) { toast("Couldn't copy " + label + " — " + err.message, "error"); });
+      return;
+    }
+    if (copyToClipboardFallback(text)) {
+      toast(label + " copied", "success");
+    } else {
+      toast("Couldn't copy " + label + " — clipboard access unavailable", "error");
+    }
+  }
+
+  /** The pre-Clipboard-API copy: a hidden textarea, selected and copied
+   * synchronously inside the click's own task. Returns whether the browser
+   * reports success (`execCommand` can also throw, which counts as a no).
+   * Restores whichever element had focus before this ran and removes the
+   * textarea in the same tick -- nothing about it should be observable
+   * afterward beyond the copy itself landing. */
+  function copyToClipboardFallback(text) {
+    var previouslyFocused = document.activeElement;
+    var textarea = el("textarea", {
+      value: text,
+      readOnly: true,
+      style: "position:fixed;top:-1000px;left:-1000px;opacity:0;"
+    }, []);
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    textarea.remove();
+    if (previouslyFocused && typeof previouslyFocused.focus === "function") previouslyFocused.focus();
+    return ok;
+  }
+
   // ============================================================
   // API
   // ============================================================
@@ -1755,6 +1828,194 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   // ============================================================
+  // STORY CONTEXT MENU (SH-197)
+  // ============================================================
+  //
+  // Right-click (or Shift+F10 / the Menu key, now that the roving tabindex
+  // above makes a card/row focusable at all) on a board card or list row
+  // opens a menu of per-story actions. Built the same way the header's
+  // project selector was (WAI-ARIA menu pattern, from scratch -- see that
+  // control's own doc comments for why) but as a fresh node per open rather
+  // than a persistent, anchor-positioned popover: the anchor here is the
+  // cursor (or the invoking card, for a keyboard-raised menu), which the
+  // `.fdd-panel` popovers never needed to reason about.
+
+  var storyMenuNode = null;
+  var storyMenuInvoker = null;
+  var storyMenuFocusIndex = -1;
+
+  /** The menu's contents for `v` (a `{story, is_ready, is_blocked}`
+   * summary record, the same shape `state.data.stories` holds) as plain
+   * data -- nothing here touches the DOM, so every gating rule lives in one
+   * place regardless of which surface contributes it. One rule, stated
+   * once: a gate the user cannot lift from here HIDES the item; a gate
+   * that will lift on its own (an in-flight request finishing) DISABLES
+   * it. */
+  function storyMenuModel(v) {
+    var st = v.story;
+    var description = (st.description || "").trim();
+    return compactSeparators([
+      { label: "Copy ID", onSelect: function() { copyText(st.id, "ID"); } },
+      { label: "Copy URL", onSelect: function() { copyText(storyPermalink(st.id), "URL"); } },
+      {
+        label: "Copy Description",
+        disabled: !description,
+        title: description ? null : "This story has no description",
+        onSelect: function() { copyText(description, "Description"); }
+      }
+    ]);
+  }
+
+  /** Drops a leading, trailing, or doubled-up separator -- what lets one
+   * group of items (e.g. Dispatch on a closed story) disappear from the
+   * model without leaving a stray divider behind. */
+  function compactSeparators(entries) {
+    var out = [];
+    entries.forEach(function(entry) {
+      if (entry.separator && (!out.length || out[out.length - 1].separator)) return;
+      out.push(entry);
+    });
+    while (out.length && out[out.length - 1].separator) out.pop();
+    return out;
+  }
+
+  /** A keyboard-raised `contextmenu` (Shift+F10 / the Menu key) carries no
+   * usable cursor position -- `button` is `-1`, and `clientX`/`clientY` are
+   * both `0`. Anchors to the invoking card/row's own rect in that case, so
+   * the menu lands on the story rather than the window's top-left corner. */
+  function menuAnchor(e, invoker) {
+    if (e.button === -1 || (e.clientX === 0 && e.clientY === 0)) {
+      var rect = invoker.getBoundingClientRect();
+      return { x: rect.left, y: rect.bottom };
+    }
+    return { x: e.clientX, y: e.clientY };
+  }
+
+  /** Clamps `node` (already inserted, so it has real dimensions) inside the
+   * viewport with an 8px margin, anchored at `(x, y)`. */
+  function placeMenu(node, x, y) {
+    var rect = node.getBoundingClientRect();
+    var left = Math.max(8, Math.min(x, window.innerWidth - rect.width - 8));
+    var top = Math.max(8, Math.min(y, window.innerHeight - rect.height - 8));
+    node.style.left = left + "px";
+    node.style.top = top + "px";
+  }
+
+  function storyMenuItemNodes() {
+    return storyMenuNode ? Array.prototype.slice.call(storyMenuNode.querySelectorAll(".ctxmenu-item")) : [];
+  }
+
+  /** Moves roving `tabindex`/focus to item `index` within the open menu,
+   * wrapping at either end -- the same convention as the project
+   * selector's `projselFocusItem`. An `aria-disabled` item is still a stop
+   * (skipping it would break roving tabindex and hide it from a screen
+   * reader); only Enter/Space on it is a no-op. */
+  function storyMenuFocusItem(index) {
+    var items = storyMenuItemNodes();
+    if (!items.length) return;
+    if (index < 0) index = items.length - 1;
+    if (index >= items.length) index = 0;
+    items.forEach(function(item, i) {
+      item.classList.toggle("focused", i === index);
+      item.tabIndex = i === index ? 0 : -1;
+    });
+    items[index].focus();
+    storyMenuFocusIndex = index;
+  }
+
+  function renderStoryMenuNode(model) {
+    var node = el("div", { class: "ctxmenu", role: "menu", "aria-label": "Story actions" }, []);
+    model.forEach(function(entry) {
+      if (entry.separator) {
+        node.appendChild(el("div", { class: "ctxmenu-sep", role: "separator" }, []));
+        return;
+      }
+      var disabled = !!entry.disabled;
+      node.appendChild(el("div", {
+        class: "ctxmenu-item" + (entry.danger ? " danger" : ""),
+        role: "menuitem",
+        tabIndex: -1,
+        "aria-disabled": disabled ? "true" : null,
+        title: entry.title || null,
+        onClick: function() {
+          if (disabled) return;
+          closeStoryMenu(false);
+          entry.onSelect();
+        }
+      }, [entry.label]));
+    });
+    return node;
+  }
+
+  /** Opens the story context menu for `v` at `e`'s position (or the
+   * invoking card/row's own position -- see `menuAnchor`). One node per
+   * open, appended to `document.body`: `position: fixed`, so it needs no
+   * anchor-relative parent the way `.fdd-panel` popovers do. */
+  function openStoryMenu(e, v, invoker) {
+    e.preventDefault();
+    closeAllPopovers();
+    var model = storyMenuModel(v);
+    if (!model.length) return;
+    storyMenuInvoker = invoker;
+    storyMenuNode = renderStoryMenuNode(model);
+    storyMenuNode.tabIndex = -1;
+    storyMenuNode.addEventListener("click", function(evt) { evt.stopPropagation(); });
+    storyMenuNode.addEventListener("keydown", bindStoryMenuKeys);
+    document.body.appendChild(storyMenuNode);
+    var anchor = menuAnchor(e, invoker);
+    placeMenu(storyMenuNode, anchor.x, anchor.y);
+    storyMenuFocusIndex = -1;
+    storyMenuNode.focus();
+  }
+
+  function removeStoryMenuNode() {
+    if (storyMenuNode && storyMenuNode.parentNode) storyMenuNode.parentNode.removeChild(storyMenuNode);
+    storyMenuNode = null;
+    storyMenuFocusIndex = -1;
+  }
+
+  /** Closes the menu -- called from `closeAllPopovers()` (an outside
+   * click, Escape's document-level handler, or another popover opening),
+   * an item's own click, or this menu's own Escape/Tab handling.
+   * `restoreFocus` mirrors `closeProjectMenu`'s: Escape returns focus to
+   * whatever card/row opened the menu (the user is still "at" that story,
+   * just backing out of its menu); every other dismissal lets focus go
+   * wherever the triggering action already sent it. */
+  function closeStoryMenu(restoreFocus) {
+    var invoker = storyMenuInvoker;
+    storyMenuInvoker = null;
+    removeStoryMenuNode();
+    if (restoreFocus && invoker && document.body.contains(invoker)) invoker.focus();
+  }
+
+  function bindStoryMenuKeys(e) {
+    var items = storyMenuItemNodes();
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      storyMenuFocusItem(storyMenuFocusIndex + 1);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      storyMenuFocusItem(storyMenuFocusIndex - 1);
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      storyMenuFocusItem(0);
+    } else if (e.key === "End") {
+      e.preventDefault();
+      storyMenuFocusItem(items.length - 1);
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      var current = items[storyMenuFocusIndex];
+      if (current) current.click();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeStoryMenu(true);
+    } else if (e.key === "Tab") {
+      closeStoryMenu(false);
+    }
+  }
+
+  // ============================================================
   // DERIVED DATA / LOOKUPS
   // ============================================================
 
@@ -2066,7 +2327,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   /** Closes every open `.fdd-panel` popover in the app — the filter bar's,
    * the label combobox's, and the header's project selector's — since all
    * three share this one styling/close-machinery pattern and only one
-   * should ever be open at a time.
+   * should ever be open at a time. Also closes the story context menu
+   * (SH-197): a different shape of popover (a fresh node per open, not a
+   * persistent one toggled via `hidden`), but the same document-wide
+   * click/Escape wiring below is what should dismiss it too.
    *
    * The `aria-expanded` reset is generic on purpose: only the project
    * selector's button sets it today, but a future popover-with-a-button
@@ -2077,6 +2341,22 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     document.querySelectorAll('[aria-expanded="true"]').forEach(function(b) { b.setAttribute("aria-expanded", "false"); });
     openFilterDropdown = null;
     projselFocusIndex = -1;
+    closeStoryMenu(false);
+  }
+
+  /** The document-wide click listener that dismisses every popover (below)
+   * doesn't call `closeAllPopovers()` directly -- it goes through this one
+   * check first. WebKit synthesizes a `click` for the ctrl+click that also
+   * raises `contextmenu` (Chromium suppresses it), targeting the SAME
+   * element the menu was opened from; filtering on WHAT was clicked, not
+   * WHEN, is what makes this correct regardless of machine load -- an
+   * earlier version used a `setTimeout(0)` arming window instead, which a
+   * loaded machine could lose the race on (confirmed empirically: the
+   * synthesized click and a genuine dismiss click can land the same ~8ms
+   * apart either way, so timing alone can't tell them apart). */
+  function dismissPopoversOnOutsideClick(e) {
+    if (storyMenuInvoker && e.target && storyMenuInvoker.contains(e.target)) return;
+    closeAllPopovers();
   }
 
   function buildFilterDropdown(key, options) {
@@ -2258,7 +2538,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         renderView();
       });
     });
-    document.addEventListener("click", closeAllPopovers);
+    document.addEventListener("click", dismissPopoversOnOutsideClick);
     document.addEventListener("keydown", function(e) { if (e.key === "Escape") closeAllPopovers(); });
   }
 
@@ -2735,6 +3015,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       e.dataTransfer.setData("text/plain", id);
     });
     card.addEventListener("dragend", function() { card.classList.remove("dragging"); });
+    // Looks up the CURRENT story by id rather than closing over `v` (SH-197):
+    // this closure is created once, in buildCard, but `populateCard` refills
+    // the same node with fresh data on every render -- closing over `v`
+    // would open the menu against whatever the story looked like the moment
+    // this card was first built, not what it looks like now.
+    card.addEventListener("contextmenu", function(e) {
+      e.preventDefault();
+      var current = findStory(id);
+      if (current) openStoryMenu(e, current, card);
+    });
     populateCard(card, v, ready, blocked, isClosed);
     return card;
   }
@@ -3002,6 +3292,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // handles correctly, and recasting it as a button would only lose that.
     var row = el("tr", { dataset: { id: id }, tabIndex: -1 }, []);
     row.addEventListener("click", function() { openDrawer(id); });
+    // See buildCard's identical comment on why this looks up the current
+    // story by id rather than closing over `v`.
+    row.addEventListener("contextmenu", function(e) {
+      e.preventDefault();
+      var current = findStory(id);
+      if (current) openStoryMenu(e, current, row);
+    });
     populateListRow(row, v, ready, blocked);
     return row;
   }
