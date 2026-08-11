@@ -8557,3 +8557,133 @@ the new test file itself, `clippy::trim_split_whitespace`).
 SH-224 (critical) ahead of SH-227 (high) and SH-170 (medium, reopened) —
 priority-ordered, nothing unworkable handed back. No defect in `next` to
 report this cycle.
+
+### SH-227 — scoped by council, not worked directly · SH-230 done (R1) · SH-231/SH-232 continue it
+
+**SH-227 itself is not "done" this cycle — it is restructured.** It is a
+three-part redesign (R1/R2/R3, "in dependency order") escalated whole from
+SH-226's RCA as Part B of a REDESIGN verdict. Each part is independently
+substantial — R1 is bash/tmux launch mechanics with a real semantics question
+to settle; R2 spans a new hook protocol, an unconfirmed assumption about what
+Claude Code's SessionStart payload exposes, and Rust readiness logic; R3
+spans `classify()`, `DispatchRecord` persistence, dashboard JS, and a
+security-relevant runtime check. Bundling all three into one PR would have
+repeated the exact "mixed concerns" shape this same investigation's own
+Part A/Part B split already existed to avoid — so before writing any code,
+the scoping question itself went to `council:council-vote`
+(`.council/sh-227-scoping/`, project-manager + software-architect + skeptic,
+**unanimous 3/3** on round 1, no deliberation round needed).
+
+**The verdict:** SH-227 becomes a non-worked **tracking parent**
+(`parent-of` on each child), left **open** rather than closed after R1 —
+verified against `src/service/query.rs:305` that `next()` already excludes
+any story carrying a `parent-of` child (`!has_children`), so an open parent
+never pollutes the queue or gets picked up by mistake. Filed three children:
+**SH-230** (R1, worked this session), **SH-231** (R2, `blocked-by` SH-230),
+**SH-232** (R3, `relates-to` SH-231 rather than `blocked-by` — adopted from
+the project-manager seat's dissent, since R3 touches code neither R1 nor R2
+does, unless R2 is later found to add a `DispatchRecord` field R3 also
+needs). Recorded as a comment on SH-227 itself, per the autonomy rule.
+Closing SH-227 outright after R1 alone was explicitly rejected by two of the
+three seats (matching the software-architect's independent round-1
+proposal): it would have marked "done" a story whose own stated invariant —
+the screen-scrape retired, the reason taxonomy enforced — is not yet true,
+the identical "recorded what it was told, not what happened" shape SH-226
+itself diagnosed.
+
+### SH-230 — done (SH-227's R1)
+
+**Outcome:** merged, PR #235. `story.sh dispatch` no longer opens an empty
+interactive shell pane and types `claude ...` into it (`paste_text` +
+`Enter`) — the launch command is now passed as `tmux new-window`'s own
+trailing shell-command argument, execed directly.
+
+**Root cause closed, not narrowed.** SH-226's patch added a process-name
+check (`READY_PROCESS_PATTERN`) *ANDed onto* the existing screen-scrape —
+the pane could still be a shell, just one it now refused to type into. This
+removes the mechanism that made a shell reachable in the first place:
+typing a launch string into an *already-running interactive* shell (whose rc
+files — oh-my-zsh's update nag, for one — have already executed and can
+still be holding an interactive prompt open) is what let the SH-226 field
+keystroke get swallowed at all. Verified empirically against this machine's
+real tmux (3.7b), not assumed from the man page: for the simple
+single-command case every shipped launch template actually is,
+`#{pane_current_command}` reports the launched binary itself within 300ms of
+`new-window` returning — no intervening shell to observe.
+
+**Three real design questions, each resolved and documented in the diff
+itself, not deferred:**
+
+1. *Does a shell still survive claude's exit?* No, deliberately — `tmux
+   new-window`'s default behavior closes the pane the instant its command
+   exits, which would have silently discarded the diagnostic tail every
+   refusal path relies on (`pane_tail`). Fixed with `remain-on-exit on`,
+   verified empirically to freeze the pane in a still-capturable dead state
+   rather than closing it. This is a real, deliberate behavior change: an
+   attended user can no longer keep typing in that same pane after claude
+   exits normally (`tmux respawn-pane` reactivates it if wanted).
+2. *Does the window-naming race widen?* Yes — pinning
+   `automatic-rename`/`allow-rename` off used to happen safely *before* any
+   text was typed; with the launch now executing the instant the window
+   opens, a separate later `tmux set-window-option` call is a real gap for a
+   title escape to land in first. Fixed by chaining all three
+   `set-window-option` calls onto the *same* tmux invocation via `\;`,
+   collapsing the gap to one server-side command batch instead of N round
+   trips through the script.
+3. *Does the chained form interact with `reap`'s kill-window step?* No —
+   verified empirically that `tmux kill-window` on a `remain-on-exit`-dead
+   pane behaves identically to a live one; `reap` already tolerated a
+   missing window.
+
+**A real bug found and fixed during implementation, not merely anticipated.**
+The `\;`-chained tmux invocation reports **one exit code for the whole
+chain**, driven by the *last* failing sub-command — verified empirically: a
+`set-window-option` targeting a bad window makes the combined invocation
+exit 1 *even though `new-window` already succeeded, the window already
+exists, and `-P -F` already printed its pane id*. The first draft's `if !
+pane=$(...) || [ -z "$pane" ]` would have misread a cosmetic option-pin
+failure as "the window never opened" and rolled back an already-live
+dispatch — worse, leaked the window, since the rollback path never attempts
+to kill a window it believes was never created. Fixed by deciding success
+from the printed pane id alone (`[ -z "$pane" ]`), restoring the `|| true`
+best-effort semantics the separate calls this replaced always had. Two
+empirical tmux experiments (a bad chained target after a good `new-window`;
+a `new-window` that fails outright) confirmed the fix before it shipped, not
+after.
+
+**The pane's pid is captured and exposed**, on a successful dispatch's JSON
+result, expressly so SH-231 can consume it as an authoritative identity
+later instead of re-deriving one from an unconfirmed hook payload — the
+council's own scoping decision, not an afterthought.
+
+**Sibling swept, not fixed:** `cmd_doctor`'s scratch-window readiness
+self-test still types its launch via `paste_text` — deliberately left alone.
+It is synchronous, always attended (`$TMUX`/`$TMUX_PANE` required), and
+never sends a charter (only a launch command an operator already configured)
+— none of SH-226's blast radius applies. Noted here rather than filed,
+matching this run's own bar for what counts as a filable sibling.
+
+**Regression suite consequence, not a regression:** Family B of
+`test-dispatch-occupant-gate.sh` ("the launch keystroke never landed")
+started **failing green** — `FAKE_TMUX_FAIL_SEND_KEYS=literal` no longer
+reaches any code path on the dispatch flow, because there is no more launch
+keystroke for it to fail. Rather than delete the coverage, it now asserts
+that directly: dispatch succeeds despite the knob being armed, which is the
+actual proof the knob is inert — if `send-keys -l` were reachable anywhere
+on this path, `paste_text`'s own `|| return 1` would surface as a failure
+here. New `test-dispatch-exec-launch.sh` pins the mechanism itself
+(occupant derivation, the three chained option-pins actually reaching tmux,
+`pane_pid` presence/shape, the process gate still refusing a launch that
+never becomes claude/node).
+
+**Gate:** full `make test`, supervised (log-growth heartbeat via a `Monitor`
+watcher, no stall) — 1072+ `test result: ok` Rust tests plus doctests,
+29/29 plugin harness `PASS` (28 prior + the new file), 45/45 Playwright
+specs green. `cargo fmt`/`cargo clippy -D warnings` clean.
+
+**Council:** yes, on the *scoping* question only (`.council/sh-227-scoping/`,
+unanimous). R1's own three design questions above were resolved directly —
+each had a verifiable empirical answer (what real tmux actually does), not a
+judgment call between defensible alternatives.
+
+**Next:** SH-231 (R2) is `blocked-by` SH-230 and now unblocked.
