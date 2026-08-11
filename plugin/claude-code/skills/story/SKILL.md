@@ -103,10 +103,6 @@ opened a new tmux window rooted **in** that worktree, running
 `claude --permission-mode plan --model opusplan` in plan mode, prompt already submitted.
 Nothing further is needed from you.
 
-A worktree dispatched before SH-166 still carries its old `<repo-prefix>-<id>` name (e.g.
-`sto-SH-45`) — `capture` and `complete` recognize and adopt it automatically (`legacy_name`
-in their JSON reports `true` when they did), so there's nothing to migrate by hand.
-
 `--auto` changes only the handoff prompt, never the launch command — plan approval stays the
 one and only human interaction. Past that approval, the autonomous charter tells the child to
 resolve ambiguity by `/council-vote` instead of asking, run `make test` before pushing, merge
