@@ -662,7 +662,14 @@ pub fn dispatch<S: Store>(
                 }
             }
         }
-        Invocation::SessionStart => SessionService::new(ctx).context().map(Response::RawJson),
+        Invocation::SessionStart => {
+            let service = SessionService::new(ctx);
+            // Best-effort and unconditional on the message below succeeding —
+            // see `publish_sentinel`'s own doc comment for why a write failure
+            // must never turn a real context envelope into `{}`.
+            service.publish_sentinel();
+            service.context().map(Response::RawJson)
+        }
         Invocation::History { action } => match action {
             HistoryAction::Read { id } => session::history(ctx, &id).map(Response::StoryHistory),
             // Restoring does not replace a story's history — an append-only
@@ -2024,6 +2031,13 @@ pub fn reads_stdin(invocation: &Invocation) -> bool {
     match invocation {
         Invocation::Import { file } => file.is_none(),
         Invocation::Decompose { stdin, .. } => *stdin,
+        // Claude Code pipes the SessionStart hook payload (session_id, cwd,
+        // source, ...) on stdin; session.rs reads `session_id` out of it to
+        // publish the dispatch sentinel (SH-231). The hook script always pipes
+        // something (real JSON, or `{}`), so this never blocks on a terminal
+        // in normal use — same as `Import` with no `--file`, which has read
+        // stdin unconditionally since before this function existed.
+        Invocation::SessionStart => true,
         _ => false,
     }
 }

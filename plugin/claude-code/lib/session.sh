@@ -390,6 +390,111 @@ wait_ready() {
   return 1
 }
 
+# wait_ready_sentinel <pane> <captured-pid> <worktree-path> — poll until a
+# Claude Code SessionStart hook has published a dispatch sentinel INSIDE
+# <worktree-path> (SH-231, replacing the screen-scrape above for
+# `cmd_dispatch`'s launch, which — since SH-230 — execs straight into the
+# launch binary rather than typing it, so <captured-pid> is that binary's own
+# pid, captured via `#{pane_pid}` right after `tmux new-window` returned).
+# `cmd_doctor`'s own scratch-window self-test is NOT ported to this: it types
+# into an interactive pane a human is watching, with no fresh dispatch
+# worktree to scope a sentinel to, so `wait_ready` (above) stays exactly
+# right for it — see this function's own commit message for why porting it
+# anyway would be scope, not safety.
+#
+# EVERY SUCCESS REQUIRES ALL THREE, checked in this order:
+#
+#   1. Re-querying `#{pane_pid}` for <pane> still answers <captured-pid> —
+#      the pane story.sh opened has not been repurposed (a respawn, a second
+#      dispatch racing the same window name). remain-on-exit means tmux never
+#      does this on its own, so a mismatch here is a real anomaly, not a
+#      timing fluke, and is never silently accepted.
+#   2. `kill -0 <captured-pid>` still succeeds — proven empirically (tmux
+#      3.7b) to be load-bearing rather than redundant with (1): tmux freezes
+#      `#{pane_pid}`/`#{pane_current_command}` at their LAST LIVE values once
+#      the pane's process exits under remain-on-exit, so re-querying them
+#      alone cannot detect death. `pid_is_live`'s own doc
+#      (src/daemon/lifecycle.rs:1806) makes the same point about a bare pid
+#      check versus a held lock; there is no lock here, so this AND with (3)
+#      is what stands in for one.
+#   3. The dispatch sentinel exists at
+#      <worktree-path>/.claude/dispatch-sentinel.json, AND `pane_runs` — the
+#      SAME process-table fact `wait_ready` gates on above — still matches
+#      READY_PROCESS_PATTERN. A sentinel with the right pid dead or a live pid
+#      that is not actually running the launch binary are both refused.
+#
+# Existence alone is NEVER sufficient (`.council/sh-231-sentinel-design/
+# DECISION.md`): a sentinel is not a secret, and nothing stops a second,
+# unrelated Claude Code session from being pointed at the same worktree path
+# during the polling window and publishing an equally well-formed one. (1)
+# and (2) are what make this dispatch's OWN pane the one thing being trusted,
+# not the sentinel's content.
+#
+# WAIT_READY_REASON distinguishes which half failed, so a caller can name the
+# actual remedy rather than a generic timeout:
+#   ok           — all three held; ready.
+#   pid-mismatch — the pane no longer shows <captured-pid> (or vanished
+#                  entirely) — FAILS FAST, no reason to keep polling a pane
+#                  that already isn't the one this dispatch opened.
+#   pid-exited   — <captured-pid> is confirmed dead — FAILS FAST, same
+#                  reasoning: the sentinel could still appear, but nothing
+#                  would be alive to receive the prompt.
+#   wrong-process — the sentinel exists but the pane's occupant does not
+#                  match READY_PROCESS_PATTERN; keeps polling (claude may
+#                  still be starting).
+#   no-sentinel  — timed out with the pane alive and correct throughout, but
+#                  no sentinel ever appeared (SessionStart hook missing,
+#                  disabled, or never fired).
+#
+# WAIT_READY_COMMAND is the last observed occupant, refreshed every
+# iteration regardless of which branch it ends up in — a launch that never
+# became claude/node still leaves something diagnosable to report even on a
+# no-sentinel timeout.
+WAIT_READY_TIER="none"
+WAIT_READY_COMMAND=""
+WAIT_READY_REASON="timeout"
+wait_ready_sentinel() {
+  local pane="$1" captured_pid="$2" worktree="$3" attempt=0
+  local sentinel_path="$worktree/.claude/dispatch-sentinel.json"
+  WAIT_READY_TIER="none"
+  WAIT_READY_COMMAND=""
+  WAIT_READY_REASON="timeout"
+
+  [ -n "$captured_pid" ] || { WAIT_READY_REASON="pid-mismatch"; return 1; }
+
+  while [ "$attempt" -lt "$READY_ATTEMPTS" ]; do
+    local current_pid
+    current_pid=$(tmux display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || printf '')
+    # Diagnostic only, and unconditional: whatever is actually running in the
+    # pane right now, an operator investigating any failure below benefits
+    # from being told what it is — the same "last observed occupant" contract
+    # WAIT_READY_COMMAND has always carried for wait_ready above.
+    WAIT_READY_COMMAND="$(pane_command "$pane")"
+    WAIT_READY_COMMAND="${WAIT_READY_COMMAND##*/}"
+    if [ -z "$current_pid" ] || [ "$current_pid" != "$captured_pid" ]; then
+      WAIT_READY_REASON="pid-mismatch"
+      return 1
+    fi
+    if ! kill -0 "$captured_pid" 2>/dev/null; then
+      WAIT_READY_REASON="pid-exited"
+      return 1
+    fi
+    if [ -f "$sentinel_path" ]; then
+      if pane_runs "$pane"; then
+        WAIT_READY_TIER="sentinel"
+        WAIT_READY_REASON="ok"
+        return 0
+      fi
+      WAIT_READY_REASON="wrong-process"
+    else
+      WAIT_READY_REASON="no-sentinel"
+    fi
+    sleep "$READY_DELAY"
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
 # pane_tail <pane> — READ-ONLY. Echo the last READY_TAIL_LINES non-blank lines of
 # the pane, for attaching to a warning result as diagnostic evidence. A failed
 # capture echoes nothing (an empty tail is an acceptable degrade).
