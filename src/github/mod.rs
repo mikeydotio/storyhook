@@ -506,6 +506,16 @@ pub fn run_sync_with(
                 // This is a placeholder from initial setup "Import all" -- treat as unmapped
                 let remote_snap = issue_to_remote_snapshot(issue, &states, &members, &prefix);
 
+                // The issue's own storyhook block may already name a story
+                // "Import all" never asked about -- e.g. a sync config reset
+                // after a previous link, then re-run as a fresh import
+                // (SH-191). Skip it the same way the truly-unmapped branch
+                // below does, rather than duplicating the story it names.
+                if already_has_a_local_story(&remote_snap, &open_stories) {
+                    report.skipped += 1;
+                    continue;
+                }
+
                 if dry_run {
                     eprintln!(
                         "Would create local story from issue #{}: \"{}\"",
@@ -575,9 +585,7 @@ pub fn run_sync_with(
 
             // If the issue body has a storyhook block referencing a story that already
             // exists locally, skip it to avoid duplicates.
-            if let Some(ref sid) = remote_snap.story_id
-                && open_stories.iter().any(|s| s.id == *sid)
-            {
+            if already_has_a_local_story(&remote_snap, &open_stories) {
                 report.skipped += 1;
                 continue;
             }
@@ -678,6 +686,26 @@ pub fn run_sync_with(
     }
 
     report.outcome()
+}
+
+// ---------------------------------------------------------------------------
+// A remote issue whose own storyhook block already names a local story
+// ---------------------------------------------------------------------------
+
+/// True when `remote_snap`'s storyhook block names a story that already
+/// exists among `open_stories`.
+///
+/// The pull phase reaches [`create_story_from_issue`] from two branches that
+/// have no *confirmed* local mapping: a genuinely unmapped issue, and one
+/// carrying only an "Import all" placeholder mapping (`story_id` empty).
+/// Both must defer to this check first -- otherwise either branch can hand
+/// back a story the issue's own body already names, minting a duplicate the
+/// check exists to prevent (SH-191).
+fn already_has_a_local_story(remote_snap: &RemoteSnapshot, open_stories: &[StorySnapshot]) -> bool {
+    remote_snap
+        .story_id
+        .as_deref()
+        .is_some_and(|sid| open_stories.iter().any(|s| s.id == sid))
 }
 
 // ---------------------------------------------------------------------------
