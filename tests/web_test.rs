@@ -699,6 +699,12 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains("\"Dispatch\""));
     assert!(body.contains("\"Dispatch Auto\""));
     assert!(body.contains("dispatchHidden"));
+
+    // SH-197: the context menu's Set Status submenu.
+    assert!(body.contains("\"Set Status\""));
+    assert!(body.contains("function setStoryState"));
+    assert!(body.contains("function statusMenuItems"));
+    assert!(body.contains(".ctxmenu-sub"));
 }
 
 #[test]

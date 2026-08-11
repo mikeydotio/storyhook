@@ -549,6 +549,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .ctxmenu-item[aria-disabled="true"] { cursor: not-allowed; opacity: 0.55; }
 .ctxmenu-item.danger { color: var(--danger); }
 .ctxmenu-sep { height: 1px; background: var(--border); margin: 0.25rem 0.25rem; }
+.ctxmenu-arrow { margin-left: auto; opacity: 0.6; font-size: 0.6875rem; }
+/* Set Status's own popover (SH-197): same look as .ctxmenu, positioned to
+   the parent item's own right (or left, flipped, if that would overflow —
+   see openStorySubmenu()) rather than below a button like .fdd-panel. */
+.ctxmenu-sub .ctxmenu-item .dot { flex-shrink: 0; }
 
 /* ---- Toasts ---- */
 .toast-stack { position: fixed; top: 1rem; right: 1rem; display: flex; flex-direction: column; gap: 0.5rem; z-index: 60; max-width: 22rem; }
@@ -1843,6 +1848,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   var storyMenuNode = null;
   var storyMenuInvoker = null;
   var storyMenuFocusIndex = -1;
+  // Set Status's own popover (SH-197): a second, independent node -- a
+  // sibling of storyMenuNode in the DOM, not a child, so a keydown inside
+  // it is scoped to ITS OWN handler (bindStorySubmenuKeys) rather than
+  // also reaching the main menu's. That's what makes Escape "close the
+  // submenu, not the whole menu" and Tab "close everything" both fall out
+  // of ordinary event routing instead of needing special-casing.
+  var storySubmenuNode = null;
+  var storySubmenuFocusIndex = -1;
+  var storySubmenuParentItem = null;
 
   /** The menu's contents for `v` (a `{story, is_ready, is_blocked}`
    * summary record, the same shape `state.data.stories` holds) as plain
@@ -1879,8 +1893,62 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         disabled: dispatchInFlight,
         title: "Runs unattended past the one plan-approval prompt in the new tmux window.",
         onSelect: function() { startDispatch(st.id, true); }
-      }
+      },
+      { separator: true },
+      (function() {
+        var items = statusMenuItems(st);
+        return { label: "Set Status", disabled: !!state.pending[st.id] || !items.length, submenu: items };
+      })()
     ].filter(Boolean));
+  }
+
+  /** The states `st` can actually be set to from the Set Status submenu.
+   *
+   * Open story: every configured state but its own -- including a closed
+   * one, since an open story going straight to e.g. "done" is a single,
+   * ordinary `/move`.
+   *
+   * Closed story: only OPEN-superstate states. The server refuses every
+   * mutation of a closed story outright (`resolve_open_story`,
+   * `src/service/mod.rs`), so closed -> closed is not expressible here at
+   * all; closed -> open is `setStoryState`'s reopen-then-move chain. */
+  function statusMenuItems(st) {
+    var states = meta().states.filter(function(s) { return s.slug !== st.state; });
+    if (stateSuperstate(st.state) === "CLOSED") {
+      states = states.filter(function(s) { return s.super_state === "OPEN"; });
+    }
+    return states.map(function(s) {
+      return { label: s.slug, color: stateColor(s.slug), onSelect: function() { setStoryState(st.id, s.slug); } };
+    });
+  }
+
+  /** Applies a Set Status choice.
+   *
+   * Open story: the board's own optimistic `moveStory()` (`:3112` — see
+   * that function) verbatim, so dragging a card and picking a state from
+   * this menu can never drift apart into two behaviors.
+   *
+   * Closed story: `moveStory()`'s own reopen branch calls `POST /reopen`
+   * and stops there -- the server always lands a reopen in the project's
+   * DEFAULT open state, which is only sometimes the one this menu was
+   * asked for. So a closed-story pick chases the reopen with an explicit
+   * `/move` when the target isn't that default: two real events, both
+   * true (reopened, then moved), landing exactly where the menu said. */
+  function setStoryState(id, targetSlug) {
+    var story = findStory(id);
+    if (!story) return;
+    if (stateSuperstate(story.story.state) !== "CLOSED") {
+      moveStory(id, targetSlug, stateSuperstate(targetSlug) === "CLOSED");
+      return;
+    }
+    var defaultState = (meta().defaults || {}).state;
+    api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/reopen", {})
+      .then(function(resp) {
+        if (resp && resp.story && resp.story.story) applyStory(resp.story.story);
+        if (targetSlug === defaultState) { fetchData(); return; }
+        moveStory(id, targetSlug, false);
+      })
+      .catch(toastError);
   }
 
   /** Drops a leading, trailing, or doubled-up separator -- what lets one
@@ -1948,6 +2016,22 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         return;
       }
       var disabled = !!entry.disabled;
+      if (entry.submenu) {
+        node.appendChild(el("div", {
+          class: "ctxmenu-item",
+          role: "menuitem",
+          tabIndex: -1,
+          "aria-haspopup": "true",
+          "aria-disabled": disabled ? "true" : null,
+          title: entry.title || null,
+          onClick: function(evt) {
+            evt.stopPropagation();
+            if (disabled) return;
+            openStorySubmenu(evt.currentTarget, entry.submenu);
+          }
+        }, [entry.label, el("span", { class: "ctxmenu-arrow" }, ["▸"])]));
+        return;
+      }
       node.appendChild(el("div", {
         class: "ctxmenu-item" + (entry.danger ? " danger" : ""),
         role: "menuitem",
@@ -1997,8 +2081,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * `restoreFocus` mirrors `closeProjectMenu`'s: Escape returns focus to
    * whatever card/row opened the menu (the user is still "at" that story,
    * just backing out of its menu); every other dismissal lets focus go
-   * wherever the triggering action already sent it. */
+   * wherever the triggering action already sent it. Always takes the Set
+   * Status submenu down too, if one is open -- it can't meaningfully
+   * outlive the menu that owns its one entry point. */
   function closeStoryMenu(restoreFocus) {
+    closeStorySubmenu();
     var invoker = storyMenuInvoker;
     storyMenuInvoker = null;
     removeStoryMenuNode();
@@ -2019,7 +2106,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     } else if (e.key === "End") {
       e.preventDefault();
       storyMenuFocusItem(items.length - 1);
-    } else if (e.key === "Enter" || e.key === " ") {
+    } else if (e.key === "Enter" || e.key === " " || e.key === "ArrowRight") {
+      // ArrowRight only actually does anything on a submenu item -- its own
+      // click handler is what calls openStorySubmenu(); an ordinary item's
+      // click handler ignores the key that triggered it entirely, so
+      // ArrowRight on Copy ID etc. is a harmless, correct no-op.
       e.preventDefault();
       var current = items[storyMenuFocusIndex];
       if (current) current.click();
@@ -2027,6 +2118,103 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       e.preventDefault();
       e.stopPropagation();
       closeStoryMenu(true);
+    } else if (e.key === "Tab") {
+      closeStoryMenu(false);
+    }
+  }
+
+  function storySubmenuItemNodes() {
+    return storySubmenuNode ? Array.prototype.slice.call(storySubmenuNode.querySelectorAll(".ctxmenu-item")) : [];
+  }
+
+  /** Same convention as `storyMenuFocusItem`, scoped to the submenu's own
+   * items. */
+  function storySubmenuFocusItem(index) {
+    var items = storySubmenuItemNodes();
+    if (!items.length) return;
+    if (index < 0) index = items.length - 1;
+    if (index >= items.length) index = 0;
+    items.forEach(function(item, i) {
+      item.classList.toggle("focused", i === index);
+      item.tabIndex = i === index ? 0 : -1;
+    });
+    items[index].focus();
+    storySubmenuFocusIndex = index;
+  }
+
+  function renderStorySubmenuNode(items) {
+    var node = el("div", { class: "ctxmenu ctxmenu-sub", role: "menu", "aria-label": "Set status" }, []);
+    items.forEach(function(entry) {
+      node.appendChild(el("div", {
+        class: "ctxmenu-item",
+        role: "menuitemradio",
+        tabIndex: -1,
+        onClick: function() {
+          closeStoryMenu(false);
+          entry.onSelect();
+        }
+      }, [
+        el("span", { class: "dot", style: "background:" + entry.color }, []),
+        entry.label
+      ]));
+    });
+    return node;
+  }
+
+  /** Opens the Set Status submenu anchored to `parentItem` (the "Set
+   * Status" row in the main menu): placed to its right, flipped to the
+   * left if that would overflow the viewport -- `placeMenu()`'s own clamp
+   * still runs afterward, for the vertical axis and the rare case where
+   * even the flipped position also overflows on a narrow viewport. */
+  function openStorySubmenu(parentItem, items) {
+    closeStorySubmenu();
+    storySubmenuParentItem = parentItem;
+    storySubmenuNode = renderStorySubmenuNode(items);
+    storySubmenuNode.tabIndex = -1;
+    storySubmenuNode.addEventListener("click", function(evt) { evt.stopPropagation(); });
+    storySubmenuNode.addEventListener("keydown", bindStorySubmenuKeys);
+    document.body.appendChild(storySubmenuNode);
+    var rect = parentItem.getBoundingClientRect();
+    var subRect = storySubmenuNode.getBoundingClientRect();
+    var x = (rect.right + subRect.width <= window.innerWidth - 8) ? rect.right : rect.left - subRect.width;
+    placeMenu(storySubmenuNode, x, rect.top);
+    storySubmenuFocusItem(0);
+  }
+
+  function closeStorySubmenu() {
+    if (storySubmenuNode && storySubmenuNode.parentNode) storySubmenuNode.parentNode.removeChild(storySubmenuNode);
+    storySubmenuNode = null;
+    storySubmenuFocusIndex = -1;
+    storySubmenuParentItem = null;
+  }
+
+  /** Bound to the submenu node itself, not the main menu's -- a DOM
+   * sibling, not a child (see the module vars' own comment), so this is
+   * the ONLY handler a keydown while inside the submenu ever reaches. */
+  function bindStorySubmenuKeys(e) {
+    var items = storySubmenuItemNodes();
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      storySubmenuFocusItem(storySubmenuFocusIndex + 1);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      storySubmenuFocusItem(storySubmenuFocusIndex - 1);
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      storySubmenuFocusItem(0);
+    } else if (e.key === "End") {
+      e.preventDefault();
+      storySubmenuFocusItem(items.length - 1);
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      var current = items[storySubmenuFocusIndex];
+      if (current) current.click();
+    } else if (e.key === "Escape" || e.key === "ArrowLeft") {
+      e.preventDefault();
+      e.stopPropagation();
+      var parent = storySubmenuParentItem;
+      closeStorySubmenu();
+      if (parent) parent.focus();
     } else if (e.key === "Tab") {
       closeStoryMenu(false);
     }
