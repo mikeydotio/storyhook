@@ -1202,6 +1202,8 @@ fn a_document_whose_ids_do_not_match_its_prefix_is_rejected_whole() {
         members: Vec::new(),
         settings: None,
         remotes: Vec::new(),
+        github_sync: None,
+        github_bases: std::collections::BTreeMap::new(),
         stories: Vec::new(),
     };
     export
@@ -1227,6 +1229,171 @@ fn a_document_whose_ids_do_not_match_its_prefix_is_rejected_whole() {
     assert!(
         store.read(|tx| tx.projects()).expect("reading").is_empty(),
         "a rejected import must leave no project behind"
+    );
+}
+
+// --- github-sync carry (SH-189) ---------------------------------------------
+
+/// A story's read-model snapshot, usable as a stand-in github-sync merge
+/// base — the base's own contents are not this test's subject, only whether
+/// it survives the round trip intact.
+fn story_snapshot(
+    fixture: &ServiceFixture,
+    id: &str,
+) -> (StoryNo, storyhook::domain::StorySnapshot) {
+    let story_no = StoryNo::parse_id("SH", id).expect("parsing the story id");
+    let snapshot = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), story_no))
+        .expect("reading the story")
+        .expect("the story exists")
+        .snapshot;
+    (story_no, snapshot)
+}
+
+#[test]
+fn github_sync_and_its_bases_round_trip_through_export_and_import() {
+    let fixture = ServiceFixture::new();
+    let with_base = create(&fixture, "Has synced before");
+    let without_base = create(&fixture, "Never synced");
+
+    let blob = serde_json::json!({
+        "github": {"owner": "acme", "repo": "widgets"},
+        "sync": {"mode": "manual"},
+        "mappings": [
+            {"story_id": with_base, "issue_number": 42, "last_synced_at": "2026-01-01T00:00:00Z"},
+            {"story_id": without_base, "issue_number": 43, "last_synced_at": "2026-01-01T00:00:00Z"},
+        ],
+    });
+    fixture
+        .store()
+        .write(|tx| {
+            let mut settings = tx.settings(fixture.project())?;
+            settings.github_sync = Some(blob.clone());
+            tx.put_settings(fixture.project(), &settings)
+        })
+        .expect("configuring github-sync");
+
+    let (base_story_no, base_snapshot) = story_snapshot(&fixture, &with_base);
+    fixture
+        .store()
+        .write(|tx| tx.put_github_base(fixture.project(), base_story_no, &base_snapshot))
+        .expect("writing a merge base");
+
+    let exported = export(&fixture);
+    assert_eq!(exported.github_sync.as_ref(), Some(&blob));
+    assert_eq!(
+        exported.github_bases.len(),
+        1,
+        "only the story that actually has a base is carried: {:?}",
+        exported.github_bases.keys().collect::<Vec<_>>()
+    );
+    assert!(exported.github_bases.contains_key(&with_base));
+    assert!(!exported.github_bases.contains_key(&without_base));
+
+    let (store, dir) = empty_store();
+    transfer::import_project(&store, dir.path(), &Clock::System, &exported, false)
+        .expect("importing");
+    let project = restored_project(&store, dir.path());
+
+    let restored_settings = store
+        .read(|tx| tx.settings(project.id))
+        .expect("reading the restored settings");
+    assert_eq!(
+        restored_settings.github_sync,
+        Some(blob),
+        "the configuration blob must survive verbatim"
+    );
+
+    let restored_base = store
+        .read(|tx| tx.github_base(project.id, base_story_no))
+        .expect("reading the restored base")
+        .expect("the base that was carried must be there");
+    assert_eq!(restored_base, base_snapshot);
+
+    let without_base_no = StoryNo::parse_id("SH", &without_base).expect("parsing");
+    let missing = store
+        .read(|tx| tx.github_base(project.id, without_base_no))
+        .expect("reading");
+    assert!(
+        missing.is_none(),
+        "a story with no base before export must not be backfilled with one by the restore"
+    );
+}
+
+#[test]
+fn a_document_with_no_github_sync_configured_leaves_an_adopted_projects_settings_untouched() {
+    // Mirrors `apply_settings`'s existing rule for `sync`/`doctor`: a document
+    // carrying no github-sync blob at all (any backup taken before this
+    // existed, or of a project that never configured it) must not clear a
+    // configuration already present in the project being restored into.
+    //
+    // Two restores into the same directory, because that is the only way to
+    // reach the "adopt an existing project" branch of `import_project`: the
+    // first establishes a project with github-sync already configured and no
+    // stories yet; the second, a document that carries stories but no
+    // github-sync blob at all, adopts that same (still story-less) project.
+    let configured = ServiceFixture::new();
+    configured
+        .store()
+        .write(|tx| {
+            let mut settings = tx.settings(configured.project())?;
+            settings.github_sync = Some(serde_json::json!({"already": "configured"}));
+            tx.put_settings(configured.project(), &settings)
+        })
+        .expect("configuring github-sync");
+    let first_document = export(&configured);
+    assert!(first_document.stories.is_empty());
+
+    let (store, dir) = empty_store();
+    transfer::import_project(&store, dir.path(), &Clock::System, &first_document, false)
+        .expect("the first restore");
+
+    let unconfigured = ServiceFixture::new();
+    create(&unconfigured, "Adopted story");
+    let mut second_document = export(&unconfigured);
+    second_document.github_sync = None;
+    assert!(!second_document.stories.is_empty());
+
+    transfer::import_project(&store, dir.path(), &Clock::System, &second_document, false)
+        .expect("the second restore, adopting the same project");
+
+    let project = restored_project(&store, dir.path());
+    let settings = store.read(|tx| tx.settings(project.id)).expect("reading");
+    assert_eq!(
+        settings.github_sync,
+        Some(serde_json::json!({"already": "configured"})),
+        "a document with no github-sync must not blank what the adopted project already has"
+    );
+}
+
+#[test]
+fn an_orphan_github_base_rejects_the_whole_restore() {
+    let fixture = ServiceFixture::new();
+    let id = create(&fixture, "Only story");
+    let (_story_no, snapshot) = story_snapshot(&fixture, &id);
+
+    let mut exported = export(&fixture);
+    exported.github_bases.insert("SH-999".to_string(), snapshot);
+
+    let (store, dir) = empty_store();
+    let error = transfer::import_project(&store, dir.path(), &Clock::System, &exported, false)
+        .expect_err("a base naming a story absent from the document must reject the restore");
+    assert!(
+        error.to_string().contains("SH-999"),
+        "the error must name the offending id: {error}"
+    );
+
+    assert!(
+        storyhook::service::project::read_pointer(dir.path())
+            .expect("reading the pointer file")
+            .is_none(),
+        "a rejected restore must leave nothing behind, not even the pointer file"
+    );
+    assert_eq!(
+        store.read(|tx| tx.projects()).expect("listing").len(),
+        0,
+        "a rejected restore must not create a project either"
     );
 }
 
