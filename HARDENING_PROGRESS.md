@@ -10146,3 +10146,77 @@ refused: "already closed") — same mechanism SH-236 exercised.
 **Next:** SH-243 — 109 stories' read-model drift, once its repair is
 verified lossless rather than assumed from a sample (high); or run `story
 next` fresh if that investigation isn't the next cycle's shape.
+
+### SH-243 — done, 2026-08-11
+
+**Outcome:** all 109 stale read-model rows repaired. `story doctor --json`
+exits 0; the store's own counts (242 stories, 33 open/209 closed, identical
+by-state/by-priority/by-type breakdowns) are byte-identical before and
+after. **No source file changed** — the entire fix was `story doctor --fix`
+against the real store, so this entry is the only commit this story
+produces.
+
+**Losslessness verified exhaustively, not sampled — SH-243's own explicit
+ask.** Two independent checks, both clean:
+
+- **Code-level.** `repair_read_model` (`src/store/rebuild.rs`) rewrites
+  every row from the exact same `fold_story` output every read already
+  uses — there is no separate "repair" logic to distrust. `fold_story`
+  (`src/domain.rs:1296`) unconditionally diverts any `StoryCommentAdded`
+  whose text matches `[git] <hex>: <subject>` into
+  `referenced_by_commits` instead of `comments` (SH-169, `774058d`,
+  2026-08-09). Since every code path folds through this one function, "the
+  repaired row" and "what today's code already believes" are the same
+  computation by construction — not a heuristic applied only to these 109.
+- **Empirical.** Parsed all 109 `snapshot` divergences out of `story doctor
+  --json`'s `.error` (regex + JSON, see the SH-243 comment thread for the
+  script's logic). For every one: every field outside
+  `comments`/`referenced_by_commits` was byte-identical; every comment
+  missing from the rebuilt side was `[git]`-shaped; every one of those had
+  exactly one matching `referenced_by_commits` entry in the rebuild (same
+  timestamp, sha prefix, subject); zero orphans either direction. 109/109
+  passed. **Correction to SH-243's own filing:** its text said "one extra
+  leading comment" from a couple of spot-checks — the full parse found some
+  stories carrying many more (SH-117 had 27 legacy `[git]` comments folded
+  into 27 `referenced_by_commits` entries in one repair), but the shape and
+  losslessness held identically across all of them.
+
+**Write path confirmed dead, not just old.** Grepped every
+`StoryCommentAdded` write site (`service/story.rs`, `config.rs`,
+`history.rs`) — none write a `[git]`-prefixed comment; they're real user
+comments, `[states]` bookkeeping, and raw event replay respectively. The one
+commit-linking site, `record_commit` (`service/git.rs:384`), has written
+`StoryEvent::StoryCommitLinked` exclusively since SH-169. Nothing live can
+regenerate this drift.
+
+**Backup taken before the repair**, per SH-132's precedent for a real-store
+mutation: `story store backup --label pre-sh243-doctor-fix` →
+`storyhook-20260811T230959.357Z-pre-sh243-doctor-fix.db`, `VACUUM INTO` +
+`integrity_check` verified, lands in the maintenance directory SH-135's
+daily-prune never scans.
+
+**Filed SH-244** (low) for the small aside SH-243 flagged but didn't commit
+to: `story doctor --json`'s `.error` is one unstructured ~1.68MB string. Its
+own speculation — "costs nothing at the call site" — turned out wrong:
+`AppError::Integrity` is a generic string-carrying variant reused by
+`domain.rs` validation, `migrate.rs`, and `git_links.rs`, and threaded
+through the CLI/daemon wire envelope (`error.rs:138`, `http.rs:143`), so
+structuring doctor's output means either a new wire variant every other
+`Integrity` caller also has to carry, or a doctor-specific bypass — a real
+design decision, not a formatting tweak. SH-243's own text names this exact
+fallback ("file separately if that turns out to be more than a one-line
+change"), so no judgment call remained to route through council.
+
+**Council:** not convened. Every decision point SH-243 raised already had
+its resolution rule written into the story itself (verify exhaustively,
+then fix; file the aside separately if it's not one line) — evaluating
+those rules against the code is a fact-finding task, not a two-sided
+tradeoff.
+
+**No version bump** — no source changed, nothing to version.
+
+**Gate:** none run. Confirmed via `git status` that this commit touches only
+`HARDENING_PROGRESS.md` before pushing — a docs-only push, CLAUDE.md's own
+carve-out from the pre-push test hook.
+
+**Next:** run `story next` fresh.
