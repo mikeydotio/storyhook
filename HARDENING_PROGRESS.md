@@ -16,36 +16,36 @@ Every story gets a `## Log` entry below — successes, failures and skips alike.
 You have no memory of the session that began it. Everything you need is in this
 file and the plan above. Read the plan, then:
 
-1. **Pick** the first unchecked story in the Phase 2 queue, which is ordered by
-   priority. Confirm it is ready (`story list --ready`). Skip any **epic** — one
-   closes when its children do, so there is never anything to work on it
-   directly (SH-112, this file's only one, closed 2026-08-09) — and skip every
-   line marked **⚠**:
-   those are in-progress in *another* session, and two loops working one story
-   is how a branch gets abandoned half-built. Re-check which are ⚠ with
-   `story list --state in-progress` rather than trusting the marks, which are
-   only as fresh as the last time somebody re-swept. Skip lines marked **⏸**
-   too: those are filed and ready, but a question about them has been put to
-   Mikey and not yet answered, so deciding one by council would overrule the
-   person it was asked of. Leave them until he answers, however tempting their
-   priority looks.
-2. **Claim** it: `story move <id> in-progress`.
-3. **Read it whole**: `story show <id>`, comments included. Several stories
-   carry re-spec notes that contradict their own titles (SH-42, SH-43, SH-44,
-   SH-109), and **SH-129 carries a complete council verdict — do not re-run
-   that vote.** The comment always wins over the title.
+1. **Pick**: run `story next` (`story next --count 3` if you want a couple of
+   options rather than one). As of 2026-08-11 this run dogfoods `story next`
+   instead of a hand-maintained checklist — see **Dogfooding `story next`**
+   below for why and what to watch for. `next` already excludes anything
+   closed, blocked, awaiting an answer, a draft, or carrying a child (an epic
+   never surfaces — `!has_children`, tested in `tests/story_next.rs`), so
+   there is nothing left to hand-check before claiming. If it returns nothing,
+   the queue is genuinely drained — stop and report that rather than
+   inventing work.
+2. **Claim** it immediately: `story move <id> in-progress`. Claim before you
+   read the rest of it — that narrows the window in which a second session,
+   running `story next` at nearly the same moment, could be handed the same
+   story before either of you claims it. `next` cannot close that race by
+   itself (nothing can, without a lock neither session asked for); claiming
+   fast is the mitigation.
+3. **Read it whole**: `story show <id>`, comments included. A story's comment
+   thread can carry a re-spec or a council verdict that supersedes its own
+   title or original description — the comment always wins over the title.
 4. **Work it.** Red→green TDD. Reproduce a bug with a failing test before
    changing code. Every fix ships its regression test. Two hats: a behaviour
    change and a refactor never share a commit. Doc comments on every public
    item. Warnings are errors.
 5. **Gate**: `make test` must be green before you push. Never `--no-verify`,
-   never `SKIP_PREPUSH_TESTS=1`. **`make test-daemon` and `make gate` no longer
-   exist** — SH-114 collapsed the two transports into one, so there is one leg
-   and `make test` is the whole gate. (This step said "both legs" until SH-116
-   noticed; the two-leg wording outlived the second leg by one story.) Run it as
-   a supervised background command with a log-growth heartbeat — see
-   **Supervising background work** below; this is the rule's most frequent
-   application.
+   never `SKIP_PREPUSH_TESTS=1` for a change that touches code (a docs-only
+   push may bypass per CLAUDE.md's own carve-out — confirm nothing but docs
+   changed first). **`make test-daemon` and `make gate` no longer exist** —
+   SH-114 collapsed the two transports into one, so there is one leg and
+   `make test` is the whole gate. Run it as a supervised background command
+   with a log-growth heartbeat — see **Supervising background work** below;
+   this is the rule's most frequent application.
 6. **Land it** — branch off `main` in this checkout (not a worktree):
    ```
    git -c url."https://github.com/".insteadOf="git@github.com:" push origin <branch>
@@ -57,8 +57,10 @@ file and the plan above. Read the plan, then:
    changed; never `git add -A`. Story ids in commit **bodies**, never subjects.
    **Never force-push. Never bump the version. Never deploy.**
 7. **Close it**: `story move <id> done`.
-8. **Record it**: tick the box below and append a `## Log` entry — as its own
-   commit on the same PR, so the record lands with the work.
+8. **Record it**: append a `## Log` entry — no checklist box to tick anymore
+   (see **Dogfooding `story next`**); `story next`/`story summary` are the
+   live status now. Land the entry as its own docs commit, on a separate PR
+   after the code PR merges — the pattern SH-174/SH-180/SH-181 established.
 9. **Freshen, then stop.** Queue the next cycle and end your turn. Do not start
    a second story in this context:
    ```
@@ -66,6 +68,29 @@ file and the plan above. Read the plan, then:
      queue "Continue the storyhook hardening run: read /Volumes/Code/mikeyward/storyhook/HARDENING_PROGRESS.md and follow its START HERE section." \
      --source storyhook-hardening --summary "<story just finished> done, next: <id>"
    ```
+
+**Dogfooding `story next`.** This run drove off a hand-maintained checklist
+(below, now removed) through 2026-08-11. It was already showing the failure
+mode a live query cannot: SH-226 found a checklist box marked `done` for a
+story nothing had ever touched — closed by a shell executing a runaway
+dispatch charter, not by an agent — because the box trusted what it was told
+rather than what the store actually held. `story next` has no state of its
+own to drift from a query it runs fresh every time; the checklist's ⚠/⏸
+bookkeeping (in-progress-elsewhere, awaiting-Mikey) is now just the real
+`in-progress` state and `story block <id> "<reason>"`, both of which `next`
+already reads live.
+
+**Watch it while you use it — this run now doubles as its test.** If `story
+next` ever recommends something unworkable — surfaces a story with children,
+hands back one already claimed elsewhere, ignores a real blocker, or
+otherwise stalls the queue instead of draining it — that is a defect in
+storyhook itself, not a one-off to route around. **File it `critical`
+priority immediately**, whatever else is in flight: a tool this run depends
+on to find work, quietly recommending the wrong work, is exactly the
+silent-failure shape this file exists to catch, and every session downstream
+inherits it until it's fixed. File it, note the finding in this cycle's
+`## Log` entry, then pick again — a bad recommendation is a reason to file a
+story, not a reason to work the bad recommendation anyway.
 
 **Supervising background work — never start it without a watchdog.**
 
@@ -117,154 +142,6 @@ halts the loop.
 **Refuse and log** rather than improvise if `make gate` is red on arrival, the
 acceptance criteria need another story to land first, or the work would
 destructively touch the real store outside SH-132's sanctioned procedure.
-
----
-
-## Backlog
-
-**Resynced 2026-08-08, before picking anything** — per the 2026-08-07
-precedent (line ~4713 of the Log) and the SH-218 entry that called this
-resync in advance. Every checkbox below was cross-checked against a fresh
-`story show <id>`; every previously-listed story really is `done (CLOSED)`
-except the epic, so none were stale. What was stale was the list's
-*coverage*: `story list --ready --json` reports 41 open/41 ready/0 blocked
-against the ~34 this queue was built from, so 40 stories that were filed
-during the run — mostly in passing, off other stories' councils and
-investigations — had never been added. They're added below, unchecked, in
-each priority's queue, ordered `story list --ready --json`'s own return
-order within a priority (which is not meaningfully different from age,
-since nothing here has been manually reordered). A new **None** section
-follows Low: eleven ready stories carry `priority: none` and are real,
-open, unblocked work, not a filing default to ignore.
-
-### Critical
-
-- [x] **SH-112** — the server-owned epic · *all 14 children merged. SH-188, the last
-  one, closed 2026-08-09; the epic closed behind it the same day after a closeout pass
-  wrote the spec it had never had (`docs/spec/server-owned.md`) and cleared the three
-  deviations that had accumulated with nowhere to be recorded. Log entry below. Never
-  worked directly — every line of it landed through a child.*
-
-### High
-
-Ordered by what each one unblocks, then by what it protects, then by age.
-The first four come first because they are the failure this file's supervision
-section was written about: a run that wedges with no failing test name costs
-more than any single story below it. SH-143 and SH-144 are that wedge, named.
-
-- [x] **SH-143** — the daemon spawn lock blocks without a timeout · *clients queue serially behind up to 15 s each*
-- [x] **SH-144** — `HttpInvoker::send` has no bound, so a wedged daemon holds its client forever
-- [x] **SH-141** — an event hook's grandchild holds its stderr pipe and wedges the daemon
-- [x] **SH-160** — the daemon inherits its first client's git environment · *one exported `GIT_DIR` poisons every project probe on the machine*
-- [x] **SH-120** — C8 Dispatch plumbing · *both halves landed; SH-50 is unblocked*
-- [x] **SH-166** — `/story do` should not prefix the worktree with the repo name · *closed by another session as #119*
-- [x] **SH-140** — five assertions assert speed, not liveness, at core-count parallelism
-- [x] **SH-182** — the SessionStart hook's 5s budget sits below the 30s spawn-lock wait its own `story` call may take · *filed by SH-140's council; Mikey's design call taken 2026-08-07*
-- [x] **SH-134** — `add_type` accepts an unaddressable slug · *filed by SH-62's council*
-- [x] **SH-67** — `TransferService::export` silently drops event kinds it does not understand
-- [x] **SH-133** — rollback drops project settings · *filed by SH-129*
-- [x] **SH-137** — github-sync unreachable for an origin carrying userinfo
-- [x] **SH-153** — `Select::interact()` called from the daemon, where there is no terminal
-- [x] **SH-158** — `GithubClient` has no trait seam, so two functions have no test at all
-- [x] **SH-145** — the dashboard does not live-update a state change until reload
-- [x] **SH-68** — `sync.mode = auto` is accepted and does nothing · *closed by another session; ⚠ mark was stale as of 2026-08-08*
-- [x] **SH-196** — dashboard dispatch fails silently-ish when the installed plugin script predates `--project` · *closed by another session; ⚠ mark was stale as of 2026-08-09 — merged PR #212 (`7e1b1d3`) on 2026-08-08*
-
-### Medium
-
-- [x] **SH-109** — prefix confirmation / `set-prefix` residual
-- [x] **SH-122** — C11 Residual gap
-- [x] **SH-126** — WebUI Blocked column · *SH-125 handed it a question about what the column's membership is*
-- [x] **SH-135** — a hand-taken backup inherits the 7-deep daily retention · *filed by SH-132*
-- [x] **SH-138** — rollback drops a project's registered origins
-- [x] **SH-142** — the web-server harness reaps its server with an unbounded `.output()` in a `Drop`
-- [x] **SH-146** — the daemon never re-attempts its tailnet bind
-- [x] **SH-147** — the tailnet probe runs twice on the port-fallback path
-- [x] **SH-150** — the TUI holds its own store handle · *landed as PR #164; confirmed `done (CLOSED)` via `story show` 2026-08-08*
-- [x] **SH-154** — `confirm_undelete` prompts from the service layer, so `reopen` can never ask
-- [x] **SH-156** — a `story` command under a pty stalls 7–10 s in two runs in ten
-- [x] **SH-159** — github-sync reports per-story errors inside a successful message and exits 0
-- [x] **SH-164** — labels are sometimes concatenated
-- [x] **SH-165** — an epic with in-progress children should read as in-progress
-- [x] **SH-167** — README documents an id-first grammar the CLI has never had · *filed by SH-118; box was stale — story confirmed `done (CLOSED)`, PR #200 merged as `5af74e2`, logged below at 2026-08-08*
-- [x] **SH-66** — `context --format json` double-encodes
-- [x] **SH-42** — project selector dropdown
-- [x] **SH-43** — archive
-- [x] **SH-49** — linked PRs
-- [x] **SH-155** — preserve presentation/layout settings
-- [x] **SH-162** — allow hiding columns
-- [x] **SH-50** — C9 Dispatch button
-- [x] **SH-157** — visually indicate story types · *closed by another session*
-- [x] **SH-169** — add a "Referenced By" field for commits, comments and PRs that mention a story, so the comments list stops filling with `[git]` noise like SH-63's own
-- [ ] **SH-170** — `project_creation_target`'s outer catch-all could let a future top-level creating verb bypass the SH-95 temp-project guard unnoticed · *residue of SH-117's council (D8); un-ticked 2026-08-10 — the `done (CLOSED)` this box was resynced against was written by a shell, not by an agent, and no work was ever done. See SH-226*
-- [x] **SH-174** — event hooks run inside the daemon's request handler with no ceiling on `hooks.settings.timeout_seconds`, so a client-side bound is also a bound on the user's own subprocesses · *done — PR #224 pulled the story's own redesign trigger: a 60s ceiling, enforced loudly, `SERVED_DEADLINE` left unchanged, `$STORYHOOK_EXCHANGE_DEADLINE_SECS` deleted*
-- [x] **SH-175** — the web New Story window should require an explicit Discard/Save Draft action rather than losing an in-progress draft to a stray dismiss
-- [ ] **SH-178** — `commit-sync` reports "no claim word" for every reason a story did not move, including four where the commit body did carry one · *un-ticked 2026-08-10 — the `done (CLOSED)` this box was resynced against was written by a shell, not by an agent, and no work was ever done. See SH-226*
-- [x] **SH-180** — `story move`'s undefined-state error omits the `doctor --fix` guidance the state-invariant error already gives for the same underlying condition · *done — routed through `validate_required_states`; fixed at all four sites sharing the pattern*
-- [x] **SH-181** — `story doctor` reports 10 malformed labels on the real store: a CSV label stored as one label instead of split · *done — no code defect (SH-164's write-path guard already closed it); real-store data repair, plus SH-225 filed for the closed-story blind spot it surfaced*
-- [ ] **SH-189** — `story export` is not a complete backup of a github-synced project · *`github.sync` and `github_bases` were deliberately excluded by SH-133; nothing replaces them*
-- [ ] **SH-190** — a restored project can be unreachable from its own checkout · *`transfer::import_project` mints a fresh `projects.uuid` the old `.storyhook.toml` pointer no longer matches*
-- [ ] **SH-192** — `RemoteUrl`: a host literally named `local` with an empty port collides with the local-path key space, contradicting the module's own "never collide" claim
-- [ ] **SH-193** — the daemon forwards its whole inherited environment to `sh`, `bash` and `claude`
-
-### Low
-
-- [x] **SH-136** — the daemon-address harness list is hand-maintained prose · *filed by SH-131*
-- [x] **SH-139** — `RemoteUrl::normalize`'s two explicit non-decisions
-- [x] **SH-148** — `bind_and_serve` is a `pub` entry point with no production caller
-- [x] **SH-161** — `story doctor` cannot report a pointer/origin disagreement · *SH-116 declined to build this; it is the residue*
-- [x] **SH-70** — pre-#18 import `[git]` comments
-- [x] **SH-44** — web form defaults
-- [x] **SH-127** — remove the status flash
-- [x] **SH-128** — column sort options
-- [x] **SH-168** — do not show the green ready status labels
-- [x] **SH-64** — story-id ordering · *unblocked by SH-63, which closed below*
-- [x] **SH-183** — `story migrate` refuses a bad state slug but accepts a bad type slug · *filed by SH-134's chair, correcting a claim in that council's own verdict*
-- [x] **SH-218** — the drawer's async detail-fetch re-render can silently wipe unsaved input · *filed by SH-168's e2e test*
-- [ ] **SH-176** — remove the pre-SH-166 legacy worktree-name fallback (`legacy_wname()`) now that dispatched names are the bare id
-- [ ] **SH-179** — GitHub sync can rename a comma-bearing remote label on push
-- [ ] **SH-184** — `TransferService::export` refuses the whole project when a single story's id will not parse, instead of skipping just that story
-- [ ] **SH-185** — `doctor` names an undecodable event but not its severity, exit code or JSON shape · *residue of SH-67*
-- [ ] **SH-191** — github-sync's setup wizard's "Import all" branch can duplicate a local story its own unmapped-branch guard would otherwise catch
-- [ ] **SH-194** — the interactive-prompt allowlist cannot tell a live exemption from a stale one
-- [ ] **SH-195** — `reserve_port()` has a bind-then-release TOCTOU window a leaked or contending daemon can exploit
-- [ ] **SH-197** — right-click actions on a story card should be overridable (Copy ID/URL/Description, Dispatch, Dispatch in Auto mode, Set Status, Delete)
-- [ ] **SH-205** — dashboard drag-into-Blocked and `story block` should capture a reason, not leave it blank · *the deliberately-deferred half of SH-126's council verdict*
-- [ ] **SH-206** — the `story:story` skill's router references a missing `references/story-complete.md`
-- [ ] **SH-207** — `story relate`/`unrelate` refuses whenever either side is closed, even for the inverse edge a living story is asserting
-- [ ] **SH-209** — `daemon_lifecycle::an_unforced_stop_waits_for_in_flight_work_to_finish` has a hairline timing margin under parallel load
-- [ ] **SH-210** — the dashboard's Reopen button shows a bare "Conflict" toast for a soft-deleted story instead of the confirmation modal SH-154 already made possible
-- [ ] **SH-211** — `story doctor` cannot detect a hidden-but-open story
-- [ ] **SH-212** — the daemon should unattended-poll GitHub for merged PRs and auto-close their stories · *deferred out of SH-49 by council verdict*
-- [ ] **SH-213** — scp-like syntax with a bracketed IPv6 host normalizes to a garbage key instead of a correct one or a refusal
-- [ ] **SH-216** — `ChangeBus` leading-edge coalescing can silently drop a later, causally-unrelated publish for the same slug
-- [ ] **SH-220** — detect a story-ID mention inside another story's comment text and surface it in Referenced By · *deferred out of SH-169's scope decision — genuinely undesigned, no existing mention grammar*
-
-### None
-
-*Priority `none` — filed without a triage pass, not without value. First time
-this queue has carried a section for them; see the 2026-08-08 resync note
-above.*
-
-- [ ] **SH-186** — `web_test::a_wedged_tailscale_cli_cannot_stop_the_dashboard_from_serving` fails on at least one dev machine
-- [x] **SH-187** — the dashboard's mutation guard is not authentication — any tailnet peer can write with two headers
-- [x] **SH-188** — event hooks already let a browser-reachable story mutation run `sh -c` in the project checkout · *the last child of the SH-112 epic; closed 2026-08-09 after SH-187's token gate made the chain unreachable — scope re-decided by council, log entry below*
-- [ ] **SH-198** — `GithubClient::get_timeline` is dead code — zero call sites in `src/` or `tests/` · *filed by SH-158*
-- [ ] **SH-199** — move the New Comment field to above the comments list
-- [ ] **SH-200** — list blocking stories on a story card, with a status light matching each blocker's own column
-- [ ] **SH-203** — show a status light next to any web UI mention of another story
-- [ ] **SH-204** — make the add-label field in the story editor behave like the one in the new-story popup (commit-on-comma/tab-out); force labels lowercase on every label-setting route, retroactively
-- [ ] **SH-215** — `story export`'s help topic and `story import`'s help topic disagree with export's actual output shape
-- [ ] **SH-217** — render markdown in a story's body description in the web interface, switching to plain text while the field is focused for editing
-- [ ] **SH-219** — the `--auto` dispatch flag and `/story:do` skill should signal council-vote for scope/direction questions when the plugin is installed
-- [ ] **SH-222** — `drawer-detail-race.spec.ts` deleting a story during its edit races the button's own DOM stability · *filed while gating SH-174's PR; reproduces identically on unmodified `main`*
-- [ ] **SH-223** — `filter-persistence.spec.ts`'s pruned-filter count races the carried-over filter settling · *filed alongside SH-222, same gating run; the wrong count differs run to run, the signature of a race*
-
-### What was on the old list and is now done
-
-SH-129, SH-124, SH-62, SH-125, SH-130, SH-132, SH-131, SH-115, SH-94, SH-110,
-SH-114, SH-116, SH-117, SH-152, SH-151, SH-119, SH-121, SH-163, SH-118, SH-63 —
-20 stories, every one with a `## Log` entry below.
 
 ---
 
@@ -8591,3 +8468,45 @@ carries the full evidence and holds the fix.
 `story move <n> done` backtick but not the `<reap>` sentence `main` has since
 added — the only reason the four worktrees survived to be examined. The next
 release makes this failure delete its own evidence.
+
+### Architecture change — 2026-08-11, from checklist to `story next`
+
+The Backlog section — four priority-ordered checklists, hand-resynced against
+the real store every few sessions — is removed. `story next` picks the work
+now; **START HERE** step 1 was rewritten to call it directly, and the ⚠/⏸
+marker system it replaces (in-progress-elsewhere, awaiting-Mikey) maps onto
+storyhook's own live `in-progress` state and `story block`, both of which
+`next` already reads.
+
+**Why now, specifically.** The checklist had just demonstrated its own failure
+mode. SH-226 (full incident: a dispatch pane readiness gate mistook a bare
+shell for a live Claude session, so an autonomous charter's backticked spans
+executed as commands, closing four stories nothing had touched) left two
+checklist boxes reading `done` for exactly that reason — the box recorded what
+it was told, not what happened, and nothing re-checked it until a `story show`
+against the real events disagreed. A live query run fresh every time has no
+state of its own to hold that kind of stale claim; hand-maintained prose
+always does, which is the same shape SH-131 named for the daemon-address
+harness list and SH-136 fixed by deriving that list instead of enumerating it.
+
+**Verified before removing anything**, reading `src/service/query.rs` and
+`src/domain.rs` plus `tests/story_next.rs`: `next()` filters
+`is_ready(&story, &all) && !has_children(&story)` — closed, draft, `blocked`
+state, an unmet `blocked-by` predecessor, and *any* story with a `parent-of`
+child are all excluded already, the last one independent of whether the
+parent is typed `epic`, which is a strictly more general rule than the old
+"skip anything marked epic" instruction it replaces. Confirmed live against
+the real store too: `story next --count 20` never returned `SH-229`, the one
+currently-blocked story, and `story list --blocked` explains why (`awaiting:
+"Hold for user..."`) — the exclusion holds outside the test suite, not only
+inside it.
+
+**One inconsistency found, not filed.** `story list --ready` calls only
+`is_ready`, without the `!has_children` guard `next` adds — so `--ready`
+still counts a parent/epic as ready while `next` will never hand you one.
+Doesn't threaten queue draining (nothing in this run's flow picks off
+`--ready` anymore; `next` is authoritative for that now) and didn't clear the
+bar this session's own instructions set for a critical filing, so it stays a
+noted observation rather than a story. No other gap found in this pass — an
+initial dogfooding run turned up nothing filable; that is what "watch it"
+looks like when the tool holds up, not a step skipped.
