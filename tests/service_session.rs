@@ -99,6 +99,24 @@ fn a_story_in_the_blocked_state_is_never_the_next_line() {
     assert!(!context.contains("Next:"), "{context}");
 }
 
+/// Regression test for SH-236: a story already moved to `in-progress` (the
+/// project's configured active state) has already been claimed by someone,
+/// so it must not still count as ready or be offered as the session's
+/// `Next:` pick — `is_ready` never inspected `story.state` beyond the
+/// required `blocked` slug, the same gap SH-126 closed for that one slug.
+#[test]
+fn a_story_already_in_progress_is_never_the_next_line() {
+    let fixture = ServiceFixture::new();
+    let claimed = create(&fixture, "Claimed elsewhere", None);
+    StoryService::new(&fixture.ctx())
+        .set_state(&claimed, "in-progress", None, None)
+        .expect("claiming");
+
+    let context = context(&fixture);
+    assert!(context.contains("1 open stories, 0 ready"), "{context}");
+    assert!(!context.contains("Next:"), "{context}");
+}
+
 #[test]
 fn the_next_line_reports_a_priority_when_there_is_one() {
     let fixture = ServiceFixture::new();

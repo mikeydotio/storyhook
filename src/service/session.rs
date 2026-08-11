@@ -10,7 +10,9 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 
-use crate::domain::{Priority, StorySnapshot, has_children, is_ready, ready_order};
+use crate::domain::{
+    Priority, StorySnapshot, active_state, has_children, is_claimable, ready_order,
+};
 use crate::error::AppError;
 use crate::help_topics;
 use crate::store::{ReadOps, Store, StoryQuery};
@@ -100,16 +102,20 @@ impl<'ctx, S: Store> SessionService<'ctx, S> {
         // — a story blocked by an archived one reads as ready, because the
         // blocker is not in the map to be found. Inherited from the legacy
         // path, which passed `load_all_open_snapshots` for the same reason and
-        // whose answer `story next` agrees with.
-        let stories = self.ctx.store().read(|tx| {
-            Ok(tx
+        // whose answer `story next` agrees with. States ride along in the same
+        // transaction so `is_claimable` can resolve the active state (SH-236)
+        // against a snapshot consistent with the stories it's checked against.
+        let loaded = self.ctx.store().read(|tx| {
+            let stories = tx
                 .stories(project, &StoryQuery::all().archived(false))?
                 .into_iter()
                 .map(|row| (row.snapshot.id.clone(), row.snapshot))
-                .collect::<BTreeMap<String, StorySnapshot>>())
+                .collect::<BTreeMap<String, StorySnapshot>>();
+            let states = tx.states(project)?;
+            Ok((stories, states))
         });
-        let stories = match stories {
-            Ok(stories) => stories,
+        let (stories, states) = match loaded {
+            Ok(pair) => pair,
             // The CLI reference alone is still worth injecting: an agent that
             // cannot read the project can at least be told how to ask.
             Err(_) => {
@@ -118,11 +124,12 @@ impl<'ctx, S: Store> SessionService<'ctx, S> {
             }
         };
 
+        let active = active_state(&states);
         let open: Vec<&StorySnapshot> = stories.values().collect();
         let ready: Vec<&StorySnapshot> = open
             .iter()
             .copied()
-            .filter(|story| is_ready(story, &stories) && !has_children(story))
+            .filter(|story| is_claimable(story, &stories, active.as_ref()) && !has_children(story))
             .collect();
         message.push_str(&format!(
             "  {} open stories, {} ready\n",

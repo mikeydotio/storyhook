@@ -68,6 +68,46 @@ fn list_ready_filter() {
     assert!(!stdout.contains("SH-2"));
 }
 
+/// Regression test for SH-236, `story list --ready`'s side of the same bug
+/// `next_skips_a_story_already_in_progress` (tests/story_next.rs) pins for
+/// `story next`: a story already claimed (moved to `in-progress`) is neither
+/// ready to pick up nor blocked — it's excluded from both filters.
+#[test]
+fn list_ready_filter_excludes_in_progress() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Todo task"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Claimed task"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["move", "SH-2", "in-progress"])
+        .assert()
+        .success();
+
+    let ready = story(dir.path())
+        .args(["list", "--ready"])
+        .assert()
+        .success();
+    let ready_stdout = String::from_utf8(ready.get_output().stdout.clone()).unwrap();
+    assert!(ready_stdout.contains("SH-1"));
+    assert!(!ready_stdout.contains("SH-2"));
+
+    let blocked = story(dir.path())
+        .args(["list", "--blocked"])
+        .assert()
+        .success();
+    let blocked_stdout = String::from_utf8(blocked.get_output().stdout.clone()).unwrap();
+    assert!(!blocked_stdout.contains("SH-2"));
+}
+
 #[test]
 fn list_dependency_blocked() {
     let dir = tempdir().unwrap();
