@@ -458,7 +458,19 @@ impl DispatchRegistry {
     /// registry was built via [`Self::load`] — the snapshot is taken, and
     /// the mutex released, before the write happens, so a slow or full
     /// filesystem never holds up `try_start`/`get`/`finish` on another
-    /// thread.
+    /// thread (each holds `inner`'s lock too, from an HTTP handler's own
+    /// call stack for the first two).
+    ///
+    /// Two concurrent `finish()` calls (up to [`MAX_RUNNING`] can overlap)
+    /// therefore have no ordering guarantee between their two *disk writes*
+    /// — each snapshot is correct as of its own mutation, but the file
+    /// system could apply them in either order, so the persisted file could
+    /// transiently reflect the earlier of the two. Deliberately not fixed
+    /// by writing inside the lock: this is a snapshot of the in-memory
+    /// registry, not the registry itself, so a stale disk copy self-heals
+    /// on the very next dispatch to finish, whenever that is — and holding
+    /// `inner`'s lock across a filesystem write would make an unrelated
+    /// `POST`/`GET` briefly hostage to that write.
     fn finish(
         &self,
         handle: &str,
