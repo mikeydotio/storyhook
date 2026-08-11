@@ -8686,4 +8686,100 @@ unanimous). R1's own three design questions above were resolved directly —
 each had a verifiable empirical answer (what real tmux actually does), not a
 judgment call between defensible alternatives.
 
+### SH-231 — done (SH-227's R2), merged PR #237
+
+**Outcome:** `story.sh dispatch`'s readiness gate no longer screen-scrapes
+rendered pane content at all. It polls for a dispatch sentinel Claude Code's
+own `SessionStart` hook publishes (`SessionService::publish_sentinel`,
+`src/service/session.rs`) at `<cwd>/.claude/dispatch-sentinel.json`, modeled
+point-for-point on `await_healthy` — sentinel exists AND a live re-check of
+the exact pane/pid SH-230 captured at window-open time, never sentinel
+content alone. `cmd_doctor`'s scratch-window self-test deliberately keeps
+the old screen-scrape (`wait_ready`) — attended, typed not exec'd, no fresh
+worktree to scope a sentinel to; the unattended-charter threat model this
+redesign exists for doesn't reach it.
+
+**The spike, done first as the story required.** Claude Code's documented
+`SessionStart` payload (`session_id`/`hook_event_name`/`source`/`cwd`/
+`permission_mode`/`model`) carries no pid, confirmed against docs via
+`claude-code-guide` rather than assumed, and a hook's own `$PPID` reliability
+is undocumented. Per the story's own fallback instruction, liveness comes
+from SH-230's `pane_pid` capture instead — verified **empirically**, not
+from the man page, that real tmux (3.7b) execs the default launch template
+directly with no intervening shell (so `pane_pid` really is claude's own
+pid), and separately that tmux **freezes** `#{pane_pid}`/
+`#{pane_current_command}` at their last live values once a `remain-on-exit`
+pane's process exits — the finding that made a second, explicit `kill -0`
+check load-bearing rather than a redundant belt-and-suspenders.
+
+**Council, on the concrete design** (`.council/sh-231-sentinel-design/`,
+unanimous 3/3 round 1): software-architect, api-designer and
+security-researcher each proposed a different design in blind round 1 (bash
+vs Rust, path-scoping alone vs a pid re-check) and converged on the
+security-researcher's — sentinel existence is necessary but never
+sufficient, because the fresh-worktree guarantee only holds until the
+readiness poll completes, and nothing stops an unrelated session from being
+pointed at the same path in that window. Recorded as a comment on SH-231
+before implementation, per this run's autonomy rule.
+
+**A real reason-taxonomy consequence, not a regression:** a launch that
+never becomes claude/node (`FAKE_TMUX_LAUNCH_MANGLE`) now reports
+`no-sentinel`, not `wrong-process` — its shell's `SessionStart` hook never
+fires, so there is no sentinel to be the wrong process's. `wrong-process`
+now means something *stronger* than before (a real sentinel exists, but this
+pane's occupant doesn't match it). The `STORY_READY_PROCESS_PATTERN=.`
+escape hatch narrows the same way — it can no longer rescue a launch that
+never published a sentinel, only a real one whose occupant name the default
+pattern refuses. `test-dispatch-occupant-gate.sh` (Family A/E) and
+`test-dispatch-pane-readiness.sh` (the original SH-178 repro) were updated
+in place with the reasoning inline rather than silently re-pointed.
+
+**Test harness had to grow up with the mechanism.** The fake tmux's exec-form
+`new-window` now spawns a real, short-lived placeholder process and exposes
+its pid via `#{pane_pid}` (a canned literal would have made every dispatch
+test fail the new `kill -0` check unconditionally) and publishes a fake
+sentinel derived from the launch line, so every test on the default
+`STORY_LAUNCH_CMD` gets a valid one for free — the same "derivation, not a
+knob" precedent SH-230 set for the occupant. Two new knobs
+(`FAKE_TMUX_SUPPRESS_SENTINEL`, `FAKE_TMUX_PANE_LIFETIME`) isolate the two
+failure modes only this mechanism can produce, covered in new
+`test-dispatch-sentinel-readiness.sh`. `mk_story_repo` (tests/lib.sh) needed
+its own `.gitignore` rule, matching the real repo's — without it,
+`test-bare-story-id.sh` caught every dispatched worktree's freshly-published
+sentinel reading as an untracked file, misclassifying a removable worktree
+as dirty.
+
+**Two incidents worth recording honestly, neither in the shipped code.**
+(1) An early manual smoke test (`cargo build` + `./target/debug/story
+session-start` run directly from this checkout, no `STORYHOOK_DATA_DIR`
+override) started a real daemon against the **real** production store and
+port 3456 — exactly the mistake `storyhook::env::is_test_build` exists to
+make impossible for `cargo test`, but `cargo build` carries no such guard.
+No data was lost (the command only reads project state and writes the new
+sentinel file, verified via `story doctor`/backups afterward), but the
+daemon's newer-than-released binary migrated the real store to schema
+version 12, which the installed release CLI (v2.0.0) cannot open until
+`story update` — flagged to Mikey rather than run unattended, since it
+touches the real environment beyond this repo. The orphan daemon (plus two
+more from earlier isolated `cargo test` probes) was caught by `make test`'s
+own `check-no-orphan-servers` preflight, not missed. (2) The full gate flaked
+four times running — `daemon_timeouts.rs`'s own timing test once, then three
+different, unrelated Playwright specs (`board-sort`, `create-story-defaults`,
+`filter-persistence`/`drawer-detail-race`) — before a clean run. Diagnosed,
+not assumed: `target/` had grown to 42G, load average was 4.4, and multiple
+other `claude`/tmux sessions were active on the same machine across several
+unrelated projects at the time; an isolated `bash scripts/run-e2e.sh` run
+passed 45/45 clean in between two failing full-gate attempts, and no rust
+test ever failed twice. Logged per this file's own wedge/flake rule.
+
+**Gate:** full `make test`, supervised — 140 `test result: ok` blocks, 30/30
+plugin harness, 45/45 Playwright specs, on the clean run. `cargo fmt`/`cargo
+clippy -D warnings` clean throughout.
+
+**Next:** SH-232 (SH-227's R3 — reason taxonomy end-to-end + CHARTER-INERT
+runtime enforcement over user prompt overrides), filed `relates-to` SH-231
+rather than `blocked-by` per the original council's adopted dissent — this
+story touched none of `classify()`/`DispatchRecord`/`web_dashboard.html`, so
+the dissent's condition for staying unblocked holds.
+
 **Next:** SH-231 (R2) is `blocked-by` SH-230 and now unblocked.
