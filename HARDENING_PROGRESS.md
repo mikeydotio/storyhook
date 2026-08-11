@@ -8930,3 +8930,100 @@ onto `main` in this checkout, branch verified deleted.
 **Next:** SH-178 — `commit-sync` reports "no claim word" for every reason a story
 did not move, including four where the commit did claim. Reopened alongside
 SH-170 by the same SH-226 dispatch-charter incident; scope unchanged.
+
+### SH-178 — done
+
+Picked via `story next`, confirming the freshen summary's own pick. Read whole,
+comments included: the story's own filing comment named five distinct causes a
+commit that linked a story could fail to also move it, only one of which the old
+message described.
+
+**Outcome:** `record_commit` no longer collapses every non-move into
+`Ok(Some(None))`. A new `NotMovedReason` enum (`NotAClaim`/`AutoTransitionOff`/
+`NoActiveState`/`AlreadyClaimedThisRun`/`NotInDefaultState`) travels with the
+decision from `record_commit` outward, computed by a small pure function,
+`eligible_active_state`, that checks grammar, the project setting, the project's
+active-state configuration, and the same-run dedup — in that order, matching the
+report's own group order. `commit_sync`'s report now groups `linked_only` by the
+real cause instead of printing "no claim word" for all of them:
+
+    linked without claiming: SH-1 (no claim word, so state unchanged)
+    linked without moving: SH-2 (sync.auto_transition is off for this project)
+    linked without moving: SH-3 (this project has no active state configured)
+    linked without moving: SH-4 (already out of the project's default open state)
+
+**Reason 5 (`AlreadyClaimedThisRun`) is real but never rendered.** The filing
+comment's own accounting already noted the `linked_only.remove` cleanup mostly
+absorbs it; tracing the two loops through confirms it always does — a story only
+reaches this branch when an *earlier* commit in the run already moved it, which
+means the story is also in `transitions` by construction, and the post-loop
+cleanup removes any `linked_only` entry for a story that transitioned, whatever
+reason produced it. Kept as a named variant rather than folded into another
+reason regardless, because the decision that produces it is a genuine fifth
+cause, not an alias — and covered by a direct unit test on
+`eligible_active_state` rather than chased through the full pipeline, since
+nothing in the pipeline can make it observable.
+
+**Red before green, on the story's own two measured cases plus a third.**
+`a_story_already_out_of_the_default_state_is_commented_but_not_moved` (reason 3,
+the story's own MEASURED repro) and `the_project_setting_can_turn_the_transition_off`
+(reason 2) were extended with assertions on the specific report line, and both
+failed exactly as the story predicted — the message said "no claim word" for a
+commit that had, in fact, claimed. A third case,
+`a_claim_with_no_active_state_configured_reports_why_not_the_grammar` (reason 4),
+is new: `ServiceFixture::with_states` built with the same required-states catalog
+used everywhere else but with no `active` role, matching
+`a_project_with_no_role_and_three_open_states_gets_no_guess` — the shape the
+story's own comment named as "the COMMON case, not an edge one" since SH-125.
+All three were confirmed red against the unmodified code before the fix, then
+green after. `eligible_active_state` also gained five inline unit tests
+exercising every branch directly, including the unobservable reason 5, plus one
+more pinning every `NotMovedReason::report_line` — six new inline tests in all.
+
+**Docs updated alongside the code**, not left to drift: `story help commit-sync`
+and the plugin's `cli-reference.md` both previously promised only "reports the
+stories it linked without claiming" (or "reports what it linked without
+claiming") — restated to name the four now-distinguished causes, matching what
+the report actually prints.
+
+**A live demonstration the fix works: the merge auto-closed this story.** The
+landing commit's body said `Closes SH-178`; the merge brought it onto `main`,
+the post-merge hook ran `commit-sync`, and the same claim-grammar machinery this
+story touched moved SH-178 itself to `done` — `story move SH-178 done` afterward
+correctly refused with "closed and cannot be modified" rather than erroring on
+something broken.
+
+**Gate:** full `make test` — Rust suite and plugin harness 140/140 `test result:
+ok` blocks, clean; `cargo fmt`/`cargo clippy -D warnings` clean throughout. e2e
+hit `board-sort.spec.ts:121` once — `Test timeout of 15000ms exceeded` /
+`did not find some options` on `#create-priority`, the exact signature SH-223
+already documents (it names this element and error text explicitly from an
+earlier gating run). Confirmed unrelated by construction — this diff is
+`src/service/git.rs`, `src/help_topics.rs`, `tests/service_git.rs` and a plugin
+doc, nothing web or dashboard — and by an isolated rerun of the full 45-spec e2e
+suite immediately after, which came back 45/45 clean. Added as corroborating
+evidence on SH-223 rather than filing a sibling, per the standing precedent for
+non-reproducing instances of an already-tracked flake class.
+
+**A supervision finding, not a defect:** the first `make test` run appeared to
+stall — 120 seconds with zero log growth, tripping this file's own stall-timeout
+rule. Diagnosed before killing anything, per that same rule's instruction: `ps`
+showed `rustc` and `dsymutil` still actively compiling the ~1,100-test library
+binary, which — unlike a running test — emits no stdout at all until the whole
+compile finishes. The moment it finished, the log jumped from 504 bytes to 87KB
+in one write. Log growth alone is a poor heartbeat for the *compile* phase; the
+120s calibration in this file's "Supervising background work" section was
+reasoned about the *test-running* phase only ("a single test prints its own
+'running for over 60 seconds' notice"). The rerun used log growth OR active CPU
+on `cargo`/`rustc`/`dsymutil`/`playwright`/`node` as the pulse instead, and
+nothing stalled again. Not fixed in this file's rule text — noted here as a
+finding for whoever next tightens it.
+
+**PR:** #243, merged as `d2d0823` (`gh pr view` confirmed `MERGED`), fast-forwarded
+onto `main` in this checkout; branch deletion was automatic (`gh pr merge
+--delete-branch` checked out `main` and removed both the local and remote
+branch, since the branch being merged was the current one).
+
+**Next:** SH-189 — `story export` is not a complete backup of a github-synced
+project. Its `blocked-by SH-153` relationship is stale: SH-153 is `done`, which
+is why `story next` surfaces SH-189 as ready despite the edge still being there.
