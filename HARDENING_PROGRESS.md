@@ -9759,3 +9759,61 @@ this run's standing practice.
 
 **Next:** SH-194 — the interactive-prompt allowlist cannot tell a live
 exemption from a stale one (low).
+
+### SH-194 — the interactive-prompt allowlist cannot tell a live exemption from a stale one — 2026-08-11
+
+**Outcome:** done. PR #263, merged as `f6b3e78` (`gh pr merge --merge
+--delete-branch`), fast-forwarded onto `main`; stale remote-tracking ref
+pruned with `git fetch --prune`.
+
+**Test-only, built to the story's own fix direction.** No council needed —
+the story (filed by SH-153's council) already specified the shape:
+`every_interactive_prompt_is_in_the_allowlist` in `tests/invoker_seam.rs`
+split its single `ALLOWED` constant into `LEGITIMATE` (the two sites that
+prompt by design, `src/main.rs` and `src/invoke.rs`, and always will) and
+`EXEMPTED` (filed defects awaiting their story — currently empty, since
+SH-152/SH-153/SH-154 already closed every prior entry). A new loop walks
+`EXEMPTED` and asserts each named file still contains a `PROMPTS` token,
+so removing the last prompt from an exempted file turns the suite red
+until the entry is deleted too — the invariant the old single list could
+not express.
+
+**Verified the invariant fires, in place of a committed regression test.**
+`EXEMPTED` is empty on `main`, so there was no live exemption to write a
+red-then-green test against without inventing one. Instead: temporarily
+set `EXEMPTED` to `["src/error.rs"]` (a real file with no prompt token),
+ran the test, confirmed it failed with the intended message ("is in
+EXEMPTED but no longer contains a PROMPTS token ... the exemption is
+stale"), then reverted and confirmed green again, diffed against a
+pre-edit backup to confirm no drift. The mechanism itself — asserting
+every future `EXEMPTED` entry — is the permanent regression coverage;
+nothing today exercises it because nothing today is stale.
+
+**One supervision incident, self-inflicted.** The first `make test` run
+was killed by my own follow-up `kill` on its recorded PID, aimed at a
+detached `nohup` job I'd meant to restart cleanly under a tracked
+watchdog; the PID killed was the top-level job, not the daemon, so
+`cargo test` kept running underneath it and cascaded into eight unrelated
+`cli_grammar` failures via "the storyhook daemon stopped answering:
+Connection refused." `scripts/check-no-orphan-servers.sh` came back clean
+(the only surviving daemon was the real one on port 3456, unaffected),
+confirmed no leftover test processes, and reran the full gate cleanly
+under a log-growth watchdog (10s poll, 120s stall bound) with no manual
+intervention this time — full Rust workspace suite, `cargo build`, the
+29-test plugin suite, and all 45 Playwright e2e specs green, `fmt` and
+`clippy -D warnings` clean.
+
+**Observed while picking the next story, not a filed defect.** `story
+next --count 3` returned SH-197 (`in-progress`) alongside two `todo`
+stories; the single-story `story next` (what this run actually claims
+from) correctly skipped it and recommended SH-195. Noted per this run's
+"watch `story next`" rule, not filed — the primary recommendation path
+was correct, and `--count`'s wider listing may deliberately relax the
+readiness filter rather than share `next`'s bug. Left for a future cycle
+to confirm either way.
+
+**No version bump** — `test:`, left for the next batched `/semver` pass
+per this run's standing practice.
+
+**Next:** SH-195 — `reserve_port()` has a bind-then-release TOCTOU window
+a leaked or contending daemon can exploit (low).
