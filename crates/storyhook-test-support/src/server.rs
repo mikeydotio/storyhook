@@ -24,6 +24,20 @@ use crate::env::story_binary;
 /// process, and reports success as soon as it has spawned that child, so a
 /// port it loses is never reported to anyone.
 ///
+/// **Not a reservation a caller can trust past the moment it returns.** The
+/// bind-and-release below rules out a *long-lived* squatter — the fixed
+/// counter's hazard, a daemon leaked by an earlier run sitting on a low
+/// number forever — but proves nothing about the gap between that release and
+/// whatever binds this port for real: a genuine TOCTOU window remains, however
+/// narrow (SH-195). A caller that only needs *some* free port, and can learn
+/// which one it actually got afterwards — every direct-daemon-spawn caller in
+/// this crate does, from the daemon's own portfile — should ask for `--port 0`
+/// instead and skip this function entirely, the way
+/// [`crate::crash::spawn_daemon`] does. Reach for this one only when the port
+/// must be known *before* the thing that binds it exists, because nothing
+/// downstream of the spawn will report the real one back (`story web start`'s
+/// case, above).
+///
 /// Two properties, both learned from SH-51:
 ///
 /// - **Outside the kernel's ephemeral range.** Every in-process server here
@@ -59,9 +73,10 @@ pub fn reserve_port() -> u16 {
             NEXT.store(BAND.start, Ordering::Relaxed);
             BAND.start
         };
-        // Binding and immediately releasing proves nothing else holds it —
-        // including a daemon leaked by an earlier run, the exact hazard the
-        // fixed counter walked straight into.
+        // Binding and immediately releasing proves nothing else holds it
+        // *right now* — including a daemon leaked by an earlier run, the
+        // exact hazard the fixed counter walked straight into — but not that
+        // nothing will grab it before the real caller binds (SH-195).
         if TcpListener::bind(("127.0.0.1", candidate)).is_ok() {
             return candidate;
         }
