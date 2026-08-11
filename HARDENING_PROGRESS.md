@@ -9516,3 +9516,64 @@ batched `/semver` pass.
 
 **Next:** SH-179 — GitHub sync can rename a comma-bearing remote label on
 push (low).
+
+### SH-179 — GitHub sync can rename a comma-bearing remote label on push — 2026-08-11
+
+**Outcome:** done. PR #255, merged as `b33d218` (`gh pr merge --merge
+--delete-branch`), fast-forwarded onto `main` in this checkout; stale
+remote-tracking ref pruned automatically by `gh pr merge`'s own fetch.
+`story move SH-179 done` found the story already `done` — the commit
+body's `Closes SH-179` auto-closed it on merge, via `story commit-sync`'s
+merge hook; its own comment thread now carries the `auto-closed by merge`
+line as a record of that.
+
+**What the story's own comment scoped out turned out unnecessary.** The
+comment (filed when SH-164 shipped) predicted the fix would need to
+thread a reverse mapping through `github::diff::FieldUpdates` and
+`merge_labels` — a change to the merge engine itself. Reading `diff.rs`
+closely: `merge_labels` only ever does set arithmetic on the
+already-rendered storyhook label strings, on both sides, to decide *what
+changed* — it has no need to know a rendered name's real GitHub origin to
+do that correctly. The rewrite back to GitHub's own label name is only
+needed once, at the very last step that turns a merged set into an actual
+`UpdateIssueRequest` — exactly the boundary `updates_to_issue_request`
+already owns (it already does the analogous member-id-to-GitHub-handle
+translation for assignees). Keeping `FieldUpdates` free of GitHub-specific
+concerns and doing the translation only at that existing boundary is
+smaller and more consistent with the codebase's own layering than the
+originally-scoped fix — a judgment call confident enough on its own
+grounds (the assignee precedent) that it didn't seem to need a council
+vote.
+
+**What shipped:** `RemoteSnapshot` gained `label_remote_names: BTreeMap
+<String, String>`, populated by `issue_to_remote_snapshot` for every label
+`render_remote_label` altered because it contained a comma.
+`updates_to_issue_request` takes it as a new parameter and uses it to
+restore a label's real GitHub name on push, falling through to the
+storyhook rendering verbatim for anything genuinely new. Both push sites
+in `sync_single_story` — the direct field-update push and the `KeepLocal`
+conflict-resolution path through `apply_conflict_remotely` — thread the
+same map through, since both send label names verbatim to GitHub.
+`FakeGithubApiFactory` (the sync engine's in-memory test double) gained a
+`set_issue_labels` seeding helper, mirroring its existing `set_issue_title`,
+since nothing previously needed to seed a remote issue's labels before a
+sync ran.
+
+**Test plan:** red proven before green — the two new `field_map` unit
+tests and the new end-to-end test (`run_sync_with` against
+`FakeGithubApiFactory`, asserting on the actual recorded
+`UpdateIssueRequest`) were written first, confirmed to fail with the exact
+buggy rename (`"backend & urgent"` pushed verbatim in place of
+`"backend,urgent"`) by temporarily neutering the translation, then
+confirmed green once restored. `make test` green end to end afterward —
+full Rust workspace suite, the plugin's shell dispatch suite, and the
+45-test Playwright e2e suite. Supervised per this file's own rule: `make
+test` ran as a tracked background command with a `wc -c`-on-log heartbeat
+polled every 10s against a 120s stall bound; it finished in 350s with no
+stall.
+
+**No version bump** — `fix:`, left for the next batched `/semver` pass per
+this run's standing practice.
+
+**Next:** SH-184 — `export` refuses the whole project when one story id
+will not parse (low).
