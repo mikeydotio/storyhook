@@ -518,6 +518,38 @@ fn web_serve_and_query_root() {
     assert!(body.contains("Storyhook"));
 }
 
+/// SH-197's deep link (`?project=<slug>&story=<id>`) is resolved client-side
+/// by the dashboard's own JS, not by the server -- but that only works if
+/// the server still serves the dashboard for a `/` request that carries a
+/// query string. `request_path` (`src/api/http.rs`) strips the query before
+/// routing, so this should already hold; pinned here so a future change to
+/// that stripping can't silently break every pasted link.
+#[test]
+fn web_serve_root_html_with_query_string_still_serves_the_dashboard() {
+    let fixture = served();
+
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!(
+            "http://127.0.0.1:{port}/?project=some-project&story=SH-1"
+        ))
+        .call()
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get("Content-Type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(ct.contains("text/html"));
+    let body = resp.into_body().read_to_string().unwrap();
+    assert!(body.contains("Storyhook"));
+}
+
 /// The redesigned dashboard is still a single self-contained embedded file
 /// (no build step, no CDN) with a Board view, a List view, a detail drawer,
 /// and a create-story modal. These markers guard against a future edit
@@ -621,6 +653,15 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     // type" for one idea in three places.
     assert!(body.contains("function typeLabel"));
     assert!(body.contains(r#"return "none";"#));
+
+    // SH-197: a story can be opened straight from ?project=&story= on load,
+    // and the address bar is kept in sync as the URL is the only mechanism
+    // "Copy URL" has for the caller to actually get a shareable link.
+    assert!(body.contains("function readDeepLink"));
+    assert!(body.contains("function syncUrl"));
+    assert!(body.contains("function storyPermalink"));
+    assert!(body.contains("history.replaceState"));
+    assert!(body.contains(r#""?project=""#));
 }
 
 #[test]
