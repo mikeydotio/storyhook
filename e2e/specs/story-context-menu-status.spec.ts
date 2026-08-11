@@ -115,11 +115,14 @@ test("keyboard: ArrowRight opens the submenu and focuses its first item, Enter s
   const card = await createStory(page, title);
 
   await card.click({ button: "right" });
-  // End, not a raw .focus() on the item: only real arrow/Home/End
-  // navigation updates the menu's own roving-focus bookkeeping
+  // End then ArrowUp, not a raw .focus() on the item: only real arrow/
+  // Home/End navigation updates the menu's own roving-focus bookkeeping
   // (storyMenuFocusIndex), which is what ArrowRight below reads to know
-  // which item is "current" -- Set Status is the model's last entry.
+  // which item is "current". Set Status sits directly above Delete, the
+  // model's actual last entry -- ArrowUp once from the end reaches it
+  // regardless of what (if anything) comes after it.
   await page.keyboard.press("End");
+  await page.keyboard.press("ArrowUp");
   const setStatus = page.locator(".ctxmenu-item", { hasText: "Set Status" });
   await expect(setStatus).toBeFocused();
   await page.keyboard.press("ArrowRight");
@@ -153,7 +156,10 @@ test("ArrowLeft closes just the submenu and returns focus to Set Status, without
   const card = await createStory(page, title);
 
   await card.click({ button: "right" });
+  // See the previous test's identical comment: ArrowUp once from the end
+  // reaches Set Status regardless of what comes after it (Delete, today).
   await page.keyboard.press("End");
+  await page.keyboard.press("ArrowUp");
   const setStatus = page.locator(".ctxmenu-item", { hasText: "Set Status" });
   await expect(setStatus).toBeFocused();
   await page.keyboard.press("ArrowRight");

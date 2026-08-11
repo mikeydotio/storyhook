@@ -705,6 +705,10 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains("function setStoryState"));
     assert!(body.contains("function statusMenuItems"));
     assert!(body.contains(".ctxmenu-sub"));
+
+    // SH-197: the context menu's Delete item, reaching the same shared
+    // modal (commit 3) the drawer footer's own Delete button opens.
+    assert!(body.contains("\"Delete\", danger: true"));
 }
 
 #[test]

@@ -88,13 +88,16 @@ test("Dispatch and Dispatch Auto are absent for a story with no checkout, and no
 
   await expect(menu.locator(".ctxmenu-item", { hasText: /^Dispatch$/ })).toHaveCount(0);
   await expect(menu.locator(".ctxmenu-item", { hasText: "Dispatch Auto" })).toHaveCount(0);
-  // Copy ID/URL/Description and Set Status survive (4, not 6) -- and the
-  // TWO separators either side of the now-empty dispatch group collapse to
-  // exactly ONE (not zero: one still belongs between the copy group and
-  // Set Status), never a stray double -- compactSeparators()'s whole job.
-  await expect(menu.locator(".ctxmenu-item")).toHaveCount(4);
+  // Copy ID/URL/Description, Set Status and Delete survive (5, not 7) --
+  // and the TWO separators either side of the now-empty dispatch group
+  // collapse to exactly ONE (not zero: one still belongs between the copy
+  // group and Set Status), never a stray double -- compactSeparators()'s
+  // whole job. The separator before Delete is untouched either way, since
+  // nothing hid Delete itself.
+  await expect(menu.locator(".ctxmenu-item")).toHaveCount(5);
   await expect(menu.locator(".ctxmenu-item", { hasText: "Set Status" })).toBeVisible();
-  await expect(menu.locator(".ctxmenu-sep")).toHaveCount(1);
+  await expect(menu.locator(".ctxmenu-item", { hasText: "Delete" })).toBeVisible();
+  await expect(menu.locator(".ctxmenu-sep")).toHaveCount(2);
 
   await page.keyboard.press("Escape");
 });
