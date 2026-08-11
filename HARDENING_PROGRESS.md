@@ -9906,3 +9906,92 @@ fetch --prune origin`. `story move SH-195 done` recorded the fix commit via
 
 **Next:** SH-236 — `is_ready()`/`story next` never excludes a story already
 in the in-progress state (critical).
+
+### SH-236 — done, 2026-08-11
+
+**The fix is a new predicate, not a change to `is_ready()`.** Reading every
+call site first showed why: `list --blocked`, `story report`, `story
+context`'s blocked section, and the phase-progress rollups all use
+`is_ready()` to mean "not blocked" — an in-progress story is not blocked, so
+folding the claimed check into `is_ready()` would have relabeled every story
+someone is actively working as blocked in those views (report's
+`blocked_ids`, `context`'s "## Blocked" section, the phase rollup's `blocked`
+bucket — all previously correct, all would have regressed). `is_claimable()`
+layers `is_ready()` plus a check against the project's *configured*
+active-role state (`domain::active_state`, the same resolver `git.rs`'s
+commit-claim path already trusted) — not a hardcoded `"in-progress"` slug,
+since SH-124/SH-178 already made that project-configurable. No resolvable
+active state (a legacy project with no role and other than exactly two open
+states) leaves `is_claimable` identical to `is_ready` — nothing new excluded
+rather than a guess.
+
+**Wired by contract, not by grep.** `query.rs`'s own module doc already names
+`next`, `summary`, `report`, and `context`'s ready lists as one family
+sharing `ready_order`; wired `is_claimable` into exactly that family plus
+`list --ready` (same contract, undocumented as a family but same shape) and
+`session.rs`'s SessionStart banner (the literal surface this run dogfoods).
+Left `is_ready` and every "blocked" computation untouched.
+
+**The plugin had already worked around this, and said so.** `story.sh`'s
+header comment named its own already-in-progress guard "deviation #1" with
+the gap spelled out and an explicit trigger: "if this ever stops being true
+… this guard becomes redundant." It stopped being true. Fixed the two plugin
+tests whose fixture-sanity assertions encoded the old ground truth
+(`test-dispatch-already-in-progress.sh`, `test-list.sh`) — both `make test`
+failures on the first gate run, both traced to this before touching either
+file — and updated `story.sh`'s comments in both `cmd_dispatch` and
+`cmd_list` rather than removing the now-redundant guards: dispatch's gives a
+more specific, actionable message than the ready-gate's generic fallback
+("not in `story list --ready`" vs. naming the likely cause and an unstick
+command); list's costs nothing to keep and only masks a future regression by
+removing it, doesn't prevent one.
+
+**Swept for siblings, filed two, fixed neither inline.** `src/tui/components
+/dashboard.rs::ready_stories()` is a second, wholly independent
+implementation of "is this ready" — no call to `is_ready`/`is_claimable` at
+all, just `awaiting.is_none() && superstate == Open`, missing the draft,
+blocked-state, blocked-by, obviated-by, *and* now active-state checks.
+`DataStore` already carries `states` alongside `stories`, so the fix is
+plausible, but it is a distinct file with its own tests needing
+re-verification against richer semantics — filed **SH-240** (low) rather
+than folded in. Separately, this change's own first `make test` run hit a
+genuine e2e flake: `drawer-detail-race.spec.ts`'s cleanup timed out on a UI
+element unrelated to this diff, orphaning a story that inflated
+`filter-persistence.spec.ts`'s count on a *different* spec three files later
+— confirmed unrelated by isolating both specs (7/7 clean, 6.7s, same
+worktree/commit) before filing **SH-241** (low, relates-to SH-238 — same
+post-gate-load timing-margin phenomenon, second independent instance).
+
+**Supervision needed three attempts before it worked.** `nohup make test &`
+survived past the tool's own notification but was still killed (`Killed: 9`)
+around the ten-minute mark — the process tree stayed attached to the
+launching shell's session despite `nohup`, so whatever reaps a Bash tool
+call's process group eventually reached it anyway. `setsid` (the standard
+escape) doesn't exist on macOS. `Monitor` looked like the right tool next,
+but its own automatic rate-limit stop (too many `Running tests/*.rs` lines)
+turned out to kill the piped process it was watching, not just stop
+listening — same failure, different trigger. What worked: `python3 -c
+"os.setsid(); subprocess.Popen(...)"`, a real new session, supervised from
+outside by a plain poll loop (`kill -0` + log-growth) chained across
+multiple bounded Bash calls. Worth knowing before the next multi-minute gate
+run in this environment.
+
+**One surprise, not this run's problem.** Mid-run process listing turned up
+two *other* `make test` invocations already running, from `SH-197` and
+`SH-239` worktrees — other sessions working this same backlog concurrently.
+Confirmed no shared state (fixture dirs are `mktemp -d`, e2e ports are
+kernel-assigned and read back, not hardcoded) and left them alone per this
+file's own worktree-isolation rules.
+
+**No version bump** — `fix:`, left for the next batched `/semver` pass per
+this run's standing practice.
+
+**PR:** #268, merged as `fba2b1d` (`gh pr view` confirmed `MERGED`),
+fast-forwarded onto `main` in this checkout; branch deletion automatic (`gh
+pr merge --delete-branch`), stale remote-tracking ref cleaned with `git
+fetch --prune origin`. SH-236 auto-closed by the merge-commit hook
+(`Closes SH-236` in the commit body) before `story move` was even run;
+`commit-sync` confirmed the link.
+
+**Next:** run `story next` fresh next cycle rather than naming one here —
+see **Dogfooding `story next`** above.
