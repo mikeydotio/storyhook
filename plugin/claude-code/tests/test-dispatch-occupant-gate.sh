@@ -4,7 +4,9 @@
 # startup/restart on the error path, secondary configuration.
 #
 # Family A  the launch never started (the field cause)
-# Family B  the launch keystroke never landed at all
+# Family B  SH-230's own claim, checked directly: a launch keystroke failure
+#           knob that used to matter no longer reaches the dispatch path at
+#           all, because there is no longer a launch keystroke to fail
 # Family C  occupant x fixture matrix -- including the fake's own documented
 #           "must NOT confirm" obligations, which nothing enforced before now
 # Family D  delivery-phase matrix -- the first coverage send_prompt_confirmed's
@@ -56,11 +58,22 @@ case "$(jqf "$out" .pane_tail)" in
   *) fail_test "A: the refusal must carry the pane's own evidence (the command-not-found line)" ;;
 esac
 
-# ---- Family B: the launch keystroke never landed ----------------------------
+# ---- Family B: the launch keystroke knob no longer reaches dispatch ---------
+# Before SH-230, story.sh typed the launch command via `paste_text` (`tmux
+# send-keys -l`), so FAKE_TMUX_FAIL_SEND_KEYS=literal made that typing fail
+# and the dispatch was refused -- this used to assert exactly that. SH-230
+# execs the launch as new-window's own trailing argument instead: there is no
+# more `send-keys -l` call on the dispatch path for it to fail. The prompt
+# handoff was already delivered via `paste-buffer` (never `send-keys -l`), so
+# with the launch also off that path, the knob is now inert for dispatch
+# end-to-end -- only cmd_doctor's still-typed scratch-window launch can still
+# trigger it. Asserting the dispatch SUCCEEDS despite the knob being armed is
+# the actual proof that claim: if `send-keys -l` were reachable anywhere on
+# this path, paste_text's own `|| return 1` would surface as a failure here.
 dispatch_run FAKE_TMUX_CAPTURE=structural FAKE_TMUX_FAIL_SEND_KEYS=literal
-assert_eq "$(jqf "$out" .ok)" "false" "B: a launch whose keystroke failed is refused"
-assert_eq "$(submits)" "0" "B: nothing typed"
-assert_eq "$(state_of)" "todo" "B: claim rolled back"
+assert_eq "$(jqf "$out" .ok)" "true" \
+  "B: a launch-keystroke-failure knob no longer reaches dispatch -- the launch is execed, not typed"
+assert_eq "$(state_of)" "in-progress" "B: the story is claimed normally"
 
 # ---- Family C: occupant x fixture matrix ------------------------------------
 # A claude occupant with a drifted footer must STILL confirm via the structural
