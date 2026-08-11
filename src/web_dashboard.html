@@ -1898,7 +1898,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       (function() {
         var items = statusMenuItems(st);
         return { label: "Set Status", disabled: !!state.pending[st.id] || !items.length, submenu: items };
-      })()
+      })(),
+      { separator: true },
+      // Never hidden or disabled: unlike Dispatch/Set Status there is no
+      // in-flight or "cannot act yet" state to gate on -- the only thing
+      // standing between a click and a deletion is the modal's own
+      // required-reason confirmation, same as the drawer footer's Delete.
+      { label: "Delete", danger: true, onSelect: function() { openDeleteModal(st.id, st.title); } }
     ].filter(Boolean));
   }
 
