@@ -278,6 +278,58 @@ fn pull_phase_creates_a_local_story_from_an_unmapped_issue() {
     assert_eq!(config.mappings[0].issue_number, issue.number);
 }
 
+// ---------------------------------------------------------------------------
+// SH-191 -- import-all's placeholder mapping must not re-duplicate a story
+// its own issue body already names
+// ---------------------------------------------------------------------------
+
+#[test]
+fn import_all_does_not_duplicate_a_story_the_issue_body_already_names() {
+    // `handle_import_all` gives every open issue a placeholder mapping
+    // (`story_id` empty) regardless of whether the issue's own body already
+    // carries a storyhook block naming a story that exists locally -- the
+    // shape left behind by a sync config that was reset and re-run through
+    // "Import all". The pull phase's truly-unmapped branch guards against
+    // exactly this (skips when `remote_snap.story_id` already exists
+    // locally); the placeholder-mapping branch a few lines above it had no
+    // equivalent, so it duplicated the story instead of recognising it.
+    let fixture = ServiceFixture::new();
+    add_github_remote(&fixture);
+    let existing_id = create(&fixture, "Already tracked locally");
+    let ctx = fixture.ctx();
+    let storage = StoreSyncStorage::new(&ctx);
+    let fake = FakeGithubApiFactory::new();
+    let body = format!(
+        "Filed on GitHub, but this issue already belongs to a local story.\n\n\
+         ---\n\n\
+         ```storyhook\n\
+         story_id: {existing_id}\n\
+         ```\n"
+    );
+    fake.seed_issue_with_body("Already tracked locally", Some(&body));
+
+    run_sync_with(
+        &storage,
+        &fake,
+        Some(&token()),
+        None,
+        false,
+        None,
+        Some(InitialStrategy::ImportAll),
+        Some(SyncMode::Manual),
+    )
+    .expect("import-all setup and its first sync");
+
+    let stories = storage.open_stories().expect("open stories");
+    assert_eq!(
+        stories.len(),
+        1,
+        "the issue's own storyhook block already names {existing_id}; import-all's \
+         placeholder mapping must not spawn a duplicate: {stories:?}"
+    );
+    assert_eq!(stories[0].id, existing_id);
+}
+
 #[test]
 fn push_phase_creates_a_github_issue_from_an_unmapped_local_story() {
     let fixture = ServiceFixture::new();
