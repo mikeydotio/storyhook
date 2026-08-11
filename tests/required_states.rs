@@ -297,3 +297,85 @@ fn importing_a_document_below_the_floor_repairs_its_catalog() {
         "an import repairs rather than refuses: the document may be older than the floor"
     );
 }
+
+// --- SH-242: a project with no resolvable active state is at the floor, not
+// below it, but `is_claimable` silently stops excluding a claimed story ------
+
+/// The floor (SH-125) requires `todo`, `in-progress` and `blocked` all OPEN —
+/// three, never two — so `active_state`'s own "exactly two open states"
+/// fallback can never fire for a project that clears it. A project sitting
+/// exactly at the floor, with no state's role set explicitly, is healthy by
+/// `report()` but must still be told.
+#[test]
+fn doctor_notices_a_project_at_the_floor_with_no_active_role_state() {
+    let fixture = ServiceFixture::with_states(&[
+        state("todo", SuperState::Open),
+        state("in-progress", SuperState::Open),
+        state("blocked", SuperState::Open),
+        state("done", SuperState::Closed),
+    ]);
+    let ctx = fixture.ctx();
+    let service = IntegrityService::new(&ctx);
+
+    assert!(
+        service.report().expect("reporting").is_empty(),
+        "a project exactly at the floor is healthy"
+    );
+    let notices = service.notices().expect("notices");
+    assert_eq!(notices.len(), 1, "{notices:#?}");
+    assert!(notices[0].contains("in-progress"), "{}", notices[0]);
+    assert!(notices[0].contains("story state set"), "{}", notices[0]);
+}
+
+/// A project that has configured an active role is silent about it.
+#[test]
+fn doctor_is_silent_about_active_role_once_one_is_configured() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let notices = IntegrityService::new(&ctx).notices().expect("notices");
+    assert!(notices.is_empty(), "{notices:#?}");
+}
+
+/// A project with more than four OPEN states — no different from the floor
+/// case; the notice fires until the project picks one.
+#[test]
+fn doctor_notices_a_project_with_several_open_states_and_no_active_role() {
+    let fixture = ServiceFixture::with_states(&[
+        state("todo", SuperState::Open),
+        state("in-progress", SuperState::Open),
+        state("verifying", SuperState::Open),
+        state("blocked", SuperState::Open),
+        state("done", SuperState::Closed),
+    ]);
+    let ctx = fixture.ctx();
+    let notices = IntegrityService::new(&ctx).notices().expect("notices");
+    assert_eq!(notices.len(), 1, "{notices:#?}");
+}
+
+/// The notice never contributes to `--fix`'s verdict: nothing here guesses
+/// which state should be active, matching `with_required_states`'s own
+/// refusal to award a role during a floor repair.
+#[test]
+fn doctor_fix_does_not_guess_which_state_should_be_active() {
+    let fixture = ServiceFixture::with_states(&[
+        state("todo", SuperState::Open),
+        state("in-progress", SuperState::Open),
+        state("blocked", SuperState::Open),
+        state("done", SuperState::Closed),
+    ]);
+    let ctx = fixture.ctx();
+    let message = IntegrityService::new(&ctx).fix().expect("fixing");
+    assert!(
+        message.starts_with("doctor found nothing to fix"),
+        "{message}"
+    );
+    assert!(message.contains("story state set"), "{message}");
+    let states = fixture
+        .store()
+        .read(|tx| tx.states(fixture.project()))
+        .expect("reading states");
+    assert!(
+        states.iter().all(|def| def.role.is_none()),
+        "--fix must not have assigned a role: {states:#?}"
+    );
+}
