@@ -507,19 +507,27 @@ fn an_event_this_build_cannot_decode_is_reported_and_told_apart_from_a_torn_one(
     );
 }
 
-/// SH-133: a backup does not carry github-sync, and `story doctor` is the only
-/// place that can say so.
+/// A project with no github-sync configuration has nothing to be told.
 #[test]
-fn a_github_synced_project_is_told_what_its_backup_leaves_behind() {
+fn a_project_with_no_github_sync_has_nothing_to_be_told() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
-    new_story(&ctx, "synced");
+    new_story(&ctx, "unsynced");
     drop(ctx);
     assert!(
         report(&fixture).is_empty(),
         "a project with no github-sync has nothing to be told"
     );
+    assert!(advisories(&fixture).is_empty());
+}
 
+/// A blob this build cannot parse as a `GithubSyncConfig` — a document
+/// written by a wildly different shape, or hand-edited — must not crash
+/// `story doctor`; it is reported by `story github-sync` itself the next time
+/// it tries to use it, not duplicated here (SH-189).
+#[test]
+fn an_unparseable_github_sync_blob_produces_no_advisory_and_no_finding() {
+    let fixture = ServiceFixture::new();
     fixture
         .store()
         .write(|tx| {
@@ -529,20 +537,179 @@ fn a_github_synced_project_is_told_what_its_backup_leaves_behind() {
         })
         .expect("configuring github-sync");
 
+    assert!(
+        advisories(&fixture).is_empty(),
+        "an unparseable blob is not this advisory's failure to report"
+    );
+    assert!(
+        report(&fixture).is_empty(),
+        "a malformed github-sync document is not an integrity fault"
+    );
+}
+
+/// SH-189: once a checkout's own git remote confirms the configured
+/// repository, there is nothing to flag.
+#[cfg(feature = "github-sync")]
+#[test]
+fn a_github_remote_matching_the_configured_repository_produces_no_advisory() {
+    use storyhook::github::sync_state::{GithubRepo, GithubSyncConfig, SyncMode, SyncSettings};
+
+    let fixture = ServiceFixture::new();
+    fixture
+        .store()
+        .write(|tx| {
+            let mut row = tx.settings(fixture.project())?;
+            row.github_sync = Some(
+                serde_json::to_value(GithubSyncConfig {
+                    github: GithubRepo {
+                        owner: "acme".into(),
+                        repo: "widgets".into(),
+                    },
+                    sync: SyncSettings {
+                        mode: SyncMode::Manual,
+                        last_sync_at: None,
+                        last_full_sync_at: None,
+                    },
+                    etags: Default::default(),
+                    mappings: Vec::new(),
+                })
+                .expect("serializing"),
+            );
+            tx.put_settings(fixture.project(), &row)
+        })
+        .expect("configuring github-sync");
+    git(fixture.cwd(), &["init", "-q"]);
+    git(
+        fixture.cwd(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/acme/widgets.git",
+        ],
+    );
+
+    assert!(
+        advisories(&fixture).is_empty(),
+        "a matching remote has nothing to flag"
+    );
+}
+
+/// SH-189: a checkout whose `origin` disagrees with the configured
+/// repository is the case that matters most — a restore into a fork or a
+/// relocated clone, where the next sync would otherwise silently push
+/// somewhere the operator did not intend.
+#[cfg(feature = "github-sync")]
+#[test]
+fn a_mismatched_github_remote_is_flagged_by_name() {
+    use storyhook::github::sync_state::{GithubRepo, GithubSyncConfig, SyncMode, SyncSettings};
+
+    let fixture = ServiceFixture::new();
+    fixture
+        .store()
+        .write(|tx| {
+            let mut row = tx.settings(fixture.project())?;
+            row.github_sync = Some(
+                serde_json::to_value(GithubSyncConfig {
+                    github: GithubRepo {
+                        owner: "acme".into(),
+                        repo: "widgets".into(),
+                    },
+                    sync: SyncSettings {
+                        mode: SyncMode::Manual,
+                        last_sync_at: None,
+                        last_full_sync_at: None,
+                    },
+                    etags: Default::default(),
+                    mappings: Vec::new(),
+                })
+                .expect("serializing"),
+            );
+            tx.put_settings(fixture.project(), &row)
+        })
+        .expect("configuring github-sync");
+    git(fixture.cwd(), &["init", "-q"]);
+    git(
+        fixture.cwd(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/a-fork-owner/widgets.git",
+        ],
+    );
+
     let advice = advisories(&fixture);
     assert_eq!(advice.len(), 1, "{advice:?}");
     assert!(
-        advice[0].contains("github-sync is configured")
-            && advice[0].contains("story export")
-            && advice[0].contains("Nothing is wrong with this project"),
-        "the notice must say what is missing and that nothing is broken: {advice:?}"
+        advice[0].contains("acme/widgets") && advice[0].contains("a-fork-owner/widgets"),
+        "the notice must name both the configured and the detected repository: {advice:?}"
     );
 
-    // Advisory, not a finding: `doctor` on a github-synced project must not
-    // exit non-zero forever after.
+    // Advisory, not a finding: a mismatch is not an integrity fault.
+    assert!(report(&fixture).is_empty());
+}
+
+/// SH-189: restoring into a fresh directory before `git remote add origin`
+/// runs is ordinary, not an error — but doctor should say the configured
+/// repository has not been verified yet, rather than staying silent.
+#[cfg(feature = "github-sync")]
+#[test]
+fn a_checkout_with_no_origin_yet_is_reported_as_unverified() {
+    use storyhook::github::sync_state::{GithubRepo, GithubSyncConfig, SyncMode, SyncSettings};
+
+    let fixture = ServiceFixture::new();
+    fixture
+        .store()
+        .write(|tx| {
+            let mut row = tx.settings(fixture.project())?;
+            row.github_sync = Some(
+                serde_json::to_value(GithubSyncConfig {
+                    github: GithubRepo {
+                        owner: "acme".into(),
+                        repo: "widgets".into(),
+                    },
+                    sync: SyncSettings {
+                        mode: SyncMode::Manual,
+                        last_sync_at: None,
+                        last_full_sync_at: None,
+                    },
+                    etags: Default::default(),
+                    mappings: Vec::new(),
+                })
+                .expect("serializing"),
+            );
+            tx.put_settings(fixture.project(), &row)
+        })
+        .expect("configuring github-sync");
+    // No `git init` at all in `fixture.cwd()`.
+
+    let advice = advisories(&fixture);
+    assert_eq!(advice.len(), 1, "{advice:?}");
     assert!(
-        report(&fixture).is_empty(),
-        "a backup's scope is not an integrity fault"
+        advice[0].contains("acme/widgets") && advice[0].contains("not been verified"),
+        "{advice:?}"
+    );
+    assert!(report(&fixture).is_empty());
+}
+
+/// Runs `git <args>` in `cwd`, asserting success — a plain subprocess call is
+/// enough here since `ServiceFixture::cwd` is an isolated scratch directory,
+/// unlike `TestEnv`'s heavier CLI-subprocess fixtures.
+#[cfg(feature = "github-sync")]
+fn git(cwd: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .current_dir(cwd)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .args(args)
+        .output()
+        .expect("running git");
+    assert!(
+        output.status.success(),
+        "`git {}` in {} failed: {}",
+        args.join(" "),
+        cwd.display(),
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 

@@ -139,6 +139,20 @@ impl ProjectPaths {
     pub fn open_story_file(&self, id: &str) -> PathBuf {
         self.open_stories_dir().join(format!("{id}.jsonl"))
     }
+
+    /// Where the pre-rearchitecture binary kept its github-sync configuration
+    /// (SH-189) — never written by this crate's production path, only by this
+    /// module's rollback leg and by `tests/` fixtures that need to look like
+    /// one.
+    pub fn github_sync_file(&self) -> PathBuf {
+        self.storyhook_dir().join("github-sync.toml")
+    }
+
+    /// Where the pre-rearchitecture binary kept one JSON file per story's
+    /// github-sync merge base (SH-189), alongside [`Self::github_sync_file`].
+    pub fn github_bases_dir(&self) -> PathBuf {
+        self.storyhook_dir().join("github-sync/bases")
+    }
 }
 
 pub fn now() -> String {
@@ -752,6 +766,79 @@ pub struct ArchiveRepairReport {
     pub issues: Vec<String>,
 }
 
+/// Reads the pre-rearchitecture github-sync configuration file, if this tree
+/// carries one — `.storyhook/github-sync.toml` (SH-189).
+///
+/// Held as an opaque `serde_json::Value`, matching
+/// [`ProjectExport::github_sync`] and the store's own
+/// `project_settings.github_sync` column: this module has no knowledge of the
+/// `github-sync`-feature-gated shape and needs none to carry the bytes through
+/// unchanged.
+fn load_legacy_github_sync(root: &Path) -> Result<Option<serde_json::Value>, AppError> {
+    let path = ProjectPaths::new(root).github_sync_file();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(&path)?;
+    let value: toml::Value = toml::from_str(&text)?;
+    Ok(Some(serde_json::to_value(value)?))
+}
+
+/// Writes `.storyhook/github-sync.toml` in the exact shape the
+/// pre-rearchitecture binary read (SH-189).
+fn save_legacy_github_sync(root: &Path, github_sync: &serde_json::Value) -> Result<(), AppError> {
+    let path = ProjectPaths::new(root).github_sync_file();
+    let value: toml::Value = serde_json::from_value(github_sync.clone())?;
+    fs::write(path, toml::to_string_pretty(&value)?)?;
+    Ok(())
+}
+
+/// Reads every per-story github-sync merge base the pre-rearchitecture binary
+/// left under `.storyhook/github-sync/bases/` (SH-189), keyed by story id.
+fn load_legacy_github_bases(root: &Path) -> Result<BTreeMap<String, StorySnapshot>, AppError> {
+    let dir = ProjectPaths::new(root).github_bases_dir();
+    let mut bases = BTreeMap::new();
+    if !dir.exists() {
+        return Ok(bases);
+    }
+    let mut entries = fs::read_dir(&dir)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let id = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .ok_or_else(|| AppError::Storage("invalid github-sync base filename".to_string()))?
+            .to_string();
+        let text = fs::read_to_string(&path)?;
+        let snapshot: StorySnapshot = serde_json::from_str(&text)?;
+        bases.insert(id, snapshot);
+    }
+    Ok(bases)
+}
+
+/// Writes every carried github-sync merge base to
+/// `.storyhook/github-sync/bases/<id>.json` (SH-189), one file per story,
+/// exactly as the pre-rearchitecture binary wrote them.
+fn save_legacy_github_bases(
+    root: &Path,
+    bases: &BTreeMap<String, StorySnapshot>,
+) -> Result<(), AppError> {
+    if bases.is_empty() {
+        return Ok(());
+    }
+    let dir = ProjectPaths::new(root).github_bases_dir();
+    fs::create_dir_all(&dir)?;
+    for (id, snapshot) in bases {
+        let text = serde_json::to_string_pretty(snapshot)?;
+        fs::write(dir.join(format!("{id}.json")), text)?;
+    }
+    Ok(())
+}
+
 pub fn export_project(root: &Path) -> Result<ProjectExport, AppError> {
     ensure_project(root)?;
     let paths = ProjectPaths::new(root);
@@ -829,6 +916,11 @@ pub fn export_project(root: &Path) -> Result<ProjectExport, AppError> {
         // rearchitecture — so this leg of the export always answers empty. The
         // store-side restore is the one that carries them; see `ExportedRemote`.
         remotes: Vec::new(),
+        // The pre-rearchitecture binary kept these beside `project.toml`
+        // rather than inside it — see `ProjectPaths::github_sync_file`/
+        // `github_bases_dir` (SH-189).
+        github_sync: load_legacy_github_sync(root)?,
+        github_bases: load_legacy_github_bases(root)?,
         states,
         types,
         members,
@@ -914,6 +1006,15 @@ pub fn import_project(
             }),
     };
     fs::write(paths.project_file(), toml::to_string_pretty(&project)?)?;
+
+    // Beside `project.toml`, not inside it — matching where the
+    // pre-rearchitecture binary itself read them from (SH-189). Written before
+    // the bases so a reader always finds a mapping before it finds what it
+    // merged against, though nothing here depends on that order.
+    if let Some(github_sync) = &export.github_sync {
+        save_legacy_github_sync(root, github_sync)?;
+    }
+    save_legacy_github_bases(root, &export.github_bases)?;
 
     save_states(root, &export.states)?;
 
@@ -1012,6 +1113,59 @@ mod tests {
         let dir = tempdir().unwrap();
         init_project(dir.path(), None).unwrap();
         dir
+    }
+
+    /// A minimal, otherwise-arbitrary snapshot — usable as a github-sync
+    /// merge base's contents, since these tests are about whether it survives
+    /// a round trip intact, not about what it holds.
+    fn sample_snapshot(id: &str) -> StorySnapshot {
+        StorySnapshot {
+            id: id.to_string(),
+            title: "A story".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            state: "todo".to_string(),
+            superstate: SuperState::Open,
+            assignee: None,
+            awaiting: None,
+            comments: Vec::new(),
+            referenced_by_commits: Vec::new(),
+            relationships: Vec::new(),
+            priority: Priority::None,
+            labels: Vec::new(),
+            story_type: None,
+            description: None,
+            closed_at: None,
+            deleted: false,
+            deleted_reason: None,
+            hidden_at: None,
+            draft: false,
+        }
+    }
+
+    /// The three default states, minimally enough for `import_project` to
+    /// write `states.toml` without needing a real project to derive them from.
+    fn sample_states() -> Vec<StateDef> {
+        vec![
+            StateDef {
+                slug: "todo".to_string(),
+                super_state: SuperState::Open,
+                role: None,
+                description: None,
+            },
+            StateDef {
+                slug: "in-progress".to_string(),
+                super_state: SuperState::Open,
+                role: Some("active".to_string()),
+                description: None,
+            },
+            StateDef {
+                slug: "done".to_string(),
+                super_state: SuperState::Closed,
+                role: None,
+                description: None,
+            },
+        ]
     }
 
     // --- ProjectPaths::types_file ---
@@ -1228,5 +1382,112 @@ mod tests {
         );
         assert_eq!(deserialized.types[1].slug, "bug");
         assert_eq!(deserialized.types[1].description, None);
+    }
+
+    // --- github-sync carry, the legacy rollback leg (SH-189) ---
+
+    #[test]
+    fn a_tree_with_no_github_sync_file_answers_none() {
+        let dir = setup_project();
+        assert_eq!(load_legacy_github_sync(dir.path()).unwrap(), None);
+        assert!(load_legacy_github_bases(dir.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_github_sync_blob_round_trips_through_the_legacy_toml_file() {
+        let dir = setup_project();
+        let blob = serde_json::json!({
+            "github": {"owner": "acme", "repo": "widgets"},
+            "sync": {"mode": "manual", "last_sync_at": "2026-01-01T00:00:00Z"},
+            "etags": {"issues": "abc123"},
+            "mappings": [
+                {"story_id": "SH-1", "issue_number": 42, "last_synced_at": "2026-01-01T00:00:00Z"},
+            ],
+        });
+        save_legacy_github_sync(dir.path(), &blob).unwrap();
+        assert!(
+            ProjectPaths::new(dir.path()).github_sync_file().exists(),
+            "must write .storyhook/github-sync.toml, the pre-rearchitecture path"
+        );
+        assert_eq!(load_legacy_github_sync(dir.path()).unwrap(), Some(blob));
+    }
+
+    #[test]
+    fn github_bases_round_trip_one_file_per_story() {
+        let dir = setup_project();
+        let snapshot = sample_snapshot("SH-1");
+        let bases = BTreeMap::from([("SH-1".to_string(), snapshot.clone())]);
+        save_legacy_github_bases(dir.path(), &bases).unwrap();
+        assert!(
+            ProjectPaths::new(dir.path())
+                .github_bases_dir()
+                .join("SH-1.json")
+                .exists(),
+            "one JSON file per story, the pre-rearchitecture path"
+        );
+        assert_eq!(load_legacy_github_bases(dir.path()).unwrap(), bases);
+    }
+
+    #[test]
+    fn saving_no_github_bases_creates_no_directory() {
+        let dir = setup_project();
+        save_legacy_github_bases(dir.path(), &BTreeMap::new()).unwrap();
+        assert!(
+            !ProjectPaths::new(dir.path()).github_bases_dir().exists(),
+            "a project with no github-sync must not grow an empty bases directory"
+        );
+    }
+
+    #[test]
+    fn export_project_carries_github_sync_and_bases_from_a_legacy_tree() {
+        let dir = setup_project();
+        let blob = serde_json::json!({
+            "github": {"owner": "acme", "repo": "widgets"},
+            "sync": {"mode": "manual"},
+        });
+        save_legacy_github_sync(dir.path(), &blob).unwrap();
+        let snapshot = sample_snapshot("SH-1");
+        save_legacy_github_bases(
+            dir.path(),
+            &BTreeMap::from([("SH-1".to_string(), snapshot.clone())]),
+        )
+        .unwrap();
+
+        let export = export_project(dir.path()).unwrap();
+        assert_eq!(export.github_sync, Some(blob));
+        assert_eq!(export.github_bases.get("SH-1"), Some(&snapshot));
+    }
+
+    #[test]
+    fn import_project_writes_github_sync_and_bases_into_a_fresh_legacy_tree() {
+        use crate::service::transfer::ProjectExport;
+
+        let blob = serde_json::json!({
+            "github": {"owner": "acme", "repo": "widgets"},
+            "sync": {"mode": "manual"},
+        });
+        let snapshot = sample_snapshot("SH-1");
+        let document = ProjectExport {
+            schema: 1,
+            prefix: None,
+            states: sample_states(),
+            types: Vec::new(),
+            members: Vec::new(),
+            settings: None,
+            remotes: Vec::new(),
+            github_sync: Some(blob.clone()),
+            github_bases: BTreeMap::from([("SH-1".to_string(), snapshot)]),
+            stories: Vec::new(),
+        };
+
+        let dir = tempdir().unwrap();
+        import_project(dir.path(), &document).unwrap();
+
+        assert_eq!(load_legacy_github_sync(dir.path()).unwrap(), Some(blob));
+        assert!(
+            load_legacy_github_bases(dir.path())
+                .unwrap()
+                .contains_key("SH-1")
+        );
     }
 }
