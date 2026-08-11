@@ -8783,3 +8783,81 @@ story touched none of `classify()`/`DispatchRecord`/`web_dashboard.html`, so
 the dissent's condition for staying unblocked holds.
 
 **Next:** SH-231 (R2) is `blocked-by` SH-230 and now unblocked.
+
+### SH-232 — done (SH-227's R3, the last child), merged PR #239
+
+**Outcome:** `classify()` now reads a typed `reason` out of `story.sh`'s own
+JSON instead of leaving it reachable only by re-parsing `payload` — a
+`DispatchReason` enum (`ClaimConflict`/`PaneNotReady`/`HandoffUndelivered`/
+`HandoffUnconfirmed`/`UnsafePromptOverride`, plus a forward-compatible
+`Other(String)` for a `story.sh` newer than the binary reading it) is now a
+first-class field on `DispatchRecord`. Finished records persist to
+`Environment::dispatch_history()` (a JSON file under the store's own daemon
+state dir, temp-plus-rename, mode 0600 — the same shape `daemon::lifecycle::
+publish_inflight` already uses) and `DispatchRegistry::load` reloads them at
+daemon startup, closing the gap `DispatchRegistry`'s own prior doc comment
+had accepted as deliberate ("a dispatch that outlives the request that
+started it does not need its bookkeeping to outlive the daemon") — true for
+an *attended* dispatch someone is watching, not for `--auto`. `run_child` now
+refuses before ever spawning `story.sh` if this daemon's own inherited
+`STORY_PROMPT`/`STORY_AUTO_PROMPT`/`STORY_PROMPT_EXTRA` would violate I4
+CHARTER-INERT — the gap REMEDIATION.md named and explicitly deferred
+("refusing a dispatch because someone's STORY_PROMPT holds a backtick is a
+behaviour change needing its own design. It goes to the escalation issue").
+The dashboard renders a `--auto` completion as a durable, self-dismissed row
+in a new `#dispatch-history` panel instead of the 4.5s/9s self-deleting
+toast every dispatch used to get regardless of mode; an attended completion
+still toasts, since a human is already watching the tmux window directly.
+
+**A real bug, caught by the tests before it shipped.** The first cut of the
+CHARTER-INERT check banned `<`/`>` outright and flagged every template that
+used `render_template`'s own placeholder syntax (`<n>`/`<name>`/`<dir>`/
+`<reap>`) — including the two shipped default templates themselves, which
+use `<n>` verbatim. Two of the first batch of unit tests failed immediately
+on that. Fixed by stripping the four sanctioned tokens before scanning, and
+pinned two ways: a test asserting the four tokens are exempt while a stray
+bracket elsewhere is still caught, and `the_shipped_default_templates_are_
+charter_inert`, which extracts both defaults directly from the checked-in
+`story.sh` rather than trusting a copy-pasted string — a future edit to
+either default that reintroduces a banned character fails this test, not
+just a live dispatch.
+
+**Persistence deliberately does not try to recover a `Running` record.** A
+dispatch's child is launched into its own process group (`run_child`'s own
+doc, since SH-226/SH-230), so it outlives a daemon restart as an orphan with
+nothing left to observe its exit — `DispatchRegistry::load` skips a
+`Running` record found in history rather than resurrecting a handle that can
+never move again, and only *finished* records are ever written in the first
+place. `finish()` snapshots the bounded finished set and releases the lock
+before writing to disk, which means two concurrent finishes (up to
+`MAX_RUNNING`) have no ordering guarantee over their two writes — noted
+explicitly rather than fixed: the file is a snapshot of the in-memory
+registry, not the registry itself, so a stale copy self-heals on the next
+dispatch to finish, and holding the lock across a filesystem write would
+make an unrelated `POST`/`GET` briefly hostage to it.
+
+**E2E, not just unit tests, for the dashboard change.** The existing
+`Dispatch Auto sends ?auto=1…` spec (`e2e/specs/dispatch.spec.ts`) asserted a
+success toast for the auto case — exactly the behavior being replaced.
+Updated in place against a real daemon and a real `story.sh` (fake tmux
+only): the durable row appears with the story id and `story.sh`'s own
+`auto_note` text, no toast fires at all, the row survives 5s (past a
+toast's own lifetime), and clicking its dismiss button removes it. Full
+45-spec suite green alongside it.
+
+**SH-227 itself closed alongside this**, all three children (SH-230/231/232)
+now done — its own stated closing criterion ("screen-scrape retired, reason
+taxonomy durable and enforced") is true. Sites 5/6 (`input_box_text`/
+`prompt_accepted`, still generically satisfiable by a shell) remain open,
+already documented in REMEDIATION.md's own "What this fix does NOT do" and
+in SH-227's first comment's named redesign trigger — not re-filed, since
+nothing in this story's work trips that trigger.
+
+**Gate:** full `make test`, supervised — 140 `test result: ok` blocks, 30/30
+plugin harness, 45/45 Playwright specs. `cargo fmt`/`cargo clippy -D
+warnings` clean throughout.
+
+**Next:** SH-170 — `project_creation_target`'s outer catch-all lets a future
+top-level creating verb bypass the SH-95 guard unnoticed. Reopened after
+SH-226 (the dispatch-charter incident closed it with zero work performed);
+scope unchanged.
