@@ -662,6 +662,18 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains("function storyPermalink"));
     assert!(body.contains("history.replaceState"));
     assert!(body.contains(r#""?project=""#));
+
+    // SH-197: one delete-confirmation modal, shared by the drawer footer's
+    // Delete button and the context menu's Delete item, replacing the
+    // drawer's own inline typed-reason form.
+    assert!(body.contains(r#"id="delete-modal""#));
+    assert!(body.contains(r#"id="delete-reason""#));
+    assert!(body.contains(r#"id="delete-modal-submit""#));
+    assert!(body.contains(r#"id="delete-modal-error""#));
+    assert!(
+        !body.contains("renderDeleteConfirm"),
+        "the inline typed-reason footer form was replaced by the shared delete modal"
+    );
 }
 
 #[test]

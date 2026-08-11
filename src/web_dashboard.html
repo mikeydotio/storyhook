@@ -813,6 +813,20 @@ tbody tr:hover { background: var(--bg-sunken); }
   </div>
 </div>
 
+<div class="backdrop" id="delete-modal-backdrop" hidden></div>
+<div class="modal" id="delete-modal" aria-hidden="true">
+  <div class="modal-header">Delete story</div>
+  <div class="modal-body">
+    <div id="delete-modal-summary"></div>
+    <input type="text" id="delete-reason" placeholder="Reason for deletion (required)" autocomplete="off">
+    <div class="modal-error" id="delete-modal-error"></div>
+  </div>
+  <div class="modal-footer">
+    <button type="button" class="btn btn-ghost" id="delete-modal-cancel">Cancel</button>
+    <button type="button" class="btn btn-danger-solid" id="delete-modal-submit">Delete</button>
+  </div>
+</div>
+
 <div class="toast-stack" id="toast-stack" role="status" aria-live="polite"></div>
 <div class="dispatch-history" id="dispatch-history" role="region" aria-label="Autonomous dispatch results" aria-live="polite"></div>
 
@@ -3323,7 +3337,7 @@ tbody tr:hover { background: var(--bg-sunken); }
       dispatchButtons(st).forEach(function(btn) { footer.appendChild(btn); });
     }
     footer.appendChild(el("button", { class: "btn btn-danger", style: "margin-left:auto", onClick: function() {
-      renderDeleteConfirm(st);
+      openDeleteModal(st.id, st.title);
     } }, ["Delete"]));
   }
 
@@ -3387,30 +3401,8 @@ tbody tr:hover { background: var(--bg-sunken); }
     ]));
   }
 
-  function renderDeleteConfirm(st) {
-    var footer = $("drawer-footer");
-    clear(footer);
-    var input = el("input", { type: "text", placeholder: "Reason for deletion (required)" });
-    footer.appendChild(el("div", { class: "confirm-delete" }, [
-      input,
-      el("div", { class: "confirm-delete-actions" }, [
-        el("button", { class: "btn btn-ghost", onClick: function() { renderDrawerFooter(st); } }, ["Cancel"]),
-        el("button", { class: "btn btn-danger", onClick: function() {
-          if (!input.value.trim()) { toast("A deletion reason is required", "error"); return; }
-          api("DELETE", apiBase() + "/story/" + encodeURIComponent(st.id), { reason: input.value.trim() })
-            .then(function() {
-              toast(st.id + " deleted", "success");
-              closeDrawer();
-              fetchData();
-            })
-            .catch(toastError);
-        } }, ["Confirm delete"])
-      ])
-    ]));
-  }
-
   /** The confirmation the story text asks for on the detail page's "Archive"
-   * button. Lighter than `renderDeleteConfirm`'s typed-reason form since
+   * button. Lighter than the delete modal's typed-reason form since
    * archiving is fully reversible via "Unarchive" — a single confirming
    * click is the right weight, the same rule `ConfirmationPlan::HideState`
    * applies server-side (`requires_typed_confirmation` is `false` for it). */
@@ -4615,6 +4607,61 @@ tbody tr:hover { background: var(--bg-sunken); }
       .catch(function(err) { $("archive-modal-error").textContent = err.message; });
   }
 
+  /** The story id the delete modal (SH-197) is currently open for, or
+   * `null`. Compared against `state.drawerId` in `submitDeleteStory` so the
+   * drawer only closes when the deleted story is the one it's showing --
+   * this modal is also reachable from the context menu with no drawer open
+   * at all. */
+  var deleteModalStoryId = null;
+
+  /** Opens the shared delete-confirmation modal for `id` -- used by both
+   * the drawer footer's Delete button and the context menu's Delete item,
+   * one confirmation surface for the one destructive action rather than the
+   * drawer's own inline typed-reason form this replaced, plus a second copy
+   * for the menu. `title` is shown for context only; the server remains the
+   * sole authority on whether `id` still exists and can be deleted. */
+  function openDeleteModal(id, title) {
+    deleteModalStoryId = id;
+    $("delete-modal-summary").textContent =
+      "Delete " + id + (title ? " — " + title : "") + "? This cannot be undone.";
+    $("delete-reason").value = "";
+    $("delete-modal-error").textContent = "";
+    $("delete-modal-backdrop").hidden = false;
+    requestAnimationFrame(function() {
+      $("delete-modal-backdrop").classList.add("open");
+      $("delete-modal").classList.add("open");
+      $("delete-modal").setAttribute("aria-hidden", "false");
+      $("delete-reason").focus();
+    });
+  }
+
+  function closeDeleteModal() {
+    deleteModalStoryId = null;
+    $("delete-modal-backdrop").classList.remove("open");
+    $("delete-modal").classList.remove("open");
+    $("delete-modal").setAttribute("aria-hidden", "true");
+    setTimeout(function() { $("delete-modal-backdrop").hidden = true; }, 150);
+  }
+
+  /** Submits the reason typed into the open delete modal. The reason is
+   * required here too, not just server-side (`require_str(&obj, "reason")`,
+   * `src/api/rest.rs`) -- an empty submission should never round-trip to
+   * find that out. */
+  function submitDeleteStory() {
+    var id = deleteModalStoryId;
+    if (!id) return;
+    var reason = $("delete-reason").value.trim();
+    if (!reason) { $("delete-modal-error").textContent = "A deletion reason is required."; return; }
+    api("DELETE", apiBase() + "/story/" + encodeURIComponent(id), { reason: reason })
+      .then(function() {
+        closeDeleteModal();
+        toast(id + " deleted", "success");
+        if (state.drawerId === id) closeDrawer();
+        fetchData();
+      })
+      .catch(function(err) { $("delete-modal-error").textContent = err.message; });
+  }
+
   // ============================================================
   // CONNECTION / FOOTER
   // ============================================================
@@ -4689,13 +4736,17 @@ tbody tr:hover { background: var(--bg-sunken); }
     $("drop-blocked-reason-backdrop").addEventListener("click", skipDropBlockedReasonModal);
     $("drop-blocked-reason-submit").addEventListener("click", submitDropBlockedReasonModal);
     $("drop-blocked-reason-input").addEventListener("keydown", function(e) { if (e.key === "Enter") submitDropBlockedReasonModal(); });
+    $("delete-modal-cancel").addEventListener("click", closeDeleteModal);
+    $("delete-modal-backdrop").addEventListener("click", closeDeleteModal);
+    $("delete-modal-submit").addEventListener("click", submitDeleteStory);
+    $("delete-reason").addEventListener("keydown", function(e) { if (e.key === "Enter") submitDeleteStory(); });
     $("drawer-close").addEventListener("click", closeDrawer);
     $("drawer-backdrop").addEventListener("click", closeDrawer);
     document.addEventListener("keydown", function(e) {
       // SH-175: `create-modal` is deliberately absent here — see the
       // comment above its own listener bindings.
       if (e.key === "Escape") {
-        closeDrawer(); closeDraftsModal(); cancelTokenModal(); closeArchiveModal(); skipDropBlockedReasonModal();
+        closeDrawer(); closeDraftsModal(); cancelTokenModal(); closeArchiveModal(); skipDropBlockedReasonModal(); closeDeleteModal();
       }
     });
   }
