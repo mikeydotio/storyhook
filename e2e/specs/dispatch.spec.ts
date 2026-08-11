@@ -195,13 +195,18 @@ test("Dispatch Auto sends ?auto=1 and runs a real autonomous dispatch (SH-208)",
   await expect(page.locator("#dispatch-btn")).toBeDisabled();
   await expect(page.locator("#dispatch-btn")).toHaveText("Dispatch");
 
-  const toast = page.locator("#toast-stack .toast.success");
-  await expect(toast).toBeVisible({ timeout: 20_000 });
-  await expect(toast).toContainText(DELTA_STORY_ID);
+  // SH-232: an --auto result is a DURABLE row, not a self-deleting toast --
+  // nobody is necessarily watching the tab when an autonomous dispatch
+  // finishes, which is the whole reason to run one. No toast at all for
+  // this completion.
+  const historyRow = page.locator("#dispatch-history .dispatch-history-row.success");
+  await expect(historyRow).toBeVisible({ timeout: 20_000 });
+  await expect(historyRow).toContainText(DELTA_STORY_ID);
   // story.sh's own auto_note names the session autonomous in `display`,
-  // relayed verbatim into the toast -- the one place this spec can observe
+  // relayed verbatim into the row -- the one place this spec can observe
   // the daemon actually forwarded `--auto` all the way to the script.
-  await expect(toast).toContainText(/utonomous/);
+  await expect(historyRow).toContainText(/utonomous/);
+  await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
 
   await expect(dispatchAutoButton).toBeEnabled();
   await expect(dispatchAutoButton).toHaveText("Dispatch Auto");
@@ -215,6 +220,14 @@ test("Dispatch Auto sends ?auto=1 and runs a real autonomous dispatch (SH-208)",
     existsSync(worktreePath),
     `expected a real worktree at ${worktreePath}`,
   ).toBe(true);
+
+  // The row survives well past a toast's own 4.5s/9s lifetime -- the whole
+  // point -- and is dismissed only by the user's own click, which then
+  // removes it from the DOM.
+  await page.waitForTimeout(5_000);
+  await expect(historyRow).toBeVisible();
+  await historyRow.locator(".dispatch-history-dismiss").click();
+  await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(0);
 });
 
 test("a saved token is not asked for again on a second dispatch", async ({
