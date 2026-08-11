@@ -8861,3 +8861,72 @@ warnings` clean throughout.
 top-level creating verb bypass the SH-95 guard unnoticed. Reopened after
 SH-226 (the dispatch-charter incident closed it with zero work performed);
 scope unchanged.
+
+### SH-170 — done
+
+Picked via `story next`, confirming the freshen summary's own pick. Read whole,
+comment included: the 2026-08-10 REOPENED comment named the SH-226 dispatch-charter
+incident as the reason this story came back to `todo` with zero prior work — its
+original scope was untouched, so no re-spec was needed.
+
+**Outcome:** `project_creation_target`'s outer match over `Invocation` is now
+exhaustive, mirroring what D8 (SH-117) did for the *inner* `ProjectAction` match and
+what `needs_github_token` already does over this same enum (SH-153) — every variant
+(60 today, up from the 52 the story's own description counted on 2026-08-03, itself
+a small demonstration of the story's premise: the enum keeps growing) is named
+explicitly rather than falling through a `_ => None` wildcard. A forgotten arm is now
+a compile error, not a silent `None` with a green build and a green suite — the exact
+failure shape SH-117's council fixed one layer down. `Migrate`'s `dry_run` match guard
+(`if !dry_run`) couldn't coexist with a wildcard-free match, since a guard alone never
+satisfies exhaustiveness; rewritten as two literal-`bool` arms (`dry_run: false` /
+`dry_run: true, ..`) instead. New unit tests pin the three creating routes, the two
+narrowings within them (`Attach::Nothing`, a dry-run `Migrate`), and a representative
+sample of non-creating invocations spanning unit, single-field and nested-`*Action`
+variant shapes — the same sampling style `only_github_sync_carries_a_credential`
+already established for `needs_github_token`, rather than hand-constructing all 60.
+
+**The gate, three times — twice clean, once an unrelated flake correctly not
+bypassed.** First full `make test`: Rust suite, plugin harness (30/30) and 42/45
+e2e green; three Playwright specs failed (`board-sort.spec.ts:97`,
+`create-story-defaults.spec.ts:71`, `filter-persistence.spec.ts:87`), none of them
+anywhere near `project_creation_target` — a Rust-only, CLI-routing function with
+zero relationship to dashboard JS, DOM timing or filter-count computation. A same-
+diff e2e rerun failed *two different, non-overlapping* specs
+(`board-sort.spec.ts:67`, `status-flags.spec.ts:114`) — the same diff producing
+different failures across two runs is itself evidence against a deterministic
+regression, since a real bug in this diff would fail the same way every time. Ran
+the proper A/B control anyway (this file's own SOP): stashed the diff, reran the
+full 45-spec suite against unmodified `main` — 45/45 clean, faster than either
+prior run (1.4m vs 2.2–2.3m, load evidently settling) — restored the diff, reran
+the full gate once more: Rust suite, plugin harness 30/30, e2e 45/45, all clean,
+zero `Error`/`FAILED` lines in the log. `filter-persistence.spec.ts:87` and the
+`deleteStory()`/"Confirm delete" DOM-detach signature (`status-flags.spec.ts:114`,
+both `board-sort.spec.ts` failures) exactly match SH-223 and SH-222 respectively,
+filed 2026-08-10 during SH-174's gate for this identical class ("assertion outruns
+an async settle, worse under load"); added corroborating evidence as comments on
+both rather than filing siblings, since none of the additional instances
+reproduced on any subsequent rerun — weaker evidence than either story's own
+three-run repro, and CLAUDE.md's reproduce-before-you-fix tenet cuts against
+filing a story for a failure that will not reproduce on demand.
+
+**A second, genuinely separate flake — the pre-push hook's own `make test`.**
+`daemon_lifecycle.rs::an_unforced_stop_waits_for_in_flight_work_to_finish` failed
+once on the push attempt, `waited >= Duration::from_secs(2)` missing by ~5ms
+(1.995547125s) — a tight timing margin in a test this diff never touches, and
+which had already passed clean in both full gate runs above (daemon_lifecycle.rs's
+24 tests, twice). Re-ran the single test in isolation three times (13–19s each,
+every one comfortably past the 2s bound) rather than reaching for
+`SKIP_PREPUSH_TESTS=1` on a guess, per the SH-135/SH-169 precedent above; retried
+the push and it passed clean on its own re-run of the gate.
+
+**Tests:** `invoke::project_creation_target_tests` (new), three cases —
+`every_creating_route_returns_a_target`,
+`attach_nothing_and_dry_run_migrate_create_no_target`,
+`a_representative_sample_of_non_creating_invocations_return_none`.
+
+**PR:** #241, merged as `92c4def` (`gh pr view` confirmed `MERGED`), fast-forwarded
+onto `main` in this checkout, branch verified deleted.
+
+**Next:** SH-178 — `commit-sync` reports "no claim word" for every reason a story
+did not move, including four where the commit did claim. Reopened alongside
+SH-170 by the same SH-226 dispatch-charter incident; scope unchanged.
