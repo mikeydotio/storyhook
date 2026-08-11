@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import type { APIRequestContext, Page } from "@playwright/test";
 
 /**
  * Shared across every spec since SH-187: every `/api/**` route requires the
@@ -42,4 +42,28 @@ export async function seedToken(page: Page): Promise<void> {
   await page.addInitScript((value) => {
     window.sessionStorage.setItem("storyhookDaemonToken", value);
   }, token);
+}
+
+/**
+ * Resolves a seeded project's slug (the `id` `GET /api/repos` reports, and
+ * what `?project=` names -- SH-197) from its display name. `run-e2e.sh`
+ * exports the story ids and checkouts it minted, but never a project's
+ * slug, and `story project new` derives one from the name by an algorithm
+ * this suite has no business depending on -- so a spec that needs Alpha's
+ * or Delta's actual slug asks the daemon, the same way the dashboard itself
+ * would.
+ */
+export async function projectSlug(
+  request: APIRequestContext,
+  name: string,
+): Promise<string> {
+  const resp = await request.get("/api/repos", {
+    headers: { "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN") },
+  });
+  const repos: Array<{ id: string; name: string }> = await resp.json();
+  const match = repos.find((r) => r.name === name);
+  if (!match) {
+    throw new Error(`No project named "${name}" in GET /api/repos`);
+  }
+  return match.id;
 }

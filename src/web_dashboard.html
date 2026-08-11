@@ -867,6 +867,126 @@ tbody tr:hover { background: var(--bg-sunken); }
   var PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3, none: 4 };
 
   // ============================================================
+  // DEEP LINK (SH-197)
+  // ============================================================
+  //
+  // A story can be opened straight from `?project=<slug>&story=<id>` on
+  // load, and the context menu's "Copy URL" writes exactly that shape back
+  // out (`storyPermalink`). Read once into `deepLink` at parse time, below
+  // -- `bootstrap()` doesn't resolve it until well after the very first
+  // `renderScreen()` has run, and `syncUrl()` would otherwise have already
+  // stripped the query string from the address bar before anything got a
+  // chance to act on it.
+
+  /** The `{project, story}` this tab was opened at (each `null` if absent).
+   * Read once at load -- see the section comment above for why this can't
+   * be reconstructed later from `window.location`. */
+  function readDeepLink() {
+    var params = new URLSearchParams(window.location.search);
+    return { project: params.get("project"), story: params.get("story") };
+  }
+  var deepLink = readDeepLink();
+
+  /** True once `bootstrap()` has resolved (or given up on) `deepLink`.
+   * Until then `syncUrl()` is a no-op: `renderScreen()`'s own call happens
+   * before `bootstrap()` gets a chance to act on the link, and an early
+   * rewrite would erase it from the address bar before it was ever read. */
+  var urlSyncArmed = false;
+
+  /** Rewrites the address bar to name what's on screen: `?project=<repoId>`
+   * whenever a repo is open, plus `&story=<drawerId>` whenever its drawer
+   * is too; neither on Home/Settings. Every OTHER query parameter is left
+   * exactly as it was -- `sseWatchdogIntervalMs`/`sseStaleAfterMs`
+   * (`intFromQuery`, above) are test-only knobs a caller may have put there
+   * on load, and clobbering them here would break a reload mid-test.
+   *
+   * `replaceState`, never `pushState`: this keeps the address bar honest,
+   * not the history stack navigable. A `pushState` per drawer-open would
+   * make Back mean "close the drawer" while the filter bar, sort and
+   * hidden columns -- persisted in `sessionStorage`/`localStorage`, not the
+   * history entry -- silently stayed wherever they were, which is a worse
+   * Back than none at all. Never creating an entry also means `popstate`
+   * can never fire from our own doing, so there is nothing to keep in sync
+   * on that side either. */
+  function syncUrl() {
+    if (!urlSyncArmed) return;
+    var params = new URLSearchParams(window.location.search);
+    if (state.screen === "repo" && state.repoId) {
+      params.set("project", state.repoId);
+    } else {
+      params.delete("project");
+    }
+    if (state.screen === "repo" && state.drawerId) {
+      params.set("story", state.drawerId);
+    } else {
+      params.delete("story");
+    }
+    var qs = params.toString();
+    window.history.replaceState(null, "", window.location.pathname + (qs ? "?" + qs : ""));
+  }
+
+  /** The shareable URL for `id` in the currently open project -- what the
+   * context menu's "Copy URL" (SH-197) puts on the clipboard. Built from
+   * `origin`/`pathname` rather than the address bar's own `search`, so a
+   * link handed to someone else never carries whatever debug query
+   * parameters this tab's own session happens to have on it. */
+  function storyPermalink(id) {
+    return window.location.origin + window.location.pathname +
+      "?project=" + encodeURIComponent(state.repoId) +
+      "&story=" + encodeURIComponent(id);
+  }
+
+  /** Resolves `deepLink.project` against the just-fetched `state.repos`,
+   * toasting exactly why when it can't be honored. Returns the matching
+   * repo, or `null` when there is nothing to resolve (no `?project=` at
+   * all) or it can't be opened -- `bootstrap()` falls back to its ordinary
+   * localStorage/Home logic in either case, the same as an unrecognized
+   * saved repo id today. */
+  function resolveDeepLinkProject() {
+    if (!deepLink.project) {
+      if (deepLink.story) toast("Add ?project=… to open a story by link", "info");
+      return null;
+    }
+    var match = state.repos.filter(function(r) { return r.id === deepLink.project; })[0];
+    if (!match) {
+      toast("No project `" + deepLink.project + "` on this daemon", "error");
+      return null;
+    }
+    if (!canOpen(match)) {
+      toast("Can't open `" + deepLink.project + "`" + (match.reason ? " — " + match.reason : ""), "error");
+      return null;
+    }
+    return match;
+  }
+
+  /** The story id `?story=` named, held here until `resolveDeepLinkProject`'s
+   * project has actually loaded -- consumed (and cleared) by
+   * `consumeDeepLinkStory()`, called from `fetchData()`'s first-load branch
+   * for `state.repoId`. */
+  var pendingDeepLinkStory = null;
+
+  /** Opens `pendingDeepLinkStory` now that this repo's first `/data` has
+   * landed, or toasts why it can't and strips it from the URL either way.
+   * Resolved case-insensitively, since a pasted id's case shouldn't matter
+   * even though every other lookup in this file (`findStory`) is exact.
+   * One-shot: `pendingDeepLinkStory` is cleared up front, so a later poll
+   * of the same repo never retries it. */
+  function consumeDeepLinkStory() {
+    var id = pendingDeepLinkStory;
+    pendingDeepLinkStory = null;
+    if (!id) return;
+    var target = (state.data.stories || []).filter(function(v) {
+      return v.story.id.toLowerCase() === id.toLowerCase();
+    })[0];
+    if (!target) {
+      toast("No story `" + id + "` in " + state.repoId, "error");
+      syncUrl();
+      return;
+    }
+    openDrawer(target.story.id);
+  }
+
+  // ============================================================
   // FILTER PERSISTENCE (SH-155)
   // ============================================================
   //
@@ -1181,6 +1301,7 @@ tbody tr:hover { background: var(--bg-sunken); }
           // repo's data.
           if (isFirstLoadForRepo) pruneCarriedFilters();
           renderAll();
+          if (isFirstLoadForRepo) consumeDeepLinkStory();
         } catch (e) {
           state.fetchOk = false;
         }
@@ -1854,6 +1975,7 @@ tbody tr:hover { background: var(--bg-sunken); }
 
     renderProjectSelector();
     updateSubtitle();
+    syncUrl();
   }
 
   function renderView() {
@@ -2803,6 +2925,7 @@ tbody tr:hover { background: var(--bg-sunken); }
     $("drawer-backdrop").hidden = false;
     requestAnimationFrame(function() { $("drawer-backdrop").classList.add("open"); });
     renderDrawer();
+    syncUrl();
     api("GET", apiBase() + "/story/" + encodeURIComponent(id))
       .then(function(resp) {
         if (state.drawerId !== id) return;
@@ -2819,6 +2942,7 @@ tbody tr:hover { background: var(--bg-sunken); }
     $("drawer").setAttribute("aria-hidden", "true");
     $("drawer-backdrop").classList.remove("open");
     setTimeout(function() { if (!state.drawerId) $("drawer-backdrop").hidden = true; }, 180);
+    syncUrl();
   }
 
   function renderDrawer() {
@@ -4677,12 +4801,26 @@ tbody tr:hover { background: var(--bg-sunken); }
   }
 
   /** Initial load: fetch the repo list once, then enter the "repo" screen
-   * for the last-viewed repo if it's still registered and openable, else
-   * land on "home". `canOpen`, not `available`: a repo with no checkout on
-   * this machine is read-only, not gone, and reloading on it should not
-   * silently bounce to Home. */
+   * for whichever project should open, and arm `syncUrl()` (see DEEP LINK)
+   * now that the very first `renderScreen()` — which ran before this was
+   * ever called — is behind us.
+   *
+   * An explicit `?project=` deep link outranks the remembered repo: it's
+   * what the user actually clicked or pasted just now. Absent that, falls
+   * back to the last-viewed repo if it's still registered and openable,
+   * else lands on "home". `canOpen`, not `available`, in both cases: a
+   * repo with no checkout on this machine is read-only, not gone, and
+   * opening it — by link or by memory — should not silently bounce to
+   * Home. */
   function bootstrap() {
     fetchReposOnce(function() {
+      var linked = resolveDeepLinkProject();
+      urlSyncArmed = true;
+      if (linked) {
+        pendingDeepLinkStory = deepLink.story;
+        selectRepo(linked.id);
+        return;
+      }
       var saved = localStorage.getItem("storyhook.repoId");
       var match = saved && state.repos.filter(function(r) { return r.id === saved; })[0];
       if (match && canOpen(match)) {
