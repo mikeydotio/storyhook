@@ -50,7 +50,12 @@ submits() { cat "$FAKE_TMUX_STATE/prompt_submits" 2>/dev/null || echo 0; }
 dispatch_run FAKE_TMUX_CAPTURE=structural FAKE_TMUX_LAUNCH_MANGLE=1
 assert_eq "$(jqf "$out" .ok)" "false" "A: a pane that never became claude is refused"
 assert_eq "$(jqf "$out" .reason)" "pane-not-ready" "A: refusal names the pane"
-assert_eq "$(jqf "$out" .wait_ready_reason)" "wrong-process" "A: and says a shell was in it"
+# SH-231: dispatch now gates on sentinel existence, not rendered content -- a
+# launch that never became claude/node never runs a SessionStart hook, so
+# "no-sentinel" (nothing ever started here) is the correct reason, not
+# "wrong-process" (which now means a real sentinel exists but THIS pane's
+# occupant doesn't match it -- see Family E below for that scenario).
+assert_eq "$(jqf "$out" .wait_ready_reason)" "no-sentinel" "A: and says nothing ever published a sentinel"
 assert_eq "$(submits)" "0" "A: NOTHING was typed into that pane"
 assert_eq "$(state_of)" "todo" "A: the claim was rolled back"
 case "$(jqf "$out" .pane_tail)" in
@@ -114,12 +119,28 @@ assert_eq "$(state_of)" "in-progress" \
 assert_eq "$(jqf "$out" .claimed)" "true" "D: and the result says so"
 
 # ---- Family E: the configuration trigger ------------------------------------
-# The escape hatch must work: `.` matches any occupant, restoring pre-SH-226
-# readiness semantics with no code change.
+# SH-231 narrows what the escape hatch can rescue. It used to restore
+# pre-SH-226 semantics outright: readiness was a rendered-content check, and
+# `.` just turned off the process-name gate SH-226 ANDed onto it, so ANY
+# stable content -- even a bare shell prompt -- could confirm. Readiness is
+# now sentinel existence FIRST: a launch that never became claude/node never
+# runs a SessionStart hook, so no sentinel is EVER published for it, and no
+# occupant-name pattern can manufacture evidence that was never produced.
+# `.` still has real power -- it is the occupant-name check specifically,
+# now gated BEHIND a real sentinel rather than in front of rendered content.
 dispatch_run FAKE_TMUX_CAPTURE=structural FAKE_TMUX_LAUNCH_MANGLE=1 \
         STORY_READY_PROCESS_PATTERN=.
+assert_eq "$(jqf "$out" .ok)" "false" \
+  "E: the escape hatch cannot rescue a launch that never published a sentinel -- there is nothing to relax"
+assert_eq "$(jqf "$out" .wait_ready_reason)" "no-sentinel" \
+  "E: ...it fails for the same reason Family A does, unaffected by the pattern"
+
+# The escape hatch DOES still rescue a real sentinel whose pane's occupant
+# name the default pattern refuses -- the scenario `.` was actually meant for.
+dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_PANE_COMMAND=some-unlisted-wrapper \
+        STORY_READY_PROCESS_PATTERN=.
 assert_eq "$(jqf "$out" .ok)" "true" \
-  "E: STORY_READY_PROCESS_PATTERN=. is the documented escape hatch and must work"
+  "E: STORY_READY_PROCESS_PATTERN=. still rescues an unrecognised occupant NAME, once a sentinel is real"
 
 # An operator whose claude reports an unexpected name can name it.
 dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_PANE_COMMAND=claude-wrapper \

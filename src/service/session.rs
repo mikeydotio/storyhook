@@ -8,6 +8,7 @@
 //! be silence rather than an error.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 
 use crate::domain::{Priority, StorySnapshot, has_children, is_ready, ready_order};
 use crate::error::AppError;
@@ -15,6 +16,52 @@ use crate::help_topics;
 use crate::store::{ReadOps, Store, StoryQuery};
 
 use super::Ctx;
+
+/// The dispatch sentinel's own schema version.
+///
+/// Bumped whenever a field is added, renamed or removed — a reader that
+/// understands an older version can then tell "absent" from "renamed" instead
+/// of guessing.
+const SENTINEL_PROTOCOL_VERSION: u32 = 1;
+
+/// The dispatch sentinel written on every `SessionStart`, at
+/// `<cwd>/.claude/dispatch-sentinel.json` — SH-231 (SH-227 R2), replacing
+/// `lib/session.sh`'s screen-scraped readiness gate for `story.sh dispatch`.
+///
+/// # What this proves, and what it deliberately does not
+///
+/// Existence at that path proves *a* Claude Code SessionStart hook fired with
+/// this cwd — nothing more. `story.sh` only ever polls for it inside a
+/// worktree it just created itself (`git worktree add`, refused if the path
+/// already exists), so the FIRST sentinel found there is guaranteed to belong
+/// to the dispatch that created that worktree — but a *later* one, from an
+/// unrelated session someone points at the same directory afterward, would
+/// look identical. That is why this file carries no pid: a hook cannot learn
+/// its own claude process's pid (confirmed against Claude Code's documented
+/// `SessionStart` payload — session_id/hook_event_name/source/cwd/
+/// permission_mode/model, no process identity), and `$PPID` as a proxy is
+/// undocumented. `story.sh`'s own dispatcher, not this file, decides
+/// liveness: it already captured the pane's pid itself
+/// (`#{pane_pid}`, SH-230) and re-checks that exact pid against the exact
+/// pane at verification time (`.council/sh-231-sentinel-design/DECISION.md`)
+/// — the sentinel is the "something happened here" half of that check, the
+/// re-queried pane is the "and it is still true" half.
+#[derive(Debug, serde::Serialize)]
+struct DispatchSentinel {
+    protocol_version: u32,
+    /// From the SessionStart hook payload's own `session_id` — absent if
+    /// stdin was empty, unparseable, or the field was missing. Diagnostic
+    /// only: nothing on the readiness path matches against it.
+    session_id: Option<String>,
+    /// Best-effort, derived from `cwd`'s own final path component — the
+    /// dispatch worktree's directory name, which is the story id under
+    /// every naming scheme this plugin ships (`resolve_wname`) unless a
+    /// caller has overridden `STORY_WINDOW_NAME`. Diagnostic only, for the
+    /// same reason `session_id` is: identity here comes from *which path*
+    /// the dispatcher polls, not from content inside the file it finds.
+    story_id: Option<String>,
+    written_at: String,
+}
 
 /// The character budget for the injected context.
 ///
@@ -97,6 +144,73 @@ impl<'ctx, S: Store> SessionService<'ctx, S> {
 
         Ok(envelope(&truncate(message)))
     }
+
+    /// Publishes the dispatch sentinel for this session — see
+    /// [`DispatchSentinel`]'s own doc comment for what it proves.
+    ///
+    /// # Why this never returns a `Result`
+    ///
+    /// `context()`'s whole job is the envelope an agent reads; this file's
+    /// header says why that must degrade to silence rather than an error on
+    /// failure. A sentinel-write failure (a read-only worktree, a full disk, a
+    /// `.claude` that is a file rather than a directory) is a DIFFERENT
+    /// failure with nothing to say to the model, so it is swallowed here
+    /// rather than composed into that same error path — the two must fail
+    /// independently, or a full disk would blank out real project state that
+    /// loaded correctly.
+    pub fn publish_sentinel(&self) {
+        let sentinel = DispatchSentinel {
+            protocol_version: SENTINEL_PROTOCOL_VERSION,
+            session_id: self.ctx.stdin().and_then(session_id_from_payload),
+            story_id: story_id_from_cwd(self.ctx.cwd()),
+            written_at: self.ctx.now(),
+        };
+        let _ = write_sentinel(self.ctx.cwd(), &sentinel);
+    }
+}
+
+/// Pulls `session_id` out of a raw SessionStart hook payload. `None` on
+/// anything short of a well-formed object carrying a non-empty string —
+/// swallowed rather than surfaced, since this field is diagnostic-only (see
+/// [`DispatchSentinel::session_id`]).
+fn session_id_from_payload(raw: &str) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Payload {
+        session_id: Option<String>,
+    }
+    serde_json::from_str::<Payload>(raw)
+        .ok()?
+        .session_id
+        .filter(|id| !id.is_empty())
+}
+
+/// The dispatch worktree's directory name — see
+/// [`DispatchSentinel::story_id`] for why this is best-effort.
+fn story_id_from_cwd(cwd: &std::path::Path) -> Option<String> {
+    cwd.file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .map(str::to_owned)
+}
+
+/// Atomically publishes `sentinel` at `<cwd>/.claude/dispatch-sentinel.json`
+/// — create-directory, write-to-a-sibling-tempfile, `fsync`, rename, the same
+/// idiom `daemon::lifecycle::write_info` uses for the portfile, so a poller
+/// reading this path never observes a half-written file. The tempfile is a
+/// sibling of the final path so the rename is same-filesystem and therefore
+/// atomic.
+fn write_sentinel(cwd: &std::path::Path, sentinel: &DispatchSentinel) -> Result<(), AppError> {
+    let dir = cwd.join(".claude");
+    std::fs::create_dir_all(&dir)?;
+    let final_path = dir.join("dispatch-sentinel.json");
+    let temp_path = final_path.with_extension("json.tmp");
+
+    let mut file = std::fs::File::create(&temp_path)?;
+    file.write_all(serde_json::to_string_pretty(sentinel)?.as_bytes())?;
+    file.sync_all()?;
+    drop(file);
+
+    std::fs::rename(&temp_path, &final_path)?;
+    Ok(())
 }
 
 /// The most urgent ready story — [`domain::ready_order`](crate::domain::ready_order)'s
@@ -269,5 +383,44 @@ mod tests {
     fn a_malformed_config_leaves_the_plugin_enabled() {
         assert!(!disabled_by("this is not toml at all ["));
         assert!(!disabled_by(""));
+    }
+
+    #[test]
+    fn session_id_round_trips_out_of_a_real_hook_payload() {
+        let payload = r#"{"session_id":"abc-123","hook_event_name":"SessionStart","source":"startup","cwd":"/tmp/x"}"#;
+        assert_eq!(
+            session_id_from_payload(payload),
+            Some("abc-123".to_string())
+        );
+    }
+
+    #[test]
+    fn session_id_is_none_for_anything_short_of_a_well_formed_field() {
+        assert_eq!(session_id_from_payload(""), None, "empty stdin");
+        assert_eq!(session_id_from_payload("not json"), None, "malformed JSON");
+        assert_eq!(session_id_from_payload("{}"), None, "field absent");
+        assert_eq!(
+            session_id_from_payload(r#"{"session_id":""}"#),
+            None,
+            "empty string is not an identity"
+        );
+        assert_eq!(
+            session_id_from_payload(r#"{"session_id":null}"#),
+            None,
+            "explicit null"
+        );
+    }
+
+    #[test]
+    fn story_id_is_the_cwds_final_path_component() {
+        assert_eq!(
+            story_id_from_cwd(std::path::Path::new("/repo/.claude/worktrees/SH-231")),
+            Some("SH-231".to_string())
+        );
+    }
+
+    #[test]
+    fn story_id_is_none_when_cwd_has_no_final_component() {
+        assert_eq!(story_id_from_cwd(std::path::Path::new("/")), None);
     }
 }

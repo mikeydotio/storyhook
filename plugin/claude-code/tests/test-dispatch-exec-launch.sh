@@ -89,6 +89,14 @@ out2=$(
       bash "$SCRIPT" dispatch "$id2" 2>&1
 )
 assert_eq "$(jqf "$out2" .ok)" "false" "exec-launch: a launch that never becomes claude/node is still refused"
-assert_eq "$(jqf "$out2" .wait_ready_reason)" "wrong-process" "exec-launch: ...for the same reason as before"
+# SH-231: readiness is no longer a rendered-content check the process gate sits
+# on top of -- it is sentinel existence itself. A launch that never became
+# claude/node never runs a SessionStart hook, so no sentinel is ever
+# published; the reason is "no-sentinel" (nothing ever started here), not
+# "wrong-process" (a real session's sentinel exists, but this pane's occupant
+# doesn't match it) -- see test-dispatch-occupant-gate.sh Family A/E for the
+# fuller before/after of this reason taxonomy shift.
+assert_eq "$(jqf "$out2" .wait_ready_reason)" "no-sentinel" \
+  "exec-launch: a launch that never starts claude never publishes a sentinel either"
 
 finish

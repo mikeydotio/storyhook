@@ -84,7 +84,14 @@ mk_story_repo() {
     git config user.name t
     git remote add origin "$origin"
     echo a >f
-    git add f
+    # Mirrors this repo's own top-level .gitignore rule for the dispatch
+    # sentinel (SH-231) — a real onboarded storyhook repo carries this, and a
+    # fixture that omits it makes every dispatched worktree spuriously
+    # "dirty" the instant its SessionStart hook (here, the fake tmux
+    # standing in for one) publishes a sentinel, which test-bare-story-id.sh's
+    # removable/dirty classification would otherwise misreport.
+    printf '%s\n' '.claude/dispatch-sentinel.json' >.gitignore
+    git add f .gitignore
     git commit -qm init
     git push -qu origin main
     git remote set-head origin main >/dev/null 2>&1 || true
