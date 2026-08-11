@@ -7,9 +7,15 @@
 # subcommands cmd_dispatch drives, enough to let the helper run to
 # completion headlessly without a live tmux server:
 #
-#   new-window        -> reset the virtual input-box state, print a pane id (%1)
+#   new-window        -> reset the virtual input-box state, print a pane id (%1).
+#                        Since SH-230 also accepts a trailing launch-command
+#                        argument (execed, not typed) and `\;`-chained
+#                        set-window-option segments — see THE PANE'S OCCUPANT
+#                        and `\;`-CHAINED SUB-COMMANDS below.
 #   display-message   -> print a window id (@1), exit 0
-#   set-window-option -> no-op, exit 0
+#   set-window-option -> no-op, exit 0 as its own top-level call (nothing calls
+#                        it standalone any more); chained onto new-window it is
+#                        recorded instead — see below.
 #   send-keys         -> mutate the virtual input box (see STATEFUL MODEL below)
 #   kill-window       -> logs its raw argv to $STATE/kill_window_args.log (one
 #                        line per call, SH-208 -- a test asserting `reap`
@@ -104,22 +110,54 @@
 #                     marker — never stabilises, never matches → readiness stays
 #                     unconfirmed (drives the warning + pane_tail evidence path).
 #
-# THE PANE'S OCCUPANT (SH-226). `display-message -p '#{pane_current_command}'` is
-# answered from $STATE/pane_command, which is DERIVED from the launch line when it
-# submits: the basename of its first word, exactly as a shell would become that
-# program. Derivation rather than a knob is deliberate — every test that uses the
-# default STORY_LAUNCH_CMD gets `claude` for free and needs no edit.
+# THE PANE'S OCCUPANT (SH-226, mechanism updated by SH-230). `display-message -p
+# '#{pane_current_command}'` is answered from $STATE/pane_command. There are now
+# TWO ways it gets set, matching the two ways a caller can launch a pane:
 #
-#   $FAKE_TMUX_LAUNCH_MANGLE=1   The launch keystroke was eaten (the SH-226 field
-#                                cause: oh-my-zsh's update prompt swallowed the
-#                                leading `c`). The occupant stays a SHELL and the
-#                                capture carries a `command not found` line. This
-#                                models the CAUSE, not the symptom.
+#   EXEC form (story.sh's dispatch path, since SH-230) — new-window's OWN
+#   trailing argument IS the launch command, so the occupant is derived right
+#   there, in the `new-window)` case itself, from that argument's basename —
+#   no later typed line to wait for. This is the form every dispatch test
+#   below now exercises.
+#   TYPED form (cmd_doctor's scratch window, unchanged) — new-window opens an
+#   empty pane and a LATER `send-keys -l <launch> ` + Enter submits it;
+#   _submit_box derives the occupant from THAT submitted line instead, the way
+#   it always has. A `new-window` call with no literal `;` argument (doctor
+#   never chains one) takes this path untouched.
+#
+# Derivation rather than a knob is deliberate either way — every test that uses
+# the default STORY_LAUNCH_CMD gets `claude` for free and needs no edit.
+#
+#   $FAKE_TMUX_LAUNCH_MANGLE=1   The launch failed to produce a live claude/node
+#                                process. Before SH-230 this specifically modeled
+#                                the field cause (oh-my-zsh's update prompt
+#                                swallowing the leading `c` of a TYPED launch);
+#                                execing the launch removed that interactive
+#                                shell entirely, so there is nothing left for a
+#                                nag prompt to swallow a keystroke into. The knob
+#                                keeps its name and its contract regardless — a
+#                                bad STORY_LAUNCH_CMD, a missing binary, or an
+#                                immediate crash all leave the SAME fact behind,
+#                                which is the only one wait_ready's pane_runs
+#                                actually checks: the occupant stays a SHELL, not
+#                                claude/node, and the capture carries a
+#                                `command not found` line.
 #   $FAKE_TMUX_PANE_COMMAND      Overrides the occupant absolutely, for cases with
 #                                no launch to derive from.
 #   $FAKE_TMUX_SHELL             The shell name a mangled launch leaves (zsh).
 #   $FAKE_TMUX_FAIL_SEND_KEYS    literal|enter|all — make send-keys EXIT 1, so
 #                                paste_text's own `|| return 1` is reachable.
+#                                Exercises only the TYPED form (doctor) — the
+#                                EXEC form never calls send-keys for its launch.
+#
+# `\;`-CHAINED SUB-COMMANDS (SH-230). Real tmux sends each `;`-separated argv
+# segment to the server as its own command; this fake models only what
+# story.sh's own chained call needs: the FIRST segment is the real new-window
+# call (see above), and every later segment — each a `set-window-option ...`
+# call pinning remain-on-exit/automatic-rename/allow-rename — is recorded
+# verbatim, one line per segment, to $STATE/window_options.log, so a test can
+# confirm those specific options actually reached tmux rather than merely that
+# dispatch compiled and returned a pane id.
 #
 # The fake is re-exec'd per tmux call and holds no in-process state, so ALL of the
 # above (the input buffer, the launched flag, the absorb counter, the churn
@@ -216,14 +254,83 @@ case "${1:-}" in
     # clears the buffer store + submit bookkeeping (issue #87) so a reused $STATE
     # dir (e.g. the shared /tmp/issue-faketmux the readiness cases use) can't read
     # stale state.
+    #
+    # `\;`-CHAINED EXEC FORM (SH-230). story.sh's dispatch path no longer opens
+    # an empty pane and types the launch command into it later — it passes the
+    # launch command as new-window's own TRAILING argument (execed, not typed)
+    # and chains `set-window-option` calls onto the SAME tmux invocation via
+    # literal `;` arguments to pin remain-on-exit/automatic-rename/allow-rename
+    # atomically. Detected here by the presence of a literal `;` among this
+    # call's own args — cmd_doctor's scratch window (still typed, not exec'd)
+    # never passes one, so its path through this case is BYTE-IDENTICAL to
+    # before this form existed. Bash-3.2-safe throughout (no negative array
+    # indices, no `mapfile`) — this repo's own `bash --version` is 3.2.57.
     shift || true
-    printf '%s\n' "$*" >> "$STATE/new_window_args.log" 2>/dev/null || true
+    _all=("$@")
+    _semi_idx=-1
+    _i=0
+    for _a in "${_all[@]}"; do
+      if [ "$_a" = ";" ]; then _semi_idx=$_i; break; fi
+      _i=$((_i + 1))
+    done
+    if [ "$_semi_idx" -ge 0 ]; then
+      nw_args=("${_all[@]:0:$_semi_idx}")
+      nw_chained=("${_all[@]:$((_semi_idx + 1))}")
+    else
+      nw_args=("${_all[@]}")
+      nw_chained=()
+    fi
+    launch_line=""
+    if [ "$_semi_idx" -ge 0 ] && [ "${#nw_args[@]}" -gt 0 ]; then
+      _last_idx=$((${#nw_args[@]} - 1))
+      launch_line="${nw_args[$_last_idx]}"
+      nw_args=("${nw_args[@]:0:$_last_idx}")
+    fi
+    printf '%s\n' "${nw_args[*]}" >> "$STATE/new_window_args.log" 2>/dev/null || true
     rm -f "$STATE/input" "$STATE/launched" "$STATE/absorb" "$STATE/pastes.log" \
           "$STATE/submitted" "$STATE/prompt_submits" \
-          "$STATE/pane_command" "$STATE/launch_mangled" 2>/dev/null || true
+          "$STATE/pane_command" "$STATE/launch_mangled" "$STATE/window_options.log" \
+          2>/dev/null || true
     rm -f "$STATE"/buf-* 2>/dev/null || true
     printf '%s' "${FAKE_TMUX_ENTER_ABSORB:-0}" > "$STATE/absorb" 2>/dev/null || true
     printf '0' > "$STATE/prompt_submits" 2>/dev/null || true
+    if [ -n "$launch_line" ]; then
+      # EXEC form: derive the occupant from the launch line NOW, the way a
+      # really-execed process becomes the pane's foreground command
+      # immediately — there is no later typed Enter to derive it from (see
+      # _submit_box's own comment for the typed form doctor still uses).
+      launch_bin="${launch_line%% *}"
+      launch_bin="${launch_bin##*/}"
+      if [ "${FAKE_TMUX_LAUNCH_MANGLE:-}" = 1 ]; then
+        # SH-230 retired the specific oh-my-zsh keystroke-swallow cause this
+        # knob used to model literally — there is no interactive shell left
+        # for a nag prompt to swallow a keystroke into. "The exec failed to
+        # produce a live claude/node process" is still a real failure mode
+        # (a bad STORY_LAUNCH_CMD, a missing binary, an immediate crash), and
+        # it is the only fact wait_ready's pane_runs actually checks, so the
+        # knob keeps its name and its contract: occupant stays a shell.
+        printf 'true' > "$STATE/launch_mangled" 2>/dev/null || true
+        launch_bin="${FAKE_TMUX_SHELL:-zsh}"
+      fi
+      [ -n "$launch_bin" ] || launch_bin="${FAKE_TMUX_SHELL:-zsh}"
+      printf '%s' "$launch_bin" > "$STATE/pane_command" 2>/dev/null || true
+      printf 'true' > "$STATE/launched" 2>/dev/null || true
+      # Record each chained set-window-option segment for its own sake, so a
+      # test can confirm SH-230's own design decisions (remain-on-exit, the
+      # naming pins) actually reached tmux, not merely that dispatch compiled.
+      seg=()
+      for _a in "${nw_chained[@]}"; do
+        if [ "$_a" = ";" ]; then
+          printf '%s\n' "${seg[*]}" >> "$STATE/window_options.log" 2>/dev/null || true
+          seg=()
+        else
+          seg+=("$_a")
+        fi
+      done
+      if [ "${#seg[@]}" -gt 0 ]; then
+        printf '%s\n' "${seg[*]}" >> "$STATE/window_options.log" 2>/dev/null || true
+      fi
+    fi
     printf '%%1\n'
     ;;
   has-session)
@@ -269,9 +376,12 @@ case "${1:-}" in
     ;;
   display-message)
     # Honour the FORMAT argument instead of always answering '@1'. story.sh asks
-    # for '#{window_id}' (unchanged), and the readiness gate asks for
+    # for '#{window_id}' (unchanged), the readiness gate asks for
     # '#{pane_current_command}' — which must answer the modelled occupant, or a
-    # process check would have a test that cannot fail.
+    # process check would have a test that cannot fail — and dispatch (SH-230)
+    # now also asks for '#{pane_pid}', best-effort, to expose for SH-231's
+    # future benefit. A fixed, obviously-fake pid is enough: nothing on the
+    # dispatch path acts on its VALUE, only its presence and shape.
     dm_fmt=""
     shift || true
     while [ "$#" -gt 0 ]; do
@@ -285,6 +395,7 @@ case "${1:-}" in
       *'#{pane_current_command}'*)
         printf '%s\n' "${FAKE_TMUX_PANE_COMMAND:-$(cat "$STATE/pane_command" 2>/dev/null || printf '')}"
         ;;
+      *'#{pane_pid}'*) printf '54321\n' ;;
       ''|*'#{window_id}'*) printf '@1\n' ;;
       *) printf '\n' ;;
     esac
