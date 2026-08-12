@@ -2,6 +2,7 @@
 
 pub mod api;
 pub mod cli;
+pub mod clipboard;
 pub mod daemon;
 pub mod decompose;
 pub mod domain;
