@@ -89,6 +89,37 @@ fn doctor_reports_and_fixes_a_malformed_label() {
         .stdout(contains("labels: sse, web"));
 }
 
+/// SH-225: the same malformed label on a **closed** story. `--fix` cannot
+/// append to a closed history and must not pretend otherwise — so the refusal
+/// arrives with the story to reopen and the three commands that clear it,
+/// rather than as a repeat of the finding the operator already read.
+#[test]
+fn doctor_fix_names_the_closed_story_whose_repair_it_declined() {
+    let env = TestEnv::shared();
+    let project = env.project().seed_story("A").build();
+    let store = project.open_store();
+    let id = project.project_id(&store);
+
+    inject_events(
+        &store,
+        id,
+        project.story_no(&store, "SH-1"),
+        &[StoryEvent::StoryLabelsSet {
+            at: AT.to_string(),
+            labels: vec!["web,sse".to_string()],
+        }],
+    )
+    .expect("injecting a malformed label");
+
+    project.run(&["move", "SH-1", "done"]).success();
+
+    project.run(&["doctor", "--fix"]).code(5).stderr(
+        contains("SH-1: malformed labels")
+            .and(contains("SH-1: normalize its labels to [\"sse\", \"web\"]"))
+            .and(contains("`story reopen <id>`")),
+    );
+}
+
 #[test]
 fn doctor_flags_a_story_type_the_catalog_does_not_define() {
     let env = TestEnv::shared();
