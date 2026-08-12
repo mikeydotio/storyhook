@@ -11404,3 +11404,67 @@ content, not the ancestry.**
 **No version bump** — left for the next batched `/semver` pass.
 
 **Next:** run `story next` fresh.
+
+### SH-234 — the board topbar's story-count label retired · PR #305 · **done**
+
+**What went, and the argument for going.** Every board rendered
+`N stories · N ready · N blocked` beside the wordmark. Each of those numbers
+is already on the board in a form that can be acted on — the columns *are* the
+story count, the blocked badge marks the blocked ones — so the label restated
+them in the one corner of the topbar the eye goes to for the project's name,
+where nothing could be done with them. A ten-line story, and the whole of the
+work was deciding what "remove it" is allowed to touch.
+
+**The Home control is the point of the test.** The obvious way to satisfy this
+story is to delete `#subtitle` and its function, and that is wrong: the same
+element carries Home's "N projects" and Settings' own line. So
+`e2e/specs/topbar-subtitle.spec.ts` asserts *both* halves — a board's subtitle
+is hidden, Home's still names how many projects there are, and returning to
+Home from a board restores it. The board assertions guard the removal; the Home
+assertion guards against the removal being over-applied later by someone
+reading only the story title. A test that only checked the first would have
+passed on the wrong fix.
+
+**Hidden, not blank.** `.brand` is a flex row with a gap, so an empty span is
+still a flex item and its gap would go on padding the wordmark away from the
+search field — a change nobody asked for, invisible in a diff, visible on
+screen. `updateSubtitle` now computes the text and derives `hidden` from it,
+rather than two facts being set independently and drifting.
+
+**Red first, against the real string.** The two board specs failed on
+`2 stories · 2 ready · 0 blocked` — the live label, not a stand-in — while the
+Home control passed unchanged. That split is what proves the spec file was
+measuring the thing the story named.
+
+**Gate: two full `make test` runs, both green, and the second was the hook's.**
+Mine ran 07:22–07:31 (8m24s), supervised with a log-growth heartbeat and a 120s
+stall bound: `cargo fmt --check`, `clippy -D warnings`, 3291 Rust tests over 143
+test binaries plus 2 doc-test targets, plugin harness 30/30, Playwright 92/92
+(89 + 3 new), no stall, no orphan daemons. The second is the global pre-push
+hook's own `make test`, which ran and passed inside the push — **no
+`SKIP_PREPUSH_TESTS=1` this time**, which is the loop SH-225's entry left open
+two cycles ago.
+
+**A supervision note worth keeping.** The pre-push hook writes its `make test`
+output to a temp file it deletes on success, so the pushed command's own log
+shows nothing but the push — a supervisor watching that log sees an 8-minute
+silence and no pulse. It was not wedged; the evidence it ran is the wall clock
+(07:30:53 commit → 07:38:40 push, ≈ one full suite) and the push being allowed
+at all, since the hook exits 2 on failure. **Do not point the stall watchdog at
+a `git push` log and expect a heartbeat** — there is nothing to see until the
+push itself starts.
+
+**One false alarm, resolved rather than ignored.** The gate monitor surfaced
+`error: the storyhook daemon stopped answering: io: Peer disconnected`. That is
+`a_forced_stop_kills_a_daemon_that_is_still_draining` printing its own expected
+stderr; the test passed on the next line. Checked the surrounding lines rather
+than the string alone — a filter that greps for "error" will find tests that
+are *about* errors.
+
+**PR:** #305, one commit, merged as `f91d384`. `Closes SH-234.` in the commit
+body closed the story automatically on merge, as SH-233's entry predicted it
+would. Branch deleted, `main` fast-forwarded.
+
+**No version bump** — left for the next batched `/semver` pass.
+
+**Next:** run `story next` fresh.
