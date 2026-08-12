@@ -204,7 +204,7 @@ fn handoff_lists_open_stories_then_archived_ones_each_in_numeric_id_order() {
     let ctx = fixture.ctx();
     for id in ["SH-11", "SH-2"] {
         StoryService::new(&ctx)
-            .set_state(id, "done", None, None)
+            .set_state(id, "done", None, None, None)
             .expect("closing");
     }
 
@@ -427,7 +427,7 @@ fn show_finds_archived_and_deleted_stories_as_well_as_open_ones() {
     let closed = new_story(&ctx, "closed");
     let deleted = new_story(&ctx, "deleted");
     StoryService::new(&ctx)
-        .set_state(&closed, "done", None, None)
+        .set_state(&closed, "done", None, None, None)
         .expect("closing");
     StoryService::new(&ctx)
         .delete(&deleted, "obsolete")
@@ -504,7 +504,7 @@ fn an_epic_in_todo_with_an_active_child_shows_a_promoted_display_state() {
         .relate(&epic, "parent-of", &child, false)
         .expect("relating");
     StoryService::new(&ctx)
-        .set_state(&child, "in-progress", None, None)
+        .set_state(&child, "in-progress", None, None, None)
         .expect("moving the child");
 
     let shown = query(&fixture, |service| service.show(&epic));
@@ -525,10 +525,10 @@ fn a_blocked_epic_keeps_its_display_state_even_with_an_active_child() {
         .relate(&epic, "parent-of", &child, false)
         .expect("relating");
     StoryService::new(&ctx)
-        .set_state(&epic, "blocked", None, None)
+        .set_state(&epic, "blocked", None, None, None)
         .expect("blocking the epic");
     StoryService::new(&ctx)
-        .set_state(&child, "in-progress", None, None)
+        .set_state(&child, "in-progress", None, None, None)
         .expect("moving the child");
 
     let shown = query(&fixture, |service| service.show(&epic));
@@ -576,7 +576,7 @@ fn summary_and_report_agree_about_the_ready_count_by_two_different_routes() {
     new_story(&ctx, "open");
     let closed = new_story(&ctx, "closed");
     StoryService::new(&ctx)
-        .set_state(&closed, "done", None, None)
+        .set_state(&closed, "done", None, None, None)
         .expect("closing");
 
     let summary = query(&fixture, |service| service.summary());
@@ -599,7 +599,7 @@ fn report_data_treats_the_blocked_state_as_not_ready() {
     let ctx = fixture.ctx();
     let id = new_story(&ctx, "manually blocked");
     StoryService::new(&ctx)
-        .set_state(&id, "blocked", None, None)
+        .set_state(&id, "blocked", None, None, None)
         .expect("blocking");
 
     let report = query(&fixture, |service| service.report_data());
@@ -649,7 +649,7 @@ fn list_includes_archived_and_deleted_stories_unless_a_filter_excludes_them() {
     new_story(&ctx, "open");
     let closed = new_story(&ctx, "closed");
     StoryService::new(&ctx)
-        .set_state(&closed, "done", None, None)
+        .set_state(&closed, "done", None, None, None)
         .expect("closing");
 
     let all = query(&fixture, |service| service.list(&ListFilters::default()));

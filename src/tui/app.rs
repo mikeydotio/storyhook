@@ -773,6 +773,7 @@ fn dispatch(
                     state: target_state.clone(),
                     comment: None,
                     if_state: None,
+                    awaiting: None,
                 },
             )
             .and_then(story_of)

@@ -106,7 +106,7 @@ fn a_closed_story_cannot_be_phased() {
     let ctx = fixture.ctx();
     let id = new_story(&ctx, "done already");
     StoryService::new(&ctx)
-        .set_state(&id, "done", None, None)
+        .set_state(&id, "done", None, None, None)
         .expect("closing");
 
     let service = GroupingService::new(&ctx);
@@ -165,10 +165,10 @@ fn a_phase_rollup_sorts_every_story_into_exactly_one_bucket() {
         service.assign_phase(id, "1").expect("assigning");
     }
     StoryService::new(&ctx)
-        .set_state(&ids[1], "in-progress", None, None)
+        .set_state(&ids[1], "in-progress", None, None, None)
         .expect("starting");
     StoryService::new(&ctx)
-        .set_state(&ids[2], "done", None, None)
+        .set_state(&ids[2], "done", None, None, None)
         .expect("closing");
     RelationService::new(&ctx)
         .relate(&ids[4], "blocks", &ids[3], false)
@@ -205,7 +205,7 @@ fn a_story_in_the_blocked_state_rolls_up_as_blocked_even_with_no_unmet_dependenc
     let id = new_story(&ctx, "manually blocked");
     service.assign_phase(&id, "1").expect("assigning");
     StoryService::new(&ctx)
-        .set_state(&id, "blocked", None, None)
+        .set_state(&id, "blocked", None, None, None)
         .expect("blocking");
 
     let phases = service.phases().expect("listing");

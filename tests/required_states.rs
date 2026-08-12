@@ -222,7 +222,7 @@ fn moving_to_a_missing_required_state_gives_the_doctor_fix_guidance() {
     let id = new_story(&ctx, "needs blocking");
 
     let error = StoryService::new(&ctx)
-        .set_state(&id, "blocked", None, None)
+        .set_state(&id, "blocked", None, None, None)
         .unwrap_err()
         .to_string();
 
@@ -240,7 +240,7 @@ fn moving_to_a_never_defined_state_keeps_the_plain_message() {
     let id = new_story(&ctx, "needs a real state");
 
     let error = StoryService::new(&ctx)
-        .set_state(&id, "in-review", None, None)
+        .set_state(&id, "in-review", None, None, None)
         .unwrap_err()
         .to_string();
 
@@ -377,5 +377,104 @@ fn doctor_fix_does_not_guess_which_state_should_be_active() {
     assert!(
         states.iter().all(|def| def.role.is_none()),
         "--fix must not have assigned a role: {states:#?}"
+    );
+}
+
+// --- SH-205: a story sitting in `blocked` with no `awaiting` reason gets a
+// notice, not a health failure — the write-time capture backstop -----------
+
+/// The common case a skipped dashboard prompt or a bare scripted `move`
+/// leaves behind: a card in the Blocked column with nothing explaining it.
+#[test]
+fn doctor_notices_a_story_blocked_with_no_reason() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let id = new_story(&ctx, "stuck");
+    StoryService::new(&ctx)
+        .set_state(&id, "blocked", None, None, None)
+        .expect("blocking");
+
+    assert!(
+        IntegrityService::new(&ctx)
+            .report()
+            .expect("reporting")
+            .is_empty(),
+        "a reason-less block is not damage"
+    );
+    let notices = IntegrityService::new(&ctx).notices().expect("notices");
+    assert_eq!(notices.len(), 1, "{notices:#?}");
+    assert!(notices[0].contains(&id), "{}", notices[0]);
+    assert!(notices[0].contains("blocked"), "{}", notices[0]);
+}
+
+/// A story blocked with a reason attached — via `move --reason`, atomically
+/// (SH-205) — is silent.
+#[test]
+fn doctor_is_silent_about_a_blocked_story_once_a_reason_is_recorded() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let id = new_story(&ctx, "stuck, but explained");
+    StoryService::new(&ctx)
+        .set_state(&id, "blocked", None, None, Some("waiting on SH-9"))
+        .expect("blocking with a reason");
+
+    let notices = IntegrityService::new(&ctx).notices().expect("notices");
+    assert!(notices.is_empty(), "{notices:#?}");
+}
+
+/// One notice per reason-less blocked story, not a single aggregate line —
+/// each is independently actionable.
+#[test]
+fn doctor_notices_one_line_per_reasonless_blocked_story() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let a = new_story(&ctx, "stuck a");
+    let b = new_story(&ctx, "stuck b");
+    service
+        .set_state(&a, "blocked", None, None, None)
+        .expect("blocking a");
+    service
+        .set_state(&b, "blocked", None, None, None)
+        .expect("blocking b");
+
+    let notices = IntegrityService::new(&ctx).notices().expect("notices");
+    assert_eq!(notices.len(), 2, "{notices:#?}");
+    assert!(notices.iter().any(|n| n.contains(&a)), "{notices:#?}");
+    assert!(notices.iter().any(|n| n.contains(&b)), "{notices:#?}");
+}
+
+/// The notice never contributes to `--fix`'s verdict: nothing here guesses
+/// or writes a reason on the caller's behalf.
+#[test]
+fn doctor_fix_does_not_guess_a_blocked_reason() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let id = new_story(&ctx, "stuck");
+    StoryService::new(&ctx)
+        .set_state(&id, "blocked", None, None, None)
+        .expect("blocking");
+
+    let message = IntegrityService::new(&ctx).fix().expect("fixing");
+    assert!(
+        message.starts_with("doctor found nothing to fix"),
+        "{message}"
+    );
+    let notices = IntegrityService::new(&ctx).notices().expect("notices");
+    assert_eq!(notices.len(), 1, "{notices:#?}");
+    let awaiting = fixture
+        .store()
+        .read(|tx| {
+            let no = StoryNo::parse_id("SH", &id).expect("a well-formed id");
+            Ok(tx
+                .story(fixture.project(), no)?
+                .expect("the story exists")
+                .snapshot
+                .awaiting)
+        })
+        .expect("reading the story");
+    assert!(
+        awaiting.is_none(),
+        "--fix must not have written a reason: {awaiting:?}"
     );
 }

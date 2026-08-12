@@ -503,6 +503,7 @@ mod tests {
             state: "todo".into(),
             comment: Some("1".into()),
             if_state: Some("in-progress".into()),
+            awaiting: None,
         });
         assert_eq!(
             moved,
@@ -511,6 +512,7 @@ mod tests {
                 state: "todo".into(),
                 comment: Some("1".into()),
                 if_state: Some("in-progress".into()),
+                awaiting: None,
             },
             "a comment body that happens to read `1` is prose, not a handle"
         );
