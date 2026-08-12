@@ -3615,24 +3615,39 @@ fn help_text_includes_web_commands() {
     );
 }
 
-// --- Default port is 3456 ---
+// --- An omitted --port is a question for the environment ---
 
+/// An omitted `--port` parses to `None` — "wherever the environment says" — and
+/// not to a port this parser chose.
+///
+/// It used to parse to `3456`, which `handle_start` then handed to
+/// `commands::start` as an explicit request, overriding both
+/// `$STORYHOOK_DAEMON_ADDR` and the store's own resolved preference (SH-249).
+/// The behaviour that override defeated is fenced by
+/// `tests/store_isolation.rs::every_spelling_that_starts_a_daemon_honours_the_
+/// preferred_port`; this pins the parse itself, which is where the wrong value
+/// entered.
 #[test]
-fn web_start_default_port_is_3456() {
-    let dir = scratch_dir();
-    // We test this via the CLI output: start without --port should mention 3456
-    // But actually, the best test is to verify parse_web returns port 3456 by default.
-    // We invoke the CLI parse directly.
-    let inv = storyhook::cli::parse_invocation(&["web".to_string(), "start".to_string()]).unwrap();
-    match inv {
-        storyhook::cli::Invocation::Web {
-            action: storyhook::cli::WebAction::Start { port },
-        } => {
-            assert_eq!(port, 3456, "default port should be 3456");
-        }
-        other => panic!("expected Web::Start, got {:?}", other),
+fn web_start_without_a_port_defers_to_the_environment() {
+    for spelling in [["web", "start"], ["web", "--serve"]] {
+        let argv: Vec<String> = spelling.iter().map(|s| (*s).to_string()).collect();
+        let port = match storyhook::cli::parse_invocation(&argv).unwrap() {
+            storyhook::cli::Invocation::Web {
+                action: storyhook::cli::WebAction::Start { port },
+            }
+            | storyhook::cli::Invocation::Web {
+                action: storyhook::cli::WebAction::Serve { port },
+            } => port,
+            other => panic!("expected a Web start/serve action, got {other:?}"),
+        };
+        assert_eq!(
+            port,
+            None,
+            "`story {}` must leave the port to the environment; a default chosen here \
+             outranks $STORYHOOK_DAEMON_ADDR and the store's own preference",
+            spelling.join(" ")
+        );
     }
-    drop(dir);
 }
 
 // --- CLI parse_web unit tests ---
@@ -3650,7 +3665,7 @@ fn web_parse_start_with_custom_port() {
         storyhook::cli::Invocation::Web {
             action: storyhook::cli::WebAction::Start { port },
         } => {
-            assert_eq!(port, 8080);
+            assert_eq!(port, Some(8080));
         }
         other => panic!("expected Web::Start with port 8080, got {:?}", other),
     }
@@ -3704,7 +3719,7 @@ fn web_parse_serve_internal() {
         storyhook::cli::Invocation::Web {
             action: storyhook::cli::WebAction::Serve { port },
         } => {
-            assert_eq!(port, 4000);
+            assert_eq!(port, Some(4000));
         }
         other => panic!("expected Web::Serve, got {:?}", other),
     }
@@ -3755,7 +3770,7 @@ fn web_start_port_one_is_valid() {
     match inv {
         storyhook::cli::Invocation::Web {
             action: storyhook::cli::WebAction::Start { port },
-        } => assert_eq!(port, 1),
+        } => assert_eq!(port, Some(1)),
         other => panic!("expected Web::Start, got {:?}", other),
     }
 }
@@ -3772,7 +3787,7 @@ fn web_start_port_65535_is_valid() {
     match inv {
         storyhook::cli::Invocation::Web {
             action: storyhook::cli::WebAction::Start { port },
-        } => assert_eq!(port, 65535),
+        } => assert_eq!(port, Some(65535)),
         other => panic!("expected Web::Start, got {:?}", other),
     }
 }

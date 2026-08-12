@@ -1372,7 +1372,7 @@ fn invocation_corpus() -> Vec<Invocation> {
             },
         },
         Invocation::Web {
-            action: WebAction::Start { port: 3456 },
+            action: WebAction::Start { port: Some(3456) },
         },
         Invocation::Web {
             action: WebAction::Stop,
@@ -1381,7 +1381,7 @@ fn invocation_corpus() -> Vec<Invocation> {
             action: WebAction::Status,
         },
         Invocation::Web {
-            action: WebAction::Serve { port: 19000 },
+            action: WebAction::Serve { port: Some(19000) },
         },
         Invocation::Web {
             action: WebAction::Open,
