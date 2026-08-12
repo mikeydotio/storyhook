@@ -152,16 +152,31 @@ impl<'a, S: Store> IntegrityService<'a, S> {
     /// command's: a repair that did not actually fix the project must not exit
     /// zero.
     ///
-    /// # One deliberate divergence from the legacy repair
+    /// # Every story is asked; only an open one is written to
     ///
-    /// "Does the other end exist?" is asked of **every** story, where the
-    /// legacy path asked it of the open ones only. That difference is data
-    /// loss: relate two stories, close or delete one of them, and legacy
-    /// `doctor --fix` retracts the survivor's edges — because the archived
-    /// counterpart is not in the open set — and then reports the asymmetry it
-    /// just created as an integrity failure the command can never clear.
-    /// Appends still go to open stories only, which is the part of that rule
-    /// that was right.
+    /// The legacy repair asked its questions of the open stories only, and
+    /// that was data loss twice over. Relate two stories, close one, and it
+    /// retracted the survivor's edges — the archived counterpart was not in
+    /// the open set, so the edge read as dangling — then reported the
+    /// asymmetry it had just created as a failure the command could never
+    /// clear. And a repair a *closed* story's own relation implied was never
+    /// even attempted, however open the story it had to be written to.
+    ///
+    /// So the questions are asked of every story and the answer decides where
+    /// the repair lands, which is what the open/closed distinction was always
+    /// really about: **appends go to open stories only**. A missing inverse is
+    /// written to the end that lacks it whenever that end is open, whichever
+    /// end raised the question.
+    ///
+    /// # What it could not do, it says (SH-225)
+    ///
+    /// When the only story a repair could append to is closed, the repair is
+    /// skipped — a closed history stays closed — and named in the output, with
+    /// the story to reopen. It used to be skipped in silence, which made
+    /// `--fix` indistinguishable from a broken one: `report` kept naming a
+    /// finding the operator had just told the doctor to fix, and nothing said
+    /// that a manual reopen was the only way through. See
+    /// [`blocked_repairs_detail`].
     pub fn fix(&self) -> Result<String, AppError> {
         let now = self.ctx.now();
         let project = self.project();
@@ -177,22 +192,32 @@ impl<'a, S: Store> IntegrityService<'a, S> {
             Ok(after.len() - before.len())
         })?;
 
-        let touched = self.ctx.store().write(|tx| {
+        let (touched, blocked) = self.ctx.store().write(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let states = tx.state_map(project)?;
             let all = all_stories(&*tx, project)?;
             let open = open_stories(&*tx, project)?;
             let mut touched: BTreeSet<String> = BTreeSet::new();
+            let mut blocked: BTreeSet<(String, String)> = BTreeSet::new();
 
-            for (id, story) in &open {
-                let mut own_events: Vec<StoryEvent> = Vec::new();
+            for (id, story) in &all {
+                // Each candidate carries the event *and* the imperative
+                // sentence describing it: a story too closed to be appended to
+                // owes the operator the sentence rather than the event.
+                let mut own_events: Vec<(StoryEvent, String)> = Vec::new();
                 for relation in &story.relationships {
                     let Some(other) = all.get(&relation.other_id) else {
-                        own_events.push(StoryEvent::StoryRelationshipRemoved {
-                            at: now.clone(),
-                            other_id: relation.other_id.clone(),
-                            relation: relation.relation.clone(),
-                        });
+                        own_events.push((
+                            StoryEvent::StoryRelationshipRemoved {
+                                at: now.clone(),
+                                other_id: relation.other_id.clone(),
+                                relation: relation.relation.clone(),
+                            },
+                            format!(
+                                "retract its dangling relation `{}` to the missing story `{}`",
+                                relation.relation, relation.other_id
+                            ),
+                        ));
                         continue;
                     };
                     let Some(expected) = inverse_relation(&relation.relation) else {
@@ -202,8 +227,20 @@ impl<'a, S: Store> IntegrityService<'a, S> {
                         continue;
                     }
                     // An archived story's history is closed; a missing inverse
-                    // on one is a finding, not something to append to.
+                    // on one is a finding, not something to append to. Named
+                    // here rather than left silent (SH-225), and named against
+                    // the *other* end, because that is the story an operator
+                    // has to reopen — `compute_integrity_issues` reports this
+                    // finding against `id`, which is the end that already has
+                    // its half.
                     if !open.contains_key(&relation.other_id) {
+                        blocked.insert((
+                            relation.other_id.clone(),
+                            format!(
+                                "write the missing inverse relation `{expected}` of {id}'s `{}`",
+                                relation.relation
+                            ),
+                        ));
                         continue;
                     }
                     let other_no = StoryNo::parse_id(&prefix, &relation.other_id)
@@ -227,36 +264,45 @@ impl<'a, S: Store> IntegrityService<'a, S> {
 
                 // A comma-bearing or blank label (SH-164) is repaired the same
                 // way a stale read-model row is: re-emit the normalized set as
-                // a fresh event. Only reachable on an open story — the loop
-                // this sits in is `open` only — so a malformed label on a
-                // closed story stays a finding `report` keeps naming, the
-                // same as any other issue a closed story cannot be repaired
-                // out of.
+                // a fresh event.
                 let normalized_labels = normalize_labels(&story.labels);
                 if normalized_labels != story.labels {
-                    own_events.push(StoryEvent::StoryLabelsSet {
-                        at: now.clone(),
-                        labels: normalized_labels,
-                    });
+                    let repair = format!("normalize its labels to {normalized_labels:?}");
+                    own_events.push((
+                        StoryEvent::StoryLabelsSet {
+                            at: now.clone(),
+                            labels: normalized_labels,
+                        },
+                        repair,
+                    ));
                 }
 
-                if !own_events.is_empty() {
-                    let story_no = StoryNo::parse_id(&prefix, id)
-                        .map_err(|error| AppError::Storage(format!("unparseable id: {error}")))?;
-                    append_and_fold(
-                        tx,
-                        project,
-                        story_no,
-                        &prefix,
-                        &states,
-                        ExpectedSeq::Any,
-                        &own_events,
-                        self.ctx.provenance(),
-                    )?;
-                    touched.insert(id.clone());
+                if own_events.is_empty() {
+                    continue;
                 }
+                let (events, repairs): (Vec<StoryEvent>, Vec<String>) =
+                    own_events.into_iter().unzip();
+                // Every repair above appends to `story` itself, so a closed one
+                // is out of reach and says so instead of vanishing (SH-225).
+                if !open.contains_key(id) {
+                    blocked.extend(repairs.into_iter().map(|repair| (id.clone(), repair)));
+                    continue;
+                }
+                let story_no = StoryNo::parse_id(&prefix, id)
+                    .map_err(|error| AppError::Storage(format!("unparseable id: {error}")))?;
+                append_and_fold(
+                    tx,
+                    project,
+                    story_no,
+                    &prefix,
+                    &states,
+                    ExpectedSeq::Any,
+                    &events,
+                    self.ctx.provenance(),
+                )?;
+                touched.insert(id.clone());
             }
-            Ok(touched)
+            Ok((touched, blocked))
         })?;
 
         let repair = repair_read_model(self.ctx.store(), project)?;
@@ -271,22 +317,33 @@ impl<'a, S: Store> IntegrityService<'a, S> {
 
         let remaining = self.report()?;
         let notices = self.notices()?;
+        let blocked_detail = blocked_repairs_detail(&blocked);
         if !remaining.is_empty() {
-            return Err(AppError::Integrity(detail_with_notices(
-                &remaining, &notices,
-            )));
+            return Err(AppError::Integrity(join_sections(&[
+                &remaining.join("\n"),
+                &blocked_detail,
+                &notices.join("\n"),
+            ])));
         }
 
-        let mut message = if touched.is_empty() && states_added == 0 {
+        let mut message = if !touched.is_empty() || states_added > 0 {
+            "doctor repaired supported integrity issues".to_string()
+        } else if blocked.is_empty() {
             "doctor found nothing to fix".to_string()
         } else {
-            "doctor repaired supported integrity issues".to_string()
+            // Not "nothing to fix": there is something, and this command
+            // cannot be the one to fix it (SH-225).
+            "doctor found nothing it could fix".to_string()
         };
         if states_added > 0 {
             message.push_str(&format!(
                 "\nadded {states_added} required {} this project was missing",
                 if states_added == 1 { "state" } else { "states" }
             ));
+        }
+        if !blocked_detail.is_empty() {
+            message.push('\n');
+            message.push_str(&blocked_detail);
         }
         if !repair.unrepairable.is_empty() {
             message.push_str(&format!(
@@ -391,7 +448,8 @@ fn story_issues(tx: &impl ReadOps, project: ProjectId) -> Result<Vec<String>, Ap
         // `story unlabel`/`list --label`) or a blank/untrimmed one.
         // `--fix` repairs this on an open story; on a closed one it stays a
         // finding, the same as any other issue a closed story's history
-        // cannot be appended to fix.
+        // cannot be appended to fix — and `--fix` names the story to reopen
+        // rather than leaving the finding unexplained (SH-225).
         if view.story.labels != normalize_labels(&view.story.labels) {
             issues.push(format!(
                 "{}: malformed labels {:?} — a label cannot contain a comma or be blank",
@@ -538,12 +596,47 @@ fn blocked_without_reason_notices(
 /// path and `--fix`'s failure path both need exactly this rendering, so it is
 /// shared rather than duplicated.
 pub fn detail_with_notices(issues: &[String], notices: &[String]) -> String {
-    let mut detail = issues.join("\n");
-    if !notices.is_empty() {
-        detail.push('\n');
-        detail.push_str(&notices.join("\n"));
+    join_sections(&[&issues.join("\n"), &notices.join("\n")])
+}
+
+/// Joins a doctor detail's sections with single newlines, skipping the empty
+/// ones — so a caller can hand over a section it has no occupants for without
+/// leaving a blank line in the output.
+fn join_sections(sections: &[&str]) -> String {
+    sections
+        .iter()
+        .filter(|section| !section.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// What `--fix` identified and did not do, because the only story it could
+/// have appended to is closed. Empty for an empty set, so a caller can splice
+/// it in unconditionally.
+///
+/// Every line names the story to **reopen**, which is frequently not the story
+/// the matching finding names: `compute_integrity_issues` reports a missing
+/// inverse against the end that already has its half, while the repair belongs
+/// on the end that lacks it. An operator working from the finding alone
+/// reopens the wrong story — SH-225, where eight closed stories' malformed
+/// labels sat behind this silence for a week because nothing said a manual
+/// reopen was the only way through.
+fn blocked_repairs_detail(blocked: &BTreeSet<(String, String)>) -> String {
+    if blocked.is_empty() {
+        return String::new();
     }
-    detail
+    format!(
+        "{} repair{} could not be made — a closed story's history cannot be appended to. Reopen \
+         it (`story reopen <id>`), re-run `story doctor --fix`, then close it again:\n{}",
+        blocked.len(),
+        if blocked.len() == 1 { "" } else { "s" },
+        blocked
+            .iter()
+            .map(|(story, repair)| format!("{story}: {repair}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
 }
 
 /// Every story in the project, keyed by id — archived and deleted included.
@@ -560,9 +653,12 @@ fn all_stories(
 
 /// The project's unarchived stories, keyed by id.
 ///
-/// `--fix` has always worked on open stories only: an archived story's history
-/// is closed, and appending a repair event to it would reopen a question the
-/// project already settled.
+/// `--fix` appends to these and no others: an archived story's history is
+/// closed, and appending a repair event to it would reopen a question the
+/// project already settled. Membership is the *destination* test, not the
+/// question test — see [`IntegrityService::fix`] for the difference, and
+/// [`blocked_repairs_detail`] for what a repair with no open destination
+/// becomes instead.
 fn open_stories(
     tx: &impl ReadOps,
     project: ProjectId,

@@ -632,6 +632,13 @@ When to use:
   under the wrong superstate is reported rather than rewritten, because
   changing it would reclassify the stories sitting in it.
 
+  A repair is an event, so it can only land on an open story. When the
+  only story a repair could be written to is closed, --fix names that
+  story instead of skipping it in silence: reopen it, run --fix again,
+  then close it again. The story to reopen is often not the one the
+  finding names — a missing inverse relation is reported against the
+  end that has its half and repaired on the end that does not.
+
 Examples:
   story doctor          # Check only, report issues
   story doctor --fix    # Attempt to fix issues found
