@@ -408,6 +408,79 @@ fn load_detail_referenced_by(
     }
 }
 
+/// Open the detail drawer on a story, its derived view fetched.
+///
+/// Extracted from the `Action::OpenDetail` dispatch arm so that "opening a
+/// drawer fetches what a snapshot cannot carry" is a testable claim rather than
+/// four lines inside a match arm no test can reach — `dispatch` takes a
+/// terminal.
+fn open_detail(
+    id: String,
+    state: &mut AppState,
+    invoker: &dyn Invoker,
+    modal_components: &mut ModalComponents,
+) {
+    let mut detail = StoryDetail::new(id.clone());
+    load_detail_referenced_by(&mut detail, invoker, state);
+    modal_components.story_detail = Some(detail);
+    state.focus.push_modal(Modal::StoryDetail { story_id: id });
+}
+
+/// Reload the project and everything drawn from it.
+///
+/// The whole board is rebuilt from one snapshot; a drawer standing open over a
+/// story that has since left the project is closed and said so; and the
+/// drawer's derived half — which does not ride the snapshot, see
+/// [`load_detail_referenced_by`] — is fetched again.
+///
+/// Extracted from the `Action::RefreshData` dispatch arm for the same
+/// testability reason as [`open_detail`]. `tui_integration.rs`'s
+/// `story_deleted_externally_closes_modal_with_notification` hand-copies the
+/// stale-drawer rule because it could not call this; the copy is still there,
+/// but the rule itself is now pinned against the real function in this file's
+/// own tests.
+fn refresh_data(
+    state: &mut AppState,
+    invoker: &dyn Invoker,
+    board: &mut Board,
+    graph: &mut GraphComponent,
+    modal_components: &mut ModalComponents,
+) {
+    match DataStore::load(invoker) {
+        Ok(data) => {
+            state.data = data;
+            // Notify board of state change so it can reclamp cursor
+            board.on_state_change(state);
+            graph.on_state_change(state);
+            // Stale modal protection: if a detail modal is open, check
+            // that the story still exists
+            if let Some(Modal::StoryDetail { story_id }) = state.focus.top_modal()
+                && state.data.find_story(story_id).is_none()
+            {
+                let id = story_id.clone();
+                state.focus.pop_modal();
+                modal_components.story_detail = None;
+                state.notification = Some((format!("Story {id} no longer open"), Instant::now()));
+            }
+            // The drawer's derived half does not ride the snapshot (see
+            // `load_detail_referenced_by`), so a pull request, commit or
+            // comment mention recorded by another process would stay
+            // invisible until the drawer was closed and reopened. The
+            // dozen mutation arms in `dispatch` reload the snapshot
+            // without this, deliberately: no TUI verb can change the open
+            // story's `referenced_by`, and each of them crosses a request
+            // boundary, so the daemon publishes and this runs on its own
+            // moments later.
+            if let Some(detail) = modal_components.story_detail.as_mut() {
+                load_detail_referenced_by(detail, invoker, state);
+            }
+        }
+        Err(e) => {
+            state.notification = Some((format!("Refresh failed: {e}"), Instant::now()));
+        }
+    }
+}
+
 /// The text a `Response::Message` carries.
 fn message_of(response: Response) -> Result<String, AppError> {
     match response {
@@ -590,12 +663,7 @@ fn dispatch(
             }
         }
 
-        Action::OpenDetail(id) => {
-            let mut detail = StoryDetail::new(id.clone());
-            load_detail_referenced_by(&mut detail, invoker, state);
-            modal_components.story_detail = Some(detail);
-            state.focus.push_modal(Modal::StoryDetail { story_id: id });
-        }
+        Action::OpenDetail(id) => open_detail(id, state, invoker, modal_components),
 
         Action::OpenCreateForm => {
             modal_components.create_form = Some(CreateForm::new());
@@ -636,42 +704,7 @@ fn dispatch(
             state.filter_bar_focused = false;
         }
 
-        Action::RefreshData => {
-            match DataStore::load(invoker) {
-                Ok(data) => {
-                    state.data = data;
-                    // Notify board of state change so it can reclamp cursor
-                    board.on_state_change(state);
-                    graph.on_state_change(state);
-                    // Stale modal protection: if a detail modal is open, check
-                    // that the story still exists
-                    if let Some(Modal::StoryDetail { story_id }) = state.focus.top_modal()
-                        && state.data.find_story(story_id).is_none()
-                    {
-                        let id = story_id.clone();
-                        state.focus.pop_modal();
-                        modal_components.story_detail = None;
-                        state.notification =
-                            Some((format!("Story {id} no longer open"), Instant::now()));
-                    }
-                    // The drawer's derived half does not ride the snapshot (see
-                    // `load_detail_referenced_by`), so a pull request, commit or
-                    // comment mention recorded by another process would stay
-                    // invisible until the drawer was closed and reopened. The
-                    // dozen mutation arms below reload the snapshot without
-                    // this, deliberately: no TUI verb can change the open
-                    // story's `referenced_by`, and each of them crosses a
-                    // request boundary, so the daemon publishes and this arm
-                    // runs on its own moments later.
-                    if let Some(detail) = modal_components.story_detail.as_mut() {
-                        load_detail_referenced_by(detail, invoker, state);
-                    }
-                }
-                Err(e) => {
-                    state.notification = Some((format!("Refresh failed: {e}"), Instant::now()));
-                }
-            }
-        }
+        Action::RefreshData => refresh_data(state, invoker, board, graph, modal_components),
 
         Action::Notify(msg) => {
             state.notification = Some((msg, Instant::now()));
@@ -1718,6 +1751,124 @@ mod tests {
         assert!(
             message.contains("Referenced By") && message.contains("the daemon went away"),
             "the notification must name what failed and why: {message}"
+        );
+    }
+
+    /// Opening a drawer fetches. The gap this closes is the one the defect
+    /// lived in: the derived view can be perfectly available and the drawer
+    /// still never ask for it.
+    #[test]
+    fn opening_a_drawer_fetches_the_story_s_derived_view() {
+        let fixture = TuiFixture::new();
+        let invoker = fixture.invoker();
+        let id = seed_story(&invoker, "Linked to a pull request");
+        invoke(
+            &invoker,
+            Invocation::LinkPr {
+                id: id.clone(),
+                url: "https://github.com/mikeydotio/storyhook/pull/12".to_string(),
+                close_on_merge: true,
+            },
+        )
+        .expect("linking a pull request");
+
+        let mut state = make_state();
+        let mut modals = ModalComponents::default();
+        open_detail(id.clone(), &mut state, &invoker, &mut modals);
+
+        let detail = modals.story_detail.expect("the drawer must be open");
+        assert_eq!(detail.story_id, id);
+        assert_eq!(
+            detail
+                .referenced_by
+                .expect("opening must fetch, not leave the derived half unasked for")
+                .prs
+                .len(),
+            1
+        );
+    }
+
+    /// A refresh re-fetches an open drawer's derived view, so a pull request
+    /// linked by another process appears without closing and reopening it.
+    #[test]
+    fn a_refresh_updates_an_open_drawer_s_derived_view() {
+        let fixture = TuiFixture::new();
+        let invoker = fixture.invoker();
+        let id = seed_story(&invoker, "Nothing links to it yet");
+
+        let mut state = make_state();
+        let mut modals = ModalComponents::default();
+        let mut board = Board::new();
+        let mut graph = GraphComponent::new();
+        open_detail(id.clone(), &mut state, &invoker, &mut modals);
+        assert!(
+            modals
+                .story_detail
+                .as_ref()
+                .and_then(|detail| detail.referenced_by.as_ref())
+                .expect("a fetched view")
+                .prs
+                .is_empty(),
+            "nothing links to the story yet"
+        );
+
+        // Another process links one, and the change feed wakes the TUI.
+        invoke(
+            &invoker,
+            Invocation::LinkPr {
+                id: id.clone(),
+                url: "https://github.com/mikeydotio/storyhook/pull/13".to_string(),
+                close_on_merge: true,
+            },
+        )
+        .expect("linking a pull request");
+        refresh_data(&mut state, &invoker, &mut board, &mut graph, &mut modals);
+
+        let prs = modals
+            .story_detail
+            .expect("the drawer is still open")
+            .referenced_by
+            .expect("still fetched")
+            .prs;
+        assert_eq!(
+            prs.iter().map(|pr| pr.number).collect::<Vec<_>>(),
+            vec![13],
+            "a refresh must re-fetch the derived half, which no snapshot carries"
+        );
+    }
+
+    /// A refresh that finds the drawer's story gone closes the drawer and says
+    /// so — and does not then try to fetch a derived view for a story that is
+    /// no longer there.
+    #[test]
+    fn a_refresh_closes_a_drawer_whose_story_has_left_the_project() {
+        let fixture = TuiFixture::new();
+        let invoker = fixture.invoker();
+        let id = seed_story(&invoker, "Ephemeral");
+
+        let mut state = make_state();
+        let mut modals = ModalComponents::default();
+        let mut board = Board::new();
+        let mut graph = GraphComponent::new();
+        open_detail(id.clone(), &mut state, &invoker, &mut modals);
+
+        invoke(
+            &invoker,
+            Invocation::Delete {
+                id: id.clone(),
+                reason: "raced".to_string(),
+            },
+        )
+        .expect("deleting the story out from under the drawer");
+        refresh_data(&mut state, &invoker, &mut board, &mut graph, &mut modals);
+
+        assert!(modals.story_detail.is_none(), "the drawer must be closed");
+        assert!(!state.focus.has_modal());
+        let (message, _) = state.notification.expect("the closure must be announced");
+        assert!(
+            message.contains(&id) && message.contains("no longer open"),
+            "the notification must be about the story leaving, not about the \
+             derived view that was never fetched for it: {message}"
         );
     }
 
