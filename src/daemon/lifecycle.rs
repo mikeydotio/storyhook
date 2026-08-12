@@ -709,6 +709,28 @@ pub fn run<S: crate::store::Store>(store: &S, env: &Environment) -> Result<(), A
         info.store_path.display()
     );
 
+    // The daemon's security posture, stated rather than assumed (SH-250).
+    //
+    // A loopback read is answered without the bearer token, and the one
+    // deployment that defeats every conjunct of that rule -- a reverse proxy
+    // that rewrites `Host` to the loopback address and forwards no
+    // `X-Forwarded-*` -- is one the daemon cannot detect from a request. It
+    // *can* be told, by the same variable that has always widened the `Host`
+    // allowlist. So an operator who is about to put a proxy in front of this
+    // needs to know both that the exemption exists and what turns it off, and
+    // the moment to say so is the one moment they are certain to have looked.
+    if crate::api::http::TrustedHosts::for_daemon(Vec::new()).behind_a_proxy() {
+        eprintln!(
+            "storyhook daemon: a reverse-proxy allowlist is configured, so every \
+             request needs the bearer token, loopback included"
+        );
+    } else {
+        eprintln!(
+            "storyhook daemon: loopback reads are answered without a token; set \
+             STORYHOOK_WEB_TRUSTED_HOSTS before reverse-proxying this daemon"
+        );
+    }
+
     // Before serving anything: one global database is one global blast radius,
     // and a daemon start is the only moment on this machine that reliably
     // happens both after a reboot and after every upgrade. A backup that cannot

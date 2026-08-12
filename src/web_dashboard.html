@@ -5622,11 +5622,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   renderScreen();
 
   /** Starts the app proper: the initial fetch, the live-update channel, and
-   * the safety-net intervals. Held back until a daemon token is on hand
-   * (every `/api/**` route requires one -- nothing here could succeed
-   * without it) rather than firing it and letting the first request's 401
-   * bounce through the modal instead -- one prompt on load beats a
-   * guaranteed failed round-trip first. */
+   * the safety-net intervals. */
   function startApp() {
     bootstrap();
     connectEvents();
@@ -5635,11 +5631,23 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     setInterval(sseWatchdog, SSE_WATCHDOG_INTERVAL_MS);
   }
 
-  if (getDaemonToken()) {
-    startApp();
-  } else {
-    openTokenModal(startApp);
-  }
+  // Started unconditionally, with no token on hand and none asked for.
+  //
+  // This used to prompt first when `sessionStorage` held no token, because
+  // every `/api/**` route required one and the first request was therefore a
+  // guaranteed 401 -- one prompt beat a wasted round-trip. Since SH-250 a
+  // *read* on the loopback listener needs no token, so on 127.0.0.1 that
+  // first request succeeds and the modal was the only thing left standing
+  // between a fresh tab and a rendered dashboard.
+  //
+  // The prompt is now purely reactive, through machinery that already
+  // existed: `fetchData()`'s 401 branch clears the stored token and opens the
+  // modal, and `api()`'s clears it, opens the modal, and transparently
+  // retries the exact request. So the tailnet listener still prompts -- it
+  // just pays one failed round-trip first, which is the cost of loopback
+  // never paying anything. A write on loopback prompts the same way: the
+  // exemption covers reads only.
+  startApp();
 })();
 </script>
 
