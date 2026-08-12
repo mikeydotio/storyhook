@@ -4341,12 +4341,24 @@ fn sse_delivers_repo_changed_on_state_configuration_change() {
     );
 }
 
-/// Several mutations fired back-to-back collapse into fewer published
-/// events than mutations performed, proving the watcher's per-repo 200ms
-/// debounce window is actually coalescing rather than publishing once per
-/// underlying filesystem event.
+/// Several out-of-band mutations fired back-to-back collapse into fewer
+/// published events than mutations performed.
+///
+/// The name and doc this test carried until SH-216 credited the collapse to a
+/// "per-repo 200ms debounce window" in the bus. It was never that: `seed`
+/// dispatches **in process**, so these writes never cross a request boundary
+/// and the only publisher that can see them is `poll_change_token`, whose
+/// `ChangeWatcher::notice` diffs the store on a 250ms tick and emits one
+/// `Change::Project` however many writes accumulated since the last baseline.
+/// The collapse is the watcher's poll granularity — which is also why the test
+/// survived SH-216 deleting the bus's coalescing outright, and why two ticks
+/// (250ms apart) were always further apart than that window anyway.
+///
+/// Kept, because what it describes is real and worth pinning: a burst of writes
+/// this daemon did not serve — a `story tui` session, a second machine — costs
+/// a browser one refetch, not one per write.
 #[test]
-fn sse_coalesces_rapid_mutations_within_debounce_window() {
+fn sse_collapses_a_burst_of_out_of_band_writes_into_fewer_events() {
     let _sse_guard = sse_test_lock();
     let fixture = served();
     let port = fixture.port;
@@ -4355,20 +4367,19 @@ fn sse_coalesces_rapid_mutations_within_debounce_window() {
 
     let mut sse = connect_sse(port, &fixture.token);
     const MUTATIONS: usize = 6;
-    // Mutate in-process rather than by spawning `story` subprocesses:
-    // subprocess spawn latency is too variable under the CPU load this whole
-    // suite generates to reliably land all of them inside the coalescing
-    // window, which would make this assertion flaky for reasons that have
-    // nothing to do with the logic under test. A tight in-process loop does.
+    // In-process on purpose, and load-bearing twice over: it is what makes
+    // these writes *out of band* (no request boundary sees them, so only the
+    // poller can report them), and a tight loop is what lands them all inside
+    // one poll tick. Spawning `story` subprocesses would do neither reliably
+    // under the CPU load this suite generates.
     for _ in 0..MUTATIONS {
         fixture.seed(&["comment", "SH-1", "rapid update"]);
     }
 
-    // Give the debounce window (200ms) and one more publish cycle to settle,
-    // then count how many `repo-changed` events actually arrived. Adaptive
-    // rather than a fixed sleep, since this whole suite can run with other
-    // test binaries hammering the CPU in parallel under `cargo test`'s
-    // default concurrency.
+    // Let the poll tick (250ms) and one more publish cycle settle, then count
+    // how many `repo-changed` events actually arrived. Adaptive rather than a
+    // fixed sleep, since this whole suite can run with other test binaries
+    // hammering the CPU in parallel under `cargo test`'s default concurrency.
     let received =
         read_sse_until_quiet(&mut sse, Duration::from_millis(500), Duration::from_secs(8));
     let occurrences = received.matches("event: repo-changed").count();
@@ -4378,8 +4389,8 @@ fn sse_coalesces_rapid_mutations_within_debounce_window() {
     );
     assert!(
         occurrences < MUTATIONS,
-        "expected debouncing to coalesce {MUTATIONS} rapid mutations into fewer than \
-         {MUTATIONS} events, got {occurrences}: {received}"
+        "expected the safety-net poll to collapse {MUTATIONS} out-of-band writes into fewer \
+         than {MUTATIONS} events, got {occurrences}: {received}"
     );
 }
 
