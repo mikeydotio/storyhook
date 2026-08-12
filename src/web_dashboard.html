@@ -770,6 +770,19 @@ tbody tr:hover { background: var(--bg-sunken); }
   </div>
 </div>
 
+<div class="backdrop" id="drop-blocked-reason-backdrop" hidden></div>
+<div class="modal" id="drop-blocked-reason-modal" aria-hidden="true">
+  <div class="modal-header">Why is this blocked?</div>
+  <div class="modal-body">
+    <div class="field"><label for="drop-blocked-reason-input">Reason (optional)</label>
+      <input type="text" id="drop-blocked-reason-input" autocomplete="off" spellcheck="false" placeholder="e.g. waiting on SH-9"></div>
+  </div>
+  <div class="modal-footer">
+    <button type="button" class="btn btn-ghost" id="drop-blocked-reason-skip">Skip</button>
+    <button type="button" class="btn btn-primary" id="drop-blocked-reason-submit">Add reason</button>
+  </div>
+</div>
+
 <div class="backdrop" id="token-modal-backdrop" hidden></div>
 <div class="modal" id="token-modal" aria-hidden="true">
   <div class="modal-header">Daemon token required</div>
@@ -2449,7 +2462,14 @@ tbody tr:hover { background: var(--bg-sunken); }
     card.appendChild(metaRow);
 
     var flags = el("div", { class: "card-flags" }, []);
-    if (blocked[st.id]) flags.appendChild(el("span", { class: "flag flag-blocked" }, ["● blocked"]));
+    if (blocked[st.id]) {
+      // SH-205: a blocked card with no `awaiting` reason is called out
+      // distinctly — the doctor notice's dashboard-facing half.
+      var label = st.awaiting ? "● blocked" : "● blocked (no reason)";
+      var flag = el("span", { class: "flag flag-blocked" }, [label]);
+      if (!st.awaiting) flag.title = "No awaiting reason recorded — click the card to add one.";
+      flags.appendChild(flag);
+    }
     // Ready is the default state and gets no badge — only the blocked
     // exception is called out.
     // Only reachable with "Show archived" on — `filteredStories()` excludes
@@ -2481,6 +2501,15 @@ tbody tr:hover { background: var(--bg-sunken); }
       // user sees on screen.
       var currentSlug = current.display_state || current.story.state;
       if (currentSlug === targetSlug) return;
+      // SH-205: dropping into Blocked opens a skippable prompt for the
+      // reason instead of moving immediately — the council's decision was
+      // that the move must complete either way (Skip, backdrop, Escape),
+      // never abort, so this never blocks the drag itself, only defers it
+      // by one small modal.
+      if (targetSlug === "blocked") {
+        openDropBlockedReasonModal(id);
+        return;
+      }
       moveStory(id, targetSlug, isClosed);
     });
   }
@@ -2489,10 +2518,56 @@ tbody tr:hover { background: var(--bg-sunken); }
     return (state.data && state.data.stories || []).filter(function(v) { return v.story.id === id; })[0] || null;
   }
 
+  /** The story id a block-reason prompt is currently open for, or null. */
+  var dropBlockedReasonMoveId = null;
+
+  function openDropBlockedReasonModal(id) {
+    dropBlockedReasonMoveId = id;
+    $("drop-blocked-reason-input").value = "";
+    $("drop-blocked-reason-backdrop").hidden = false;
+    requestAnimationFrame(function() {
+      $("drop-blocked-reason-backdrop").classList.add("open");
+      $("drop-blocked-reason-modal").classList.add("open");
+      $("drop-blocked-reason-modal").setAttribute("aria-hidden", "false");
+      $("drop-blocked-reason-input").focus();
+    });
+  }
+
+  function closeDropBlockedReasonModal() {
+    $("drop-blocked-reason-backdrop").classList.remove("open");
+    $("drop-blocked-reason-modal").classList.remove("open");
+    $("drop-blocked-reason-modal").setAttribute("aria-hidden", "true");
+    setTimeout(function() { $("drop-blocked-reason-backdrop").hidden = true; }, 150);
+  }
+
+  /** Completes the drag into Blocked either way. `reason` is optional —
+   * skipping the prompt (Skip, backdrop click, Escape) still moves the
+   * card, just with `awaiting` left null, per SH-205's council verdict:
+   * write-time capture is a human-legibility nicety, never a gate on the
+   * move itself. A no-op if nothing is pending (safe to call from the
+   * shared Escape handler unconditionally). */
+  function finishBlockedDrop(reason) {
+    var id = dropBlockedReasonMoveId;
+    dropBlockedReasonMoveId = null;
+    if (!id) return;
+    closeDropBlockedReasonModal();
+    moveStory(id, "blocked", false, reason || undefined);
+  }
+
+  function skipDropBlockedReasonModal() { finishBlockedDrop(null); }
+
+  function submitDropBlockedReasonModal() {
+    var value = $("drop-blocked-reason-input").value.trim();
+    finishBlockedDrop(value || null);
+  }
+
   /** Optimistically moves a card to `targetSlug`, calls the API, and either
    * applies the server's story on success or reverts + toasts on failure.
-   * The next poll ignores `pending` ids so it can't fight the in-flight move. */
-  function moveStory(id, targetSlug, targetIsClosed) {
+   * The next poll ignores `pending` ids so it can't fight the in-flight move.
+   * `reason` (SH-205) is optional and only meaningful alongside a move into
+   * an OPEN state — the server refuses it combined with a close, so it is
+   * never sent on the `targetIsClosed` path. */
+  function moveStory(id, targetSlug, targetIsClosed, reason) {
     var story = findStory(id);
     if (!story) return;
     var originSlug = story.story.state;
@@ -2500,11 +2575,14 @@ tbody tr:hover { background: var(--bg-sunken); }
     state.pending[id] = true;
     renderView();
 
+    var body = { state: targetSlug };
+    if (reason) body.reason = reason;
+
     var request = targetIsClosed
       ? api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/move", { state: targetSlug })
       : (stateSuperstate(originSlug) === "CLOSED"
           ? api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/reopen", {})
-          : api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/move", { state: targetSlug }));
+          : api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/move", body));
 
     request
       .then(function(resp) {
@@ -4431,12 +4509,18 @@ tbody tr:hover { background: var(--bg-sunken); }
     $("token-input").addEventListener("keydown", function(e) { if (e.key === "Enter") submitTokenModal(); });
     $("archive-modal-cancel").addEventListener("click", closeArchiveModal);
     $("archive-modal-backdrop").addEventListener("click", closeArchiveModal);
+    $("drop-blocked-reason-skip").addEventListener("click", skipDropBlockedReasonModal);
+    $("drop-blocked-reason-backdrop").addEventListener("click", skipDropBlockedReasonModal);
+    $("drop-blocked-reason-submit").addEventListener("click", submitDropBlockedReasonModal);
+    $("drop-blocked-reason-input").addEventListener("keydown", function(e) { if (e.key === "Enter") submitDropBlockedReasonModal(); });
     $("drawer-close").addEventListener("click", closeDrawer);
     $("drawer-backdrop").addEventListener("click", closeDrawer);
     document.addEventListener("keydown", function(e) {
       // SH-175: `create-modal` is deliberately absent here — see the
       // comment above its own listener bindings.
-      if (e.key === "Escape") { closeDrawer(); closeDraftsModal(); cancelTokenModal(); closeArchiveModal(); }
+      if (e.key === "Escape") {
+        closeDrawer(); closeDraftsModal(); cancelTokenModal(); closeArchiveModal(); skipDropBlockedReasonModal();
+      }
     });
   }
 
