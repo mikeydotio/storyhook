@@ -80,6 +80,29 @@ impl LegacyPaths {
         self.storyhook_dir().join("archive/archive.db")
     }
 
+    /// `github-sync.toml` — the sync engine's configuration, mappings included.
+    ///
+    /// Beside `project.toml` rather than inside it: the pre-rearchitecture
+    /// binary kept github-sync's state in its own files, which is why the two
+    /// settings tables this reader takes from `project.toml` never mentioned it
+    /// (SH-189, SH-233).
+    #[must_use]
+    pub fn github_sync_file(&self) -> PathBuf {
+        self.storyhook_dir().join("github-sync.toml")
+    }
+
+    /// `github-sync/bases`, one `<id>.json` per story github-sync has synced —
+    /// the snapshot it last merged against.
+    ///
+    /// A mapping without its base is worse than neither: `sync_single_story`
+    /// falls back to the story's *current* state as the base, so a story that
+    /// arrives mapped-but-baseless has every stale remote field filed as an
+    /// ordinary pull.
+    #[must_use]
+    pub fn github_bases_dir(&self) -> PathBuf {
+        self.storyhook_dir().join("github-sync/bases")
+    }
+
     /// The write-ahead log beside [`archive_db`](Self::archive_db).
     ///
     /// Read only to *refuse*: an archive database with uncommitted WAL content
@@ -122,6 +145,8 @@ mod tests {
             paths.open_stories_dir(),
             paths.archive_db(),
             paths.archive_wal(),
+            paths.github_sync_file(),
+            paths.github_bases_dir(),
         ] {
             assert!(
                 path.starts_with(paths.storyhook_dir()),

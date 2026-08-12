@@ -170,6 +170,10 @@ pub struct MigrationReport {
     /// only place an operator would learn a rollback would drop them. The
     /// envelope carries them now; what the line still does is tell an operator
     /// what the tree turned out to be configured with.
+    ///
+    /// Wider than `project.toml`'s two tables since SH-233: github-sync's
+    /// configuration lives in its own file beside them, and its absence from
+    /// this list was how a migration that dropped it stayed silent.
     pub settings: Vec<String>,
 }
 
@@ -258,10 +262,11 @@ impl MigrationReport {
 /// # What travels, and what a rollback therefore does not carry
 ///
 /// A [`ProjectExport`](crate::service::transfer::ProjectExport) holds states,
-/// types, members, stories and — since SH-133 — the project's settings. A *tree*
-/// also holds `project.toml`'s `created_at` and `next-id`, which ride alongside
-/// the envelope rather than inside it and are what a rollback still does not
-/// restore, along with `projects.uuid` and the registered origins.
+/// types, members and stories, the project's settings since SH-133, and
+/// github-sync's configuration with every per-story merge base since SH-189. A
+/// *tree* also holds `project.toml`'s `created_at` and `next-id`, which ride
+/// alongside the envelope rather than inside it and are what a rollback still
+/// does not restore, along with `projects.uuid` and the registered origins.
 ///
 /// Settings used to be on that list, and the reason given was that widening the
 /// document would move bytes in a format the golden corpus compared literally.
@@ -322,6 +327,7 @@ impl MigrationPlan {
         }
 
         let numbers = story_numbers(&project, &prefix, &mut refusals);
+        refuse_orphan_github_bases(&project, &mut refusals);
         let snapshots = fold_stories(&project, &mut refusals);
         // The relation checks read folded snapshots, so they are only
         // meaningful once every story folded. Reporting "SH-3 has two parents"
@@ -375,6 +381,24 @@ impl MigrationPlan {
         }
         if let Some(value) = &self.project.doctor_stale_threshold {
             settings.push(format!("doctor.stale_threshold = \"{value}\""));
+        }
+        // Reported by *shape* rather than by value, unlike the two above: the
+        // blob is a mapping table, not a preference, and what an operator needs
+        // to know is that it arrived — with its merge bases, since mappings
+        // without them are worse than neither (SH-233). The bases are counted
+        // even when nothing configured them, because a tree holding bases and
+        // no `github-sync.toml` is a tree somebody has edited, and this file's
+        // second rule is that nothing is lost quietly.
+        let bases = self.project.github_bases.len();
+        let plural = if bases == 1 { "" } else { "s" };
+        if self.project.github_sync.is_some() {
+            settings.push(format!(
+                "github.sync = configured, with {bases} merge base{plural}"
+            ));
+        } else if bases > 0 {
+            settings.push(format!(
+                "github.sync = not configured, but {bases} merge base{plural} carried"
+            ));
         }
 
         MigrationReport {
@@ -444,12 +468,31 @@ impl MigrationPlan {
             for member in &self.project.members {
                 tx.put_member(project, member)?;
             }
+            // A fresh row, not a read-modify-write: this transaction created
+            // the project a few lines above, so there is nothing of anyone
+            // else's to preserve. `transfer::import_project` needs the other
+            // shape because it can be restoring into a project that already
+            // exists.
+            //
+            // `github_sync` stood at `None` here until SH-233, whatever the
+            // tree held — so a user migrating a github-synced project lost
+            // every issue mapping, silently, and the first sync afterwards read
+            // as an ordinary first setup. It travels verbatim, and it is
+            // deliberately *not* reconciled against this checkout's git remote
+            // the way a restore's is (`service::github::
+            // reconcile_restored_github_remote`): a restore lands a document in
+            // a checkout that may be a fork or a relocated clone, while a
+            // migration's destination *is* its source, so the owner/repo in the
+            // blob is the one the legacy tool derived from this very
+            // repository. Genuine drift — a repository renamed since — is
+            // `story doctor`'s `github_remote_advice`, which re-asks the
+            // question on every run rather than once.
             tx.put_settings(
                 project,
                 &ProjectSettings {
                     sync_auto_transition: self.project.sync_auto_transition,
                     doctor_stale_threshold: self.project.doctor_stale_threshold.clone(),
-                    github_sync: None,
+                    github_sync: self.project.github_sync.clone(),
                 },
             )?;
 
@@ -485,6 +528,14 @@ impl MigrationPlan {
                 let (known, _unknown) = partition_known(story.story_no, &stored);
                 let snapshot = fold_story(&story.id, &known, &state_map(&self.project.states))?;
                 tx.put_story(project, &snapshot, head)?;
+                // After `put_story`, not before: a `github_bases` row has a
+                // live foreign key to the story row this line just wrote. Every
+                // remaining key is one of these ids — `refuse_orphan_github_
+                // bases` refused the rest before the plan was built — so no
+                // base can be silently left behind by this loop.
+                if let Some(base) = self.project.github_bases.get(&story.id) {
+                    tx.put_github_base(project, story.story_no, base)?;
+                }
             }
             tx.reserve_story_no(project, self.highest)?;
             Ok(())
@@ -608,6 +659,43 @@ pub fn refuse_in_linked_worktree(root: &Path) -> Result<(), AppError> {
         root.display(),
         main.display()
     )))
+}
+
+/// Refuses every github-sync merge base naming a story this tree does not hold
+/// (SH-233).
+///
+/// The store's `github_bases` rows carry a live foreign key to
+/// `stories(project_id, story_no)`, so such a base cannot be written at all —
+/// the choice is between refusing it here, by name, and letting
+/// `put_github_base` trip a bare constraint violation halfway through the
+/// migration's transaction with nothing saying which file caused it. It is the
+/// same check, for the same reason, that `transfer::import_project` runs over an
+/// export document's bases before its own transaction opens.
+///
+/// Keyed on the ids the tree *holds* rather than on the ids that parsed:
+/// a base for a story whose id does not belong to this prefix is one broken
+/// thing, and [`story_numbers`] has already said so.
+fn refuse_orphan_github_bases(project: &LegacyProject, refusals: &mut Refusals) {
+    let present: BTreeSet<&str> = project
+        .stories
+        .iter()
+        .map(|story| story.id.as_str())
+        .collect();
+    for id in project.github_bases.keys() {
+        if present.contains(id.as_str()) {
+            continue;
+        }
+        refusals.push(format!(
+            "`{}` is a github-sync merge base for story `{id}`, which this tree does not hold. A \
+             base belongs to a story; delete the file, or restore the story it belongs to, and \
+             run this again.",
+            project
+                .root
+                .join(".storyhook/github-sync/bases")
+                .join(format!("{id}.json"))
+                .display()
+        ));
+    }
 }
 
 /// Every story's number, with a refusal for each id the project cannot hold.
