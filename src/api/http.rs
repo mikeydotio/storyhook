@@ -42,16 +42,41 @@ fn content_type_header(value: &str) -> Header {
     Header::from_bytes("Content-Type", value).unwrap()
 }
 
+/// What `Cache-Control` a [`Reply`] carries.
+///
+/// One field with three states rather than two booleans, because `no-cache`
+/// and `no-store` are different instructions and "both at once" is not a
+/// thing a reply should be able to say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Caching {
+    /// No `Cache-Control` header at all.
+    Unset,
+    /// `no-cache` — the browser may keep a copy, but must revalidate before
+    /// reusing it. Right for dynamic content.
+    NoCache,
+    /// `no-store` — the browser may not write it down at all. Right for the
+    /// one reply in this daemon that carries a credential
+    /// ([`crate::api::handoff`]); `no-cache` would permit exactly the durable
+    /// copy that reply exists to avoid.
+    NoStore,
+}
+
 /// A fully-formed HTTP response, decoupled from the connection layer's request type so
 /// routing decisions stay pure and easy to reason about (and test) apart from
 /// the network layer. Every `Reply` — success or error — flows through
 /// [`finish`], which attaches the security headers exactly once, in exactly
 /// one place, so no response path can accidentally omit them.
+///
+/// `PartialEq` so a test can assert two refusals are *the same reply* rather
+/// than that they merely share a status code — what SH-251 requires of the
+/// handoff route, whose refusals must not tell a caller which part of an
+/// attempt was wrong.
+#[derive(Debug, PartialEq, Eq)]
 pub struct Reply {
     pub status: u16,
     content_type: &'static str,
     body: String,
-    no_cache: bool,
+    caching: Caching,
     retry_after: Option<u32>,
 }
 
@@ -61,7 +86,7 @@ impl Reply {
             status,
             content_type,
             body: body.into(),
-            no_cache: false,
+            caching: Caching::Unset,
             retry_after: None,
         }
     }
@@ -69,7 +94,19 @@ impl Reply {
     /// Marks this reply as dynamic content that must never be cached by the browser.
     #[must_use]
     pub fn no_cache(mut self) -> Self {
-        self.no_cache = true;
+        self.caching = Caching::NoCache;
+        self
+    }
+
+    /// Marks this reply as one the browser must not write down at all.
+    ///
+    /// Stronger than [`Self::no_cache`], and reserved for a reply carrying a
+    /// credential: `no-cache` still permits a stored copy that is revalidated
+    /// before reuse, and a stored copy is precisely what a credential must not
+    /// leave behind.
+    #[must_use]
+    pub fn no_store(mut self) -> Self {
+        self.caching = Caching::NoStore;
         self
     }
 
@@ -102,8 +139,14 @@ pub fn finish(request: Request, reply: Reply) {
         .with_header(security_header_nosniff())
         .with_header(security_header_frame())
         .with_header(security_header_csp());
-    if reply.no_cache {
-        resp = resp.with_header(Header::from_bytes("Cache-Control", "no-cache").unwrap());
+    match reply.caching {
+        Caching::Unset => {}
+        Caching::NoCache => {
+            resp = resp.with_header(Header::from_bytes("Cache-Control", "no-cache").unwrap());
+        }
+        Caching::NoStore => {
+            resp = resp.with_header(Header::from_bytes("Cache-Control", "no-store").unwrap());
+        }
     }
     if let Some(secs) = reply.retry_after {
         resp = resp.with_header(Header::from_bytes("Retry-After", secs.to_string()).unwrap());
