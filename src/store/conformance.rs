@@ -149,7 +149,7 @@ macro_rules! store_conformance_suite {
                 events: &[StoryEvent],
             ) -> Result<EventSeq, StoreError> {
                 store.write(|tx| {
-                    let head = tx.append_events(project, story, expected, events)?;
+                    let head = tx.append_events(project, story, expected, events, &$crate::domain::provenance::Provenance::unrecorded())?;
                     let prefix = tx.project(project)?.expect("the project exists").prefix;
                     let state_map = tx.state_map(project)?;
                     let stored = tx.events_for(project, story)?;
@@ -1462,6 +1462,7 @@ macro_rules! store_conformance_suite {
                             StoryNo::new(1),
                             ExpectedSeq::Any,
                             &[created("First", "2026-01-01T00:00:00Z")],
+                            &$crate::domain::provenance::Provenance::unrecorded(),
                         )
                     })
                     .unwrap();
@@ -1538,7 +1539,7 @@ macro_rules! store_conformance_suite {
                 let story = new_story(f.store(), project, "First");
                 let head = f
                     .store()
-                    .write(|tx| tx.append_events(project, story, ExpectedSeq::Any, &[]))
+                    .write(|tx| tx.append_events(project, story, ExpectedSeq::Any, &[], &$crate::domain::provenance::Provenance::unrecorded()))
                     .unwrap();
                 assert_eq!(head, EventSeq::new(1));
                 assert_eq!(
@@ -1859,6 +1860,7 @@ macro_rules! store_conformance_suite {
                                 StoryNo::new(1),
                                 ExpectedSeq::Exact(EventSeq::ZERO),
                                 &[created("First", "2026-01-01T00:00:00Z")],
+                                &$crate::domain::provenance::Provenance::unrecorded(),
                             )
                         })
                         .is_ok()
@@ -2413,6 +2415,7 @@ macro_rules! store_conformance_suite {
                             story,
                             ExpectedSeq::Exact(EventSeq::ZERO),
                             &[created("First", "2026-01-01T00:00:00Z")],
+                            &$crate::domain::provenance::Provenance::unrecorded(),
                         )?;
                         assert_eq!(tx.head_seq(project, story)?, head);
                         assert_eq!(tx.events_for(project, story)?.len(), 1);
@@ -2442,6 +2445,7 @@ macro_rules! store_conformance_suite {
                         story,
                         ExpectedSeq::Exact(EventSeq::ZERO),
                         &[created("First", "2026-01-01T00:00:00Z")],
+                        &$crate::domain::provenance::Provenance::unrecorded(),
                     )?;
                     let state_map = tx.state_map(project)?;
                     let stored = tx.events_for(project, story)?;
@@ -3573,6 +3577,7 @@ macro_rules! store_conformance_suite {
                             ExpectedSeq::Any,
                             &[teleported()],
                             LinkSource::Replayed,
+                            &$crate::domain::provenance::Provenance::unrecorded(),
                         )
                     })
                     .unwrap();
@@ -3596,6 +3601,7 @@ macro_rules! store_conformance_suite {
                             ExpectedSeq::Any,
                             &[teleported()],
                             LinkSource::Replayed,
+                            &$crate::domain::provenance::Provenance::unrecorded(),
                         )
                     })
                     .unwrap();
@@ -3622,6 +3628,7 @@ macro_rules! store_conformance_suite {
                             ExpectedSeq::Any,
                             &[teleported()],
                             LinkSource::Replayed,
+                            &$crate::domain::provenance::Provenance::unrecorded(),
                         )
                     })
                     .unwrap();
@@ -3647,6 +3654,7 @@ macro_rules! store_conformance_suite {
                             ExpectedSeq::Any,
                             &[teleported()],
                             LinkSource::Replayed,
+                            &$crate::domain::provenance::Provenance::unrecorded(),
                         )
                     })
                     .unwrap();
@@ -3680,6 +3688,7 @@ macro_rules! store_conformance_suite {
                             ExpectedSeq::Any,
                             &[teleported()],
                             LinkSource::Replayed,
+                            &$crate::domain::provenance::Provenance::unrecorded(),
                         )
                     })
                     .unwrap();
@@ -3707,6 +3716,7 @@ macro_rules! store_conformance_suite {
                             ExpectedSeq::Exact(EventSeq::ZERO),
                             &[teleported()],
                             LinkSource::Replayed,
+                            &$crate::domain::provenance::Provenance::unrecorded(),
                         )
                     })
                     .unwrap_err();
@@ -4272,6 +4282,7 @@ macro_rules! store_conformance_suite {
                         StoryNo::new(1),
                         ExpectedSeq::Any,
                         &[created("Never", "2026-01-01T00:00:00Z")],
+                        &$crate::domain::provenance::Provenance::unrecorded(),
                     )?;
                     Err::<(), _>(StoreError::Validation("no".into()))
                 });
@@ -4378,6 +4389,7 @@ macro_rules! store_conformance_suite {
                                             story,
                                             ExpectedSeq::Exact(EventSeq::ZERO),
                                             &[created("Concurrent", "2026-01-01T00:00:00Z")],
+                                            &$crate::domain::provenance::Provenance::unrecorded(),
                                         )
                                     })
                                     .unwrap();

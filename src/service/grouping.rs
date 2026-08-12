@@ -291,6 +291,7 @@ impl<'ctx, S: Store> GroupingService<'ctx, S> {
                 &states,
                 ExpectedSeq::Exact(row.head_seq),
                 &events,
+                self.ctx.provenance(),
             )?;
             Ok(Some(snapshot))
         })?)

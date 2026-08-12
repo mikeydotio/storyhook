@@ -969,6 +969,7 @@ fn a_fault_before_commit_leaves_the_database_untouched() {
                 title: "Never written".into(),
                 state: "todo".into(),
             }],
+            &storyhook::domain::provenance::Provenance::unrecorded(),
         )
     });
 

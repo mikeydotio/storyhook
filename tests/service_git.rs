@@ -927,6 +927,7 @@ fn a_second_link_record_for_one_commit_is_rejected_by_the_store() {
                 sha: sha.clone(),
                 subject: "feat: land it again".to_string(),
             }],
+            &storyhook::domain::provenance::Provenance::unrecorded(),
         )?;
         Ok(())
     });

@@ -101,6 +101,7 @@ pub fn restore<S: Store>(
                 &states,
                 ExpectedSeq::Any,
                 &story_events,
+                ctx.provenance(),
             )?;
         }
         for event in &relation_events {
@@ -130,6 +131,7 @@ pub fn restore<S: Store>(
                 &states,
                 ExpectedSeq::Any,
                 std::slice::from_ref(event),
+                ctx.provenance(),
             )?;
             append_and_fold(
                 tx,
@@ -139,6 +141,7 @@ pub fn restore<S: Store>(
                 &states,
                 ExpectedSeq::Any,
                 &[mirrored],
+                ctx.provenance(),
             )?;
         }
         Ok(())

@@ -118,6 +118,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                 &states,
                 ExpectedSeq::Exact(EventSeq::ZERO),
                 &events,
+                self.ctx.provenance(),
             )?)
         })?;
 
@@ -181,6 +182,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                     at: now.clone(),
                     member_id: member.id,
                 }],
+                self.ctx.provenance(),
             )?)
         })?)
     }
@@ -383,6 +385,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                 &states,
                 ExpectedSeq::Exact(row.head_seq),
                 &events,
+                self.ctx.provenance(),
             )?;
             Ok((row.snapshot, snapshot))
         })?;
@@ -416,6 +419,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                 &states,
                 ExpectedSeq::Exact(row.head_seq),
                 &plan.events,
+                self.ctx.provenance(),
             )?;
             Ok((plan, row.snapshot, snapshot))
         })?;
@@ -498,6 +502,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                         reason: reason.to_string(),
                     },
                 ],
+                self.ctx.provenance(),
             )?;
             Ok(())
         })?;
@@ -578,6 +583,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                         other_id: canonical.clone(),
                         relation: relation.clone(),
                     }],
+                    self.ctx.provenance(),
                 )?;
             }
 
@@ -664,6 +670,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                     at: now.clone(),
                     state: target.slug.clone(),
                 }],
+                self.ctx.provenance(),
             )?;
             Ok((row.snapshot, snapshot))
         })?;
@@ -715,6 +722,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                 &states,
                 ExpectedSeq::Exact(row.head_seq),
                 &[StoryEvent::StoryHidden { at: now.clone() }],
+                self.ctx.provenance(),
             )?)
         })?)
     }
@@ -739,6 +747,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                 &states,
                 ExpectedSeq::Exact(row.head_seq),
                 &[StoryEvent::StoryUnhidden { at: now.clone() }],
+                self.ctx.provenance(),
             )?)
         })?)
     }
@@ -766,6 +775,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                 &states,
                 ExpectedSeq::Exact(row.head_seq),
                 &[StoryEvent::StoryPublished { at: now.clone() }],
+                self.ctx.provenance(),
             )?)
         })?)
     }
@@ -818,6 +828,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                     &states,
                     ExpectedSeq::Exact(row.head_seq),
                     &[StoryEvent::StoryHidden { at: now.clone() }],
+                    self.ctx.provenance(),
                 )?;
                 archived.push(row.story_no);
             }
@@ -854,6 +865,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                 &states,
                 ExpectedSeq::Exact(row.head_seq),
                 &events,
+                self.ctx.provenance(),
             )?)
         })?)
     }

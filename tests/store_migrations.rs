@@ -1218,8 +1218,13 @@ fn v8_store_with_renamed_and_retired_type_stories(
                         },
                     ];
                     let no = tx.allocate_story_no(project)?;
-                    let head =
-                        tx.append_events(project, no, ExpectedSeq::Exact(EventSeq::ZERO), &events)?;
+                    let head = tx.append_events(
+                        project,
+                        no,
+                        ExpectedSeq::Exact(EventSeq::ZERO),
+                        &events,
+                        &storyhook::domain::provenance::Provenance::unrecorded(),
+                    )?;
                     let snapshot = fold_story(&no.to_id("SH"), &events, &state_map).unwrap();
                     Ok::<_, storyhook::store::StoreError>((no, head, snapshot))
                 };
@@ -1580,8 +1585,13 @@ fn migration_nine_leaves_a_project_with_no_task_stories_and_no_task_type_untouch
                 state: "todo".into(),
             }];
             let no = tx.allocate_story_no(project)?;
-            let head =
-                tx.append_events(project, no, ExpectedSeq::Exact(EventSeq::ZERO), &events)?;
+            let head = tx.append_events(
+                project,
+                no,
+                ExpectedSeq::Exact(EventSeq::ZERO),
+                &events,
+                &storyhook::domain::provenance::Provenance::unrecorded(),
+            )?;
             let snapshot = fold_story(&no.to_id("SH"), &events, &state_map).unwrap();
             Ok((project, no, head, snapshot))
         })
@@ -1646,8 +1656,13 @@ fn migration_nine_removes_an_unused_task_catalog_entry_without_touching_any_stor
                 state: "todo".into(),
             }];
             let no = tx.allocate_story_no(project)?;
-            let head =
-                tx.append_events(project, no, ExpectedSeq::Exact(EventSeq::ZERO), &events)?;
+            let head = tx.append_events(
+                project,
+                no,
+                ExpectedSeq::Exact(EventSeq::ZERO),
+                &events,
+                &storyhook::domain::provenance::Provenance::unrecorded(),
+            )?;
             let snapshot = fold_story(&no.to_id("SH"), &events, &state_map).unwrap();
             Ok((project, no, head, snapshot))
         })
