@@ -37,7 +37,7 @@ use std::process::{ExitStatus, Output, Stdio};
 use storyhook::store::FaultPoint;
 
 use crate::env::TestEnv;
-use crate::server::{ChildGuard, wait_for_server};
+use crate::server::{ChildGuard, port_of, wait_for_server};
 
 /// What one armed daemon left behind, and what its client was told.
 pub struct Crash {
@@ -135,7 +135,7 @@ pub fn crash_a_starting_daemon(env: &TestEnv, cwd: &Path, point: FaultPoint) -> 
 /// "finished" means for each.
 ///
 /// `--port 0`, not a `reserve_port()`-picked number (SH-195): every caller here
-/// learns the daemon's *real* port from its portfile (`port_of`, below) rather
+/// learns the daemon's *real* port from its portfile ([`port_of`]) rather
 /// than trusting the one it asked for, because `bind_preferred` treats a
 /// requested port as a preference and falls back to a kernel-assigned one the
 /// moment it is taken. A pre-picked port bought nothing these callers needed
@@ -200,35 +200,6 @@ fn arm_a_daemon(env: &TestEnv, cwd: &Path, point: FaultPoint) -> ChildGuard {
     env.stop_daemon();
     assert_no_daemon(env, "before the armed one could start");
     spawn_daemon(env, cwd, Some(point))
-}
-
-/// The port the daemon with pid `pid` bound, once it has published one.
-///
-/// **This is where the pid the client will talk to is checked against the pid
-/// the test armed.** The portfile is how a client finds a daemon, so a portfile
-/// naming somebody else is a client about to send its work to the wrong process
-/// — the first of the two hazards, caught before the command is sent rather than
-/// inferred afterwards from a corpse.
-///
-/// Read from the portfile rather than remembered from the reservation, because
-/// the reservation is only a *preference*: `bind_preferred` falls back to a
-/// kernel-assigned port, and a test that waited on the number it asked for would
-/// wait forever on the day that fallback fired.
-fn port_of(env: &TestEnv, pid: u32) -> u16 {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        match env.daemon() {
-            Some(info) if info.pid == pid => return info.port,
-            other => assert!(
-                std::time::Instant::now() < deadline,
-                "the daemon this test armed (pid {pid}) never became the one a client would \
-                 find. The portfile names {:?} — if that is another daemon, the command below \
-                 would go to it and the armed process would never run the work.",
-                other.map(|info| info.pid),
-            ),
-        }
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
 }
 
 /// A `story` command, which is a client of whatever daemon is holding the store
