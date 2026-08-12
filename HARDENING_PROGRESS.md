@@ -11725,3 +11725,88 @@ authority, not a grep for the word.**
 
 **Final gate:** 3328 Rust tests across 147 suites, 94 e2e, 0 failures. Merged as
 PR #309.
+
+### SH-253 — loopback is a label on a listener, not a fact about the peer
+
+**Outcome:** done. Four acceptance criteria, all met, in three code commits plus
+one docs commit.
+
+**The defect.** `Listener` carried a `loopback: bool` that was *stamped* beside
+the bind rather than read from it — `bind_listeners` wrote `loopback: true` next
+to a hardcoded `TcpListener::bind(("127.0.0.1", port))`, and the late tailnet
+rebind (SH-146) passed a bare `false` to its accept loop. Both literals were
+correct, and correct only because the addresses beside them were literals too.
+SH-250 is what made that dangerous: the flag is conjunct 1 of the tokenless read
+exemption, the single affirmative grant in that rule.
+
+**What shipped.**
+
+1. **The field is gone.** `Listener` holds the `SocketAddr` it bound, read back
+   off the socket by its one constructor (`Listener::adopt`), and `is_loopback()`
+   computes the answer. The label cannot disagree with the bind because there is
+   nothing left to disagree with. The late tailnet bind's `false` became
+   `listener.is_loopback()` too — same class of defect, one line away.
+2. **`$STORYHOOK_DAEMON_ADDR`'s IP is refused, not discarded.** Exactly
+   `127.0.0.1`, deliberately *not* `is_loopback()`: `127.0.0.2` and `::1` are
+   loopback and are distinct sockets this daemon never binds, so accepting one
+   keeps the same silent discard in a smaller box.
+3. **`Environment` carries a `u16` port**, not a `SocketAddr` — so an address
+   cannot be carried past the parse and "bind whatever the variable said" is
+   unwritable rather than merely refused. `serve::bind_listeners` is now the only
+   place in the program that names an address to bind.
+
+**Council:** yes — `.council/sh-253-daemon-addr-ip-meaning/`, unanimous 3–0 on the
+first ballot, verdict recorded as a comment on the story. Question: honour the
+variable's IP, or refuse it? Seats: security-researcher, software-architect,
+devops-engineer.
+
+Two things worth keeping from it. **The devops seat voted against their own
+proposal** — their case for the narrower fix rested on the wider one renaming the
+variable and churning every harness, and neither rival proposal did that; the
+objection dissolved on contact with the actual text. And **honouring the IP was
+rejected on the merits, not on cost**: `/api/v1/*` 404s off-loopback, and since
+SH-114 that is the only way a `story` command reaches the store, so an honoured
+`0.0.0.0` yields a daemon *its own CLI cannot talk to* while exposing the
+dashboard. An "honest" contract whose honest outcome is a broken install.
+
+**Red→green, proved rather than asserted.** The three new `serve.rs` tests bind
+real sockets rather than fabricating addresses — a hand-built `SocketAddr` would
+test only that `is_loopback()` calls `is_loopback()`. The decisive one composes
+the real pieces with nothing mocked between them: bind `0.0.0.0`, derive the flag,
+hand it to `api::admission::admission` itself, and require a 401. Falsified before
+being trusted — replacing `is_loopback()` with the constant it used to be fails
+exactly two of the three, including that one.
+
+**A note on the process rule this cycle exercised.** The parse refusal and the
+`u16` narrowing landed as separate commits because the council insisted on it, not
+because I noticed: the first is behavioural and the second is signature-only, and
+one commit would have made the security fix un-bisectable. Worth recording that
+the two-hats rule was enforced *by the reviewers of the design*, before any code
+existed.
+
+**Supervision:** three full `make test` runs, each with a log-growth heartbeat
+polled on a 120s stall bound. No wedges. Run 1 failed in 30 seconds on
+`cargo fmt --check` alone — cheap, and an argument for running `cargo fmt` before
+starting a gate rather than discovering it inside one.
+
+**The pre-push gate did not run, and that is a finding, not an aside.** The push
+returned in under thirty seconds having printed nothing but git's own output. The
+pre-push test hook is a *Claude Code* hook matching the tool call, not a git
+hook — and this push was wrapped in `nohup sh -c '…'` for supervision, which is
+not the shape the matcher recognises. The suite had passed on the identical code
+tree minutes earlier and the only commit after it was docs-only, so nothing
+unverified reached `main`; the hazard is that the wrapper *silently* removed a
+gate rather than failing loudly. **Wrapping a push to supervise it can evade the
+thing that was supervising it.** Push bare, or verify the hook's output is
+present before believing it ran.
+
+**One self-inflicted supervision lapse, recorded because the rule exists for it.**
+The first gate was started with a trailing `&` *inside* a `run_in_background`
+tool call, so the harness saw the wrapper shell exit immediately and reported the
+task "completed (exit code 0)" while `make test` was still running detached. No
+harm — the log-growth heartbeat is the actual pulse and it caught the real failure
+— but the completion notification was worthless. Later runs used `nohup` with the
+harness told nothing, which is honest about where the pulse lives. **A background
+task must be started so that the thing you poll is the thing that is running.**
+
+**Final gate:** 3336 Rust tests across 147 suites, 94 e2e, 0 failures.
