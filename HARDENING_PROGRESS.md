@@ -11582,3 +11582,146 @@ trusting the roster to show them**.
 **No version bump** — left for the next batched `/semver` pass.
 
 **Next:** run `story next` fresh.
+
+### SH-250 — the loopback token exemption, and the token on the clipboard
+
+**Outcome:** done. Six commits on `feat/sh-250-loopback-token-exemption`.
+
+**The story was partly wrong, and the council is what caught it.** SH-250 asked
+planning to "confirm or replace" one rule, so a council was convened on that
+question (`.council/loopback-token-exemption-rule/`). Unanimous 3–0, no
+deliberation round — but the value was not the verdict. All three seats,
+independently and before seeing each other's work, found two things the story
+had asserted that were false:
+
+1. **`mutation_guard_ok` never runs on a read.** `admission.rs` gates it on
+   `mutating(method)`. So the story's own reassurance — "`mutation_guard_ok`
+   stays, and still matters on loopback … Anyone reading this story as 'loopback
+   is unguarded' has read it wrong" — is true for writes and **false for reads**,
+   where no guard has ever run. Implementing the story as written would have
+   exempted loopback reads with nothing checking `Host`, reopening DNS-rebinding
+   read exfiltration of `GET /api/repos/{id}/data` (every story in a project) and
+   `GET /api/events` (every live change) to any page that can get itself rebound.
+2. **The proposed rule was unimplementable as specified.** `trusted_hosts` was a
+   flat merge of tailnet-derived and env-derived hosts, extended at runtime by
+   the late tailnet rebind. `trusted_hosts.is_empty()` would have withheld the
+   exemption from every Tailscale machine — including this one — and flipped
+   mid-daemon-life on a self-heal.
+
+**Deviation from the story as filed, recorded on it as a comment.** The story
+wanted loopback free for "reads, writes, SSE and dispatch alike". The council
+restricted it to **reads**. Each seat independently enumerated the write surface
+and found `POST /api/repos` (registers an arbitrary caller-named filesystem
+path), `DELETE /api/repos/{id}` (destroys a project, `confirm` in-band), and
+`POST .../move` → `Command::new("sh")` via event hooks. Where the rule can be
+evaded, reads-only costs disclosure; reads-and-writes costs the shell. Both
+non-authors voted against their own proposals on that basis.
+
+**The rule, six conjuncts, governed by one sentence now in the code:** *an
+attacker-supplied header may only withhold trust, never confer it.* The single
+affirmative grant is the bind-time `loopback` flag; `Host`, the forwarding
+headers and the proxy allowlist can only turn the exemption **off**, so forging
+any of them refuses nobody but the forger.
+
+**One seat's headline objection was tested and withdrawn**, which is what made
+the round unanimous: `tailscale serve` proxies over loopback and never needs the
+env var, but it *preserves the inbound `Host`* and sets `X-Forwarded-*`, so two
+separate conjuncts refuse it. Worth noting as a process point — the skeptic went
+and checked rather than restating round 1.
+
+**A defect the story could not have known about, found while implementing.** The
+server-side exemption alone would **not** have met the acceptance criterion. The
+SPA's last statement was `if (getDaemonToken()) startApp(); else
+openTokenModal(startApp)` — it prompted *pre-emptively* whenever `sessionStorage`
+was empty, so the modal would have stayed in the user's face no matter what the
+daemon decided. Its reasoning ("one prompt beats a guaranteed failed round-trip")
+was correct while every route needed a credential and silently stopped being
+correct here. `startApp()` now runs unconditionally and the prompt is reactive.
+
+**Red proved, not assumed.** Every conjunct was deleted individually and its
+tests confirmed to fail: conjunct 3 (three unit + two integration), conjunct 4
+(one unit + one integration), and the whole exemption (four unit + two
+integration + the proxy control). One of those runs was a false pass first — a
+`python` replacement silently did not match after rustfmt had reformatted the
+closure, so the "removed" conjunct was still there and its tests still passed.
+Caught by reading the function back rather than trusting the edit. **A
+falsification run has to verify the code actually changed.**
+
+**`STORYHOOK_WEB_TRUSTED_HOSTS` has coverage for the first time ever** —
+`tests/proxy_trusted_hosts.rs`, closing a residual `dashboard-authorization.md`
+had carried since SH-187. It pins both what the variable has always been for and
+what it now also does, each against a paired control differing in exactly that
+one variable.
+
+**Two fixture traps, same shape, cost ~20 minutes between them.** A `TempDir`
+whose `DaemonGuard` outlived it: the guard runs `story web stop` with that
+directory as its cwd, so teardown panicked *inside a destructor* and aborted the
+whole test binary — which reports as a signal, not as a failing assertion. Once
+from a struct field ordering, once from `DaemonGuard::new(&env,
+scratch_dir().path())` where the temporary dies at the end of the statement.
+Then a third: `env.project().build()` **auto-spawns a daemon**, so a fixture that
+built a project before running `web start --port N` was talking to a daemon that
+never saw its environment variable. Daemon first, project second.
+
+**Accepted residual, now written in three places** (spec, README, startup
+banner): a bare `nginx proxy_pass http://127.0.0.1:PORT` rewrites `Host` to a
+loopback literal, adds no forwarding headers, and gives its operator no reason to
+set the allowlist — defeating three conjuncts at once, undetectably. Unclosable
+at the HTTP layer; bounded to disclosure. `STORYHOOK_WEB_TRUSTED_HOSTS` is now
+documented as security-load-bearing rather than a convenience.
+
+**Filed, both from the council:**
+- **SH-251** — hand the dashboard its token from `story web open` (`#t=`
+  fragment), so nothing ever prompts. Two seats argued that if this lands, the
+  read exemption may no longer earn its keep; that reassessment belongs there.
+- **SH-253** (high) — *`loopback` is a label on a listener, not a fact about the
+  peer*. It is stamped beside a hardcoded `127.0.0.1` bind while
+  `STORYHOOK_DAEMON_ADDR` already parses a full `SocketAddr` whose IP is silently
+  discarded. Conjunct 1 is the affirmative grant this whole rule rests on, so
+  that label becoming wrong is now a security failure rather than a curiosity.
+  **This work is what promoted it from curiosity to defect.**
+
+**Council:** yes — `.council/loopback-token-exemption-rule/`, verdict recorded as
+a comment on SH-250.
+
+**Three guards caught this change, and every one of them was right.** None was
+a flake; each named a real consequence.
+
+1. `tests/e2e_fixture_hygiene.rs` — the new e2e spec clicks `#create-submit`
+   without registering the story sweeper. Pointed, because that spec *asserts*
+   the write is refused: the exact regression it exists to catch is also the one
+   that would strand a story in a fixture two other specs count the cards of.
+2. `tests/spawn_inventory.rs` — two hits. One real (moving `copy_to_clipboard`
+   into its own module moved a `Command::new` site). One a **false positive**: a
+   doc comment in `admission.rs` literally spelled `Command::new("sh")`, which a
+   text scan cannot tell from a call site. Reworded the comment to `sh -c`
+   rather than weakening the scanner. It also exposed a latent ambiguity —
+   `src/web.rs` held *two* unrelated spawns (clipboard and browser opener) under
+   one inventory key, so one row was standing for two; splitting the clipboard
+   out gave the browser opener its own classified row for the first time.
+3. `e2e/specs/dispatch.spec.ts` — asserted the dashboard prompts *at load*,
+   which is precisely what this story removes. SH-187 introduced that assertion;
+   SH-250 puts it back the way it was, so the *click* prompts. The rewrite
+   strengthened it: one spec now proves the read exemption renders a board
+   tokenless, that dispatch still demands a credential, and that `api()`'s retry
+   runs the dispatch without a second click.
+
+**History was repaired three times rather than patched over.** Each of those
+failures meant some commit did not pass `make test` on its own, which breaks
+`git bisect` — and merge commits preserve branch SHAs into `main` forever. Each
+time: tag a safety point, `reset --hard` to the parent, `cherry-pick -n` the
+commit, fold the fix in, re-commit with the saved message, cherry-pick the rest,
+then `git diff` against the tag to prove the tree changed by exactly the fix and
+nothing else. Nothing was pushed at any point, so no force-push was involved.
+After the last round, every one of the six commits was checked out in turn and
+both static guards run against it. `git commit --amend` was avoided throughout —
+it fails silently in this repo.
+
+**Supervision:** four full `make test` runs, each with a log-growth heartbeat and
+a 135s stall bound. No wedges; three red runs and one green. Run 1's summary line
+was a false alarm of my own making — my grep counted the string `error:` inside a
+test's *expected* output as a failure. **`EXIT=` and `test result:` lines are the
+authority, not a grep for the word.**
+
+**Final gate:** 3328 Rust tests across 147 suites, 94 e2e, 0 failures. Merged as
+PR #309.
