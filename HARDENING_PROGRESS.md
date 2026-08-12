@@ -10598,4 +10598,86 @@ checkout, remote branch confirmed deleted (`gh pr merge --delete-branch`).
 
 **No version bump** — left for the next batched `/semver` pass.
 
+### SH-212 — done, 2026-08-12
+
+`story next` surfaced SH-212 as top pick — the only ready story that names a design
+decision as its own scope (deferred out of SH-49's council verdict, which required the
+durable-credential mechanism be built as first-class work, not a rider). Claimed
+immediately.
+
+**The scope, as filed:** the storyhook daemon has never been able to check GitHub for a
+merged pull request unattended — `story pr-check` rides a per-request credential
+(`STORYHOOK_GITHUB_TOKEN`, read by the client, carried in the envelope) that only exists
+for the lifetime of one invocation, because SH-153 forbids the daemon reading a credential
+from its own ambient environment. SH-212 asked for a durable, explicitly-consented
+credential and a background poll thread to spend it — genuinely a design decision, not an
+implementation detail, so council first per this run's autonomy rule.
+
+**Council:** yes — 3 seats (`security-researcher`, `software-architect`,
+`devops-engineer`), unanimous 3/3 in round 1 (no deliberation needed). All three
+independently converged on the `keyring` ecosystem, `github-sync` feature-gating, and
+per-project error isolation reusing `pr_check::run_check` unmodified; the vote settled on
+execution detail the security-researcher's and devops-engineer's proposals left
+unspecified or got wrong — the exact keychain crate shape (the modern `keyring` facade
+turned out to have split into `keyring-core` plus per-platform backend crates since the
+proposals were written, discovered only once `cargo add` actually resolved it), the
+`_MS`-suffixed env var naming this daemon's other poll knobs already use, and the
+login-refuses-hard-but-poll-degrades-quietly split for an unavailable keychain backend.
+Verdict recorded verbatim as a comment on SH-212; audit trail at
+`.council/sh212-daemon-github-poll-durable-credential/` (gitignored, per this run's own
+relaxed rule).
+
+**A dependency-shape surprise the council couldn't have caught:** every proposal assumed
+"the `keyring` crate" as one dependency with per-platform Cargo features. Its current major
+version (4.x) instead redirects real applications to link `keyring-core` (the
+`Entry`/`CredentialStore` API, with a `mock` store built in for tests) plus whichever
+platform-specific backend crate they want (`apple-native-keyring-store`,
+`windows-native-keyring-store`, `zbus-secret-service-keyring-store`) directly — the
+`keyring` crate itself is now a thin CLI/compat facade not meant for linking. This turned
+out to be a better fit than what the council assumed: explicit `Arc<CredentialStore>`
+parameters rather than the crate's own process-global `set_default_store`, so a test can
+hold `keyring_core::mock::Store` beside production code holding the real platform store —
+the same shape `GithubApiFactory` already uses for the GitHub client itself, avoiding a
+global static that would have made concurrent tests in one binary race each other.
+
+**What shipped:** `story github-auth login|status|logout`, handled entirely in `main.rs`
+before a store or the daemon is ever reached — the OS keychain is a machine-level
+resource, not project data, and `login`'s masked `dialoguer::Password` prompt needs a
+terminal only the client has. Keyed by `StoreLocation::key()` (one credential per store).
+`daemon::github_poll`, a new background thread in `serve()`'s `thread::scope` beside
+`heartbeat`/`poll_change_token`/`watch_parent`, wakes on `STORYHOOK_GITHUB_POLL_MS`
+(default 5 min), reads the credential fresh every tick (never cached — `logout` takes
+effect on the next tick, no daemon restart), and calls `pr_check::run_check` completely
+unmodified once per project, so SH-49's cross-repo owner/repo re-validation guard cannot
+be silently dropped. One project's error never aborts the tick for the rest; an
+unavailable keychain backend (most commonly a headless Linux box with no Secret Service
+session) degrades to a logged no-op poll tick rather than a daemon-startup failure, while
+`login` itself still refuses hard, since a human is at the terminal to see why.
+
+**Tests:** unit tests in `src/github/credential_store.rs` against
+`keyring_core::mock::Store` (round trip, overwrite on re-login, idempotent logout, two
+accounts in one store don't collide). Integration tests in the new
+`tests/daemon_github_poll.rs`, against `storyhook_test_support::FakeGithubApiFactory`: no
+stored credential does nothing; a project with no configured remote is skipped quietly,
+never reaching GitHub; a full close-on-merge scenario driven through the poll path proves
+the credential-read-and-iterate wiring (not `run_check`'s own merge logic, which
+`tests/service_pr_check.rs` already covers); a second project seeded directly against the
+same store proves one credential reaches every project in it, not just the fixture's
+default one. CLI parsing tests for all three actions plus the usage-error paths. No test
+touches a real OS keychain anywhere — the mock backend is the only one any test ever
+builds. `every_interactive_prompt_is_in_the_allowlist` needed no change: the new prompt
+lives in `src/main.rs`, already the one legitimate site.
+
+**Gate:** full `make test`, supervised (log-growth heartbeat via Monitor, 120s stall
+bound, no stall observed across either run): `cargo fmt`/`clippy -D warnings` clean on both
+default and `--no-default-features` builds, full Rust suite green (143 test binaries, 0
+failures), plugin bash harness 29/29, e2e Playwright 50/50.
+
+**PR:** #287, one commit, merged as `bcb7d4f`, fast-forwarded onto `main` in this
+checkout, remote branch confirmed deleted (`gh pr merge --delete-branch`). The commit's
+`Closes SH-212` trailer auto-closed the story via storyhook's own post-merge hook —
+confirmed already `done` before this session ran `story move` by hand.
+
+**No version bump** — left for the next batched `/semver` pass.
+
 **Next:** run `story next` fresh.
