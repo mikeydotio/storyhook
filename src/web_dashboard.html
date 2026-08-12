@@ -3179,15 +3179,7 @@ tbody tr:hover { background: var(--bg-sunken); }
     var isClosed = stateSuperstate(st.state) === "CLOSED";
     if (isClosed) {
       var wasHidden = !!st.hidden_at;
-      footer.appendChild(el("button", { class: "btn", onClick: function() {
-        // The fold clears `hidden_at` the moment a story reopens (SH-43) —
-        // silently, from the read model's point of view. A story that was
-        // archived reappearing on the board with no explanation is exactly
-        // the confusion the council's dissent flagged, so reopening a hidden
-        // one says so explicitly rather than leaving it to be noticed.
-        runFieldMutation(st.id, "POST", "reopen", {});
-        if (wasHidden) toast(st.id + " reopened — no longer archived", "info");
-      } }, ["Reopen"]));
+      footer.appendChild(el("button", { class: "btn", onClick: function() { attemptReopen(st, wasHidden); } }, ["Reopen"]));
     }
     // "Archive" only applies to a closed, not-yet-hidden story (SH-43); once
     // hidden, the "Unarchive" action lives on the banner above instead of
@@ -3209,6 +3201,66 @@ tbody tr:hover { background: var(--bg-sunken); }
     footer.appendChild(el("button", { class: "btn btn-danger", style: "margin-left:auto", onClick: function() {
       renderDeleteConfirm(st);
     } }, ["Delete"]));
+  }
+
+  /** Reopen (drawer footer "Reopen" button). Tries the unforced reopen
+   * first — correct for the ordinary case, a story merely closed — and only
+   * a soft-deleted story's unforced attempt comes back 409 with an
+   * `UndeletePlan` (SH-154), which this turns into an inline yes/no confirm
+   * rather than the bare "Conflict" toast `toastError` alone would show
+   * (SH-210). Mirrors `deleteProject`/`showDeleteConfirm`'s reactive
+   * confirm-on-409 shape.
+   *
+   * The fold clears `hidden_at` the moment a story reopens (SH-43) —
+   * silently, from the read model's point of view. A story that was
+   * archived reappearing on the board with no explanation is exactly the
+   * confusion the council's dissent flagged, so reopening a hidden one says
+   * so explicitly rather than leaving it to be noticed. */
+  function attemptReopen(st, wasHidden) {
+    api("POST", apiBase() + "/story/" + encodeURIComponent(st.id) + "/reopen", {})
+      .then(function(resp) {
+        handleMutationSuccess(resp);
+        if (wasHidden) toast(st.id + " reopened — no longer archived", "info");
+      })
+      .catch(function(err) {
+        if (err.status === 409 && err.body && err.body.plan && err.body.plan.confirm === "undelete") {
+          renderReopenConfirm(st, err.body.plan, wasHidden);
+        } else {
+          toastError(err);
+        }
+      });
+  }
+
+  /** The confirm `attemptReopen` lands on when the story it tried to reopen
+   * turned out to be soft-deleted: names the story and, when one was
+   * recorded, why it was deleted — everything `UndeletePlan` carries. A
+   * single click is the right weight here, the same rule
+   * `renderArchiveConfirm` applies to `HideState` — undeleting puts the
+   * story right back where it started, which is exactly why
+   * `ConfirmationPlan::requires_typed_confirmation` answers `false` for
+   * `Undelete` too. */
+  function renderReopenConfirm(st, plan, wasHidden) {
+    var footer = $("drawer-footer");
+    clear(footer);
+    footer.appendChild(el("div", { class: "confirm-delete" }, [
+      el("div", {}, [
+        plan.title + " was deleted" +
+        (plan.deleted_reason ? " (" + plan.deleted_reason + ")" : "") +
+        ". Undelete it to reopen?"
+      ]),
+      el("div", { class: "confirm-delete-actions" }, [
+        el("button", { class: "btn btn-ghost", onClick: function() { renderDrawerFooter(st); } }, ["Cancel"]),
+        el("button", { class: "btn", onClick: function() {
+          api("POST", apiBase() + "/story/" + encodeURIComponent(st.id) + "/reopen", { force: true })
+            .then(function(resp) {
+              handleMutationSuccess(resp);
+              toast(st.id + " undeleted", "success");
+              if (wasHidden) toast(st.id + " reopened — no longer archived", "info");
+            })
+            .catch(toastError);
+        } }, ["Undelete"])
+      ])
+    ]));
   }
 
   function renderDeleteConfirm(st) {
