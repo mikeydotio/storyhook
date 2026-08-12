@@ -10681,3 +10681,110 @@ confirmed already `done` before this session ran `story move` by hand.
 **No version bump** — left for the next batched `/semver` pass.
 
 **Next:** run `story next` fresh.
+
+### SH-245 — done, 2026-08-12
+
+`story next` surfaced SH-245 as top pick. Claimed immediately.
+
+**The reproduction never arrived — four escalating attempts, all green.** The
+story reports three dashboard e2e specs failing while a second `make test` had
+the machine, and passing on a quiet one, same tree and same commit. Staged that
+condition four ways:
+
+| Attempt | Load staged | Result |
+|---|---|---|
+| 1 | the three named specs, 10 busy loops | 12/12 green |
+| 2 | deterministic CDP CPU throttling of the renderer, 8× then 20× with 16 busy loops | 3/3 green |
+| 3 | three full suites concurrently, 8 busy loops | 3 × 87 green |
+| 4 | two full suites racing a real `cargo test --no-run` compile | 2 × 89 green |
+
+Attempt 4 was the closest to the reported condition on purpose — `yes` loops
+spin in userspace and contend for nothing but scheduler slots, while a real
+compile also takes the memory bandwidth, the page cache and the disk, which is
+what a second `make test` actually costs. It still would not go red. Per
+CLAUDE.md's carve-out the reason is recorded here rather than papered over, and
+the work proceeded forensically. What attempt 4 *did* buy was instrumentation:
+the numbers below come from a green run carrying timing probes, not from a red
+one.
+
+**One of the three needed no reproduction — the reported string names its own
+cause.** `filter-persistence.spec.ts:87` asserts Alpha's board reads `0 / 2`
+and read `0 / 3`, holding that value across all 14 retries. A third open story
+in a two-story fixture is not a value settling late; it is a stray. Every
+story-creating spec deletes what it created as the **last statement of the test
+body** — precisely the statement a failing test never reaches — and
+`drawer-detail-race.spec.ts`, red earlier in the same alphabetical run, creates
+one. So the third failure was collateral from the first, in a file the actual
+defect never touched, naming a project switch that was never involved. One red
+spec was reported as three. That is the finding the story could not have had.
+
+**What shipped, four commits:**
+
+*The stray cannot outlive its test.* `cleanUpCreatedStories()` registers an
+`afterEach` — which runs whether the test passed or failed — deleting every
+OPEN story in the named project that was not in the fixture the run started
+with. The baseline is read once per run rather than once per file, so a stray
+can never be absorbed into it. Thirteen specs adopt it.
+`fixture-isolation.spec.ts` pins the rule with the stranding itself: one test
+creates a story and returns without deleting it, the next asserts the board is
+clean anyway. Red before the hook (`toHaveCount` 0 vs 1 — the reported symptom
+in miniature), green after. The sweep needs `X-Storyhook` as well as the bearer
+token, which cost one debugging round trip: mutations clear a CSRF check reads
+do not, so every delete answered 403 first, silently, until the helper was made
+to throw on a non-2xx.
+
+*The race is opened by the test, not a timer.* Three specs manufactured a race
+by delaying a response a fixed 400/500/1000ms and acting inside that window.
+Instrumented under attempt 4's load, the drawer's window closes with ~486ms to
+spare — ample until a Playwright action that normally takes 8ms does not — and
+it fails in two directions at once: lose narrowly and the assertion reddens for
+a reason unrelated to SH-218; lose widely and the window has already shut before
+the test types, so the spec passes having exercised nothing. The second is the
+worse one, because it is silent, and it is the shape this run's own rule about
+inferred readiness (SH-226) keeps finding. `latch()` and `holdDetailFetch()`
+hold the response in flight until the test releases it. Checked the specs kept
+their teeth rather than merely going green: disabling SH-218's own guard
+(`captureDrawerFocus` returning null) turns both drawer specs red on
+`toHaveValue`, as it must.
+
+*A real dispatch is budgeted by what a loaded machine costs it.* The three
+specs that dispatch for real waited 20s for completion — a wait that is not on
+the dashboard at all but on `story.sh` (`git worktree add`, the CAS claim, the
+readiness handoff) plus up to one 5s status-poll interval of rounding. Measured
+at ~5.5s under attempt 4's load, so 20s carried under 4× of headroom for work
+whose duration is a subprocess's. Now `DISPATCH_COMPLETION_TIMEOUT` at 45s,
+with the per-test budgets derived from it rather than restated.
+
+The suite-wide `expect` timeout deliberately stays at 5s. The story's own
+suggested direction warns that raising a global timeout "slows every green
+run", which turns out not to be true — an assertion resolves when its condition
+holds, not when its timeout expires, so a larger budget only slows a genuine
+failure's report. The reason to refuse it anyway is the honest one: nothing
+else in the suite waits on a subprocess, and the daemon round trips behind the
+ordinary assertions measured in *tens of milliseconds* under the same load, so
+there is no evidence 5s is tight anywhere else. Pay the bigger budget where the
+work really can take that long; refuse it where it cannot.
+
+*A fence, so a fourteenth spec cannot forget.* `tests/e2e_fixture_hygiene.rs`
+derives the story-creating specs and asserts each registers the sweep — the
+same shape SH-136 used to replace CLAUDE.md's hand-counted harness list, for
+the same reason: a list somebody has to remember to update drifts, a derived
+set cannot. Verified it catches a violation rather than merely passing:
+dropping the registration from `board-sort.spec.ts` fails the test and names
+that file. A spec that forgets now fails deterministically in the Rust suite,
+on any machine, instead of intermittently in someone else's spec on a loaded
+one.
+
+**Gate:** full `make test`, supervised (log-growth heartbeat via Monitor, 120s
+stall bound, no stall observed): `cargo fmt`/`clippy -D warnings` clean, Rust
+suite green (143 test binaries), plugin bash harness 29/29, e2e 89/89. Run
+again by the pre-push hook on the tip. Additionally re-run adversarially under
+attempt 3's staged load after the fix — 3 × 89 green.
+
+**PR:** #289, four commits, merged as `35399a8`, fast-forwarded onto `main` in
+this checkout, remote and local branches confirmed deleted. The `Closes SH-245`
+trailer auto-closed the story via the post-merge hook.
+
+**No version bump** — left for the next batched `/semver` pass.
+
+**Next:** run `story next` fresh.
