@@ -2357,6 +2357,7 @@ mod tests {
                     state: "done".to_string(),
                     comment: None,
                     if_state: None,
+                    awaiting: None,
                 },
                 dir.path()
             ),

@@ -1613,6 +1613,66 @@ fn web_move_unknown_story_is_404() {
     assert_eq!(status_of(err), 404);
 }
 
+#[test]
+fn web_move_story_with_reason_sets_awaiting_atomically() {
+    // The dashboard's Blocked-column drop prompt (SH-205) — a skippable
+    // reason threaded through the same /move call, not a second request.
+    let fixture = served();
+    fixture.seed(&["new", "Movable"]);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let resp = post_json(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"),
+        r#"{"state":"blocked","reason":"waiting on SH-9"}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "state"), "blocked");
+    assert_eq!(story_field(&json, "awaiting"), "waiting on SH-9");
+}
+
+#[test]
+fn web_move_story_without_reason_leaves_awaiting_null() {
+    // Every drop that isn't into Blocked (or that skips the prompt) must see
+    // no behavior change from before `reason` existed on this endpoint.
+    let fixture = served();
+    fixture.seed(&["new", "Movable"]);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let resp = post_json(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"),
+        r#"{"state":"blocked"}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "state"), "blocked");
+    assert!(json["story"]["story"]["awaiting"].is_null(), "{json}");
+}
+
+#[test]
+fn web_move_story_reason_combined_with_closed_state_is_422() {
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let err = post_json(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"),
+        r#"{"state":"done","reason":"why though"}"#,
+    )
+    .unwrap_err();
+    assert_eq!(status_of(err), 422);
+}
+
 // --- Mutation API: comment, priority, assign, labels, block/unblock, reopen ---
 
 #[test]

@@ -175,6 +175,7 @@ fn undo_move_story_restores_state() {
             state: "in-progress".to_string(),
             comment: None,
             if_state: None,
+            awaiting: None,
         },
     )
     .unwrap();
@@ -216,6 +217,7 @@ fn redo_after_undo() {
             state: "in-progress".to_string(),
             comment: None,
             if_state: None,
+            awaiting: None,
         },
     )
     .unwrap();
@@ -351,6 +353,7 @@ fn close_archive_not_undoable() {
             state: "done".to_string(),
             comment: None,
             if_state: None,
+            awaiting: None,
         },
     )
     .unwrap();
