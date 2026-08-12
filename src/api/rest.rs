@@ -33,6 +33,7 @@ use crate::api::http::{
     Reply, TrustedHosts, error_reply, get_bool, get_str, get_str_array, guarded, guarded_no_body,
     html_reply, json_reply, parse_json_object, path_segments, require_str, text_reply, to_json,
 };
+use crate::api::routes::{ProjectRoute, Route, StoryAction, classify};
 use crate::cli::{Invocation, ProjectAction, StateAction};
 use crate::domain::{Priority, default_open_state, default_type};
 use crate::env::Environment;
@@ -121,10 +122,17 @@ pub(crate) fn mutating(method: &Method) -> bool {
 
 /// Decides how to respond to a request against `store`.
 ///
-/// `/` always serves the single-page app; `/api/repos` (list/init) and
-/// `/api/repos/<id>` (delete) operate on the project catalog; every other
-/// `/api/repos/<id>/...` path resolves `<id>` to that project and delegates to
-/// [`route_project`], the entire per-project API surface.
+/// The path is turned into a [`Route`] by [`classify`] and answered by the
+/// `match` below, which has **no wildcard arm**: a route added to
+/// [`crate::api::routes`] does not compile until it is answered here *and*
+/// classified in [`crate::api::routes::authority`] (SH-254). That is the whole
+/// mechanism by which the dashboard's scoped capability cannot be inherited by
+/// a route somebody adds later.
+///
+/// **Classification does not resolve the project.** `{id}` is split off here
+/// and looked up below, which is what keeps `PUT /api/repos/<unknown>/data` a
+/// 404 (no such project) rather than the 405 its shape suggests — an ordering
+/// `tests/rest_routing.rs` pins.
 pub fn route<S: Store>(
     store: &S,
     env: &Environment,
@@ -134,39 +142,27 @@ pub fn route<S: Store>(
     body: &str,
     trusted_hosts: &TrustedHosts,
 ) -> Routed {
-    match path_segments(path).as_slice() {
-        [] => match method {
-            Method::Get => Routed::quiet(html_reply(DASHBOARD_HTML).no_cache()),
-            _ => Routed::quiet(text_reply(405, "Method not allowed")),
-        },
-        ["api", "repos"] => match method {
-            Method::Get => Routed::quiet(match repos_json(store, env) {
-                Ok(json) => json_reply(200, json).no_cache(),
-                Err(e) => error_reply(&e),
+    match classify(&path_segments(path), method) {
+        Route::Shell => Routed::quiet(html_reply(DASHBOARD_HTML).no_cache()),
+        Route::Repos => Routed::quiet(match repos_json(store, env) {
+            Ok(json) => json_reply(200, json).no_cache(),
+            Err(e) => error_reply(&e),
+        }),
+        Route::ReposCreate => Routed::changing(
+            method,
+            guarded(headers, trusted_hosts, body, |b| {
+                route_init_repo(store, env, b)
             }),
-            Method::Post => Routed::changing(
-                method,
-                guarded(headers, trusted_hosts, body, |b| {
-                    route_init_repo(store, env, b)
-                }),
-                Changed::Catalog,
-            ),
-            _ => Routed::quiet(text_reply(405, "Method not allowed")),
-        },
-        ["api", "repos", id] => match method {
-            Method::Delete => Routed::changing(
-                method,
-                guarded(headers, trusted_hosts, body, |b| {
-                    route_delete_repo(store, env, id, b)
-                }),
-                Changed::Catalog,
-            ),
-            _ => Routed::quiet(text_reply(405, "Method not allowed")),
-        },
-        ["api", "repos", id, rest @ ..] => match resolve_repo(store, id) {
-            // A project with no checkout on this machine is still 404 here.
-            // Serving it read-only is the next commit's job; this one only
-            // moves where the decision is taken.
+            Changed::Catalog,
+        ),
+        Route::RepoDelete { id } => Routed::changing(
+            method,
+            guarded(headers, trusted_hosts, body, |b| {
+                route_delete_repo(store, env, id, b)
+            }),
+            Changed::Catalog,
+        ),
+        Route::Project { id, route } => match resolve_repo(store, id) {
             // One door for the whole per-project surface. A project with no
             // checkout on this machine is served read-only: reads need no
             // working directory, and every write does — that is where the
@@ -180,138 +176,133 @@ pub fn route<S: Store>(
                 let hookless = checkout.is_none();
                 let root = checkout.unwrap_or_else(|| no_checkout_placeholder(id));
                 let ctx = Ctx::new(store, project, root, env.clone()).no_hooks(hookless);
-                let reply = route_project(&ctx, method, rest, headers, body, trusted_hosts);
-                Routed::changing(method, reply, Changed::Project((*id).to_string()))
+                let reply = route_project(&ctx, route, headers, body, trusted_hosts);
+                Routed::changing(method, reply, Changed::Project(id.to_string()))
             }
             Ok(None) => Routed::quiet(text_reply(404, "Not found")),
             Err(e) => Routed::quiet(error_reply(&e)),
         },
-        _ => Routed::quiet(text_reply(404, "Not found")),
+        // Both are answered in full by [`crate::daemon::serve`]'s worker,
+        // which never lets them reach the router: the change feed is a
+        // long-lived stream that must not occupy the dispatcher pool, and the
+        // control surface is [`crate::api::rpc`]'s. Reaching here means
+        // something upstream stopped answering, and the reply is what an
+        // unrouted path has always got.
+        Route::Events | Route::ControlSurface => Routed::quiet(text_reply(404, "Not found")),
+        Route::MethodNotAllowed => Routed::quiet(text_reply(405, "Method not allowed")),
+        Route::NotFound => Routed::quiet(text_reply(404, "Not found")),
     }
 }
 
 /// The per-project API surface — everything under `/api/repos/<id>/...` once
-/// `<id>` has resolved. `rest` is the path *after* `/api/repos/<id>`, e.g.
-/// `["data"]` or `["story", "SH-1", "move"]`.
+/// `<id>` has resolved to a project.
+///
+/// The method is already decided: it was consumed by [`classify`], which is why
+/// this function no longer takes one. Every 405 and every 404 that used to be
+/// spelled at the bottom of a nested `match` is now a variant, so this `match`
+/// is exhaustive with no wildcard and a new per-project route cannot be added
+/// without an answer here.
 fn route_project<S: Store>(
     ctx: &Ctx<'_, S>,
-    method: &Method,
-    rest: &[&str],
+    route: ProjectRoute<'_>,
     headers: &[Header],
     body: &str,
     trusted_hosts: &TrustedHosts,
 ) -> Reply {
-    match rest {
-        ["data"] => match method {
-            Method::Get => match project_data_json(ctx) {
-                Ok(json) => json_reply(200, json).no_cache(),
-                Err(e) => error_reply(&e),
-            },
-            _ => text_reply(405, "Method not allowed"),
+    match route {
+        ProjectRoute::Data => match project_data_json(ctx) {
+            Ok(json) => json_reply(200, json).no_cache(),
+            Err(e) => error_reply(&e),
         },
-        ["story"] => match method {
-            Method::Post => guarded(headers, trusted_hosts, body, |b| route_create_story(ctx, b)),
-            _ => text_reply(405, "Method not allowed"),
-        },
-        ["story", id] => match method {
-            Method::Get => reply_with(
-                ctx,
-                200,
-                Invocation::Show {
-                    id: (*id).to_string(),
-                },
-            ),
-            Method::Patch => guarded(headers, trusted_hosts, body, |b| {
-                route_patch_story(ctx, id, b)
-            }),
-            Method::Delete => guarded(headers, trusted_hosts, body, |b| {
-                route_delete_story(ctx, id, b)
-            }),
-            _ => text_reply(405, "Method not allowed"),
-        },
-        ["story", id, action] => match (method, *action) {
-            (Method::Post, "move") => guarded(headers, trusted_hosts, body, |b| {
+        ProjectRoute::StoryCreate => {
+            guarded(headers, trusted_hosts, body, |b| route_create_story(ctx, b))
+        }
+        ProjectRoute::StoryShow { id } => {
+            reply_with(ctx, 200, Invocation::Show { id: id.to_string() })
+        }
+        ProjectRoute::StoryPatch { id } => guarded(headers, trusted_hosts, body, |b| {
+            route_patch_story(ctx, id, b)
+        }),
+        ProjectRoute::StoryDelete { id } => guarded(headers, trusted_hosts, body, |b| {
+            route_delete_story(ctx, id, b)
+        }),
+        ProjectRoute::StoryAction { id, action } => match action {
+            StoryAction::Move => guarded(headers, trusted_hosts, body, |b| {
                 route_move_story(ctx, id, b)
             }),
-            (Method::Post, "comment") => guarded(headers, trusted_hosts, body, |b| {
+            StoryAction::Comment => guarded(headers, trusted_hosts, body, |b| {
                 route_comment_story(ctx, id, b)
             }),
-            (Method::Post, "priority") => guarded(headers, trusted_hosts, body, |b| {
+            StoryAction::Priority => guarded(headers, trusted_hosts, body, |b| {
                 route_priority_story(ctx, id, b)
             }),
-            (Method::Post, "assign") => guarded(headers, trusted_hosts, body, |b| {
+            StoryAction::Assign => guarded(headers, trusted_hosts, body, |b| {
                 route_assign_story(ctx, id, b)
             }),
-            (Method::Post, "labels") => guarded(headers, trusted_hosts, body, |b| {
+            StoryAction::Labels => guarded(headers, trusted_hosts, body, |b| {
                 route_labels_story(ctx, id, b)
             }),
-            (Method::Post, "block") => guarded(headers, trusted_hosts, body, |b| {
+            StoryAction::Block => guarded(headers, trusted_hosts, body, |b| {
                 route_block_story(ctx, id, b)
             }),
-            (Method::Post, "unblock") => {
+            StoryAction::Unblock => {
                 guarded_no_body(headers, trusted_hosts, || route_unblock_story(ctx, id))
             }
-            (Method::Post, "reopen") => guarded(headers, trusted_hosts, body, |b| {
+            StoryAction::Reopen => guarded(headers, trusted_hosts, body, |b| {
                 route_reopen_story(ctx, id, b)
             }),
-            (Method::Post, "archive") => {
+            StoryAction::Archive => {
                 guarded_no_body(headers, trusted_hosts, || route_hide_story(ctx, id))
             }
-            (Method::Post, "unarchive") => {
+            StoryAction::Unarchive => {
                 guarded_no_body(headers, trusted_hosts, || route_unhide_story(ctx, id))
             }
-            (Method::Post, "publish") => {
+            StoryAction::Publish => {
                 guarded_no_body(headers, trusted_hosts, || route_publish_story(ctx, id))
             }
-            (Method::Post, "link-pr") => guarded(headers, trusted_hosts, body, |b| {
+            StoryAction::LinkPr => guarded(headers, trusted_hosts, body, |b| {
                 route_link_pr_story(ctx, id, b)
             }),
-            (Method::Post, "unlink-pr") => guarded(headers, trusted_hosts, body, |b| {
+            StoryAction::UnlinkPr => guarded(headers, trusted_hosts, body, |b| {
                 route_unlink_pr_story(ctx, id, b)
             }),
-            (Method::Post, _) => text_reply(404, "Not found"),
-            _ => text_reply(405, "Method not allowed"),
         },
         // Reordering is a PATCH of the *collection*, not a
         // `/states/reorder` sub-path: `reorder` is a legal state slug, and
         // that route would shadow the state with that name.
-        ["states"] => match method {
-            Method::Get => match states_json(ctx, None) {
-                Ok(json) => json_reply(200, json).no_cache(),
-                Err(e) => error_reply(&e),
-            },
-            Method::Post => guarded(headers, trusted_hosts, body, |b| route_create_state(ctx, b)),
-            Method::Patch => guarded(headers, trusted_hosts, body, |b| {
-                route_reorder_states(ctx, b)
-            }),
-            _ => text_reply(405, "Method not allowed"),
+        ProjectRoute::States => match states_json(ctx, None) {
+            Ok(json) => json_reply(200, json).no_cache(),
+            Err(e) => error_reply(&e),
         },
-        ["states", slug] => match method {
-            Method::Patch => guarded(headers, trusted_hosts, body, |b| {
-                route_patch_state(ctx, slug, b)
-            }),
-            Method::Delete => guarded(headers, trusted_hosts, body, |b| {
-                route_delete_state(ctx, slug, b)
-            }),
-            _ => text_reply(405, "Method not allowed"),
-        },
-        ["states", slug, "archive"] => match method {
-            Method::Post => guarded(headers, trusted_hosts, body, |b| {
-                route_hide_state(ctx, slug, b)
-            }),
-            _ => text_reply(405, "Method not allowed"),
-        },
-        ["relate"] => match method {
-            Method::Post => guarded(headers, trusted_hosts, body, |b| {
-                route_relate(ctx, b, false)
-            }),
-            _ => text_reply(405, "Method not allowed"),
-        },
-        ["unrelate"] => match method {
-            Method::Post => guarded(headers, trusted_hosts, body, |b| route_relate(ctx, b, true)),
-            _ => text_reply(405, "Method not allowed"),
-        },
-        _ => text_reply(404, "Not found"),
+        ProjectRoute::StateCreate => {
+            guarded(headers, trusted_hosts, body, |b| route_create_state(ctx, b))
+        }
+        ProjectRoute::StatesReorder => guarded(headers, trusted_hosts, body, |b| {
+            route_reorder_states(ctx, b)
+        }),
+        ProjectRoute::StatePatch { slug } => guarded(headers, trusted_hosts, body, |b| {
+            route_patch_state(ctx, slug, b)
+        }),
+        ProjectRoute::StateDelete { slug } => guarded(headers, trusted_hosts, body, |b| {
+            route_delete_state(ctx, slug, b)
+        }),
+        ProjectRoute::StateArchive { slug } => guarded(headers, trusted_hosts, body, |b| {
+            route_hide_state(ctx, slug, b)
+        }),
+        ProjectRoute::Relate => guarded(headers, trusted_hosts, body, |b| {
+            route_relate(ctx, b, false)
+        }),
+        ProjectRoute::Unrelate => {
+            guarded(headers, trusted_hosts, body, |b| route_relate(ctx, b, true))
+        }
+        // Answered by [`crate::api::dispatch::intercept`] in the accept loop,
+        // so neither reaches the router in production. They are variants
+        // rather than a fall-through because a route that spawns an agent
+        // process has to be *nameable* by the authority table that refuses it.
+        ProjectRoute::Dispatch { .. } | ProjectRoute::DispatchPoll => text_reply(404, "Not found"),
+        ProjectRoute::StoryActionUnknown => text_reply(404, "Not found"),
+        ProjectRoute::MethodNotAllowed => text_reply(405, "Method not allowed"),
+        ProjectRoute::NotFound => text_reply(404, "Not found"),
     }
 }
 
