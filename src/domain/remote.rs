@@ -450,12 +450,8 @@ fn classify(raw: &str) -> Result<String, NormalizeError> {
         return network_key(authority, path, raw);
     }
 
-    // scp-like: `[user@]host:path`, distinguished from a path by the colon
-    // arriving before any slash. This is git's own rule.
-    if let Some((before, after)) = raw.split_once(':')
-        && !before.contains('/')
-    {
-        return network_key(before, after, raw);
+    if let Some((authority, path)) = scp_like_split(raw)? {
+        return network_key(authority, path, raw);
     }
 
     if raw.starts_with('/') {
@@ -470,6 +466,67 @@ fn classify(raw: &str) -> Result<String, NormalizeError> {
     }
 
     Err(NormalizeError::Unclassifiable(raw.to_string()))
+}
+
+/// Splits scp-like `[user@]host:path` syntax into its authority and path, or
+/// reports that `raw` is not that shape.
+///
+/// The separator is the colon that arrives before any slash — git's own rule
+/// for telling this shape from a filesystem path — except that a bracketed
+/// IPv6 literal host keeps its own colons. `git@[::1]:acme/widgets.git` is
+/// working git syntax naming host `::1` and path `acme/widgets.git`, so the
+/// separator is the colon after `]` rather than the first one in the string
+/// (SH-213). Splitting on the first colon there yielded not a refusal but a
+/// wrong key, which no later command could tell from a right one.
+///
+/// There is no port in this form. Git reads `git@[::1]:22/acme/widgets.git` as
+/// path `22/acme/widgets.git`, so this does too: parsing those digits as a
+/// port would invent an endpoint git never contacts, and would split the
+/// spelling off from the `ssh://` form of the same repository.
+///
+/// # Errors
+///
+/// [`NormalizeError::Unclassifiable`] for an authority that opens a bracket
+/// and never closes it. Git resolves that to a host literally spelled `[`,
+/// which nothing can answer for — there is no repository here to have an
+/// identity, and a refusal is the answer this module owes an input it cannot
+/// read.
+fn scp_like_split(raw: &str) -> Result<Option<(&str, &str)>, NormalizeError> {
+    let host_start = bracketed_host_end(raw)?.unwrap_or(0);
+    let Some(offset) = raw[host_start..].find(':') else {
+        return Ok(None);
+    };
+    let (authority, path) = raw.split_at(host_start + offset);
+    if authority.contains('/') {
+        return Ok(None);
+    }
+    Ok(Some((authority, &path[1..])))
+}
+
+/// Locates a bracketed IPv6 literal host, returning the byte offset just past
+/// its `]`.
+///
+/// The bracket must open the authority itself — the start of the string, or
+/// immediately after the userinfo's `@` — because anywhere else it is an
+/// ordinary character in a path or a filename rather than an address literal.
+///
+/// # Errors
+///
+/// [`NormalizeError::Unclassifiable`] for a bracket that is never closed.
+fn bracketed_host_end(raw: &str) -> Result<Option<usize>, NormalizeError> {
+    let Some(open) = raw.find('[') else {
+        return Ok(None);
+    };
+    let userinfo = &raw[..open];
+    let opens_the_authority = userinfo.is_empty()
+        || (userinfo.ends_with('@') && !userinfo.contains('/') && !userinfo.contains(':'));
+    if !opens_the_authority {
+        return Ok(None);
+    }
+    match raw[open..].find(']') {
+        Some(close) => Ok(Some(open + close + 1)),
+        None => Err(NormalizeError::Unclassifiable(raw.to_string())),
+    }
 }
 
 /// Builds the key for a remote that names a host.
@@ -859,6 +916,13 @@ mod tests {
             "\u{0}",
             "https://[::1]",
             "C:\\repos\\thing",
+            "[",
+            "[]",
+            "[]:",
+            "[::1]",
+            "[::1]:",
+            "@[::1]:",
+            "[[::1]]:r",
         ] {
             let _ = RemoteUrl::normalize(raw);
         }
@@ -934,6 +998,106 @@ mod tests {
             key("https://host.example/acme%2Fwidgets"),
             key("https://Host.Example/Acme%2FWidgets")
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // A bracketed IPv6 literal in the scp-like position — decided (SH-213)
+    //
+    // `git@[::1]:acme/widgets.git` is real git syntax, and the first colon in
+    // it sits *inside* the brackets. Splitting there produced a key that was
+    // not a refusal but a wrong answer — the silent failure this module exists
+    // to prevent. Every expectation below was read off the installed git
+    // (`GIT_TRACE=1 git ls-remote`, git 2.50.1) rather than assumed.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn a_bracketed_ipv6_host_in_scp_like_syntax_splits_after_the_bracket() {
+        // git resolves this to host `::1`, path `acme/widgets.git`.
+        assert_eq!(key("git@[::1]:acme/widgets.git"), "[::1]/acme/widgets");
+        // Userinfo is optional in this form, as it is in every other.
+        assert_eq!(
+            key("[2001:db8::1]:acme/widgets"),
+            "[2001:db8::1]/acme/widgets"
+        );
+        // The literal folds like any other host — same rule, no allowlist.
+        assert_eq!(
+            key("git@[2001:DB8::1]:Acme/Widgets"),
+            key("git@[2001:db8::1]:acme/widgets")
+        );
+    }
+
+    #[test]
+    fn the_scp_like_and_scheme_spellings_of_one_ipv6_host_are_one_identity() {
+        // The whole point: these name the same repository, so a project
+        // registered through one must be found through the other.
+        assert_eq!(
+            key("git@[::1]:acme/widgets.git"),
+            key("ssh://git@[::1]/acme/widgets.git")
+        );
+        assert_eq!(
+            key("[2001:db8::1]:acme/widgets"),
+            key("https://[2001:db8::1]/acme/widgets")
+        );
+    }
+
+    #[test]
+    fn a_port_shaped_prefix_after_a_bracketed_scp_like_host_is_path_not_port() {
+        // git has no port syntax in this form: it asks host `::1` for the path
+        // `22/acme/widgets.git`, swallowing the digits it might have parsed as
+        // a port. Reading them as a port here would invent an endpoint git
+        // never contacts — and split this spelling off from the scheme form
+        // below, which is the same repository.
+        assert_eq!(
+            key("git@[::1]:22/acme/widgets.git"),
+            "[::1]/22/acme/widgets"
+        );
+        assert_eq!(
+            key("git@[::1]:22/acme/widgets.git"),
+            key("ssh://git@[::1]/22/acme/widgets.git")
+        );
+    }
+
+    #[test]
+    fn path_on_answers_for_a_bracketed_scp_like_host() {
+        let remote = RemoteUrl::normalize("git@[::1]:acme/widgets.git").unwrap();
+        assert_eq!(remote.path_on("[::1]"), Some("acme/widgets"));
+        assert_eq!(remote.path_on("::1"), None);
+    }
+
+    #[test]
+    fn an_unclosed_bracket_is_refused_rather_than_split_inside() {
+        // git reads these as a host literally spelled `[` (or `git@[`), which
+        // no name service can answer. There is no repository here to have an
+        // identity, and this module refuses rather than guesses.
+        for raw in [
+            "git@[::1:acme/widgets.git",
+            "[::1:acme/widgets",
+            "[:",
+            "git@[",
+        ] {
+            assert!(
+                matches!(
+                    RemoteUrl::normalize(raw),
+                    Err(NormalizeError::Unclassifiable(_))
+                ),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bracket_that_does_not_open_the_authority_is_not_read_as_a_host() {
+        // A bracket inside a path segment is an ordinary character. Neither of
+        // these is scp-like syntax, and reading the bracket as an address
+        // literal would change what they are.
+        assert_eq!(
+            key("/srv/git/[wip]/repo.git"),
+            "local:/srv/git/[wip]/repo.git"
+        );
+        assert!(matches!(
+            RemoteUrl::normalize("[wip]/notes:x"),
+            Err(NormalizeError::RelativeLocalPath(_))
+        ));
     }
 
     // -----------------------------------------------------------------------
