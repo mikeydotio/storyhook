@@ -454,7 +454,7 @@ fn a_commit_naming_a_closed_story_is_skipped() {
     git_init(&fixture);
     let id = create(&fixture, "Already finished");
     StoryService::new(&fixture.ctx())
-        .set_state(&id, "done", None, None)
+        .set_state(&id, "done", None, None, None)
         .expect("closing it");
     commit(&fixture, &format!("chore: mention the closed {id}"));
 
@@ -485,7 +485,7 @@ fn a_story_already_out_of_the_default_state_is_commented_but_not_moved() {
     git_init(&fixture);
     let id = create(&fixture, "Under review");
     StoryService::new(&fixture.ctx())
-        .set_state(&id, "in-progress", None, None)
+        .set_state(&id, "in-progress", None, None, None)
         .expect("moving it on");
     // It must *claim*. With a bare mention the story would stay put because of
     // the grammar, and this test would prove nothing about the state it is in.

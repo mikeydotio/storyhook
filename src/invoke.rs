@@ -399,12 +399,14 @@ pub fn dispatch<S: Store>(
             state,
             comment,
             if_state,
+            awaiting,
         } => {
             StoryService::new(ctx).set_state(
                 &id,
                 &state,
                 comment.as_deref(),
                 if_state.as_deref(),
+                awaiting.as_deref(),
             )?;
             ctx.story_view(&id)
         }

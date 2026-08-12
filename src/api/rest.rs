@@ -811,12 +811,15 @@ fn route_patch_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply 
 
 /// `POST /api/repos/{id}/story/{story}/move` — the board's drag-and-drop
 /// endpoint. Moving into a CLOSED state archives the story (handled inside
-/// `SetState`).
+/// `SetState`). An optional `reason` (SH-205) sets `awaiting` atomically with
+/// the move — the Blocked-column drop prompt's skippable field; omitted by
+/// every other drop, so no existing caller's payload shape needs to change.
 fn route_move_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply {
     (|| -> Result<Reply, AppError> {
         let obj = parse_json_object(body)?;
         let state = require_str(&obj, "state")?.to_string();
         let comment = get_str(&obj, "comment").map(str::to_string);
+        let awaiting = get_str(&obj, "reason").map(str::to_string);
         Ok(reply_with(
             ctx,
             200,
@@ -825,6 +828,7 @@ fn route_move_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply {
                 state,
                 comment,
                 if_state: None,
+                awaiting,
             },
         ))
     })()

@@ -303,15 +303,37 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     /// from the slug. `story delete` leaves the state slug alone and only
     /// forces the story closed, so a stale `--if-state` naming the
     /// pre-deletion slug would otherwise sail through.
+    /// `awaiting`, when given, is set atomically with the state change
+    /// (SH-205) — the CLI's `story move <id> blocked --reason "<text>"` and
+    /// the dashboard's Blocked-column drop prompt both thread a reason
+    /// through here rather than issuing a second, non-atomic `set_awaiting`
+    /// call. Refused for a move into a CLOSED state, which already clears
+    /// `awaiting` unconditionally (`state_transition_events`) — setting one
+    /// in the same breath it gets cleared has no coherent meaning. To set a
+    /// reason without moving state, use [`Self::set_awaiting`] (`story
+    /// block`) instead.
     pub fn set_state(
         &self,
         id: &str,
         state: &str,
         comment: Option<&str>,
         if_state: Option<&str>,
+        awaiting: Option<&str>,
     ) -> Result<StorySnapshot, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
+        let awaiting = awaiting
+            .map(str::trim)
+            .map(|reason| {
+                if reason.is_empty() {
+                    Err(AppError::Validation(
+                        "awaiting reason must not be empty".to_string(),
+                    ))
+                } else {
+                    Ok(reason.to_string())
+                }
+            })
+            .transpose()?;
         let (before, snapshot) = self.ctx.store().write(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let states = tx.state_map(project)?;
@@ -333,12 +355,24 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                 .get(state)
                 .cloned()
                 .ok_or_else(|| undefined_state_error(state, &states))?;
+            if awaiting.is_some() && target.super_state == SuperState::Closed {
+                return Err(AppError::Validation(
+                    "--reason cannot be combined with a move to a closed state; \
+                     awaiting is cleared on close"
+                        .to_string(),
+                )
+                .into());
+            }
             let extra = comment
                 .map(|text| StoryEvent::StoryCommentAdded {
                     at: now.clone(),
                     text: text.to_string(),
                 })
                 .into_iter()
+                .chain(awaiting.clone().map(|reason| StoryEvent::StoryAwaitingSet {
+                    at: now.clone(),
+                    awaiting: reason,
+                }))
                 .collect();
             let events = state_transition_events(&target, row.awaiting.is_some(), &now, extra);
             let snapshot = append_and_fold(
@@ -418,7 +452,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                 ));
                 continue;
             }
-            match self.set_state(id, state_slug, None, None) {
+            match self.set_state(id, state_slug, None, None, None) {
                 Ok(snapshot) if snapshot.superstate == SuperState::Closed => {
                     results.push(format!("{id}: {state_slug} (archived)"));
                 }

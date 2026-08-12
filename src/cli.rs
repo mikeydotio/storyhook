@@ -352,6 +352,11 @@ pub enum Invocation {
         state: String,
         comment: Option<String>,
         if_state: Option<String>,
+        /// An `awaiting` reason to set atomically with the state change
+        /// (SH-205) — `story move <id> blocked --reason "<text>"`. Strictly
+        /// opt-in: `None` on every unmodified caller (scripts, agents, CI),
+        /// so the bare transition's non-interactive contract is unchanged.
+        awaiting: Option<String>,
     },
     SetAwaiting {
         id: String,
@@ -1325,7 +1330,7 @@ static VERB_FLAGS: &[VerbFlags] = &[
     VerbFlags {
         verb: "move",
         subcommand: None,
-        flags: &[value("if-state")],
+        flags: &[value("if-state"), value("reason")],
     },
     VerbFlags {
         verb: "reopen",
@@ -3513,19 +3518,22 @@ fn parse_assign(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_move(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story move <id> <state> [--if-state <expected>] [\"<comment>\"]";
+    let usage =
+        "usage: story move <id> <state> [--if-state <expected>] [--reason <text>] [\"<comment>\"]";
     if args.len() < 3 {
         return Err(AppError::Usage(usage.to_string()));
     }
     let id = args[1].clone();
     let state = args[2].clone();
 
-    // `--if-state` is recognized only as the literal token immediately
-    // following <state> (args[3]) — never scanned for anywhere else in the
-    // trailing args. What that protects against is an unrelated `--if-state`
-    // substring inside an unquoted multi-word comment being silently spliced
-    // out mid-comment and mistaken for a real CAS guard. That reasoning is
-    // unchanged and this position-pinning stays.
+    // `--if-state` and `--reason` are recognized only as a contiguous run of
+    // flag+value pairs immediately following <state> (starting at args[3]),
+    // in either order, each at most once — never scanned for anywhere else in
+    // the trailing args. What that protects against is an unrelated
+    // `--if-state`/`--reason` substring inside an unquoted multi-word comment
+    // being silently spliced out mid-comment and mistaken for a real flag.
+    // That reasoning is unchanged and this position-pinning stays; SH-205
+    // only widens it from one recognized flag to two.
     //
     // What *has* changed (SH-62) is the sentence this comment used to carry
     // next: that a comment beginning with `--` must never fail as an
@@ -3541,14 +3549,28 @@ fn parse_move(args: &[String]) -> Result<Invocation, AppError> {
     // before. Only the unquoted single-token form (`… done --sprint-23`) now
     // errors, and it does so naming the token and offering `--`. A repo-wide
     // search for that form found one hit: SH-62's own defect description.
-    let (if_state, comment_start) = if args.get(3).map(String::as_str) == Some("--if-state") {
-        let value = args
-            .get(4)
-            .ok_or_else(|| AppError::Usage("--if-state requires a value".to_string()))?;
-        (Some(value.clone()), 5)
-    } else {
-        (None, 3)
-    };
+    let mut if_state = None;
+    let mut awaiting = None;
+    let mut comment_start = 3;
+    loop {
+        match args.get(comment_start).map(String::as_str) {
+            Some("--if-state") if if_state.is_none() => {
+                let value = args
+                    .get(comment_start + 1)
+                    .ok_or_else(|| AppError::Usage("--if-state requires a value".to_string()))?;
+                if_state = Some(value.clone());
+                comment_start += 2;
+            }
+            Some("--reason") if awaiting.is_none() => {
+                let value = args
+                    .get(comment_start + 1)
+                    .ok_or_else(|| AppError::Usage("--reason requires a value".to_string()))?;
+                awaiting = Some(value.clone());
+                comment_start += 2;
+            }
+            _ => break,
+        }
+    }
 
     let comment = if comment_start < args.len() {
         Some(join_tokens(&args[comment_start..]))
@@ -3561,6 +3583,7 @@ fn parse_move(args: &[String]) -> Result<Invocation, AppError> {
         state,
         comment,
         if_state,
+        awaiting,
     })
 }
 

@@ -256,7 +256,7 @@ story new <title> [--state <slug>] [--type <slug>] [--description "<text>"] [--p
 story show <id>
 story comment <id> "<text>"
 story assign <id> <member>
-story move <id> <slug> [--if-state <expected>] ["<comment>"]
+story move <id> <slug> [--if-state <expected>] [--reason <text>] ["<comment>"]
 story block <id> "<reason>"
 story unblock <id>
 story prioritize <id> <level>

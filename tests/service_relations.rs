@@ -317,7 +317,7 @@ fn relating_to_a_closed_story_is_refused_from_either_side() {
     let a = new_story(&ctx, "a");
     let b = new_story(&ctx, "b");
     StoryService::new(&ctx)
-        .set_state(&b, "done", None, None)
+        .set_state(&b, "done", None, None, None)
         .unwrap();
 
     for (first, second) in [(&a, &b), (&b, &a)] {
@@ -497,7 +497,7 @@ fn closing_a_related_story_leaves_the_relation_intact() {
         .relate(&a, "blocks", &b, false)
         .unwrap();
     StoryService::new(&ctx)
-        .set_state(&b, "done", None, None)
+        .set_state(&b, "done", None, None, None)
         .unwrap();
 
     assert_eq!(snapshot(&fixture, &b).superstate, SuperState::Closed);

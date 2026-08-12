@@ -91,7 +91,7 @@ fn a_story_in_the_blocked_state_is_never_the_next_line() {
     let fixture = ServiceFixture::new();
     let only = create(&fixture, "Manually blocked", None);
     StoryService::new(&fixture.ctx())
-        .set_state(&only, "blocked", None, None)
+        .set_state(&only, "blocked", None, None, None)
         .expect("blocking");
 
     let context = context(&fixture);
@@ -109,7 +109,7 @@ fn a_story_already_in_progress_is_never_the_next_line() {
     let fixture = ServiceFixture::new();
     let claimed = create(&fixture, "Claimed elsewhere", None);
     StoryService::new(&fixture.ctx())
-        .set_state(&claimed, "in-progress", None, None)
+        .set_state(&claimed, "in-progress", None, None, None)
         .expect("claiming");
 
     let context = context(&fixture);
@@ -486,7 +486,7 @@ mod undo {
         let fixture = ServiceFixture::new();
         let (id, before) = snapshot(&fixture, "Moves around");
         StoryService::new(&fixture.ctx())
-            .set_state(&id, "in-progress", None, None)
+            .set_state(&id, "in-progress", None, None, None)
             .expect("moving");
 
         let compensation = undo(&fixture, &id, &before);
@@ -642,7 +642,7 @@ mod undo {
         let fixture = ServiceFixture::new();
         let (id, before) = snapshot(&fixture, "Back and forth");
         StoryService::new(&fixture.ctx())
-            .set_state(&id, "in-progress", None, None)
+            .set_state(&id, "in-progress", None, None, None)
             .expect("moving");
         let after_move = session::history(&fixture.ctx(), &id).expect("history");
 
