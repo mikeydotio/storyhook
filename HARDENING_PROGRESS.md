@@ -11468,3 +11468,117 @@ would. Branch deleted, `main` fast-forwarded.
 **No version bump** — left for the next batched `/semver` pass.
 
 **Next:** run `story next` fresh.
+
+### SH-237 — done · PR #307 · and SH-249 filed and fixed alongside it
+
+**Outcome:** merged as `0f1fae0`, five commits. The story as filed was a
+test-hygiene sweep; the fix that closed it was a production one, because the
+filed fix direction turned out to be impossible and finding out why led to the
+defect underneath.
+
+**The filed direction was blocked, and that was the finding.** SH-237 said:
+stop pre-reserving, pass `--port 0`, read `env.daemon().port` back. But
+`story web start --port 0` is *refused* (`src/cli.rs`), and the refusal is
+pinned by `web_start_invalid_port_zero`. The refusal is right — "start my
+bookmarked dashboard on a port nobody can predict" is not a request a person
+makes — so the question became why these tests had to name a port at all.
+
+**Because `web start` was overriding the environment (SH-249, filed mid-story).**
+`WebAction::Start`/`Serve` carried a plain `u16` with a `DEFAULT_WEB_PORT`
+default, so an omitted `--port` became `Some(3456)` — an explicit request that
+outranked `$STORYHOOK_DAEMON_ADDR` and the address `default_daemon_addr`
+resolves for the store. `daemon start` never had this: its port is already an
+`Option`, and `None` means "ask the environment". Two spellings of one command,
+disagreeing about the port they share.
+
+Reproduced deterministically, and *without* binding 3456, on a machine whose
+real dashboard was holding it:
+
+| command, no `--port`, preferred address set | port bound |
+|---|---|
+| `story daemon start`, preferred 49339 | **49339** — honoured |
+| `story web start`, preferred 49323 | **49330** — ignored it, tried 3456, fell back |
+
+**`bind_preferred`'s fallback is why nobody had noticed.** A wrong preference
+quietly becomes a right-looking port whenever the wrong one is taken — and on
+the machine that matters most, a developer's own, 3456 *is* taken, by them. The
+defect is invisible exactly where it is most dangerous. This is the same shape
+as the flip side of SH-195: there, fallback made a reservation's TOCTOU gap
+harmless; here, it made a real override look fine.
+
+**What it was defeating.** `$STORYHOOK_DAEMON_ADDR=127.0.0.1:0` is the *only*
+containment this suite has against binding 3456 — `daemon_containment()` pins
+it, `every_harness_that_isolates_the_data_dir_also_contains_its_daemon` spends
+its whole length making every shell harness export it, and CLAUDE.md's standing
+rule rests on it. `web start` walked past all of it, and
+`tests/daemon_lifecycle.rs` already runs that exact spelling with no `--port`
+inside an isolated environment. It also overrode store isolation's
+port-0-for-a-non-default-store decision, so a second store's dashboard fought
+the default store's for 3456 — a user-facing consequence, not just a test one.
+
+**Council, because this was a real fork.** Fixing the tests only (the story as
+written) versus fixing the origin (a production change inside a test-infra
+story) had two defensible answers, so: three seats — qa-engineer,
+software-architect, skeptic — two rounds. Round 1 split 2–1–0. Deliberation
+moved **every** member: the skeptic abandoned its own test-only proposal once
+the reproduction showed the regression test could be non-vacuous, and both
+others dropped the sequencing they had argued for once the one-story-per-context
+rule made it cost an abandoned claim. The runoff was unanimous. Verdict: file
+the override as its own story *before* writing its fix, fix both in this
+context, close both with one PR, commits two-hats separated, and write the
+regression test as a **derived fence rather than a single example**. Audit trail
+in `.council/sh237-where-to-fix-the-web-start-port/` (gitignored, local);
+verdict also recorded as a comment on SH-237.
+
+**The fence is the part worth keeping.** It derives over all four spellings that
+start a daemon — `daemon start`, `web start`, `daemon --serve`, `web --serve` —
+so a fifth inherits the check by being added to the list. And it asserts the
+preferred port is **honoured**, not that 3456 is avoided: "did not bind 3456"
+passes for free on any machine where something already holds 3456, which is
+precisely the machine this defect lives on. A single-example test would have
+been green on the developer's own laptop while the defect sat there. Red on
+exactly the two `web` spellings, green on the two `daemon` ones, before the fix.
+
+**Eight sites, not six.** The story counted six; there were eight. Four of them
+were already reading the portfile for the daemon's token and simply not taking
+the port sitting beside it. The eighth — the wedged-`tailscale` `web --serve`
+spawn — has no client blocking on health, so it now learns its port from the
+portfile via `port_of`, which also checks the portfile names *its* child rather
+than some other daemon. That works for the same reason the test exists:
+`bind_listeners` binds loopback before probing the tailnet and that probe is
+capped at 3s, so a `tailscale` wedged for two minutes delays publication by
+three seconds. Measured before writing the change: **3.36s**, against that
+test's own 20s deadline.
+
+**A formatting failure that mattered more than it looked.** The first `make
+test` failed on `cargo fmt --check` alone — two hunks, both caused by my own
+edits. Fixing it with a sixth "style" commit would have left the five commits
+underneath failing the gate, which is the bisectability rule broken in exactly
+the way it exists to prevent. Rebuilt the branch instead: reset to `main`, then
+for each commit restore its tree, run `cargo fmt --all`, recommit with the
+original message. Verified afterwards that the rebuilt tip differs from the
+backup by exactly the two formatting hunks, and that **each of the five commits
+independently passes `cargo fmt --check`**. (`git commit --amend` is unreliable
+in this environment — see the standing note — so a rebuild beats an amend chain.)
+
+**Gate:** `make test` green end to end, exit 0, zero failures, supervised with a
+log-growth heartbeat throughout — steady growth, no stall, no kill needed. No
+orphan daemons afterwards (`check-no-orphan-servers.sh` clean), and the
+developer's own dashboard on 3456 was still up and untouched at the end, which
+is the outcome this whole story is about. The pre-push hook then ran its own
+`make test` inside the push — no `SKIP_PREPUSH_TESTS=1`.
+
+**Stories closed automatically.** `Closes SH-237.` / `Closes SH-249.` in the
+commit bodies closed both on merge; the explicit `story move ... done` afterwards
+was refused as already-closed, which is the confirmation.
+
+**A note on the council seats.** Dispatched as named background agents, they did
+not appear in `ListAgents` and their results arrived only when asked for
+directly. Their proposals were never lost — but a chair that had waited for a
+notification instead of pinging would still be waiting. Worth remembering the
+next time a council is convened from this run: **ping the seats rather than
+trusting the roster to show them**.
+
+**No version bump** — left for the next batched `/semver` pass.
+
+**Next:** run `story next` fresh.
