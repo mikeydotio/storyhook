@@ -49,17 +49,24 @@
 //! nowhere to put them: `project.toml` has never had a table for a registered
 //! origin, before or after the rearchitecture, so `storage::export_project`
 //! always answers an empty list and `storage::import_project` never looks at
-//! the field. That is not a leftover gap of the kind SH-133 closed — it is the
-//! same shape as `github.sync` below, a carry this leg of the round trip
-//! structurally cannot make.
+//! the field. That is not a leftover gap of the kind SH-133 closed — it is a
+//! carry this leg of the round trip structurally cannot make, and the only one
+//! left.
 //!
-//! `github.sync` is the one thing the document deliberately does not carry even
-//! though it could. `src/service/transfer.rs`'s `ExportedSettings` says why: a
-//! partial carry is worse than none, because the per-story `github_bases` merge
-//! bases have no home in a legacy tree, and restoring mappings without them
-//! makes the next sync treat local as base and file every stale remote value as
-//! an ordinary pull. `story doctor` names that omission on a project it applies
-//! to.
+//! **`github.sync` used to be the other one, and this note used to say so.**
+//! It was true when written: `src/service/transfer.rs`'s `ExportedSettings`
+//! argued that a partial carry is worse than none, because the per-story
+//! `github_bases` merge bases had no home in a legacy tree, and restoring
+//! mappings without them makes the next sync treat local as base and file every
+//! stale remote value as an ordinary pull. What changed is the premise. SH-189
+//! found where the pre-rearchitecture binary actually kept both —
+//! `.storyhook/github-sync.toml` and `.storyhook/github-sync/bases/<id>.json`,
+//! beside `project.toml` rather than inside it — and taught the document and
+//! `storage.rs` to carry them in full, so the partial carry the argument
+//! rejected was never the choice. SH-233 taught the remaining leg, `story
+//! migrate`, to read them, and the whole loop carries github-sync end to end:
+//! `github_syncs_configuration_and_its_merge_bases_survive_the_whole_loop`
+//! below is the proof.
 
 mod legacy_support;
 
@@ -283,7 +290,9 @@ fn a_projects_registered_origins_reach_the_document_but_not_a_rebuilt_legacy_tre
     // `story import-project`, the documented backup's other half — is the
     // primary consumer. This leg of the two-way door cannot follow: a legacy
     // tree has never had anywhere to write one, before or after the
-    // rearchitecture, the same shape as `github.sync` below it.
+    // rearchitecture. It is the last thing the loop structurally cannot carry —
+    // `github.sync`, which this comment used to name beside it, has its own
+    // files in the tree and travels the whole way (SH-189, SH-233).
     let (_tree, root) = custom_config_tree();
     let (_store_dir, store, _report) = migrate(&root);
     let project = store

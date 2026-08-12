@@ -158,31 +158,44 @@ impl From<crate::store::ProjectRemoteRecord> for ExportedRemote {
 /// contract and enrol every future column into the wire format by default —
 /// `store/types.rs` owns no wire format, which is the rule SH-67 settled one
 /// story earlier. And the store row has a third field, `github_sync`, that this
-/// document deliberately does not carry: a separate type makes that
-/// **unrepresentable** rather than a `skip_serializing_if` somebody could
-/// remove without noticing what it was holding back.
+/// *type* deliberately does not carry — the document does, as its own field
+/// beside the merge bases it must never be separated from. A separate type makes
+/// that separation **unrepresentable** rather than a `skip_serializing_if`
+/// somebody could remove without noticing what it was holding back.
 ///
 /// The shape is the legacy `project.toml`'s, because the document's job is to be
 /// the contract between the two storage layouts and the layout it must survive
 /// into spells them this way.
 ///
-/// # Why `github.sync` does not travel
+/// # Why `github.sync` does not travel *through this type*
 ///
-/// Not because the document could not hold it — it is a serde struct and could.
-/// Because a **partial** carry is worse than none. `load_config` decides whether
-/// a project is configured by whether this blob is present, and never looks at
-/// the per-story `github_bases` merge-base table, which the legacy leg has
-/// nowhere to write: `src/legacy/` and `src/storage.rs` hold no github knowledge
-/// at all. Restore the blob without the bases and the next sync's
+/// It travels — as [`ProjectExport::github_sync`], a sibling field, alongside
+/// [`ProjectExport::github_bases`] (SH-189). What it must never do is arrive
+/// **partially**, and keeping it out of this type is how that is made
+/// unrepresentable rather than merely intended.
+///
+/// A partial carry is worse than none. `load_config` decides whether a project
+/// is configured by whether the blob is present, and never looks at the
+/// per-story `github_bases` merge-base table beside it. Carry the blob without
+/// the bases and the next sync's
 /// `load_base(..).unwrap_or_else(|| story.clone())` treats *local as base*, so
 /// every field the user edited since the last sync reads as unchanged and the
-/// stale remote value is filed as an ordinary pull — silently, at exit 0. The
-/// blob also carries `github.owner`/`github.repo`, which only the setup wizard
-/// re-derives, so a document restored into a fork would push to the original
-/// repository.
+/// stale remote value is filed as an ordinary pull — silently, at exit 0.
 ///
-/// What a backup therefore does not carry is named by `story doctor` rather than
-/// left to be discovered at the next sync.
+/// This section used to argue from that risk that the blob could not travel at
+/// all, on the grounds that the legacy leg had nowhere to write the bases.
+/// That premise was retired, not the reasoning: SH-189 recovered where the
+/// pre-rearchitecture binary actually kept both — `.storyhook/github-sync.toml`
+/// and `.storyhook/github-sync/bases/<id>.json` — and taught `src/storage.rs`
+/// to write them; SH-233 taught `src/legacy/` to read them, so `story migrate`
+/// carries them too. Both halves move together on every leg, which is what the
+/// argument was ever asking for.
+///
+/// One field the blob holds is still checkout-specific:
+/// `github.owner`/`github.repo`, which only the setup wizard re-derives.
+/// [`crate::service::github::reconcile_restored_github_remote`] corrects it
+/// after a restore, and `story doctor`'s `github_remote_advice` re-asks on
+/// every run for the cases it cannot answer.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ExportedSettings {
     /// The `[sync]` table, absent when nothing in it is set.
