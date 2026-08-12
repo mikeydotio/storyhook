@@ -153,6 +153,7 @@ pub fn run_check<S: Store>(
                     &states,
                     ExpectedSeq::Exact(row.head_seq),
                     &events,
+                    ctx.provenance(),
                 )?;
                 Ok(())
             })?;
@@ -174,6 +175,7 @@ pub fn run_check<S: Store>(
                         at: now.clone(),
                         url: link.url.clone(),
                     }],
+                    ctx.provenance(),
                 )?;
                 Ok(())
             })?;

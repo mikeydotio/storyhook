@@ -31,6 +31,7 @@ use crate::cli::{
     Invocation, NewProjectRequest, PhaseAction, PluginAction, ProjectAction, SettingsAction,
     StateAction, StoreAction, TypeAction, WebAction,
 };
+use crate::domain::provenance::{ActorLabel, Provenance};
 use crate::domain::{FieldEdit, ImportStory, StateChanges, SuperState, TypeChanges, TypeDef};
 use crate::env::Environment;
 use crate::error::AppError;
@@ -100,6 +101,25 @@ pub struct InvokeRequest {
     /// look elsewhere: the refusal is raised where the work runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_token: Option<crate::domain::secret::GithubToken>,
+    /// Who the caller says it is, from `$STORYHOOK_ACTOR` (SH-246).
+    ///
+    /// Read by the client from its own environment and carried here for the
+    /// same reason [`stdin`](Self::stdin) and
+    /// [`github_token`](Self::github_token) are: the daemon's environment
+    /// belongs to whichever process happened to start it, so a daemon reading
+    /// `$STORYHOOK_ACTOR` directly would label every write with whatever the
+    /// *first* caller of the day had exported.
+    ///
+    /// `None` means the caller declared nothing, which is the common case and
+    /// is never filled in from the command beside it — an undeclared actor and
+    /// a declared one must stay distinguishable, or the record answers a
+    /// question it was not asked.
+    ///
+    /// Typed rather than a bare `String`: [`ActorLabel`]'s `TryFrom<String>`
+    /// runs on deserialization, so a label that crossed the wire is bounded and
+    /// control-character-free by the time anything can store or render it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<ActorLabel>,
 }
 
 impl InvokeRequest {
@@ -111,6 +131,7 @@ impl InvokeRequest {
             stdin: None,
             project: None,
             github_token: None,
+            actor: None,
         }
     }
 
@@ -121,6 +142,13 @@ impl InvokeRequest {
         github_token: Option<crate::domain::secret::GithubToken>,
     ) -> Self {
         self.github_token = github_token;
+        self
+    }
+
+    /// Supplies who the caller says it is (SH-246).
+    #[must_use]
+    pub fn actor(mut self, actor: Option<ActorLabel>) -> Self {
+        self.actor = actor;
         self
     }
 
@@ -564,6 +592,10 @@ pub fn dispatch<S: Store>(
         }
         Invocation::Show { id } => {
             query(ctx, |service| service.show(&id)).map(|view| Response::Story(Box::new(view)))
+        }
+        Invocation::Log { id } => {
+            let (id, title, entries) = session::story_log(ctx, &id)?;
+            Ok(Response::StoryLog { id, title, entries })
         }
         Invocation::Search { query: needle } => query(ctx, |service| service.search(&needle))
             .map(|views| Response::Stories(views, None)),
@@ -2116,6 +2148,7 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::Doctor { .. }
         | Invocation::DoctorAbandoned { .. }
         | Invocation::Show { .. }
+        | Invocation::Log { .. }
         | Invocation::Comment { .. }
         | Invocation::Assign { .. }
         | Invocation::SetState { .. }
@@ -2314,6 +2347,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Report { .. } => "report",
         Invocation::Doctor { .. } => "doctor",
         Invocation::Show { .. } => "show",
+        Invocation::Log { .. } => "log",
         Invocation::Comment { .. } => "comment",
         Invocation::Assign { .. } => "assign",
         Invocation::SetState { .. } => "set-state",
@@ -2795,7 +2829,8 @@ impl Invoker for HttpInvoker {
             .hook_depth(self.hook_depth)
             .stdin(request.stdin)
             .project(request.project)
-            .github_token(request.github_token);
+            .github_token(request.github_token)
+            .actor(request.actor);
 
         // Always `None` in production: `bound` exists only as a test seam
         // (`send`'s own docstring) since SH-174 deleted its sole production
@@ -3187,6 +3222,7 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Doctor { .. }
         | Invocation::DoctorAbandoned { .. }
         | Invocation::Show { .. }
+        | Invocation::Log { .. }
         | Invocation::Comment { .. }
         | Invocation::Assign { .. }
         | Invocation::SetState { .. }
@@ -3362,11 +3398,19 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
             ));
         };
 
+        // Provenance is assembled here, at the one place a scoped invocation
+        // becomes a context, so every event the command goes on to write carries
+        // the same answer to "who did this" (SH-246). The command half is read
+        // off the invocation itself rather than accepted from the caller —
+        // that is precisely what makes it the attested half.
+        let provenance =
+            Provenance::command(invocation_name(&request.invocation)).with_actor(request.actor);
         let ctx = Ctx::new(self.store, project, &self.cwd, self.env.clone())
             .no_hooks(request.no_hooks)
             .hook_depth(self.hook_depth)
             .with_stdin(request.stdin)
-            .with_github_token(request.github_token);
+            .with_github_token(request.github_token)
+            .with_provenance(provenance);
         dispatch(&ctx, request.invocation)
     }
 }

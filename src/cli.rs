@@ -192,6 +192,7 @@ Usage:
   story help [<command>] [--compact] [--all]
   story plugin install|uninstall <target>
   story show <id>
+  story log <id>
   story comment <id> "<text>"
   story assign <id> <member-id|handle>
   story move <id> <state-slug> [--if-state <expected>] ["<comment>"]
@@ -357,6 +358,23 @@ pub enum Invocation {
         action: AbandonedAction,
     },
     Show {
+        id: String,
+    },
+    /// One story's write history: what happened to it, when, and what wrote it
+    /// (SH-246).
+    ///
+    /// **Named `log`, not `history`, and that is deliberate.** [`History`] below
+    /// already exists as the TUI's undo primitive and is unreachable from the
+    /// command line on purpose. The two answer different questions — one is a
+    /// raw log to put *back*, this is a rendering to *read* — and giving them
+    /// the same word would leave two "history" concepts in one codebase for
+    /// every future reader to disentangle. `log` is also what every neighbouring
+    /// tool calls an append-only trail: `git log`, `journalctl`, `docker logs`.
+    ///
+    /// A verb rather than a flag on [`Show`](Self::Show) because this parser
+    /// reserves verbs for a distinct data *shape* and flags for narrowing an
+    /// existing view — and `show` takes no flags at all today.
+    Log {
         id: String,
     },
     Comment {
@@ -1807,6 +1825,7 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "daemon" => parse_daemon(args),
         "store" => parse_store(args),
         "show" => parse_show(args),
+        "log" => parse_log(args),
         "comment" => parse_comment(args),
         "assign" => parse_assign(args),
         "move" => parse_move(args),
@@ -3534,6 +3553,15 @@ fn parse_show(args: &[String]) -> Result<Invocation, AppError> {
         return Err(AppError::Usage("usage: story show <id>".to_string()));
     }
     Ok(Invocation::Show {
+        id: args[1].clone(),
+    })
+}
+
+fn parse_log(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() != 2 {
+        return Err(AppError::Usage("usage: story log <id>".to_string()));
+    }
+    Ok(Invocation::Log {
         id: args[1].clone(),
     })
 }

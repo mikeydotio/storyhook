@@ -113,6 +113,7 @@ impl<'ctx, S: Store> PrLinkService<'ctx, S> {
                     number,
                     close_on_merge,
                 }],
+                self.ctx.provenance(),
             )?)
         })?)
     }
@@ -136,6 +137,7 @@ impl<'ctx, S: Store> PrLinkService<'ctx, S> {
                     at: now.clone(),
                     url: url.to_string(),
                 }],
+                self.ctx.provenance(),
             )?)
         })?)
     }

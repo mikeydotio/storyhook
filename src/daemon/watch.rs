@@ -187,6 +187,7 @@ mod tests {
                         title: "watched".into(),
                         state: "backlog".into(),
                     }],
+                    &crate::domain::provenance::Provenance::unrecorded(),
                 )
             })
             .expect("appending an event");
@@ -309,6 +310,7 @@ mod tests {
                         title: "raced".into(),
                         state: "backlog".into(),
                     }],
+                    &crate::domain::provenance::Provenance::unrecorded(),
                 )
             })
             .expect("appending an event");

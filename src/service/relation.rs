@@ -199,6 +199,7 @@ impl<'ctx, S: Store> RelationService<'ctx, S> {
                     &states,
                     ExpectedSeq::Exact(head),
                     events,
+                    self.ctx.provenance(),
                 )?;
             }
 

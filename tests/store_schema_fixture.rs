@@ -166,8 +166,13 @@ fn build(path: &Path) {
                 ),
             ] {
                 assert_eq!(tx.allocate_story_no(project)?, no);
-                let head =
-                    tx.append_events(project, no, ExpectedSeq::Exact(EventSeq::ZERO), &events)?;
+                let head = tx.append_events(
+                    project,
+                    no,
+                    ExpectedSeq::Exact(EventSeq::ZERO),
+                    &events,
+                    &storyhook::domain::provenance::Provenance::unrecorded(),
+                )?;
                 let snapshot = fold_story(&no.to_id("SH"), &events, &state_map).unwrap();
                 tx.put_story(project, &snapshot, head)?;
             }

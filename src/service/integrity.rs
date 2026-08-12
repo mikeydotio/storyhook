@@ -220,6 +220,7 @@ impl<'a, S: Store> IntegrityService<'a, S> {
                             other_id: id.clone(),
                             relation: expected.to_string(),
                         }],
+                        self.ctx.provenance(),
                     )?;
                     touched.insert(relation.other_id.clone());
                 }
@@ -250,6 +251,7 @@ impl<'a, S: Store> IntegrityService<'a, S> {
                         &states,
                         ExpectedSeq::Any,
                         &own_events,
+                        self.ctx.provenance(),
                     )?;
                     touched.insert(id.clone());
                 }

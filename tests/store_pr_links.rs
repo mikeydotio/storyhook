@@ -131,6 +131,7 @@ fn story_pr_linked_inserts_an_open_row() {
                     number: 7,
                     close_on_merge: true,
                 }],
+                &storyhook::domain::provenance::Provenance::unrecorded(),
             )
         })
         .unwrap();
@@ -167,6 +168,7 @@ fn a_second_story_pr_linked_for_the_same_pr_upserts_close_on_merge() {
                     number: 7,
                     close_on_merge: true,
                 }],
+                &storyhook::domain::provenance::Provenance::unrecorded(),
             )
         })
         .unwrap();
@@ -184,6 +186,7 @@ fn a_second_story_pr_linked_for_the_same_pr_upserts_close_on_merge() {
                     number: 7,
                     close_on_merge: false,
                 }],
+                &storyhook::domain::provenance::Provenance::unrecorded(),
             )
         })
         .unwrap();
@@ -226,6 +229,7 @@ fn story_pr_unlinked_deletes_the_row() {
                         url: URL.into(),
                     },
                 ],
+                &storyhook::domain::provenance::Provenance::unrecorded(),
             )
         })
         .unwrap();
@@ -262,6 +266,7 @@ fn story_pr_merged_updates_status_and_drops_out_of_the_open_read() {
                         url: URL.into(),
                     },
                 ],
+                &storyhook::domain::provenance::Provenance::unrecorded(),
             )
         })
         .unwrap();
@@ -310,6 +315,7 @@ fn pr_links_includes_a_merged_link_that_open_pr_links_excludes() {
                         url: URL.into(),
                     },
                 ],
+                &storyhook::domain::provenance::Provenance::unrecorded(),
             )
         })
         .unwrap();
@@ -352,6 +358,7 @@ fn pr_links_answers_project_wide_across_stories_regardless_of_status() {
                     number: 7,
                     close_on_merge: true,
                 }],
+                &storyhook::domain::provenance::Provenance::unrecorded(),
             )
         })
         .unwrap();
@@ -375,6 +382,7 @@ fn pr_links_answers_project_wide_across_stories_regardless_of_status() {
                         url: "https://github.com/acme/widgets/pull/9".into(),
                     },
                 ],
+                &storyhook::domain::provenance::Provenance::unrecorded(),
             )
         })
         .unwrap();
@@ -414,6 +422,7 @@ fn story_pr_closed_without_merging_updates_status_to_closed() {
                         url: URL.into(),
                     },
                 ],
+                &storyhook::domain::provenance::Provenance::unrecorded(),
             )
         })
         .unwrap();
@@ -444,6 +453,7 @@ fn open_pr_links_answers_project_wide_across_stories() {
                     number: 7,
                     close_on_merge: true,
                 }],
+                &storyhook::domain::provenance::Provenance::unrecorded(),
             )
         })
         .unwrap();
@@ -461,6 +471,7 @@ fn open_pr_links_answers_project_wide_across_stories() {
                     number: 9,
                     close_on_merge: false,
                 }],
+                &storyhook::domain::provenance::Provenance::unrecorded(),
             )
         })
         .unwrap();
