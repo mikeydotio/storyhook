@@ -51,6 +51,26 @@ const ALPHA_CHECKOUT = requiredEnv("DASHBOARD_ALPHA_CHECKOUT");
 const DELTA_STORY_ID = requiredEnv("DASHBOARD_DELTA_STORY_ID");
 const DELTA_CHECKOUT = requiredEnv("DASHBOARD_DELTA_CHECKOUT");
 
+/**
+ * How long a real dispatch has to report completion, measured from the
+ * click that starts it.
+ *
+ * The dashboard learns a dispatch finished from its own 5s status poll, so
+ * this budget covers all of `story.sh` -- `git worktree add`, the CAS claim,
+ * the readiness handoff -- plus up to one poll interval of rounding. It was
+ * 20s, and SH-245 records a `make test` that ran out of it while a second
+ * build had the machine. Measured at ~5.5s here with two other e2e suites
+ * and a full `cargo test --no-run` compile running alongside, so 20s was
+ * under 4x of headroom for work whose duration is a subprocess's, not the
+ * dashboard's.
+ *
+ * A green run pays nothing for the larger number: the assertion resolves
+ * the moment the toast (or history row) appears. The only cost is a slower
+ * report on a dispatch that genuinely never finishes, which the per-test
+ * timeout still bounds.
+ */
+const DISPATCH_COMPLETION_TIMEOUT = 45_000;
+
 // No shared `beforeEach` here, unlike this suite's other spec files: the
 // "prompts for the daemon token" test below deliberately navigates with NO
 // token seeded, since that is the one thing it exercises. Every other test
@@ -98,7 +118,8 @@ test("Dispatch sits at the leading edge, before Delete", async ({ page }) => {
 test("the dashboard prompts for the daemon token at load, then a dispatch runs with no second prompt (AC2)", async ({
   page,
 }) => {
-  test.setTimeout(45_000);
+  // Two dispatches to wait out here, at DISPATCH_COMPLETION_TIMEOUT apiece.
+  test.setTimeout(2 * DISPATCH_COMPLETION_TIMEOUT + 30_000);
 
   // No token seeded: SH-187 requires one for every `/api/**` route, so the
   // app's own bootstrap sequence -- not a Dispatch click -- is what surfaces
@@ -134,7 +155,7 @@ test("the dashboard prompts for the daemon token at load, then a dispatch runs w
   await expect(page.locator("#dispatch-auto-btn")).toHaveText("Dispatch Auto");
 
   const toast = page.locator("#toast-stack .toast.success");
-  await expect(toast).toBeVisible({ timeout: 20_000 });
+  await expect(toast).toBeVisible({ timeout: DISPATCH_COMPLETION_TIMEOUT });
   await expect(toast).toContainText(ALPHA_STORY_ID);
 
   // The button returns to its normal, clickable state once the poll
@@ -160,14 +181,14 @@ test("the dashboard prompts for the daemon token at load, then a dispatch runs w
   const refusedToast = page.locator("#toast-stack .toast.error", {
     hasText: "Dispatch refused",
   });
-  await expect(refusedToast).toBeVisible({ timeout: 20_000 });
+  await expect(refusedToast).toBeVisible({ timeout: DISPATCH_COMPLETION_TIMEOUT });
   await expect(refusedToast).toContainText("already in-progress");
 });
 
 test("Dispatch Auto sends ?auto=1 and runs a real autonomous dispatch (SH-208)", async ({
   page,
 }) => {
-  test.setTimeout(45_000);
+  test.setTimeout(DISPATCH_COMPLETION_TIMEOUT + 30_000);
 
   // Seeded directly rather than driven through the token modal -- that flow
   // is AC2's own test; this one is scoped to Dispatch Auto's own behavior.
@@ -200,7 +221,7 @@ test("Dispatch Auto sends ?auto=1 and runs a real autonomous dispatch (SH-208)",
   // finishes, which is the whole reason to run one. No toast at all for
   // this completion.
   const historyRow = page.locator("#dispatch-history .dispatch-history-row.success");
-  await expect(historyRow).toBeVisible({ timeout: 20_000 });
+  await expect(historyRow).toBeVisible({ timeout: DISPATCH_COMPLETION_TIMEOUT });
   await expect(historyRow).toContainText(DELTA_STORY_ID);
   // story.sh's own auto_note names the session autonomous in `display`,
   // relayed verbatim into the row -- the one place this spec can observe
@@ -233,7 +254,7 @@ test("Dispatch Auto sends ?auto=1 and runs a real autonomous dispatch (SH-208)",
 test("a saved token is not asked for again on a second dispatch", async ({
   page,
 }) => {
-  test.setTimeout(45_000);
+  test.setTimeout(DISPATCH_COMPLETION_TIMEOUT + 30_000);
 
   // Dispatching Alpha's other story reuses a token already in this tab's
   // sessionStorage -- Playwright starts each test with a fresh context, so
@@ -256,5 +277,5 @@ test("a saved token is not asked for again on a second dispatch", async ({
   await expect(dispatchButton).toBeDisabled();
 
   const toast = page.locator("#toast-stack .toast.success");
-  await expect(toast).toBeVisible({ timeout: 20_000 });
+  await expect(toast).toBeVisible({ timeout: DISPATCH_COMPLETION_TIMEOUT });
 });

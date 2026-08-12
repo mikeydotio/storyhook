@@ -1,5 +1,10 @@
 import { test, expect } from "@playwright/test";
-import { deleteStory, seedToken } from "./support";
+import {
+  cleanUpCreatedStories,
+  deleteStory,
+  latch,
+  seedToken,
+} from "./support";
 
 /**
  * Exercises SH-197's context menu Dispatch/Dispatch Auto group, gated
@@ -16,6 +21,8 @@ import { deleteStory, seedToken } from "./support";
  * "Archived idea") -- the same two AC1 (`dispatch.spec.ts`) already relies
  * on for "has a checkout" vs. "doesn't".
  */
+
+cleanUpCreatedStories("Alpha Project");
 
 test.beforeEach(async ({ page }) => {
   await seedToken(page);
@@ -176,8 +183,12 @@ test("both items are aria-disabled while a dispatch for this story is in flight"
   const card = await createStory(page, title);
   const id = await card.getAttribute("data-id");
 
-  // Delayed, not immediate: the window this test needs to re-open the menu
-  // and observe the disabled state before the stubbed dispatch "finishes".
+  // Held, not immediate: the status poll is what tells the dashboard the
+  // dispatch finished, so holding it is what keeps one "in flight" while
+  // this test re-opens the menu and reads the disabled state. It waited a
+  // fixed 1000ms before SH-245 -- a window the test had to out-race, and
+  // one that closes early on a loaded machine.
+  const poll = latch();
   await page.route("**/dispatch**", async (route) => {
     const req = route.request();
     if (req.method() === "POST") {
@@ -188,7 +199,7 @@ test("both items are aria-disabled while a dispatch for this story is in flight"
       });
       return;
     }
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await poll.held;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -210,6 +221,7 @@ test("both items are aria-disabled while a dispatch for this story is in flight"
   ).toHaveAttribute("aria-disabled", "true");
 
   await page.keyboard.press("Escape");
+  poll.release();
   await expect(page.locator("#toast-stack .toast.success")).toBeVisible({
     timeout: 10_000,
   });

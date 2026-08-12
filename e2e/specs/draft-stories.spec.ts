@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { deleteStory, seedToken } from "./support";
+import { cleanUpCreatedStories, deleteStory, seedToken } from "./support";
 
 /**
  * Exercises SH-175: the New Story modal's redesigned footer (Discard
@@ -12,6 +12,8 @@ import { deleteStory, seedToken } from "./support";
  * draft it leaves behind) so sibling specs relying on this project's story
  * count (e.g. filter-persistence.spec.ts) are not disturbed.
  */
+
+cleanUpCreatedStories("Alpha Project");
 
 test.beforeEach(async ({ page }) => {
   await seedToken(page);
