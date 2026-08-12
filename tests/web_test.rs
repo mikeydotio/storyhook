@@ -27,8 +27,8 @@ use storyhook::invoke::{dispatch, dispatch_unscoped};
 use storyhook::service::Ctx;
 use storyhook::store::{ProjectId, ReadOps, SqliteStore, Store};
 use storyhook_test_support::{
-    ChildGuard, DaemonGuard, TestEnv, http_status_line, reserve_port, scratch_dir, serve,
-    wait_for_addr, wait_for_server,
+    ChildGuard, DaemonGuard, TestEnv, http_status_line, port_of, scratch_dir, serve, wait_for_addr,
+    wait_for_server,
 };
 
 /// A `story` command in the shared environment, for the tests that only
@@ -4896,7 +4896,6 @@ fn a_wedged_tailscale_cli_cannot_stop_the_dashboard_from_serving() {
     )
     .expect("making the fake CLI executable");
 
-    let port = reserve_port();
     let path = format!(
         "{}:{}",
         fake_bin.path().display(),
@@ -4905,14 +4904,24 @@ fn a_wedged_tailscale_cli_cannot_stop_the_dashboard_from_serving() {
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_story"));
     env.apply(&mut command);
     let child = command
-        .args(["web", "--serve", "--port", &port.to_string()])
+        .args(["web", "--serve"])
         .env("PATH", path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawning the dashboard");
-    let _guard = ChildGuard::new(child);
+    let guard = ChildGuard::new(child);
+
+    // The port comes from the portfile this daemon published, never from a
+    // number picked before it existed (SH-237) — and `port_of` checks that the
+    // portfile names *this* child, so a stray daemon cannot answer for it.
+    //
+    // Publication is not delayed indefinitely by the wedge, which is the same
+    // fact this test is about: `bind_listeners` binds loopback first and its
+    // tailnet probe is capped at 3s, so the portfile lands shortly after that
+    // and well inside the deadline below (measured: 3.36s).
+    let port = port_of(&env, guard.pid());
 
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut last = None;
