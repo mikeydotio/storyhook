@@ -43,10 +43,11 @@ fn project() -> Project<'static> {
 /// Two stories that claimed each other while both were alive, one of which has
 /// since been soft-deleted — the shape a real purge meets.
 ///
-/// The order matters and is not incidental: `story relate` refuses a closed
-/// story, so a claim into the doomed story can only have been made *before* it
-/// was deleted. Any fixture that relates afterwards is testing something that
-/// cannot happen.
+/// Relate happens before delete because that is the realistic history a purge
+/// finds — not because the CLI would refuse the other order. Since SH-207,
+/// `story relate <open> blocks <closed>` succeeds (a plain cross-reference
+/// onto a closed target is no longer rejected); only `parent-of`/`child-of`
+/// and a `relate` naming the closed story *first* still refuse.
 fn claimed_then_deleted(project: &Project<'_>) -> (String, String) {
     let doomed = project.new_story("Created in error");
     let kept = project.new_story("Real work");

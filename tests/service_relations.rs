@@ -311,7 +311,9 @@ fn a_missing_story_is_reported_before_the_self_relation_rule() {
 }
 
 #[test]
-fn relating_to_a_closed_story_is_refused_from_either_side() {
+fn relating_from_a_closed_story_is_refused() {
+    // `a` is the story the command is about -- SH-207 leaves this guard as
+    // strict as ever.
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let a = new_story(&ctx, "a");
@@ -320,14 +322,155 @@ fn relating_to_a_closed_story_is_refused_from_either_side() {
         .set_state(&b, "done", None, None, None)
         .unwrap();
 
-    for (first, second) in [(&a, &b), (&b, &a)] {
-        let error = RelationService::new(&ctx)
-            .relate(first, "relates-to", second, false)
-            .unwrap_err();
-        assert_eq!(
-            validation_message(error),
-            "story `SH-2` is closed and cannot be modified"
+    let error = RelationService::new(&ctx)
+        .relate(&b, "relates-to", &a, false)
+        .unwrap_err();
+    assert_eq!(
+        validation_message(error),
+        format!("story `{b}` is closed and cannot be modified")
+    );
+}
+
+#[test]
+fn relating_to_a_closed_target_as_a_plain_cross_reference_succeeds() {
+    // SH-207's motivating case: an open story recording a relationship to a
+    // closed one is not rewriting the closed story's history, only
+    // completing a shared fact it's one endpoint of.
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let a = new_story(&ctx, "a");
+    let b = new_story(&ctx, "b");
+    StoryService::new(&ctx)
+        .set_state(&b, "done", None, None, None)
+        .unwrap();
+
+    RelationService::new(&ctx)
+        .relate(&a, "relates-to", &b, false)
+        .unwrap();
+
+    assert_eq!(
+        relations(&fixture, &a),
+        [("relates-to".to_string(), b.clone())]
+    );
+    assert_eq!(relations(&fixture, &b), [("relates-to".to_string(), a)]);
+}
+
+#[test]
+fn relating_to_a_closed_target_succeeds_for_every_non_hierarchy_kind() {
+    // SH-207 council decision: relates-to, blocks/blocked-by, duplicate-of
+    // and obviates/obviated-by all relax uniformly -- only parent-of/child-of
+    // needs the finer, role-based guard covered separately below.
+    for (asked, a_edge, b_edge) in RELATION_PAIRS {
+        if asked == "parent-of" || asked == "child-of" {
+            continue;
+        }
+        let fixture = ServiceFixture::new();
+        let ctx = fixture.ctx();
+        let a = new_story(&ctx, "a");
+        let b = new_story(&ctx, "b");
+        StoryService::new(&ctx)
+            .set_state(&b, "done", None, None, None)
+            .unwrap();
+
+        let result = RelationService::new(&ctx).relate(&a, asked, &b, false);
+        assert!(
+            result.is_ok(),
+            "relate({asked}) onto a closed target should succeed: {result:?}"
         );
+        assert_eq!(relations(&fixture, &a), [(a_edge.to_string(), b.clone())]);
+        assert_eq!(relations(&fixture, &b), [(b_edge.to_string(), a)]);
+    }
+}
+
+#[test]
+fn attaching_a_closed_story_as_a_child_of_an_open_epic_succeeds() {
+    // SH-207: filing a closed story as retroactive history under an active
+    // epic is harmless -- compute_progress already counts closed children
+    // toward children_done regardless of when the edge was added.
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let epic = new_story(&ctx, "epic");
+    let child = new_story(&ctx, "child");
+    StoryService::new(&ctx)
+        .set_state(&child, "done", None, None, None)
+        .unwrap();
+
+    RelationService::new(&ctx)
+        .relate(&epic, "parent-of", &child, false)
+        .unwrap();
+
+    assert_eq!(
+        relations(&fixture, &epic),
+        [("parent-of".to_string(), child.clone())]
+    );
+    assert_eq!(
+        relations(&fixture, &child),
+        [("child-of".to_string(), epic)]
+    );
+}
+
+#[test]
+fn attaching_a_new_open_child_to_a_closed_epic_is_refused_from_either_phrasing() {
+    // SH-207: unlike the reverse direction, this is NOT safe to relax --
+    // compute_progress (domain.rs) recomputes a closed epic's displayed
+    // rollup from every parent-of edge with no guard on the epic's own
+    // superstate, so a closed epic gaining a new open child would visibly
+    // change its own progress percentage after it already closed.
+    // relation_edges assigns the "parent" role by which verb is typed, not
+    // by argument position, so both phrasings a caller could type must
+    // refuse it -- an a-strict/b-relaxed guard alone would not.
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let epic = new_story(&ctx, "epic");
+    let child = new_story(&ctx, "child");
+    StoryService::new(&ctx)
+        .set_state(&epic, "done", None, None, None)
+        .unwrap();
+
+    let via_child_of = RelationService::new(&ctx)
+        .relate(&child, "child-of", &epic, false)
+        .unwrap_err();
+    assert_eq!(
+        validation_message(via_child_of),
+        format!("story `{epic}` is closed and cannot be modified")
+    );
+
+    let via_parent_of = RelationService::new(&ctx)
+        .relate(&epic, "parent-of", &child, false)
+        .unwrap_err();
+    assert_eq!(
+        validation_message(via_parent_of),
+        format!("story `{epic}` is closed and cannot be modified")
+    );
+
+    assert!(relations(&fixture, &child).is_empty());
+}
+
+#[test]
+fn unrelating_from_a_closed_target_succeeds_for_every_kind() {
+    // SH-207: relate and unrelate share one guard, so today, once a target
+    // closes, its edge becomes permanently un-removable from the open side --
+    // a data lock, not just a missed cross-reference. Removal never grows a
+    // closed story's scope, so it relaxes uniformly, including for
+    // parent-of/child-of, unlike the add side.
+    for (asked, _, _) in RELATION_PAIRS {
+        let fixture = ServiceFixture::new();
+        let ctx = fixture.ctx();
+        let a = new_story(&ctx, "a");
+        let b = new_story(&ctx, "b");
+        let service = RelationService::new(&ctx);
+        service.relate(&a, asked, &b, false).unwrap();
+        StoryService::new(&ctx)
+            .set_state(&b, "done", None, None, None)
+            .unwrap();
+
+        let result = service.relate(&a, asked, &b, true);
+        assert!(
+            result.is_ok(),
+            "unrelate({asked}) from a closed target should succeed: {result:?}"
+        );
+        assert!(relations(&fixture, &a).is_empty(), "asked = {asked}");
+        assert!(relations(&fixture, &b).is_empty(), "asked = {asked}");
     }
 }
 
