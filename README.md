@@ -341,6 +341,7 @@ story web stop
 story web status
 story web open
 story web address
+story web revoke
 story daemon start [--port <PORT>]
 story daemon stop [--force]
 story daemon status
@@ -561,6 +562,25 @@ The dashboard's own page asks for it the first time a request needs one and hold
 or a daemon restart — the token rotates then — is expected). Anything that can't
 supply it, including a peer on your tailnet that only knows how to forge the checks
 below, is refused.
+
+**`story web open` hands the tab a scoped session instead, so it never sees the token.**
+That session can edit stories and states. It cannot create or delete a project, cannot
+dispatch an agent, cannot reach the CLI through `/api/v1/invoke`, and is refused outright
+from any machine but this one — where the token is spendable for writes from any peer on
+your tailnet. It lasts until the daemon stops or you end it:
+
+```bash
+story web revoke     # ends every open dashboard session
+story web status     # says how many are open, and never prints one
+```
+
+Be aware of what it *can* reach: every story or state change fires that project's
+configured event hooks, and a hook is a shell command. The session cannot choose or change
+what runs — hooks come from the checkout — but on a project with hooks configured it
+triggers the command you wrote. The boundary is "cannot run code you did not already
+configure, cannot create or destroy projects, cannot spawn an agent, cannot be used from
+another machine", not "cannot run code". Full reasoning:
+[`docs/spec/dashboard-authorization.md`](docs/spec/dashboard-authorization.md).
 
 The loopback read exemption is narrow on purpose. It applies only when the request is a
 `GET`/`HEAD`, its `Host` is a loopback literal, it carries no `X-Forwarded-*` /
