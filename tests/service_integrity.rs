@@ -248,6 +248,11 @@ fn a_malformed_label_on_an_open_story_is_reported_and_repaired() {
 /// story's history is closed, so a malformed label on one is a finding
 /// `--fix` cannot clear, the same as any other issue a closed story cannot be
 /// repaired out of (`fix_exits_non_zero_when_something_is_left_unrepaired`).
+///
+/// SH-225: it must also *say so*. Refusing is right; refusing silently left
+/// the operator re-reading a finding `--fix` had just declined to touch, with
+/// nothing to distinguish "this story is closed" from "the doctor is broken" —
+/// which is what kept SH-181's eight rows invisible for a week.
 #[test]
 fn a_malformed_label_on_a_closed_story_is_reported_but_not_repaired() {
     let fixture = ServiceFixture::new();
@@ -276,11 +281,163 @@ fn a_malformed_label_on_a_closed_story_is_reported_but_not_repaired() {
     );
 
     let error = fix(&fixture).expect_err("a closed story's history cannot be appended to");
-    assert!(error.to_string().contains("malformed labels"), "{error}");
+    let message = error.to_string();
+    assert!(message.contains("malformed labels"), "{message}");
+    assert!(
+        message.contains("SH-1: normalize its labels to [\"sse\", \"web\"]"),
+        "the repair `--fix` declined to make is unnamed: {message}"
+    );
+    assert!(
+        message.contains("story reopen"),
+        "nothing tells the operator how to unblock the repair: {message}"
+    );
     assert_eq!(
         labels_of(&fixture, &a),
         ["web,sse"],
         "an archived story's history was appended to"
+    );
+}
+
+/// SH-225, the case that misleads hardest: the story a repair must be
+/// appended to is **not** the story the finding names. A missing inverse is
+/// reported against the end that *has* the relation (`compute_integrity_
+/// issues`) and repaired on the end that lacks it — so an operator working
+/// from the finding alone reopens the wrong story.
+#[test]
+fn fix_names_the_closed_end_an_inverse_repair_needs_reopened() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let a = new_story(&ctx, "A");
+    let b = new_story(&ctx, "B");
+    StoryService::new(&ctx)
+        .set_state(&b, "done", None, None, None)
+        .expect("closing B");
+    drop(ctx);
+
+    append_to_one_end(
+        &fixture,
+        &a,
+        &[StoryEvent::StoryRelationshipAdded {
+            at: FIXTURE_NOW.to_string(),
+            other_id: b.clone(),
+            relation: "blocks".to_string(),
+        }],
+    );
+
+    let error = fix(&fixture).expect_err("the inverse belongs on a closed story");
+    let message = error.to_string();
+    assert!(
+        message.contains("SH-1: missing inverse relation `blocked-by` on story `SH-2`"),
+        "{message}"
+    );
+    assert!(
+        message
+            .contains("SH-2: write the missing inverse relation `blocked-by` of SH-1's `blocks`"),
+        "the finding names SH-1, so only this can tell the operator to reopen SH-2: {message}"
+    );
+
+    // The recipe that message prints, followed to the letter: advice that does
+    // not actually clear the finding would be a worse failure than silence.
+    let ctx = fixture.ctx();
+    StoryService::new(&ctx).reopen(&b).expect("reopening SH-2");
+    drop(ctx);
+    assert_eq!(
+        fix(&fixture).expect("the destination is open now"),
+        "doctor repaired supported integrity issues"
+    );
+    assert!(report(&fixture).is_empty(), "{:?}", report(&fixture));
+}
+
+/// The other half of SH-225's blind spot, and the one that was never a
+/// message problem: `--fix` visited *open* stories only, so a repair a closed
+/// story's relation implied — one whose append target is the open end, and
+/// therefore perfectly legal — was never even attempted, leaving a finding
+/// the command could never clear.
+#[test]
+fn fix_writes_an_inverse_an_open_story_lacks_of_a_closed_ones_relation() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let a = new_story(&ctx, "A");
+    let b = new_story(&ctx, "B");
+    drop(ctx);
+
+    append_to_one_end(
+        &fixture,
+        &a,
+        &[StoryEvent::StoryRelationshipAdded {
+            at: FIXTURE_NOW.to_string(),
+            other_id: b.clone(),
+            relation: "blocks".to_string(),
+        }],
+    );
+    let ctx = fixture.ctx();
+    StoryService::new(&ctx)
+        .set_state(&a, "done", None, None, None)
+        .expect("closing A");
+    drop(ctx);
+
+    assert_eq!(
+        fix(&fixture).expect("the append target, SH-2, is open"),
+        "doctor repaired supported integrity issues"
+    );
+    assert!(report(&fixture).is_empty(), "{:?}", report(&fixture));
+}
+
+/// A blocked repair is not always a finding, which is why naming it cannot be
+/// left to the failure path alone.
+///
+/// `story_issues` suppresses every issue whose text mentions obviation — a
+/// deliberate authoring decision, not damage — so an `obviates` edge whose
+/// inverse is missing on a *closed* story reports clean, and `--fix` used to
+/// return "doctor found nothing to fix" while silently skipping the very
+/// repair it had just identified.
+#[test]
+fn a_blocked_repair_is_named_even_when_the_report_is_clean() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let a = new_story(&ctx, "A");
+    let b = new_story(&ctx, "B");
+    StoryService::new(&ctx)
+        .set_state(&b, "done", None, None, None)
+        .expect("closing B");
+    drop(ctx);
+
+    append_to_one_end(
+        &fixture,
+        &a,
+        &[StoryEvent::StoryRelationshipAdded {
+            at: FIXTURE_NOW.to_string(),
+            other_id: b.clone(),
+            relation: "obviates".to_string(),
+        }],
+    );
+
+    assert!(
+        report(&fixture).is_empty(),
+        "doctor suppresses obviation findings: {:?}",
+        report(&fixture)
+    );
+
+    let message = fix(&fixture).expect("an obviation asymmetry fails nothing");
+    assert!(
+        message.starts_with("doctor found nothing it could fix"),
+        "`nothing to fix` would be a lie — there is something, and it is out of reach: {message}"
+    );
+    assert!(
+        message.contains(
+            "SH-2: write the missing inverse relation `obviated-by` of SH-1's `obviates`"
+        ),
+        "{message}"
+    );
+
+    // And the same recipe clears it — the fixture's own drop-time symmetry
+    // check is the assertion that it did.
+    let ctx = fixture.ctx();
+    StoryService::new(&ctx).reopen(&b).expect("reopening SH-2");
+    drop(ctx);
+    assert_eq!(
+        fix(&fixture).expect("the destination is open now"),
+        "doctor repaired supported integrity issues"
     );
 }
 
