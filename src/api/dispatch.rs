@@ -616,6 +616,24 @@ fn valid_segment(s: &str) -> bool {
 /// all, on the `POST` arm only — a malformed value is a 400, but only once
 /// every prior guard has already passed, so it leaks nothing to an
 /// unauthenticated caller either.
+/// Whether `segments` addresses the dispatch endpoint — either
+/// `POST /api/repos/{project}/story/{id}/dispatch` or the
+/// `GET …/dispatch/{handle}` poll beside it.
+///
+/// Named once, and `pub(crate)`, because two gates need the same answer and a
+/// second hand-written copy of this shape could drift from it:
+/// [`intercept`] uses it to claim the request, and
+/// [`crate::api::admission`] uses it to *refuse* the request the token
+/// exemption it would otherwise grant. Those two disagreeing would mean a
+/// route admitted by one gate and refused by the other.
+pub(crate) fn is_dispatch_path(segments: &[&str]) -> bool {
+    (segments.len() == 6 || segments.len() == 7)
+        && segments[0] == "api"
+        && segments[1] == "repos"
+        && segments[3] == "story"
+        && segments[5] == "dispatch"
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn intercept(
     segments: &[&str],
@@ -628,13 +646,7 @@ pub fn intercept(
     bus: &ChangeBus,
     registry: &Arc<DispatchRegistry>,
 ) -> Option<Reply> {
-    if segments.len() < 6
-        || segments.len() > 7
-        || segments[0] != "api"
-        || segments[1] != "repos"
-        || segments[3] != "story"
-        || segments[5] != "dispatch"
-    {
+    if !is_dispatch_path(segments) {
         return None;
     }
 
