@@ -506,3 +506,195 @@ that way is rejected in review.
 - **SH-255** — reassess SH-250's read exemption now that a handoff exists. The six
   conjuncts now buy only bookmarks and hand-typed URLs, while the permanently-widened read
   surface and the unclosable bare-nginx residual remain.
+
+## As built — SH-254: the browser stops holding the master token
+
+SH-251 shipped transport, done correctly, and said so in its own module doc: *"it is not
+least privilege."* After it, a tab opened by `story web open` held the **master token** —
+the whole write surface, on both listeners, spendable from any tailnet peer, alive for the
+daemon's entire run. The architecture seat's dissent named the consequence exactly: *"a
+dashboard tab can delete every project on the machine."* It could also reach
+`POST /api/v1/invoke`, which runs every verb the CLI has, `story project delete` and
+`story daemon stop` included.
+
+What redemption issues now is a **capability**: an opaque 32-hex value from a registry the
+daemon holds in memory, presented in its own header, refused from anywhere but this
+machine, and endable without restarting anything.
+
+Design of record for the decision: `.council/sh-254-scoped-dashboard-capability/` (local
+only; the full verdict is a comment on SH-254). The panel was unanimous on first preference
+in the runoff, after a round of deliberation moved all three seats.
+
+### What the capability reaches, and what it does not
+
+| Surface | Authority | Why |
+|---|---|---|
+| Every read the dashboard makes | `Public` | SH-250's exemption already admits these on loopback with no credential at all. The table records that rather than duplicating it. |
+| Stories: create, edit, move, comment, label, block, relate, delete | `Session` | The board's own work. This is what the dashboard is *for*. |
+| A project's states: add, edit, reorder, remove, archive | `Session` | Same. |
+| `POST /api/repos` | `MasterToken` | Registers a project at a **caller-named filesystem path**. |
+| `DELETE /api/repos/{id}` | `MasterToken` | Destroys a project and every story recorded against it. |
+| `POST .../story/{id}/dispatch` and its poll | `MasterToken` | Spawns an autonomous agent — the highest-consequence primitive this machine has, and after SH-226 the least defensible in a browser tab. |
+| Everything `/api/v1/*` | out by **topology** | `admission()` returns at `["api", "v1", ..]` before a capability is consulted, and `rpc.rs`/`dispatch.rs` are never handed the registry. Not a rule that could be edited — a shape. |
+| Any route this daemon does not have | `MasterToken` | Fails closed, so a capability holder cannot map the surface by the difference between a 403 and a 404. |
+
+### It reaches `sh -c`, and that is stated rather than glossed
+
+**Every mutation this capability authorizes fires the project's configured event hooks, and
+a hook is a shell command.** It cannot choose or change what runs — hook commands come from
+the checkout's `.storyhook.toml` (or the legacy `.storyhook/hooks.toml`), no route it
+reaches can edit either, and none can repoint a checkout — but on a project with hooks
+configured, a holder triggers the command that project's owner wrote, with a storyhook
+payload on its stdin.
+
+The boundary drawn here is **not** "cannot execute code". It is: *cannot execute code the
+project's owner did not already configure, cannot create or destroy projects, cannot spawn
+an agent, cannot reach the CLI, and cannot be spent from another machine.*
+
+That is not a caveat added out of caution. It is a tested fact:
+`tests/session_capability.rs::a_capability_authorized_move_fires_the_projects_shell_hook`
+configures a real hook, moves a story with nothing but a capability, and asserts the shell
+ran. If a later change narrows the scope so it stops being true, that test goes red and
+this paragraph gets corrected — which is the outcome prose alone could never force. The
+story that filed this work put the standard plainly: *"Shipping a false security claim is
+worse than shipping a narrow one."*
+
+### Scope is enforced by construction
+
+`src/api/routes.rs` names every route once. `classify(segments, method)` turns a request
+head into a `Route`, and **two exhaustive matches with no wildcard arm** consume it: the
+router in `rest.rs`, which answers it, and `authority(&Route)`, which says what credential
+it needs. A route added to the dashboard's API does not compile until somebody has answered
+both "what does this do?" and "who may do it?".
+
+The module imports `daemon::http1::Method` and **nothing else**. That is the load-bearing
+part rather than a style preference: `serve.rs::worker` decides admission *before it reads a
+request body*, so the classifier the gate consults has to be answerable from the head alone
+— and a module that cannot reach a store or a body makes that a fact about the dependency
+graph instead of a rule somebody has to remember.
+
+This is deliberately **not** the shape SH-251's council rejected: `matches!(segments,
+["api", "repos", _, _, ..])`, scope by arity, which reproduces the defect this document's
+own conjunct 2 is spelled affirmatively to forbid.
+
+Four guards, because an exhaustive `match` has three holes it cannot see:
+
+- `tests/route_authority.rs::the_authority_table_has_no_wildcard_arm` reads the source and
+  fails on `_ =>` inside either authority function. `_ => Authority::Session` compiles,
+  reads as tidying up, and silently re-opens everything; an exhaustive match cannot catch
+  its own widening.
+- `…::the_authority_table_names_every_route_it_classifies` is its positive half — a scan for
+  what is absent passes if the function is deleted outright.
+- `…::every_declared_route_is_reachable_through_classify` parses the variant names out of
+  the enum's own source and requires a real path to produce each one. **Derived, not
+  counted**: CLAUDE.md already records what a hand-maintained inventory does here (SH-136,
+  "drifted three times before it stopped being trusted").
+- `…::public_means_exactly_what_the_loopback_read_exemption_admits` asks the real gate, so
+  `Authority::Public` cannot drift from the byte-frozen `token_exempt` it describes.
+
+Both source-scanning guards were mutation-checked during implementation: a wildcard arm and
+an unprobed variant each turn them red.
+
+**The guarantee holds at enum granularity only.** Widening an *existing* variant's pattern —
+routing a new path onto `ProjectRoute::StoryAction`, say — still grants the new path whatever
+the old variant had, with nothing going red. That is stated here rather than claimed away.
+
+### Why there is no expiry
+
+Every other credential in this daemon that could expire, does. This one must not, and the
+reason is the **client**, not the server.
+
+The dashboard clears its stored credential and opens the master-token modal on a 401 and on
+nothing else. A capability that quietly expired under a long-open tab would therefore end
+with a user pasting **full authority** into that tab as a matter of routine — least
+privilege undone by its own error handler, which is the sixth failure mode SH-251's security
+seat named and the thing this whole story exists to avoid.
+
+So the lifetime is the daemon's: bounded at 8 live (the same number as a handoff coupon, so
+there is one figure to reason about), least-recently-used evicted, never written to disk,
+and endable on purpose with `story web revoke`.
+
+One pleasant consequence: there is no clock to get wrong. The entire failure class SH-251's
+security seat catalogued around `Clock::Fixed`, a wall clock that runs backwards, and the
+monotonic floor needed to defend against one, simply does not arise. `Instant` appears in
+`session.rs` only to say how long a capability has sat idle, which is a diagnostic and
+authorizes nothing.
+
+### Two refusals, because one would escalate the tab
+
+| Situation | Reply | What the dashboard does |
+|---|---|---|
+| A capability on a route it does not reach | **403** `{"code": "session_scope"}` | Clears nothing, opens nothing, shows the server's message — which names the `story` command that *can* do it. |
+| A capability the daemon does not know (revoked, evicted, daemon restarted) | **401** `{"code": "session_unknown"}` | Clears **only** the session key, says the session ended and to run `story web open` again. Never the master-token modal. |
+| No credential at all | **401**, byte-identical to before | Unchanged: clears the token, opens the modal. |
+
+The three routes a capability cannot reach also render **disabled, with the CLI command in
+their tooltip**, rather than hidden. A missing button teaches nothing and a button that
+403s teaches it too late. This is an affordance only — the boundary is
+`api::routes::authority`, and `tests/session_capability.rs` asserts every refusal at the
+HTTP layer with no UI involved.
+
+### The kill switch
+
+`story web revoke` ends every live capability and says how many there were. `story web
+status` reports how many are open and the longest idle time — **never a capability**, since
+a status command prints into scrollback and a credential in scrollback is the durable copy
+this whole design spends its effort avoiding.
+
+Both speak to `GET`/`DELETE /api/v1/sessions` directly over loopback with the portfile's
+token, exactly as `story web open` already arms a coupon — **not** through
+`Invocation`/`/api/v1/invoke`, which builds a `StoreInvoker` with no handle to daemon
+process state. Revocation lives on the control surface so a capability can never revoke its
+siblings; a compromised tab must not be able to lock the owner out of their own dashboard.
+
+### Residuals, stated plainly
+
+- **A same-uid process gains nothing from this.** The portfile is mode 0600 and carries the
+  master token, so any process running as this user already has everything. What SH-254
+  mitigates is a compromised or hostile *tab*, and off-machine replay of a leaked
+  credential — not local privilege.
+- **`STORYHOOK_WEB_TRUSTED_HOSTS` disables the feature outright.** A configured proxy
+  allowlist makes `TrustedHosts::behind_a_proxy` true, which withdraws `local_request` and
+  SH-250's read exemption together. On such a machine a coupon cannot be redeemed, a
+  capability cannot be presented, and the dashboard degrades to the master-token modal
+  exactly as it did before SH-251. This is inherited from SH-250's conjunct 5 rather than
+  introduced here, and it is recorded because nothing else says it.
+- **SH-251's residuals are unchanged and now buy less.** The coupon still lands in Chrome's
+  on-disk history and still crosses `open(1)` argv; what it buys is a capability rather than
+  the master token, so the value of a stolen coupon fell with everything else.
+- **The dashboard's CSP is `default-src 'self'; script-src 'unsafe-inline'`.** Tab
+  compromise is a live threat model rather than a hypothetical one, which is the main reason
+  the capability's scope is worth narrowing at all.
+- **Browser storage behaviour is still unmeasured.** "The capability dies with the tab" is a
+  claim about `sessionStorage`, which is a browser behaviour and not a security guarantee.
+  SH-251's own record forbids inferring browser-storage claims from a green suite, and that
+  prohibition applies here unchanged.
+
+### Deviation from the verdict as decided
+
+The council's third binding amendment asked `classify` to call
+`dispatch::is_dispatch_path` so the two gates could not disagree about which route spawns
+processes. It does not: importing `dispatch` would cost `routes.rs` the property the panel
+ranked it first for — that it imports nothing but a `Method` and so structurally cannot
+reach a store or a body. The verdict's own agreement test carries the guarantee instead, as
+`routes.rs::tests::the_dispatch_route_is_spelled_the_same_here_as_in_the_gate_that_refuses_it`,
+which asserts the two spellings claim exactly the same paths. Unifying them is left filed
+rather than done, as the verdict itself proposed.
+
+### Verification
+
+- `tests/rest_routing.rs` — ~95 rows of (method, path, headers, body) → (status, change
+  feed), written **before** the router moved and byte-unmodified across it. The proof the
+  restructure was behaviour-preserving.
+- `tests/route_authority.rs` — the four guards above.
+- `src/api/routes.rs` unit tests — classification, the authority table, and the dispatch
+  agreement.
+- `src/api/session.rs` unit tests — the registry (no expiry, revocation, LRU eviction,
+  constant-time comparison) and the gate's truth table.
+- `tests/session_capability.rs` — the capability over a real socket: it runs the board, it
+  is refused the three routes and the control surface, a scope refusal is never a 401 and
+  never consumes the capability, a rebound `Host` is refused, revocation works and is
+  distinguishable, the listing route never serves a capability — and the hook fires.
+- `tests/handoff_endpoint.rs` — redemption answers with a capability and never the token.
+- `e2e/specs/handoff.spec.ts` — a real Chrome tab holds a 32-hex session and not the token,
+  writes without prompting, and meets a disabled control with an explanation.
