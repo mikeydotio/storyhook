@@ -158,23 +158,32 @@ impl Served {
     /// call sites needed no change when the server started requiring one
     /// (SH-187) — only this method did.
     fn agent(&self) -> ureq::Agent {
-        let token = self.token.clone();
-        let config = ureq::Agent::config_builder()
-            .middleware(
-                move |mut req: ureq::http::Request<ureq::SendBody>,
-                      next: ureq::middleware::MiddlewareNext|
-                      -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
-                    req.headers_mut().insert(
-                        "X-Storyhook-Token",
-                        ureq::http::HeaderValue::from_str(&token)
-                            .expect("the fixture's own token is a valid header value"),
-                    );
-                    next.handle(req)
-                },
-            )
-            .build();
-        ureq::Agent::new_with_config(config)
+        token_agent(&self.token)
     }
+}
+
+/// An agent that attaches `token` as `X-Storyhook-Token` to every request.
+///
+/// Separate from [`Served::agent`] so a test driving the *real daemon
+/// subprocess* — which has no `Served` fixture, only a token read from the
+/// portfile — reaches the same seam rather than rebuilding the middleware.
+fn token_agent(token: &str) -> ureq::Agent {
+    let token = token.to_string();
+    let config = ureq::Agent::config_builder()
+        .middleware(
+            move |mut req: ureq::http::Request<ureq::SendBody>,
+                  next: ureq::middleware::MiddlewareNext|
+                  -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+                req.headers_mut().insert(
+                    "X-Storyhook-Token",
+                    ureq::http::HeaderValue::from_str(&token)
+                        .expect("the fixture's own token is a valid header value"),
+                );
+                next.handle(req)
+            },
+        )
+        .build();
+    ureq::Agent::new_with_config(config)
 }
 
 /// An isolated environment with one initialized project, served on an
@@ -4372,6 +4381,110 @@ fn sse_coalesces_rapid_mutations_within_debounce_window() {
         "expected debouncing to coalesce {MUTATIONS} rapid mutations into fewer than \
          {MUTATIONS} events, got {occurrences}: {received}"
     );
+}
+
+/// **SH-216, over the wire.** Two mutations to the *same* project, from two
+/// genuinely different causes, landing well inside the 200ms window the bus
+/// used to coalesce over. Both must reach a live client.
+///
+/// The bus used to drop the second, because it keyed coalescing on a change's
+/// *value* and kept the *first* publish of a value within the window. That is
+/// sound only while the first notice is still undelivered — and here it is not:
+/// the client has been told once and has refetched off that notice, so the
+/// second write commits with nothing left to announce it, and the dashboard
+/// shows state that write already superseded.
+///
+/// Mutations go over HTTP rather than through `Fixture::seed`, which matters:
+/// `seed` dispatches in process, so its writes never cross the request boundary
+/// and are only ever picked up — already collapsed into one publish — by
+/// `poll_change_token`'s diff. Only a real request produces the precise,
+/// per-mutation `Changed` publish this test is about. Two loopback POSTs also
+/// land milliseconds apart, where two `story` subprocesses would not reliably
+/// land inside 200ms at all.
+///
+/// **`STORYHOOK_CHANGE_POLL_MS` is set beyond this test's own timeout, and that
+/// is what gives the assertion its teeth** — the same technique
+/// `sse_delivers_a_cli_write_with_the_safety_net_poll_disabled` uses, and for a
+/// sharper reason here. With the safety net free to tick, this test passes
+/// against the *defect*: the poller re-publishes the same project ~250ms later,
+/// outside the old 200ms window, so a second `repo-changed` arrives even when
+/// the second mutation's own publish was dropped. Verified by restoring the old
+/// coalescing rule and watching it stay green. Disabling the poll leaves the two
+/// request-boundary publishes as the only ones that can occur, so a suppressed
+/// second publish is a failure and not a delay. Hence the real daemon
+/// subprocess rather than the in-thread fixture: the variable is process-wide,
+/// and a child process is where it can be set without reaching other tests.
+#[test]
+fn sse_delivers_a_second_change_to_the_same_repo_immediately_after_the_first() {
+    let _sse_guard = sse_test_lock();
+    let env = TestEnv::isolated();
+    let dir = scratch_dir();
+    let port = reserve_port();
+    let _daemon = DaemonGuard::new(&env, dir.path());
+
+    env.story(dir.path())
+        .env("STORYHOOK_CHANGE_POLL_MS", "600000")
+        .args(["web", "start", "--port", &port.to_string()])
+        .assert()
+        .success();
+    wait_for_server(port);
+
+    env.story(dir.path())
+        .args(["project", "new", "--prefix", "SH", "--no-agents-md"])
+        .assert()
+        .success();
+
+    let token = env
+        .daemon()
+        .expect("the started daemon must publish a portfile")
+        .token;
+    let agent = token_agent(&token);
+    let repos: serde_json::Value = serde_json::from_str(
+        &agent
+            .get(format!("http://127.0.0.1:{port}/api/repos"))
+            .call()
+            .expect("listing repos")
+            .into_body()
+            .read_to_string()
+            .expect("a repo list body"),
+    )
+    .expect("the repo list is JSON");
+    let repo_id = repos[0]["id"]
+        .as_str()
+        .expect("the project's id")
+        .to_string();
+
+    let mut sse = connect_sse(port, &token);
+
+    // Two distinct causes: two separate story creations, each its own request,
+    // each committing before its own publish. Creations rather than
+    // transitions, so no workflow rule can make the second request fail for a
+    // reason that has nothing to do with what is under test.
+    let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story");
+    for title in ["First cause", "Second cause"] {
+        let resp = agent
+            .post(&url)
+            .header("X-Storyhook", "1")
+            .content_type("application/json")
+            .send(format!(r#"{{"title":"{title}"}}"#))
+            .unwrap_or_else(|e| panic!("creating {title:?} must succeed: {e}"));
+        assert_eq!(resp.status(), 201, "creating {title:?} must return 201");
+    }
+
+    let received =
+        read_sse_until_quiet(&mut sse, Duration::from_millis(500), Duration::from_secs(8));
+    let occurrences = received.matches("event: repo-changed").count();
+    assert_eq!(
+        occurrences, 2,
+        "both mutations must be announced, and with the safety-net poll disabled these two \
+         request boundaries are the only publishers that can fire; {occurrences} event(s) \
+         means a write committed with nothing left to tell the client about it: {received}"
+    );
+
+    env.story(dir.path())
+        .args(["web", "stop"])
+        .assert()
+        .success();
 }
 
 /// Dropping an SSE connection must not wedge the broadcaster or the server:

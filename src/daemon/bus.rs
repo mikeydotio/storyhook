@@ -15,11 +15,9 @@
 //!    [`crate::daemon::watch::ChangeWatcher::notice`] instead, the same
 //!    store-wide diff `poll_change_token` below runs on a schedule (SH-202).
 //!    **Deliberately not called from the REST arm too** — every mutating REST
-//!    route already has exhaustive `Changed` coverage by construction, and a
-//!    `notice()` call there was found, empirically, to risk attributing an
-//!    unrelated out-of-band commit to the wrong response and colliding with
-//!    the coalescing window below (SH-202's own council record; the surviving
-//!    hazard is filed as SH-216).
+//!    route already has exhaustive `Changed` coverage by construction, so a
+//!    `notice()` call there would add no coverage (SH-202's own council
+//!    record).
 //! 2. **`poll_change_token`** (`daemon::serve`), a low-frequency safety net
 //!    over SQLite's `PRAGMA data_version`, which changes whenever *another
 //!    connection* commits. That is how a write this
@@ -42,6 +40,15 @@
 //! watching it turned every client's refetch into a change event for every other
 //! client, and the only way out was not to watch it at all.
 //!
+//! # Delivery
+//!
+//! Every publish reaches every subscriber. The bus suppresses nothing of its
+//! own accord: it cannot see what *caused* a change, so it cannot tell a
+//! redundant publish from a distinct one, and a rule that guessed got it wrong
+//! (SH-216 — see [`ChangeBus::publish`]). Deduplication belongs where cause is
+//! known, which is [`crate::daemon::watch::ChangeWatcher`]'s shared baseline;
+//! throttling belongs where the cost of a refetch is paid, which is the client.
+//!
 //! # Backpressure
 //!
 //! A subscriber's queue is bounded. A client that stops reading — a laptop that
@@ -54,7 +61,7 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// How many undelivered messages one subscriber may hold before its queue is
 /// collapsed to a resync.
@@ -63,13 +70,6 @@ use std::time::{Duration, Instant};
 /// so a deep queue buys a slow client nothing but latency: by the time it drains
 /// the tenth notice the first nine describe states that no longer exist.
 const QUEUE_CAPACITY: usize = 32;
-
-/// How long two identical changes have to be apart to be published twice.
-///
-/// The request boundary and the `data_version` poller can both notice the same
-/// commit, and a burst of writes to one project — a `story bulk-update`, a
-/// decompose — is one thing a browser needs to hear about, not twenty.
-const COALESCE_WINDOW: Duration = Duration::from_millis(200);
 
 /// A message pushed to every connected `/api/events` client.
 ///
@@ -233,8 +233,6 @@ impl Drop for Subscription {
 struct BusState {
     next_id: u64,
     subscribers: Vec<(u64, Arc<Slot>)>,
-    /// The last time each distinct change was published, for coalescing.
-    recent: Vec<(Change, Instant)>,
     /// Total messages dropped across every subscriber this daemon has served,
     /// including ones that have since disconnected.
     dropped: u64,
@@ -284,23 +282,38 @@ impl ChangeBus {
         }
     }
 
-    /// Sends `change` to every subscriber, unless an identical change was
-    /// published within [`COALESCE_WINDOW`].
+    /// Sends `change` to every subscriber. Every publish is delivered; nothing
+    /// is suppressed.
     ///
-    /// [`Change::Ping`] is never coalesced: its whole purpose is to be written
-    /// on a schedule so that a dead connection is discovered.
+    /// This deliberately has no dedup rule of its own (SH-216). It used to drop
+    /// a change equal to one published within a 200ms window, which is sound
+    /// only while the retained publish's notice is still undelivered — and it
+    /// was the *earlier* publish that was retained, so once a subscriber had
+    /// taken that notice and refetched off it, a second write committing inside
+    /// the window was suppressed with nothing left to report it. Keyed on a
+    /// change's *value*, the rule could not tell one cause from another, and two
+    /// publishes of one slug from genuinely different causes are not duplicates.
+    ///
+    /// What the window was for is now done, better, by the layers that can see
+    /// what it could not:
+    ///
+    /// * **Two publishers noticing one commit** is dedup by *cause*, and
+    ///   [`crate::daemon::watch::ChangeWatcher`]'s shared baseline does it at
+    ///   the source — the request boundary and `poll_change_token` diff against
+    ///   one baseline, so whichever notices a commit first is the only one that
+    ///   publishes it (SH-202).
+    /// * **A burst to one project** is throttling, and the browser already
+    ///   throttles on the *trailing* edge — `web_dashboard.html`'s
+    ///   `scheduleDataFetch` arms a 150ms timer on the first event and refetches
+    ///   once after it, so every event absorbed is followed by a fetch. Dropping
+    ///   the later publish here defeated that, which is the whole defect.
+    ///
+    /// A subscriber too far behind to keep up is still bounded, by [`Slot::push`]
+    /// collapsing an over-capacity queue to one [`Change::Resync`] — the one
+    /// place a message is allowed to be dropped, because it is counted and the
+    /// client is told.
     pub fn publish(&self, change: Change) {
-        let mut state = self.inner.lock().unwrap();
-        if !matches!(change, Change::Ping) {
-            let now = Instant::now();
-            state
-                .recent
-                .retain(|(_, at)| now.duration_since(*at) < COALESCE_WINDOW);
-            if state.recent.iter().any(|(seen, _)| *seen == change) {
-                return;
-            }
-            state.recent.push((change.clone(), now));
-        }
+        let state = self.inner.lock().unwrap();
         for (_, slot) in &state.subscribers {
             slot.push(change.clone());
         }
@@ -356,20 +369,64 @@ mod tests {
         bus.publish(Change::Catalog);
     }
 
+    /// The hazard SH-216 was filed for: coalescing keyed on a change's *value*
+    /// within a fixed time window is blind to its *cause*. Two publishes of the
+    /// same slug with genuinely different causes — an incidental discovery by a
+    /// store-wide diff, then a real mutation — are not duplicates, and dropping
+    /// the second leaves the client's refetch (which already happened, for the
+    /// first) describing state that the second write has since superseded.
     #[test]
-    fn an_identical_change_within_the_window_is_published_once() {
+    fn a_change_already_delivered_is_published_again_however_soon_it_recurs() {
         let bus = ChangeBus::new();
         let subscriber = bus.subscribe();
         bus.publish(Change::Project("app".into()));
+        assert_eq!(
+            subscriber.recv(INSTANT),
+            Some(Change::Project("app".into()))
+        );
+
+        // The client has been told once and will refetch off that notice. A
+        // second, causally unrelated write to the same project commits now —
+        // after that notice was consumed, so nothing guarantees the refetch it
+        // triggered lands after this commit.
         bus.publish(Change::Project("app".into()));
+        assert_eq!(
+            subscriber.recv(INSTANT),
+            Some(Change::Project("app".into())),
+            "a notice the subscriber has already taken cannot stand in for a \
+             later write; suppressing this one is silent staleness"
+        );
+    }
+
+    /// The shape SH-216 asked the fix to be verified against: an *incidental*
+    /// discovery — a store-wide diff noticing a project the current request
+    /// never touched — followed immediately by a genuine, distinct-cause write
+    /// to that same project. Both must reach the subscriber. Under the old
+    /// window the first consumed the second, and the client's refetch could
+    /// observe state the second write had already superseded.
+    ///
+    /// No sleeps, and no dependence on how fast the subscriber drains: the
+    /// property is that publishing delivers, so it holds whatever the timing.
+    #[test]
+    fn two_distinct_causes_for_one_slug_both_reach_a_subscriber() {
+        let bus = ChangeBus::new();
+        let subscriber = bus.subscribe();
+
+        // Cause one: an out-of-band commit, attributed to `app` by a diff that
+        // ran for some other request entirely.
+        bus.publish(Change::Project("app".into()));
+        // Cause two: a real mutation to `app`, committed just after.
+        bus.publish(Change::Project("app".into()));
+
         assert_eq!(
             subscriber.recv(INSTANT),
             Some(Change::Project("app".into()))
         );
         assert_eq!(
             subscriber.recv(INSTANT),
-            None,
-            "the second identical change must be coalesced, not queued"
+            Some(Change::Project("app".into())),
+            "two publishes with different causes are not duplicates; the bus \
+             cannot tell them apart and so must deliver both"
         );
     }
 
