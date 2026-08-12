@@ -73,7 +73,7 @@ pub struct Environment {
     state_home: PathBuf,
     home: PathBuf,
     clock: Clock,
-    daemon_addr: SocketAddr,
+    preferred_port: u16,
     busy_timeout: Duration,
 }
 
@@ -91,7 +91,7 @@ impl Environment {
     ///   runtime scratch. The per-store directories underneath it are what keep
     ///   two stores' daemons apart; see [`Self::daemon_state_dir`].
     /// * `daemon_addr` — `$STORYHOOK_DAEMON_ADDR`, else
-    ///   [`default_daemon_addr`] for this store. Port 0 asks the OS for one,
+    ///   [`default_daemon_port`] for this store. Port 0 asks the OS for one,
     ///   which is what the test harness sets: a suite that bound the production
     ///   port would fight the developer's own dashboard for it.
     /// * `busy_timeout` — `$STORYHOOK_BUSY_TIMEOUT_MS`, else
@@ -110,7 +110,7 @@ impl Environment {
     /// and how long it waits, and a typo that quietly reverts to the default is
     /// a debugging session. `STORYHOOK_DAEMON_ADDR` is refused for a second
     /// reason too — an IP other than `127.0.0.1`, which parses fine and names
-    /// an address this daemon will not bind (see [`parse_daemon_addr`]).
+    /// an address this daemon will not bind (see [`parse_daemon_port`]).
     pub fn from_process(store_flag: Option<&Path>) -> Result<Self, AppError> {
         let home = env_path("HOME")
             .ok_or_else(|| AppError::Storage("could not determine home directory".to_string()))?;
@@ -124,9 +124,9 @@ impl Environment {
             .map(|xdg| xdg.join("storyhook"))
             .unwrap_or_else(|| home.join(".local/state/storyhook"));
 
-        let daemon_addr = match env_string("STORYHOOK_DAEMON_ADDR") {
-            Some(raw) => parse_daemon_addr(&raw)?,
-            None => default_daemon_addr(store.is_default()),
+        let preferred_port = match env_string("STORYHOOK_DAEMON_ADDR") {
+            Some(raw) => parse_daemon_port(&raw)?,
+            None => default_daemon_port(store.is_default()),
         };
 
         let busy_timeout = match env_string("STORYHOOK_BUSY_TIMEOUT_MS") {
@@ -143,7 +143,7 @@ impl Environment {
             state_home,
             home,
             clock: Clock::System,
-            daemon_addr,
+            preferred_port,
             busy_timeout,
         })
     }
@@ -162,7 +162,7 @@ impl Environment {
             state_home: home.join(".local/state/storyhook"),
             home,
             clock: Clock::System,
-            daemon_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            preferred_port: 0,
             busy_timeout: DEFAULT_BUSY_TIMEOUT,
         }
     }
@@ -174,10 +174,10 @@ impl Environment {
         self
     }
 
-    /// Sets the address the daemon binds and clients dial.
+    /// Sets the port the daemon prefers to bind.
     #[must_use]
-    pub fn daemon_addr(mut self, addr: SocketAddr) -> Self {
-        self.daemon_addr = addr;
+    pub fn daemon_port(mut self, port: u16) -> Self {
+        self.preferred_port = port;
         self
     }
 
@@ -221,10 +221,22 @@ impl Environment {
         self.clock.now()
     }
 
-    /// The address the daemon prefers to bind, and the one a client dials
-    /// before consulting the portfile.
-    pub fn preferred_daemon_addr(&self) -> SocketAddr {
-        self.daemon_addr
+    /// The port a daemon should try first.
+    ///
+    /// The preferred port keeps a bookmarked dashboard URL working across
+    /// restarts; falling back to an OS-assigned one
+    /// ([`crate::daemon::lifecycle::bind_preferred`]) means a daemon can always
+    /// start, even when something else holds it. A test harness sets this to 0,
+    /// so a suite never contends for the port a developer's own dashboard is
+    /// using.
+    ///
+    /// A port and not a [`SocketAddr`] (SH-253): the address is not this
+    /// value's to name. `crate::daemon::serve::bind_listeners` binds
+    /// `127.0.0.1`, and the tailnet interface beside it comes from an identity
+    /// `tailscale` reports — so an address carried this far could only ever be
+    /// discarded on arrival, which is exactly what used to happen.
+    pub fn preferred_port(&self) -> u16 {
+        self.preferred_port
     }
 
     /// How long a writer waits for another process's write lock.
@@ -473,12 +485,13 @@ impl Environment {
 /// `$STORYHOOK_DAEMON_ADDR` may legitimately name.
 const DAEMON_BIND_IP: std::net::IpAddr = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
 
-/// Parses `$STORYHOOK_DAEMON_ADDR`, refusing an IP this daemon will not bind.
+/// Parses `$STORYHOOK_DAEMON_ADDR` into the port it names, refusing an IP this
+/// daemon will not bind.
 ///
 /// # Why the IP is checked rather than ignored (SH-253)
 ///
 /// The variable parses as a full [`SocketAddr`] but only its port has ever been
-/// used — `crate::daemon::lifecycle::preferred_port` takes `.port()` and the
+/// used — [`Environment::preferred_port`] is all that survives resolution, and the
 /// bind is a hardcoded `127.0.0.1`. So `STORYHOOK_DAEMON_ADDR=0.0.0.0:3456`
 /// was *accepted*, silently ignored, and left an operator believing they had
 /// widened a bind that never moved. Half a parsed value quietly discarded is a
@@ -500,7 +513,7 @@ const DAEMON_BIND_IP: std::net::IpAddr = std::net::IpAddr::V4(std::net::Ipv4Addr
 /// the message names the fix three times over — the accepted spelling, the flag
 /// that sets a port on its own, and the tailnet interface that answers the need
 /// a wider bind would have been reached for.
-fn parse_daemon_addr(raw: &str) -> Result<SocketAddr, AppError> {
+fn parse_daemon_port(raw: &str) -> Result<u16, AppError> {
     let addr: SocketAddr = raw.parse().map_err(|e| {
         AppError::Usage(format!(
             "STORYHOOK_DAEMON_ADDR=`{raw}` is not an address: {e}"
@@ -517,10 +530,10 @@ fn parse_daemon_addr(raw: &str) -> Result<SocketAddr, AppError> {
              would expose a full-privilege API to the local network."
         )));
     }
-    Ok(addr)
+    Ok(addr.port())
 }
 
-/// The address a daemon prefers when nothing names one.
+/// The port a daemon prefers when nothing names one.
 ///
 /// The **default** store keeps [`DEFAULT_DAEMON_PORT`], so a bookmarked
 /// dashboard URL survives restarts and the launchd agent needs no change. Any
@@ -528,13 +541,12 @@ fn parse_daemon_addr(raw: &str) -> Result<SocketAddr, AppError> {
 /// makes two isolated stores unable to collide on a port — and therefore what
 /// makes a parallel test suite safe without the harness having to choose ports.
 #[must_use]
-pub fn default_daemon_addr(is_default_store: bool) -> SocketAddr {
-    let port = if is_default_store {
+pub fn default_daemon_port(is_default_store: bool) -> u16 {
+    if is_default_store {
         DEFAULT_DAEMON_PORT
     } else {
         0
-    };
-    SocketAddr::from(([127, 0, 0, 1], port))
+    }
 }
 
 /// Where the store lives on this machine when nothing names one.
@@ -651,12 +663,12 @@ mod tests {
     #[test]
     fn the_daemon_address_accepts_the_address_the_daemon_binds() {
         assert_eq!(
-            parse_daemon_addr("127.0.0.1:0").expect("the harness spelling"),
-            SocketAddr::from(([127, 0, 0, 1], 0))
+            parse_daemon_port("127.0.0.1:0").expect("the harness spelling"),
+            0
         );
         assert_eq!(
-            parse_daemon_addr("127.0.0.1:3456").expect("the bookmarked spelling"),
-            SocketAddr::from(([127, 0, 0, 1], DEFAULT_DAEMON_PORT))
+            parse_daemon_port("127.0.0.1:3456").expect("the bookmarked spelling"),
+            DEFAULT_DAEMON_PORT
         );
     }
 
@@ -677,7 +689,7 @@ mod tests {
             "[::]:3456",
             "127.0.0.2:3456",
         ] {
-            let error = parse_daemon_addr(raw)
+            let error = parse_daemon_port(raw)
                 .expect_err("an IP the daemon does not bind must not be accepted and ignored");
             assert!(
                 matches!(error, AppError::Usage(_)),
@@ -692,7 +704,7 @@ mod tests {
     #[test]
     fn the_refusal_names_the_accepted_spelling_the_flag_and_the_tailnet() {
         let AppError::Usage(message) =
-            parse_daemon_addr("0.0.0.0:3456").expect_err("a wildcard bind is refused")
+            parse_daemon_port("0.0.0.0:3456").expect_err("a wildcard bind is refused")
         else {
             panic!("a misconfigured variable is a usage error");
         };
@@ -707,7 +719,7 @@ mod tests {
     /// The older refusal still stands, and still says which variable it means.
     #[test]
     fn the_daemon_address_still_refuses_something_that_is_not_an_address() {
-        let error = parse_daemon_addr("localhost:3456")
+        let error = parse_daemon_port("localhost:3456")
             .expect_err("a hostname is not a SocketAddr, and never was");
         let AppError::Usage(message) = error else {
             panic!("a misconfigured variable is a usage error");
@@ -839,10 +851,8 @@ mod tests {
     /// collide.
     #[test]
     fn only_the_default_store_prefers_the_production_port() {
-        assert_eq!(default_daemon_addr(true).port(), DEFAULT_DAEMON_PORT);
-        assert_eq!(default_daemon_addr(false).port(), 0);
-        assert!(default_daemon_addr(true).ip().is_loopback());
-        assert!(default_daemon_addr(false).ip().is_loopback());
+        assert_eq!(default_daemon_port(true), DEFAULT_DAEMON_PORT);
+        assert_eq!(default_daemon_port(false), 0);
     }
 
     /// The upgrade path reads one and writes the other. If they were ever the
@@ -860,8 +870,7 @@ mod tests {
     #[test]
     fn a_constructed_environment_never_prefers_the_production_port() {
         let env = Environment::at("/tmp/storyhook-env-test");
-        assert_eq!(env.preferred_daemon_addr().port(), 0);
-        assert!(env.preferred_daemon_addr().ip().is_loopback());
+        assert_eq!(env.preferred_port(), 0);
     }
 
     #[test]
