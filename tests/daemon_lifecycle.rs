@@ -140,6 +140,57 @@ fn daemon_token_prints_the_portfiles_token_and_it_actually_works() {
     assert_eq!(hello_status(&info, &info.token), 200);
 }
 
+/// SH-250: stdout is the token and nothing else.
+///
+/// `assert_cmd` gives the child pipes rather than a terminal, which is exactly
+/// the shape `story daemon token | pbcopy` and `TOKEN=$(story daemon token)`
+/// have — so this is the real scripted case, not an approximation of it. The
+/// clipboard copy, the OSC 52 escape sequence and the rotation notice all live
+/// on stderr and all are suppressed when stderr is not a terminal, so a caller
+/// parsing stdout sees a bare token.
+///
+/// The rotation notice *used* to be printed on stdout, on its own line, so
+/// this is a real change in what a script reads: it now reads less.
+#[test]
+fn daemon_token_writes_nothing_but_the_token_when_it_is_piped() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let dir = scratch_dir();
+    let info = start(&env);
+
+    let output = env
+        .story(dir.path())
+        .args(["daemon", "token"])
+        .output()
+        .expect("running `story daemon token`");
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout must be valid UTF-8");
+    assert_eq!(
+        stdout.trim_end_matches('\n'),
+        info.token,
+        "stdout must be the bare token: anything else breaks every script \
+         that reads it"
+    );
+    assert!(
+        !stdout.contains('\u{1b}'),
+        "an escape sequence reached stdout: OSC 52 belongs on stderr, and \
+         only when a terminal is there to receive it; got {stdout:?}"
+    );
+    assert!(
+        !stdout.to_lowercase().contains("rotate"),
+        "the rotation notice belongs on stderr; got {stdout:?}"
+    );
+
+    // Nothing on stderr either, because stderr is a pipe here too -- the
+    // notice is for a human at a terminal, and a redirected stderr is not one.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains('\u{1b}'),
+        "an escape sequence reached a redirected stderr; got {stderr:?}"
+    );
+}
+
 /// Refuses rather than silently starting a daemon: `token` is a question
 /// about a daemon presumably already serving the dashboard the token is for,
 /// so a caller with none running gets told to start one, not handed a token

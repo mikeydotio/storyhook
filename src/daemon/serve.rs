@@ -36,7 +36,8 @@ use std::thread;
 use std::time::Duration;
 
 use crate::api::http::{
-    Reply, carries_body, finish, path_segments, read_body, request_path, request_query, text_reply,
+    Reply, TrustedHosts, carries_body, finish, path_segments, read_body, request_path,
+    request_query, text_reply,
 };
 use crate::api::rest::{self, Changed};
 use crate::api::rpc;
@@ -158,7 +159,7 @@ struct Serving<'a, S: Store> {
     /// hold `&Serving` the way [`dispatch`] and [`tailnet_reprobe`] do — can
     /// still read the live value on every request rather than a snapshot
     /// frozen when the listener started.
-    trusted_hosts: Arc<RwLock<Vec<String>>>,
+    trusted_hosts: Arc<RwLock<TrustedHosts>>,
     /// The bearer token `/api/v1/*` requires — and, since SH-50,
     /// `/api/repos/*/story/*/dispatch` too.
     token: String,
@@ -192,14 +193,21 @@ struct Serving<'a, S: Store> {
 /// retries a tailnet bind `listeners` did not already include (SH-146) — never
 /// from a request thread, so nothing a peer sends can trigger it. It is the
 /// only way a caller finds out a late bind happened at all: `listeners` and
-/// `trusted_hosts` are a snapshot of what was true when `serve` was called,
+/// the allowlist are a snapshot of what was true when `serve` was called,
 /// and everything after that lives inside this function.
+///
+/// `bound_hosts` are the `Host` values the *bind* earned — nothing else. The
+/// reverse-proxy half of the allowlist is read from the environment here,
+/// exactly once, rather than by each caller: since SH-250 its emptiness is a
+/// security signal ([`TrustedHosts::behind_a_proxy`]), and a caller who forgot
+/// to merge it in would silently grant the loopback token exemption. Both
+/// callers used to write that merge by hand.
 #[allow(clippy::too_many_arguments)]
 pub fn serve<S: Store, F, L>(
     store: &S,
     env: &Environment,
     listeners: Vec<Listener>,
-    trusted_hosts: Vec<String>,
+    bound_hosts: Vec<String>,
     bus: ChangeBus,
     token: String,
     ready: F,
@@ -240,7 +248,7 @@ where
         env: env.clone(),
         bus: bus.clone(),
         watcher: watcher.clone(),
-        trusted_hosts: Arc::new(RwLock::new(trusted_hosts)),
+        trusted_hosts: Arc::new(RwLock::new(TrustedHosts::for_daemon(bound_hosts))),
         token,
         hello: Hello {
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -412,14 +420,12 @@ where
 {
     let (listeners, bound) = bind_listeners(port)?;
     eprintln!("Storyhook dashboard: http://127.0.0.1:{}", bound.port());
-    let mut trusted_hosts = bound.trusted_hosts();
-    trusted_hosts.extend(crate::api::http::trusted_hosts_from_env());
     let token = crate::daemon::lifecycle::mint_token();
     serve(
         store,
         env,
         listeners,
-        trusted_hosts,
+        bound.trusted_hosts(),
         ChangeBus::new(),
         token.clone(),
         move || ready(bound, token),
@@ -731,7 +737,7 @@ fn worker(
     bus: ChangeBus,
     jobs: mpsc::SyncSender<Job>,
     nested_jobs: mpsc::Sender<Job>,
-    trusted_hosts: &[String],
+    trusted_hosts: &TrustedHosts,
     env: &Environment,
     dispatch_registry: &Arc<crate::api::dispatch::DispatchRegistry>,
 ) {
@@ -765,6 +771,7 @@ fn worker(
         &headers,
         trusted_hosts,
         token,
+        loopback,
     ) {
         finish(request, reply);
         return;
@@ -1334,7 +1341,7 @@ fn tailnet_reprobe<'scope, S: Store, L>(
                 .trusted_hosts
                 .write()
                 .unwrap_or_else(PoisonError::into_inner);
-            hosts.extend(bind.trusted_hosts());
+            hosts.add_bound(bind.trusted_hosts());
         }
 
         let bound = BoundAddress {

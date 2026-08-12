@@ -183,19 +183,123 @@ fn host_without_port(host: &str) -> &str {
     }
 }
 
-/// A `Host` is trusted if it's a loopback address, or explicitly listed in
-/// `trusted_hosts` (the tailnet's MagicDNS FQDN and IPv4 — see
-/// [`crate::daemon::tailnet::TailnetIdentity::trusted_hosts`] — or
-/// `STORYHOOK_WEB_TRUSTED_HOSTS`, for a `web-serve`-style reverse proxy). A
-/// trailing `.` is stripped before matching so a browser sending the rooted form
-/// of a MagicDNS FQDN (e.g. `psamathe.tail983f02.ts.net.`) still matches the
-/// unrooted form stored in `trusted_hosts`.
-pub fn host_is_trusted(host: &str, trusted_hosts: &[String]) -> bool {
-    let host_only = host_without_port(host)
+/// A `Host` header reduced to the form the allowlists are matched against:
+/// port stripped, rooted trailing `.` stripped (so a browser sending the rooted
+/// form of a MagicDNS FQDN — `psamathe.tail983f02.ts.net.` — still matches the
+/// unrooted form stored in the allowlist), lowercased.
+fn normalized_host(host: &str) -> String {
+    host_without_port(host)
         .trim_end_matches('.')
-        .to_ascii_lowercase();
-    matches!(host_only.as_str(), "127.0.0.1" | "localhost" | "::1")
-        || trusted_hosts.contains(&host_only)
+        .to_ascii_lowercase()
+}
+
+/// Whether `host` names loopback and *nothing else*.
+///
+/// Deliberately not [`host_is_trusted`], which also matches the allowlists —
+/// including the reverse-proxy one, which is exactly the hazard this predicate
+/// exists to avoid. Anything deciding "is this caller local?" must ask this;
+/// anything deciding "may this `Host` mutate?" must ask [`host_is_trusted`].
+/// Merging the two would silently let a configured proxy hostname answer the
+/// first question, which is how SH-250's loopback exemption would have leaked.
+pub fn host_is_loopback(host: &str) -> bool {
+    matches!(
+        normalized_host(host).as_str(),
+        "127.0.0.1" | "localhost" | "::1"
+    )
+}
+
+/// A `Host` is trusted if it's a loopback address, or explicitly listed in
+/// `trusted` (the tailnet's MagicDNS FQDN and IPv4 — see
+/// [`crate::daemon::tailnet::TailnetBind::trusted_hosts`] — or
+/// `STORYHOOK_WEB_TRUSTED_HOSTS`, for a `web-serve`-style reverse proxy).
+pub fn host_is_trusted(host: &str, trusted: &TrustedHosts) -> bool {
+    let host_only = normalized_host(host);
+    matches!(host_only.as_str(), "127.0.0.1" | "localhost" | "::1") || trusted.allows(&host_only)
+}
+
+/// The non-loopback `Host` values this daemon will trust for a mutation, kept
+/// in **two lists by provenance** because one of them is a security signal
+/// about the network and the other is not.
+///
+/// * `bound` — derived from an interface this daemon actually bound: the
+///   tailnet IPv4 and MagicDNS FQDN ([`crate::daemon::tailnet::TailnetBind::trusted_hosts`]).
+///   Trust follows bind, so a name is never in here unless the interface it
+///   would arrive on is being served.
+/// * `proxy` — named by `STORYHOOK_WEB_TRUSTED_HOSTS`, for a `web-serve`-style
+///   reverse proxy forwarding under its own hostname.
+///
+/// # Why they cannot be one list (SH-250)
+///
+/// **A reverse proxy connects to this daemon over loopback.** So a non-empty
+/// `proxy` is the daemon's only evidence that "arrived on the loopback
+/// listener" may no longer mean "came from this machine" — which is what
+/// [`Self::behind_a_proxy`] answers, and the fifth conjunct of
+/// [`crate::api::admission`]'s token exemption.
+///
+/// Before SH-250 these were one flat `Vec<String>`, merged by two callers who
+/// each wrote the same two lines ([`crate::daemon::serve::serve`] and
+/// `daemon::lifecycle::run`). Two things made that untenable at once. A
+/// merged list cannot answer `behind_a_proxy` at all — on any Tailscale
+/// machine it is non-empty with zero proxies configured, so an emptiness test
+/// would withhold the exemption from every such machine, and
+/// [`crate::daemon::serve`]'s late tailnet rebind extends the same list at
+/// runtime, so the answer would *change mid-daemon-life*. And forgetting the
+/// merge used to cost only proxy trust; after SH-250 the same omission would
+/// silently **grant** the exemption. Hence private fields and one constructor
+/// that reads the environment, the same shape and the same reason
+/// [`crate::daemon::tailnet::TailnetBind`] has: the value *is* the evidence.
+#[derive(Debug, Clone, Default)]
+pub struct TrustedHosts {
+    bound: Vec<String>,
+    proxy: Vec<String>,
+}
+
+impl TrustedHosts {
+    /// The allowlist for a daemon that bound `bound_hosts`, with the
+    /// reverse-proxy half read from `STORYHOOK_WEB_TRUSTED_HOSTS`.
+    ///
+    /// The only constructor that reads the environment, and the one both the
+    /// production daemon and the test seam call — so "forgot the env half" is
+    /// not a reachable state.
+    pub fn for_daemon(bound_hosts: Vec<String>) -> Self {
+        TrustedHosts {
+            bound: bound_hosts,
+            proxy: proxy_hosts_from_env(),
+        }
+    }
+
+    /// Adds hosts earned by a *bind* — the late tailnet bind (SH-146), which
+    /// is the only thing that ever widens an allowlist after startup.
+    ///
+    /// Reaches the `bound` half only. That is the invariant that makes
+    /// [`Self::behind_a_proxy`] immutable for the daemon's whole life, so the
+    /// token exemption cannot flip under a self-heal.
+    pub fn add_bound(&mut self, hosts: impl IntoIterator<Item = String>) {
+        self.bound.extend(hosts);
+    }
+
+    /// Whether a reverse proxy has been declared to this daemon.
+    ///
+    /// Reads the `proxy` half alone, never `bound`: a bound tailnet interface
+    /// is an interface this daemon serves directly, not an indirection it was
+    /// told about.
+    pub fn behind_a_proxy(&self) -> bool {
+        !self.proxy.is_empty()
+    }
+
+    /// Whether `host_only` (already [`normalized_host`]-ed) is on either list.
+    fn allows(&self, host_only: &str) -> bool {
+        self.bound.iter().any(|h| h == host_only) || self.proxy.iter().any(|h| h == host_only)
+    }
+
+    /// An allowlist with both halves stated outright, for tests that need a
+    /// configured proxy without mutating the process environment — which
+    /// `crates/storyhook-test-support` forbids, because the environment is
+    /// shared by every test in the binary.
+    #[cfg(test)]
+    pub(crate) fn from_parts(bound: Vec<String>, proxy: Vec<String>) -> Self {
+        TrustedHosts { bound, proxy }
+    }
 }
 
 /// Localhost-only CSRF / DNS-rebinding guard for mutating requests. Both
@@ -211,12 +315,12 @@ pub fn host_is_trusted(host: &str, trusted_hosts: &[String]) -> bool {
 ///    resolving to 127.0.0.1 after the browser's same-origin check passes —
 ///    still fails here, even though check 1 alone can't stop it (a rebound
 ///    page is same-origin and so *can* set custom headers).
-pub fn mutation_guard_ok(headers: &[Header], trusted_hosts: &[String]) -> bool {
+pub fn mutation_guard_ok(headers: &[Header], trusted: &TrustedHosts) -> bool {
     if header_value(headers, "X-Storyhook").is_none() {
         return false;
     }
     match header_value(headers, "Host") {
-        Some(host) => host_is_trusted(host, trusted_hosts),
+        Some(host) => host_is_trusted(host, trusted),
         None => false,
     }
 }
@@ -237,7 +341,7 @@ pub fn content_type_is_json(headers: &[Header]) -> bool {
 /// declares a JSON content type; otherwise returns 403 or 415.
 pub fn guarded(
     headers: &[Header],
-    trusted_hosts: &[String],
+    trusted_hosts: &TrustedHosts,
     body: &str,
     handler: impl FnOnce(&str) -> Reply,
 ) -> Reply {
@@ -254,7 +358,7 @@ pub fn guarded(
 /// `Content-Type` check doesn't apply).
 pub fn guarded_no_body(
     headers: &[Header],
-    trusted_hosts: &[String],
+    trusted_hosts: &TrustedHosts,
     handler: impl FnOnce() -> Reply,
 ) -> Reply {
     if !mutation_guard_ok(headers, trusted_hosts) {
@@ -263,11 +367,16 @@ pub fn guarded_no_body(
     handler()
 }
 
-/// Parses `STORYHOOK_WEB_TRUSTED_HOSTS` into a lowercase host allowlist for
-/// the mutation guard, used to permit a `web-serve`-style reverse proxy to
-/// reach the write API under its own (non-loopback) hostname. Read-only
-/// requests are never subject to this check.
-pub fn trusted_hosts_from_env() -> Vec<String> {
+/// Parses `STORYHOOK_WEB_TRUSTED_HOSTS` into a lowercase host allowlist,
+/// permitting a `web-serve`-style reverse proxy to reach the write API under
+/// its own (non-loopback) hostname.
+///
+/// Private, and reached only through [`TrustedHosts::for_daemon`]: since
+/// SH-250 the *emptiness* of this list is a security signal
+/// ([`TrustedHosts::behind_a_proxy`]), so a caller that read it separately and
+/// merged the result into a flat list would destroy the one fact the exemption
+/// depends on.
+fn proxy_hosts_from_env() -> Vec<String> {
     std::env::var("STORYHOOK_WEB_TRUSTED_HOSTS")
         .ok()
         .map(|raw| {
@@ -409,11 +518,14 @@ pub fn carries_body(method: &Method) -> bool {
 mod tests {
     use super::*;
 
-    fn tailnet_trusted_hosts() -> Vec<String> {
-        vec![
-            "100.71.206.33".to_string(),
-            "psamathe.tail983f02.ts.net".to_string(),
-        ]
+    fn tailnet_trusted_hosts() -> TrustedHosts {
+        TrustedHosts::from_parts(
+            vec![
+                "100.71.206.33".to_string(),
+                "psamathe.tail983f02.ts.net".to_string(),
+            ],
+            Vec::new(),
+        )
     }
 
     #[test]
@@ -468,6 +580,80 @@ mod tests {
         assert!(!host_is_trusted("psamathe.evil.com:3456", &hosts));
         assert!(!host_is_trusted("", &hosts));
         assert!(!host_is_trusted("evil.tail983f02.ts.net", &hosts));
+    }
+
+    // --- host_is_loopback, and the provenance split (SH-250) ---
+
+    #[test]
+    fn host_is_loopback_accepts_every_spelling_of_loopback() {
+        for host in [
+            "127.0.0.1",
+            "127.0.0.1:3456",
+            "localhost",
+            "LOCALHOST:3456",
+            "[::1]",
+            "[::1]:3456",
+            "localhost.",
+        ] {
+            assert!(host_is_loopback(host), "{host} names loopback");
+        }
+    }
+
+    #[test]
+    fn host_is_loopback_rejects_everything_else_including_a_trusted_host() {
+        // The last two are the point of the predicate existing: a tailnet
+        // FQDN and a configured proxy name are both *trusted* for a mutation,
+        // and neither means "this caller is local". `host_is_trusted` says
+        // yes to them; this must say no.
+        for host in [
+            "evil.example",
+            "evil.example:3456",
+            "",
+            "127.0.0.2",
+            "psamathe.tail983f02.ts.net",
+            "proxy.example",
+        ] {
+            assert!(!host_is_loopback(host), "{host} does not name loopback");
+        }
+    }
+
+    #[test]
+    fn behind_a_proxy_is_false_for_a_bind_only_allowlist() {
+        // The regression test for the naive implementation of SH-250's
+        // conjunct 5. On every Tailscale machine the allowlist is non-empty
+        // with zero proxies configured, so `!is_empty()` would report a proxy
+        // that does not exist and withhold the loopback exemption from the
+        // one machine class most likely to want it.
+        let bound_only = tailnet_trusted_hosts();
+        assert!(!bound_only.behind_a_proxy());
+        assert!(bound_only.allows("psamathe.tail983f02.ts.net"));
+    }
+
+    #[test]
+    fn behind_a_proxy_is_true_only_for_the_env_derived_half() {
+        let proxied = TrustedHosts::from_parts(Vec::new(), vec!["proxy.example".to_string()]);
+        assert!(proxied.behind_a_proxy());
+        assert!(proxied.allows("proxy.example"));
+    }
+
+    #[test]
+    fn a_late_bound_host_cannot_change_the_proxy_verdict() {
+        // `add_bound` is the late tailnet bind (SH-146), the only thing that
+        // widens an allowlist after startup. It must never be able to flip
+        // `behind_a_proxy` in either direction, or an authorization decision
+        // would change mid-daemon-life on a self-heal.
+        let mut bound_only = TrustedHosts::for_daemon(Vec::new());
+        let before = bound_only.behind_a_proxy();
+        bound_only.add_bound(["100.71.206.33".to_string()]);
+        assert_eq!(bound_only.behind_a_proxy(), before);
+        assert!(bound_only.allows("100.71.206.33"));
+
+        let mut proxied = TrustedHosts::from_parts(Vec::new(), vec!["proxy.example".to_string()]);
+        proxied.add_bound(["100.71.206.33".to_string()]);
+        assert!(
+            proxied.behind_a_proxy(),
+            "a late bind must not retire a configured proxy"
+        );
     }
 
     #[test]

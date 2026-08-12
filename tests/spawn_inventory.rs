@@ -116,6 +116,21 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     ("src/tui/app.rs", "&editor_cmd", Kind::Waited),
     ("src/update.rs", "\"tar\"", Kind::Waited),
     ("src/update.rs", "staged", Kind::Waited),
+    // `clipboard::pipe_to_command` — `pbcopy`/`xclip`/`wl-copy`, or whatever
+    // `$STORYHOOK_CLIPBOARD_CMD` names. `Waited`: stdout and stderr are both
+    // `Stdio::null()`, so there is no pipe for a descendant to hold, and the
+    // only pipe at all is *stdin*, which this end closes. Lived at
+    // `src/web.rs` until SH-250 moved it beside its second caller.
+    ("src/clipboard.rs", "&argv[0]", Kind::Waited),
+    // `web::open_in_browser` — `open`/`xdg-open`/`cmd /C start`, or `$BROWSER`.
+    // `Waited`: `.status()` with both output streams `Stdio::null()`, so no
+    // pipe exists for a descendant to hold. A browser it launches routinely
+    // outlives the command, which is why the null streams matter rather than
+    // being tidiness.
+    //
+    // Until SH-250 this file's clipboard spawn shared this entry's key
+    // (same path, same `&argv[0]` expression), so one row was standing for two
+    // unrelated spawns. Moving the clipboard out separated them.
     ("src/web.rs", "&argv[0]", Kind::Waited),
 ];
 

@@ -124,6 +124,21 @@ pub fn status(env: &Environment) -> Result<String, AppError> {
 /// and silently starting a second one under a caller who only wanted to read
 /// a value would be a surprising side effect for what looks like a query —
 /// the same reasoning `status` already follows.
+///
+/// # Standard output is the token, and only the token (SH-250)
+///
+/// Every side effect this grew — the clipboard copy, the OSC 52 escape
+/// sequence, the note saying what happened, and the rotation warning that
+/// used to be printed on stdout — goes to **stderr**, and only when stderr is
+/// a terminal. `story daemon token | pbcopy`, `TOKEN=$(story daemon token)`
+/// and every script already written against this command keep working
+/// unchanged, because what they read never had anything added to it.
+///
+/// The TTY test is on **stderr**, not stdout: stdout is very often a pipe
+/// here (that is the command's whole shape), while stderr is what a person
+/// watching would be reading. Testing stdout would switch the convenience off
+/// in exactly the case it is most wanted — a human running
+/// `story daemon token | pbcopy` on a machine they are sitting at.
 pub fn token(env: &Environment) -> Result<String, AppError> {
     if !lifecycle::is_live(env) {
         return Err(AppError::Usage(format!(
@@ -132,14 +147,40 @@ pub fn token(env: &Environment) -> Result<String, AppError> {
         )));
     }
     match lifecycle::read_info(env) {
-        Some(info) => Ok(format!(
-            "{}\nRotates every time the daemon restarts — fetch a fresh one after \
-             a `story daemon stop`/`start`.",
-            info.token
-        )),
+        Some(info) => {
+            offer_token_to_the_clipboard(&info.token);
+            Ok(info.token)
+        }
         None => Err(AppError::Storage(
             "a storyhook daemon holds the pidfile but published no portfile".to_string(),
         )),
+    }
+}
+
+/// Copies `token` to the clipboard and says so, when there is a human there
+/// to be told. A no-op otherwise.
+///
+/// The OSC 52 sequence is written to stderr rather than stdout for the reason
+/// in [`token`]'s own doc: stdout carries a value callers parse. Stderr is
+/// the same terminal device in every interactive session, so the escape
+/// reaches the emulator either way — and when stderr is redirected instead,
+/// the guard below has already declined to write anything.
+fn offer_token_to_the_clipboard(token: &str) {
+    use std::io::IsTerminal;
+    if !std::io::stderr().is_terminal() {
+        return;
+    }
+    let mut stderr = std::io::stderr();
+    let copied = crate::clipboard::copy_everywhere(token, &mut stderr);
+    match copied.describe() {
+        Some(what) => eprintln!(
+            "note: {what}. It rotates every time the daemon restarts — fetch a \
+             fresh one after a `story daemon stop`/`start`."
+        ),
+        None => eprintln!(
+            "note: could not reach a clipboard. The token rotates every time the \
+             daemon restarts — fetch a fresh one after a `story daemon stop`/`start`."
+        ),
     }
 }
 

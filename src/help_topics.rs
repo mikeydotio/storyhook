@@ -1905,12 +1905,19 @@ Screens:
             relationships, reopen, and delete.
 
 Security:
-  Every request — reads and writes, on both 127.0.0.1 and your
-  tailnet IP — requires the daemon's bearer token ('story daemon
-  token' prints it). The dashboard's own page prompts for it on first
-  load and holds it in sessionStorage (gone when the tab closes;
-  re-entering it after a daemon restart is expected — the token
-  rotates then). Mutating requests (create/move/edit/delete a story,
+  Every request requires the daemon's bearer token ('story daemon
+  token' prints it, and copies it to your clipboard when you're at a
+  terminal — over SSH or Mosh too, via OSC 52), with one exception: a
+  read arriving on 127.0.0.1 is answered without one, so opening the
+  dashboard locally just works. Writes always need it, and everything
+  over your tailnet IP needs it, reads included. That exemption is
+  narrow: GET or HEAD only, a loopback Host, no X-Forwarded-* /
+  Forwarded / X-Real-IP header, not the dispatch endpoint, and no
+  reverse-proxy allowlist configured — any one of those failing means
+  the token is required as before. The dashboard's own page asks the
+  first time a request needs one and holds it in sessionStorage (gone
+  when the tab closes; re-entering it after a daemon restart is
+  expected — the token rotates then). Mutating requests (create/move/edit/delete a story,
   and anything the Settings screen changes) additionally require a
   same-origin request (a custom header a cross-site request can't
   replicate) and a Host header resolving to 127.0.0.1/localhost/::1,
@@ -1925,11 +1932,14 @@ Security:
   token, so it can serve the page that prompts for one; GET
   /api/events (the live-update stream) also accepts the token as a
   ?token= query parameter, since a browser's EventSource can't set
-  headers. To allow writes through a reverse proxy under a different
-  hostname (e.g. web-serve), set STORYHOOK_WEB_TRUSTED_HOSTS to a
-  comma-separated allowlist before starting the server — this only
-  widens the Host allowlist for writes, it does not change what the
-  server binds, and a proxied caller still needs the token.
+  headers. Set STORYHOOK_WEB_TRUSTED_HOSTS to a comma-separated
+  allowlist before putting any reverse proxy in front of the daemon:
+  it widens the Host allowlist so writes work under the proxy's
+  hostname, and it switches off the loopback read exemption, because
+  a reverse proxy connects over loopback — so 'arrived on 127.0.0.1'
+  stops meaning 'came from this machine' once one exists. It does not
+  change what the server binds. The daemon states which posture it is
+  in on startup.
 
 How it works:
   The repo list is the store's own projects table — the same rows the
