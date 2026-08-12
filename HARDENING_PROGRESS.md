@@ -10546,4 +10546,56 @@ checkout, remote branch confirmed deleted (`gh pr merge --delete-branch`).
 
 **No version bump** — left for the next batched `/semver` pass.
 
+### SH-211 — done, 2026-08-12
+
+`story next` surfaced SH-211 as top pick. Claimed immediately.
+
+**The gap, confirmed by reading rather than reproducing:** `stories.hidden_at` (SH-43,
+migration 10) carries no schema CHECK against `superstate` — SQLite cannot express a
+cross-column CHECK without the full table-rebuild migration 4 used for
+`archived`/`closed_at`/`superstate`. "Hidden implies closed" was kept true only by the
+service layer (`StoryService::hide` refuses an open story) and by `fold_story` (clears
+`hidden_at` the instant a superstate resolves OPEN). Neither is reachable from a write
+that lands on the `hidden_at` column directly — a raw migration, an admin script — and
+`diff()` in `src/store/rebuild.rs` turned out never to compare that column at all: its
+`report()` calls cover every other dedicated `StoryRow` column (`title`, `state`,
+`superstate`, `closed_at`, …) plus the whole `snapshot` JSON blob, but `hidden_at` was
+missing from the list entirely. A column-only write bypasses both the column comparison
+that doesn't exist and the blob comparison that does (the blob is untouched by such a
+write), so the illegal tuple was genuinely invisible to `doctor` — not merely untested.
+
+**The fix:** one `report("hidden_at", …)` call added to `diff()`, comparing the column
+against the same fold-derived `expected.hidden_at` every other field already checks
+against. `fold_story`'s existing invariant (`hidden_at` is `None` whenever the rebuilt
+superstate is OPEN) does the rest: any row where the persisted `superstate` matches its
+events but `hidden_at` does not is now an ordinary read-model divergence, reported by
+`story doctor` and repaired by `--fix` re-folding the row exactly like any other drift.
+
+**Sibling swept in the same commit:** `draft` (SH-175) turned out to be the *only* other
+dedicated `stories` column `diff()` never compared, for the identical reason — it's
+written from `snapshot.draft` the same way `hidden_at` is written from `snapshot.hidden_at`
+(`store/sqlite/write.rs`), and nothing wired it into the comparison either. Fixed
+alongside per this run's "fix any hits unless distant and unrelated" rule — same file,
+same function, same one-line shape — with its own regression test rather than a filed
+follow-up, since CLAUDE.md's "trivial same-session finds" carve-out applies.
+
+**Tests:** two new `tests/doctor.rs` cases, both fabricating the corruption a step below
+the service layer (a second `rusqlite::Connection`, one `UPDATE` on the dedicated column,
+no event behind it — the same shape `tests/illegal_state_pair.rs` uses for its raw-column
+fixtures) rather than through `store::test_support::corrupt_snapshot`, which turned out
+unable to reach this exact gap: its own raw `UPDATE` never touches `hidden_at` or `draft`,
+so editing the JSON blob alone leaves the dedicated column — the thing actually under test
+— unchanged. Confirmed no existing test asserts an exhaustive divergence-field list that
+the two new comparisons would break (`tests/store_rebuild.rs`'s one such test only exercises
+an unknown-event-kind scenario, where `head_seq` is the sole field that moves).
+
+**Gate:** full `make test`, supervised (log-growth heartbeat via Monitor, 120s stall
+bound, no stall observed): `cargo fmt`/`clippy -D warnings` clean, Rust suite green,
+plugin bash harness 29/29, e2e 50/50.
+
+**PR:** #285, one commit, merged as `fff454c`, fast-forwarded onto `main` in this
+checkout, remote branch confirmed deleted (`gh pr merge --delete-branch`).
+
+**No version bump** — left for the next batched `/semver` pass.
+
 **Next:** run `story next` fresh.
