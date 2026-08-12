@@ -6,7 +6,9 @@ import { cleanUpCreatedStories, deleteStory, seedToken } from "./support";
  * SH-256: on a coarse pointer (a finger, not a mouse), no text-entry control
  * anywhere in the dashboard may compute a font-size under 16 CSS pixels --
  * the threshold below which iOS Safari zooms the viewport to whatever field
- * was just focused, and does not zoom back out when it blurs.
+ * was just focused, and does not zoom back out when it blurs. Also: tap
+ * targets carry `touch-action: manipulation`, so a quick double tap acts
+ * instead of double-tap-zooming.
  *
  * This file runs only under the `mobile-chromium` Playwright project
  * (`playwright.config.ts`'s `MOBILE_SPECS` pattern, matched by this file's
@@ -338,4 +340,28 @@ test("the statuses editor's controls are at least 16px", async ({ page }) => {
   // this spec has no reason to provoke.
   await expectNoZoomingControls(page.locator(".status-list"), "the statuses list", 3);
   await expectNoZoomingControls(page.locator(".status-add"), "the add-status row", 3);
+});
+
+test("tap targets carry touch-action: manipulation, and the page itself does not", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await expect(page.locator("#board-view")).toBeVisible();
+
+  // This asserts the CSS *declaration*, not the gesture it produces:
+  // Playwright's locator.click() injects mouse events even with
+  // `hasTouch: true`, so no double-tap is actually performed here. The
+  // behavioral claim -- that a double tap acts instead of zooming -- rests
+  // on the CSS spec for `touch-action: manipulation`, not on this test.
+  // (`.fdd-option`, the fourth selector in the rule, is a lazily-built
+  // popover row not reliably present without opening a dropdown -- its
+  // declaration is still pinned statically, in web_test.rs.)
+  for (const selector of ["#new-story-btn", ".card", ".filter-toggle"]) {
+    const locator = page.locator(selector).first();
+    await expect(locator).toHaveCSS("touch-action", "manipulation");
+  }
+
+  await expect(page.locator("body")).toHaveCSS("touch-action", "auto");
+  await expect(page.locator("html")).toHaveCSS("touch-action", "auto");
 });
