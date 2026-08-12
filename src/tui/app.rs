@@ -356,6 +356,131 @@ fn story_of(response: Response) -> Result<StorySnapshot, AppError> {
     }
 }
 
+/// The `referenced_by` block of the story a `Show` answered with.
+fn referenced_by_of(response: Response) -> Result<crate::output::ReferencedBy, AppError> {
+    match response {
+        Response::Story(view) => Ok(view.referenced_by),
+        other => Err(AppError::Storage(format!(
+            "internal: expected a story, got {other:?}"
+        ))),
+    }
+}
+
+/// Fetch the derived half of one story's `Referenced By` into the drawer
+/// showing it (SH-248).
+///
+/// One `Invocation::Show` — the same read `story show` pays, and the only read
+/// that carries `referenced_by.prs` and `referenced_by.comment_mentions`. Both
+/// are gated behind `include_derived` (see `service::query::story_views`)
+/// because they are project-wide work: a `pr_links` read and a scan of every
+/// comment thread. The TUI's one `ProjectSnapshot` is a list-scope read rebuilt
+/// on every change, so it must not pay for them — which is why this is a
+/// per-story fetch on open rather than a fatter snapshot.
+///
+/// A failure is announced, not swallowed: `referenced_by` is left `None`, which
+/// the drawer draws as a stated absence rather than as an empty list, and the
+/// error reaches the user as a notification.
+///
+/// Extracted from the `Action::OpenDetail` and `Action::RefreshData` dispatch
+/// arms so it can be exercised by tests without a real terminal, for the same
+/// reason as [`create_story_mutation`].
+fn load_detail_referenced_by(
+    detail: &mut StoryDetail,
+    invoker: &dyn Invoker,
+    state: &mut AppState,
+) {
+    match invoke(
+        invoker,
+        Invocation::Show {
+            id: detail.story_id.clone(),
+        },
+    )
+    .and_then(referenced_by_of)
+    {
+        Ok(referenced_by) => detail.referenced_by = Some(referenced_by),
+        Err(error) => {
+            detail.referenced_by = None;
+            state.notification = Some((
+                format!("Referenced By unavailable: {error}"),
+                Instant::now(),
+            ));
+        }
+    }
+}
+
+/// Open the detail drawer on a story, its derived view fetched.
+///
+/// Extracted from the `Action::OpenDetail` dispatch arm so that "opening a
+/// drawer fetches what a snapshot cannot carry" is a testable claim rather than
+/// four lines inside a match arm no test can reach — `dispatch` takes a
+/// terminal.
+fn open_detail(
+    id: String,
+    state: &mut AppState,
+    invoker: &dyn Invoker,
+    modal_components: &mut ModalComponents,
+) {
+    let mut detail = StoryDetail::new(id.clone());
+    load_detail_referenced_by(&mut detail, invoker, state);
+    modal_components.story_detail = Some(detail);
+    state.focus.push_modal(Modal::StoryDetail { story_id: id });
+}
+
+/// Reload the project and everything drawn from it.
+///
+/// The whole board is rebuilt from one snapshot; a drawer standing open over a
+/// story that has since left the project is closed and said so; and the
+/// drawer's derived half — which does not ride the snapshot, see
+/// [`load_detail_referenced_by`] — is fetched again.
+///
+/// Extracted from the `Action::RefreshData` dispatch arm for the same
+/// testability reason as [`open_detail`]. `tui_integration.rs`'s
+/// `story_deleted_externally_closes_modal_with_notification` hand-copies the
+/// stale-drawer rule because it could not call this; the copy is still there,
+/// but the rule itself is now pinned against the real function in this file's
+/// own tests.
+fn refresh_data(
+    state: &mut AppState,
+    invoker: &dyn Invoker,
+    board: &mut Board,
+    graph: &mut GraphComponent,
+    modal_components: &mut ModalComponents,
+) {
+    match DataStore::load(invoker) {
+        Ok(data) => {
+            state.data = data;
+            // Notify board of state change so it can reclamp cursor
+            board.on_state_change(state);
+            graph.on_state_change(state);
+            // Stale modal protection: if a detail modal is open, check
+            // that the story still exists
+            if let Some(Modal::StoryDetail { story_id }) = state.focus.top_modal()
+                && state.data.find_story(story_id).is_none()
+            {
+                let id = story_id.clone();
+                state.focus.pop_modal();
+                modal_components.story_detail = None;
+                state.notification = Some((format!("Story {id} no longer open"), Instant::now()));
+            }
+            // The drawer's derived half does not ride the snapshot (see
+            // `load_detail_referenced_by`), so a pull request, commit or
+            // comment mention recorded by another process would stay
+            // invisible until the drawer was closed and reopened. The
+            // dozen mutation arms in `dispatch` reload the snapshot
+            // without this, deliberately: no TUI verb can change the open
+            // story's `referenced_by`, and each of them crosses a request
+            // boundary, so the daemon publishes and this runs on its own
+            // moments later.
+            if let Some(detail) = modal_components.story_detail.as_mut() {
+                load_detail_referenced_by(detail, invoker, state);
+            }
+        }
+        Err(e) => {
+            state.notification = Some((format!("Refresh failed: {e}"), Instant::now()));
+        }
+    }
+}
+
 /// The text a `Response::Message` carries.
 fn message_of(response: Response) -> Result<String, AppError> {
     match response {
@@ -538,10 +663,7 @@ fn dispatch(
             }
         }
 
-        Action::OpenDetail(id) => {
-            modal_components.story_detail = Some(StoryDetail::new(id.clone()));
-            state.focus.push_modal(Modal::StoryDetail { story_id: id });
-        }
+        Action::OpenDetail(id) => open_detail(id, state, invoker, modal_components),
 
         Action::OpenCreateForm => {
             modal_components.create_form = Some(CreateForm::new());
@@ -582,30 +704,7 @@ fn dispatch(
             state.filter_bar_focused = false;
         }
 
-        Action::RefreshData => {
-            match DataStore::load(invoker) {
-                Ok(data) => {
-                    state.data = data;
-                    // Notify board of state change so it can reclamp cursor
-                    board.on_state_change(state);
-                    graph.on_state_change(state);
-                    // Stale modal protection: if a detail modal is open, check
-                    // that the story still exists
-                    if let Some(Modal::StoryDetail { story_id }) = state.focus.top_modal()
-                        && state.data.find_story(story_id).is_none()
-                    {
-                        let id = story_id.clone();
-                        state.focus.pop_modal();
-                        modal_components.story_detail = None;
-                        state.notification =
-                            Some((format!("Story {id} no longer open"), Instant::now()));
-                    }
-                }
-                Err(e) => {
-                    state.notification = Some((format!("Refresh failed: {e}"), Instant::now()));
-                }
-            }
-        }
+        Action::RefreshData => refresh_data(state, invoker, board, graph, modal_components),
 
         Action::Notify(msg) => {
             state.notification = Some((msg, Instant::now()));
@@ -1529,6 +1628,247 @@ mod tests {
         assert_eq!(
             store.find_story(&id).unwrap().assignee.as_deref(),
             Some("mikey-ward")
+        );
+    }
+
+    // =======================================================================
+    // SH-248: the drawer's derived `Referenced By`
+    //
+    // `dispatch` takes a terminal and cannot be unit-tested, so these exercise
+    // the function its `OpenDetail` and `RefreshData` arms both call — against
+    // a real store, because a stub invoker would only prove that this file
+    // agrees with itself about which invocation carries the derived view.
+    // =======================================================================
+
+    /// An [`Invoker`] that refuses everything, for the failure path.
+    struct RefusingInvoker;
+
+    impl Invoker for RefusingInvoker {
+        fn invoke(&self, _request: InvokeRequest) -> Result<Response, AppError> {
+            Err(AppError::Storage("the daemon went away".to_string()))
+        }
+    }
+
+    /// The fetch fills all three sources — including the two the TUI's own
+    /// `ProjectSnapshot` does not carry, which is the whole of SH-248.
+    #[test]
+    fn the_drawer_fetch_carries_prs_and_comment_mentions_the_snapshot_lacks() {
+        let fixture = TuiFixture::new();
+        let invoker = fixture.invoker();
+        let subject = seed_story(&invoker, "The story other things point at");
+        let other = seed_story(&invoker, "The story that mentions it");
+
+        invoke(
+            &invoker,
+            Invocation::LinkPr {
+                id: subject.clone(),
+                url: "https://github.com/mikeydotio/storyhook/pull/297".to_string(),
+                close_on_merge: true,
+            },
+        )
+        .expect("linking a pull request");
+        invoke(
+            &invoker,
+            Invocation::Comment {
+                id: other.clone(),
+                text: format!("superseded by {subject}"),
+            },
+        )
+        .expect("commenting on the other story");
+
+        // The snapshot the board runs on has neither — the premise of the fix.
+        let snapshot = DataStore::load(&invoker).unwrap();
+        let story = snapshot.find_story(&subject).expect("the story");
+        assert!(
+            story.referenced_by_commits.is_empty(),
+            "the snapshot carries only commits, and there are none here"
+        );
+
+        let mut state = make_state();
+        let mut detail = StoryDetail::new(subject.clone());
+        load_detail_referenced_by(&mut detail, &invoker, &mut state);
+
+        let referenced_by = detail
+            .referenced_by
+            .expect("a successful fetch must leave a view behind");
+        assert_eq!(
+            referenced_by
+                .prs
+                .iter()
+                .map(|pr| pr.url.as_str())
+                .collect::<Vec<_>>(),
+            vec!["https://github.com/mikeydotio/storyhook/pull/297"],
+        );
+        assert_eq!(
+            referenced_by
+                .comment_mentions
+                .iter()
+                .map(|mention| mention.other_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![other.as_str()],
+        );
+        assert!(
+            state.notification.is_none(),
+            "a fetch that worked must say nothing"
+        );
+    }
+
+    /// A story nothing references gets an *answer* — an empty view — not a
+    /// missing one. The drawer draws the two apart: `Some(empty)` is silence,
+    /// `None` is a stated absence.
+    #[test]
+    fn a_story_nothing_references_still_fetches_an_answer() {
+        let fixture = TuiFixture::new();
+        let invoker = fixture.invoker();
+        let id = seed_story(&invoker, "Referenced by nothing at all");
+
+        let mut state = make_state();
+        let mut detail = StoryDetail::new(id);
+        load_detail_referenced_by(&mut detail, &invoker, &mut state);
+
+        let referenced_by = detail.referenced_by.expect("an answer, not an absence");
+        assert!(referenced_by.commits.is_empty());
+        assert!(referenced_by.prs.is_empty());
+        assert!(referenced_by.comment_mentions.is_empty());
+    }
+
+    /// A fetch that fails is announced and leaves `None` behind, so the drawer
+    /// can say its derived half is missing instead of drawing an empty list
+    /// that reads as a complete one.
+    #[test]
+    fn a_failed_drawer_fetch_notifies_and_leaves_no_view() {
+        let mut state = make_state();
+        let mut detail = StoryDetail::new("SH-1".to_string());
+        detail.referenced_by = Some(crate::output::ReferencedBy::default());
+
+        load_detail_referenced_by(&mut detail, &RefusingInvoker, &mut state);
+
+        assert!(
+            detail.referenced_by.is_none(),
+            "a failed refresh must not leave the previous answer standing as if fresh"
+        );
+        let (message, _) = state.notification.expect("the failure must be announced");
+        assert!(
+            message.contains("Referenced By") && message.contains("the daemon went away"),
+            "the notification must name what failed and why: {message}"
+        );
+    }
+
+    /// Opening a drawer fetches. The gap this closes is the one the defect
+    /// lived in: the derived view can be perfectly available and the drawer
+    /// still never ask for it.
+    #[test]
+    fn opening_a_drawer_fetches_the_story_s_derived_view() {
+        let fixture = TuiFixture::new();
+        let invoker = fixture.invoker();
+        let id = seed_story(&invoker, "Linked to a pull request");
+        invoke(
+            &invoker,
+            Invocation::LinkPr {
+                id: id.clone(),
+                url: "https://github.com/mikeydotio/storyhook/pull/12".to_string(),
+                close_on_merge: true,
+            },
+        )
+        .expect("linking a pull request");
+
+        let mut state = make_state();
+        let mut modals = ModalComponents::default();
+        open_detail(id.clone(), &mut state, &invoker, &mut modals);
+
+        let detail = modals.story_detail.expect("the drawer must be open");
+        assert_eq!(detail.story_id, id);
+        assert_eq!(
+            detail
+                .referenced_by
+                .expect("opening must fetch, not leave the derived half unasked for")
+                .prs
+                .len(),
+            1
+        );
+    }
+
+    /// A refresh re-fetches an open drawer's derived view, so a pull request
+    /// linked by another process appears without closing and reopening it.
+    #[test]
+    fn a_refresh_updates_an_open_drawer_s_derived_view() {
+        let fixture = TuiFixture::new();
+        let invoker = fixture.invoker();
+        let id = seed_story(&invoker, "Nothing links to it yet");
+
+        let mut state = make_state();
+        let mut modals = ModalComponents::default();
+        let mut board = Board::new();
+        let mut graph = GraphComponent::new();
+        open_detail(id.clone(), &mut state, &invoker, &mut modals);
+        assert!(
+            modals
+                .story_detail
+                .as_ref()
+                .and_then(|detail| detail.referenced_by.as_ref())
+                .expect("a fetched view")
+                .prs
+                .is_empty(),
+            "nothing links to the story yet"
+        );
+
+        // Another process links one, and the change feed wakes the TUI.
+        invoke(
+            &invoker,
+            Invocation::LinkPr {
+                id: id.clone(),
+                url: "https://github.com/mikeydotio/storyhook/pull/13".to_string(),
+                close_on_merge: true,
+            },
+        )
+        .expect("linking a pull request");
+        refresh_data(&mut state, &invoker, &mut board, &mut graph, &mut modals);
+
+        let prs = modals
+            .story_detail
+            .expect("the drawer is still open")
+            .referenced_by
+            .expect("still fetched")
+            .prs;
+        assert_eq!(
+            prs.iter().map(|pr| pr.number).collect::<Vec<_>>(),
+            vec![13],
+            "a refresh must re-fetch the derived half, which no snapshot carries"
+        );
+    }
+
+    /// A refresh that finds the drawer's story gone closes the drawer and says
+    /// so — and does not then try to fetch a derived view for a story that is
+    /// no longer there.
+    #[test]
+    fn a_refresh_closes_a_drawer_whose_story_has_left_the_project() {
+        let fixture = TuiFixture::new();
+        let invoker = fixture.invoker();
+        let id = seed_story(&invoker, "Ephemeral");
+
+        let mut state = make_state();
+        let mut modals = ModalComponents::default();
+        let mut board = Board::new();
+        let mut graph = GraphComponent::new();
+        open_detail(id.clone(), &mut state, &invoker, &mut modals);
+
+        invoke(
+            &invoker,
+            Invocation::Delete {
+                id: id.clone(),
+                reason: "raced".to_string(),
+            },
+        )
+        .expect("deleting the story out from under the drawer");
+        refresh_data(&mut state, &invoker, &mut board, &mut graph, &mut modals);
+
+        assert!(modals.story_detail.is_none(), "the drawer must be closed");
+        assert!(!state.focus.has_modal());
+        let (message, _) = state.notification.expect("the closure must be announced");
+        assert!(
+            message.contains(&id) && message.contains("no longer open"),
+            "the notification must be about the story leaving, not about the \
+             derived view that was never fetched for it: {message}"
         );
     }
 

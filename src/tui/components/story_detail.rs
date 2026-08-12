@@ -5,7 +5,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use tui_input::backend::crossterm::EventHandler;
 
-use crate::domain::{Priority, SuperState};
+use crate::domain::{CommitReference, Priority, StorySnapshot, SuperState};
+use crate::output::ReferencedBy;
 use crate::tui::action::Action;
 use crate::tui::components::modal::render_modal;
 use crate::tui::state::AppState;
@@ -65,6 +66,19 @@ pub struct StoryDetail {
     pub description_input: tui_input::Input,
     pub priority_cursor: usize,
     pub scroll_offset: u16,
+    /// This story's derived view, as the dispatch loop last fetched it for the
+    /// drawer — the two `Referenced By` sources that a
+    /// [`StorySnapshot`](crate::domain::StorySnapshot) does not carry (SH-248).
+    ///
+    /// Lives here rather than in [`AppState`](crate::tui::state::AppState)
+    /// because the drawer's lifetime is exactly this component's: opened, then
+    /// dropped, with no cache left keyed to a story nobody is looking at.
+    ///
+    /// `None` is not "nothing references this story" — an empty
+    /// [`ReferencedBy`] says that. It means **no answer was had**: the fetch
+    /// failed, or a construction path skipped it. The drawer renders that
+    /// state, rather than a partial list that reads as a whole one.
+    pub referenced_by: Option<ReferencedBy>,
 }
 
 const PRIORITY_OPTIONS: &[Priority] = &[
@@ -76,6 +90,11 @@ const PRIORITY_OPTIONS: &[Priority] = &[
 ];
 
 impl StoryDetail {
+    /// A drawer for one story, before its derived view has been fetched.
+    ///
+    /// [`Self::referenced_by`] starts `None` on purpose: a caller that forgets
+    /// to fetch it gets a drawer that *says* its derived half is missing,
+    /// rather than one quietly missing it.
     pub fn new(story_id: String) -> Self {
         Self {
             story_id,
@@ -89,6 +108,7 @@ impl StoryDetail {
             description_input: tui_input::Input::default(),
             priority_cursor: 0,
             scroll_offset: 0,
+            referenced_by: None,
         }
     }
 
@@ -600,26 +620,31 @@ impl Component for StoryDetail {
             }
         }
 
-        // Referenced By (SH-169) — read-only, like the timestamps below: no
-        // edit action exists for it, so unlike Relations/Comments above it is
-        // never part of `FIELDS`/`selected_field` navigation.
-        if !story.referenced_by_commits.is_empty() {
+        // Referenced By (SH-169, SH-220, SH-248) — read-only, like the
+        // timestamps below: no edit action exists for it, so unlike
+        // Relations/Comments above it is never part of
+        // `FIELDS`/`selected_field` navigation.
+        let references = referenced_by_rows(story, self.referenced_by.as_ref());
+        if !references.is_empty() {
             lines.push(render_label_span(
                 "Referenced By",
                 false,
                 label_width,
                 &theme,
             ));
-            for commit in &story.referenced_by_commits {
-                lines.push(Line::from(vec![
-                    Span::raw(" ".repeat(label_width)),
-                    Span::styled(&commit.at[..10.min(commit.at.len())], theme.story_id),
-                    Span::raw(" "),
-                    Span::raw(crate::domain::git_link_comment(
-                        &commit.sha,
-                        &commit.subject,
-                    )),
-                ]));
+            for row in references {
+                lines.push(match row {
+                    ReferenceRow::Reference { at, text } => Line::from(vec![
+                        Span::raw(" ".repeat(label_width)),
+                        Span::styled(at, theme.story_id),
+                        Span::raw(" "),
+                        Span::raw(text),
+                    ]),
+                    ReferenceRow::Notice(text) => Line::from(vec![
+                        Span::raw(" ".repeat(label_width)),
+                        Span::styled(text, theme.section_count),
+                    ]),
+                });
             }
         }
 
@@ -677,6 +702,78 @@ impl Component for StoryDetail {
 
         frame.render_widget(Paragraph::new(visible_lines), inner);
     }
+}
+
+/// One row of the drawer's `Referenced By` block.
+///
+/// The block is built as data before it is built as [`Line`]s so that what it
+/// says can be asserted without a terminal — the same split
+/// [`Board::build_visible_rows`](crate::tui::components::board::Board::build_visible_rows)
+/// draws, and the reason this defect was invisible for two releases: nothing
+/// under `src/tui/` renders into a buffer in a test, so a section that was
+/// never drawn failed nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReferenceRow {
+    /// Something that named this story: the day it happened, and what it was.
+    Reference { at: String, text: String },
+    /// Something the block must say about *itself* rather than about a
+    /// reference — today, only that its derived half could not be loaded.
+    Notice(String),
+}
+
+/// What the drawer says when [`StoryDetail::referenced_by`] is `None`.
+///
+/// Rendered rather than swallowed: an incomplete list that reads as a complete
+/// one is precisely the defect SH-248 is about, and a fetch that failed leaves
+/// exactly that shape behind.
+const DERIVED_UNAVAILABLE: &str = "(pull requests and comment mentions unavailable)";
+
+/// The `Referenced By` block's rows, in the order `story show` prints them:
+/// commits, then pull requests, then comment mentions.
+///
+/// `fetched` is the story's derived view as `Action::OpenDetail` last obtained
+/// it. `Some` is the whole answer — all three lists come from that one read, so
+/// the block cannot mix a commit list from one instant with a mention list from
+/// another. `None` means no answer was had, and the snapshot's own commits are
+/// shown with [`DERIVED_UNAVAILABLE`] beneath them.
+///
+/// An empty result draws no block at all, heading included.
+fn referenced_by_rows(story: &StorySnapshot, fetched: Option<&ReferencedBy>) -> Vec<ReferenceRow> {
+    let reference = |at: &str, text: String| ReferenceRow::Reference { at: day(at), text };
+    let commit_row = |commit: &CommitReference| {
+        reference(
+            &commit.at,
+            crate::domain::git_link_comment(&commit.sha, &commit.subject),
+        )
+    };
+
+    let Some(referenced_by) = fetched else {
+        let mut rows: Vec<ReferenceRow> =
+            story.referenced_by_commits.iter().map(commit_row).collect();
+        rows.push(ReferenceRow::Notice(DERIVED_UNAVAILABLE.to_string()));
+        return rows;
+    };
+
+    let mut rows: Vec<ReferenceRow> = referenced_by.commits.iter().map(commit_row).collect();
+    rows.extend(
+        referenced_by
+            .prs
+            .iter()
+            .map(|pr| reference(&pr.linked_at, format!("[pr] {} ({})", pr.url, pr.status))),
+    );
+    rows.extend(referenced_by.comment_mentions.iter().map(|mention| {
+        reference(
+            &mention.at,
+            format!("[comment] {}: {}", mention.other_id, mention.snippet),
+        )
+    }));
+    rows
+}
+
+/// The date half of an RFC3339 timestamp — what every dated row in the drawer
+/// shows, and all a fixed-width column has room for.
+fn day(at: &str) -> String {
+    at[..10.min(at.len())].to_string()
 }
 
 /// Render a single field row with a dimmed label and value.
@@ -739,8 +836,10 @@ fn render_editing_field<'a>(
 mod tests {
     use super::*;
     use crate::domain::{
-        CommitReference, Member, Priority, StateDef, StoryComment, StorySnapshot, SuperState,
+        CommentMention, CommitReference, Member, Priority, StateDef, StoryComment, StorySnapshot,
+        SuperState,
     };
+    use crate::store::PrLink;
     use crate::tui::action::View;
     use crate::tui::data::DataStore;
     use crate::tui::focus::{FocusStack, FocusTarget};
@@ -1392,5 +1491,192 @@ mod tests {
 
         detail.handle_key(key(KeyCode::Char('e')), &state);
         assert_eq!(detail.mode, DetailMode::Viewing);
+    }
+
+    // =======================================================================
+    // SH-248: the `Referenced By` block draws all three sources
+    //
+    // The block used to read one field of the snapshot, so a story referenced
+    // *only* by a pull request (since SH-169) or *only* by another story's
+    // comment (since SH-220) drew nothing at all — no heading, no row, no
+    // notice. These assert what the block says, which is why they can catch a
+    // section that is never drawn.
+    // =======================================================================
+
+    fn pr_link(url: &str, status: &str, linked_at: &str) -> PrLink {
+        PrLink {
+            owner: "mikeydotio".to_string(),
+            repo: "storyhook".to_string(),
+            number: 297,
+            url: url.to_string(),
+            close_on_merge: true,
+            status: status.to_string(),
+            linked_at: linked_at.to_string(),
+            last_checked_at: None,
+        }
+    }
+
+    fn mention(other_id: &str, snippet: &str, at: &str) -> CommentMention {
+        CommentMention {
+            at: at.to_string(),
+            other_id: other_id.to_string(),
+            snippet: snippet.to_string(),
+        }
+    }
+
+    fn reference(at: &str, text: &str) -> ReferenceRow {
+        ReferenceRow::Reference {
+            at: at.to_string(),
+            text: text.to_string(),
+        }
+    }
+
+    /// All three sources, in the order `story show` prints them, with the same
+    /// `[git]`/`[pr]`/`[comment]` vocabulary the CLI and the dashboard use.
+    #[test]
+    fn the_block_draws_commits_then_pull_requests_then_comment_mentions() {
+        let story = test_snapshot();
+        let fetched = ReferencedBy {
+            commits: story.referenced_by_commits.clone(),
+            prs: vec![pr_link(
+                "https://github.com/mikeydotio/storyhook/pull/297",
+                "merged",
+                "2026-01-04T00:00:00Z",
+            )],
+            comment_mentions: vec![mention(
+                "SH-220",
+                "TUI parity filed separately as SH-248",
+                "2026-01-05T00:00:00Z",
+            )],
+        };
+
+        assert_eq!(
+            referenced_by_rows(&story, Some(&fetched)),
+            vec![
+                reference("2026-01-03", "[git] abc1234: feat: land it"),
+                reference(
+                    "2026-01-04",
+                    "[pr] https://github.com/mikeydotio/storyhook/pull/297 (merged)"
+                ),
+                reference(
+                    "2026-01-05",
+                    "[comment] SH-220: TUI parity filed separately as SH-248"
+                ),
+            ]
+        );
+    }
+
+    /// The half that was invisible from SH-169 until SH-248: a story whose only
+    /// reference is a linked pull request drew no block, because the block was
+    /// gated on the *commit* list being non-empty.
+    #[test]
+    fn a_story_referenced_only_by_a_pull_request_still_draws_the_block() {
+        let mut story = test_snapshot();
+        story.referenced_by_commits.clear();
+        let fetched = ReferencedBy {
+            prs: vec![pr_link(
+                "https://github.com/mikeydotio/storyhook/pull/12",
+                "open",
+                "2026-02-01T00:00:00Z",
+            )],
+            ..ReferencedBy::default()
+        };
+
+        assert_eq!(
+            referenced_by_rows(&story, Some(&fetched)),
+            vec![reference(
+                "2026-02-01",
+                "[pr] https://github.com/mikeydotio/storyhook/pull/12 (open)"
+            )]
+        );
+    }
+
+    /// The same, for SH-220's source — the one that made this story `critical`
+    /// enough to file rather than leave for a third release.
+    #[test]
+    fn a_story_referenced_only_by_a_comment_mention_still_draws_the_block() {
+        let mut story = test_snapshot();
+        story.referenced_by_commits.clear();
+        let fetched = ReferencedBy {
+            comment_mentions: vec![mention("SH-9", "obviated by SH-1", "2026-02-02T00:00:00Z")],
+            ..ReferencedBy::default()
+        };
+
+        assert_eq!(
+            referenced_by_rows(&story, Some(&fetched)),
+            vec![reference("2026-02-02", "[comment] SH-9: obviated by SH-1")]
+        );
+    }
+
+    /// One read, one answer. The fetched view's commits are what the block
+    /// draws — not the snapshot's copy of them — so the three lists on screen
+    /// always come from the same instant.
+    #[test]
+    fn the_fetched_view_supplies_the_commits_not_the_snapshot() {
+        let story = test_snapshot();
+        let fetched = ReferencedBy {
+            commits: vec![CommitReference {
+                at: "2026-03-01T00:00:00Z".to_string(),
+                sha: "9999999aaaaaaa".to_string(),
+                subject: "fix: a commit the snapshot has not seen".to_string(),
+            }],
+            ..ReferencedBy::default()
+        };
+
+        assert_eq!(
+            referenced_by_rows(&story, Some(&fetched)),
+            vec![reference(
+                "2026-03-01",
+                "[git] 9999999: fix: a commit the snapshot has not seen"
+            )]
+        );
+    }
+
+    /// A fetch that failed says so, and still shows the commits the snapshot
+    /// carries. An incomplete list that reads as a complete one is the defect
+    /// class this story is about — so the absence is drawn, not swallowed.
+    #[test]
+    fn a_failed_fetch_is_announced_beneath_the_commits_it_still_has() {
+        let story = test_snapshot();
+
+        assert_eq!(
+            referenced_by_rows(&story, None),
+            vec![
+                reference("2026-01-03", "[git] abc1234: feat: land it"),
+                ReferenceRow::Notice(DERIVED_UNAVAILABLE.to_string()),
+            ]
+        );
+    }
+
+    /// And with no commits to fall back on, the notice is the whole block —
+    /// never an empty section and never silence.
+    #[test]
+    fn a_failed_fetch_with_nothing_to_fall_back_on_is_still_announced() {
+        let mut story = test_snapshot();
+        story.referenced_by_commits.clear();
+
+        assert_eq!(
+            referenced_by_rows(&story, None),
+            vec![ReferenceRow::Notice(DERIVED_UNAVAILABLE.to_string())]
+        );
+    }
+
+    /// A story nothing references draws no block at all — heading included.
+    /// `Some(empty)` is a real answer ("nothing references this"), and differs
+    /// from `None` ("no answer was had") by exactly the notice above.
+    #[test]
+    fn a_story_nothing_references_draws_no_block() {
+        let mut story = test_snapshot();
+        story.referenced_by_commits.clear();
+
+        assert!(referenced_by_rows(&story, Some(&ReferencedBy::default())).is_empty());
+    }
+
+    /// A drawer built without a fetch is a drawer that says so. The field
+    /// defaults to `None` precisely so a forgetful construction path fails
+    /// loudly rather than showing two thirds of an answer.
+    #[test]
+    fn a_freshly_constructed_drawer_has_no_derived_view() {
+        assert!(StoryDetail::new("SH-1".to_string()).referenced_by.is_none());
     }
 }
