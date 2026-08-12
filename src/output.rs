@@ -529,6 +529,39 @@ pub struct SettingView {
     pub note: Option<String>,
 }
 
+/// One line of `story log` — what happened to a story, and what did it
+/// (SH-246).
+///
+/// The **auditable** view of an event, as opposed to
+/// [`Response::StoryHistory`]'s raw one: it carries the two provenance columns
+/// as separate fields rather than a rendered string, so a `--json` consumer can
+/// tell an attested `command` from a self-attested `actor` without parsing
+/// prose — which is the whole distinction the feature exists to preserve.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LogEntry {
+    /// Position within the story, so two events in the same second still have
+    /// an unambiguous order.
+    pub seq: i64,
+    /// The event's own timestamp.
+    pub at: String,
+    /// The event's kind discriminant, e.g. `StoryStateChanged`.
+    pub kind: String,
+    /// What changed, in one phrase — `state → in-progress`. `None` for a kind
+    /// this binary does not recognise, whose payload it cannot summarise but
+    /// whose existence it still reports (SH-54).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// The verb the daemon dispatched. `null` for an event written before
+    /// SH-246, or replayed by `migrate`/`import-project`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// What the caller declared itself to be. `null` when it declared nothing —
+    /// never filled in from [`command`](Self::command), because "said nothing"
+    /// and "said `move`" are different facts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+}
+
 /// Everything a command can return, before any rendering decision is made.
 ///
 /// This is the **wire envelope**: `app::run` produces it, and every renderer
@@ -589,6 +622,21 @@ pub enum Response {
     /// it is a machine's value. A human wanting a story's history has
     /// `story show`, which renders the *fold* of it.
     StoryHistory(Vec<crate::domain::StoryEvent>),
+    /// One story's write history, rendered for a person (SH-246) — the answer
+    /// to "what moved this story, and when".
+    ///
+    /// A sibling of [`StoryHistory`](Self::StoryHistory) rather than a
+    /// replacement: that one is the TUI's undo snapshot, a raw log meant to be
+    /// handed back verbatim, and it deliberately carries no provenance because
+    /// restoring one must not claim the original writer performed the restore.
+    StoryLog {
+        /// The story these entries belong to, so a rendering can name it.
+        id: String,
+        /// Its title, for the same reason.
+        title: String,
+        /// Every event, oldest first.
+        entries: Vec<LogEntry>,
+    },
     /// A destructive command asking to be confirmed, and saying what it would
     /// destroy.
     ///
@@ -841,6 +889,17 @@ fn render_json(response: &Response) -> String {
         }
         Response::ProjectSnapshot(view) => serde_json::to_string_pretty(view.as_ref()),
         Response::StoryHistory(events) => serde_json::to_string_pretty(events),
+        // `command` and `actor` stay separate fields rather than the rendered
+        // "move (story.sh:dispatch)" a human sees: a script must be able to tell
+        // the attested half from the self-attested one without parsing prose.
+        Response::StoryLog { id, title, entries } => {
+            serde_json::to_string_pretty(&serde_json::json!({
+                "result": "ok",
+                "id": id,
+                "title": title,
+                "log": entries,
+            }))
+        }
         // Not `result: "ok"`: nothing happened. A scripted caller that saw
         // "ok" here would reasonably conclude the project was gone.
         Response::ConfirmationRequired(plan) => serde_json::to_string_pretty(&serde_json::json!({
@@ -1001,6 +1060,7 @@ fn render_human(response: &Response) -> String {
                 serde_json::to_string_pretty(events).unwrap_or_default()
             )
         }
+        Response::StoryLog { id, title, entries } => render_story_log(id, title, entries),
         Response::Project(view) => render_project(view),
         Response::ConfirmationRequired(plan) => render_confirmation_plan(plan),
         Response::SetupRequired(plan) => render_setup_plan(plan),
@@ -1230,6 +1290,64 @@ pub fn render_purge_plan(plan: &PurgePlan) -> String {
 /// nothing reads a value yet — comes from the [`SettingView`] rather than
 /// from a condition written here, so the day a setting starts having an effect
 /// the label stops appearing without this function being touched.
+/// `story log`, for a person (SH-246).
+///
+/// # The grammar of the last column, which is the point of the command
+///
+/// * `move` — a bare word is the verb **the daemon derived** from the arm it
+///   dispatched. A caller cannot misstate it, because a caller is never asked.
+/// * `move (story.sh:dispatch-rollback)` — parentheses mean **self-attested**:
+///   the caller declared this about itself in `$STORYHOOK_ACTOR`.
+/// * `(unrecorded)` — nothing was captured. Consistent with the rule above
+///   rather than an exception to it: the store is admitting it was told
+///   nothing, which is why it is parenthesized and why it is deliberately not
+///   the `-` this module uses elsewhere for a field that is merely unset. `-`
+///   would read as "nobody did this"; these events were written before the
+///   columns existed, or replayed by `migrate`.
+fn render_story_log(id: &str, title: &str, entries: &[LogEntry]) -> String {
+    let mut out = format!("{id} {title}\n");
+    if entries.is_empty() {
+        // Not reachable through `story log` — a story always has at least a
+        // creation event — but a total match beats an assumption about that.
+        out.push_str("\nno events\n");
+        return out;
+    }
+    out.push('\n');
+
+    // The `by` column is padded to its own widest entry rather than a constant:
+    // most stories are written entirely by undeclared commands, and a fixed
+    // column sized for the longest possible actor would leave every ordinary
+    // trail full of whitespace.
+    let by: Vec<String> = entries.iter().map(by_column).collect();
+    let width = by.iter().map(|b| b.chars().count()).max().unwrap_or(0);
+
+    for (entry, by) in entries.iter().zip(&by) {
+        let detail = entry.detail.as_deref().unwrap_or(&entry.kind);
+        out.push_str(&format!(
+            "{}  {:width$}  {}\n",
+            entry.at,
+            by,
+            detail,
+            width = width
+        ));
+    }
+    out
+}
+
+/// The provenance column for one entry — see [`render_story_log`] for the
+/// grammar this implements.
+fn by_column(entry: &LogEntry) -> String {
+    match (&entry.command, &entry.actor) {
+        (Some(command), Some(actor)) => format!("{command} ({actor})"),
+        (Some(command), None) => command.clone(),
+        // A declared actor with no command cannot arise from the CLI, which
+        // always knows its own verb. It is representable, so it renders rather
+        // than being asserted away.
+        (None, Some(actor)) => format!("({actor})"),
+        (None, None) => "(unrecorded)".to_string(),
+    }
+}
+
 fn render_project_settings(settings: &[SettingView]) -> String {
     if settings.is_empty() {
         return "no settings\n".to_string();

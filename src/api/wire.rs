@@ -35,6 +35,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::cli::Invocation;
+use crate::domain::provenance::ActorLabel;
 use crate::error::{AppError, WireError};
 use crate::output::Response;
 
@@ -150,6 +151,18 @@ pub struct WireRequest {
     /// entirely when there is none, rather than present and null.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_token: Option<crate::domain::secret::GithubToken>,
+    /// Who the client says it is, from its own `$STORYHOOK_ACTOR` (SH-246).
+    ///
+    /// Carried for the same reason [`stdin`](Self::stdin) is: the daemon
+    /// outlives the client and holds whatever environment the process that
+    /// happened to start it had, so a daemon reading this variable itself would
+    /// label every write on the machine with one stale value.
+    ///
+    /// Typed as [`ActorLabel`], so the bound and the control-character refusal
+    /// are applied again on deserialization — a client that skipped storyhook's
+    /// own CLI does not get to skip the constraint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<ActorLabel>,
     /// What to do.
     pub invocation: Invocation,
 }
@@ -167,6 +180,7 @@ impl WireRequest {
             hook_depth: 0,
             stdin: None,
             github_token: None,
+            actor: None,
             invocation,
         }
     }
@@ -185,6 +199,13 @@ impl WireRequest {
         github_token: Option<crate::domain::secret::GithubToken>,
     ) -> Self {
         self.github_token = github_token;
+        self
+    }
+
+    /// Supplies who the client says it is (SH-246).
+    #[must_use]
+    pub fn actor(mut self, actor: Option<ActorLabel>) -> Self {
+        self.actor = actor;
         self
     }
 

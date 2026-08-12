@@ -552,6 +552,7 @@ Examples:
 Related:
   story list      — Filter by state, priority, label, etc.
   story show <id> — Show a specific story by ID
+  story log <id>  — What changed it, when, and what wrote it
 "#,
         );
 
@@ -1267,6 +1268,64 @@ Examples:
 Related:
   story list      — Browse stories with filters
   story search    — Find stories by content
+  story log       — What changed this story, and what did it
+"#,
+        );
+
+        m.insert(
+            "log",
+            r#"story log <id>
+
+Every event in a story's history, oldest first, with what wrote each one.
+Answers "what moved this story, and when" — from the store, in one lookup.
+
+The last column, which is the point of the command:
+
+  set-state                        A bare word is the command STORYHOOK
+                                   DERIVED from the request it dispatched.
+                                   A caller cannot misstate it, because a
+                                   caller is never asked for it.
+
+  set-state (story.sh:dispatch)    Parentheses mean SELF-ATTESTED: the
+                                   caller declared this about itself in
+                                   $STORYHOOK_ACTOR.
+
+  (unrecorded)                     Nothing was captured. Events written
+                                   before storyhook recorded provenance,
+                                   and events replayed by 'story migrate'
+                                   or 'story import-project', which copied
+                                   a history rather than performed it.
+
+The command is the internal request name, which is not always the verb you
+typed: 'story move' dispatches 'set-state', 'story sync-git' dispatches
+'commit-sync'. The verb you type is parsed by the client and never reaches
+the daemon, so recording it would make the attested half caller-supplied.
+
+Declaring an actor:
+  Export $STORYHOOK_ACTOR before running a command, and its value is
+  recorded against every event that command writes. Scripts should use it
+  to say which of their code paths ran — that is the difference between
+  "something moved this story" and "dispatch rolled its claim back".
+
+    STORYHOOK_ACTOR=story.sh:dispatch-rollback story move SH-1 todo
+
+  A label is at most 128 bytes and may not contain control characters.
+  A bad one is REFUSED rather than cleaned up: the value is rendered into
+  a terminal and kept in a trail people reason from, so a newline or an
+  escape sequence could rewrite what a reader sees.
+
+This is a diagnostic aid, NOT a tamper-proof audit log. The declared half
+is self-attested, and anyone who can set $STORYHOOK_ACTOR can already write
+to the store directly. It answers "what wrote this" for a cooperating
+caller, which is the question that is otherwise unanswerable.
+
+Examples:
+  story log SH-1               # The story's whole history
+  story log SH-1 --json        # command and actor as separate fields
+
+Related:
+  story show       — The story's current state, not how it got there
+  story comment    — Add a note to a story's history
 "#,
         );
 

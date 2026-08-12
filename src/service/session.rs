@@ -369,6 +369,114 @@ pub fn history<S: Store>(
     })?)
 }
 
+/// One story's write history, for `story log` (SH-246).
+///
+/// Unlike [`history`] — the undo primitive, which answers an unknown story with
+/// an empty log — this **refuses** an id it cannot resolve. The two have
+/// opposite obligations: a client asking "what was there before?" about a story
+/// that never existed is owed the honest empty answer, while a person typing
+/// `story log SH-999` mid-incident must not be shown a blank trail that reads
+/// exactly like a story nothing ever touched.
+///
+/// An event whose kind this binary does not understand is **listed anyway**,
+/// with no detail. SH-54's rule is that an unknown kind cannot fail a read, and
+/// an audit trail that silently omits the rows it cannot parse would be
+/// misleading in precisely the situation it exists for.
+pub fn story_log<S: Store>(
+    ctx: &Ctx<'_, S>,
+    id: &str,
+) -> Result<(String, String, Vec<crate::output::LogEntry>), AppError> {
+    let project = ctx.project();
+    Ok(ctx.store().read(|tx| {
+        let prefix = super::project_prefix(tx, project)?;
+        let (story_no, row) = super::resolve_story(tx, project, &prefix, id)?;
+        let stored = tx.events_for(project, story_no)?;
+        let entries = stored
+            .into_iter()
+            .map(|event| crate::output::LogEntry {
+                seq: event.seq.get(),
+                at: event.at.clone(),
+                kind: event.kind.clone(),
+                detail: event.known().map(event_detail),
+                command: event.provenance.command.clone(),
+                actor: event
+                    .provenance
+                    .actor
+                    .as_ref()
+                    .map(|actor| actor.as_str().to_string()),
+            })
+            .collect();
+        Ok((story_no.to_id(&prefix), row.snapshot.title.clone(), entries))
+    })?)
+}
+
+/// What one event changed, in a phrase a person can scan.
+///
+/// Deliberately short and lossy — a description-set entry says that the
+/// description was set, not what it was set to. `story log` is a trail to scan
+/// for *when* and *by what*; `story show` is where the current values live, and
+/// reproducing a multi-paragraph body here would bury the column that matters.
+fn event_detail(event: &crate::domain::StoryEvent) -> String {
+    use crate::domain::StoryEvent as E;
+    match event {
+        E::StoryCreated { title, state, .. } => format!("created in {state} — {title}"),
+        E::StoryStateChanged { state, .. } => format!("state → {state}"),
+        E::StoryClosedAndArchived { state, .. } => format!("closed and archived in {state}"),
+        E::StoryDeleted { reason, .. } => format!("deleted — {reason}"),
+        E::StoryCommentAdded { text, .. } => format!("comment — {}", first_line(text)),
+        E::StoryCommentRetracted { text, .. } => {
+            format!("comment retracted — {}", first_line(text))
+        }
+        E::StoryAssigned { member_id, .. } => format!("assigned to {member_id}"),
+        E::StoryAssigneeCleared { .. } => "assignee cleared".to_string(),
+        E::StoryAwaitingSet { awaiting, .. } => format!("awaiting — {}", first_line(awaiting)),
+        E::StoryAwaitingCleared { .. } => "awaiting cleared".to_string(),
+        E::StoryRelationshipAdded {
+            other_id, relation, ..
+        } => format!("{relation} {other_id}"),
+        E::StoryRelationshipRemoved {
+            other_id, relation, ..
+        } => format!("no longer {relation} {other_id}"),
+        E::StoryPrioritySet { priority, .. } => format!("priority → {}", priority.as_str()),
+        E::StoryTypeSet { story_type, .. } => format!("type → {story_type}"),
+        E::StoryLabelsSet { labels, .. } if labels.is_empty() => "labels cleared".to_string(),
+        E::StoryLabelsSet { labels, .. } => format!("labels → {}", labels.join(", ")),
+        E::StoryTitleSet { title, .. } => format!("title → {title}"),
+        E::StoryDescriptionSet { .. } => "description set".to_string(),
+        E::StoryCommitLinked { sha, subject, .. } => {
+            format!(
+                "commit {} — {}",
+                &sha[..sha.len().min(7)],
+                first_line(subject)
+            )
+        }
+        E::StoryHidden { .. } => "hidden".to_string(),
+        E::StoryUnhidden { .. } => "unhidden".to_string(),
+        E::StoryPrLinked { url, .. } => format!("pull request linked — {url}"),
+        E::StoryPrUnlinked { url, .. } => format!("pull request unlinked — {url}"),
+        E::StoryPrMerged { url, .. } => format!("pull request merged — {url}"),
+        E::StoryPrClosed { url, .. } => format!("pull request closed — {url}"),
+        E::StoryCreatedAsDraft { .. } => "created as a draft".to_string(),
+        E::StoryPublished { .. } => "published".to_string(),
+    }
+}
+
+/// The first line of a possibly-multi-line value, truncated.
+///
+/// A trail is a column of one-line rows; a comment body carrying its own
+/// newlines would break that alignment and let a comment's *content* forge
+/// entries — the same shape SH-246 refuses an actor label for, arriving through
+/// a field a user is genuinely allowed to write prose into.
+fn first_line(text: &str) -> String {
+    const MAX: usize = 60;
+    let line = text.lines().next().unwrap_or_default().trim();
+    let mut out: String = line.chars().take(MAX).collect();
+    if line.chars().count() > MAX {
+        out.push('…');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

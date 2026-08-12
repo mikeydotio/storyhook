@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::domain::provenance::Provenance;
 use crate::domain::{Priority, StoryEvent, StorySnapshot, SuperState};
 use crate::store::error::StoreError;
 use crate::store::ids::{EventSeq, GlobalSeq, ProjectId, StoryNo};
@@ -121,6 +122,13 @@ pub struct StoredEvent {
     pub at: String,
     /// The payload, decoded if this binary understands the kind.
     pub payload: StoredPayload,
+    /// Who performed the write (SH-246).
+    ///
+    /// [`Provenance::unrecorded`] for every event written before the columns
+    /// existed, and for the replay paths that copy a history rather than
+    /// perform it. Not part of [`payload`](Self::payload) on purpose: the
+    /// payload is the domain event, and who wrote it is a fact about the write.
+    pub provenance: Provenance,
 }
 
 impl StoredEvent {
@@ -661,6 +669,7 @@ mod tests {
                     title: "t".into(),
                     state: "todo".into(),
                 }),
+                provenance: Provenance::unrecorded(),
             },
             StoredEvent {
                 seq: EventSeq::new(2),
@@ -671,6 +680,7 @@ mod tests {
                     kind: "StoryTeleported".into(),
                     json: "{\"kind\":\"StoryTeleported\"}".into(),
                 },
+                provenance: Provenance::unrecorded(),
             },
         ];
         let (known, unknown) = partition_known(StoryNo::new(1), &events);
