@@ -11152,3 +11152,88 @@ rather than left silent.
 **No version bump** — left for the next batched `/semver` pass.
 
 **Next:** run `story next` fresh.
+
+### SH-248 — the drawer that never asked · PR #299 · merged
+
+**Outcome:** done. The TUI's `Referenced By` block draws all three sources.
+
+**The defect, stated precisely.** The drawer read one field of the project
+snapshot, `StorySnapshot::referenced_by_commits`, and gated the whole block on
+that field being non-empty. A story referenced **only** by a linked pull request
+therefore drew nothing at all — no heading, no row, no notice — from SH-169
+until now; SH-220's comment mentions were invisible the same way five days after
+shipping. Not "renders two of three": renders one, and vanishes entirely when
+that one is empty.
+
+**No council, and that is the finding worth recording.** The story framed
+(a) fetch-on-select versus (b) a fatter snapshot as "choosing between them is
+the story". It isn't a choice: `include_derived` exists in `service/query.rs`
+precisely so a list-scope read does not pay a project-wide `pr_links` read and a
+project-wide comment scan, the TUI's one `ProjectSnapshot` *is* a list-scope
+read, and **the web dashboard already solved this exact problem the same way** —
+`buildReferencedBySection`'s own comment reads "PRs and comment mentions only
+arrive with the single-story detail fetch". So (b) contradicts a written rule
+and (a) copies a shipped design. That is SH-213's situation again: applying an
+existing rule, not picking between two defensible answers, and a council would
+have been ceremony. Recorded as a comment on SH-248 either way — the next reader
+cannot tell a rule-application from an unexamined choice without being told.
+
+**What the fetch costs, and where it does not run.** One `Invocation::Show` when
+the drawer opens, and one more beside each snapshot reload while it stays open.
+The dozen mutation arms that reload the snapshot inline were deliberately left
+alone: no TUI verb can change the open story's `referenced_by` — a self-mention
+is excluded by `derive_comment_mentions`, and there is no TUI verb for `link-pr`
+or `commit-sync` — and each of them crosses a request boundary anyway, so the
+daemon publishes and the refresh path runs on its own moments later. Leaving
+them alone is a decision, not an omission.
+
+**Two states the drawer draws differently.** `None` means *no answer was had*;
+an empty `ReferencedBy` means *nothing references this*. A failed fetch keeps
+the snapshot's commits and adds `(pull requests and comment mentions
+unavailable)` plus a notification naming the error, because an incomplete list
+that reads as a complete one is this defect's own class.
+
+**Why it survived two releases: nothing under `src/tui/` renders into a buffer
+in any test.** A section that is never drawn fails nothing. So the block's rows
+are built as data before they are built as `Line`s — the split
+`Board::build_visible_rows` already draws — and the six row tests assert what
+the block *says*. Three more exercise the fetch against a real store, and three
+more the wiring, which needed the second commit to exist at all: `dispatch`
+takes a `&mut Terminal` and cannot be unit-tested, so the `OpenDetail` and
+`RefreshData` arm bodies were extracted verbatim into `open_detail` and
+`refresh_data`. That gap is exactly where this defect lived — the derived view
+can be perfectly available and the surface still never ask for it, which no test
+of the fetch alone can catch.
+
+**Toggle-the-failure on every new assertion.** The six row tests were run
+against a restored copy of the old one-field behaviour (6 red, and the two that
+pin unchanged behaviour green); the two fetch-wiring tests were run against the
+fetch calls deleted from `open_detail` and `refresh_data` (both red, the
+stale-drawer test green). A regression test nobody has watched fail is a guess.
+
+**Verified end to end against the real binary and an isolated store.** A TUI in
+tmux, its own `STORYHOOK_DATA_DIR` and a kernel-assigned port, on a story
+carrying a commit, a PR link and a comment mention: all three rows drew. Then
+`story link-pr` from outside, and the second PR appeared in the standing drawer
+without a keystroke — the change-feed refresh path, proven rather than assumed.
+Daemon stopped and `check-no-orphan-servers.sh` clean afterwards.
+
+**Gate:** full `make test`, supervised (log-growth heartbeat, 120s stall bound).
+Exit 0 on the **first** run — 3279 Rust tests over 145 binaries, plugin harness
+30/30, Playwright 89/89, `fmt`/`clippy -D warnings` clean, no stall, no orphan
+daemons. Longest observed gap between log growth was ~40s, during the initial
+compile.
+
+**Sibling sweep, per CLAUDE.md's pattern-defect rule.** Every other reader of
+`referenced_by`: the CLI's `render_story` draws all three, the dashboard draws
+all three, and `transfer.rs`'s importer builds a deliberately bare view with a
+comment saying so. No hits, nothing filed.
+
+**PR:** #299, two commits, two hats — the behaviour fix with its regression
+tests, then the extraction with no behaviour change. Merged as `e6b4a5f`,
+`Closes SH-248` auto-closed the story via the post-merge hook; branch deleted
+and pruned, `main` fast-forwarded.
+
+**No version bump** — left for the next batched `/semver` pass.
+
+**Next:** run `story next` fresh.
