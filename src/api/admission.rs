@@ -43,7 +43,7 @@
 //! logs, browser history) than one in a header, so the exception stays as
 //! narrow as the one caller that has no alternative.
 
-use crate::api::http::{Reply, mutation_guard_ok, text_reply};
+use crate::api::http::{Reply, TrustedHosts, mutation_guard_ok, text_reply};
 use crate::api::rest::mutating;
 use crate::api::rpc::{constant_time_eq, token_ok};
 use crate::daemon::http1::{Header, Method};
@@ -65,7 +65,7 @@ pub fn admission(
     method: &Method,
     query: Option<&str>,
     headers: &[Header],
-    trusted_hosts: &[String],
+    trusted_hosts: &TrustedHosts,
     token: &str,
 ) -> Option<Reply> {
     match segments {
@@ -132,8 +132,10 @@ mod tests {
         ])
     }
 
-    fn trusted_hosts() -> Vec<String> {
-        Vec::new() // loopback is always trusted; nothing extra needed here
+    fn trusted_hosts() -> TrustedHosts {
+        // Loopback is always trusted, and no reverse proxy is configured —
+        // nothing extra is needed for these cases.
+        TrustedHosts::default()
     }
 
     #[test]

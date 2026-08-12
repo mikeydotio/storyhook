@@ -699,9 +699,6 @@ pub fn bind_preferred(
 pub fn run<S: crate::store::Store>(store: &S, env: &Environment) -> Result<(), AppError> {
     let _pidfile = claim_pidfile(env)?;
     let (listeners, bound) = bind_preferred(env)?;
-    let mut trusted_hosts = bound.trusted_hosts();
-    trusted_hosts.extend(crate::api::http::trusted_hosts_from_env());
-
     let info = info_for(&bound, mint_token(), &env.now(), env.store_path())?;
     write_info(env, &info)?;
     eprintln!(
@@ -729,7 +726,7 @@ pub fn run<S: crate::store::Store>(store: &S, env: &Environment) -> Result<(), A
         store,
         env,
         listeners,
-        trusted_hosts,
+        bound.trusted_hosts(),
         bus,
         info.token.clone(),
         || {},
