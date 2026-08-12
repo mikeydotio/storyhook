@@ -818,6 +818,7 @@ pub fn dispatch<S: Store>(
         | Invocation::HelpTopic { .. }
         | Invocation::HelpCompact
         | Invocation::HelpAll
+        | Invocation::GithubAuth { .. }
         | Invocation::Version => dispatch_unscoped_with_stdin(
             ctx.store(),
             ctx.env(),
@@ -1735,6 +1736,11 @@ pub fn needs_no_store(invocation: &Invocation) -> bool {
             | Invocation::HelpCompact
             | Invocation::HelpAll
             | Invocation::Version
+            // The OS keychain, not project data — see `GithubAuthAction`'s
+            // own doc. `main.rs` intercepts it even earlier than this, in its
+            // own dedicated block, because `Login`'s prompt needs a terminal
+            // this predicate has no way to ask about.
+            | Invocation::GithubAuth { .. }
     )
 }
 
@@ -1795,6 +1801,18 @@ pub fn dispatch_without_store(invocation: Invocation) -> Result<Response, AppErr
             action: StoreAction::New { .. },
         } => Err(AppError::Storage(
             "`story store new` is handled before the store is opened".to_string(),
+        )),
+        // `main.rs` answers every `GithubAuth` action in its own dedicated
+        // block, before this function or even `Environment::from_process`
+        // runs — `Login`'s masked prompt needs a terminal, and neither this
+        // function nor its caller has one. Reaching here means some other
+        // caller (a hand-built request, a future REST route) went round that
+        // block; the honest answer is that this command has no meaning
+        // outside the CLI client that owns the terminal.
+        Invocation::GithubAuth { .. } => Err(AppError::Usage(
+            "`story github-auth` only runs in the CLI client, before a store is opened; it \
+             cannot be dispatched to a daemon or over the wire"
+                .to_string(),
         )),
         other => Err(AppError::Storage(format!(
             "internal: `{}` needs a store and must not be dispatched without one",
@@ -2141,6 +2159,12 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::ProjectSnapshot
         | Invocation::History { .. }
         | Invocation::Publish { .. } => false,
+        // `Login` does spend a credential, but never through this envelope —
+        // it is handled entirely client-side in `main.rs`, which prompts for
+        // the PAT itself and writes it straight to the keychain. `false` here
+        // is "this invocation never rides `InvokeRequest::github_token`", not
+        // "this command needs no credential at all".
+        Invocation::GithubAuth { .. } => false,
     }
 }
 
@@ -2323,6 +2347,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::LinkPr { .. } => "link-pr",
         Invocation::UnlinkPr { .. } => "unlink-pr",
         Invocation::PrCheck { .. } => "pr-check",
+        Invocation::GithubAuth { .. } => "github-auth",
         Invocation::HelpTopic { .. } => "help-topic",
         Invocation::HelpCompact => "help-compact",
         Invocation::HelpAll => "help-all",
@@ -3205,7 +3230,8 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Update { .. }
         | Invocation::Version
         | Invocation::ProjectSnapshot
-        | Invocation::History { .. } => None,
+        | Invocation::History { .. }
+        | Invocation::GithubAuth { .. } => None,
     }
 }
 

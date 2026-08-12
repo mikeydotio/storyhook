@@ -331,6 +331,7 @@ story github-sync [<id>] [--dry-run] [--resolve local|remote] [--strategy import
 story link-pr <id> <url> [--no-close-on-merge]
 story unlink-pr <id> <url>
 story pr-check [<id>]
+story github-auth login|status|logout
 story plugin install <target>
 story plugin uninstall <target>
 
