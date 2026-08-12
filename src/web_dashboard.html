@@ -143,6 +143,17 @@ body {
 }
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
+/* Double-tap-to-zoom is the second way a phone zooms without being asked:
+   the browser holds a tap for ~300ms in case a second one follows, then
+   zooms if it does. `manipulation` keeps panning and pinch-zoom and drops
+   only the double-tap gesture, on the things you tap to *act* -- never on
+   `body`, because double-tapping to zoom the board's own text is a gesture
+   the reader is entitled to. Safe alongside the board's drag-and-drop:
+   that is HTML5 native dnd (`card.draggable` + `dragstart`), which does
+   not fire on touch at all. Setting it on the two <label> wrappers covers
+   the checkboxes inside them, since the effective value is the
+   intersection over an element and its ancestors. */
+button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-option, .filter-toggle { touch-action: manipulation; }
 ::selection { background: var(--accent); color: var(--accent-fg); }
 
 .app { display: flex; flex-direction: column; height: 100vh; }

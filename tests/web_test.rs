@@ -825,6 +825,21 @@ fn web_serve_root_html_keeps_text_controls_above_the_ios_zoom_threshold() {
         4,
         "the coarse-pointer block should raise exactly the four control-font tokens"
     );
+
+    // Double-tap-to-zoom, on the tap targets only -- never on `body`, where
+    // double-tapping to zoom the board's own text is a gesture the reader
+    // is entitled to.
+    let touch_action_selector = "button, select, .card, .repo-card, tbody tr, .ctxmenu-item, \
+         .projsel-item, .fdd-option, .filter-toggle";
+    assert!(
+        declarations(css, touch_action_selector).contains("touch-action: manipulation"),
+        "the dashboard's tap targets should carry touch-action: manipulation"
+    );
+    assert_eq!(
+        css.matches("touch-action").count(),
+        1,
+        "exactly one touch-action rule, on the tap targets -- never on the page as a whole"
+    );
 }
 
 #[test]
