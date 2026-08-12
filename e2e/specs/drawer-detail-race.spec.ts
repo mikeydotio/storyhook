@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { deleteStory, seedToken } from "./support";
+import { cleanUpCreatedStories, deleteStory, seedToken } from "./support";
 
 /**
  * Exercises SH-218: openDrawer() renders once synchronously from cached
@@ -18,6 +18,8 @@ import { deleteStory, seedToken } from "./support";
  * (filter-persistence.spec.ts, column-visibility.spec.ts) assert on
  * byte-for-byte per run-e2e.sh's own comment.
  */
+
+cleanUpCreatedStories("Alpha Project");
 
 test.beforeEach(async ({ page }) => {
   await seedToken(page);

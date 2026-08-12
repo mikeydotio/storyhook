@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { deleteStory, projectSlug, seedToken } from "./support";
+import { cleanUpCreatedStories, deleteStory, projectSlug, seedToken } from "./support";
 
 /**
  * Exercises SH-197's story context menu: right-click (or a keyboard-raised
@@ -15,6 +15,8 @@ import { deleteStory, projectSlug, seedToken } from "./support";
  * (filter-persistence.spec.ts, column-visibility.spec.ts) assert on
  * byte-for-byte per run-e2e.sh's own comment.
  */
+
+cleanUpCreatedStories("Alpha Project");
 
 test.beforeEach(async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);

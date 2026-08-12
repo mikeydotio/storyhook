@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { deleteStory, seedToken } from "./support";
+import { cleanUpCreatedStories, deleteStory, seedToken } from "./support";
 
 /**
  * Exercises SH-197's context menu Dispatch/Dispatch Auto group, gated
@@ -16,6 +16,8 @@ import { deleteStory, seedToken } from "./support";
  * "Archived idea") -- the same two AC1 (`dispatch.spec.ts`) already relies
  * on for "has a checkout" vs. "doesn't".
  */
+
+cleanUpCreatedStories("Alpha Project");
 
 test.beforeEach(async ({ page }) => {
   await seedToken(page);

@@ -1,4 +1,4 @@
-import { expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import type { APIRequestContext, Page } from "@playwright/test";
 
 /**
@@ -89,4 +89,149 @@ export async function deleteStory(page: Page, title: string): Promise<void> {
   await page.locator("#delete-modal-submit").click();
   await expect(page.locator("#delete-modal")).not.toHaveClass(/open/);
   await expect(card).not.toBeVisible();
+}
+
+/**
+ * A one-shot latch: `held` stays pending until `release()` is called, and
+ * every subsequent `await` on it resolves immediately.
+ *
+ * The suite uses this to open a race window a test needs — a request held
+ * in flight while the test types into the drawer, say — with a boundary the
+ * *test* decides rather than a `setTimeout`. A wall-clock delay only works
+ * while the test out-races it: SH-245's specs each budgeted ~500ms for a
+ * Playwright action that normally takes 8ms, which is ample until the
+ * machine is loaded, and which fails in two directions at once. Lose the
+ * race narrowly and the assertion goes red for a reason that has nothing to
+ * do with the behaviour under test; lose it widely and the window has
+ * already closed before the test acts, so the spec passes while exercising
+ * nothing — the worse of the two, because it is silent.
+ */
+export function latch(): { held: Promise<void>; release: () => void } {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { held, release };
+}
+
+/**
+ * Holds every `GET .../story/<id>` drawer-detail fetch in flight until the
+ * returned function is called, then lets it through to the daemon.
+ *
+ * The drawer renders once synchronously from cached summary data and again
+ * when this fetch resolves (SH-218); holding it is how a spec puts the
+ * second render exactly where it wants it. Register before the click that
+ * opens the drawer, release once the drawer is in the state under test.
+ */
+export async function holdDetailFetch(page: Page): Promise<() => void> {
+  const gate = latch();
+  await page.route(/\/story\/[^/]+$/, async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    await gate.held;
+    await route.continue();
+  });
+  return gate.release;
+}
+
+/**
+ * Board stories, as `GET .../data` reports them: open and closed alike,
+ * neither deleted nor draft (`project_data_json` in `src/api/rest.rs`).
+ */
+interface BoardStory {
+  id: string;
+  superstate: string;
+}
+
+/** Reads `projectName`'s board stories and drafts, by id. */
+async function storiesInProject(
+  request: APIRequestContext,
+  projectName: string,
+): Promise<BoardStory[]> {
+  const slug = await projectSlug(request, projectName);
+  const resp = await request.get(
+    `/api/repos/${encodeURIComponent(slug)}/data`,
+    { headers: { "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN") } },
+  );
+  if (!resp.ok()) {
+    throw new Error(
+      `GET /data for "${projectName}" answered ${resp.status()}: ${await resp.text()}`,
+    );
+  }
+  const data = await resp.json();
+  const views = [...(data.stories ?? []), ...(data.drafts ?? [])];
+  return views.map((view: { story: BoardStory }) => ({
+    id: view.story.id,
+    superstate: view.story.superstate,
+  }));
+}
+
+/**
+ * The stories each project held the first time a spec asked — the seeded
+ * fixture, since every spec that creates one registers the cleanup below
+ * and so cannot leave one behind for the next spec's baseline to absorb.
+ *
+ * Module state, so it is captured once for the whole run rather than once
+ * per file. That relies on `workers: 1` (`playwright.config.ts`): a second
+ * worker would take its own baseline in its own process, at whatever moment
+ * its first test ran, which is not necessarily a pristine board.
+ */
+const fixtureBaselines = new Map<string, Set<string>>();
+
+/**
+ * Registers an `afterEach` that deletes, through the API, every story the
+ * spec left behind in `projectName` — anything not in the fixture the run
+ * started with. Call once at the top of any spec file that creates stories
+ * in a project other specs also read.
+ *
+ * A test body's own `deleteStory()` call is the last statement it runs, so
+ * any failure above it strands the story it created. SH-245 is what that
+ * costs: one red spec became three, because the strays inflated Alpha's
+ * two-story fixture and `filter-persistence.spec.ts` asserts on the count
+ * (`0 / 2` read `0 / 3`) — a failure naming a project switch that was never
+ * involved, in a file the actual defect never touched. An `afterEach` runs
+ * whether the test passed or failed, so a stray cannot outlive the test
+ * that created it, and a red spec stays one red spec.
+ *
+ * Deletes only OPEN stories: `StoryService::delete` refuses a closed one,
+ * and a closed stray is off the board anyway, counted by nothing.
+ */
+export function cleanUpCreatedStories(projectName: string): void {
+  test.beforeEach(async ({ request }) => {
+    if (fixtureBaselines.has(projectName)) return;
+    const baseline = await storiesInProject(request, projectName);
+    fixtureBaselines.set(projectName, new Set(baseline.map((s) => s.id)));
+  });
+
+  test.afterEach(async ({ request }) => {
+    const baseline = fixtureBaselines.get(projectName);
+    if (!baseline) return;
+    const slug = await projectSlug(request, projectName);
+    for (const story of await storiesInProject(request, projectName)) {
+      if (baseline.has(story.id) || story.superstate !== "OPEN") continue;
+      const deleted = await request.delete(
+        `/api/repos/${encodeURIComponent(slug)}/story/${encodeURIComponent(story.id)}`,
+        {
+          // `X-Storyhook` as well as the token: a mutation also has to clear
+          // `mutation_guard_ok`'s CSRF check, which a read does not
+          // (`src/api/admission.rs`). Without it this answers 403.
+          headers: {
+            "X-Storyhook": "1",
+            "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
+          },
+          data: { reason: "e2e afterEach cleanup (SH-245)" },
+        },
+      );
+      // Loud on failure: a cleanup that quietly gives up leaves exactly the
+      // stray it exists to remove, and the next spec pays for it instead.
+      if (!deleted.ok()) {
+        throw new Error(
+          `cleanUpCreatedStories: DELETE ${story.id} answered ` +
+            `${deleted.status()}: ${await deleted.text()}`,
+        );
+      }
+    }
+  });
 }

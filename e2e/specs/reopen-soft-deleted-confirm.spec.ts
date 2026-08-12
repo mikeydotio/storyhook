@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { seedToken, requiredEnv } from "./support";
+import { cleanUpCreatedStories, seedToken, requiredEnv } from "./support";
 
 /**
  * Exercises SH-210: an unforced `POST .../story/{id}/reopen` of a
@@ -40,6 +40,8 @@ import { seedToken, requiredEnv } from "./support";
  * (filter-persistence.spec.ts, column-visibility.spec.ts) assert on
  * byte-for-byte per run-e2e.sh's own comment.
  */
+
+cleanUpCreatedStories("Alpha Project");
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {

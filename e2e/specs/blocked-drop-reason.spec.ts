@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { seedToken } from "./support";
+import { cleanUpCreatedStories, seedToken } from "./support";
 
 /**
  * Exercises SH-205: dragging a card into the Blocked column opens a
@@ -16,6 +16,8 @@ import { seedToken } from "./support";
  * (filter-persistence.spec.ts, column-visibility.spec.ts) assert on
  * byte-for-byte per run-e2e.sh's own comment.
  */
+
+cleanUpCreatedStories("Alpha Project");
 
 test.beforeEach(async ({ page }) => {
   await seedToken(page);
