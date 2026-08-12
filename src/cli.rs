@@ -645,10 +645,6 @@ pub enum PluginAction {
     Uninstall { target: String },
 }
 
-/// Default TCP port for the web dashboard, used by both `story web start`
-/// and the internal `story web --serve` daemon entrypoint.
-pub const DEFAULT_WEB_PORT: u16 = 3456;
-
 /// `story daemon …`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DaemonAction {
@@ -3464,30 +3460,14 @@ fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
 
     match args[1].as_str() {
         "start" => {
-            let mut port: Option<u16> = None;
-            let mut index = 2;
-            while index < args.len() {
-                match args[index].as_str() {
-                    "--port" => {
-                        let value = args.get(index + 1).ok_or_else(|| {
-                            AppError::Usage("--port requires a value".to_string())
-                        })?;
-                        let requested = value
-                            .parse::<u16>()
-                            .map_err(|_| AppError::Usage(format!("invalid port: {value}")))?;
-                        // Refused here and accepted on `--serve` below, which is
-                        // not an inconsistency: `--serve` is what the spawner
-                        // execs, and "let the kernel choose" is a thing a program
-                        // means. Asking a *person* to start their bookmarked
-                        // dashboard on a port nobody can predict is not.
-                        if requested == 0 {
-                            return Err(AppError::Usage("invalid port: 0".to_string()));
-                        }
-                        port = Some(requested);
-                        index += 2;
-                    }
-                    _ => return Err(AppError::Usage(usage.to_string())),
-                }
+            let port = parse_port_flag(&args[2..], usage)?;
+            // Refused here and accepted on `--serve` below, which is not an
+            // inconsistency: `--serve` is what the spawner execs, and "let the
+            // kernel choose" is a thing a program means. Asking a *person* to
+            // start their bookmarked dashboard on a port nobody can predict is
+            // not.
+            if port == Some(0) {
+                return Err(AppError::Usage("invalid port: 0".to_string()));
             }
             Ok(Invocation::Web {
                 action: WebAction::Start { port },
@@ -3505,30 +3485,12 @@ fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
         "address" => Ok(Invocation::Web {
             action: WebAction::Address,
         }),
-        "--serve" => {
-            // Internal: story web --serve --port N
-            let mut port: Option<u16> = None;
-            let mut index = 2;
-            while index < args.len() {
-                match args[index].as_str() {
-                    "--port" => {
-                        let value = args.get(index + 1).ok_or_else(|| {
-                            AppError::Usage("--port requires a value".to_string())
-                        })?;
-                        port = Some(
-                            value
-                                .parse::<u16>()
-                                .map_err(|_| AppError::Usage(format!("invalid port: {value}")))?,
-                        );
-                        index += 2;
-                    }
-                    _ => return Err(AppError::Usage(usage.to_string())),
-                }
-            }
-            Ok(Invocation::Web {
-                action: WebAction::Serve { port },
-            })
-        }
+        // Internal: `story web --serve [--port N]`, what the spawner execs.
+        "--serve" => Ok(Invocation::Web {
+            action: WebAction::Serve {
+                port: parse_port_flag(&args[2..], usage)?,
+            },
+        }),
         _ => Err(AppError::Usage(usage.to_string())),
     }
 }
