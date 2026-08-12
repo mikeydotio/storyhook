@@ -18,10 +18,10 @@
 //! pins that a hop through JSON changes neither.
 
 use storyhook::cli::{
-    AbandonedAction, Attach, ConflictSide, DaemonAction, EpicAction, GraphMode, HistoryAction,
-    HooksAction, Invocation, MemberInput, NewProjectRequest, NewProjectSpec, PhaseAction,
-    PluginAction, ProjectAction, SettingsAction, SetupMode, SetupStrategy, StateAction,
-    StoreAction, TypeAction, WebAction,
+    AbandonedAction, Attach, ConflictSide, DaemonAction, EpicAction, GithubAuthAction, GraphMode,
+    HistoryAction, HooksAction, Invocation, MemberInput, NewProjectRequest, NewProjectSpec,
+    PhaseAction, PluginAction, ProjectAction, SettingsAction, SetupMode, SetupStrategy,
+    StateAction, StoreAction, TypeAction, WebAction,
 };
 use storyhook::domain::{
     CommitReference, Member, Priority, ProgressRollup, StateDef, StoryComment, StoryEvent,
@@ -1312,6 +1312,15 @@ fn invocation_corpus() -> Vec<Invocation> {
             id: Some("SH-1".to_string()),
         },
         Invocation::PrCheck { id: None },
+        Invocation::GithubAuth {
+            action: GithubAuthAction::Login,
+        },
+        Invocation::GithubAuth {
+            action: GithubAuthAction::Status,
+        },
+        Invocation::GithubAuth {
+            action: GithubAuthAction::Logout,
+        },
         Invocation::HelpTopic {
             topic: "states".to_string(),
         },
@@ -1471,6 +1480,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::LinkPr { .. } => "LinkPr",
         Invocation::UnlinkPr { .. } => "UnlinkPr",
         Invocation::PrCheck { .. } => "PrCheck",
+        Invocation::GithubAuth { .. } => "GithubAuth",
         Invocation::HelpTopic { .. } => "HelpTopic",
         Invocation::HelpCompact => "HelpCompact",
         Invocation::HelpAll => "HelpAll",
@@ -1497,7 +1507,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        60,
+        61,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

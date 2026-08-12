@@ -1,6 +1,8 @@
 use std::env;
 use std::process;
 
+#[cfg(feature = "github-sync")]
+use storyhook::cli::GithubAuthAction;
 use storyhook::cli::{self, DaemonAction, Invocation, StoreAction, WebAction};
 use storyhook::invoke::{HttpInvoker, InvokeRequest, Invoker};
 use storyhook::output::{self, Response};
@@ -197,6 +199,37 @@ fn main() {
     } = &invocation
     {
         match storyhook::invoke::create_store(&cwd, path) {
+            Ok(response) => {
+                let rendered = output::render_response(&response, json, flags.quiet);
+                if !rendered.is_empty() {
+                    print!("{rendered}");
+                }
+                return;
+            }
+            Err(error) => fail(&error, json),
+        }
+    }
+
+    // `story github-auth` touches the OS keychain — a machine-level resource
+    // with no project — and `Login`'s masked prompt can only run where this
+    // process has a terminal. Answered entirely here, before a store or even
+    // a daemon round trip is ever considered; see
+    // `invoke::dispatch_without_store`'s own refusal for what happens if a
+    // `GithubAuth` invocation is ever dispatched any other way.
+    if let Invocation::GithubAuth { action } = &invocation {
+        #[cfg(feature = "github-sync")]
+        let result = storyhook::env::Environment::from_process(flags.store_path.as_deref())
+            .and_then(|environment| run_github_auth(action, &environment, json));
+        #[cfg(not(feature = "github-sync"))]
+        let result: Result<Response, storyhook::error::AppError> = {
+            let _ = action;
+            Err(storyhook::error::AppError::Usage(
+                "github-auth requires the `github-sync` feature. Rebuild with: cargo install \
+                 storyhook --features github-sync"
+                    .to_string(),
+            ))
+        };
+        match result {
             Ok(response) => {
                 let rendered = output::render_response(&response, json, flags.quiet);
                 if !rendered.is_empty() {
@@ -598,6 +631,110 @@ fn ask_setup(plan: &storyhook::output::SetupPlan, json: bool, quiet: bool) -> As
         }
         Ok(storyhook::service::github_setup::Answered::Cancelled) => AskedSetup::Cancelled,
         Err(error) => AskedSetup::CannotAsk(error),
+    }
+}
+
+/// Prompts for a GitHub Personal Access Token, for `story github-auth login`
+/// (SH-212).
+///
+/// Two cases cannot be asked at all, and both are refusals — the same two
+/// `why` clauses [`ask_setup`] and [`ask_about_a_new_project`] use:
+///
+/// * **`--json`.** The contract is one self-describing document on stdout,
+///   and a prompt corrupts it for every scripted caller.
+/// * **No terminal.** A pipeline, a CI job, an agent. `login` grants the
+///   daemon unattended access, so unlike an ordinary command there is no
+///   silent, safe default to fall back to here — a script that wanted this
+///   would have to say so as explicitly as a human typing the token does.
+///
+/// The consent banner prints every time, not only on a fresh grant: `login`
+/// is also how an existing token gets rotated, and the grant it describes is
+/// exactly what is about to be renewed.
+#[cfg(feature = "github-sync")]
+fn ask_github_token(
+    json: bool,
+) -> Result<storyhook::domain::secret::GithubToken, storyhook::error::AppError> {
+    use std::io::IsTerminal;
+
+    let refuse = |why: &str| -> storyhook::error::AppError {
+        storyhook::error::AppError::Validation(format!(
+            "`story github-auth login` needs somebody to ask, and {why}.\n\nThe daemon's \
+             background poll needs a token stored by an interactive `login` — there is no \
+             non-interactive form of this command. `story pr-check` still works with \
+             STORYHOOK_GITHUB_TOKEN set, run by hand or from a scheduler."
+        ))
+    };
+    if json {
+        return Err(refuse("--json cannot carry a prompt"));
+    }
+    if !std::io::stdin().is_terminal() {
+        return Err(refuse("there is no terminal here"));
+    }
+
+    eprintln!(
+        "This stores a GitHub Personal Access Token in your OS keychain and grants the \
+         storyhook daemon unattended background access to check pull requests and close \
+         linked stories on your behalf, until you run `story github-auth logout`.\n"
+    );
+    let raw = dialoguer::Password::new()
+        .with_prompt("GitHub Personal Access Token")
+        .interact()
+        .map_err(|e| storyhook::error::AppError::GithubAuth(format!("reading the token: {e}")))?;
+    storyhook::domain::secret::GithubToken::new(raw)
+}
+
+/// Answers `story github-auth login|status|logout` (SH-212) — entirely in
+/// this process. The OS keychain is a machine-level resource, not project
+/// data, so this needs `env` (for the store's own key, which names the
+/// keychain entry) but never a store or the daemon.
+#[cfg(feature = "github-sync")]
+fn run_github_auth(
+    action: &GithubAuthAction,
+    env: &storyhook::env::Environment,
+    json: bool,
+) -> Result<Response, storyhook::error::AppError> {
+    use storyhook::github::credential_store;
+
+    let account = env.store().key();
+    match action {
+        GithubAuthAction::Login => {
+            let token = ask_github_token(json)?;
+            let store = credential_store::default_credential_store()?;
+            credential_store::login(&store, &account, &token)?;
+            Ok(Response::Message(
+                "GitHub credential stored. The daemon's background poll will start using it \
+                 on its next tick; run `story github-auth logout` to revoke it."
+                    .to_string(),
+            ))
+        }
+        GithubAuthAction::Status => match credential_store::default_credential_store() {
+            Ok(store) => match credential_store::read(&store, &account)? {
+                Some(_) => Ok(Response::Message(
+                    "a GitHub credential is stored; the daemon's background poll can use it."
+                        .to_string(),
+                )),
+                None => Ok(Response::Message(
+                    "no GitHub credential is stored. Run `story github-auth login` to add one."
+                        .to_string(),
+                )),
+            },
+            // Diagnostic, not a failure: `status` degrades to reporting why
+            // rather than exiting non-zero, the same posture the daemon's own
+            // poll thread takes on a missing keychain backend.
+            Err(error) => Ok(Response::Message(format!(
+                "no keychain backend is available on this platform, so nothing could be \
+                 stored: {error}"
+            ))),
+        },
+        GithubAuthAction::Logout => {
+            let store = credential_store::default_credential_store()?;
+            credential_store::logout(&store, &account)?;
+            Ok(Response::Message(
+                "GitHub credential removed. The daemon's background poll stops using it on \
+                 its next tick."
+                    .to_string(),
+            ))
+        }
     }
 }
 

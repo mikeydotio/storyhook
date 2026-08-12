@@ -13,6 +13,25 @@ pub enum HooksAction {
     Test { event_type: String },
 }
 
+/// `story github-auth login|status|logout` — SH-212's durable GitHub
+/// credential for unattended `pr-check` polling.
+///
+/// Handled entirely client-side, before a store is ever opened — see
+/// [`crate::invoke::needs_no_store`] and `main.rs`'s own dispatch for why: the
+/// OS keychain is a machine-level resource with no natural project, and
+/// `Login`'s masked prompt can only run where a terminal exists.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GithubAuthAction {
+    /// Prompts for a GitHub Personal Access Token and stores it in the OS
+    /// keychain, so the daemon's background poll thread can spend it
+    /// unattended. Always interactive — see the module doc.
+    Login,
+    /// Reports whether a token is stored, without ever printing it.
+    Status,
+    /// Deletes the stored token, if any. Idempotent.
+    Logout,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GraphMode {
     Overview,
@@ -168,6 +187,7 @@ Usage:
   story link-pr <id> <url> [--no-close-on-merge]    (link a GitHub pull request to a story)
   story unlink-pr <id> <url>
   story pr-check [<id>]                             (requires the github-sync feature)
+  story github-auth login|status|logout             (durable credential for unattended pr-check polling)
   story scaffold agents-md|claude-md|cursor-rules
   story help [<command>] [--compact] [--all]
   story plugin install|uninstall <target>
@@ -525,6 +545,12 @@ pub enum Invocation {
     /// that spends a GitHub credential.
     PrCheck {
         id: Option<String>,
+    },
+    /// `story github-auth login|status|logout` (SH-212). See
+    /// [`GithubAuthAction`] — handled entirely client-side and never reaches
+    /// the daemon; [`crate::invoke::needs_no_store`] is what routes it there.
+    GithubAuth {
+        action: GithubAuthAction,
     },
     HelpTopic {
         topic: String,
@@ -1775,6 +1801,7 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "link-pr" => parse_link_pr(args),
         "unlink-pr" => parse_unlink_pr(args),
         "pr-check" => parse_pr_check(args),
+        "github-auth" => parse_github_auth(args),
         "plugin" => parse_plugin(args),
         "web" => parse_web(args),
         "daemon" => parse_daemon(args),
@@ -3227,6 +3254,24 @@ fn parse_pr_check(args: &[String]) -> Result<Invocation, AppError> {
     Ok(Invocation::PrCheck {
         id: args.get(1).cloned(),
     })
+}
+
+fn parse_github_auth(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = "usage: story github-auth login|status|logout";
+    if args.len() != 2 {
+        return Err(AppError::Usage(usage.to_string()));
+    }
+    let action = match args[1].as_str() {
+        "login" => GithubAuthAction::Login,
+        "status" => GithubAuthAction::Status,
+        "logout" => GithubAuthAction::Logout,
+        other => {
+            return Err(AppError::Usage(format!(
+                "unknown github-auth action `{other}`\n{usage}"
+            )));
+        }
+    };
+    Ok(Invocation::GithubAuth { action })
 }
 
 fn parse_help(args: &[String]) -> Result<Invocation, AppError> {
@@ -4787,9 +4832,10 @@ mod tests {
         }
     }
 
-    /// `story link-pr` / `story unlink-pr` / `story pr-check` — SH-49.
+    /// `story link-pr` / `story unlink-pr` / `story pr-check` / `story
+    /// github-auth` — SH-49, SH-212.
     mod pr_link {
-        use super::super::{Invocation, parse_invocation};
+        use super::super::{GithubAuthAction, Invocation, parse_invocation};
 
         const URL: &str = "https://github.com/acme/widgets/pull/7";
 
@@ -4884,6 +4930,59 @@ mod tests {
         #[test]
         fn pr_check_with_too_many_arguments_is_a_usage_error() {
             assert!(parse(&["pr-check", "SH-1", "extra"]).is_err());
+        }
+
+        #[test]
+        fn github_auth_login_parses() {
+            assert_eq!(
+                parse(&["github-auth", "login"]).expect("parses"),
+                Invocation::GithubAuth {
+                    action: GithubAuthAction::Login
+                }
+            );
+        }
+
+        #[test]
+        fn github_auth_status_parses() {
+            assert_eq!(
+                parse(&["github-auth", "status"]).expect("parses"),
+                Invocation::GithubAuth {
+                    action: GithubAuthAction::Status
+                }
+            );
+        }
+
+        #[test]
+        fn github_auth_logout_parses() {
+            assert_eq!(
+                parse(&["github-auth", "logout"]).expect("parses"),
+                Invocation::GithubAuth {
+                    action: GithubAuthAction::Logout
+                }
+            );
+        }
+
+        #[test]
+        fn github_auth_with_no_action_is_a_usage_error() {
+            let error = parse(&["github-auth"]).expect_err("refuses");
+            assert!(
+                error.to_string().contains("usage: story github-auth"),
+                "{error}"
+            );
+        }
+
+        #[test]
+        fn github_auth_with_an_unknown_action_is_a_usage_error() {
+            let error = parse(&["github-auth", "bogus"]).expect_err("refuses");
+            assert!(
+                error.to_string().contains("unknown github-auth action"),
+                "{error}"
+            );
+        }
+
+        #[test]
+        fn github_auth_with_too_many_arguments_is_a_usage_error() {
+            assert!(parse(&["github-auth", "login", "extra"]).is_err());
         }
     }
 }

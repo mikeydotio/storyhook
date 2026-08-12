@@ -97,7 +97,12 @@ fn change_poll_interval() -> Duration {
 }
 
 /// How often a background thread looks up to see whether it should stop.
-const SHUTDOWN_CHECK: Duration = Duration::from_millis(250);
+///
+/// `pub(crate)` rather than private: [`crate::daemon::github_poll`] chops its
+/// own sleep into the same naps, for the same reason [`heartbeat`] and
+/// [`poll_change_token`] do — a shutdown should not have to wait out a whole
+/// poll interval.
+pub(crate) const SHUTDOWN_CHECK: Duration = Duration::from_millis(250);
 
 /// How many requests this daemon routes at once (SH-173).
 ///
@@ -285,6 +290,15 @@ where
         {
             let stop = Arc::clone(&stop);
             scope.spawn(move || watch_parent(&stop));
+        }
+        // The unattended GitHub poll (SH-212) — absent entirely without the
+        // `github-sync` feature, the same way `pr_check::run_check`, the
+        // engine it spends its credential on, is unreachable without it.
+        #[cfg(feature = "github-sync")]
+        {
+            let stop = Arc::clone(&stop);
+            let env = env.clone();
+            scope.spawn(move || crate::daemon::github_poll::poll_github(store, &env, &stop));
         }
         if !has_tailnet && let Some(loopback_addr) = loopback_addr {
             let stop = Arc::clone(&stop);

@@ -9,6 +9,10 @@
 //! * [`bus`] — the change feed every `/api/events` client subscribes to, fed by
 //!   the request boundary and by a `PRAGMA data_version` poller.
 //! * [`commands`] — `story daemon start|stop|status|install|uninstall|token`.
+//! * [`github_poll`] — the unattended background poll for merged pull
+//!   requests (SH-212), spending the credential `story github-auth login`
+//!   stored in the OS keychain. `github-sync`-gated: absent entirely from a
+//!   build without it.
 //! * [`http1`] — the HTTP/1.1 connection layer: parsing, framing, and every
 //!   deadline and cap a peer socket is held to (SH-177).
 //! * [`lifecycle`] — the portfile, the pidfile lock, and auto-spawn.
@@ -25,6 +29,8 @@
 pub mod backup;
 pub mod bus;
 pub mod commands;
+#[cfg(feature = "github-sync")]
+pub mod github_poll;
 pub mod http1;
 pub mod lifecycle;
 pub mod serve;

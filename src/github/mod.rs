@@ -2,6 +2,7 @@ pub mod api;
 pub mod body_block;
 pub mod client;
 pub mod conflict;
+pub mod credential_store;
 pub mod diff;
 pub mod field_map;
 pub mod initial;
