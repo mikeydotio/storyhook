@@ -588,6 +588,7 @@ fn pin_from_the_future(fixture: &ServiceFixture) {
                     payload: FROM_THE_FUTURE.to_string(),
                 }],
                 storyhook::store::LinkSource::Replayed,
+                &storyhook::domain::provenance::Provenance::unrecorded(),
             )?;
             Ok(())
         })

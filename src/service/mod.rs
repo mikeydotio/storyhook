@@ -57,6 +57,7 @@ pub mod transfer;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::domain::provenance::Provenance;
 use crate::domain::{StateDef, StoryEvent, StorySnapshot, fold_story};
 use crate::env::Environment;
 use crate::error::AppError;
@@ -135,6 +136,7 @@ pub struct Ctx<'a, S: Store> {
     env: Environment,
     stdin: Option<String>,
     github_token: Option<crate::domain::secret::GithubToken>,
+    provenance: Provenance,
 }
 
 impl<'a, S: Store> Ctx<'a, S> {
@@ -161,6 +163,7 @@ impl<'a, S: Store> Ctx<'a, S> {
             env,
             stdin: None,
             github_token: None,
+            provenance: Provenance::unrecorded(),
         }
     }
 
@@ -190,6 +193,31 @@ impl<'a, S: Store> Ctx<'a, S> {
     ) -> Self {
         self.github_token = github_token;
         self
+    }
+
+    /// Supplies who is performing this invocation's writes (SH-246).
+    ///
+    /// Here for the same reason [`with_stdin`](Self::with_stdin) and
+    /// [`with_github_token`](Self::with_github_token) are: half of it — the
+    /// declared actor — is a fact about the caller that the daemon's own
+    /// environment cannot supply. An in-process caller that leaves this unset
+    /// writes [`Provenance::unrecorded`], which is honest rather than merely
+    /// permissive: a fixture appending events really was performed by nothing a
+    /// user would recognise.
+    #[must_use]
+    pub fn with_provenance(mut self, provenance: Provenance) -> Self {
+        self.provenance = provenance;
+        self
+    }
+
+    /// Who is performing this invocation's writes.
+    ///
+    /// Every event a single command appends carries the same provenance by
+    /// construction, which is why this is read off the context rather than
+    /// passed from wherever an event happened to be built.
+    #[must_use]
+    pub fn provenance(&self) -> &Provenance {
+        &self.provenance
     }
 
     /// Suppresses the project's event hooks, as `--no-hooks` does.
@@ -368,6 +396,12 @@ pub(crate) fn project_prefix(tx: &impl ReadOps, project: ProjectId) -> Result<St
 /// and put the snapshot back. What must never vary is that all four happen in
 /// one transaction; the caller supplies that transaction, so the atomicity is
 /// still visible at every call site.
+// Eight, since SH-246 added `provenance`. Every one of them is a distinct fact
+// the caller alone holds, and the obvious bundling — a struct of
+// project/prefix/states — would hide the transaction this deliberately keeps
+// visible at all 29 call sites. Bundling is a refactor, and a refactor does not
+// share a commit with a behaviour change.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn append_and_fold(
     tx: &mut impl WriteOps,
     project: ProjectId,
@@ -376,6 +410,7 @@ pub(crate) fn append_and_fold(
     states: &BTreeMap<String, StateDef>,
     expected: ExpectedSeq,
     events: &[StoryEvent],
+    provenance: &Provenance,
 ) -> Result<StorySnapshot, AppError> {
     // Every producer of a `StoryLabelsSet` is expected to normalize through
     // `domain::normalize_labels` before it gets here; this is the backstop
@@ -384,7 +419,7 @@ pub(crate) fn append_and_fold(
     for event in events {
         crate::domain::validate_event_for_append(event)?;
     }
-    let head = tx.append_events(project, story, expected, events)?;
+    let head = tx.append_events(project, story, expected, events, provenance)?;
     let stored = tx.events_for(project, story)?;
     let (known, _unknown) = partition_known(story, &stored);
     let snapshot = fold_story(&story.to_id(prefix), &known, states)?;

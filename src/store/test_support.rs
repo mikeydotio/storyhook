@@ -55,7 +55,15 @@ pub fn inject_events(
     events: &[StoryEvent],
 ) -> Result<EventSeq, StoreError> {
     store.write(|tx| {
-        let head = tx.append_events(project, story, ExpectedSeq::Any, events)?;
+        // Unrecorded provenance (SH-246): an injected event was performed by no
+        // command, and saying so is what these columns are for.
+        let head = tx.append_events(
+            project,
+            story,
+            ExpectedSeq::Any,
+            events,
+            &crate::domain::provenance::Provenance::unrecorded(),
+        )?;
         refold(tx, project, story)?;
         Ok(head)
     })
@@ -81,6 +89,7 @@ pub fn inject_raw_events(
             ExpectedSeq::Any,
             events,
             LinkSource::Replayed,
+            &crate::domain::provenance::Provenance::unrecorded(),
         )?;
         // A fold failure here is the point of the call, not a problem with it.
         let _ = refold(tx, project, story);

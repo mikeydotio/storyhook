@@ -72,6 +72,7 @@ pub mod types;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::domain::provenance::Provenance;
 use crate::domain::remote::RemoteUrl;
 use crate::domain::{Member, StateDef, StoryEvent, StorySnapshot, TypeDef};
 
@@ -547,12 +548,20 @@ pub trait WriteOps: ReadOps {
     /// head is not what `expected` requires.
     ///
     /// Returns the story's new head.
+    ///
+    /// `provenance` stamps every appended row with who performed the write
+    /// (SH-246), and is an argument for the same reason `source` is on
+    /// [`append_raw_events`](Self::append_raw_events): it is a fact about the
+    /// *caller*. [`Provenance::unrecorded`] is a legitimate answer and writes
+    /// NULLs — the value every pre-SH-246 row already holds, rendered
+    /// `(unrecorded)` rather than confused with an unset field.
     fn append_events(
         &mut self,
         project: ProjectId,
         story: StoryNo,
         expected: ExpectedSeq,
         events: &[StoryEvent],
+        provenance: &Provenance,
     ) -> Result<EventSeq, StoreError>;
 
     /// [`append_events`](Self::append_events), for a caller holding an event's
@@ -578,6 +587,7 @@ pub trait WriteOps: ReadOps {
         expected: ExpectedSeq,
         events: &[RawEvent],
         source: LinkSource,
+        provenance: &Provenance,
     ) -> Result<EventSeq, StoreError>;
 
     /// Writes a folded snapshot into the read model, recording the event `head`

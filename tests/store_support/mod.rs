@@ -122,7 +122,13 @@ pub fn append_and_fold(
     events: &[StoryEvent],
 ) -> Result<EventSeq, StoreError> {
     store.write(|tx| {
-        let head = tx.append_events(project, story, expected, events)?;
+        let head = tx.append_events(
+            project,
+            story,
+            expected,
+            events,
+            &storyhook::domain::provenance::Provenance::unrecorded(),
+        )?;
         let states = tx.state_map(project)?;
         let prefix = tx.project(project)?.expect("the project exists").prefix;
         let stored = tx.events_for(project, story)?;
@@ -184,6 +190,7 @@ pub fn link_atomic(
                     other_id: other.to_id(&prefix),
                     relation: relation.to_string(),
                 }],
+                &storyhook::domain::provenance::Provenance::unrecorded(),
             )?;
             let stored = tx.events_for(project, story)?;
             let (known, _) = storyhook::store::partition_known(story, &stored);

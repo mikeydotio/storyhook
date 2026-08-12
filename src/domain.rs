@@ -34,6 +34,15 @@ pub mod secret;
 /// (SH-49, `.council/sh49-linked-prs/DECISION.md`).
 pub mod pr_url;
 
+/// Who wrote an event — the daemon-derived command, and the caller-declared
+/// actor beside it (SH-246).
+///
+/// Deliberately *not* part of [`StoryEvent`]: provenance is a fact about the
+/// write rather than about the story, so it lives in its own columns on
+/// `events` and leaves the payload's shape — which every replay path decodes —
+/// exactly as it was.
+pub mod provenance;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImportStory {
     pub title: String,
