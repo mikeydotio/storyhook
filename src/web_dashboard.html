@@ -2421,20 +2421,30 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   /** Sets the topbar subtitle for whichever screen is active. Split out of
    * `renderAll()` (repo-only, needs `state.data`) so `renderScreen()` can
    * refresh it on every screen switch too, including home/settings where
-   * `state.data` (one repo's data) is never populated. */
+   * `state.data` (one repo's data) is never populated.
+   *
+   * A board has no subtitle at all (SH-234): it used to restate the story,
+   * ready and blocked counts the board itself already shows in a form that
+   * can be acted on — the columns and the blocked badge — in the one corner
+   * of the topbar the eye goes to for the project's name.
+   *
+   * An empty subtitle is *hidden*, not merely blank. `.brand` is a flex row
+   * with a gap, so a blank span is still a flex item and its gap would go
+   * on padding the wordmark away from the search field. */
   function updateSubtitle() {
+    var node = $("subtitle");
+    var text;
     if (state.screen === "repo") {
-      if (!state.data) { $("subtitle").textContent = "Loading…"; return; }
-      var s = state.data.summary;
-      var total = s.total_open + s.total_closed;
-      $("subtitle").textContent = total + " " + (total === 1 ? "story" : "stories") + " · " + s.ready_count + " ready · " + s.blocked_count + " blocked";
+      text = "";
     } else if (state.screen === "home") {
-      $("subtitle").textContent = state.repos.length + " " + (state.repos.length === 1 ? "project" : "projects");
+      text = state.repos.length + " " + (state.repos.length === 1 ? "project" : "projects");
     } else if (state.settingsRepoId) {
-      $("subtitle").textContent = "Settings · statuses";
+      text = "Settings · statuses";
     } else {
-      $("subtitle").textContent = "Settings";
+      text = "Settings";
     }
+    node.textContent = text;
+    node.hidden = text === "";
   }
 
   /** Switches between the three top-level screens, showing/hiding the
