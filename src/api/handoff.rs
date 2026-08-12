@@ -49,12 +49,19 @@
 //! **Do not move this route under `/api` "for consistency".**
 //! `tests/handoff_endpoint.rs` fails if anyone does.
 //!
-//! # What is not fixed by any of this
+//! # What a coupon buys, and what it stopped buying
 //!
-//! The browser still ends up holding the master token. This is *transport*,
-//! done correctly — it is not least privilege. SH-254 is filed against the
-//! redemption handler below as the seam for a scoped, revocable capability,
-//! and it is a merge gate on this work rather than a follow-up.
+//! Until SH-254 a redeemed coupon bought the **master token**, and this module
+//! said so plainly: *"this is transport, done correctly — it is not least
+//! privilege."* It buys a [`crate::api::session`] capability now — the board's
+//! own write surface, honoured only on this machine, revocable without
+//! restarting the daemon.
+//!
+//! The gate did not move for that change. The same five conjuncts in the same
+//! order decide a redemption, and the only difference visible here is that
+//! [`redemption_admitted`] hands back the [`LocalRequest`] it built instead of
+//! a `bool`, so the capability is issued against the locality this request
+//! already proved rather than against a second derivation of it.
 
 use std::collections::VecDeque;
 use std::sync::{Mutex, PoisonError};
@@ -64,6 +71,7 @@ use crate::api::http::{
     LocalRequest, Reply, TrustedHosts, header_value, json_reply, local_request, text_reply,
 };
 use crate::api::rpc::{constant_time_eq, token_ok};
+use crate::api::session::SessionRegistry;
 use crate::daemon::http1::{Header, Method};
 
 /// Where `story web open` arms a coupon: on the control surface, so
@@ -231,6 +239,7 @@ pub fn intercept(
     loopback: bool,
     now: Instant,
     registry: &HandoffRegistry,
+    sessions: &SessionRegistry,
 ) -> Option<Reply> {
     match segments {
         ["api", "v1", "handoff"] => Some(handle_arm(method, headers, token, now, registry)),
@@ -238,10 +247,10 @@ pub fn intercept(
             method,
             headers,
             trusted_hosts,
-            token,
             loopback,
             now,
             registry,
+            sessions,
         )),
         _ => None,
     }
@@ -275,7 +284,21 @@ fn handle_arm(
     .no_store()
 }
 
-/// `POST /handoff` — spend a coupon for the daemon's token.
+/// `POST /handoff` — spend a coupon for a scoped dashboard capability.
+///
+/// **Not the master token** (SH-254). What the browser gets is a
+/// [`crate::api::session`] capability: the board's own write surface, honoured
+/// only on this machine, revocable without restarting anything. Until SH-254
+/// this handed over the daemon's token itself, which made a dashboard tab able
+/// to delete every project on the machine and to reach `POST /api/v1/invoke` —
+/// every verb the CLI has. That was transport done correctly, and it was not
+/// least privilege.
+///
+/// The redemption *gate* did not move an inch for this: the same five conjuncts
+/// in the same order decide it. All that changed is the value on the other side
+/// — and that [`redemption_admitted`] now hands back the [`LocalRequest`] it
+/// built rather than a `bool`, so the capability is issued against the witness
+/// this request already earned instead of deriving locality a second time.
 ///
 /// `no_store` rather than `no_cache`: `no-cache` permits a browser to *store*
 /// a response and revalidate it, which is the wrong instruction for the one
@@ -284,18 +307,30 @@ fn handle_redeem(
     method: &Method,
     headers: &[Header],
     trusted_hosts: &TrustedHosts,
-    token: &str,
     loopback: bool,
     now: Instant,
     registry: &HandoffRegistry,
+    sessions: &SessionRegistry,
 ) -> Reply {
-    if !redemption_admitted(method, headers, trusted_hosts, loopback, now, registry) {
+    let Some(witness) =
+        redemption_admitted(method, headers, trusted_hosts, loopback, now, registry)
+    else {
         return refusal();
-    }
-    json_reply(200, serde_json::json!({ "token": token }).to_string()).no_store()
+    };
+    json_reply(
+        200,
+        serde_json::json!({ "session": sessions.issue(&witness, now) }).to_string(),
+    )
+    .no_store()
 }
 
-/// Whether a redemption is admitted — and, if it is, the coupon is now spent.
+/// Whether a redemption is admitted — and, if it is, the coupon is now spent
+/// and the caller's proof of locality is handed back.
+///
+/// Returns the [`LocalRequest`] rather than a `bool` (SH-254) so the capability
+/// issued on the other side is issued against the witness *this* request
+/// earned. Deriving locality twice would be two chances to derive it
+/// differently, and the second derivation would be the one nobody reads.
 ///
 /// One named predicate with one truth table, the `token_exempt` idiom: a
 /// tokenless credential-issuing route may not be defended more weakly than
@@ -330,20 +365,14 @@ fn redemption_admitted(
     loopback: bool,
     now: Instant,
     registry: &HandoffRegistry,
-) -> bool {
+) -> Option<LocalRequest> {
     if !matches!(method, Method::Post) {
-        return false;
+        return None;
     }
-    if header_value(headers, "X-Storyhook").is_none() {
-        return false;
-    }
-    let Some(offered) = header_value(headers, COUPON_HEADER) else {
-        return false;
-    };
-    let Some(witness) = local_request(headers, trusted_hosts, loopback) else {
-        return false;
-    };
-    registry.redeem(&witness, offered, now)
+    header_value(headers, "X-Storyhook")?;
+    let offered = header_value(headers, COUPON_HEADER)?;
+    let witness = local_request(headers, trusted_hosts, loopback)?;
+    registry.redeem(&witness, offered, now).then_some(witness)
 }
 
 #[cfg(test)]
@@ -362,6 +391,38 @@ mod tests {
 
     fn trusted_hosts() -> TrustedHosts {
         TrustedHosts::default()
+    }
+
+    /// This module's routes, with a fresh capability registry behind them.
+    ///
+    /// **Shadows [`super::intercept`] on purpose.** SH-254 gave it one more
+    /// parameter — where a redeemed coupon's capability is issued — and every
+    /// test below is about the *gate*, which that change did not touch. Routing
+    /// them through a helper keeps SH-251's whole truth table byte-identical
+    /// across the change, which is what makes "the gate did not move" checkable
+    /// by reading the diff rather than by taking somebody's word for it.
+    #[allow(clippy::too_many_arguments)]
+    fn intercept(
+        segments: &[&str],
+        method: &Method,
+        headers: &[Header],
+        trusted_hosts: &TrustedHosts,
+        token: &str,
+        loopback: bool,
+        now: Instant,
+        registry: &HandoffRegistry,
+    ) -> Option<Reply> {
+        super::intercept(
+            segments,
+            method,
+            headers,
+            trusted_hosts,
+            token,
+            loopback,
+            now,
+            registry,
+            &SessionRegistry::new(),
+        )
     }
 
     /// A witness, for the registry tests that need one and are not about the
@@ -505,15 +566,46 @@ mod tests {
     }
 
     #[test]
-    fn a_local_post_with_a_live_coupon_gets_the_token() {
+    fn a_local_post_with_a_live_coupon_gets_a_capability_and_never_the_token() {
+        // SH-254's headline: this used to answer with the daemon's master
+        // token. What comes back now is a scoped capability, and the assertion
+        // is written in both directions on purpose — that the reply *is* a
+        // capability, and that the token appears nowhere in it. The second half
+        // is the one that would notice a well-meaning "include the token too,
+        // for compatibility".
         let now = Instant::now();
         let (registry, coupon) = armed(now);
-        let reply = redeem(&redeem_headers(&coupon), &registry, now);
+        let sessions = SessionRegistry::new();
+        let reply = super::intercept(
+            &path_segments(REDEEM_PATH),
+            &Method::Post,
+            &redeem_headers(&coupon),
+            &trusted_hosts(),
+            TOKEN,
+            true,
+            now,
+            &registry,
+            &sessions,
+        )
+        .expect("the redemption path is this module's");
+
         assert_eq!(reply.status, 200);
-        assert_eq!(
-            reply,
-            json_reply(200, serde_json::json!({ "token": TOKEN }).to_string()).no_store(),
-            "the reply is the token, and it is marked never-store"
+        assert!(
+            !reply.body().contains(TOKEN),
+            "the redemption reply carried the master token: {}",
+            reply.body()
+        );
+
+        // And what it did carry is a capability this daemon will honour.
+        let issued: String = serde_json::from_str::<serde_json::Value>(reply.body())
+            .expect("the reply is JSON")
+            .get("session")
+            .and_then(|v| v.as_str())
+            .expect("the reply names a session")
+            .to_string();
+        assert!(
+            sessions.present(&witness(), &issued, now),
+            "the capability handed to the browser must be one this daemon knows"
         );
     }
 
