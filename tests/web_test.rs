@@ -395,6 +395,202 @@ fn web_open_and_address_succeed_when_running() {
         .success();
 }
 
+/// A `$BROWSER` that records the argv it was handed, instead of opening one.
+///
+/// The only way to see what `story web open` actually sent to a browser:
+/// stdout carries the bare URL by design (SH-251), so a test that reads
+/// stdout alone cannot tell a handoff from its absence — which is precisely
+/// the distinction the two tests below turn on.
+///
+/// Returns the scratch directory (which must outlive the command) and the
+/// path the shim writes to.
+fn recording_browser() -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix("storyhook-browser-shim-")
+        .tempdir_in("/private/tmp")
+        .expect("a scratch directory");
+    let recorded = dir.path().join("opened-url");
+    let shim = dir.path().join("browser");
+    std::fs::write(
+        &shim,
+        format!(
+            "#!/bin/sh\nprintf '%s' \"$1\" > {}\n",
+            recorded.to_string_lossy()
+        ),
+    )
+    .expect("writing the shim");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755))
+            .expect("making the shim executable");
+    }
+    (dir, recorded)
+}
+
+/// SH-251's client-side acceptance criteria, both halves of them: the browser
+/// gets a one-shot coupon in the URL *fragment*, and the terminal never does.
+///
+/// The fragment is what keeps the coupon out of the daemon's own access
+/// path — a fragment is never sent to a server — and printing the bare URL is
+/// what keeps it out of scrollback, shell history and any script piping this
+/// command. A test asserting only on stdout would pass with the whole feature
+/// deleted, which is why the shim above exists.
+#[test]
+fn web_open_hands_the_browser_a_coupon_and_the_terminal_the_bare_url() {
+    let env = TestEnv::isolated();
+    let dir = scratch_dir();
+    let _daemon = DaemonGuard::new(&env, dir.path());
+
+    env.story(dir.path())
+        .args(["web", "start"])
+        .assert()
+        .success();
+    let port = started_port(&env);
+    wait_for_server(port);
+
+    let (_shim_dir, recorded) = recording_browser();
+    let opened = env
+        .story(dir.path())
+        .env("BROWSER", _shim_dir.path().join("browser"))
+        .args(["web", "open"])
+        .output()
+        .expect("running `story web open`");
+    assert!(opened.status.success());
+
+    let url = std::fs::read_to_string(&recorded).expect("the shim recorded a URL");
+    let expected_prefix = format!("http://127.0.0.1:{port}/#h=");
+    assert!(
+        url.starts_with(&expected_prefix),
+        "the browser must be opened at a handoff fragment; got {url}"
+    );
+    let coupon = &url[expected_prefix.len()..];
+    assert_eq!(coupon.len(), 32, "a coupon is 32 hex characters: {coupon}");
+    assert!(coupon.chars().all(|c| c.is_ascii_hexdigit()));
+
+    // And neither stream ever carried it. stdout names the dashboard, with no
+    // fragment at all.
+    let stdout = String::from_utf8_lossy(&opened.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&opened.stderr).into_owned();
+    assert!(stdout.contains(&format!("http://127.0.0.1:{port}/")));
+    assert!(!stdout.contains(coupon), "stdout carried the coupon");
+    assert!(!stderr.contains(coupon), "stderr carried the coupon");
+    assert!(!stdout.contains("#h="), "stdout carried a handoff fragment");
+
+    env.story(dir.path())
+        .args(["web", "stop"])
+        .assert()
+        .success();
+}
+
+/// A failed arming is a degraded convenience, never a failed command.
+///
+/// Simulated the only honest way from outside the daemon: rewrite the
+/// portfile's token so the client's arming request is refused by the very
+/// gate that protects it, run the command, then put the real token back. The
+/// daemon reads its portfile once at startup and never again, so it keeps
+/// answering with the token it minted — which is why the restore is enough to
+/// leave `DaemonGuard` able to stop it.
+#[test]
+fn web_open_falls_back_to_the_bare_url_when_arming_fails() {
+    let env = TestEnv::isolated();
+    let dir = scratch_dir();
+    let _daemon = DaemonGuard::new(&env, dir.path());
+
+    env.story(dir.path())
+        .args(["web", "start"])
+        .assert()
+        .success();
+    let port = started_port(&env);
+    wait_for_server(port);
+
+    let portfile = env.environment().daemon_file();
+    let real = std::fs::read_to_string(&portfile).expect("reading the portfile");
+    let mut info: serde_json::Value = serde_json::from_str(&real).expect("the portfile is JSON");
+    info["token"] = serde_json::Value::String("not-the-daemons-token".to_string());
+    std::fs::write(&portfile, info.to_string()).expect("rewriting the portfile");
+
+    let (_shim_dir, recorded) = recording_browser();
+    let opened = env
+        .story(dir.path())
+        .env("BROWSER", _shim_dir.path().join("browser"))
+        .args(["web", "open"])
+        .output()
+        .expect("running `story web open`");
+    std::fs::write(&portfile, &real).expect("restoring the portfile");
+
+    assert!(
+        opened.status.success(),
+        "a refused arming must not fail the command"
+    );
+    let url = std::fs::read_to_string(&recorded).expect("the shim recorded a URL");
+    assert_eq!(
+        url,
+        format!("http://127.0.0.1:{port}/"),
+        "without a coupon the browser gets exactly the URL it always got"
+    );
+    // Said out loud rather than swallowed, and naming what happens instead.
+    let stderr = String::from_utf8_lossy(&opened.stderr).into_owned();
+    assert!(
+        stderr.contains("one-time handoff"),
+        "the fallback must say what was lost; got: {stderr}"
+    );
+
+    env.story(dir.path())
+        .args(["web", "stop"])
+        .assert()
+        .success();
+}
+
+/// `story web address` carries no handoff, pinned by a test rather than by
+/// the absence of code.
+///
+/// Unanimous across every round of SH-251's council, and the reason is the
+/// difference between the two commands: `web open` targets a browser on *this
+/// machine*, while a copied URL is for another device — which is why it
+/// advertises the tailnet host at all. `mutation_guard_ok` accepts a bound
+/// tailnet `Host`, so a credential pasted into a URL bar over there would be
+/// a live *write* credential for any tailnet peer. `web address` is a
+/// location; `story daemon token` is a credential.
+#[test]
+fn web_address_copies_a_location_and_never_a_credential() {
+    let env = TestEnv::isolated();
+    let dir = scratch_dir();
+    let _daemon = DaemonGuard::new(&env, dir.path());
+
+    env.story(dir.path())
+        .args(["web", "start"])
+        .assert()
+        .success();
+    let port = started_port(&env);
+    wait_for_server(port);
+
+    let copied = env
+        .story(dir.path())
+        .env("STORYHOOK_CLIPBOARD_CMD", "cat")
+        .args(["web", "address"])
+        .output()
+        .expect("running `story web address`");
+    assert!(copied.status.success());
+    let stdout = String::from_utf8_lossy(&copied.stdout).into_owned();
+
+    assert!(stdout.contains(&format!(":{port}/")));
+    assert!(
+        !stdout.contains('#'),
+        "a copied URL must carry no fragment at all: {stdout}"
+    );
+    let token = env.daemon().expect("the daemon published a portfile").token;
+    assert!(
+        !stdout.contains(&token),
+        "a copied URL must never carry the daemon's token"
+    );
+
+    env.story(dir.path())
+        .args(["web", "stop"])
+        .assert()
+        .success();
+}
+
 /// The CLI advertises the host the *daemon* bound, never one this process
 /// probed for. Direction A of SH-110, mechanized.
 ///

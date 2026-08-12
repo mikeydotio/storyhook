@@ -42,16 +42,41 @@ fn content_type_header(value: &str) -> Header {
     Header::from_bytes("Content-Type", value).unwrap()
 }
 
+/// What `Cache-Control` a [`Reply`] carries.
+///
+/// One field with three states rather than two booleans, because `no-cache`
+/// and `no-store` are different instructions and "both at once" is not a
+/// thing a reply should be able to say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Caching {
+    /// No `Cache-Control` header at all.
+    Unset,
+    /// `no-cache` — the browser may keep a copy, but must revalidate before
+    /// reusing it. Right for dynamic content.
+    NoCache,
+    /// `no-store` — the browser may not write it down at all. Right for the
+    /// one reply in this daemon that carries a credential
+    /// ([`crate::api::handoff`]); `no-cache` would permit exactly the durable
+    /// copy that reply exists to avoid.
+    NoStore,
+}
+
 /// A fully-formed HTTP response, decoupled from the connection layer's request type so
 /// routing decisions stay pure and easy to reason about (and test) apart from
 /// the network layer. Every `Reply` — success or error — flows through
 /// [`finish`], which attaches the security headers exactly once, in exactly
 /// one place, so no response path can accidentally omit them.
+///
+/// `PartialEq` so a test can assert two refusals are *the same reply* rather
+/// than that they merely share a status code — what SH-251 requires of the
+/// handoff route, whose refusals must not tell a caller which part of an
+/// attempt was wrong.
+#[derive(Debug, PartialEq, Eq)]
 pub struct Reply {
     pub status: u16,
     content_type: &'static str,
     body: String,
-    no_cache: bool,
+    caching: Caching,
     retry_after: Option<u32>,
 }
 
@@ -61,7 +86,7 @@ impl Reply {
             status,
             content_type,
             body: body.into(),
-            no_cache: false,
+            caching: Caching::Unset,
             retry_after: None,
         }
     }
@@ -69,7 +94,19 @@ impl Reply {
     /// Marks this reply as dynamic content that must never be cached by the browser.
     #[must_use]
     pub fn no_cache(mut self) -> Self {
-        self.no_cache = true;
+        self.caching = Caching::NoCache;
+        self
+    }
+
+    /// Marks this reply as one the browser must not write down at all.
+    ///
+    /// Stronger than [`Self::no_cache`], and reserved for a reply carrying a
+    /// credential: `no-cache` still permits a stored copy that is revalidated
+    /// before reuse, and a stored copy is precisely what a credential must not
+    /// leave behind.
+    #[must_use]
+    pub fn no_store(mut self) -> Self {
+        self.caching = Caching::NoStore;
         self
     }
 
@@ -102,8 +139,14 @@ pub fn finish(request: Request, reply: Reply) {
         .with_header(security_header_nosniff())
         .with_header(security_header_frame())
         .with_header(security_header_csp());
-    if reply.no_cache {
-        resp = resp.with_header(Header::from_bytes("Cache-Control", "no-cache").unwrap());
+    match reply.caching {
+        Caching::Unset => {}
+        Caching::NoCache => {
+            resp = resp.with_header(Header::from_bytes("Cache-Control", "no-cache").unwrap());
+        }
+        Caching::NoStore => {
+            resp = resp.with_header(Header::from_bytes("Cache-Control", "no-store").unwrap());
+        }
     }
     if let Some(secs) = reply.retry_after {
         resp = resp.with_header(Header::from_bytes("Retry-After", secs.to_string()).unwrap());
@@ -215,6 +258,98 @@ pub fn host_is_loopback(host: &str) -> bool {
 pub fn host_is_trusted(host: &str, trusted: &TrustedHosts) -> bool {
     let host_only = normalized_host(host);
     matches!(host_only.as_str(), "127.0.0.1" | "localhost" | "::1") || trusted.allows(&host_only)
+}
+
+// --- Locality: the one affirmative grant, and the type that carries it ---
+
+/// The headers a reverse proxy adds when it forwards a request. Their mere
+/// presence means this daemon cannot claim the caller is local.
+///
+/// None of these is authentication and none is trusted — a caller may set any
+/// of them freely. That is exactly what makes them safe to consult: under
+/// [`local_request`]'s governing rule they can only ever *withhold* locality,
+/// so forging one refuses nobody but the forger. What they buy is the *honest*
+/// proxy — nginx's own recommended configuration, caddy, traefik and
+/// `tailscale serve` each set at least one, which turns every one of them from
+/// silently local into "not local, exactly as before".
+pub const FORWARDING_HEADERS: [&str; 5] = [
+    "X-Forwarded-For",
+    "X-Forwarded-Host",
+    "X-Forwarded-Proto",
+    "Forwarded",
+    "X-Real-IP",
+];
+
+/// Proof that a request came from **this machine**.
+///
+/// Zero-sized, with a private field, so [`local_request`] — which is in this
+/// module and nowhere else — is the only thing in the entire crate that can
+/// produce one. A route that wants to act on locality must therefore *hold*
+/// one, and the only way to hold one is to have asked. Deleting the check
+/// becomes a compile error rather than a quietly-passing test, which is the
+/// property SH-251's council made binding: *"a test is what gets deleted
+/// alongside the check."*
+///
+/// It carries no data on purpose. Everything it could carry — the listener,
+/// the `Host`, the headers — is already in scope at every call site; what the
+/// caller lacks is not information but *authority to conclude*, and that is
+/// exactly what a witness type confers.
+pub struct LocalRequest(());
+
+/// Whether this request came from this machine, and the proof if it did.
+///
+/// # The governing rule
+///
+/// **An attacker-supplied header may only withhold locality, never confer it.**
+///
+/// The single affirmative grant is `loopback`, stamped on the listener at bind
+/// time — the one input here no caller can supply (and, since SH-253, derived
+/// from the bound socket rather than asserted beside it). Every other conjunct
+/// can only answer `None`. Keep it that way: an edit that lets a request-borne
+/// value *grant* locality breaks the rule however reasonable it looks on its
+/// own, because every such value is forgeable by exactly the caller this must
+/// not reach.
+///
+/// # The conjuncts, and what each one is for
+///
+/// 1. **`loopback`** — it arrived on the listener bound to `127.0.0.1`.
+/// 2. **No reverse-proxy allowlist is configured**
+///    ([`TrustedHosts::behind_a_proxy`]). A reverse proxy connects to this
+///    daemon *over loopback*, so an operator declaring one is telling this
+///    daemon that "arrived on loopback" has stopped meaning "came from this
+///    machine". Reading it from the `proxy` half alone is what stops a bound
+///    tailnet interface — which is not an indirection — from withdrawing
+///    locality on every Tailscale machine.
+/// 3. **No [`FORWARDING_HEADERS`]** — see that constant.
+/// 4. **`Host` is a loopback literal** — [`host_is_loopback`], deliberately
+///    *not* [`host_is_trusted`], which also matches the allowlists. A
+///    configured proxy hostname must never be able to answer "is this caller
+///    local?". This is also the conjunct that keeps DNS rebinding out: a
+///    rebound page is same-origin with `http://127.0.0.1:PORT` and can read
+///    what it gets back.
+///
+/// # Why one function
+///
+/// Two callers derive locality — [`crate::api::admission`]'s tokenless read
+/// exemption (SH-250) and [`crate::api::handoff`]'s redemption gate (SH-251) —
+/// and before this extraction the first spelled the rule inline. Answering
+/// *"the governing principle lives in two files, which is how it rots"*, both
+/// now derive it here. A third caller is a change to this doc comment and to
+/// the source-scanning test that names the two.
+pub fn local_request(
+    headers: &[Header],
+    trusted: &TrustedHosts,
+    loopback: bool,
+) -> Option<LocalRequest> {
+    let local = loopback
+        && !trusted.behind_a_proxy()
+        && !headers.iter().any(|header| {
+            FORWARDING_HEADERS
+                .iter()
+                .any(|name| header.field.equiv(name))
+        })
+        && header_value(headers, "Host").is_some_and(host_is_loopback);
+    local.then_some(LocalRequest(()))
 }
 
 /// The non-loopback `Host` values this daemon will trust for a mutation, kept
@@ -653,6 +788,88 @@ mod tests {
         assert!(
             proxied.behind_a_proxy(),
             "a late bind must not retire a configured proxy"
+        );
+    }
+
+    // --- The locality predicate, and its witness (SH-251) ---
+    //
+    // A truth table over `local_request`'s four conjuncts: one local case,
+    // then one case per conjunct falsifying that conjunct alone. The same
+    // shape `api::admission`'s own tests already use for the exemption that
+    // now derives from this function — and the reason those tests could stay
+    // byte-identical across the extraction.
+
+    fn headers(pairs: &[(&str, &str)]) -> Vec<Header> {
+        pairs
+            .iter()
+            .map(|(name, value)| Header::from_bytes(*name, *value).unwrap())
+            .collect()
+    }
+
+    /// What a browser on this machine actually sends: a loopback `Host`, and
+    /// nothing else that bears on locality.
+    fn local_headers() -> Vec<Header> {
+        headers(&[("Host", "127.0.0.1:3456")])
+    }
+
+    #[test]
+    fn a_loopback_request_with_a_loopback_host_is_local() {
+        assert!(local_request(&local_headers(), &TrustedHosts::default(), true).is_some());
+    }
+
+    #[test]
+    fn conjunct_1_the_same_request_on_another_listener_is_not_local() {
+        assert!(local_request(&local_headers(), &TrustedHosts::default(), false).is_none());
+    }
+
+    #[test]
+    fn conjunct_2_a_configured_proxy_allowlist_withdraws_locality() {
+        let behind_proxy = TrustedHosts::from_parts(Vec::new(), vec!["proxy.example".to_string()]);
+        assert!(local_request(&local_headers(), &behind_proxy, true).is_none());
+    }
+
+    #[test]
+    fn conjunct_2_a_bound_host_allowlist_does_not() {
+        // A bound tailnet interface is an interface this daemon serves
+        // directly, not an indirection it was told about — so on every
+        // Tailscale machine, where the allowlist is non-empty with zero
+        // proxies configured, loopback stays local.
+        assert!(local_request(&local_headers(), &tailnet_trusted_hosts(), true).is_some());
+    }
+
+    #[test]
+    fn conjunct_3_any_forwarding_header_withdraws_locality() {
+        for name in FORWARDING_HEADERS {
+            let mut forwarded = local_headers();
+            forwarded.push(Header::from_bytes(name, "203.0.113.1").unwrap());
+            assert!(
+                local_request(&forwarded, &TrustedHosts::default(), true).is_none(),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn conjunct_4_a_rebound_host_is_not_local() {
+        let rebound = headers(&[("Host", "evil.example:3456")]);
+        assert!(local_request(&rebound, &TrustedHosts::default(), true).is_none());
+    }
+
+    #[test]
+    fn conjunct_4_a_missing_host_is_not_local() {
+        // An absent input can never grant. HTTP/1.0 clients may omit `Host`.
+        assert!(local_request(&[], &TrustedHosts::default(), true).is_none());
+    }
+
+    #[test]
+    fn conjunct_4_a_merely_trusted_host_is_not_thereby_local() {
+        // `host_is_trusted` would happily accept this for a mutation. It
+        // still must not read as "this caller is local" — the whole reason
+        // `host_is_loopback` exists apart from it.
+        let trusted = TrustedHosts::from_parts(vec!["proxy.example".to_string()], Vec::new());
+        assert!(
+            local_request(&headers(&[("Host", "proxy.example")]), &trusted, true).is_none(),
+            "a merely-trusted Host is not a local one"
         );
     }
 

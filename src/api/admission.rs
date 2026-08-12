@@ -60,9 +60,7 @@
 //! read what it gets back. That is conjunct 3, and it is why this module grew
 //! a `Host` requirement on reads that it never had.
 
-use crate::api::http::{
-    Reply, TrustedHosts, header_value, host_is_loopback, mutation_guard_ok, text_reply,
-};
+use crate::api::http::{Reply, TrustedHosts, local_request, mutation_guard_ok, text_reply};
 use crate::api::rest::mutating;
 use crate::api::rpc::{constant_time_eq, token_ok};
 use crate::daemon::http1::{Header, Method};
@@ -110,65 +108,44 @@ pub fn admission(
     None
 }
 
-/// The headers a reverse proxy adds when it forwards a request. Their mere
-/// presence retracts the loopback exemption (conjunct 4).
-///
-/// None of these is authentication and none is trusted — a caller may set any
-/// of them freely. That is exactly what makes them safe to consult here: under
-/// [`token_exempt`]'s governing rule they can only ever *withhold* the
-/// exemption, so forging one refuses nobody but the forger. What they buy is
-/// the *honest* proxy — nginx's own recommended configuration, caddy, traefik
-/// and `tailscale serve` each set at least one, which turns every one of them
-/// from silently exempt into "token required, exactly as before".
-const FORWARDING_HEADERS: [&str; 5] = [
-    "X-Forwarded-For",
-    "X-Forwarded-Host",
-    "X-Forwarded-Proto",
-    "Forwarded",
-    "X-Real-IP",
-];
-
 /// Whether this request may be admitted with **no token at all** (SH-250).
 ///
 /// # The governing rule
 ///
 /// **An attacker-supplied header may only withhold trust, never confer it.**
 ///
-/// The single affirmative grant here is `loopback`, stamped on the listener at
-/// bind time — the one input in this function no caller can supply. Every
-/// other conjunct can only turn the exemption *off*. Keep it that way: a
-/// future edit that lets a request-borne value *grant* the exemption breaks
-/// the rule however reasonable it looks on its own, because every such value
-/// is forgeable by exactly the caller the exemption must not reach.
+/// The single affirmative grant is `loopback`, stamped on the listener at bind
+/// time — the one input no caller can supply. Every other conjunct can only
+/// turn the exemption *off*. Keep it that way: a future edit that lets a
+/// request-borne value *grant* the exemption breaks the rule however
+/// reasonable it looks on its own, because every such value is forgeable by
+/// exactly the caller the exemption must not reach.
 ///
 /// # The conjuncts, and what each one is for
 ///
-/// 1. **`loopback`** — it arrived on the listener bound to `127.0.0.1`.
-/// 2. **`Get | Head`, affirmatively.** Not `!mutating(method)`: `Put`,
-///    `Options` and `Other(_)` all parse ([`Method`]) and none of them is
-///    [`mutating`], so the negative spelling would hand a future `PUT` route
-///    the exemption the day it was added, silently.
-/// 3. **`Host` is a loopback literal** — [`host_is_loopback`], deliberately
-///    *not* [`crate::api::http::host_is_trusted`], which also matches the
-///    allowlists. A configured proxy hostname must never be able to answer
-///    "is this caller local?". This is also the conjunct that keeps DNS
-///    rebinding out of the newly-tokenless read surface, which no guard has
-///    ever covered (see the module doc).
-/// 4. **No [`FORWARDING_HEADERS`]** — see that constant.
-/// 5. **No reverse-proxy allowlist is configured**
-///    ([`TrustedHosts::behind_a_proxy`]). A reverse proxy connects to this
-///    daemon *over loopback*, so an operator declaring one is telling this
-///    daemon that "arrived on loopback" has stopped meaning "came from this
-///    machine". Reading it from the `proxy` half alone is what stops a bound
-///    tailnet interface — which is not an indirection — from withdrawing the
-///    exemption on every Tailscale machine.
-/// 6. **Not `.../dispatch`.** That route spawns processes.
-///    [`crate::api::dispatch::intercept`] refuses a tokenless dispatch on its
-///    own regardless, since it is never told about the exemption and both
-///    gates fail closed — this conjunct stops *this* gate from admitting
-///    something the next one will refuse, which would be merely confusing
-///    today and load-bearing the day somebody acts on the standing note that
-///    `intercept`'s duplicated checks look redundant.
+/// Four of the six are locality, and they live in
+/// [`crate::api::http::local_request`] rather than here (SH-251): `loopback`,
+/// the loopback-literal `Host`, the absence of
+/// [`crate::api::http::FORWARDING_HEADERS`], and the
+/// absence of a configured reverse-proxy allowlist. That function's own doc
+/// comment explains each, and holding its [`LocalRequest`](crate::api::http::LocalRequest)
+/// is the only way anything in this daemon may conclude "the caller is local".
+/// They were spelled inline here until a second gate needed the same answer,
+/// and a governing principle living in two files is how it rots.
+///
+/// The two that are this module's own:
+///
+/// * **`Get | Head`, affirmatively.** Not `!mutating(method)`: `Put`,
+///   `Options` and `Other(_)` all parse ([`Method`]) and none of them is
+///   [`mutating`], so the negative spelling would hand a future `PUT` route
+///   the exemption the day it was added, silently.
+/// * **Not `.../dispatch`.** That route spawns processes.
+///   [`crate::api::dispatch::intercept`] refuses a tokenless dispatch on its
+///   own regardless, since it is never told about the exemption and both
+///   gates fail closed — this conjunct stops *this* gate from admitting
+///   something the next one will refuse, which would be merely confusing
+///   today and load-bearing the day somebody acts on the standing note that
+///   `intercept`'s duplicated checks look redundant.
 ///
 /// `/api/v1/*` needs no conjunct: [`admission`] returns before reaching here,
 /// leaving that surface entirely to [`crate::api::rpc::admission`].
@@ -191,16 +168,9 @@ fn token_exempt(
     trusted_hosts: &TrustedHosts,
     loopback: bool,
 ) -> bool {
-    loopback
-        && matches!(method, Method::Get | Method::Head)
-        && !trusted_hosts.behind_a_proxy()
+    matches!(method, Method::Get | Method::Head)
         && !crate::api::dispatch::is_dispatch_path(segments)
-        && !headers.iter().any(|header| {
-            FORWARDING_HEADERS
-                .iter()
-                .any(|name| header.field.equiv(name))
-        })
-        && header_value(headers, "Host").is_some_and(host_is_loopback)
+        && local_request(headers, trusted_hosts, loopback).is_some()
 }
 
 /// Whether `query`'s `token=` value matches `token`, constant-time.
@@ -226,6 +196,13 @@ fn query_token_ok(query: Option<&str>, token: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Named here rather than in the module's own imports: since SH-251 the
+    // constant lives in `http.rs` beside the locality predicate that reads
+    // it, and this module's only remaining use of it is conjunct 4's test —
+    // which stays byte-identical across that extraction, which is what makes
+    // the extraction's behaviour-preservation checkable by reading the diff.
+    use crate::api::http::FORWARDING_HEADERS;
 
     const TOKEN: &str = "the-real-token";
 
