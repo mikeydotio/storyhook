@@ -1071,18 +1071,21 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
     }
     // Deliberately does NOT also call `serving.watcher.notice()` here.
     // Every mutating REST route is built through `Routed::changing`, so its
-    // `Changed` coverage above is already exhaustive — `notice()`'s
-    // store-wide diff would add no coverage and would risk attributing an
-    // unrelated out-of-band commit to this response, which can consume
-    // `ChangeBus`'s 200ms coalesce window and cause a *later*, genuinely
-    // relevant publish for the same project to be silently dropped
-    // (`ChangeBus::publish` coalesces on the leading edge). Confirmed by two
-    // failing integration tests during SH-202's own implementation; a
-    // council vote (`.council/rest-arm-join-shared-change-watcher-boundary/`)
-    // scoped the fix to the RPC arm alone, which is the gap the story was
-    // actually filed about. The residual cost is exactly today's status
-    // quo: the safety-net poll may re-publish a REST change up to one poll
-    // interval after this precise publish already did.
+    // `Changed` coverage above is already exhaustive and `notice()`'s
+    // store-wide diff would add none. A council vote
+    // (`.council/rest-arm-join-shared-change-watcher-boundary/`) scoped
+    // SH-202's fix to the RPC arm alone, which is the gap that story was
+    // actually filed about.
+    //
+    // Its second reason has since expired: a `notice()` call here could
+    // attribute an unrelated out-of-band commit to this response and consume
+    // `ChangeBus`'s 200ms coalesce window, silently dropping a *later*,
+    // genuinely relevant publish for the same project. SH-216 deleted that
+    // window, so an incidental publish now costs one extra refetch instead.
+    // The first reason still stands on its own, so the behaviour here is
+    // unchanged. The residual cost is also unchanged: the safety-net poll may
+    // re-publish a REST change up to one poll interval after this precise
+    // publish already did.
     let _ = job.reply.send(Verdict::Reply(routed.reply));
 }
 
