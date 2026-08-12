@@ -799,6 +799,44 @@ Related:
         );
 
         m.insert(
+            "github-auth",
+            r#"story github-auth login|status|logout
+
+Manage the durable GitHub credential the daemon's background poll uses
+to check linked pull requests unattended (SH-212). Separate from the
+STORYHOOK_GITHUB_TOKEN environment variable `story github-sync` and
+`story pr-check` read per invocation: this one is stored once, in your
+OS keychain (macOS Keychain, Windows Credential Manager, or the Secret
+Service on Linux), and spent by the daemon on a five-minute timer with
+nobody typing a command.
+
+login    Prompts for a GitHub Personal Access Token (always
+         interactive — there is no non-interactive form) and stores it.
+status   Reports whether a credential is stored, without printing it.
+logout   Deletes the stored credential. The daemon stops using it on
+         its next poll tick; no restart needed.
+
+When to use:
+  Once, to let close-on-merge links (`story link-pr`) resolve on their
+  own instead of requiring a human or a scheduler to run
+  `story pr-check`. Everyone else can keep running `story pr-check` by
+  hand or from cron/CI, which needs no stored credential at all.
+
+Examples:
+  story github-auth login     # prompts for a token, stores it
+  story github-auth status    # "a GitHub credential is stored..."
+  story github-auth logout    # removes it
+
+Requires the github-sync feature, like `story pr-check` itself.
+
+Related:
+  story pr-check      — Check linked pull requests by hand
+  story link-pr        — Link a pull request to a story
+  story github-sync    — The other GitHub credential, read per invocation
+"#,
+        );
+
+        m.insert(
             "scaffold",
             r#"story scaffold agents-md|claude-md|cursor-rules
 
