@@ -12,6 +12,9 @@
 //! * [`http`] — the plumbing both share: response shaping, the security
 //!   headers, the CSRF and DNS-rebinding guard, body reading, SSE framing.
 //! * [`rest`] — the dashboard's resource API, over the service layer.
+//! * [`routes`] — every route named once, and what authority each requires.
+//!   Imports nothing but a `Method`, so the gate that classifies a request
+//!   before reading its body structurally cannot reach a store (SH-254).
 //! * [`rpc`] — the daemon's control surface: loopback only, token-authenticated.
 //! * [`wire`] — the `/api/v1/invoke` envelope, shared by the daemon and its
 //!   client.
@@ -26,5 +29,6 @@ pub mod dispatch;
 pub mod handoff;
 pub mod http;
 pub mod rest;
+pub mod routes;
 pub mod rpc;
 pub mod wire;
