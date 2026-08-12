@@ -839,7 +839,14 @@ pub fn story_views(
     // `story_view` answers a single-story question by filtering the *whole*
     // project's views (see below), so a per-story query here would run once
     // per story in the project on every `story show`.
+    //
+    // `comment_mentions` rides the same gate and is computed here for the same
+    // reason, with one difference worth naming: it is not a store read at all
+    // (SH-220). Every comment thread is already folded into `stories` above, so
+    // this is a scan over data in hand rather than a second trip to the store —
+    // which is also why a retracted comment needs no invalidation path.
     let mut pr_links_by_id: BTreeMap<String, Vec<crate::store::PrLink>> = BTreeMap::new();
+    let mut comment_mentions_by_id: BTreeMap<String, Vec<domain::CommentMention>> = BTreeMap::new();
     if include_derived {
         let prefix = project_prefix(tx, project)?;
         for (story_no, link) in tx.pr_links(project)? {
@@ -848,6 +855,7 @@ pub fn story_views(
                 .or_default()
                 .push(link);
         }
+        comment_mentions_by_id = domain::derive_comment_mentions(&prefix, &stories);
     }
 
     let mut views = Vec::with_capacity(stories.len());
@@ -867,6 +875,7 @@ pub fn story_views(
         let referenced_by = ReferencedBy {
             commits: story.referenced_by_commits.clone(),
             prs: pr_links_by_id.get(&id).cloned().unwrap_or_default(),
+            comment_mentions: comment_mentions_by_id.remove(&id).unwrap_or_default(),
         };
 
         views.push(StoryView {

@@ -1093,16 +1093,27 @@ Commands returning a single story ("story" field):
         "commits": [
           {"at": "2025-01-15T10:30:00Z", "sha": "abc123...", "subject": "feat: closes SH-1"}
         ],
-        "prs": []
+        "prs": [],
+        "comment_mentions": [
+          {"at": "2025-01-16T09:00:00Z", "other_id": "SH-7", "snippet": "superseded by SH-1"}
+        ]
       },
       "warnings": [],
       "flagged_reasons": [],
       "stale_info": null
     }
 
-  "referenced_by" is omitted entirely when both "commits" and "prs" are
-  empty. "commits" comes from `commit-sync` scanning git history; "prs"
-  from `story link-pr`. Neither ever appears in "comments" (SH-169).
+  "referenced_by" is omitted entirely when all three lists are empty, and
+  each list is omitted when it alone is. "commits" comes from `commit-sync`
+  scanning git history; "prs" from `story link-pr`; "comment_mentions" from
+  scanning every *other* story's comments for this story's id (SH-220) —
+  "other_id" is the story that did the mentioning, and "snippet" is the
+  matched line of its comment, capped at 120 bytes. None of the three ever
+  appears in "comments" (SH-169).
+
+  "prs" and "comment_mentions" are cross-story work, so they arrive on
+  `story show` and are absent from `story list`, `story next` and `story
+  search` — the same gate "derived_relationships" and "progress" are behind.
 
   A story removed via `story delete` also carries "deleted": true and
   "deleted_reason": "<reason>" (omitted entirely for non-deleted stories).

@@ -3978,18 +3978,21 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return wrap;
   }
 
-  /** Commits `commit-sync` found and PRs `story link-pr` recorded (SH-169) —
-   * the data that used to spam the comments list as `[git]` noise. Commits
-   * come off `st` (folded into the snapshot for free, so present as soon as
-   * the summary is); PRs only arrive with the single-story detail fetch,
-   * same split `buildRelationshipsSection` draws for `derived_relationships`.
-   * Renders nothing at all when there is neither — there is no "add"
-   * affordance here, so an empty collapsible would be pure clutter. */
+  /** Commits `commit-sync` found, PRs `story link-pr` recorded (SH-169), and
+   * comments on other stories that named this one (SH-220) — the data that
+   * used to spam the comments list as `[git]` noise. Commits come off `st`
+   * (folded into the snapshot for free, so present as soon as the summary
+   * is); PRs and comment mentions only arrive with the single-story detail
+   * fetch, same split `buildRelationshipsSection` draws for
+   * `derived_relationships`. Renders nothing at all when there is none of
+   * the three — there is no "add" affordance here, so an empty collapsible
+   * would be pure clutter. */
   function buildReferencedBySection(st, full) {
     var commits = st.referenced_by_commits || [];
     var prs = (full && full.referenced_by && full.referenced_by.prs) || [];
-    if (!commits.length && !prs.length) return null;
-    var wrap = el("div", {}, [buildSectionToggle("referencedBy", "Referenced By", commits.length + prs.length)]);
+    var mentions = (full && full.referenced_by && full.referenced_by.comment_mentions) || [];
+    if (!commits.length && !prs.length && !mentions.length) return null;
+    var wrap = el("div", {}, [buildSectionToggle("referencedBy", "Referenced By", commits.length + prs.length + mentions.length)]);
     if (!state.drawerSections.referencedBy) return wrap;
     var list = el("div", { class: "referenced-by-list" }, []);
     commits.forEach(function(c) {
@@ -4006,6 +4009,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
             "PR " + p.owner + "/" + p.repo + "#" + p.number
           ]),
           " (" + p.status + ")"
+        ])
+      ]));
+    });
+    // The mentioning story is a button, not text: a backlink you cannot follow
+    // is half of one. Same `rel-id` affordance the relationships list uses.
+    mentions.forEach(function(m) {
+      list.appendChild(el("div", { class: "referenced-by-row" }, [
+        el("span", { class: "referenced-by-meta" }, [(m.at || "").replace("T", " ").slice(0, 16)]),
+        el("span", { class: "referenced-by-text" }, [
+          el("button", { class: "rel-id", onClick: function() { openDrawer(m.other_id); } }, [m.other_id]),
+          " " + m.snippet
         ])
       ]));
     });
