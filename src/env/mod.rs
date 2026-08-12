@@ -108,7 +108,9 @@ impl Environment {
     /// An unparseable `STORYHOOK_DAEMON_ADDR` or `STORYHOOK_BUSY_TIMEOUT_MS` is
     /// an error rather than a silent fallback: both name where a request goes
     /// and how long it waits, and a typo that quietly reverts to the default is
-    /// a debugging session.
+    /// a debugging session. `STORYHOOK_DAEMON_ADDR` is refused for a second
+    /// reason too — an IP other than `127.0.0.1`, which parses fine and names
+    /// an address this daemon will not bind (see [`parse_daemon_addr`]).
     pub fn from_process(store_flag: Option<&Path>) -> Result<Self, AppError> {
         let home = env_path("HOME")
             .ok_or_else(|| AppError::Storage("could not determine home directory".to_string()))?;
@@ -123,11 +125,7 @@ impl Environment {
             .unwrap_or_else(|| home.join(".local/state/storyhook"));
 
         let daemon_addr = match env_string("STORYHOOK_DAEMON_ADDR") {
-            Some(raw) => raw.parse().map_err(|e| {
-                AppError::Usage(format!(
-                    "STORYHOOK_DAEMON_ADDR=`{raw}` is not an address: {e}"
-                ))
-            })?,
+            Some(raw) => parse_daemon_addr(&raw)?,
             None => default_daemon_addr(store.is_default()),
         };
 
@@ -467,6 +465,61 @@ impl Environment {
     }
 }
 
+/// The only IP a storyhook daemon binds on its own account.
+///
+/// `crate::daemon::serve::bind_listeners` binds this literal; the tailnet
+/// interface beside it is bound from an identity `tailscale` reports, never
+/// from anything a variable named. So this is the whole of what
+/// `$STORYHOOK_DAEMON_ADDR` may legitimately name.
+const DAEMON_BIND_IP: std::net::IpAddr = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+
+/// Parses `$STORYHOOK_DAEMON_ADDR`, refusing an IP this daemon will not bind.
+///
+/// # Why the IP is checked rather than ignored (SH-253)
+///
+/// The variable parses as a full [`SocketAddr`] but only its port has ever been
+/// used — `crate::daemon::lifecycle::preferred_port` takes `.port()` and the
+/// bind is a hardcoded `127.0.0.1`. So `STORYHOOK_DAEMON_ADDR=0.0.0.0:3456`
+/// was *accepted*, silently ignored, and left an operator believing they had
+/// widened a bind that never moved. Half a parsed value quietly discarded is a
+/// defect on its own; since SH-250 it is a security-shaped one, because
+/// "which interface did this arrive on" is now what decides whether a read
+/// needs a credential at all.
+///
+/// # Exactly `127.0.0.1`, not any loopback address
+///
+/// Deliberately not `is_loopback()`, which would also admit `127.0.0.2` and
+/// `::1`. Those are real, distinct sockets that this daemon never binds, so
+/// accepting one would preserve the very defect this check exists to remove —
+/// in a smaller box. `crate::api::http::host_is_loopback` accepts `::1` as a
+/// `Host`, which makes the mismatch actively confusing rather than merely
+/// unused.
+///
+/// The refusal fires in [`Environment::from_process`], which runs at the top of
+/// *every* `story` invocation rather than only at daemon startup. That is why
+/// the message names the fix three times over — the accepted spelling, the flag
+/// that sets a port on its own, and the tailnet interface that answers the need
+/// a wider bind would have been reached for.
+fn parse_daemon_addr(raw: &str) -> Result<SocketAddr, AppError> {
+    let addr: SocketAddr = raw.parse().map_err(|e| {
+        AppError::Usage(format!(
+            "STORYHOOK_DAEMON_ADDR=`{raw}` is not an address: {e}"
+        ))
+    })?;
+    if addr.ip() != DAEMON_BIND_IP {
+        return Err(AppError::Usage(format!(
+            "STORYHOOK_DAEMON_ADDR=`{raw}` names an IP the daemon does not bind. \
+             It binds {DAEMON_BIND_IP} — and, on a machine with a tailnet, that \
+             Tailscale interface as well — so only `{DAEMON_BIND_IP}:PORT` is \
+             accepted here, and `--port PORT` sets the port without naming an \
+             address at all. To reach the dashboard from another machine, use \
+             the tailnet address the daemon already binds for you: a wider bind \
+             would expose a full-privilege API to the local network."
+        )));
+    }
+    Ok(addr)
+}
+
 /// The address a daemon prefers when nothing names one.
 ///
 /// The **default** store keeps [`DEFAULT_DAEMON_PORT`], so a bookmarked
@@ -591,6 +644,77 @@ fn env_string(name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- `$STORYHOOK_DAEMON_ADDR`'s IP means something now (SH-253) ---
+
+    /// The spelling every harness, the README and the launchd agent use.
+    #[test]
+    fn the_daemon_address_accepts_the_address_the_daemon_binds() {
+        assert_eq!(
+            parse_daemon_addr("127.0.0.1:0").expect("the harness spelling"),
+            SocketAddr::from(([127, 0, 0, 1], 0))
+        );
+        assert_eq!(
+            parse_daemon_addr("127.0.0.1:3456").expect("the bookmarked spelling"),
+            SocketAddr::from(([127, 0, 0, 1], DEFAULT_DAEMON_PORT))
+        );
+    }
+
+    /// The defect SH-253 names: an IP that parsed, was thrown away, and left
+    /// the operator believing they had moved a bind that never moved.
+    ///
+    /// `127.0.0.2` and `::1` are in this list on purpose. Both *are* loopback,
+    /// so an `is_loopback()` check would admit them — and both are distinct
+    /// sockets this daemon never binds, which is the same silent discard in a
+    /// smaller box. Only the literal the daemon binds is accepted.
+    #[test]
+    fn the_daemon_address_refuses_every_ip_the_daemon_will_not_bind() {
+        for raw in [
+            "0.0.0.0:3456",
+            "192.168.1.5:3456",
+            "100.64.0.1:3456",
+            "[::1]:3456",
+            "[::]:3456",
+            "127.0.0.2:3456",
+        ] {
+            let error = parse_daemon_addr(raw)
+                .expect_err("an IP the daemon does not bind must not be accepted and ignored");
+            assert!(
+                matches!(error, AppError::Usage(_)),
+                "{raw} is the operator's mistake to fix, not a storage failure"
+            );
+        }
+    }
+
+    /// The refusal fires on every `story` invocation, not just daemon startup,
+    /// so a message that only says "no" reads as a total outage. It has to name
+    /// the way out — all three of them.
+    #[test]
+    fn the_refusal_names_the_accepted_spelling_the_flag_and_the_tailnet() {
+        let AppError::Usage(message) =
+            parse_daemon_addr("0.0.0.0:3456").expect_err("a wildcard bind is refused")
+        else {
+            panic!("a misconfigured variable is a usage error");
+        };
+        assert!(
+            message.contains("127.0.0.1:PORT"),
+            "the accepted spelling: {message}"
+        );
+        assert!(message.contains("--port"), "the flag: {message}");
+        assert!(message.contains("tailnet"), "the remote answer: {message}");
+    }
+
+    /// The older refusal still stands, and still says which variable it means.
+    #[test]
+    fn the_daemon_address_still_refuses_something_that_is_not_an_address() {
+        let error = parse_daemon_addr("localhost:3456")
+            .expect_err("a hostname is not a SocketAddr, and never was");
+        let AppError::Usage(message) = error else {
+            panic!("a misconfigured variable is a usage error");
+        };
+        assert!(message.contains("STORYHOOK_DAEMON_ADDR"), "{message}");
+        assert!(message.contains("is not an address"), "{message}");
+    }
 
     #[test]
     fn an_empty_variable_is_ignored_rather_than_joined_onto() {
