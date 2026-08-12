@@ -57,7 +57,7 @@ classDiagram
         -store: StoreLocation
         -state_home: PathBuf
         -home: PathBuf
-        -daemon_addr: Option~SocketAddr~
+        -preferred_port: u16
         -busy_timeout: Duration
         +from_process() Result~Environment~
         +at(home) Environment
@@ -67,7 +67,7 @@ classDiagram
         +daemon_pidfile() PathBuf
         +daemon_spawn_lock() PathBuf
         +daemon_log() PathBuf
-        +preferred_daemon_addr() SocketAddr
+        +preferred_port() u16
     }
 
     class StoreLocation {
@@ -321,3 +321,19 @@ guard alone, matching the same carve-out `project_creation_target` already draws
 
 No schema migration, no wire change: `ProjectRecord::created_at` already carried what the
 gate needs.
+
+### Later amendment — the daemon address became a port (SH-253)
+
+The `Environment` diagrammed above carried a `SocketAddr` whose IP nothing ever read:
+`preferred_port` took `.port()` off it, and the bind underneath was a hardcoded
+`127.0.0.1`. So `$STORYHOOK_DAEMON_ADDR`'s IP was parsed and silently discarded, which
+turned into a security-shaped defect once SH-250 made "which interface did this arrive
+on" decide whether a read needs a credential at all.
+
+SH-253 refused the discard rather than honouring it. The variable now accepts exactly
+`127.0.0.1` and refuses any other IP with a message naming `--port` and the tailnet
+interface; `Environment` carries the `u16` port that survives, and `serve::bind_listeners`
+is the single place in the program that names an address to bind. The diagram above is
+updated to the shape as built, so **"`STORYHOOK_DAEMON_ADDR` still overrides explicitly
+and still wins" under *Ports* should be read as being about the port** — which is all it
+ever meant, and now all it can say.

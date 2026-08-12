@@ -41,9 +41,7 @@ pub const LAUNCHD_LABEL: &str = "io.mikey.storyhook.daemon";
 /// Pinned by `a_daemon_from_another_build_is_replaced_rather_than_reused`.
 pub fn start(env: &Environment, port: Option<u16>) -> Result<DaemonInfo, AppError> {
     let env = match port {
-        Some(port) => env
-            .clone()
-            .daemon_addr(std::net::SocketAddr::from(([127, 0, 0, 1], port))),
+        Some(port) => env.clone().daemon_port(port),
         None => env.clone(),
     };
     lifecycle::ensure(&env)

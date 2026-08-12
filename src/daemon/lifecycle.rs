@@ -653,16 +653,6 @@ pub fn info_for(
     })
 }
 
-/// The port a daemon should try first.
-///
-/// The preferred port keeps a bookmarked dashboard URL working across restarts;
-/// falling back to an OS-assigned one means a daemon can always start, even when
-/// something else holds it. A test harness sets the preferred port to 0, so a
-/// suite never contends for the port a developer's own dashboard is using.
-pub fn preferred_port(env: &Environment) -> u16 {
-    env.preferred_daemon_addr().port()
-}
-
 /// Binds a listener for the daemon: the preferred port, else one the kernel
 /// picks.
 ///
@@ -683,7 +673,7 @@ pub fn preferred_port(env: &Environment) -> u16 {
 pub fn bind_preferred(
     env: &Environment,
 ) -> Result<(Vec<super::serve::Listener>, super::serve::BoundAddress), AppError> {
-    let preferred = preferred_port(env);
+    let preferred = env.preferred_port();
     match super::serve::bind_listeners(preferred) {
         Ok(bound) => Ok(bound),
         Err(_) if preferred != 0 => super::serve::bind_listeners(0),
@@ -1144,7 +1134,7 @@ fn spawn_child(env: &Environment) -> Result<std::process::Child, AppError> {
     // worse: a daemon published in *this* store's directory while holding a
     // different file is the disagreement the whole design exists to make
     // unrepresentable.
-    let port = preferred_port(env).to_string();
+    let port = env.preferred_port().to_string();
     let store = env.store_path().to_path_buf();
     let mut command = Command::new(exe);
     command

@@ -335,8 +335,32 @@ anywhere to assert the variable changes any outcome at all.
 - **SH-251** — hand the dashboard its token from `story web open`, so nothing ever
   prompts. Two of the three reviewers argued that if this ships, the read exemption may no
   longer earn its keep; that reassessment belongs to that story.
-- **SH-253** — `loopback` is a label on a listener, not a fact about the peer. It is
-  stamped beside a hardcoded `127.0.0.1` bind, while `STORYHOOK_DAEMON_ADDR` already
-  parses a full `SocketAddr` whose IP is silently discarded. Conjunct 1 is the affirmative
-  grant this whole rule rests on, so that label becoming wrong is now a security failure
-  rather than a curiosity.
+
+### Conjunct 1 is now derived rather than asserted — SH-253, fixed
+
+SH-253 was filed here as "`loopback` is a label on a listener, not a fact about the peer":
+the flag conjunct 1 rests on was *stamped* `true` beside a hardcoded `127.0.0.1` bind,
+while `STORYHOOK_DAEMON_ADDR` parsed a full `SocketAddr` whose IP was silently discarded.
+It has since been closed, and what closed it changes how this rule should be read.
+
+`serve::Listener` no longer has a `loopback` field. It holds the `SocketAddr` it bound —
+read back off the socket by its one constructor — and `is_loopback()` computes the answer
+from it, so the label cannot disagree with the bind because there is nothing left to
+disagree with. `src/daemon/serve.rs`'s
+`the_tokenless_read_exemption_follows_the_bind_rather_than_a_constant` binds a real
+wildcard socket, derives the flag from it, and asserts this module's own `admission`
+refuses a tokenless read on the result — the test that fails the day conjunct 1 stops
+following the bind.
+
+The variable's IP is refused rather than discarded: exactly `127.0.0.1`, not any loopback
+address, because `127.0.0.2` and `::1` are distinct sockets the daemon never binds and
+`host_is_loopback` accepts `::1` as a `Host`. `Environment` then carries a `u16` port and
+no address at all, which is what makes "bind whatever the variable said" unwritable rather
+than merely refused.
+
+Honouring the IP — a real option, and the one that would have made conjunct 1 load-bearing
+in a new way — was rejected on the merits by a three-seat council
+(`.council/sh-253-daemon-addr-ip-meaning/`, unanimous): `/api/v1/*` 404s off-loopback and
+since SH-114 that is the only way a `story` command reaches the store, so an honoured
+`0.0.0.0` yields a daemon its own CLI cannot talk to, while exposing the dashboard. The
+tailnet listener already answers the need a wider bind would be reached for.

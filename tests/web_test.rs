@@ -3580,12 +3580,12 @@ fn web_deregister_repo_requires_guard_header() {
 /// `cli::DEFAULT_WEB_PORT` was a second copy of this number, and a copy is what
 /// let `story web start` disagree with `story daemon start` about the same port
 /// (SH-249). `env::DEFAULT_DAEMON_PORT` is the survivor because it is the one
-/// `default_daemon_addr` actually consults — the parser now names no port at all.
+/// `default_daemon_port` actually consults — the parser now names no port at all.
 #[test]
 fn the_dashboards_default_port_is_3456_and_there_is_one_of_it() {
     assert_eq!(storyhook::env::DEFAULT_DAEMON_PORT, 3456);
     assert_eq!(
-        storyhook::env::default_daemon_addr(true).port(),
+        storyhook::env::default_daemon_port(true),
         3456,
         "the default store's daemon prefers the port a bookmarked dashboard URL uses"
     );
