@@ -11313,3 +11313,94 @@ deleted and pruned, `main` fast-forwarded.
 **No version bump** — left for the next batched `/semver` pass.
 
 **Next:** run `story next` fresh.
+
+### SH-233 — `story migrate` never carried a legacy tree's github-sync config · PR #303 · **done**
+
+**The defect, and why it survived SH-189.** `src/legacy/` — the reader
+`story migrate` uses — had zero references to `github-sync.toml` or
+`github-sync/bases/`, so `MigrationPlan::apply` wrote `github_sync: None` into
+every project it ever created, whatever the tree held. SH-189 closed the same
+gap on the store-side pair (`story export`/`story import-project`, and the
+`store -> export -> legacy tree` rollback leg) and filed this as its sibling.
+The two directions look symmetrical and are not: SH-189's legs both start from a
+store, and this one starts from a real tree on disk.
+
+**Silent, which is what made it worth a story at a low priority.** The migration
+report has a settings inventory — SH-133 put `sync.auto_transition` and
+`doctor.stale_threshold` in it — and github-sync was simply absent from it. So a
+user migrating a github-synced project lost every issue mapping and every merge
+base, and the first `story github-sync` afterwards presented as an ordinary
+first setup with nothing to explain why.
+
+**Mappings and bases move together or not at all.** That is SH-133's rule
+("a partial carry is worse than none") and it is load-bearing here: `load_config`
+decides a project is *configured* from the blob alone, and
+`sync_single_story`'s `load_base(..).unwrap_or_else(|| story.clone())` then
+treats local as base — so a mapped-but-baseless story files every stale remote
+field as an ordinary pull, at exit 0. A corrupt base is therefore an **error
+naming the file**, never a skip: skipping one manufactures exactly that state.
+
+**Two decisions, neither of them a council.**
+
+*The blob is not reconciled against the checkout's git remote.* A restore does
+that (`reconcile_restored_github_remote`) because its document can land in a fork
+or a relocated clone. A migration's destination **is** its source — `apply`
+adopts the very directory the tree was read from — so the owner/repo in the blob
+is the one the legacy tool derived from this same repository. Genuine drift is
+`story doctor`'s `github_remote_advice`, which re-asks on every run rather than
+once. Evidence settled it; no defensible second answer to weigh.
+
+*An orphan merge base refuses the migration by name.* `github_bases` carries a
+live foreign key to `stories(project_id, story_no)`, and
+`transfer::import_project` already refuses the identical shape in an export
+document for the identical reason. Precedent, not a choice.
+
+**A fixture that could have passed for the wrong reason.** Every merge base the
+tests write deliberately differs from the story it belongs to — a base is what
+github-sync last merged against, not what the story says now. Against an
+identical base, a carry that quietly re-derived the base from the story's
+current snapshot would look correct.
+
+**The round trip could not have proven this until now.** `migrate_round_trip.rs`
+runs tree → store → document → tree, and github-sync had never travelled the
+first leg, so the loop stayed green while dropping it. It now carries the config
+and its bases end to end, asserted through the legacy exporter — the reader a
+reverted binary's equivalent would be.
+
+**A docs commit rides along, and it was already owed.** Four places still argued
+the envelope deliberately leaves github-sync behind because the bases have
+nowhere to live in a tree. SH-189 retired that premise and left the notes —
+including `docs/rearch/flip-checklist.md`'s carry table, which
+`ProjectExport`'s own doc comment names as the authority on what the envelope
+does and does not carry. The reasoning is kept, not deleted: a partial carry is
+still worse than none. What changed is that both halves now have somewhere to go
+on every leg. Two hats, two commits.
+
+**Gate:** full `make test`, supervised (log-growth heartbeat, 135s stall bound),
+run **twice** — once before two wording edits and once on the exact tree that
+was pushed, because the first run no longer described the tree after those
+edits. Both green: 145 Rust test binaries, plugin harness 30/30, Playwright
+89/89, `clippy -D warnings` clean, no stall, no orphan daemons. No
+`SKIP_PREPUSH_TESTS=1` this time — the previous entry's confession is why the
+second run happened rather than being argued away as redundant.
+
+**PR:** #303, two commits, merged as `3bf0221`. `Closes SH-233.` in the commit
+body closed the story automatically on merge — worth recording, because SH-225's
+entry above notes the opposite outcome when the same line sat only in the PR
+body, which the merge commit does not carry. Branch deleted and pruned, `main`
+fast-forwarded.
+
+**Also this session, on Mikey's instruction:** SH-197 closed as `done` and its
+worktree reclaimed. `story.sh complete` reported its branch **unmerged** and
+preserved it — correctly, by its own SHA-based test, and misleadingly: PR #274
+was reconciled and force-pushed before merging, so `origin/main` carries the same
+work under different SHAs. Verified at content level rather than by ref
+(`#delete-modal` present, `renderDeleteConfirm` gone, all four
+`story-context-menu*` specs tracked, the as-built note in
+`docs/spec/dashboard-dispatch.md`) before closing anything. **A guard rail
+reading "unmerged" after a reconcile is not evidence of unlanded work — check the
+content, not the ancestry.**
+
+**No version bump** — left for the next batched `/semver` pass.
+
+**Next:** run `story next` fresh.
