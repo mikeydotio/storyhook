@@ -1005,6 +1005,15 @@ pub enum WebAction {
     },
     Open,
     Address,
+    /// End every scoped dashboard capability this daemon has issued (SH-254).
+    ///
+    /// The kill switch the capability's design requires. Not an
+    /// [`Invocation`] the daemon executes against the store — capabilities are
+    /// daemon *process* state, and `/api/v1/invoke` builds a `StoreInvoker`
+    /// with no handle to it — so this is dispatched client-side in
+    /// [`crate::web`], against the control route, exactly as `web open` arms a
+    /// coupon.
+    Revoke,
 }
 
 /// The global flags, and everything that is not one.
@@ -3453,7 +3462,7 @@ fn parse_port_flag(rest: &[String], usage: &str) -> Result<Option<u16>, AppError
 }
 
 fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story web start [--port <PORT>] | stop | status | open | address";
+    let usage = "usage: story web start [--port <PORT>] | stop | status | open | address | revoke";
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -3484,6 +3493,9 @@ fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
         }),
         "address" => Ok(Invocation::Web {
             action: WebAction::Address,
+        }),
+        "revoke" => Ok(Invocation::Web {
+            action: WebAction::Revoke,
         }),
         // Internal: `story web --serve [--port N]`, what the spawner execs.
         "--serve" => Ok(Invocation::Web {
