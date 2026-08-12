@@ -6,6 +6,9 @@
 //!   behind (SH-187), reads and writes alike, on both listeners.
 //! * [`dispatch`] — the dashboard's dispatch endpoint (SH-50): token-gated,
 //!   answered off the store-owning thread, on both listeners.
+//! * [`handoff`] — the one-shot coupon `story web open` arms and the dashboard
+//!   redeems for the token (SH-251), so a one-click dashboard never prompts
+//!   and nothing anywhere is relaxed to achieve it.
 //! * [`http`] — the plumbing both share: response shaping, the security
 //!   headers, the CSRF and DNS-rebinding guard, body reading, SSE framing.
 //! * [`rest`] — the dashboard's resource API, over the service layer.
@@ -20,6 +23,7 @@
 
 pub mod admission;
 pub mod dispatch;
+pub mod handoff;
 pub mod http;
 pub mod rest;
 pub mod rpc;

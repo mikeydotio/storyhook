@@ -170,6 +170,11 @@ struct Serving<'a, S: Store> {
     /// answered off the store thread, so it is not reached through
     /// [`dispatch`] the way everything else in this struct is.
     dispatch_registry: Arc<crate::api::dispatch::DispatchRegistry>,
+    /// Every handoff coupon this daemon has armed and not yet spent (SH-251).
+    /// An `Arc` for the same reason `dispatch_registry` is one: redemption
+    /// needs nothing from the store, so it is answered on the `worker` thread
+    /// and must never queue behind the dispatcher pool.
+    handoff: Arc<crate::api::handoff::HandoffRegistry>,
     /// Everything this daemon is serving right now (SH-173, SH-144). An `Arc`
     /// so the detached thread [`worker`] spawns on the shutdown path — which
     /// has no `'scope` of its own — can still poll it while draining.
@@ -257,6 +262,7 @@ where
             started_at: env.now(),
         },
         dispatch_registry: Arc::new(crate::api::dispatch::DispatchRegistry::load(env)),
+        handoff: Arc::new(crate::api::handoff::HandoffRegistry::new()),
         inflight: Arc::new(crate::daemon::lifecycle::InFlight::new(env.clone())),
         draining: AtomicBool::new(false),
     };
@@ -702,6 +708,7 @@ fn accept_loop<S: Store>(
     let trusted_hosts = Arc::clone(&serving.trusted_hosts);
     let env = serving.env.clone();
     let dispatch_registry = Arc::clone(&serving.dispatch_registry);
+    let handoff = Arc::clone(&serving.handoff);
 
     // One closure per listener, cloned by `http1::serve_connections` once per
     // accepted connection (and, within a kept-alive connection, called again
@@ -722,6 +729,7 @@ fn accept_loop<S: Store>(
             &trusted_hosts,
             &env,
             &dispatch_registry,
+            &handoff,
         )
     };
 
@@ -780,6 +788,7 @@ fn worker(
     trusted_hosts: &TrustedHosts,
     env: &Environment,
     dispatch_registry: &Arc<crate::api::dispatch::DispatchRegistry>,
+    handoff: &Arc<crate::api::handoff::HandoffRegistry>,
 ) {
     let mut request = request;
     let method = request.method().clone();
@@ -812,6 +821,30 @@ fn worker(
         trusted_hosts,
         token,
         loopback,
+    ) {
+        finish(request, reply);
+        return;
+    }
+
+    // The handoff routes (SH-251), answered here for the same reason the SSE
+    // branch below is: neither needs anything from the store, so neither may
+    // queue behind the dispatcher pool. A browser redeeming its coupon on
+    // page load, stuck behind eight long-running commands, would time out for
+    // no reason at all.
+    //
+    // Immediately after `admission::admission` and before everything else, so
+    // that `POST /api/v1/handoff` has already passed `rpc::admission`'s
+    // loopback-and-token gate above, and `POST /handoff` — which is outside
+    // `/api` and so passes through both gates untouched — reaches its own.
+    if let Some(reply) = crate::api::handoff::intercept(
+        &segments,
+        &method,
+        &headers,
+        trusted_hosts,
+        token,
+        loopback,
+        std::time::Instant::now(),
+        handoff,
     ) {
         finish(request, reply);
         return;

@@ -117,12 +117,62 @@ fn web_not_running_error() -> AppError {
 /// Targets loopback (`http://127.0.0.1:<port>/`), which is always reachable from
 /// a browser on this machine. Fails with a help-like summary when the dashboard
 /// isn't running.
+///
+/// # The handoff (SH-251)
+///
+/// The browser is opened at `…/#h=<coupon>`, a one-shot credential the page
+/// spends for the daemon's token before it issues a single request — so a
+/// one-click dashboard never shows the token modal, and nothing about the
+/// token requirement is relaxed to achieve that. See [`crate::api::handoff`]
+/// for why a coupon travels here rather than the token itself.
+///
+/// **What is printed is the bare URL**, never the coupon: stdout is read by
+/// scripts and scrolled back through by humans, and a credential in either is
+/// exactly the durable copy this design exists to avoid.
 pub fn handle_open() -> Result<String, AppError> {
     let env = environment()?;
     let info = running_daemon(&env).ok_or_else(web_not_running_error)?;
     let url = format!("http://127.0.0.1:{}/", info.port);
-    open_in_browser(&url)?;
+    open_in_browser(&browser_target(&url, armed_handoff(&info).as_deref()))?;
     Ok(format!("Opening dashboard at {url}"))
+}
+
+/// Where to send the browser: the dashboard, carrying `coupon` in the URL
+/// fragment when one was armed.
+///
+/// A **fragment**, not a query parameter, and that is the whole point: a
+/// fragment is never sent to a server and never lands in a server log. What it
+/// does not escape is the browser's own history and the `open(1)` argv — both
+/// recorded as residuals in `docs/spec/dashboard-authorization.md`, and both
+/// bounded by the coupon being worthless within two minutes.
+fn browser_target(url: &str, coupon: Option<&str>) -> String {
+    match coupon {
+        Some(coupon) => format!("{url}#h={coupon}"),
+        None => url.to_string(),
+    }
+}
+
+/// Asks the daemon for a handoff coupon, or `None` with a note on stderr.
+///
+/// **Non-fatal by design.** Without a coupon the dashboard still opens, still
+/// renders (SH-250's tokenless loopback read), and still prompts on the first
+/// write — which is exactly the behaviour that shipped before this feature
+/// existed. Turning a degraded convenience into a failed command would be a
+/// strictly worse answer to "open my dashboard".
+///
+/// Not silent either: the note says what was lost and what will happen
+/// instead. It can carry no coupon, because a failure never produced one.
+fn armed_handoff(info: &DaemonInfo) -> Option<String> {
+    match lifecycle::arm_handoff(info) {
+        Ok(coupon) => Some(coupon),
+        Err(e) => {
+            eprintln!(
+                "note: the daemon did not arm a one-time handoff ({e}); \
+                 the dashboard will ask for its token on your first change."
+            );
+            None
+        }
+    }
 }
 
 /// `story web address` — copy the running dashboard's URL to the system clipboard.
@@ -133,6 +183,17 @@ pub fn handle_open() -> Result<String, AppError> {
 /// and is never a URL that refuses connections. Matches what `story web status`
 /// prints, because both read the same published fact. Fails with a help-like
 /// summary when the dashboard isn't running.
+///
+/// # No handoff here, ever (SH-251)
+///
+/// [`handle_open`] arms a coupon; this deliberately does not, and
+/// `tests/web_test.rs` pins that rather than leaving it to the absence of
+/// code. A copied URL is *for another device* — that is the entire reason it
+/// advertises the tailnet host — and
+/// [`crate::api::http::mutation_guard_ok`] accepts a bound tailnet `Host`, so
+/// a credential on the clipboard would be a live **write** credential for any
+/// tailnet peer it was pasted to. `web address` stays a location;
+/// `story daemon token` stays a credential.
 pub fn handle_address() -> Result<String, AppError> {
     let env = environment()?;
     let info = running_daemon(&env).ok_or_else(web_not_running_error)?;
@@ -204,4 +265,29 @@ fn open_in_browser(url: &str) -> Result<(), AppError> {
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_coupon_travels_in_the_fragment() {
+        assert_eq!(
+            browser_target("http://127.0.0.1:3456/", Some(&"a".repeat(32))),
+            format!("http://127.0.0.1:3456/#h={}", "a".repeat(32)),
+            "the coupon must be a fragment — a query string would reach the \
+             server and its logs, which is the failure this design avoids"
+        );
+    }
+
+    #[test]
+    fn no_coupon_means_the_bare_url() {
+        // The non-fatal arming path. What opens is exactly what opened before
+        // SH-251: a dashboard that renders and prompts on the first write.
+        assert_eq!(
+            browser_target("http://127.0.0.1:3456/", None),
+            "http://127.0.0.1:3456/"
+        );
+    }
 }
