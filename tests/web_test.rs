@@ -518,6 +518,38 @@ fn web_serve_and_query_root() {
     assert!(body.contains("Storyhook"));
 }
 
+/// SH-197's deep link (`?project=<slug>&story=<id>`) is resolved client-side
+/// by the dashboard's own JS, not by the server -- but that only works if
+/// the server still serves the dashboard for a `/` request that carries a
+/// query string. `request_path` (`src/api/http.rs`) strips the query before
+/// routing, so this should already hold; pinned here so a future change to
+/// that stripping can't silently break every pasted link.
+#[test]
+fn web_serve_root_html_with_query_string_still_serves_the_dashboard() {
+    let fixture = served();
+
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!(
+            "http://127.0.0.1:{port}/?project=some-project&story=SH-1"
+        ))
+        .call()
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get("Content-Type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(ct.contains("text/html"));
+    let body = resp.into_body().read_to_string().unwrap();
+    assert!(body.contains("Storyhook"));
+}
+
 /// The redesigned dashboard is still a single self-contained embedded file
 /// (no build step, no CDN) with a Board view, a List view, a detail drawer,
 /// and a create-story modal. These markers guard against a future edit
@@ -621,6 +653,62 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     // type" for one idea in three places.
     assert!(body.contains("function typeLabel"));
     assert!(body.contains(r#"return "none";"#));
+
+    // SH-197: a story can be opened straight from ?project=&story= on load,
+    // and the address bar is kept in sync as the URL is the only mechanism
+    // "Copy URL" has for the caller to actually get a shareable link.
+    assert!(body.contains("function readDeepLink"));
+    assert!(body.contains("function syncUrl"));
+    assert!(body.contains("function storyPermalink"));
+    assert!(body.contains("history.replaceState"));
+    assert!(body.contains(r#""?project=""#));
+
+    // SH-197: one delete-confirmation modal, shared by the drawer footer's
+    // Delete button and the context menu's Delete item, replacing the
+    // drawer's own inline typed-reason form.
+    assert!(body.contains(r#"id="delete-modal""#));
+    assert!(body.contains(r#"id="delete-reason""#));
+    assert!(body.contains(r#"id="delete-modal-submit""#));
+    assert!(body.contains(r#"id="delete-modal-error""#));
+    assert!(
+        !body.contains("renderDeleteConfirm"),
+        "the inline typed-reason footer form was replaced by the shared delete modal"
+    );
+
+    // SH-197: board cards and list rows carry a roving tabindex (WAI-ARIA
+    // grid pattern) so Tab can reach a story at all -- the prerequisite for
+    // Shift+F10/the Menu key ever raising the context menu from a keyboard.
+    assert!(body.contains("function syncRoving"));
+    assert!(body.contains("function bindRovingKeys"));
+    assert!(body.contains("function bindRovingFocus"));
+    assert!(body.contains(".card:focus-visible"));
+
+    // SH-197: the story context menu -- Copy ID/URL/Description for now,
+    // Dispatch/Set Status/Delete added by later commits onto the same
+    // storyMenuModel.
+    assert!(body.contains(".ctxmenu"));
+    assert!(body.contains("function openStoryMenu"));
+    assert!(body.contains("function storyMenuModel"));
+    assert!(body.contains("function copyText"));
+    assert!(body.contains(r#"execCommand("copy")"#));
+    assert!(body.contains("\"Copy Description\""));
+
+    // SH-197: the context menu's Dispatch group -- gated identically to the
+    // drawer footer's own Dispatch buttons (dashboard-dispatch.md's As-built
+    // section names the shared expression).
+    assert!(body.contains("\"Dispatch\""));
+    assert!(body.contains("\"Dispatch Auto\""));
+    assert!(body.contains("dispatchHidden"));
+
+    // SH-197: the context menu's Set Status submenu.
+    assert!(body.contains("\"Set Status\""));
+    assert!(body.contains("function setStoryState"));
+    assert!(body.contains("function statusMenuItems"));
+    assert!(body.contains(".ctxmenu-sub"));
+
+    // SH-197: the context menu's Delete item, reaching the same shared
+    // modal (commit 3) the drawer footer's own Delete button opens.
+    assert!(body.contains("\"Delete\", danger: true"));
 }
 
 #[test]
@@ -678,6 +766,31 @@ fn web_serve_api_data_with_stories() {
         assert!(s.get("is_blocked").is_some());
         assert!(s["story"]["id"].is_string());
     }
+}
+
+/// SH-197's context menu "Copy Description" reads straight off the summary
+/// record `/data` already returns -- no separate detail fetch -- so this
+/// pins that `description` really is there rather than something only the
+/// single-story `GET .../story/<id>` (`openDrawer`'s own follow-up call)
+/// carries.
+#[test]
+fn web_serve_api_data_carries_story_descriptions() {
+    let fixture = served();
+    fixture.seed(&["new", "Build feature", "--description", "Ship the thing"]);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let resp = fixture
+        .agent()
+        .get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    let stories = json["stories"].as_array().unwrap();
+    assert_eq!(stories.len(), 1);
+    assert_eq!(stories[0]["story"]["description"], "Ship the thing");
 }
 
 #[test]
