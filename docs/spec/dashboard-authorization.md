@@ -334,7 +334,8 @@ anywhere to assert the variable changes any outcome at all.
 
 - **SH-251** — hand the dashboard its token from `story web open`, so nothing ever
   prompts. Two of the three reviewers argued that if this ships, the read exemption may no
-  longer earn its keep; that reassessment belongs to that story.
+  longer earn its keep; that reassessment belongs to that story. **Shipped** — see the
+  next section, which also carries the reassessment forward as SH-255.
 
 ### Conjunct 1 is now derived rather than asserted — SH-253, fixed
 
@@ -364,3 +365,144 @@ in a new way — was rejected on the merits by a three-seat council
 since SH-114 that is the only way a `story` command reaches the store, so an honoured
 `0.0.0.0` yields a daemon its own CLI cannot talk to, while exposing the dashboard. The
 tailnet listener already answers the need a wider bind would be reached for.
+
+## As built — SH-251: the handoff coupon, and the experiment that chose it
+
+SH-250 removed the modal from a *read*. SH-251 removes it from everything, without
+relaxing anything further: `story web open` arms a one-shot coupon, the browser spends it
+for the token, and the token requirement is exactly where SH-187 left it on every route
+and every listener.
+
+Decided by a three-seat council over two rounds plus a runoff
+(`.council/sh-251-web-open-token-handoff/`, unanimous on the runoff, including from the
+two seats whose own proposals it beat). The verdict is also a comment on SH-251, written
+to be implementable on its own, since `.council/` is gitignored.
+
+### The experiment, and why it inverted the panel
+
+The story proposed `http://127.0.0.1:PORT/#t=<token>`: a fragment is never sent to a
+server, and `history.replaceState` scrubs it from the address bar before the first
+request. Every seat flagged the same unverified premise — *does `replaceState` actually
+remove the pre-replacement URL from a browser's on-disk history?* — and then reasoned past
+it, forming a 2–1 majority on it.
+
+The chair ran it. Real Chrome, isolated profile, a page loaded at `…/page.html#t=<secret>`
+calling `replaceState(null, "", location.pathname + location.search)`:
+
+```text
+sqlite> select id, url from urls;
+1|http://127.0.0.1:8791/page.html#t=deadbeefcafe0000deadbeefcafe0001
+2|http://127.0.0.1:8791/page.html
+```
+
+**`replaceState` does not scrub the row. It adds a second one**, and the first keeps the
+secret on disk indefinitely while `location.href` reads clean. So `#t=<token>` writes the
+*master* token — valid until the daemon restarts, weeks for a `RunAtLoad` agent, and
+spendable for **writes from any tailnet peer**, because `mutation_guard_ok` accepts a bound
+tailnet `Host` — into a durable, well-known, same-uid-readable file. Both of that shape's
+advocates withdrew it themselves, and the majority inverted.
+
+Every URL-borne handoff persists. The experiment separates the candidates not on *whether*
+something is written but on **what the written thing is worth**.
+
+### What ships
+
+| Piece | Where |
+|---|---|
+| `POST /api/v1/handoff` — arm, 32-hex coupon, `TTL` 120s, `MAX_LIVE` 8 | `src/api/handoff.rs` |
+| `POST /handoff` — redeem, **outside `/api`** | `src/api/handoff.rs` |
+| `LocalRequest` witness + `local_request()` | `src/api/http.rs` |
+| `Reply::no_store()` beside `no_cache()` | `src/api/http.rs` |
+| `arm_handoff(info)` beside the `hello` client | `src/daemon/lifecycle.rs` |
+| `consumeHandoff()` / `redeemHandoff()` | `src/web_dashboard.html` |
+
+**Why redemption sits outside `/api`.** `admission()` matches `["api", ..]` and falls
+through on everything else, so `/handoff` stands on its own gate rather than inheriting
+the read exemption above — **and the verb becomes a free choice rather than a consequence
+of conjunct 2.** The design's first draft was a side-effecting `GET`, chosen only because
+the exemption admitted nothing else; a seat called that "a design defect wearing a scope
+waiver", and the topology deletes it. `tests/handoff_endpoint.rs` fails if the route is
+moved under `/api` "for consistency".
+
+**Why the witness is a type.** Deleting the locality check has to be a *compile error*,
+not a failed test — *"a test is what gets deleted alongside the check."* `LocalRequest` has
+a private field and one constructor, so nothing outside `http.rs` can mint one; the four
+locality conjuncts moved there in their own behaviour-free commit, with this document's
+own six-conjunct truth table byte-unmodified and green either side of it.
+`tests/handoff_endpoint.rs::locality_is_derived_in_exactly_two_places` pins the caller set
+at two — the read exemption and the redemption gate — so a third is a decision somebody
+takes rather than a line that slips in.
+
+**Why the clock is a parameter.** Neither `arm` nor `redeem` reads one. Expiry is the
+load-bearing half of the security argument, so it is asserted against an injected clock
+rather than inferred from a sleep — a deliberate divergence from `DispatchRegistry`, which
+reads `Instant::now()` inline and is not clock-testable as a result.
+
+**One refusal, for every reason.** Absent, malformed, expired, wrong, already spent, wrong
+verb, not local — all one byte-identical reply, asserted as **equality of `Reply`s** rather
+than agreement of status codes, so the route cannot become an oracle for live coupons.
+
+### Deviation from the verdict as written
+
+The coupon travels in a request **header** (`X-Storyhook-Handoff`) rather than a body. The
+verdict specified the route, the gate and the reply but not where the coupon rides; a
+header keeps the whole module deciding from the request *head*, which is what lets
+`intercept` answer before the daemon waits on a body byte — the property `rpc::admission`
+and `dispatch::intercept` already rely on. A query parameter was not considered: a query
+string lands in logs, which is the exact failure this design exists to bound.
+
+### Residuals, stated plainly
+
+The panel was explicit that a residue section which understates these is worse than none.
+
+- **The coupon still lands in Chrome's on-disk history**, verified above, and
+  `replaceState` will not remove it. What lands is worth nothing 120 seconds later. *"A
+  durable record of a dead value is a durable record of nothing."*
+- **The coupon crosses `open(1)`/`$BROWSER` argv**, cross-uid-readable via
+  `/proc/PID/cmdline` on Linux for its lifetime. Narrowed from permanent to
+  racing-and-loud; not closed.
+- **The browser still receives the master token** on redemption — the full write surface,
+  on both listeners, spendable from any tailnet peer, alive for the daemon's run. This is
+  transport done correctly, **not least privilege**. SH-254.
+- **Safari, Firefox, and history sync are unmeasured.** One browser was tested, and it was
+  sufficient to condemn the token-in-fragment shape. The dissent stands on the record: the
+  panel treated one browser as the population *in the direction that suited it*. Any future
+  claim about a browser's durable stores must be re-run by hand against a real browser and
+  **never inferred from a green suite**.
+
+### What no test here can prove
+
+**Playwright's bundled chromium writes no History database**, so no spec in this
+repository can observe the residue the experiment found. `e2e/specs/handoff.spec.ts` is
+corroboration of *ordering* only — that the fragment was gone before any request was
+constructed — and it carries a harness guard that fails when its shim captures nothing, so
+a vacuous pass reads as red. The worthlessness claim lives in `src/api/handoff.rs`'s unit
+tests, against an injected clock.
+
+That spec also never asserts on `location.hash` after load. `syncUrl()`
+(`web_dashboard.html`) rebuilds the URL from `pathname + search` and discards the fragment
+regardless, so that spelling passes **with the whole feature deleted**. Any spec written
+that way is rejected in review.
+
+### Deliberately rejected, so they do not return as improvements
+
+- **A `hashchange` listener.** `replaceState` does not fire it and nothing internal drives
+  one.
+- **An opt-out environment knob.** A knob nobody sets protects nobody.
+- **A scoped session credential** — `<expiry>.<hmac(master, expiry)>` in the fragment,
+  verified statelessly, admissible on loopback under `/api/repos/{id}/…` with 4+ segments.
+  The runner-up, beaten on its merits by a panel including its author. Its scope claim was
+  false: it excluded `POST /api/repos` for reaching `sh -c`, but the routes it *kept* reach
+  `sh -c` too, through project event hooks (`rest.rs:176-184` → `service/mod.rs:316-330` →
+  `event_hooks.rs:519-521`, verified by the chair). Scope by arity also reproduces the exact
+  defect this document's conjunct 2 is spelled affirmatively to forbid. Its analysis is
+  inherited by SH-254, which is explicitly **not** that design.
+
+### Filed as merge gates, not follow-ups
+
+- **SH-254** — a server-issued scoped capability, so the browser stops holding the master
+  token. `POST /handoff`'s redemption handler is the seam; revocation and
+  construction-enforced scope are requirements.
+- **SH-255** — reassess SH-250's read exemption now that a handoff exists. The six
+  conjuncts now buy only bookmarks and hand-typed URLs, while the permanently-widened read
+  surface and the unclosable bare-nginx residual remain.
