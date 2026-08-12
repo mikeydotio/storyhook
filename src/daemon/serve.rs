@@ -217,11 +217,11 @@ where
     F: FnOnce(),
     L: Fn(&BoundAddress) + Send + Sync,
 {
-    let has_tailnet = listeners.iter().any(|l| !l.loopback);
+    let has_tailnet = listeners.iter().any(|l| !l.is_loopback());
     let loopback_addr = listeners
         .iter()
-        .find(|l| l.loopback)
-        .and_then(|l| l.listener.local_addr().ok());
+        .find(|l| l.is_loopback())
+        .map(Listener::addr);
 
     if listeners.is_empty() {
         return Err(AppError::Usage(
@@ -354,11 +354,12 @@ where
             let jobs_tx = jobs_tx.clone();
             let nested_tx = nested_tx.clone();
             let slots = Arc::clone(&connection_slots);
+            let loopback = listener.is_loopback();
             scope.spawn(move || {
                 accept_loop(
                     serving,
                     listener.listener,
-                    listener.loopback,
+                    loopback,
                     http_limits,
                     slots,
                     jobs_tx,
@@ -366,10 +367,11 @@ where
                 )
             });
         }
+        let primary_is_loopback = primary.is_loopback();
         accept_loop(
             &serving,
             primary.listener,
-            primary.loopback,
+            primary_is_loopback,
             http_limits,
             connection_slots,
             jobs_tx,
@@ -489,16 +491,59 @@ impl BoundAddress {
     }
 }
 
-/// A bound listener and whether it is the loopback one.
+/// A bound listener, and the address it actually bound.
 ///
-/// The distinction is security-relevant rather than cosmetic: `/api/v1/*` is a
-/// full-privilege surface and is answered on loopback only, so the accept loop
-/// has to know which interface a request came in on.
+/// The loopback distinction is security-relevant rather than cosmetic:
+/// `/api/v1/*` is a full-privilege surface answered on loopback only, and since
+/// SH-250 a tokenless read is admitted on the strength of the same answer
+/// ([`crate::api::admission`]'s first conjunct). So the accept loop has to know
+/// which interface a request came in on.
+///
+/// **There is no `loopback` field, and that is the point (SH-253).** There used
+/// to be one, stamped `true` beside a hardcoded `127.0.0.1` literal — a *claim*
+/// about the bind sitting next to it rather than a *consequence* of it. The two
+/// could not disagree only because the literal was a literal; the day anything
+/// varied the bind address, a listener still stamped `loopback: true` would have
+/// started admitting tokenless reads from anywhere, and no test would have
+/// noticed. [`Self::is_loopback`] is now computed from [`Self::addr`], so the
+/// disagreement is unrepresentable rather than merely unlikely.
 pub struct Listener {
     /// The bound socket.
-    pub listener: TcpListener,
-    /// Whether this is the loopback interface.
-    pub loopback: bool,
+    listener: TcpListener,
+    /// The address [`Self::listener`] is bound to, read from the socket after
+    /// the bind rather than copied from what the bind was asked for — a
+    /// port-0 bind gets a real port here, and a host with an unusual routing
+    /// table gets whatever the kernel actually gave it.
+    addr: SocketAddr,
+}
+
+impl Listener {
+    /// Adopts an already-bound socket, reading its address back off it.
+    ///
+    /// The only constructor, so every `Listener` in existence knows the address
+    /// it is answering on. Fails only if the socket cannot report one, which
+    /// would mean it is not bound — the same failure [`bind_listeners`] used to
+    /// raise inline.
+    pub fn adopt(listener: TcpListener) -> Result<Self, AppError> {
+        let addr = listener
+            .local_addr()
+            .map_err(|e| AppError::Storage(format!("bound listener has no address: {e}")))?;
+        Ok(Listener { listener, addr })
+    }
+
+    /// The address this listener bound.
+    pub fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    /// Whether this listener answers on the loopback interface.
+    ///
+    /// Derived, never asserted: `127.0.0.1` and `::1` are loopback, `0.0.0.0`
+    /// and a tailnet address are not. A caller cannot set this to disagree with
+    /// the socket, because there is nothing to set.
+    pub fn is_loopback(&self) -> bool {
+        self.addr.ip().is_loopback()
+    }
 }
 
 /// Binds loopback on `port`, then the tailnet interface on whatever port
@@ -515,7 +560,7 @@ pub struct Listener {
 /// one that pays the probe's cost. Move the probe ahead of this bind and that
 /// stops being true.
 pub fn bind_listeners(port: u16) -> Result<(Vec<Listener>, BoundAddress), AppError> {
-    let loopback = TcpListener::bind(("127.0.0.1", port)).map_err(|e| {
+    let socket = TcpListener::bind(("127.0.0.1", port)).map_err(|e| {
         if e.kind() == std::io::ErrorKind::AddrInUse {
             AppError::Usage(format!(
                 "Port {port} already in use. Try a different port with --port."
@@ -524,14 +569,10 @@ pub fn bind_listeners(port: u16) -> Result<(Vec<Listener>, BoundAddress), AppErr
             AppError::Storage(format!("Failed to start web server: {e}"))
         }
     })?;
-    let bound = loopback
-        .local_addr()
-        .map_err(|e| AppError::Storage(format!("bound listener has no address: {e}")))?;
+    let loopback = Listener::adopt(socket)?;
+    let bound = loopback.addr();
 
-    let mut listeners = vec![Listener {
-        listener: loopback,
-        loopback: true,
-    }];
+    let mut listeners = vec![loopback];
     let mut tailnet = None;
 
     if let Some((listener, bind)) = probe_and_bind_tailnet(bound.port()) {
@@ -571,13 +612,12 @@ fn probe_and_bind_tailnet(port: u16) -> Option<(Listener, TailnetBind)> {
             // rule is enforced: it is reachable only from here, on the
             // success arm.
             let bind = identity.into_bound();
-            Some((
-                Listener {
-                    listener,
-                    loopback: false,
-                },
-                bind,
-            ))
+            // `adopt` can only fail on a socket that cannot report its own
+            // address, and this one has just bound successfully. A tailnet
+            // bind is best-effort throughout this function, so the failure
+            // joins the other three cases `None` covers rather than becoming
+            // the one that is fatal.
+            Some((Listener::adopt(listener).ok()?, bind))
         }
         Err(e) => {
             eprintln!(
@@ -1350,11 +1390,17 @@ fn tailnet_reprobe<'scope, S: Store, L>(
         };
         on_late_tailnet_bind(&bound);
 
+        // `is_loopback()` rather than the `false` that used to be written here.
+        // A tailnet bind is never loopback, so the literal was right — but it
+        // was right by assertion, which is the whole of what SH-253 removes:
+        // this listener now answers the question from the address it bound,
+        // exactly as the two in `serve` do.
+        let loopback = listener.is_loopback();
         scope.spawn(move || {
             accept_loop(
                 serving,
                 listener.listener,
-                false,
+                loopback,
                 limits,
                 slots,
                 jobs_tx,
@@ -1368,6 +1414,101 @@ fn tailnet_reprobe<'scope, S: Store, L>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- The loopback label follows the bind (SH-253) ---
+
+    /// A read on `/api/repos` with no credential anywhere, as a browser on this
+    /// machine sends it. `Host` names loopback, which is conjunct 3 of the
+    /// SH-250 exemption — so the *only* conjunct left in question below is the
+    /// one the listener supplies.
+    fn tokenless_read() -> Vec<Header> {
+        vec![Header::from_bytes("Host", "127.0.0.1:3456").expect("a valid header")]
+    }
+
+    /// Whether the real admission gate admits [`tokenless_read`] on a listener
+    /// with this `loopback` standing.
+    ///
+    /// `TrustedHosts::default()` rather than `for_daemon`: the latter reads
+    /// `$STORYHOOK_WEB_TRUSTED_HOSTS`, and a unit test whose verdict depends on
+    /// the developer's environment is not a test. Default is the empty
+    /// allowlist, which is what a machine with no proxy configured has.
+    fn admits_a_tokenless_read(loopback: bool) -> bool {
+        crate::api::admission::admission(
+            &["api", "repos"],
+            &Method::Get,
+            None,
+            &tokenless_read(),
+            &crate::api::http::TrustedHosts::default(),
+            "the-real-token",
+            loopback,
+        )
+        .is_none()
+    }
+
+    /// The flag is a consequence of the bind, not a claim made beside it.
+    ///
+    /// Binds for real rather than fabricating a `SocketAddr`: the property
+    /// under test is that the label follows *the socket*, and a hand-built
+    /// address would test only that `is_loopback()` calls `is_loopback()`.
+    #[test]
+    fn a_listener_that_bound_a_non_loopback_address_is_not_marked_loopback() {
+        // `0.0.0.0` — the wildcard — is reachable from every interface this
+        // machine has, so it is emphatically not loopback. It is also the one
+        // non-loopback address any machine can bind without a network to be
+        // on, which is what keeps this test hermetic.
+        let wildcard = Listener::adopt(
+            TcpListener::bind(("0.0.0.0", 0)).expect("binding the wildcard address"),
+        )
+        .expect("a freshly bound socket reports its address");
+
+        assert!(
+            !wildcard.is_loopback(),
+            "a listener bound to {} answers the whole machine, and must not be \
+             labelled loopback",
+            wildcard.addr()
+        );
+    }
+
+    /// The other half of the same property: the address the daemon really
+    /// binds still reads as loopback, so deriving the flag did not withdraw the
+    /// exemption from the one listener that has always had it.
+    #[test]
+    fn a_listener_that_bound_loopback_is_marked_loopback() {
+        let local = Listener::adopt(TcpListener::bind(("127.0.0.1", 0)).expect("binding loopback"))
+            .expect("a freshly bound socket reports its address");
+
+        assert!(local.is_loopback(), "127.0.0.1 is the loopback interface");
+    }
+
+    /// SH-250's tokenless read exemption follows the derived flag — the fourth
+    /// acceptance criterion of SH-253, and the reason the other three matter.
+    ///
+    /// Composes the two real pieces with nothing mocked between them: a socket
+    /// bound for real, the flag derived from it, and
+    /// [`crate::api::admission::admission`] itself deciding. Before SH-253 a
+    /// wildcard-bound listener would have carried `loopback: true` — the value
+    /// stamped beside the bind — and this daemon would have handed every story
+    /// in the store to any peer on the network with no credential at all.
+    #[test]
+    fn the_tokenless_read_exemption_follows_the_bind_rather_than_a_constant() {
+        let wildcard = Listener::adopt(
+            TcpListener::bind(("0.0.0.0", 0)).expect("binding the wildcard address"),
+        )
+        .expect("a freshly bound socket reports its address");
+        let local = Listener::adopt(TcpListener::bind(("127.0.0.1", 0)).expect("binding loopback"))
+            .expect("a freshly bound socket reports its address");
+
+        assert!(
+            !admits_a_tokenless_read(wildcard.is_loopback()),
+            "a read arriving on a listener bound to {} must be made to prove who \
+             it is, however loopback its Host header claims to be",
+            wildcard.addr()
+        );
+        assert!(
+            admits_a_tokenless_read(local.is_loopback()),
+            "and the exemption still reaches the listener it was written for"
+        );
+    }
 
     /// `hook_depth` is peeked from the body only for `/api/v1/invoke`; every
     /// other path is never nested, whatever its body says.
