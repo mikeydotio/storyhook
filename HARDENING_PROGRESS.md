@@ -10331,4 +10331,50 @@ exercised.
 
 **Council:** convened, unanimous — see above.
 
+### SH-206 — done · report did not reproduce · fixed the real risk it pointed at anyway
+
+First pick under the new `story next` dogfooding regime (no more hand-maintained
+checklist). `story next --count 3` surfaced SH-206, SH-207, SH-209, all low. Claimed
+SH-206 immediately.
+
+**The claim was false.** The report said `plugin/claude-code/skills/story/`'s router
+points `complete <id>` at `references/story-complete.md`, and that directory has no
+`references/` subdirectory at all — true, but the wrong place to look. `references/`
+lives at the plugin root (`plugin/claude-code/references/`), sibling to `skills/`, and
+both `story-new.md` and `story-complete.md` were there already, correctly written,
+routing through `bin/story.sh` as required. `git log` dates the files to 76f3650/
+832ce94/0bdc825 (2026-07-25 through 08-03) — landed **before** SH-206 was filed
+(2026-08-07). `tests/test-skill-routing.sh` already asserted both paths exist and
+already passed, on `main`, before this story was ever picked up. The report's own
+"extent" question — does `story-new.md` have the same problem — is answered: no.
+
+A stale local plugin cache at `/Users/mikey/.claude/plugins/storyhook/` (v0.1.0, dated
+June, predates the `story` router entirely — only has the old `storyhook-*` skills, no
+`references/story-*.md`) is a plausible explanation for how a prior session concluded
+the file was missing. It isn't what's active: `~/.claude/settings.json` names a
+`directory`-source marketplace pointing straight at this checkout.
+
+**What was real, and worth fixing anyway:** the router wrote these two paths bare
+(`references/story-complete.md`), while every `bin/story.sh` call in the same table is
+fully qualified with `${CLAUDE_PLUGIN_ROOT}/`. That asymmetry is a genuine hazard
+independent of whether the file exists — a future agent resolving a bare relative path
+could guess `skills/story/references/` (as the filer apparently did) and stop rather
+than search further. Anchored both paths to `${CLAUDE_PLUGIN_ROOT}/`, then swept for
+the sibling: `references/ensure-cli.md` was referenced the same bare way from six other
+skills (story-context, story-plan, story-handoff, story-work, story-sync,
+story-triage) — anchored all six. 8 lines, 7 files, no behavior change.
+
+**Gate:** full `make test`, supervised (log-growth heartbeat, 120s stall bound, no
+stall): Rust suite green, plugin bash harness 29/29 (`test-skill-routing.sh` included),
+e2e 48/48. `scripts/check-no-orphan-servers.sh` clean after.
+
+**PR:** #277, one commit, merged as `d56ca0b`, fast-forwarded onto `main` in this
+checkout, remote branch confirmed deleted after `git fetch --prune`.
+
+**Council:** not convened — no ambiguous decision; the fix was the only correct one
+once the asymmetry was found, and the alternative (author two files that already exist)
+was foreclosed by discovery, not a judgment call.
+
+**No version bump** — left for the next batched `/semver` pass.
+
 **Next:** run `story next` fresh.
