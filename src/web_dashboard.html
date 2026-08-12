@@ -910,6 +910,54 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   var PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3, none: 4 };
 
   // ============================================================
+  // HANDOFF (SH-251)
+  // ============================================================
+  //
+  // `story web open` arms a one-shot, 120-second coupon on the daemon and
+  // opens this page at `#h=<coupon>`. It is read and stripped in the same
+  // synchronous tick, at parse time, before any request in this file is
+  // issued -- then spent at `POST /handoff` for the daemon's real token. The
+  // result is a one-click dashboard that never shows the token modal, with
+  // nothing about the token requirement relaxed to achieve it.
+  //
+  // What the fragment buys: a fragment is never sent to a server, so it
+  // reaches no access log and no proxy.
+  //
+  // What it does NOT buy, measured rather than assumed: `replaceState` does
+  // not remove the pre-replacement URL from Chrome's on-disk history -- it
+  // adds a second row beside it, and the first keeps whatever was in the
+  // fragment. That is the entire reason a *coupon* travels here and not the
+  // token: what stays on disk is worth nothing 120 seconds later. The
+  // experiment is recorded in docs/spec/dashboard-authorization.md.
+  //
+  // Two things are deliberately absent, and are not to be re-added as
+  // obvious improvements: a `hashchange` listener (nothing internal drives
+  // one -- `replaceState` does not fire it) and an opt-out knob (a knob
+  // nobody sets protects nobody).
+
+  // How long to wait for the redemption round trip before starting the app
+  // without a token. A loopback request unanswered this long is not going to
+  // be answered, and a hung socket must never leave the dashboard blank.
+  var HANDOFF_TIMEOUT_MS = 5000;
+
+  /** Reads `#h=<32 hex>` and strips it from the address bar in the same
+   * synchronous tick, returning the coupon (or null).
+   *
+   * `location.search` is preserved: `?project=`/`?story=` deep links and the
+   * SSE test knobs both live there, and a handoff must not eat them.
+   *
+   * Called at parse time, from here, because "before any request is issued"
+   * is the whole property -- and because `syncUrl()` would rewrite the URL
+   * out from under it later regardless. */
+  function consumeHandoff() {
+    var match = /^#h=([0-9a-f]{32})$/.exec(window.location.hash);
+    if (!match) return null;
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    return match[1];
+  }
+  var handoffCoupon = consumeHandoff();
+
+  // ============================================================
   // DEEP LINK (SH-197)
   // ============================================================
   //
@@ -5631,23 +5679,75 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     setInterval(sseWatchdog, SSE_WATCHDOG_INTERVAL_MS);
   }
 
-  // Started unconditionally, with no token on hand and none asked for.
+  /** Spends the coupon `consumeHandoff()` took off the URL, then calls
+   * `done()` -- on every outcome, exactly once (SH-251).
+   *
+   * `done` runs from the completion handler on success, on refusal and on
+   * timeout alike, guarded by `finished`, so the app can neither be skipped
+   * (a hung loopback socket leaving a blank dashboard) nor started twice (two
+   * `EventSource` connections and two of every interval).
+   *
+   * A refused coupon is reported once and never retried. It may mean somebody
+   * else redeemed it, and a retry loop would turn a possible theft into
+   * noise; it must also not open the token modal pre-emptively, which is the
+   * behaviour SH-250 removed. The dashboard renders either way and prompts on
+   * the first write, exactly as a hand-typed URL does. */
+  function redeemHandoff(done) {
+    if (!handoffCoupon) { done(); return; }
+    var coupon = handoffCoupon;
+    handoffCoupon = null;
+    var finished = false;
+    function complete(redeemed) {
+      if (finished) return;
+      finished = true;
+      if (!redeemed) {
+        toast("That one-time dashboard link was not accepted — you'll be asked for the daemon token on your first change.");
+      }
+      done();
+    }
+
+    var xhr = new XMLHttpRequest();
+    xhr.open("POST", "/handoff", true);
+    xhr.setRequestHeader("X-Storyhook", "1");
+    xhr.setRequestHeader("X-Storyhook-Handoff", coupon);
+    xhr.timeout = HANDOFF_TIMEOUT_MS;
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== 4) return;
+      var token = null;
+      if (xhr.status === 200) {
+        try { token = JSON.parse(xhr.responseText).token; } catch (e) { token = null; }
+      }
+      if (token) setDaemonToken(token);
+      complete(Boolean(token));
+    };
+    xhr.ontimeout = function() { complete(false); };
+    xhr.onerror = function() { complete(false); };
+    xhr.send();
+  }
+
+  // Started once any handoff has been spent -- see HANDOFF, above -- and
+  // never blocked on one: `redeemHandoff` calls back on every outcome, and
+  // calls back immediately when there is no coupon at all, which is every tab
+  // that was not opened by `story web open`.
   //
-  // This used to prompt first when `sessionStorage` held no token, because
-  // every `/api/**` route required one and the first request was therefore a
-  // guaranteed 401 -- one prompt beat a wasted round-trip. Since SH-250 a
-  // *read* on the loopback listener needs no token, so on 127.0.0.1 that
+  // Nothing here prompts. The bootstrap used to, when `sessionStorage` held
+  // no token, because every `/api/**` route required one and the first
+  // request was a guaranteed 401 -- one prompt beat a wasted round-trip.
+  // Since SH-250 a *read* on the loopback listener needs no token, so that
   // first request succeeds and the modal was the only thing left standing
-  // between a fresh tab and a rendered dashboard.
+  // between a fresh tab and a rendered dashboard; since SH-251 a tab opened
+  // by `story web open` arrives holding the token, so writes do not prompt
+  // either.
   //
   // The prompt is now purely reactive, through machinery that already
   // existed: `fetchData()`'s 401 branch clears the stored token and opens the
   // modal, and `api()`'s clears it, opens the modal, and transparently
   // retries the exact request. So the tailnet listener still prompts -- it
   // just pays one failed round-trip first, which is the cost of loopback
-  // never paying anything. A write on loopback prompts the same way: the
-  // exemption covers reads only.
-  startApp();
+  // never paying anything. A hand-typed loopback URL prompts on its first
+  // write the same way: it carries no coupon, and the read exemption covers
+  // reads only.
+  redeemHandoff(startApp);
 })();
 </script>
 
