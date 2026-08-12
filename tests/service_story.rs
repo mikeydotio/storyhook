@@ -302,7 +302,7 @@ fn commenting_on_a_closed_story_is_refused() {
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "closing time");
     service
-        .set_state(&story.id, "done", None, None)
+        .set_state(&story.id, "done", None, None, None)
         .expect("closing");
     let error = service.comment(&story.id, "too late").unwrap_err();
     assert_eq!(
@@ -538,7 +538,7 @@ fn moving_between_open_states_leaves_the_story_open() {
     let ctx = fixture.ctx();
     let story = new_story(&ctx, "moving");
     let after = StoryService::new(&ctx)
-        .set_state(&story.id, "in-progress", None, None)
+        .set_state(&story.id, "in-progress", None, None, None)
         .expect("moving");
     assert_eq!(after.state, "in-progress");
     assert_eq!(after.superstate, SuperState::Open);
@@ -555,7 +555,7 @@ fn moving_into_a_closed_state_archives_the_story_and_stamps_it_closed() {
     let ctx = fixture.ctx();
     let story = new_story(&ctx, "finishing");
     let after = StoryService::new(&ctx)
-        .set_state(&story.id, "done", None, None)
+        .set_state(&story.id, "done", None, None, None)
         .expect("closing");
     assert_eq!(after.superstate, SuperState::Closed);
     assert_eq!(after.closed_at.as_deref(), Some(FIXTURE_NOW));
@@ -579,7 +579,7 @@ fn closing_a_story_that_was_awaiting_something_clears_it_first() {
         .set_awaiting(&story.id, "review")
         .expect("setting awaiting");
     let after = service
-        .set_state(&story.id, "done", None, None)
+        .set_state(&story.id, "done", None, None, None)
         .expect("closing");
 
     assert_eq!(after.awaiting, None);
@@ -601,7 +601,7 @@ fn closing_a_story_that_awaits_nothing_omits_the_awaiting_clear() {
     let ctx = fixture.ctx();
     let story = new_story(&ctx, "just done");
     StoryService::new(&ctx)
-        .set_state(&story.id, "done", None, None)
+        .set_state(&story.id, "done", None, None, None)
         .expect("closing");
     assert_eq!(
         event_kinds(&fixture, &story.id),
@@ -619,7 +619,7 @@ fn a_comment_supplied_with_a_move_lands_between_the_move_and_the_close_markers()
     let ctx = fixture.ctx();
     let story = new_story(&ctx, "commented close");
     StoryService::new(&ctx)
-        .set_state(&story.id, "done", Some("shipped"), None)
+        .set_state(&story.id, "done", Some("shipped"), None, None)
         .expect("closing with a comment");
     assert_eq!(
         event_kinds(&fixture, &story.id),
@@ -638,7 +638,7 @@ fn moving_to_an_undefined_state_is_refused() {
     let ctx = fixture.ctx();
     let story = new_story(&ctx, "nowhere to go");
     let error = StoryService::new(&ctx)
-        .set_state(&story.id, "limbo", None, None)
+        .set_state(&story.id, "limbo", None, None, None)
         .unwrap_err();
     assert_eq!(validation_message(error), "state `limbo` is not defined");
 }
@@ -650,10 +650,10 @@ fn moving_a_closed_story_is_refused() {
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "done and dusted");
     service
-        .set_state(&story.id, "done", None, None)
+        .set_state(&story.id, "done", None, None, None)
         .expect("closing");
     let error = service
-        .set_state(&story.id, "todo", None, None)
+        .set_state(&story.id, "todo", None, None, None)
         .unwrap_err();
     assert_eq!(
         validation_message(error),
@@ -669,7 +669,7 @@ fn an_if_state_claim_that_matches_succeeds() {
     let ctx = fixture.ctx();
     let story = new_story(&ctx, "claimable");
     let after = StoryService::new(&ctx)
-        .set_state(&story.id, "in-progress", None, Some("todo"))
+        .set_state(&story.id, "in-progress", None, Some("todo"), None)
         .expect("claiming");
     assert_eq!(after.state, "in-progress");
 }
@@ -681,11 +681,11 @@ fn an_if_state_claim_that_lost_reports_both_states() {
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "contended");
     service
-        .set_state(&story.id, "in-progress", None, None)
+        .set_state(&story.id, "in-progress", None, None, None)
         .expect("the winner's move");
 
     let error = service
-        .set_state(&story.id, "in-progress", None, Some("todo"))
+        .set_state(&story.id, "in-progress", None, Some("todo"), None)
         .unwrap_err();
     match error {
         AppError::StateConflict(expected, actual) => {
@@ -712,7 +712,7 @@ fn an_if_state_claim_against_a_deleted_story_reports_deleted() {
     service.delete(&story.id, "duplicate").expect("deleting");
 
     let error = service
-        .set_state(&story.id, "in-progress", None, Some("todo"))
+        .set_state(&story.id, "in-progress", None, Some("todo"), None)
         .unwrap_err();
     match error {
         AppError::StateConflict(expected, actual) => {
@@ -732,11 +732,11 @@ fn an_if_state_claim_against_a_closed_story_is_a_conflict_not_a_validation_error
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "closed under us");
     service
-        .set_state(&story.id, "done", None, None)
+        .set_state(&story.id, "done", None, None, None)
         .expect("closing");
 
     let error = service
-        .set_state(&story.id, "in-progress", None, Some("todo"))
+        .set_state(&story.id, "in-progress", None, Some("todo"), None)
         .unwrap_err();
     match error {
         AppError::StateConflict(expected, actual) => {
@@ -761,7 +761,7 @@ fn two_concurrent_claims_produce_exactly_one_winner() {
                 let fixture = &fixture;
                 scope.spawn(move || {
                     let ctx = fixture.ctx();
-                    StoryService::new(&ctx).set_state(&id, "in-progress", None, Some("todo"))
+                    StoryService::new(&ctx).set_state(&id, "in-progress", None, Some("todo"), None)
                 })
             })
             .collect();
@@ -794,10 +794,145 @@ fn a_story_moved_twice_ends_where_the_second_move_put_it() {
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "back and forth");
     service
-        .set_state(&story.id, "in-progress", None, None)
+        .set_state(&story.id, "in-progress", None, None, None)
         .unwrap();
-    let after = service.set_state(&story.id, "todo", None, None).unwrap();
+    let after = service
+        .set_state(&story.id, "todo", None, None, None)
+        .unwrap();
     assert_eq!(after.state, "todo");
+}
+
+// --- set_state's optional `awaiting` reason (SH-205) ------------------------
+
+/// The common case: `story move <id> blocked --reason "..."` lands both the
+/// state change and the reason in one call, one transaction.
+#[test]
+fn set_state_with_awaiting_sets_state_and_reason_atomically() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let story = new_story(&ctx, "stuck");
+    let after = StoryService::new(&ctx)
+        .set_state(&story.id, "blocked", None, None, Some("waiting on SH-9"))
+        .expect("blocking with a reason");
+
+    assert_eq!(after.state, "blocked");
+    assert_eq!(after.awaiting.as_deref(), Some("waiting on SH-9"));
+    assert_eq!(
+        event_kinds(&fixture, &story.id),
+        ["StoryCreated", "StoryStateChanged", "StoryAwaitingSet"],
+        "state and awaiting land as one batch, not two separate writes"
+    );
+}
+
+/// Omitting `awaiting` — every unmodified caller, scripts included — behaves
+/// exactly as before: no `StoryAwaitingSet` event at all.
+#[test]
+fn set_state_without_awaiting_is_unchanged() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let story = new_story(&ctx, "stuck, unexplained");
+    let after = StoryService::new(&ctx)
+        .set_state(&story.id, "blocked", None, None, None)
+        .expect("blocking without a reason");
+
+    assert_eq!(after.state, "blocked");
+    assert_eq!(after.awaiting, None);
+    assert_eq!(
+        event_kinds(&fixture, &story.id),
+        ["StoryCreated", "StoryStateChanged"]
+    );
+}
+
+/// A comment and a reason can be set in the same move — both land in the
+/// same batch, comment first (matching the order they're passed in).
+#[test]
+fn set_state_can_carry_a_comment_and_a_reason_together() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let story = new_story(&ctx, "stuck, noted");
+    StoryService::new(&ctx)
+        .set_state(
+            &story.id,
+            "blocked",
+            Some("filed the upstream ticket"),
+            None,
+            Some("waiting on SH-9"),
+        )
+        .expect("blocking with a comment and a reason");
+
+    assert_eq!(
+        event_kinds(&fixture, &story.id),
+        [
+            "StoryCreated",
+            "StoryStateChanged",
+            "StoryCommentAdded",
+            "StoryAwaitingSet"
+        ]
+    );
+    let after = snapshot(&fixture, &story.id);
+    assert_eq!(after.awaiting.as_deref(), Some("waiting on SH-9"));
+    assert_eq!(
+        after.comments.last().unwrap().text,
+        "filed the upstream ticket"
+    );
+}
+
+/// Mirrors `set_awaiting`'s own validation: a blank reason is refused, not
+/// silently trimmed to nothing and stored.
+#[test]
+fn set_state_awaiting_is_trimmed_and_a_blank_one_is_refused() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+
+    let story = new_story(&ctx, "trimmed");
+    let after = service
+        .set_state(
+            &story.id,
+            "blocked",
+            None,
+            None,
+            Some("  waiting on SH-9  "),
+        )
+        .expect("blocking with a padded reason");
+    assert_eq!(after.awaiting.as_deref(), Some("waiting on SH-9"));
+
+    for blank in ["", "   ", "\t\n"] {
+        let other = new_story(&ctx, "blank");
+        let error = service
+            .set_state(&other.id, "blocked", None, None, Some(blank))
+            .unwrap_err();
+        assert_eq!(
+            validation_message(error),
+            "awaiting reason must not be empty"
+        );
+    }
+}
+
+/// Closing already clears `awaiting` unconditionally
+/// (`state_transition_events`) — setting a new one in the same breath it
+/// gets cleared has no coherent meaning, so it's refused rather than
+/// silently discarded or silently overriding the clear.
+#[test]
+fn set_state_refuses_a_reason_combined_with_a_move_to_a_closed_state() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let story = new_story(&ctx, "not both");
+    let error = StoryService::new(&ctx)
+        .set_state(&story.id, "done", None, None, Some("waiting on SH-9"))
+        .unwrap_err();
+
+    assert_eq!(
+        validation_message(error),
+        "--reason cannot be combined with a move to a closed state; awaiting is cleared on close"
+    );
+    // Refused before any write: the story never moved.
+    assert_eq!(snapshot(&fixture, &story.id).state, "todo");
+    assert_eq!(
+        event_kinds(&fixture, &story.id),
+        ["StoryCreated"],
+        "a refused call must write nothing"
+    );
 }
 
 // --- set fields ------------------------------------------------------------
@@ -895,7 +1030,9 @@ fn set_fields_closing_a_blocked_story_emits_the_same_batch_as_a_move() {
 
     let via_move = new_story(&ctx, "via move");
     service.set_awaiting(&via_move.id, "review").unwrap();
-    service.set_state(&via_move.id, "done", None, None).unwrap();
+    service
+        .set_state(&via_move.id, "done", None, None, None)
+        .unwrap();
 
     assert_eq!(
         event_kinds(&fixture, &via_set.id),
@@ -1215,7 +1352,9 @@ fn bulk_update_reports_a_missing_or_closed_story_the_same_way() {
     let ctx = fixture.ctx();
     let service = StoryService::new(&ctx);
     let closed = new_story(&ctx, "already closed");
-    service.set_state(&closed.id, "done", None, None).unwrap();
+    service
+        .set_state(&closed.id, "done", None, None, None)
+        .unwrap();
 
     let message = service
         .bulk_update(&[
@@ -1327,7 +1466,9 @@ fn reopening_a_closed_story_returns_it_to_the_default_open_state() {
     let ctx = fixture.ctx();
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "back from the dead");
-    service.set_state(&story.id, "done", None, None).unwrap();
+    service
+        .set_state(&story.id, "done", None, None, None)
+        .unwrap();
 
     let reopened = service.reopen(&story.id).expect("reopening");
     assert_eq!(reopened.state, "todo");
@@ -1351,7 +1492,9 @@ fn reopening_preserves_the_whole_event_log() {
     let ctx = fixture.ctx();
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "history kept");
-    service.set_state(&story.id, "done", None, None).unwrap();
+    service
+        .set_state(&story.id, "done", None, None, None)
+        .unwrap();
     service.reopen(&story.id).unwrap();
 
     assert_eq!(
@@ -1424,7 +1567,9 @@ fn reopen_plan_of_an_ordinarily_closed_story_is_none() {
     let ctx = fixture.ctx();
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "just closed");
-    service.set_state(&story.id, "done", None, None).unwrap();
+    service
+        .set_state(&story.id, "done", None, None, None)
+        .unwrap();
 
     let plan = service.reopen_plan(&story.id).expect("reading the plan");
     assert!(plan.is_none(), "{plan:?}");
@@ -1451,7 +1596,9 @@ fn a_reopened_story_can_be_edited_again() {
     let ctx = fixture.ctx();
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "usable again");
-    service.set_state(&story.id, "done", None, None).unwrap();
+    service
+        .set_state(&story.id, "done", None, None, None)
+        .unwrap();
     service.reopen(&story.id).unwrap();
     let after = service.comment(&story.id, "still here").expect("editing");
     assert_eq!(after.comments.len(), 1);
@@ -1465,7 +1612,9 @@ fn hiding_a_closed_story_sets_hidden_at() {
     let ctx = fixture.ctx();
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "closed, then archived");
-    service.set_state(&story.id, "done", None, None).unwrap();
+    service
+        .set_state(&story.id, "done", None, None, None)
+        .unwrap();
 
     let hidden = service.hide(&story.id).expect("archiving");
     assert!(hidden.hidden_at.is_some());
@@ -1490,7 +1639,9 @@ fn hiding_an_already_hidden_story_is_a_no_op() {
     let ctx = fixture.ctx();
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "archived twice");
-    service.set_state(&story.id, "done", None, None).unwrap();
+    service
+        .set_state(&story.id, "done", None, None, None)
+        .unwrap();
     let first = service.hide(&story.id).unwrap();
 
     let second = service.hide(&story.id).unwrap();
@@ -1520,7 +1671,9 @@ fn unhiding_clears_hidden_at() {
     let ctx = fixture.ctx();
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "archived then unarchived");
-    service.set_state(&story.id, "done", None, None).unwrap();
+    service
+        .set_state(&story.id, "done", None, None, None)
+        .unwrap();
     service.hide(&story.id).unwrap();
 
     let unhidden = service.unhide(&story.id).expect("unarchiving");
@@ -1535,7 +1688,9 @@ fn unhiding_a_story_that_is_not_hidden_is_a_no_op() {
     let ctx = fixture.ctx();
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "never archived");
-    service.set_state(&story.id, "done", None, None).unwrap();
+    service
+        .set_state(&story.id, "done", None, None, None)
+        .unwrap();
 
     service.unhide(&story.id).unwrap();
     assert_eq!(
@@ -1554,7 +1709,9 @@ fn reopening_a_hidden_story_clears_hidden_at() {
     let ctx = fixture.ctx();
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "archived then reopened");
-    service.set_state(&story.id, "done", None, None).unwrap();
+    service
+        .set_state(&story.id, "done", None, None, None)
+        .unwrap();
     service.hide(&story.id).unwrap();
 
     let reopened = service.reopen(&story.id).expect("reopening");
@@ -1570,9 +1727,9 @@ fn hide_state_plan_lists_every_undhidden_story_in_the_state() {
     let a = new_story(&ctx, "a");
     let b = new_story(&ctx, "b");
     let c = new_story(&ctx, "c");
-    service.set_state(&a.id, "done", None, None).unwrap();
-    service.set_state(&b.id, "done", None, None).unwrap();
-    service.set_state(&c.id, "done", None, None).unwrap();
+    service.set_state(&a.id, "done", None, None, None).unwrap();
+    service.set_state(&b.id, "done", None, None, None).unwrap();
+    service.set_state(&c.id, "done", None, None, None).unwrap();
     service.hide(&c.id).unwrap();
 
     let plan = service.hide_state_plan("done").expect("previewing");
@@ -1610,8 +1767,8 @@ fn hide_state_archives_every_story_currently_in_the_column() {
     let a = new_story(&ctx, "a");
     let b = new_story(&ctx, "b");
     let open = new_story(&ctx, "still open");
-    service.set_state(&a.id, "done", None, None).unwrap();
-    service.set_state(&b.id, "done", None, None).unwrap();
+    service.set_state(&a.id, "done", None, None, None).unwrap();
+    service.set_state(&b.id, "done", None, None, None).unwrap();
 
     let message = service.hide_state("done").expect("archiving the column");
     assert_eq!(message, "archived 2 stories from `done`");
@@ -1626,7 +1783,7 @@ fn hide_state_does_not_re_hide_an_already_hidden_story() {
     let ctx = fixture.ctx();
     let service = StoryService::new(&ctx);
     let a = new_story(&ctx, "a");
-    service.set_state(&a.id, "done", None, None).unwrap();
+    service.set_state(&a.id, "done", None, None, None).unwrap();
     let first_hide = service.hide(&a.id).unwrap();
 
     service.hide_state("done").unwrap();
@@ -1810,7 +1967,7 @@ fn every_event_in_one_call_shares_one_timestamp() {
     let story = new_story(&ctx, "one instant");
     service.set_awaiting(&story.id, "review").unwrap();
     service
-        .set_state(&story.id, "done", Some("ship"), None)
+        .set_state(&story.id, "done", Some("ship"), None, None)
         .unwrap();
 
     let no = StoryNo::parse_id("SH", &story.id).unwrap();
@@ -1881,7 +2038,9 @@ fn no_hooks_suppresses_every_hook() {
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "silent");
     service.comment(&story.id, "quiet").unwrap();
-    service.set_state(&story.id, "done", None, None).unwrap();
+    service
+        .set_state(&story.id, "done", None, None, None)
+        .unwrap();
     assert!(fired_hooks(&fixture).is_empty());
 }
 
@@ -1903,7 +2062,7 @@ fn closing_a_story_fires_the_state_change_hook_and_then_the_close_hook() {
     let ctx = fixture.ctx();
     let story = new_story(&ctx, "closing");
     StoryService::new(&ctx)
-        .set_state(&story.id, "done", None, None)
+        .set_state(&story.id, "done", None, None, None)
         .unwrap();
     assert_eq!(fired_hooks(&fixture), ["create", "state_change", "close"]);
 }
@@ -1915,7 +2074,7 @@ fn moving_between_open_states_does_not_fire_the_close_hook() {
     let ctx = fixture.ctx();
     let story = new_story(&ctx, "still open");
     StoryService::new(&ctx)
-        .set_state(&story.id, "in-progress", None, None)
+        .set_state(&story.id, "in-progress", None, None, None)
         .unwrap();
     assert_eq!(fired_hooks(&fixture), ["create", "state_change"]);
 }
@@ -1956,7 +2115,7 @@ fn a_rejected_operation_fires_no_hook() {
     record_all_hooks(&fixture);
     let ctx = fixture.ctx();
     let story = new_story(&ctx, "rejected");
-    let _ = StoryService::new(&ctx).set_state(&story.id, "limbo", None, None);
+    let _ = StoryService::new(&ctx).set_state(&story.id, "limbo", None, None, None);
     assert_eq!(fired_hooks(&fixture), ["create"]);
 }
 
@@ -1966,7 +2125,9 @@ fn reopening_fires_a_state_change_hook_from_closed() {
     let ctx = fixture.ctx();
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "reopened");
-    service.set_state(&story.id, "done", None, None).unwrap();
+    service
+        .set_state(&story.id, "done", None, None, None)
+        .unwrap();
     record_all_hooks(&fixture);
     service.reopen(&story.id).unwrap();
 

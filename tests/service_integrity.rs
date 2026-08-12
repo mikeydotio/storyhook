@@ -242,7 +242,7 @@ fn a_malformed_label_on_a_closed_story_is_reported_but_not_repaired() {
     let ctx = fixture.ctx();
     let a = new_story(&ctx, "A");
     StoryService::new(&ctx)
-        .set_state(&a, "done", None, None)
+        .set_state(&a, "done", None, None, None)
         .expect("closing");
     drop(ctx);
 
@@ -870,7 +870,7 @@ fn fix_does_not_append_to_archived_stories() {
     let ctx = fixture.ctx();
     let id = new_story(&ctx, "closed");
     StoryService::new(&ctx)
-        .set_state(&id, "done", None, None)
+        .set_state(&id, "done", None, None, None)
         .expect("closing");
     drop(ctx);
 

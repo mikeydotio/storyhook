@@ -266,7 +266,7 @@ fn writing_events_to_a_closed_story_is_refused() {
     let fixture = ServiceFixture::new();
     let id = create(&fixture, "Finished");
     StoryService::new(&fixture.ctx())
-        .set_state(&id, "done", None, None)
+        .set_state(&id, "done", None, None, None)
         .expect("closing");
 
     let ctx = fixture.ctx();
@@ -289,7 +289,7 @@ fn the_catalog_and_the_open_story_list_come_from_the_store() {
     let open = create(&fixture, "Open");
     let closed = create(&fixture, "Closed");
     StoryService::new(&fixture.ctx())
-        .set_state(&closed, "done", None, None)
+        .set_state(&closed, "done", None, None, None)
         .expect("closing");
 
     let ctx = fixture.ctx();

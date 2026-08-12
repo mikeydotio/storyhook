@@ -188,6 +188,7 @@ fn set_state(fixture: &Fixture, id: &str, state: &str) {
             state: state.to_string(),
             comment: None,
             if_state: None,
+            awaiting: None,
         },
     )
     .unwrap();
@@ -1152,6 +1153,7 @@ fn removing_an_occupied_status_migrates_its_stories() {
             state: "in-review".to_string(),
             comment: None,
             if_state: None,
+            awaiting: None,
         },
     )
     .unwrap();
@@ -1186,6 +1188,7 @@ fn removing_an_occupied_status_without_a_destination_is_refused() {
             state: "in-review".to_string(),
             comment: None,
             if_state: None,
+            awaiting: None,
         },
     )
     .unwrap();

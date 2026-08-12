@@ -156,7 +156,7 @@ fn an_export_puts_open_stories_first_and_sorts_each_group_as_text() {
         create(&fixture, &format!("Story {index}"));
     }
     StoryService::new(&fixture.ctx())
-        .set_state("SH-3", "done", None, None)
+        .set_state("SH-3", "done", None, None, None)
         .expect("closing SH-3");
 
     let export = export(&fixture);
@@ -658,7 +658,7 @@ fn a_restored_document_holds_the_same_events_at_the_same_positions() {
         .comment(&id, "After the future.")
         .expect("commenting");
     StoryService::new(&fixture.ctx())
-        .set_state(&id, "done", None, None)
+        .set_state(&id, "done", None, None, None)
         .expect("closing");
 
     let before = triples(fixture.store(), fixture.project());
@@ -1123,7 +1123,7 @@ fn a_project_round_trips_through_export_and_import_byte_for_byte() {
         .comment(&parent, "A remark.")
         .expect("commenting");
     StoryService::new(&fixture.ctx())
-        .set_state("SH-3", "done", None, None)
+        .set_state("SH-3", "done", None, None, None)
         .expect("closing SH-3");
 
     let first = document(&export(&fixture));

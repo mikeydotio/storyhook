@@ -1234,7 +1234,7 @@ Related:
 
         m.insert(
             "move",
-            r#"story move <id> <state> [--if-state <expected>] ["<comment>"]
+            r#"story move <id> <state> [--if-state <expected>] [--reason <text>] ["<comment>"]
 
 Transition a story to a new state. Transitioning to a CLOSED state
 automatically archives the story. Optionally add a comment in the
@@ -1244,20 +1244,32 @@ same operation.
 the move only applies if the story's current state still matches
 <expected>. Otherwise it fails with a machine-readable conflict
 instead of overwriting a state you didn't know had changed —
-useful for automated callers claiming stories concurrently. When
-used, --if-state must come immediately after <state>; everything
-else is treated as free-text comment, exactly like today, with no
-restrictions on its content.
+useful for automated callers claiming stories concurrently.
+
+--reason <text> sets the story's `awaiting` reason atomically with
+the state change — the common case is `story move <id> blocked
+--reason "..."` so a card in the Blocked column carries an
+explanation from the moment it lands there. Strictly opt-in: omit
+it and the move behaves exactly as before, so scripts, agents and
+CI that never pass it see no behavior change. Refused if <state> is
+a CLOSED state, since closing already clears `awaiting`. To set a
+reason without moving state at all, use `story block <id> "<text>"`.
+
+When --if-state and/or --reason are used, they must come immediately
+after <state>, in either order; everything past them is treated as
+free-text comment, exactly like today, with no restrictions on its
+content.
 
 When to use:
   To update the status of a story as you work on it, or to close
   it when complete.
 
 Examples:
-  story move SH-1 in-progress                 # Start working on it
-  story move SH-1 done                         # Mark as done
-  story move SH-1 done "shipped v2.1"          # Done with comment
-  story move SH-1 in-progress --if-state todo  # Claim only if still todo
+  story move SH-1 in-progress                          # Start working on it
+  story move SH-1 done                                 # Mark as done
+  story move SH-1 done "shipped v2.1"                  # Done with comment
+  story move SH-1 in-progress --if-state todo          # Claim only if still todo
+  story move SH-1 blocked --reason "waiting on SH-9"   # Block with a reason
 
 Related:
   story reopen <id>  — Reopen a closed story

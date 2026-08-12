@@ -44,7 +44,7 @@ fn new_story(ctx: &Ctx<'_, SqliteStore>, title: &str) -> String {
 fn story_in(ctx: &Ctx<'_, SqliteStore>, title: &str, state: &str) -> String {
     let id = new_story(ctx, title);
     StoryService::new(ctx)
-        .set_state(&id, state, None, None)
+        .set_state(&id, state, None, None, None)
         .expect("moving the story");
     id
 }
@@ -1127,7 +1127,7 @@ fn a_closed_storys_type_still_counts_as_in_use() {
         })
         .expect("creating");
     StoryService::new(&ctx)
-        .set_state(&story.id, "done", None, None)
+        .set_state(&story.id, "done", None, None, None)
         .expect("closing");
 
     let error = ConfigService::new(&ctx).remove_type("bug").unwrap_err();

@@ -1072,9 +1072,10 @@ fn invocation_corpus() -> Vec<Invocation> {
         },
         Invocation::SetState {
             id: "SH-1".to_string(),
-            state: "done".to_string(),
+            state: "in-progress".to_string(),
             comment: Some("shipped".to_string()),
-            if_state: Some("in-progress".to_string()),
+            if_state: Some("todo".to_string()),
+            awaiting: Some("blocked on SH-2".to_string()),
         },
         Invocation::SetAwaiting {
             id: "SH-1".to_string(),

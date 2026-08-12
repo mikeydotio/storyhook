@@ -103,26 +103,36 @@ impl<'a, S: Store> IntegrityService<'a, S> {
 
     /// Findings that are informational rather than damage.
     ///
-    /// Two occupants. An event whose kind this build has never heard of,
-    /// which is a newer storyhook's data (SH-67), not corruption. And a
+    /// Three occupants. An event whose kind this build has never heard of,
+    /// which is a newer storyhook's data (SH-67), not corruption. A
     /// project with no state configured `role=active` (SH-242) — not damage
     /// either, since `active_state`'s "exactly two open states" fallback
     /// covers a project the required-states floor (SH-125) has already made
     /// unreachable in practice (the floor alone puts three states OPEN), so
     /// silence here is the *common* case for anything written before the
-    /// role concept existed, not a rare one. Neither notice
-    /// contributes to [`report`](Self::report)'s health verdict,
+    /// role concept existed, not a rare one. And a story sitting in the
+    /// reserved `blocked` state with no `awaiting` reason recorded (SH-205)
+    /// — human-legibility only, since `is_ready` (SH-126) already treats
+    /// `state == "blocked"` as not-ready with or without a reason attached,
+    /// so this is the backstop for a skipped dashboard prompt or a bare
+    /// scripted `move` rather than a dispatch-safety gap. None of the three
+    /// contribute to [`report`](Self::report)'s health verdict,
     /// [`fix`](Self::fix)'s success or failure, or `story doctor`'s exit code
     /// — SH-185's council put the first one here specifically so it could
-    /// not, and the second follows the same reasoning
+    /// not, and the other two follow the same reasoning
     /// [`crate::domain::with_required_states`] already gives for never
-    /// awarding a role during a floor repair: which state should be active
-    /// is not this command's to guess. The caller still owes both
-    /// visibility: see `notice_issues`'s doc comment.
+    /// awarding a role during a floor repair: which state should be active,
+    /// or why a story is blocked, is not this command's to guess. The caller
+    /// still owes all three visibility: see `notice_issues`'s doc comment.
     pub fn notices(&self) -> Result<Vec<String>, AppError> {
         let mut notices = notice_issues(&diff_read_model(self.ctx.store(), self.project())?);
-        let states = self.ctx.store().read(|tx| tx.states(self.project()))?;
+        let (states, blocked) = self.ctx.store().read(|tx| {
+            let states = tx.states(self.project())?;
+            let blocked = blocked_without_reason_notices(tx, self.project())?;
+            Ok((states, blocked))
+        })?;
         notices.extend(active_state_notice(&states));
+        notices.extend(blocked);
         Ok(notices)
     }
 
@@ -491,6 +501,28 @@ fn active_state_notice(states: &[StateDef]) -> Vec<String> {
          recommending it. Run `story state set in-progress --role active` (or name whichever \
          state means work is underway) to fix it."
     )]
+}
+
+/// A story in the reserved `blocked` state with no `awaiting` reason
+/// recorded (SH-205) — one notice per such story, in story-id order via
+/// [`story_views`]'s own ordering. Only `state == "blocked"` is checked, not
+/// superstate: `blocked` is pinned to `SuperState::Open` for every project by
+/// the required-states floor (SH-125), so no closed story can carry it.
+fn blocked_without_reason_notices(
+    tx: &impl ReadOps,
+    project: ProjectId,
+) -> Result<Vec<String>, AppError> {
+    Ok(story_views(tx, project, false)?
+        .into_iter()
+        .filter(|view| view.story.state == "blocked" && view.story.awaiting.is_none())
+        .map(|view| {
+            format!(
+                "{}: sitting in `blocked` with no awaiting reason — `story block {} \"<reason>\"` \
+                 (or `story move {} blocked --reason \"<text>\"` next time) explains why",
+                view.story.id, view.story.id, view.story.id
+            )
+        })
+        .collect())
 }
 
 /// Renders `report()`'s findings for display when the run is unhealthy,
