@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { seedToken } from "./support";
+import { deleteStory, seedToken } from "./support";
 
 /**
  * Exercises SH-175: the New Story modal's redesigned footer (Discard
@@ -142,18 +142,8 @@ test("publishing a draft from the Edit Draft modal makes it a live board card", 
   await page.locator("#create-submit").click();
   await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
 
-  const card = page.locator(".card", { hasText: title });
-  await expect(card).toBeVisible();
+  await expect(page.locator(".card", { hasText: title })).toBeVisible();
 
   // Cleanup: a live story, so the ordinary drawer delete flow applies.
-  await card.click();
-  await expect(page.locator("#drawer")).toHaveClass(/open/);
-  await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
-  await page
-    .locator('input[placeholder="Reason for deletion (required)"]')
-    .fill("e2e cleanup");
-  await page
-    .locator("#drawer-footer button", { hasText: "Confirm delete" })
-    .click();
-  await expect(card).not.toBeVisible();
+  await deleteStory(page, title);
 });

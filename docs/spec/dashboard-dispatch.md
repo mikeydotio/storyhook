@@ -376,6 +376,21 @@ drift from the real one), and separately pins `plugin.json`'s version against
 and forgot the other), which is the literal reason `claude plugin update` answered
 "already at the latest version" during this story's own investigation.
 
+## As built — SH-197 (a second entry point: the story context menu)
+
+**Dispatch and Dispatch Auto are reachable from two places now, sharing one gate.**
+SH-197 added a right-click context menu (`storyMenuModel`, `src/web_dashboard.html`) with
+its own Dispatch/Dispatch Auto items, alongside the drawer footer's existing buttons
+(`renderDrawerFooter`/`dispatchButtons`). Both read the identical expression —
+`stateSuperstate(st.state) === "CLOSED"` (or the equivalent `isClosed`) `||
+!currentRepoHasCheckout()` — rather than each surface computing its own answer, so the
+two can never disagree about whether a story is dispatchable. Both call the same
+`startDispatch(id, auto)` and disable while `state.dispatches[id]` holds an entry,
+matching `DispatchRegistry::try_start`'s per-story (not per-mode) dedupe on the daemon
+side. The context menu HIDES the two items rather than disabling them when the gate
+fails — nothing a menu click can do lifts "closed" or "no checkout" — the same choice
+the drawer footer already made by omitting the buttons outright.
+
 ## Verification
 
 `make test` is the gate. Coverage, by layer:

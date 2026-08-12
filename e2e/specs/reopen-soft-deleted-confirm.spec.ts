@@ -164,12 +164,9 @@ async function deleteStory(
   await card.click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
   await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
-  await page
-    .locator('input[placeholder="Reason for deletion (required)"]')
-    .fill("e2e cleanup");
-  await page
-    .locator("#drawer-footer button", { hasText: "Confirm delete" })
-    .click();
+  await expect(page.locator("#delete-modal")).toHaveClass(/open/);
+  await page.locator("#delete-reason").fill("e2e cleanup");
+  await page.locator("#delete-modal-submit").click();
   await expect(card).not.toBeVisible();
 }
 

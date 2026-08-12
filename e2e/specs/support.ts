@@ -1,4 +1,5 @@
-import type { Page } from "@playwright/test";
+import { expect } from "@playwright/test";
+import type { APIRequestContext, Page } from "@playwright/test";
 
 /**
  * Shared across every spec since SH-187: every `/api/**` route requires the
@@ -42,4 +43,50 @@ export async function seedToken(page: Page): Promise<void> {
   await page.addInitScript((value) => {
     window.sessionStorage.setItem("storyhookDaemonToken", value);
   }, token);
+}
+
+/**
+ * Resolves a seeded project's slug (the `id` `GET /api/repos` reports, and
+ * what `?project=` names -- SH-197) from its display name. `run-e2e.sh`
+ * exports the story ids and checkouts it minted, but never a project's
+ * slug, and `story project new` derives one from the name by an algorithm
+ * this suite has no business depending on -- so a spec that needs Alpha's
+ * or Delta's actual slug asks the daemon, the same way the dashboard itself
+ * would.
+ */
+export async function projectSlug(
+  request: APIRequestContext,
+  name: string,
+): Promise<string> {
+  const resp = await request.get("/api/repos", {
+    headers: { "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN") },
+  });
+  const repos: Array<{ id: string; name: string }> = await resp.json();
+  const match = repos.find((r) => r.name === name);
+  if (!match) {
+    throw new Error(`No project named "${name}" in GET /api/repos`);
+  }
+  return match.id;
+}
+
+/**
+ * Deletes the "todo"-column story titled `title` through the drawer's
+ * footer Delete button and the shared delete-confirmation modal (SH-197),
+ * and waits for the card to disappear. Was six near-identical copies (one
+ * local `deleteStory` per spec file, plus two more inlined directly)
+ * driving the drawer's now-removed inline typed-reason form, before being
+ * pulled out into this one call site ahead of that form's replacement.
+ */
+export async function deleteStory(page: Page, title: string): Promise<void> {
+  const card = page.locator('.column[data-state="todo"] .card', {
+    hasText: title,
+  });
+  await card.click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
+  await expect(page.locator("#delete-modal")).toHaveClass(/open/);
+  await page.locator("#delete-reason").fill("e2e cleanup");
+  await page.locator("#delete-modal-submit").click();
+  await expect(page.locator("#delete-modal")).not.toHaveClass(/open/);
+  await expect(card).not.toBeVisible();
 }

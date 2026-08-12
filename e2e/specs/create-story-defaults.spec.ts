@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { seedToken } from "./support";
+import { deleteStory, seedToken } from "./support";
 
 /**
  * Exercises SH-44: the "+ New" create-story modal preselects the project's
@@ -56,16 +56,7 @@ test("creating a story shows no success toast (SH-127) -- the card's own entranc
   await expect(page.locator("#toast-stack .toast.success")).toHaveCount(0);
 
   // Cleanup, same pattern as the sibling test below.
-  await card.click();
-  await expect(page.locator("#drawer")).toHaveClass(/open/);
-  await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
-  await page
-    .locator('input[placeholder="Reason for deletion (required)"]')
-    .fill("e2e cleanup");
-  await page
-    .locator("#drawer-footer button", { hasText: "Confirm delete" })
-    .click();
-  await expect(card).not.toBeVisible();
+  await deleteStory(page, title);
 });
 
 test("submitting without touching state or type creates a story with the preselected defaults", async ({
@@ -93,14 +84,5 @@ test("submitting without touching state or type creates a story with the presele
   // filter-persistence.spec.ts's "0 / 2"), all sharing this one seeded
   // daemon for the whole e2e run — so this test cleans up the story it just
   // created rather than leaving it behind for the next spec to trip over.
-  await card.click();
-  await expect(page.locator("#drawer")).toHaveClass(/open/);
-  await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
-  await page
-    .locator('input[placeholder="Reason for deletion (required)"]')
-    .fill("e2e cleanup");
-  await page
-    .locator("#drawer-footer button", { hasText: "Confirm delete" })
-    .click();
-  await expect(card).not.toBeVisible();
+  await deleteStory(page, title);
 });
