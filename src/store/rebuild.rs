@@ -322,6 +322,21 @@ pub fn diff(tx: &impl ReadOps, project: ProjectId) -> Result<ReadModelDiff, Stor
             optional(row.description.as_deref()),
             optional(expected.description.as_deref()),
         );
+        // Neither column has a schema CHECK tying it to anything else (SH-43,
+        // SH-175 respectively) — the fold and the service layer are the only
+        // things that ever kept `hidden_at` implying CLOSED or `draft` only
+        // ever clearing. A write that reaches the column directly (a raw
+        // migration, a hand edit) skips both, and until now nothing compared
+        // this column against the fold that would have caught it: `snapshot`
+        // below only sees a divergence here if that same write also touched
+        // the embedded copy, which is exactly what a column-only write does
+        // not do (SH-211).
+        report(
+            "hidden_at",
+            optional(row.hidden_at.as_deref()),
+            optional(expected.hidden_at.as_deref()),
+        );
+        report("draft", row.draft.to_string(), expected.draft.to_string());
         report(
             "labels",
             row.labels.join(","),
