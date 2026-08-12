@@ -263,17 +263,29 @@ fn an_unforced_stop_waits_for_in_flight_work_to_finish() {
                 .any(|r| r.command == "comment")
         },
     );
+    // `wait_for` only proves the record exists by the time it polls, which
+    // can be an arbitrary amount of the hook's 2s already spent — measuring
+    // "waited" from here (as this test used to) understates the daemon's
+    // own wait and goes flaky under scheduling contention (SH-209). The
+    // record's own `started_at`, set by the daemon before it ever spawns
+    // the hook (`api::rpc::invoke`), is the true origin.
+    let hook_started_at: chrono::DateTime<chrono::Utc> = lifecycle::read_inflight(&environment)
+        .into_iter()
+        .find(|r| r.command == "comment")
+        .expect("the in-flight record wait_for just found is still there")
+        .started_at
+        .parse()
+        .expect("started_at is RFC 3339");
 
-    let started = Instant::now();
     env.story(project.path())
         .args(["daemon", "stop"])
         .assert()
         .success();
-    let waited = started.elapsed();
+    let waited = chrono::Utc::now() - hook_started_at;
 
     assert!(
-        waited >= Duration::from_secs(2),
-        "an unforced stop must wait for the 2s hook to finish, not abandon it: took {waited:?}"
+        waited >= chrono::Duration::seconds(2),
+        "an unforced stop must wait for the 2s hook to finish, not abandon it: took {waited}"
     );
     assert!(
         !lifecycle::is_live(&environment),
