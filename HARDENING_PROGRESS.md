@@ -11890,3 +11890,70 @@ registry, the SPA, ~20 tests, an e2e spec, the spec's residuals) and `make test`
 needs supervising on top. Running dry mid-implementation with a dirty tree is the
 one outcome worse than a clean boundary, and the decision is written to be picked
 up cold.
+
+### SH-251 — implementation · merged (PR #314) · closed
+
+The council's verdict, built. `story web open` arms a one-shot 120-second
+coupon on the daemon, opens `http://127.0.0.1:PORT/#h=<coupon>`, and prints
+the bare URL; the SPA strips the fragment in its first synchronous tick and
+spends it at `POST /handoff` for the token. A one-click dashboard never
+prompts, for reads or writes, and nothing about the token requirement was
+relaxed to achieve that.
+
+Four commits, in the order the verdict required them:
+
+| | |
+|---|---|
+| `523c13b` | **refactor** — the four locality conjuncts extracted to one `local_request() -> Option<LocalRequest>` |
+| `059d968` | **server** — `src/api/handoff.rs`, `Reply::no_store()`, the `serve.rs` wiring, `lifecycle::arm_handoff` |
+| `379100b` | **client** — `story web open`, the SPA's consume/redeem, CLI and browser specs |
+| `0883b4c` | **docs** — design, experiment, residuals, rejected options |
+
+**The witness type earned its keep before a test did.** Binding condition 1
+asked that deleting the locality check be a *compile error*, not a failed test.
+That was checked rather than asserted: replacing the `local_request(...)` call
+with a forged `LocalRequest(())` gives `E0423: cannot initialize a tuple struct
+which contains private fields`. A source scan then pins the caller set at two —
+SH-250's read exemption and SH-251's redemption gate — so a third is a decision
+somebody takes rather than a line that slips in.
+
+**Three mutations, to check the new tests can actually fail.** Consuming a
+coupon on every attempt rather than only on a match: 6 red. Deleting the expiry
+comparison: 7 red. Deferring the fragment strip by one `setTimeout(…, 0)`: the
+browser spec's ordering assertion red. Writing tests and never watching one
+fail is how a suite ends up proving nothing, and the ordering spec in
+particular had a documented way to pass vacuously — the reason it asserts
+`location.hash` **at request construction** via a shim, with a length guard,
+rather than after load.
+
+**The extraction's behaviour-freedom is readable in the diff**, which was the
+point of condition 12: `admission.rs`'s six-conjunct truth table is byte-
+unmodified across `523c13b`, and green either side. Its only edit is a `use`
+line moved into the test module — the constant now lives beside the predicate
+that reads it.
+
+**One deviation from the verdict as written**, recorded in the spec's own "As
+built": the coupon rides in a request header (`X-Storyhook-Handoff`) rather than
+a body. The verdict fixed the route, the gate and the reply but not where the
+coupon travels; a header keeps the whole module deciding from the request
+*head*, which is what lets `intercept` answer before the daemon waits on a body
+byte — the property `rpc::admission` and `dispatch::intercept` already rely on.
+
+**Supervision:** one `make test` run, backgrounded under the log-growth
+heartbeat with a 120s stall bound. Longest no-growth gap: 20s. 480s wall clock,
+exit 0 — 3377 Rust tests, 30 plugin bash tests, 97 browser specs, no orphan
+daemons. Two e2e runs before it (one to verify the specs, one to verify a
+mutation turned them red) plus three single-spec runs to confirm each browser
+spec passes with no predecessor — condition 7's ordering point, which
+`workers: 1` hides rather than removes.
+
+**What this did not close, and says so plainly.** The browser still ends up
+holding the master token: this is transport done correctly, not least privilege
+(**SH-254**). SH-250's read exemption now buys only bookmarks and hand-typed
+URLs (**SH-255**). The coupon still lands in Chrome's on-disk history and still
+crosses `$BROWSER` argv — narrowed from permanent to worthless-in-120-seconds,
+not removed. And three of four browsers remain unmeasured: the spec records
+that any future claim about a browser's durable stores must be re-run by hand
+against a real browser and **never inferred from a green suite**, because
+Playwright's chromium writes no History database and would answer green to a
+question it never asked.
