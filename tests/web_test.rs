@@ -360,13 +360,13 @@ fn web_address_not_running_fails_with_summary() {
 fn web_open_and_address_succeed_when_running() {
     let env = TestEnv::isolated();
     let dir = scratch_dir(); // deliberately NOT a storyhook project
-    let port = reserve_port();
     let _daemon = DaemonGuard::new(&env, dir.path());
 
     env.story(dir.path())
-        .args(["web", "start", "--port", &port.to_string()])
+        .args(["web", "start"])
         .assert()
         .success();
+    let port = started_port(&env);
     wait_for_server(port);
 
     // `web open` targets loopback; browser launch is stubbed via $BROWSER=true.
@@ -418,19 +418,18 @@ fn web_open_and_address_succeed_when_running() {
 fn web_start_status_address_advertise_the_host_the_daemon_bound() {
     let env = TestEnv::isolated();
     let dir = scratch_dir();
-    let port = reserve_port();
     let _daemon = DaemonGuard::new(&env, dir.path());
 
     env.story(dir.path())
-        .args(["web", "start", "--port", &port.to_string()])
+        .args(["web", "start"])
         .assert()
         .success();
-    wait_for_server(port);
 
     let info = env
         .daemon()
         .expect("the daemon published a portfile after binding");
-    let expected = format!("http://{}:{}", info.advertised_host(), port);
+    wait_for_server(info.port);
+    let expected = format!("http://{}:{}", info.advertised_host(), info.port);
 
     // A `tailscale` that fails, ahead of everything else: a client that still
     // probes gets nothing and falls back to loopback.
@@ -483,16 +482,15 @@ fn web_start_status_address_advertise_the_host_the_daemon_bound() {
 fn web_start_succeeds_outside_a_project() {
     let env = TestEnv::isolated();
     let dir = scratch_dir(); // deliberately NOT a storyhook project
-    let port = reserve_port();
     let _daemon = DaemonGuard::new(&env, dir.path());
 
     env.story(dir.path())
-        .args(["web", "start", "--port", &port.to_string()])
+        .args(["web", "start"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Web UI started"));
 
-    wait_for_server(port);
+    wait_for_server(started_port(&env));
 
     env.story(dir.path())
         .args(["web", "stop"])
@@ -4445,14 +4443,15 @@ fn sse_delivers_a_second_change_to_the_same_repo_immediately_after_the_first() {
     let _sse_guard = sse_test_lock();
     let env = TestEnv::isolated();
     let dir = scratch_dir();
-    let port = reserve_port();
     let _daemon = DaemonGuard::new(&env, dir.path());
 
     env.story(dir.path())
         .env("STORYHOOK_CHANGE_POLL_MS", "600000")
-        .args(["web", "start", "--port", &port.to_string()])
+        .args(["web", "start"])
         .assert()
         .success();
+    let info = started(&env);
+    let port = info.port;
     wait_for_server(port);
 
     env.story(dir.path())
@@ -4460,11 +4459,7 @@ fn sse_delivers_a_second_change_to_the_same_repo_immediately_after_the_first() {
         .assert()
         .success();
 
-    let token = env
-        .daemon()
-        .expect("the started daemon must publish a portfile")
-        .token;
-    let agent = token_agent(&token);
+    let agent = token_agent(&info.token);
     let repos: serde_json::Value = serde_json::from_str(
         &agent
             .get(format!("http://127.0.0.1:{port}/api/repos"))
@@ -4480,7 +4475,7 @@ fn sse_delivers_a_second_change_to_the_same_repo_immediately_after_the_first() {
         .expect("the project's id")
         .to_string();
 
-    let mut sse = connect_sse(port, &token);
+    let mut sse = connect_sse(port, &info.token);
 
     // Two distinct causes: two separate story creations, each its own request,
     // each committing before its own publish. Creations rather than
@@ -4719,21 +4714,17 @@ fn sse_heartbeat_ping_arrives_without_any_story_changes() {
     let _sse_guard = sse_test_lock();
     let env = TestEnv::isolated();
     let dir = scratch_dir();
-    let port = reserve_port();
     let _daemon = DaemonGuard::new(&env, dir.path());
 
     env.story(dir.path())
         .env("STORYHOOK_SSE_HEARTBEAT_MS", "300")
-        .args(["web", "start", "--port", &port.to_string()])
+        .args(["web", "start"])
         .assert()
         .success();
-    wait_for_server(port);
+    let info = started(&env);
+    wait_for_server(info.port);
 
-    let token = env
-        .daemon()
-        .expect("the started daemon must publish a portfile")
-        .token;
-    let mut sse = connect_sse(port, &token);
+    let mut sse = connect_sse(info.port, &info.token);
     let received = read_sse_until(&mut sse, "event: ping", Duration::from_secs(8));
     assert!(
         received.contains("event: ping"),
@@ -4765,25 +4756,21 @@ fn sse_delivers_repo_changed_for_a_cli_write_through_the_daemon() {
     let _sse_guard = sse_test_lock();
     let env = TestEnv::isolated();
     let dir = scratch_dir();
-    let port = reserve_port();
     let _daemon = DaemonGuard::new(&env, dir.path());
 
     env.story(dir.path())
-        .args(["web", "start", "--port", &port.to_string()])
+        .args(["web", "start"])
         .assert()
         .success();
-    wait_for_server(port);
+    let info = started(&env);
+    wait_for_server(info.port);
 
     env.story(dir.path())
         .args(["project", "new", "--prefix", "SH", "--no-agents-md"])
         .assert()
         .success();
 
-    let token = env
-        .daemon()
-        .expect("the started daemon must publish a portfile")
-        .token;
-    let mut sse = connect_sse(port, &token);
+    let mut sse = connect_sse(info.port, &info.token);
 
     env.story(dir.path())
         .args(["new", "Created through the CLI, not the dashboard"])
@@ -4819,26 +4806,22 @@ fn sse_delivers_a_cli_write_with_the_safety_net_poll_disabled() {
     let _sse_guard = sse_test_lock();
     let env = TestEnv::isolated();
     let dir = scratch_dir();
-    let port = reserve_port();
     let _daemon = DaemonGuard::new(&env, dir.path());
 
     env.story(dir.path())
         .env("STORYHOOK_CHANGE_POLL_MS", "600000")
-        .args(["web", "start", "--port", &port.to_string()])
+        .args(["web", "start"])
         .assert()
         .success();
-    wait_for_server(port);
+    let info = started(&env);
+    wait_for_server(info.port);
 
     env.story(dir.path())
         .args(["project", "new", "--prefix", "SH", "--no-agents-md"])
         .assert()
         .success();
 
-    let token = env
-        .daemon()
-        .expect("the started daemon must publish a portfile")
-        .token;
-    let mut sse = connect_sse(port, &token);
+    let mut sse = connect_sse(info.port, &info.token);
 
     env.story(dir.path())
         .args(["new", "Carried by the request boundary alone"])
@@ -4943,6 +4926,30 @@ fn a_wedged_tailscale_cli_cannot_stop_the_dashboard_from_serving() {
     panic!(
         "the dashboard never served a request while `tailscale` hung; last response line: {last:?}"
     );
+}
+
+/// What the daemon a `story web start` just returned from actually bound.
+///
+/// **Read back, never remembered from the request.** A requested port is only a
+/// preference: `bind_preferred` falls back to a kernel-assigned one the moment
+/// its first choice is taken, so a test that waited on — or asserted about — the
+/// number it asked for would be describing a daemon that may not exist. Worse
+/// than waiting forever, it can *succeed*: whatever else claimed that port
+/// answers the connection, and a stranger's server answers 404 or 200 to
+/// everything the test asks about, which is the mass-failure mode of SH-51.
+/// SH-195 fixed this shape for the direct `daemon --serve` spawns; SH-237 is the
+/// same fix for the `web start` ones.
+///
+/// No polling: `web start` blocks in `lifecycle::ensure` until the daemon is
+/// healthy, and a healthy daemon has already published its portfile.
+fn started(env: &TestEnv) -> storyhook::daemon::lifecycle::DaemonInfo {
+    env.daemon()
+        .expect("`web start` returned success, so its daemon has published a portfile")
+}
+
+/// [`started`], for the callers that only want the port.
+fn started_port(env: &TestEnv) -> u16 {
+    started(env).port
 }
 
 /// Opens a raw `GET /api/events` connection, carrying `token` as the
