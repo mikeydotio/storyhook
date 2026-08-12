@@ -60,7 +60,7 @@ use crate::daemon::http1::{Header, Method};
 use serde::{Deserialize, Serialize};
 use wait_timeout::ChildExt;
 
-use crate::api::http::{Reply, mutation_guard_ok, text_reply};
+use crate::api::http::{Reply, TrustedHosts, mutation_guard_ok, text_reply};
 use crate::api::rpc::token_ok;
 use crate::daemon::bus::{Change, ChangeBus};
 use crate::env::Environment;
@@ -622,7 +622,7 @@ pub fn intercept(
     method: &Method,
     query: Option<&str>,
     headers: &[Header],
-    trusted_hosts: &[String],
+    trusted_hosts: &TrustedHosts,
     token: &str,
     env: &Environment,
     bus: &ChangeBus,
@@ -1315,7 +1315,7 @@ mod tests {
                 &Method::Post,
                 None,
                 &[],
-                &[],
+                &TrustedHosts::default(),
                 "tok",
                 &env,
                 &bus,
@@ -1342,7 +1342,7 @@ mod tests {
                 &Method::Get,
                 None,
                 &[],
-                &[],
+                &TrustedHosts::default(),
                 "tok",
                 &env,
                 &bus,
@@ -1363,7 +1363,7 @@ mod tests {
             &Method::Post,
             None,
             &headers(&[("X-Storyhook-Token", "tok")]), // no X-Storyhook, no Host
-            &[],
+            &TrustedHosts::default(),
             "tok",
             &env,
             &bus,
@@ -1388,7 +1388,7 @@ mod tests {
                 ("Host", "evil.example"),
                 ("X-Storyhook-Token", "tok"),
             ]),
-            &[],
+            &TrustedHosts::default(),
             "tok",
             &env,
             &bus,
@@ -1409,7 +1409,7 @@ mod tests {
             &Method::Post,
             None,
             &headers(GUARD_HEADERS),
-            &[],
+            &TrustedHosts::default(),
             "tok",
             &env,
             &bus,
@@ -1432,7 +1432,7 @@ mod tests {
             &Method::Post,
             None,
             &headers(&h),
-            &[],
+            &TrustedHosts::default(),
             "tok",
             &env,
             &bus,
@@ -1465,7 +1465,7 @@ mod tests {
             &Method::Get,
             None,
             &headers(GUARD_HEADERS),
-            &[],
+            &TrustedHosts::default(),
             "tok",
             &env,
             &bus,
@@ -1491,7 +1491,7 @@ mod tests {
             &Method::Post,
             None,
             &headers(&h),
-            &[],
+            &TrustedHosts::default(),
             "tok",
             &env,
             &bus,
@@ -1514,7 +1514,7 @@ mod tests {
             &Method::Put,
             None,
             &headers(&h),
-            &[],
+            &TrustedHosts::default(),
             "tok",
             &env,
             &bus,

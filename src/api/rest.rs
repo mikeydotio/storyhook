@@ -30,8 +30,8 @@ use std::path::PathBuf;
 use crate::daemon::http1::{Header, Method};
 
 use crate::api::http::{
-    Reply, error_reply, get_bool, get_str, get_str_array, guarded, guarded_no_body, html_reply,
-    json_reply, parse_json_object, path_segments, require_str, text_reply, to_json,
+    Reply, TrustedHosts, error_reply, get_bool, get_str, get_str_array, guarded, guarded_no_body,
+    html_reply, json_reply, parse_json_object, path_segments, require_str, text_reply, to_json,
 };
 use crate::cli::{Invocation, ProjectAction, StateAction};
 use crate::domain::{Priority, default_open_state, default_type};
@@ -132,7 +132,7 @@ pub fn route<S: Store>(
     path: &str,
     headers: &[Header],
     body: &str,
-    trusted_hosts: &[String],
+    trusted_hosts: &TrustedHosts,
 ) -> Routed {
     match path_segments(path).as_slice() {
         [] => match method {
@@ -199,7 +199,7 @@ fn route_project<S: Store>(
     rest: &[&str],
     headers: &[Header],
     body: &str,
-    trusted_hosts: &[String],
+    trusted_hosts: &TrustedHosts,
 ) -> Reply {
     match rest {
         ["data"] => match method {
@@ -1288,7 +1288,7 @@ mod tests {
                 "{{\"path\": {}, \"prefix\": \"RG\"}}",
                 to_json(&throwaway.display().to_string()).expect("encoding the path")
             ),
-            &[],
+            &TrustedHosts::default(),
         );
 
         assert_ne!(
