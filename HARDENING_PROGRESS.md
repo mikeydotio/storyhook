@@ -10496,4 +10496,54 @@ checkout, remote branch confirmed deleted (`gh pr merge --delete-branch`).
 
 **No version bump** — left for the next batched `/semver` pass.
 
+### SH-210 — done, 2026-08-12
+
+`story next` surfaced SH-210 as top pick. Claimed immediately.
+
+**The bug, confirmed as filed:** the drawer's "Reopen" button called `runFieldMutation`
+unconditionally. SH-154 made an unforced `POST .../story/{id}/reopen` of a soft-deleted
+story answer 409 with a `ConfirmationRequired`/`UndeletePlan`, but `runFieldMutation`'s
+generic `.catch(toastError)` reads `err.body.error`, which that response never carries —
+so the user saw a bare "Conflict" toast (the response's `xhr.statusText`) with no
+explanation and no path forward short of the CLI's `--force`.
+
+**The fix:** `attemptReopen()` tries the unforced reopen first — unchanged behavior for
+the ordinary case, a story merely closed — and only on the specific 409
+(`err.body.plan.confirm === "undelete"`) renders `renderReopenConfirm`, an inline yes/no
+confirm in the drawer footer naming the story and its deletion reason. Mirrors
+`deleteProject`/`showDeleteConfirm`'s existing reactive confirm-on-409 shape; a single
+click confirms, matching `UndeletePlan`'s non-typed weight
+(`requires_typed_confirmation() == false`), the same rule `renderArchiveConfirm` already
+applies to `HideState`.
+
+**The harder part was reproducing the bug's own precondition.** SH-210's description
+assumed a plain race — drawer open on an ordinarily-closed story, deleted out from under
+it elsewhere. That's impossible: `StoryService::delete` only accepts an *open* story and
+closes-and-deletes it atomically (`service/story.rs`'s own comment: "An already-archived
+story is *not found* rather than *closed*"), so a client can never observe a plain close
+followed later by a delete — only the atomic result. Two failed e2e attempts (a
+state-select-then-delete sequence that 404'd because the story was already closed by the
+time the delete ran, and a stray `.field-grid select` locator that hit the hidden
+create-story modal's own state select instead of the drawer's) narrowed this down to the
+real mechanism: the drawer's single-story detail fetch (`GET .../story/<id>`, unlike the
+board's own `/data`) does not filter out deleted stories, and the footer's Reopen-button
+logic checks only `superstate`, never `deleted`. So the actual race is: open the drawer
+while the story is still open (its detail fetch in flight), delete it out from under that
+in-flight fetch, and let the fetch resolve — the footer then shows "Reopen" for a story
+the server already knows is soft-deleted. `e2e/specs/reopen-soft-deleted-confirm.spec.ts`
+reproduces this deterministically by delaying the detail fetch with `page.route()` (the
+same technique `drawer-detail-race.spec.ts` uses for SH-218's race) and stubbing
+`EventSource` so the delete's own live `repo-changed` push can't resync the board and
+close the drawer during the manufactured delay.
+
+**Gate:** full `make test`, supervised (log-growth heartbeat via Monitor, 120s stall
+bound, no stall observed): `cargo fmt`/`clippy -D warnings` clean, Rust suite green,
+plugin bash harness 29/29, e2e 50/50 (48 prior + the 2 new specs). New spec also run
+standalone twice beforehand to confirm it wasn't flaky before folding it into the gate.
+
+**PR:** #283, one commit, merged as `9958b50`, fast-forwarded onto `main` in this
+checkout, remote branch confirmed deleted (`gh pr merge --delete-branch`).
+
+**No version bump** — left for the next batched `/semver` pass.
+
 **Next:** run `story next` fresh.
