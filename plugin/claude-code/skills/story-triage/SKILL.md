@@ -13,7 +13,7 @@ Review and organize the project backlog.
 
 ### 0. Ensure the storyhook CLI is available
 
-Before running any `story` command, confirm the CLI is installed by running `command -v story`. If it is missing, follow `references/ensure-cli.md`: tell the user, ask permission to install (via `AskUserQuestion`), and if approved use the `story-install` skill before continuing. Do not run `story` commands until this check passes.
+Before running any `story` command, confirm the CLI is installed by running `command -v story`. If it is missing, follow `${CLAUDE_PLUGIN_ROOT}/references/ensure-cli.md`: tell the user, ask permission to install (via `AskUserQuestion`), and if approved use the `story-install` skill before continuing. Do not run `story` commands until this check passes.
 
 ### 1. Gather project state
 
