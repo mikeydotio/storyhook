@@ -89,6 +89,46 @@ fn comment_and_assign_append_events() {
         .stdout(contains("First pass done"));
 }
 
+/// A comment naming another story surfaces on *that* story's `referenced_by`
+/// block, in the `[comment]` shape beside `[git]` and `[pr]` (SH-220) — and
+/// never as a comment on it.
+#[test]
+fn a_comment_naming_another_story_shows_up_under_its_referenced_by() {
+    let dir = tempdir().unwrap();
+    for args in [
+        vec!["project", "new", "--prefix", "SH"],
+        vec!["new", "Mentioned"],
+        vec!["new", "Mentioner"],
+        vec!["comment", "SH-2", "superseded by SH-1"],
+    ] {
+        Command::cargo_bin("story")
+            .unwrap()
+            .current_dir(dir.path())
+            .args(&args)
+            .assert()
+            .success();
+    }
+
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["show", "SH-1"])
+        .assert()
+        .success()
+        .stdout(contains("referenced_by:"))
+        .stdout(contains("[comment] SH-2: superseded by SH-1"))
+        .stdout(contains("comments:").not());
+
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["show", "SH-2"])
+        .assert()
+        .success()
+        .stdout(contains("superseded by SH-1"))
+        .stdout(contains("[comment]").not());
+}
+
 #[test]
 fn awaiting_can_be_set_and_cleared() {
     let dir = tempdir().unwrap();

@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{
-    CommitReference, Member, Priority, ProgressRollup, StateDef, StoryRelation, StorySnapshot,
-    SuperState,
+    CommentMention, CommitReference, Member, Priority, ProgressRollup, StateDef, StoryRelation,
+    StorySnapshot, SuperState,
 };
 use crate::error::AppError;
 use crate::store::PrLink;
@@ -17,12 +17,15 @@ pub struct StaleInfo {
 }
 
 /// Everything that names a story without living in its own comment thread
-/// (SH-169): the commits `commit-sync` found and the pull requests `story
-/// link-pr` recorded. Assembled at query time, not folded — `commits` is
-/// copied from the story's own [`StorySnapshot::referenced_by_commits`], and
-/// `prs` comes from a separate store read (`ReadOps::pr_links`), the same
-/// split [`StoryView::derived_relationships`] draws between what a story's
-/// own event log says and what a cross-story read adds.
+/// (SH-169): the commits `commit-sync` found, the pull requests `story
+/// link-pr` recorded, and the comments *other* stories wrote naming this one
+/// (SH-220). Assembled at query time, not folded — `commits` is copied from
+/// the story's own [`StorySnapshot::referenced_by_commits`], `prs` comes from
+/// a separate store read (`ReadOps::pr_links`), and `comment_mentions` is
+/// derived from the project's folded comment threads
+/// ([`domain::derive_comment_mentions`](crate::domain::derive_comment_mentions)) —
+/// the same split [`StoryView::derived_relationships`] draws between what a
+/// story's own event log says and what a cross-story read adds.
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct ReferencedBy {
     /// Commits `commit-sync` found naming this story, oldest first — folded
@@ -35,21 +38,31 @@ pub struct ReferencedBy {
     /// `include_derived` is set (`story show`, not `story list`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prs: Vec<PrLink>,
+    /// Comments on *other* stories that named this one, oldest first — a
+    /// project-wide scan, so gated on `include_derived` exactly as `prs` is,
+    /// and never stored anywhere (SH-220).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comment_mentions: Vec<CommentMention>,
 }
 
 impl ReferencedBy {
+    /// Whether there is nothing here to show — which is what omits the whole
+    /// block from `--json` and from `story show`.
+    ///
+    /// Every list must be named: a story reachable only by a comment mention
+    /// would otherwise serialize an empty `referenced_by` object rather than
+    /// no `referenced_by` at all.
     fn is_empty(&self) -> bool {
-        self.commits.is_empty() && self.prs.is_empty()
+        self.commits.is_empty() && self.prs.is_empty() && self.comment_mentions.is_empty()
     }
 
-    /// `commits` with no `prs` — the shape every caller that skips the
-    /// project-wide pr_links read builds (`query::bare_view`,
-    /// `transfer::import_project`), so as not to repeat the same two-field
-    /// literal at each one.
+    /// `commits` alone — the shape every caller that skips the project-wide
+    /// reads builds (`query::bare_view`, `transfer::import_project`), so as
+    /// not to repeat the same field-by-field literal at each one.
     pub fn commits_only(commits: Vec<CommitReference>) -> Self {
         Self {
             commits,
-            prs: Vec::new(),
+            ..Self::default()
         }
     }
 }
@@ -1520,6 +1533,12 @@ fn render_story(view: &StoryView) -> String {
             body.push_str(&format!(
                 "- {} [pr] {} ({})\n",
                 pr.linked_at, pr.url, pr.status
+            ));
+        }
+        for mention in &view.referenced_by.comment_mentions {
+            body.push_str(&format!(
+                "- {} [comment] {}: {}\n",
+                mention.at, mention.other_id, mention.snippet
             ));
         }
     }
