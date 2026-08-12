@@ -11810,3 +11810,83 @@ harness told nothing, which is honest about where the pulse lives. **A backgroun
 task must be started so that the thing you poll is the thing that is running.**
 
 **Final gate:** 3336 Rust tests across 147 suites, 94 e2e, 0 failures.
+
+### SH-251 — council phase complete, implementation pending · no PR yet
+
+**Status:** in-progress, deliberately handed to the next context with the design
+settled. No code written. Nothing staged, nothing pushed, tree clean.
+
+SH-251 asks `story web open` to hand the dashboard its token so nothing prompts,
+and the story itself names two shapes — a `#t=<token>` URL fragment and a
+one-time exchange nonce — with the instruction "Decide between them here." That
+is the run's autonomy rule exactly, so it went to `council:council-vote`: three
+seats (security-researcher, software-architect, qa-engineer), two rounds and a
+runoff. The full verdict is a **comment on SH-251**, written to be implementable
+on its own, because `.council/` is gitignored and the artifacts are local to this
+checkout.
+
+**Outcome — unanimous on the runoff:** arm a single-use 120-second coupon on the
+daemon, open `…/#h=<coupon>`, and have the SPA strip it and redeem it for the
+real token at `POST /handoff` — a route **outside `/api` entirely**, so it stands
+on its own gate instead of inheriting SH-250's read exemption. No relaxation of
+the token requirement anywhere.
+
+**What the chair actually contributed, and why it belongs in this file.** Every
+seat named the same unverified fact — whether `history.replaceState` scrubs the
+*persisted* history row — listed it as a risk, and then reasoned past it. The
+panel formed a 2–1 majority resting on it. One seat's dissent said the experiment
+costs ten minutes and nobody had run it.
+
+So it was run: real Chrome, isolated profile, a page calling `replaceState` after
+loading at `…#t=<secret>`. The `urls` table came back holding **both** rows — the
+pre-replacement URL, secret intact, still on disk, while `location.href` read
+clean. **`replaceState` does not scrub; it adds a second row.** The majority
+inverted at the next round and the shape it had chosen ended up ranked *below*
+the shape one seat had already disqualified as unprovable. A second finding fell
+out of the same twenty minutes: **Playwright's bundled chromium writes no History
+database at all**, so no e2e spec in this repo could ever have observed the
+residue — a green suite would have been evidence of nothing.
+
+That is this file's own standing lesson arriving from a new direction. SH-226 was
+*rendered output is not evidence a process is running*; this is **a cleared
+address bar is not evidence a credential is gone.** Both are the same mistake:
+reading the surface a system presents and calling it the state the system is in.
+The council did the reasoning well and still could not get there, because the
+missing input was not an argument — it was a measurement. **Three careful seats
+flagging a fact as unverified is not a substitute for spending ten minutes
+verifying it**, and a chair whose only job is to tally has less to offer than one
+who goes and looks.
+
+**Also caught, and worth more than the verdict in the long run:** one seat found
+that `syncUrl` (`web_dashboard.html:954-968`) rebuilds the URL from `pathname +
+search` and discards the fragment on the ordinary bootstrap path — so the obvious
+acceptance test, `expect(location.hash).toBe("")` after load, **passes with the
+whole feature deleted**. Verified. That is SH-245's failure mode pre-empted
+before a line of it was written, and the decision bans that spelling in review.
+
+**Filed as merge gates, not follow-ups** — both seats insisted, and the chair
+adopted it: **SH-254** (the browser still ends up holding the master token; this
+story is transport done correctly, *not* least privilege) and **SH-255** (SH-250's
+exemption now buys only bookmarks, reloads, second tabs and a failed handoff —
+decide whether that still earns the permanently-widened read surface).
+
+**Chair rulings recorded in the decision**, since both were requested explicitly
+rather than assumed: the runner-up's scoped-credential shape was ruled **in
+scope** (the fence names SH-250's *exemption* rule, which that shape left
+byte-identical) and then beaten on its merits by a panel including its own
+author — chiefly because its scope claim was false today: a "scoped" mutation
+still reaches `sh -c` through project event hooks (`rest.rs:176-184` →
+`service/mod.rs:316-330` → `event_hooks.rs:519-521`, verified). And the shared
+locality predicate may be extracted into `http.rs` as a behaviour-free commit,
+with `admission.rs`'s truth table byte-unmodified either side as the proof.
+
+**Supervision:** twelve subagent dispatches, all foreground and blocking, so the
+heartbeat rule's polling clause did not apply — a foreground agent's return *is*
+its completion signal. No wedges, no restarts.
+
+**Why the handoff here rather than one more push:** the council consumed most of a
+context, the implementation is large (a new module, a witness type, a bounded
+registry, the SPA, ~20 tests, an e2e spec, the spec's residuals) and `make test`
+needs supervising on top. Running dry mid-implementation with a dirty tree is the
+one outcome worse than a clean boundary, and the decision is written to be picked
+up cold.
