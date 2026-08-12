@@ -27,8 +27,8 @@ use storyhook::invoke::{dispatch, dispatch_unscoped};
 use storyhook::service::Ctx;
 use storyhook::store::{ProjectId, ReadOps, SqliteStore, Store};
 use storyhook_test_support::{
-    ChildGuard, DaemonGuard, TestEnv, http_status_line, reserve_port, scratch_dir, serve,
-    wait_for_addr, wait_for_server,
+    ChildGuard, DaemonGuard, TestEnv, http_status_line, port_of, scratch_dir, serve, wait_for_addr,
+    wait_for_server,
 };
 
 /// A `story` command in the shared environment, for the tests that only
@@ -360,13 +360,13 @@ fn web_address_not_running_fails_with_summary() {
 fn web_open_and_address_succeed_when_running() {
     let env = TestEnv::isolated();
     let dir = scratch_dir(); // deliberately NOT a storyhook project
-    let port = reserve_port();
     let _daemon = DaemonGuard::new(&env, dir.path());
 
     env.story(dir.path())
-        .args(["web", "start", "--port", &port.to_string()])
+        .args(["web", "start"])
         .assert()
         .success();
+    let port = started_port(&env);
     wait_for_server(port);
 
     // `web open` targets loopback; browser launch is stubbed via $BROWSER=true.
@@ -418,19 +418,18 @@ fn web_open_and_address_succeed_when_running() {
 fn web_start_status_address_advertise_the_host_the_daemon_bound() {
     let env = TestEnv::isolated();
     let dir = scratch_dir();
-    let port = reserve_port();
     let _daemon = DaemonGuard::new(&env, dir.path());
 
     env.story(dir.path())
-        .args(["web", "start", "--port", &port.to_string()])
+        .args(["web", "start"])
         .assert()
         .success();
-    wait_for_server(port);
 
     let info = env
         .daemon()
         .expect("the daemon published a portfile after binding");
-    let expected = format!("http://{}:{}", info.advertised_host(), port);
+    wait_for_server(info.port);
+    let expected = format!("http://{}:{}", info.advertised_host(), info.port);
 
     // A `tailscale` that fails, ahead of everything else: a client that still
     // probes gets nothing and falls back to loopback.
@@ -483,16 +482,15 @@ fn web_start_status_address_advertise_the_host_the_daemon_bound() {
 fn web_start_succeeds_outside_a_project() {
     let env = TestEnv::isolated();
     let dir = scratch_dir(); // deliberately NOT a storyhook project
-    let port = reserve_port();
     let _daemon = DaemonGuard::new(&env, dir.path());
 
     env.story(dir.path())
-        .args(["web", "start", "--port", &port.to_string()])
+        .args(["web", "start"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Web UI started"));
 
-    wait_for_server(port);
+    wait_for_server(started_port(&env));
 
     env.story(dir.path())
         .args(["web", "stop"])
@@ -3492,11 +3490,23 @@ fn web_deregister_repo_requires_guard_header() {
     assert_eq!(status_of(err), 403);
 }
 
-// --- CLI DEFAULT_WEB_PORT constant ---
+// --- The dashboard's default port ---
 
+/// One constant for the port a daemon prefers when nothing names one, and it
+/// lives with the environment that resolves it.
+///
+/// `cli::DEFAULT_WEB_PORT` was a second copy of this number, and a copy is what
+/// let `story web start` disagree with `story daemon start` about the same port
+/// (SH-249). `env::DEFAULT_DAEMON_PORT` is the survivor because it is the one
+/// `default_daemon_addr` actually consults — the parser now names no port at all.
 #[test]
-fn default_web_port_constant_is_3456() {
-    assert_eq!(storyhook::cli::DEFAULT_WEB_PORT, 3456);
+fn the_dashboards_default_port_is_3456_and_there_is_one_of_it() {
+    assert_eq!(storyhook::env::DEFAULT_DAEMON_PORT, 3456);
+    assert_eq!(
+        storyhook::env::default_daemon_addr(true).port(),
+        3456,
+        "the default store's daemon prefers the port a bookmarked dashboard URL uses"
+    );
 }
 
 // --- build_report_data with blocked stories ---
@@ -3615,24 +3625,39 @@ fn help_text_includes_web_commands() {
     );
 }
 
-// --- Default port is 3456 ---
+// --- An omitted --port is a question for the environment ---
 
+/// An omitted `--port` parses to `None` — "wherever the environment says" — and
+/// not to a port this parser chose.
+///
+/// It used to parse to `3456`, which `handle_start` then handed to
+/// `commands::start` as an explicit request, overriding both
+/// `$STORYHOOK_DAEMON_ADDR` and the store's own resolved preference (SH-249).
+/// The behaviour that override defeated is fenced by
+/// `tests/store_isolation.rs::every_spelling_that_starts_a_daemon_honours_the_
+/// preferred_port`; this pins the parse itself, which is where the wrong value
+/// entered.
 #[test]
-fn web_start_default_port_is_3456() {
-    let dir = scratch_dir();
-    // We test this via the CLI output: start without --port should mention 3456
-    // But actually, the best test is to verify parse_web returns port 3456 by default.
-    // We invoke the CLI parse directly.
-    let inv = storyhook::cli::parse_invocation(&["web".to_string(), "start".to_string()]).unwrap();
-    match inv {
-        storyhook::cli::Invocation::Web {
-            action: storyhook::cli::WebAction::Start { port },
-        } => {
-            assert_eq!(port, 3456, "default port should be 3456");
-        }
-        other => panic!("expected Web::Start, got {:?}", other),
+fn web_start_without_a_port_defers_to_the_environment() {
+    for spelling in [["web", "start"], ["web", "--serve"]] {
+        let argv: Vec<String> = spelling.iter().map(|s| (*s).to_string()).collect();
+        let port = match storyhook::cli::parse_invocation(&argv).unwrap() {
+            storyhook::cli::Invocation::Web {
+                action: storyhook::cli::WebAction::Start { port },
+            }
+            | storyhook::cli::Invocation::Web {
+                action: storyhook::cli::WebAction::Serve { port },
+            } => port,
+            other => panic!("expected a Web start/serve action, got {other:?}"),
+        };
+        assert_eq!(
+            port,
+            None,
+            "`story {}` must leave the port to the environment; a default chosen here \
+             outranks $STORYHOOK_DAEMON_ADDR and the store's own preference",
+            spelling.join(" ")
+        );
     }
-    drop(dir);
 }
 
 // --- CLI parse_web unit tests ---
@@ -3650,7 +3675,7 @@ fn web_parse_start_with_custom_port() {
         storyhook::cli::Invocation::Web {
             action: storyhook::cli::WebAction::Start { port },
         } => {
-            assert_eq!(port, 8080);
+            assert_eq!(port, Some(8080));
         }
         other => panic!("expected Web::Start with port 8080, got {:?}", other),
     }
@@ -3704,7 +3729,7 @@ fn web_parse_serve_internal() {
         storyhook::cli::Invocation::Web {
             action: storyhook::cli::WebAction::Serve { port },
         } => {
-            assert_eq!(port, 4000);
+            assert_eq!(port, Some(4000));
         }
         other => panic!("expected Web::Serve, got {:?}", other),
     }
@@ -3755,7 +3780,7 @@ fn web_start_port_one_is_valid() {
     match inv {
         storyhook::cli::Invocation::Web {
             action: storyhook::cli::WebAction::Start { port },
-        } => assert_eq!(port, 1),
+        } => assert_eq!(port, Some(1)),
         other => panic!("expected Web::Start, got {:?}", other),
     }
 }
@@ -3772,7 +3797,7 @@ fn web_start_port_65535_is_valid() {
     match inv {
         storyhook::cli::Invocation::Web {
             action: storyhook::cli::WebAction::Start { port },
-        } => assert_eq!(port, 65535),
+        } => assert_eq!(port, Some(65535)),
         other => panic!("expected Web::Start, got {:?}", other),
     }
 }
@@ -4430,14 +4455,15 @@ fn sse_delivers_a_second_change_to_the_same_repo_immediately_after_the_first() {
     let _sse_guard = sse_test_lock();
     let env = TestEnv::isolated();
     let dir = scratch_dir();
-    let port = reserve_port();
     let _daemon = DaemonGuard::new(&env, dir.path());
 
     env.story(dir.path())
         .env("STORYHOOK_CHANGE_POLL_MS", "600000")
-        .args(["web", "start", "--port", &port.to_string()])
+        .args(["web", "start"])
         .assert()
         .success();
+    let info = started(&env);
+    let port = info.port;
     wait_for_server(port);
 
     env.story(dir.path())
@@ -4445,11 +4471,7 @@ fn sse_delivers_a_second_change_to_the_same_repo_immediately_after_the_first() {
         .assert()
         .success();
 
-    let token = env
-        .daemon()
-        .expect("the started daemon must publish a portfile")
-        .token;
-    let agent = token_agent(&token);
+    let agent = token_agent(&info.token);
     let repos: serde_json::Value = serde_json::from_str(
         &agent
             .get(format!("http://127.0.0.1:{port}/api/repos"))
@@ -4465,7 +4487,7 @@ fn sse_delivers_a_second_change_to_the_same_repo_immediately_after_the_first() {
         .expect("the project's id")
         .to_string();
 
-    let mut sse = connect_sse(port, &token);
+    let mut sse = connect_sse(port, &info.token);
 
     // Two distinct causes: two separate story creations, each its own request,
     // each committing before its own publish. Creations rather than
@@ -4704,21 +4726,17 @@ fn sse_heartbeat_ping_arrives_without_any_story_changes() {
     let _sse_guard = sse_test_lock();
     let env = TestEnv::isolated();
     let dir = scratch_dir();
-    let port = reserve_port();
     let _daemon = DaemonGuard::new(&env, dir.path());
 
     env.story(dir.path())
         .env("STORYHOOK_SSE_HEARTBEAT_MS", "300")
-        .args(["web", "start", "--port", &port.to_string()])
+        .args(["web", "start"])
         .assert()
         .success();
-    wait_for_server(port);
+    let info = started(&env);
+    wait_for_server(info.port);
 
-    let token = env
-        .daemon()
-        .expect("the started daemon must publish a portfile")
-        .token;
-    let mut sse = connect_sse(port, &token);
+    let mut sse = connect_sse(info.port, &info.token);
     let received = read_sse_until(&mut sse, "event: ping", Duration::from_secs(8));
     assert!(
         received.contains("event: ping"),
@@ -4750,25 +4768,21 @@ fn sse_delivers_repo_changed_for_a_cli_write_through_the_daemon() {
     let _sse_guard = sse_test_lock();
     let env = TestEnv::isolated();
     let dir = scratch_dir();
-    let port = reserve_port();
     let _daemon = DaemonGuard::new(&env, dir.path());
 
     env.story(dir.path())
-        .args(["web", "start", "--port", &port.to_string()])
+        .args(["web", "start"])
         .assert()
         .success();
-    wait_for_server(port);
+    let info = started(&env);
+    wait_for_server(info.port);
 
     env.story(dir.path())
         .args(["project", "new", "--prefix", "SH", "--no-agents-md"])
         .assert()
         .success();
 
-    let token = env
-        .daemon()
-        .expect("the started daemon must publish a portfile")
-        .token;
-    let mut sse = connect_sse(port, &token);
+    let mut sse = connect_sse(info.port, &info.token);
 
     env.story(dir.path())
         .args(["new", "Created through the CLI, not the dashboard"])
@@ -4804,26 +4818,22 @@ fn sse_delivers_a_cli_write_with_the_safety_net_poll_disabled() {
     let _sse_guard = sse_test_lock();
     let env = TestEnv::isolated();
     let dir = scratch_dir();
-    let port = reserve_port();
     let _daemon = DaemonGuard::new(&env, dir.path());
 
     env.story(dir.path())
         .env("STORYHOOK_CHANGE_POLL_MS", "600000")
-        .args(["web", "start", "--port", &port.to_string()])
+        .args(["web", "start"])
         .assert()
         .success();
-    wait_for_server(port);
+    let info = started(&env);
+    wait_for_server(info.port);
 
     env.story(dir.path())
         .args(["project", "new", "--prefix", "SH", "--no-agents-md"])
         .assert()
         .success();
 
-    let token = env
-        .daemon()
-        .expect("the started daemon must publish a portfile")
-        .token;
-    let mut sse = connect_sse(port, &token);
+    let mut sse = connect_sse(info.port, &info.token);
 
     env.story(dir.path())
         .args(["new", "Carried by the request boundary alone"])
@@ -4898,7 +4908,6 @@ fn a_wedged_tailscale_cli_cannot_stop_the_dashboard_from_serving() {
     )
     .expect("making the fake CLI executable");
 
-    let port = reserve_port();
     let path = format!(
         "{}:{}",
         fake_bin.path().display(),
@@ -4907,14 +4916,24 @@ fn a_wedged_tailscale_cli_cannot_stop_the_dashboard_from_serving() {
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_story"));
     env.apply(&mut command);
     let child = command
-        .args(["web", "--serve", "--port", &port.to_string()])
+        .args(["web", "--serve"])
         .env("PATH", path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawning the dashboard");
-    let _guard = ChildGuard::new(child);
+    let guard = ChildGuard::new(child);
+
+    // The port comes from the portfile this daemon published, never from a
+    // number picked before it existed (SH-237) — and `port_of` checks that the
+    // portfile names *this* child, so a stray daemon cannot answer for it.
+    //
+    // Publication is not delayed indefinitely by the wedge, which is the same
+    // fact this test is about: `bind_listeners` binds loopback first and its
+    // tailnet probe is capped at 3s, so the portfile lands shortly after that
+    // and well inside the deadline below (measured: 3.36s).
+    let port = port_of(&env, guard.pid());
 
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut last = None;
@@ -4928,6 +4947,30 @@ fn a_wedged_tailscale_cli_cannot_stop_the_dashboard_from_serving() {
     panic!(
         "the dashboard never served a request while `tailscale` hung; last response line: {last:?}"
     );
+}
+
+/// What the daemon a `story web start` just returned from actually bound.
+///
+/// **Read back, never remembered from the request.** A requested port is only a
+/// preference: `bind_preferred` falls back to a kernel-assigned one the moment
+/// its first choice is taken, so a test that waited on — or asserted about — the
+/// number it asked for would be describing a daemon that may not exist. Worse
+/// than waiting forever, it can *succeed*: whatever else claimed that port
+/// answers the connection, and a stranger's server answers 404 or 200 to
+/// everything the test asks about, which is the mass-failure mode of SH-51.
+/// SH-195 fixed this shape for the direct `daemon --serve` spawns; SH-237 is the
+/// same fix for the `web start` ones.
+///
+/// No polling: `web start` blocks in `lifecycle::ensure` until the daemon is
+/// healthy, and a healthy daemon has already published its portfile.
+fn started(env: &TestEnv) -> storyhook::daemon::lifecycle::DaemonInfo {
+    env.daemon()
+        .expect("`web start` returned success, so its daemon has published a portfile")
+}
+
+/// [`started`], for the callers that only want the port.
+fn started_port(env: &TestEnv) -> u16 {
+    started(env).port
 }
 
 /// Opens a raw `GET /api/events` connection, carrying `token` as the
