@@ -315,6 +315,40 @@ fn a_projects_registered_origins_reach_the_document_but_not_a_rebuilt_legacy_tre
     );
 }
 
+#[test]
+fn github_syncs_configuration_and_its_merge_bases_survive_the_whole_loop() {
+    // The last leg of this round trip to learn about github-sync (SH-233). The
+    // document has carried it since SH-189 and `storage::import_project` writes
+    // it back into a tree, but `story migrate` — the leg that *starts* the loop
+    // — read neither file, so a tree that arrived configured left the store
+    // unconfigured and the whole loop stayed green while losing every mapping.
+    let (_tree, root) = custom_config_tree();
+    let (config, bases) = legacy_support::add_github_sync(&root, &["ADA-1", "ADA-3"]);
+
+    assert_round_trips(&root, 4);
+
+    let (_store_dir, store, _report) = migrate(&root);
+    let document = export(&store);
+    assert_eq!(
+        document.github_sync.as_ref(),
+        Some(&config),
+        "the store the migration produced must hold what the tree was configured with"
+    );
+    assert_eq!(
+        document.github_bases, bases,
+        "including the merge base of an archived story — github-sync's bases are per story, not \
+         per open story"
+    );
+
+    // Read back through the legacy exporter rather than by parsing the files
+    // here, for the reason `assert_round_trips` reads settings that way: that
+    // is the reader a reverted binary's equivalent would be.
+    let (_dir, rebuilt) = rebuild_legacy_tree(&document);
+    let reverted = storage::export_project(&rebuilt).expect("re-exporting the rebuilt tree");
+    assert_eq!(reverted.github_sync.as_ref(), Some(&config));
+    assert_eq!(reverted.github_bases, bases);
+}
+
 /// **The preventative, not the instance.** SH-133 was one setting that could not
 /// reach a rollback; a fourth setting added later could be another, and nobody
 /// would find out until somebody's rollback ate it.

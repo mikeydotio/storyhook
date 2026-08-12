@@ -786,7 +786,15 @@ fn load_legacy_github_sync(root: &Path) -> Result<Option<serde_json::Value>, App
 
 /// Writes `.storyhook/github-sync.toml` in the exact shape the
 /// pre-rearchitecture binary read (SH-189).
-fn save_legacy_github_sync(root: &Path, github_sync: &serde_json::Value) -> Result<(), AppError> {
+///
+/// `pub` for the same reason [`save_states`] and [`store_member`] are: this
+/// module is the one place that knows how to *write* the legacy format, so a
+/// test fixture that needs a tree with github-sync configured builds it here
+/// rather than assembling bytes by hand and testing its own idea of the format.
+pub fn save_legacy_github_sync(
+    root: &Path,
+    github_sync: &serde_json::Value,
+) -> Result<(), AppError> {
     let path = ProjectPaths::new(root).github_sync_file();
     let value: toml::Value = serde_json::from_value(github_sync.clone())?;
     fs::write(path, toml::to_string_pretty(&value)?)?;
@@ -823,7 +831,9 @@ fn load_legacy_github_bases(root: &Path) -> Result<BTreeMap<String, StorySnapsho
 /// Writes every carried github-sync merge base to
 /// `.storyhook/github-sync/bases/<id>.json` (SH-189), one file per story,
 /// exactly as the pre-rearchitecture binary wrote them.
-fn save_legacy_github_bases(
+///
+/// `pub` for the reason [`save_legacy_github_sync`] is.
+pub fn save_legacy_github_bases(
     root: &Path,
     bases: &BTreeMap<String, StorySnapshot>,
 ) -> Result<(), AppError> {

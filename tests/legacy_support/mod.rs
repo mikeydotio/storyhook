@@ -233,6 +233,60 @@ pub fn custom_config_tree() -> (TempDir, PathBuf) {
     (dir, root)
 }
 
+/// Gives a legacy tree the github-sync configuration the pre-rearchitecture
+/// binary kept *beside* `project.toml` (SH-189): `.storyhook/github-sync.toml`,
+/// plus one `.storyhook/github-sync/bases/<id>.json` per story listed in
+/// `based_on`. Returns both, so a test can compare what the store ends up
+/// holding against exactly what the tree held.
+///
+/// Written through `storage`'s own writers for the reason
+/// [`custom_config_tree`] gives: a fixture assembled with `fs::write` tests the
+/// fixture's idea of the format rather than the format.
+///
+/// Each base deliberately **differs** from the story it belongs to. A merge
+/// base is what github-sync last merged against, not what the story says now,
+/// so a carry that quietly re-derived it from the story's current snapshot
+/// would still look correct against an identical one.
+pub fn add_github_sync(
+    root: &Path,
+    based_on: &[&str],
+) -> (serde_json::Value, BTreeMap<String, StorySnapshot>) {
+    let mappings: Vec<serde_json::Value> = based_on
+        .iter()
+        .enumerate()
+        .map(|(index, id)| {
+            serde_json::json!({
+                "story_id": id,
+                "issue_number": 100 + index as u64,
+                "last_synced_at": "2026-02-01T00:00:00Z",
+            })
+        })
+        .collect();
+    let config = serde_json::json!({
+        "github": {"owner": "acme", "repo": "widgets"},
+        "sync": {"mode": "manual", "last_sync_at": "2026-02-01T00:00:00Z"},
+        "mappings": mappings,
+    });
+    storage::save_legacy_github_sync(root, &config).expect("writing github-sync.toml");
+
+    let snapshots: BTreeMap<String, StorySnapshot> = storage::load_all_snapshots(root)
+        .expect("folding the tree's stories")
+        .into_iter()
+        .map(|snapshot| (snapshot.id.clone(), snapshot))
+        .collect();
+    let mut bases = BTreeMap::new();
+    for id in based_on {
+        let mut base = snapshots
+            .get(*id)
+            .unwrap_or_else(|| panic!("no story `{id}` in this tree to base a merge base on"))
+            .clone();
+        base.title = format!("{} (as GitHub last saw it)", base.title);
+        bases.insert((*id).to_string(), base);
+    }
+    storage::save_legacy_github_bases(root, &bases).expect("writing the merge bases");
+    (config, bases)
+}
+
 fn created(at: &str, title: &str, state: &str) -> StoryEvent {
     StoryEvent::StoryCreated {
         at: at.to_string(),
