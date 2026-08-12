@@ -1,5 +1,10 @@
 import { test, expect } from "@playwright/test";
-import { cleanUpCreatedStories, seedToken, requiredEnv } from "./support";
+import {
+  cleanUpCreatedStories,
+  holdDetailFetch,
+  requiredEnv,
+  seedToken,
+} from "./support";
 
 /**
  * Exercises SH-210: an unforced `POST .../story/{id}/reopen` of a
@@ -89,19 +94,6 @@ async function createStory(
   return { repoId: decodeURIComponent(match[1]), storyId: body.story.story.id };
 }
 
-/** Delays every `GET .../story/<id>` detail fetch -- the same helper
- * `drawer-detail-race.spec.ts` uses to make its own race deterministic. */
-async function delayDetailFetch(page: import("@playwright/test").Page) {
-  await page.route(/\/story\/[^/]+$/, async (route) => {
-    if (route.request().method() !== "GET") {
-      await route.continue();
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    await route.continue();
-  });
-}
-
 /** Soft-deletes `storyId` via a direct API call, standing in for another
  * session's write while `title`'s own detail fetch is deliberately delayed
  * (see this file's header comment). Requires the story to currently be
@@ -178,14 +170,16 @@ test("Reopen on a story deleted out from under the drawer shows an undelete conf
 }) => {
   const title = "SH-210 reopen confirm — cancel";
   const { repoId, storyId } = await createStory(page, title);
-  await delayDetailFetch(page);
+  const releaseDetail = await holdDetailFetch(page);
 
-  // Both fire while the story is still open: the click starts the (delayed)
-  // detail fetch, then the delete races it to completion first.
+  // Both fire while the story is still open: the click starts the (held)
+  // detail fetch, and the delete lands before it is released, so the drawer
+  // can only ever resolve it against the post-delete story.
   const opened = openDrawerAndAwaitDetail(page, title);
   await deleteOutOfBand(request, repoId, storyId, "e2e out-of-band delete");
+  releaseDetail();
   await opened;
-  // The delay was only needed to win that race; leaving it wired up would
+  // The hold was only needed to order those two; leaving it wired up would
   // make every later detail fetch in this test (including cleanup's) replay
   // SH-218's stale-node race against whatever clicks first.
   await page.unroute(/\/story\/[^/]+$/);
@@ -219,12 +213,13 @@ test("confirming Undelete reopens the story into the project's default open stat
 }) => {
   const title = "SH-210 reopen confirm — undelete";
   const { repoId, storyId } = await createStory(page, title);
-  await delayDetailFetch(page);
+  const releaseDetail = await holdDetailFetch(page);
 
   const opened = openDrawerAndAwaitDetail(page, title);
   await deleteOutOfBand(request, repoId, storyId, "e2e out-of-band delete");
+  releaseDetail();
   await opened;
-  // The delay was only needed to win that race; leaving it wired up would
+  // The hold was only needed to order those two; leaving it wired up would
   // make every later detail fetch in this test (including cleanup's) replay
   // SH-218's stale-node race against whatever clicks first.
   await page.unroute(/\/story\/[^/]+$/);
