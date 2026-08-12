@@ -10,12 +10,13 @@
 //!   command reaches the store, and the one route that carries no signal of
 //!   its own for what it changed the way `rest::route`'s `Changed` does.
 //!   `rest::route`'s own arm deliberately does **not** also call this: every
-//!   mutating REST route already has exhaustive `Changed` coverage, and
-//!   calling `notice()` there too was found, empirically, to risk attributing
-//!   an unrelated out-of-band commit to the wrong response and colliding with
-//!   [`ChangeBus`]'s coalescing window (SH-202's own council record; the
-//!   surviving hazard — the coalescing window is blind to *cause*, not just
-//!   to this call site — is filed as SH-216).
+//!   mutating REST route already has exhaustive `Changed` coverage, so a
+//!   `notice()` call there would add none (SH-202's own council record). The
+//!   other half of that reasoning — that an incidental discovery here could
+//!   consume [`ChangeBus`]'s coalescing window and cost a later, genuine
+//!   publish for the same project — no longer applies: SH-216 deleted the
+//!   window, and an incidental publish now costs one extra refetch rather
+//!   than a silently dropped one.
 //! * `poll_change_token`'s low-frequency `PRAGMA data_version` poll, the
 //!   safety net for a write this daemon did not itself serve — a `story tui`
 //!   session on the same store, a second machine, a `sqlite3` prompt.
