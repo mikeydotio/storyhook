@@ -10446,4 +10446,54 @@ checkout, remote branch confirmed deleted after `git fetch --prune`.
 
 **No version bump** — left for the next batched `/semver` pass.
 
+### SH-209 — done, 2026-08-11/12
+
+`story next` surfaced SH-209 as top pick (matching the freshen queue's own hint from
+SH-207's cycle). Claimed immediately; no other in-progress stories to check for
+collision.
+
+**The bug, confirmed as filed:** `an_unforced_stop_waits_for_in_flight_work_to_finish`
+(`tests/daemon_lifecycle.rs`) asserted `waited >= Duration::from_secs(2)` where `waited`
+was measured from `Instant::now()` taken immediately before issuing `daemon stop` — not
+from when the fixture's 2s hook (`sleep 2` on `on_comment`) actually started. In between
+sits `wait_for`'s own polling loop (25ms granularity, 5s deadline), which only proves the
+in-flight record existed by the time it last checked — an arbitrary, load-dependent slice
+of the hook's sleep had already elapsed by then. That slice comes straight out of the
+assertion's 2s budget: SH-209's own report (`took 1.95428025s`, 46ms short) is the shape
+of failure this predicts under `--test-threads=4` contention, and it's the same structural
+family SH-140 named (asserting a lower bound on wall-clock timing across a scheduling
+boundary the test doesn't control).
+
+**The fix (the comment thread's own second option, taken over the first):** the story's
+filing comment offered two paths — loosen the bound to something coarser (`>= 1.8s`), or
+restructure to measure from the hook's true start. The first is symptom-masking (CLAUDE.md's
+own term for it): it shrinks the flake window without closing it, and buys that shrinkage by
+weakening what the test actually proves. Took the second. `api::rpc::invoke`
+(`src/api/rpc.rs:189`) stamps `CurrentRequest.started_at` via `chrono::Utc::now()` *before*
+dispatching to `StoreInvoker`, which is what runs the hook — so it is the true origin,
+recorded server-side, immune to client-side polling latency by construction. The test now
+re-reads the in-flight record once `wait_for` finds it, parses `started_at` as an RFC 3339
+`DateTime<Utc>`, and measures `Utc::now() - hook_started_at` after `daemon stop` returns.
+`started_at`'s own truncation to whole seconds (`SecondsFormat::Secs`) only ever rounds the
+recorded instant *earlier*, which biases the measured elapsed time *up* — the safe direction
+for a lower-bound assertion; it can widen the margin but never manufacture a false pass out
+of a genuine regression.
+
+**Verified, not just argued:** 5 consecutive isolated runs green; 5 more under
+`--test-threads=4` (the exact condition SH-209 was filed under); one run under full
+CPU-core contention (10 concurrent `yes` processes pinning all 10 cores) to stress
+scheduling jitter harder than the original flake ever saw — still green. No reproduction
+of the original failure was possible on demand (it was a one-off even before the fix), so
+this is confidence built from the fix's structural correctness plus adversarial load
+testing, not from red→green on the original symptom.
+
+**Gate:** full `make test`, supervised (log-growth heartbeat via Monitor, 120s stall
+bound, no stall observed): Rust suite green (including the target test), plugin bash
+harness 29/29, e2e 48/48.
+
+**PR:** #281, one commit, merged as `4313c8d`, fast-forwarded onto `main` in this
+checkout, remote branch confirmed deleted (`gh pr merge --delete-branch`).
+
+**No version bump** — left for the next batched `/semver` pass.
+
 **Next:** run `story next` fresh.
