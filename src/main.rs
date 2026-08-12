@@ -782,7 +782,7 @@ fn foreground_serve_port(invocation: &Invocation) -> Option<Option<u16>> {
         } => Some(*port),
         Invocation::Web {
             action: WebAction::Serve { port },
-        } => Some(Some(*port)),
+        } => Some(*port),
         _ => None,
     }
 }

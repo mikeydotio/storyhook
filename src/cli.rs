@@ -996,10 +996,17 @@ pub enum StoreAction {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WebAction {
-    Start { port: u16 },
+    /// `None` means "wherever the environment says", exactly as it does for
+    /// [`DaemonAction::Start`] — these are the same command under two names, so
+    /// an omitted `--port` has to mean the same thing in both (SH-249).
+    Start {
+        port: Option<u16>,
+    },
     Stop,
     Status,
-    Serve { port: u16 },
+    Serve {
+        port: Option<u16>,
+    },
     Open,
     Address,
 }
@@ -3457,7 +3464,7 @@ fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
 
     match args[1].as_str() {
         "start" => {
-            let mut port: u16 = DEFAULT_WEB_PORT;
+            let mut port: Option<u16> = None;
             let mut index = 2;
             while index < args.len() {
                 match args[index].as_str() {
@@ -3465,12 +3472,18 @@ fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
                         let value = args.get(index + 1).ok_or_else(|| {
                             AppError::Usage("--port requires a value".to_string())
                         })?;
-                        port = value
+                        let requested = value
                             .parse::<u16>()
                             .map_err(|_| AppError::Usage(format!("invalid port: {value}")))?;
-                        if port == 0 {
+                        // Refused here and accepted on `--serve` below, which is
+                        // not an inconsistency: `--serve` is what the spawner
+                        // execs, and "let the kernel choose" is a thing a program
+                        // means. Asking a *person* to start their bookmarked
+                        // dashboard on a port nobody can predict is not.
+                        if requested == 0 {
                             return Err(AppError::Usage("invalid port: 0".to_string()));
                         }
+                        port = Some(requested);
                         index += 2;
                     }
                     _ => return Err(AppError::Usage(usage.to_string())),
@@ -3494,7 +3507,7 @@ fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
         }),
         "--serve" => {
             // Internal: story web --serve --port N
-            let mut port: u16 = DEFAULT_WEB_PORT;
+            let mut port: Option<u16> = None;
             let mut index = 2;
             while index < args.len() {
                 match args[index].as_str() {
@@ -3502,9 +3515,11 @@ fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
                         let value = args.get(index + 1).ok_or_else(|| {
                             AppError::Usage("--port requires a value".to_string())
                         })?;
-                        port = value
-                            .parse::<u16>()
-                            .map_err(|_| AppError::Usage(format!("invalid port: {value}")))?;
+                        port = Some(
+                            value
+                                .parse::<u16>()
+                                .map_err(|_| AppError::Usage(format!("invalid port: {value}")))?,
+                        );
                         index += 2;
                     }
                     _ => return Err(AppError::Usage(usage.to_string())),

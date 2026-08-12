@@ -42,10 +42,14 @@ fn environment() -> Result<Environment, AppError> {
 }
 
 /// `story web start [--port N]` — an alias for `story daemon start`.
-pub fn handle_start(port: u16) -> Result<String, AppError> {
+///
+/// `port` passes straight through, `None` included: an alias that substituted a
+/// default of its own would override `$STORYHOOK_DAEMON_ADDR` and the store's
+/// resolved preference, which is the whole of SH-249.
+pub fn handle_start(port: Option<u16>) -> Result<String, AppError> {
     deprecation("web start", "daemon start");
     let env = environment()?;
-    let info = commands::start(&env, Some(port))?;
+    let info = commands::start(&env, port)?;
     Ok(format!(
         "Web UI started at {} (PID {})",
         info.dashboard_url(),

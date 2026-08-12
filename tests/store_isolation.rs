@@ -1066,3 +1066,136 @@ fn every_harness_that_isolates_the_data_dir_also_contains_its_daemon() {
          data-directory export."
     );
 }
+
+// ---------------------------------------------------------------------------
+// SH-249: the command that starts a daemon does not get to pick its port
+// ---------------------------------------------------------------------------
+
+/// Every spelling that starts a daemon binds the address the *environment*
+/// resolved, and none substitutes a preference of its own.
+///
+/// **A fence over the spellings, not an example of one.** `story web start`
+/// carried its own `DEFAULT_WEB_PORT` and forced `127.0.0.1:3456` whenever
+/// `--port` was omitted, so it walked straight past `$STORYHOOK_DAEMON_ADDR` —
+/// the single variable `daemon_containment` sets, the one
+/// `every_harness_that_isolates_the_data_dir_also_contains_its_daemon` spends its
+/// whole length making every harness export, and therefore the only thing keeping
+/// a test daemon off the port a developer's own dashboard is using.
+/// `tests/daemon_lifecycle.rs`'s alias test already ran that exact spelling inside
+/// an isolated environment. Pinning `web start` alone would leave the next
+/// spelling free to reintroduce the same default, so all four are derived from one
+/// list and a fifth inherits the check by being added to it.
+///
+/// **Asserting the port is honoured, not that 3456 is avoided.** "Did not bind
+/// 3456" passes for free on any machine where something already holds 3456 —
+/// including the developer's real dashboard, which is precisely the machine this
+/// is about — because [`bind_preferred`](storyhook::daemon::lifecycle::bind_preferred)
+/// falls back to a kernel-assigned port when its preference is taken. That
+/// fallback is what made the defect invisible: the wrong preference quietly
+/// became a right-looking port. So each spelling is given a preference it could
+/// only satisfy by asking the environment, and must come back holding exactly it.
+///
+/// The `--serve` spellings are checked separately from the `start` ones because
+/// they arrive by a different route — `main::foreground_serve_port` rather than
+/// `daemon::commands::start` — and that is the route a later refactor is most
+/// likely to break silently, since no user-facing test runs it.
+#[test]
+fn every_spelling_that_starts_a_daemon_honours_the_preferred_port() {
+    /// `story <spelling>` — how a dashboard gets started, in every spelling the
+    /// CLI accepts. `foreground` marks the two that run the daemon in the calling
+    /// process and never return, so the check has to spawn and poll rather than
+    /// wait for an exit.
+    const SPELLINGS: &[(&[&str], bool)] = &[
+        (&["daemon", "start"], false),
+        (&["web", "start"], false),
+        (&["daemon", "--serve"], true),
+        (&["web", "--serve"], true),
+    ];
+
+    let mut wrong = Vec::new();
+    for (spelling, foreground) in SPELLINGS {
+        let probe = Probe::new();
+        let repo = probe.dir("repo");
+        let data = probe.dir("data");
+        // The port must be known before the process that binds it exists, which
+        // is the one case `reserve_port` is for: the question here is whether the
+        // *preference* was honoured, so there has to be a specific number to
+        // honour.
+        let preferred = storyhook_test_support::reserve_port();
+
+        let mut command = probe.story(&repo);
+        command
+            .env("STORYHOOK_DATA_DIR", &data)
+            .env("STORYHOOK_DAEMON_ADDR", format!("127.0.0.1:{preferred}"))
+            .args(*spelling);
+
+        let bound = if *foreground {
+            let child = command
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawning a foreground daemon");
+            let _guard = storyhook_test_support::ChildGuard::new(child);
+            await_published_port(&probe)
+        } else {
+            ok(&mut command);
+            let bound = published_port(&probe).expect("a client that returned must have a daemon");
+            probe.quiesce(&repo, &data);
+            Some(bound)
+        };
+
+        match bound {
+            Some(bound) if bound == preferred => {}
+            other => wrong.push(format!(
+                "`story {}` asked for {preferred} and bound {}",
+                spelling.join(" "),
+                match other {
+                    Some(bound) => bound.to_string(),
+                    None => "nothing — it never published a portfile".to_string(),
+                }
+            )),
+        }
+    }
+
+    assert!(
+        wrong.is_empty(),
+        "{wrong:?}\n\nEvery spelling that starts a daemon must defer to the address the \
+         environment resolved — `$STORYHOOK_DAEMON_ADDR`, else `default_daemon_addr` for \
+         this store — and none may substitute a port of its own. A spelling that forces \
+         one overrides the only containment the test suite has against binding 3456, the \
+         port a developer's own dashboard uses, and overrides store isolation's \
+         port-0-for-a-non-default-store decision with it (SH-249)."
+    );
+}
+
+/// The port in this probe's portfile, or `None` while there is not exactly one.
+fn published_port(probe: &Probe) -> Option<u16> {
+    let dirs = probe.daemon_dirs();
+    let [dir] = dirs.as_slice() else {
+        return None;
+    };
+    let info: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("daemon.json")).ok()?).ok()?;
+    info["port"].as_u64().map(|port| port as u16)
+}
+
+/// [`published_port`], waited for — the foreground spellings publish on their own
+/// schedule rather than before an exit this test could wait on.
+///
+/// The bound covers a tailnet probe (3s, and it runs before the portfile is
+/// written) plus process start, with margin: what is being told apart is
+/// "published somewhere else" from "never published at all", and both answers are
+/// reported by the caller.
+fn await_published_port(probe: &Probe) -> Option<u16> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        if let Some(port) = published_port(probe) {
+            return Some(port);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
