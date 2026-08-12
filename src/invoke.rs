@@ -1322,6 +1322,7 @@ fn dispatch_web(action: WebAction) -> Result<Response, AppError> {
         WebAction::Status => crate::web::handle_status().map(Response::Message),
         WebAction::Open => crate::web::handle_open().map(Response::Message),
         WebAction::Address => crate::web::handle_address().map(Response::Message),
+        WebAction::Revoke => crate::web::handle_revoke().map(Response::Message),
         // `main` intercepts this before any dispatcher sees it: the foreground
         // server is a process that never returns, not a command with an answer.
         WebAction::Serve { .. } => Err(AppError::Usage(

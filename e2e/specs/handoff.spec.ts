@@ -102,7 +102,7 @@ async function hashesAtRequest(page: Page): Promise<string[]> {
   );
 }
 
-test("a tab opened with a coupon holds the token before it asks for anything", async ({
+test("a tab opened with a coupon holds a scoped session, and never the token", async ({
   page,
   request,
 }) => {
@@ -117,15 +117,24 @@ test("a tab opened with a coupon holds the token before it asks for anything", a
   ).toBeVisible();
   await expect(page.locator("#token-modal")).not.toHaveClass(/open/);
 
-  // The coupon really was spent: this tab now holds the daemon's token, which
-  // it had no other way of learning.
+  // The coupon really was spent: this tab now holds a credential it had no
+  // other way of learning. What it holds changed in SH-254 — it was the
+  // daemon's master token, and it is a scoped session capability now, so the
+  // assertion is written in both directions. A tab holding the token could
+  // delete every project on the machine and reach `POST /api/v1/invoke`; this
+  // one can edit stories and states, on this machine only, revocably.
   await expect
     .poll(() =>
       page.evaluate(() =>
-        window.sessionStorage.getItem("storyhookDaemonToken"),
+        window.sessionStorage.getItem("storyhookDashboardSession"),
       ),
     )
-    .toBe(requiredEnv("DASHBOARD_TOKEN"));
+    .toMatch(/^[0-9a-f]{32}$/);
+  expect(
+    await page.evaluate(() =>
+      window.sessionStorage.getItem("storyhookDaemonToken"),
+    ),
+  ).not.toBe(requiredEnv("DASHBOARD_TOKEN"));
 
   // And every request this page has made so far was constructed with the
   // fragment already gone. The length check is the harness guard: a shim that
@@ -159,6 +168,30 @@ test("that same tab writes without ever being asked for a token", async ({
   await expect(
     page.locator(".card", { hasText: "SH-251 — created by a handed-off tab" }),
   ).toBeVisible();
+  await expect(page.locator("#token-modal")).not.toHaveClass(/open/);
+});
+
+test("that same tab is shown the boundary rather than a button that 403s", async ({
+  page,
+  request,
+}) => {
+  // SH-254's affordance half. The server refuses dispatch to a session
+  // capability whatever this page renders — `tests/session_capability.rs` is
+  // where that is proved — but a user who clicks and gets nothing has learned
+  // nothing. So the control is disabled and carries the command that works.
+  const coupon = await armCoupon(request);
+  await page.goto(`/#h=${coupon}`);
+
+  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await expect(page.locator("#board-view")).toBeVisible();
+  await page.locator(".card").first().click();
+
+  const dispatch = page.locator("#dispatch-btn");
+  await expect(dispatch).toBeDisabled();
+  await expect(dispatch).toHaveAttribute("title", /story dispatch/);
+
+  // And the modal stays shut: meeting the edge of a scope is not a reason to
+  // ask anybody for the strongest credential on the machine.
   await expect(page.locator("#token-modal")).not.toHaveClass(/open/);
 });
 

@@ -1842,6 +1842,7 @@ story web stop
 story web status
 story web open
 story web address
+story web revoke
 
 Launch a single web dashboard that serves every storyhook project
 the store knows: a home screen with a summary card per
@@ -1872,6 +1873,13 @@ Commands:
                the tailnet URL when Tailscale is up (so it works from
                your other devices), else loopback. Both open/address
                fail with this summary if the dashboard isn't running.
+  revoke       End every open dashboard session at once. 'story web
+               open' hands the browser a scoped session rather than the
+               daemon's token: it can edit stories and states, it works
+               only from this machine, and it lasts until the daemon
+               stops or you revoke it. Creating or deleting a project
+               and dispatching an agent are not part of it, and ask for
+               the daemon's token instead.
 
 There is no separate registration step. A project reaches the dashboard
 by existing: 'story project new' puts it in the store, and the store is
@@ -1893,6 +1901,7 @@ Examples:
   story web status                     # Check if running
   story web open                       # Open the dashboard in your browser
   story web address                    # Copy the dashboard URL to the clipboard
+  story web revoke                     # End every open dashboard session
 
 Screens:
   Home      One summary card per project (open/ready/blocked

@@ -110,6 +110,17 @@ impl Reply {
         self
     }
 
+    /// What this reply will send, before [`finish`] consumes it.
+    ///
+    /// Read-only, and here for the assertions a credential-issuing route needs:
+    /// "this reply carries a capability the daemon knows" and "this reply does
+    /// not contain the master token" are both claims about the body, and the
+    /// alternative — picking them out of a `Debug` rendering — would be a test
+    /// that passes or fails on how `String` chooses to escape itself.
+    pub fn body(&self) -> &str {
+        &self.body
+    }
+
     /// Advises the client to retry after `secs` seconds (used for 409
     /// LockTimeout, where a concurrent writer briefly held the project lock).
     #[must_use]
