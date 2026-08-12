@@ -11080,3 +11080,75 @@ the browser. Explicitly *not* putting suppression back into the bus.
 **No version bump** — left for the next batched `/semver` pass.
 
 **Next:** run `story next` fresh.
+
+### SH-220 — comment mentions, the third `referenced_by` source · PR #297
+
+**Outcome:** done. A comment on one story that names another now surfaces on *that*
+story, derived at query time and stored nowhere.
+
+**It was five open questions, not an implementation.** SH-169's scope decision
+deferred it precisely because nothing about it was designed: which comments get
+scanned, when, whether retroactively, on what grammar, in what wire shape. So the
+first work was the council, per this file's autonomy rule — `software-architect`,
+`api-designer`, `skeptic`. Round 1 split 0-1-2; one deliberation round moved every
+seat, and the runoff was unanimous C > A > B with Seat 2 ranking its own proposal
+last. Verdict recorded as a comment on SH-220; audit trail in
+`.council/sh-220-comment-mention-backlinks/` (gitignored, so the comment is the
+durable copy).
+
+**What it decided, and the one that mattered:** derive at query time (no event, no
+migration, and a retracted comment stops referencing anything the moment the
+retraction folds); other stories' comments only; `ids_in_line` and **not**
+`scan_story_refs`. That last one is the load-bearing call. `scan_story_refs` layers
+claim words, a negation lookback, a revert ceiling and `git-interpret-trailers`'
+colon rule over the raw scan — all commit-message grammar. Reading them in comment
+prose would let someone quoting `Closes SH-1` out of a commit body register as
+claiming SH-1: SH-124's defect one layer up. `CommentMention` has nowhere to put an
+intent rather than computing one and throwing it away.
+
+**The council made a dry-run the merge gate, and the dry-run earned its place.**
+Run over a `VACUUM INTO` snapshot of the real store — 537 stories, 14 projects,
+through `story show --json` so the numbers come from production code: **910**
+mentions across **250** target stories, longest snippet exactly **120** bytes (the
+cap), and **782 of 910** flagged by the pasted-block proxy (source comment >280
+bytes or containing a blank line).
+
+782 looked like the flood the skeptic predicted. It wasn't. The proxy measures
+comment *length*, and every comment in this corpus is long; the mentions themselves
+read `Obviated by SH-114`, `filed separately as SH-221 rather than fixed here`,
+`SH-229 -- port the session.sh half upstream`. The worst-hit story, SH-114 with 25,
+gets its own blast radius listed. Eyeballed and judged signal. **4 of 910 are false
+positives** (<0.5%), every one a comment *documenting the id grammar itself* —
+SH-124 illustrating the scanner with `Closes SH-1, SH-2 and SH-3`, SH-220's own
+verdict quoting `'Closes SH-1'`, an API path reading `story/SH-1/move`. No
+suppression filter added: the one the council floated ("require the id on its own
+line") would delete every good backlink, all of which are mid-sentence.
+
+**Two traps on the way to those numbers, both this file's own rules.** The first
+dry-run returned 910 → *zero*, twice. Once because the store copy was stale: `cp` of
+`store.db` plus its `-wal` while the live daemon holds the file gave a snapshot
+missing hours of writes — the "stand the daemon down before you ask about bytes on
+disk" rule, met from the other side. `VACUUM INTO` is the answer that needs no
+daemon stopped. Then again because `rm`-ing and recreating the copy left *my own*
+scratch daemon bound to the deleted inode, still answering from it. Both times the
+failure looked like "the feature finds nothing", which is the shape that gets
+shipped. The third zero was mine: reading `referenced_by` at the top level of a
+response that nests it under `story`.
+
+**And `make test` caught the daemons.** The first run refused at
+`check-no-orphan-servers` preflight — the two dry-run daemons were still up. That
+gate is doing exactly what it was built for.
+
+**TUI parity deferred, bindingly.** `story_detail.rs` renders only the snapshot's
+`referenced_by_commits` and has never rendered `prs` either, because `tui/data.rs`
+issues one `ProjectSnapshot` carrying `StorySnapshot` and never a `StoryView` — zero
+occurrences of `StoryView` or `include_derived` anywhere under `src/tui/`. Parity is
+a per-story fetch path or a project-wide scan per refresh, a design decision of its
+own. Filed as **SH-248**, scoped to all three sources at once, linked in the PR body
+rather than left silent.
+
+**Council:** yes — SH-220 comment, `.council/sh-220-comment-mention-backlinks/`.
+
+**No version bump** — left for the next batched `/semver` pass.
+
+**Next:** run `story next` fresh.
