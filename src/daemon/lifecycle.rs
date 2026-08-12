@@ -1659,6 +1659,43 @@ pub fn hello(info: &DaemonInfo) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Asks a daemon to arm a one-shot handoff coupon (SH-251).
+///
+/// The credential half of `story web open`: the coupon travels in the URL
+/// fragment the browser is opened at, and the page spends it for the real
+/// token. Nothing in this exchange is durable — see
+/// [`crate::api::handoff`] for what that buys and what it does not.
+///
+/// Loopback only, and authenticated with the portfile's token, because
+/// [`crate::api::rpc::admission`] owns `/api/v1/*`. A caller that could not
+/// read the portfile could not call this, and a caller that *can* read the
+/// portfile already has the token this coupon would buy.
+pub fn arm_handoff(info: &DaemonInfo) -> Result<String, AppError> {
+    let url = format!(
+        "http://127.0.0.1:{}{}",
+        info.port,
+        crate::api::handoff::ARM_PATH
+    );
+    let response = control_agent()
+        .post(&url)
+        .header(crate::api::rpc::TOKEN_HEADER, &info.token)
+        .send_empty()
+        .map_err(|e| AppError::Storage(format!("the daemon did not arm a handoff: {e}")))?;
+    let armed: ArmedHandoff = response
+        .into_body()
+        .read_json()
+        .map_err(|e| AppError::Storage(format!("the daemon's handoff was unreadable: {e}")))?;
+    Ok(armed.coupon)
+}
+
+/// [`arm_handoff`]'s answer.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ArmedHandoff {
+    /// The coupon, good for one redemption within
+    /// [`crate::api::handoff::TTL`].
+    coupon: String,
+}
+
 /// `/api/v1/hello`'s answer.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Hello {
