@@ -1,5 +1,11 @@
 import { test, expect } from "@playwright/test";
-import { deleteStory, projectSlug, requiredEnv, seedToken } from "./support";
+import {
+  cleanUpCreatedStories,
+  deleteStory,
+  projectSlug,
+  requiredEnv,
+  seedToken,
+} from "./support";
 
 /**
  * Exercises SH-197's roving tabindex: before this, board cards were plain
@@ -16,6 +22,8 @@ import { deleteStory, projectSlug, requiredEnv, seedToken } from "./support";
  * (filter-persistence.spec.ts, column-visibility.spec.ts) assert on
  * byte-for-byte per run-e2e.sh's own comment.
  */
+
+cleanUpCreatedStories("Alpha Project");
 
 const DASHBOARD_TOKEN = requiredEnv("DASHBOARD_TOKEN");
 
