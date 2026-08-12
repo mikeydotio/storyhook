@@ -2806,6 +2806,197 @@ pub fn scan_story_refs(prefix: &str, message: &str) -> Vec<StoryReference> {
         .collect()
 }
 
+/// One comment, on *another* story, that named this one (SH-220).
+///
+/// The third source under `referenced_by`, beside [`CommitReference`] and a
+/// linked pull request — and the only one that is never stored. It is derived
+/// from the comment threads already folded into the project's snapshots
+/// ([`derive_comment_mentions`]), so a retracted comment stops producing one
+/// the moment the retraction folds, with no invalidation path to get wrong.
+///
+/// # It carries no intent
+///
+/// A commit reference does ([`ReferenceIntent`]), because a commit may *claim*
+/// a story and move it. A comment never moves anything, and the claim grammar
+/// is a commit-message grammar: someone quoting `Closes SH-1` from a commit
+/// body into a comment asserted nothing about SH-1. Recording a claim here
+/// would be SH-124's defect one layer up — a cross-reference read as an
+/// assertion of ownership — so the type has nowhere to put one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommentMention {
+    /// When the mentioning comment was written — the comment's own `at`, not
+    /// the moment the mention was derived.
+    pub at: String,
+    /// The story whose comment named this one.
+    ///
+    /// `other_id` rather than `story_id` because the value lives inside one
+    /// specific story's `referenced_by` already, where `story_id` would be
+    /// ambiguous about which end it names — the same reason
+    /// [`StoryRelation::other_id`] is spelled that way.
+    pub other_id: String,
+    /// The matched line of that comment, trimmed, and never longer than
+    /// [`SNIPPET_BYTES`].
+    ///
+    /// When the line is longer than that, this is a window of it that always
+    /// contains the id, elided with `…` at whichever ends were cut — a
+    /// snippet that truncated the id away would be evidence of nothing.
+    pub snippet: String,
+}
+
+/// The longest a [`CommentMention::snippet`] may be, in bytes.
+///
+/// A hard cap rather than a guideline. A comment in this repository is
+/// routinely a pasted council verdict or re-spec naming a dozen stories; the
+/// verbatim text of one would otherwise be copied into every one of those
+/// stories' `referenced_by`, once per mention, on every read of them.
+pub const SNIPPET_BYTES: usize = 120;
+
+/// What a truncated snippet is elided with, at either end. Three bytes.
+const SNIPPET_ELLIPSIS: &str = "…";
+
+/// How much of the line before the matched id a truncated snippet tries to
+/// keep, so the reader sees a little of what was being said rather than
+/// starting mid-word at the id.
+const SNIPPET_LEAD_IN: usize = 24;
+
+/// The greatest char boundary at or below `at`.
+fn floor_boundary(text: &str, mut at: usize) -> usize {
+    while at > 0 && !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    at
+}
+
+/// The least char boundary at or above `at`.
+fn ceil_boundary(text: &str, mut at: usize) -> usize {
+    while at < text.len() && !text.is_char_boundary(at) {
+        at += 1;
+    }
+    at
+}
+
+/// The snippet for an id found at `id_start..id_end` in `line`.
+///
+/// The matched line, trimmed — and when that is longer than [`SNIPPET_BYTES`],
+/// a window of it that **always contains the id**, elided at whichever ends
+/// were cut. Anchoring on the match is the whole point: a comment pasted as one
+/// long line can carry the id thousands of bytes in, and a snippet that
+/// truncated from the left would show text that does not contain the id it is
+/// evidence for.
+fn snippet_for(line: &str, id_start: usize, id_end: usize) -> String {
+    let trimmed = line.trim();
+    if trimmed.len() <= SNIPPET_BYTES {
+        return trimmed.to_string();
+    }
+
+    // Offsets arrive relative to `line`; leading whitespace is all that can sit
+    // before the id, and trailing whitespace all that can sit after the end.
+    let shift = line.len() - line.trim_start().len();
+    let (id_start, id_end) = (id_start - shift, id_end - shift);
+
+    // Reserve for both ellipses up front so the result is inside the cap
+    // whichever ends turn out to be cut, without a second pass.
+    let inner = SNIPPET_BYTES - 2 * SNIPPET_ELLIPSIS.len();
+    let lead = SNIPPET_LEAD_IN.min(inner.saturating_sub(id_end - id_start));
+    let mut start = ceil_boundary(
+        trimmed,
+        id_start
+            .saturating_sub(lead)
+            .min(trimmed.len() - inner.min(trimmed.len())),
+    );
+    let mut end = floor_boundary(trimmed, (start + inner).min(trimmed.len()));
+    if end < id_end {
+        // Only reachable when rounding to a char boundary clipped the id's
+        // last bytes: keep the id whole and slide the window back instead.
+        end = id_end;
+        start = ceil_boundary(trimmed, end.saturating_sub(inner));
+    }
+
+    let mut snippet = String::with_capacity(SNIPPET_BYTES);
+    if start > 0 {
+        snippet.push_str(SNIPPET_ELLIPSIS);
+    }
+    snippet.push_str(&trimmed[start..end]);
+    if end < trimmed.len() {
+        snippet.push_str(SNIPPET_ELLIPSIS);
+    }
+    snippet
+}
+
+/// Every comment mention in a project, keyed by the story mentioned (SH-220).
+///
+/// Pure, and over data the caller already holds: `story_views` folds every
+/// story's comment thread into memory to answer any question at all, so this
+/// adds a scan rather than a read. It is the same shape — and gated the same
+/// way — as [`derive_family_relationships`], for the same reason: nothing that
+/// lists stories needs it, and `story show` is the one command that does.
+///
+/// # What counts
+///
+/// - **Another story's comment only.** A story naming its own id in its own
+///   thread is a self-loop the reader is already looking at.
+/// - **A story that exists**, in this project. Ids are prefix-scoped, so a
+///   mention of `SH-9999` when there is no SH-9999 has nowhere to appear and
+///   is dropped rather than invented.
+/// - **Once per comment per story.** A comment naming SH-1 five times is one
+///   mention of SH-1, whose snippet is the first line that named it — the same
+///   uniqueness [`scan_story_refs`] gives a commit message.
+///
+/// Ordering is oldest comment first, ties broken by story number, so the list
+/// reads like the `commits` beside it rather than in the map's id order (where
+/// `SH-10` precedes `SH-2`).
+///
+/// # The grammar is `ids_in_line`, deliberately not [`scan_story_refs`]
+///
+/// `ids_in_line` is the raw id scan — where a `{PREFIX}-{DIGITS}` starts and
+/// ends, and nothing else. [`scan_story_refs`] layers claim words, a negation
+/// lookback, a revert ceiling and `git-interpret-trailers`' colon rule on top
+/// of it. All four encode *commit message* structure and mean nothing in
+/// comment prose; reading them here would let a quoted commit body read as a
+/// claim. See [`CommentMention`].
+#[must_use]
+pub fn derive_comment_mentions(
+    prefix: &str,
+    stories: &BTreeMap<String, StorySnapshot>,
+) -> BTreeMap<String, Vec<CommentMention>> {
+    let mut mentions: BTreeMap<String, Vec<CommentMention>> = BTreeMap::new();
+
+    for (source_id, story) in stories {
+        for comment in &story.comments {
+            let mut named: BTreeSet<&str> = BTreeSet::new();
+            for line in comment.text.lines() {
+                for (start, end) in ids_in_line(prefix, line) {
+                    let target = &line[start..end];
+                    if target == source_id.as_str() || !stories.contains_key(target) {
+                        continue;
+                    }
+                    if !named.insert(target) {
+                        continue;
+                    }
+                    mentions
+                        .entry(target.to_string())
+                        .or_default()
+                        .push(CommentMention {
+                            at: comment.at.clone(),
+                            other_id: source_id.clone(),
+                            snippet: snippet_for(line, start, end),
+                        });
+                }
+            }
+        }
+    }
+
+    for found in mentions.values_mut() {
+        found.sort_by(|a, b| {
+            a.at.cmp(&b.at)
+                .then_with(|| story_number(&a.other_id).cmp(&story_number(&b.other_id)))
+                .then_with(|| a.other_id.cmp(&b.other_id))
+        });
+    }
+
+    mentions
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -5280,6 +5471,280 @@ mod tests {
         assert_eq!(story_number("garbage"), u64::MAX);
         assert_eq!(story_number("SH-abc"), u64::MAX);
         assert_eq!(story_number(""), u64::MAX);
+    }
+
+    // -----------------------------------------------------------------------
+    // `derive_comment_mentions` — the third `referenced_by` source (SH-220)
+    //
+    // Every fixture here is *folded* rather than hand-built, because what the
+    // derivation is promised is the comment thread the store hands it — which
+    // is `fold_story`'s output and nothing else. The retraction test is the
+    // one that would be a lie otherwise.
+    // -----------------------------------------------------------------------
+
+    /// A story whose thread is exactly `comments`, each one minute apart,
+    /// folded from a real event log.
+    fn story_with_comments(id: &str, comments: &[&str]) -> super::StorySnapshot {
+        let mut events = vec![StoryEvent::StoryCreated {
+            at: "2026-03-13T00:00:00Z".to_string(),
+            title: format!("story {id}"),
+            state: "todo".to_string(),
+        }];
+        for (index, text) in comments.iter().enumerate() {
+            events.push(StoryEvent::StoryCommentAdded {
+                at: format!("2026-03-13T00:{:02}:00Z", index + 1),
+                text: (*text).to_string(),
+            });
+        }
+        fold_story(id, &events, &state_map()).expect("folding a comment thread")
+    }
+
+    fn story_map(stories: Vec<super::StorySnapshot>) -> BTreeMap<String, super::StorySnapshot> {
+        stories
+            .into_iter()
+            .map(|story| (story.id.clone(), story))
+            .collect()
+    }
+
+    /// `(other_id, snippet)` for every mention of `id`, in the order derived.
+    fn mentions_of(
+        stories: &BTreeMap<String, super::StorySnapshot>,
+        id: &str,
+    ) -> Vec<(String, String)> {
+        super::derive_comment_mentions("SH", stories)
+            .remove(id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|mention| (mention.other_id, mention.snippet))
+            .collect()
+    }
+
+    #[test]
+    fn a_comment_on_another_story_becomes_a_backlink() {
+        let stories = story_map(vec![
+            story_with_comments("SH-1", &[]),
+            story_with_comments("SH-2", &["superseded by SH-1"]),
+        ]);
+
+        assert_eq!(
+            mentions_of(&stories, "SH-1"),
+            [("SH-2".to_string(), "superseded by SH-1".to_string())],
+            "SH-2's comment named SH-1, so SH-1 is referenced by it"
+        );
+        assert!(
+            mentions_of(&stories, "SH-2").is_empty(),
+            "the mention is one-way: SH-1 never named SH-2"
+        );
+    }
+
+    #[test]
+    fn a_story_naming_itself_in_its_own_thread_is_not_a_backlink() {
+        let stories = story_map(vec![story_with_comments(
+            "SH-1",
+            &["SH-1 is blocked on nothing"],
+        )]);
+
+        assert!(
+            mentions_of(&stories, "SH-1").is_empty(),
+            "a self-mention is a self-loop the reader is already looking at"
+        );
+    }
+
+    #[test]
+    fn a_mention_of_a_story_that_does_not_exist_is_dropped() {
+        let stories = story_map(vec![
+            story_with_comments("SH-1", &[]),
+            story_with_comments("SH-2", &["see SH-9999, which nobody filed"]),
+        ]);
+
+        let derived = super::derive_comment_mentions("SH", &stories);
+        assert!(
+            !derived.contains_key("SH-9999"),
+            "a mention of a story that does not exist has nowhere to appear"
+        );
+        assert!(derived.is_empty(), "and invents nothing else either");
+    }
+
+    #[test]
+    fn one_comment_naming_a_story_twice_is_one_mention_from_the_first_line() {
+        let stories = story_map(vec![
+            story_with_comments("SH-1", &[]),
+            story_with_comments("SH-2", &["first line names SH-1\nso does SH-1 again"]),
+        ]);
+
+        assert_eq!(
+            mentions_of(&stories, "SH-1"),
+            [("SH-2".to_string(), "first line names SH-1".to_string())],
+            "one comment is one mention, and the snippet is the line that first named it"
+        );
+    }
+
+    #[test]
+    fn two_comments_naming_the_same_story_are_two_mentions() {
+        let stories = story_map(vec![
+            story_with_comments("SH-1", &[]),
+            story_with_comments("SH-2", &["opens SH-1", "and again, SH-1"]),
+        ]);
+
+        assert_eq!(
+            mentions_of(&stories, "SH-1"),
+            [
+                ("SH-2".to_string(), "opens SH-1".to_string()),
+                ("SH-2".to_string(), "and again, SH-1".to_string()),
+            ],
+            "uniqueness is per comment, not per thread"
+        );
+    }
+
+    #[test]
+    fn the_snippet_is_the_matched_line_not_the_whole_comment() {
+        let stories = story_map(vec![
+            story_with_comments("SH-1", &[]),
+            story_with_comments(
+                "SH-2",
+                &["Council verdict\n\n  the winner supersedes SH-1  \n\nDissent: none"],
+            ),
+        ]);
+
+        assert_eq!(
+            mentions_of(&stories, "SH-1"),
+            [("SH-2".to_string(), "the winner supersedes SH-1".to_string())],
+            "one line of the comment, trimmed — not the paste around it"
+        );
+    }
+
+    #[test]
+    fn a_long_line_is_capped_and_still_contains_the_id() {
+        let padding = "x".repeat(400);
+        let line = format!("{padding} SH-1 {padding}");
+        let stories = story_map(vec![
+            story_with_comments("SH-1", &[]),
+            story_with_comments("SH-2", &[&line]),
+        ]);
+
+        let derived = mentions_of(&stories, "SH-1");
+        let snippet = &derived[0].1;
+        assert!(
+            snippet.len() <= super::SNIPPET_BYTES,
+            "snippet was {} bytes, over the {} cap: {snippet:?}",
+            snippet.len(),
+            super::SNIPPET_BYTES
+        );
+        assert!(
+            snippet.contains("SH-1"),
+            "a snippet that elides the id it is evidence for proves nothing: {snippet:?}"
+        );
+        assert!(
+            snippet.starts_with('…') && snippet.ends_with('…'),
+            "both ends were cut, so both are elided: {snippet:?}"
+        );
+    }
+
+    #[test]
+    fn a_snippet_window_survives_a_multi_byte_line() {
+        let padding = "é".repeat(400);
+        let line = format!("{padding} SH-1 {padding}");
+        let stories = story_map(vec![
+            story_with_comments("SH-1", &[]),
+            story_with_comments("SH-2", &[&line]),
+        ]);
+
+        let derived = mentions_of(&stories, "SH-1");
+        let snippet = &derived[0].1;
+        assert!(
+            snippet.len() <= super::SNIPPET_BYTES,
+            "snippet was {} bytes, over the cap: {snippet:?}",
+            snippet.len()
+        );
+        assert!(snippet.contains("SH-1"), "id still visible: {snippet:?}");
+    }
+
+    /// A comment quoting a commit body is still only a mention: SH-124's defect
+    /// was reading a cross-reference as an assertion of ownership, and a
+    /// `CommentMention` has nowhere to record one.
+    #[test]
+    fn a_quoted_claim_word_carries_no_more_weight_than_a_bare_mention() {
+        let stories = story_map(vec![
+            story_with_comments("SH-1", &[]),
+            story_with_comments("SH-2", &["Closes SH-1"]),
+            story_with_comments("SH-3", &["see SH-1"]),
+        ]);
+
+        let derived = super::derive_comment_mentions("SH", &stories);
+        let shapes: Vec<_> = derived["SH-1"]
+            .iter()
+            .map(|mention| (mention.other_id.as_str(), mention.snippet.as_str()))
+            .collect();
+        assert_eq!(
+            shapes,
+            [("SH-2", "Closes SH-1"), ("SH-3", "see SH-1")],
+            "both are mentions, distinguished only by the words they quote"
+        );
+    }
+
+    #[test]
+    fn mentions_read_oldest_first_then_by_story_number() {
+        let mut stories = story_map(vec![
+            story_with_comments("SH-1", &[]),
+            // Both comment at 00:01; SH-10 must not sort before SH-2.
+            story_with_comments("SH-2", &["SH-1 second"]),
+            story_with_comments("SH-10", &["SH-1 third"]),
+        ]);
+        // An older comment than either, on a story whose id sorts last.
+        let mut earlier = story_with_comments("SH-3", &["SH-1 first"]);
+        earlier.comments[0].at = "2026-03-12T00:00:00Z".to_string();
+        stories.insert("SH-3".to_string(), earlier);
+
+        assert_eq!(
+            mentions_of(&stories, "SH-1")
+                .into_iter()
+                .map(|(other, _)| other)
+                .collect::<Vec<_>>(),
+            ["SH-3", "SH-2", "SH-10"],
+            "oldest comment first, then by story number — not the map's id order"
+        );
+    }
+
+    /// The payoff of deriving rather than storing: nothing has to be
+    /// invalidated when a comment is withdrawn, because the retraction has
+    /// already removed it from the thread the scan reads.
+    #[test]
+    fn a_retracted_comment_stops_producing_a_mention() {
+        let mut events = vec![
+            StoryEvent::StoryCreated {
+                at: "2026-03-13T00:00:00Z".to_string(),
+                title: "SH-2".to_string(),
+                state: "todo".to_string(),
+            },
+            StoryEvent::StoryCommentAdded {
+                at: "2026-03-13T00:01:00Z".to_string(),
+                text: "superseded by SH-1".to_string(),
+            },
+        ];
+        let with_comment = story_map(vec![
+            story_with_comments("SH-1", &[]),
+            fold_story("SH-2", &events, &state_map()).expect("folding"),
+        ]);
+        assert_eq!(
+            mentions_of(&with_comment, "SH-1").len(),
+            1,
+            "the comment is there to begin with"
+        );
+
+        events.push(StoryEvent::StoryCommentRetracted {
+            at: "2026-03-13T00:02:00Z".to_string(),
+            comment_at: "2026-03-13T00:01:00Z".to_string(),
+            text: "superseded by SH-1".to_string(),
+        });
+        let retracted = story_map(vec![
+            story_with_comments("SH-1", &[]),
+            fold_story("SH-2", &events, &state_map()).expect("folding"),
+        ]);
+
+        assert!(
+            mentions_of(&retracted, "SH-1").is_empty(),
+            "a retracted comment cannot go on referencing anything"
+        );
     }
 }
 

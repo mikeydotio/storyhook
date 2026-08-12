@@ -494,6 +494,43 @@ fn referenced_by_prs_only_arrives_on_show_not_list() {
     assert_eq!(shown.referenced_by.prs[0].number, 7);
 }
 
+/// `referenced_by.comment_mentions` is a project-wide scan of every other
+/// story's comment thread, gated behind `include_derived` exactly as
+/// `referenced_by.prs` is (SH-220) — so `list` must not pay for it.
+#[test]
+fn referenced_by_comment_mentions_only_arrive_on_show_not_list() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let mentioned = new_story(&ctx, "Mentioned");
+    let mentioner = new_story(&ctx, "Mentioner");
+    StoryService::new(&ctx)
+        .comment(&mentioner, &format!("superseded by {mentioned}"))
+        .expect("commenting");
+
+    let listed = query(&fixture, |service| service.list(&ListFilters::default()));
+    let listed_view = listed.iter().find(|v| v.story.id == mentioned).unwrap();
+    assert!(
+        listed_view.referenced_by.comment_mentions.is_empty(),
+        "the scan is cross-story work `list` must not pay for, same as prs"
+    );
+
+    let shown = query(&fixture, |service| service.show(&mentioned));
+    assert_eq!(
+        shown.referenced_by.comment_mentions.len(),
+        1,
+        "show scans the whole project's comment threads"
+    );
+    let mention = &shown.referenced_by.comment_mentions[0];
+    assert_eq!(mention.other_id, mentioner, "named by the commenting story");
+    assert_eq!(mention.snippet, format!("superseded by {mentioned}"));
+
+    let back = query(&fixture, |service| service.show(&mentioner));
+    assert!(
+        back.referenced_by.comment_mentions.is_empty(),
+        "the mention points one way: nothing named the commenter"
+    );
+}
+
 #[test]
 fn an_epic_in_todo_with_an_active_child_shows_a_promoted_display_state() {
     let fixture = ServiceFixture::new();

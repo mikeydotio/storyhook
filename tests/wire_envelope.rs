@@ -24,8 +24,8 @@ use storyhook::cli::{
     StateAction, StoreAction, TypeAction, WebAction,
 };
 use storyhook::domain::{
-    CommitReference, Member, Priority, ProgressRollup, StateDef, StoryComment, StoryEvent,
-    StoryRelation, StorySnapshot, SuperState,
+    CommentMention, CommitReference, Member, Priority, ProgressRollup, StateDef, StoryComment,
+    StoryEvent, StoryRelation, StorySnapshot, SuperState,
 };
 use storyhook::error::{AppError, WireError};
 use storyhook::output::{
@@ -170,6 +170,11 @@ fn maximal_view() -> StoryView {
                 status: "merged".to_string(),
                 linked_at: "2026-07-28T09:20:00Z".to_string(),
                 last_checked_at: Some("2026-07-28T10:00:00Z".to_string()),
+            }],
+            comment_mentions: vec![CommentMention {
+                at: "2026-07-28T09:25:00Z".to_string(),
+                other_id: "SH-4".to_string(),
+                snippet: "superseded by SH-1".to_string(),
             }],
         },
         warnings: vec!["a warning".to_string()],
