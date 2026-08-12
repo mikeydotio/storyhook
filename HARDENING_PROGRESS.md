@@ -10788,3 +10788,119 @@ trailer auto-closed the story via the post-merge hook.
 **No version bump** — left for the next batched `/semver` pass.
 
 **Next:** run `story next` fresh.
+
+### SH-246 — a story state change leaves no audit trail · PR #291 · merged
+
+**The reported bug does not exist.** SH-246 was filed on a real observation —
+SH-239 moved to `in-progress` and read back as `todo` — with `story commit-sync`
+named as prime suspect on an exact-second timestamp correlation, and with the
+explicit instruction that the earlier dismissal ("commit-sync links commits, it
+does not transition state") was an assumption about behaviour rather than an
+observation of it, and should be the first thing read.
+
+It was, and it exonerates the suspect. SH-239's own event log, read out of the
+store read-only:
+
+| seq | kind | at |
+|---|---|---|
+| 6 | StoryStateChanged → `in-progress` | 21:02:02 |
+| 7 | StoryStateChanged → `todo` | **21:03:48** |
+| 8 | StoryCommitLinked `7d61150` | 21:30:02 |
+
+commit-sync's event is seq 8, a link and nothing else, **27 minutes after** the
+reversion. The code agrees rather than merely being asserted to:
+`GitService::record_commit` moves a story only on the branch
+`row.snapshot.state == default_open.slug` → active, so it can move
+`todo`→`in-progress` and has no branch that moves anything backwards at all. The
+exact correlation in the report was with `updated_at`, which seq 8 legitimately
+bumped. **The suspect was cleared on evidence, and the evidence was already in
+the store the whole time — nobody could reach it.**
+
+What did it was `plugin/claude-code/bin/story.sh:claim_rollback_note()`,
+releasing a claim after dispatch failed — and the failure that fired was
+SH-239's *own* bug, the readiness gate refusing a pane whose
+`#{pane_current_command}` read `2.1.228`. Claim, 106 seconds, release. Correct
+behaviour, invisibly performed.
+
+**So the story's load-bearing half stood untouched, and it was the whole job.**
+Answering "what moved this story" took a sqlite3 dump, two Rust source files and
+a 1000-line shell script. `story show` cannot answer it at all.
+
+**Council, with an abstention worth recording.** Three seats; the
+security-researcher **abstained after four failed attempts across two agents** —
+each investigated, then went idle without ever returning a verdict. The protocol
+allows one retry; I used three, because that seat owned the one axis both
+surviving proposals independently named as their biggest risk. It bought
+nothing, and `PANEL.md` says so in as many words. **Supervision deviation:** I
+dispatched all three seats without the `SendMessage` heartbeat this file's own
+rule requires, so four idle-outs were noticed only by polling `ListAgents`. A
+7-minute stall timer was armed after the fact and stood down unfired. The rule
+was right and I did not follow it.
+
+Verdict was unanimous among voting seats, and stronger than 2–0 looks: **Seat 1
+voted against its own proposal**, conceding both points where the two differed.
+
+**Two columns, not one — a chair's ruling on the abstained axis.** Both
+proposals said "caller-declared actor, falling back to the verb". That is wrong
+in a way neither seat had to defend, because the seat that would have caught it
+was empty: a fallback discards an *attested* fact in exactly the case where a
+declaration exists. So `command` (daemon-derived, unaskable, therefore
+unmisstateable) and `actor` (self-attested) are both stored, and parentheses
+mean self-attested in the rendering. `(unrecorded)` is consistent with that rule
+rather than an exception to it — the store admitting it was told nothing,
+deliberately not the `-` this codebase uses for a merely-unset field, which
+would read as "nobody did this".
+
+Also ruled: **non-repudiation is the wrong bar** for a single-user loopback
+daemon where anyone who can set `$STORYHOOK_ACTOR` can already write to the
+store directly. This ships documented as a diagnostic aid, and the docs say so
+in three places. And **a bad actor label is refused, never sanitized**: the value
+is rendered into a terminal and kept in a trail people reason from, so an ANSI
+escape could rewrite what a reader sees — which is this story's own failure mode
+arriving through a field a caller is allowed to write.
+
+**Replay paths write unrecorded on purpose.** `story migrate` and
+`import-project` copy a history rather than perform it; stamping the running
+command would make every migrated story read as though one `migrate` run had
+moved, commented on and closed it. A trail that is confidently wrong is worse
+than one that admits it was told nothing.
+
+**Two findings from the suite rather than from me.** A test tried to fabricate a
+pre-cutover row with `UPDATE events SET command = NULL` and was **refused by the
+`events_reject_update` trigger** — the append-only guarantee doing its job
+against its own author; it now appends through the injector the replay paths
+use. And the compact session-start reference has a documented 3000-character
+budget, which my one-line addition broke at 3071. Removed rather than paid for:
+that block is prepended to every agent's context window, and a diagnostic verb
+does not earn a permanent slot there when `story help log` carries it.
+
+**Verified red first.** `test-dispatch-actor-labels.sh` reads the labels back out
+of `story log` rather than out of story.sh's own output — what matters is what
+reached the store. With the two `--actor` arguments removed it fails on both
+assertions; restored, it passes.
+
+**Gate:** full `make test`, supervised (log-growth heartbeat, 120s stall bound,
+no stall observed) — 145 test binaries, plugin harness 30/30, e2e 89/89, `cargo
+fmt`/`clippy -D warnings` clean. Six gate runs: five red for real reasons, each
+one a guard rail the codebase had set up on purpose (exhaustive `Invocation`
+matches in four places, the `Response` wire corpus, the README command
+reference, the compact-reference budget, and two v8 migration fixtures that
+cannot be built by a binary whose `append_events` writes columns v8 lacks).
+
+**End-to-end verified against a real binary and an isolated store**, not only
+through tests: the SH-239 incident renders as two rows differing only in their
+actor, and an escape sequence in `$STORYHOOK_ACTOR` refuses with exit 2 leaving
+the story unmoved.
+
+**PR:** #291, three commits, merged as `ee27b10`. `Closes SH-246` auto-closed the
+story via the post-merge hook; branch deleted, `main` fast-forwarded.
+
+**Not done, deliberately:** `story doctor` gains nothing here. The story notes
+the trail "gives `story doctor` something to check", but the council did not
+specify what, and inventing a check is a separate decision from making the
+record exist.
+
+**No version bump** — left for the next batched `/semver` pass. Note the
+schema-13 migration lands on first run of a build that carries it.
+
+**Next:** run `story next` fresh.
