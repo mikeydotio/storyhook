@@ -94,6 +94,23 @@ impl ActorLabel {
         Ok(Some(Self(trimmed.to_string())))
     }
 
+    /// A label read back out of storage, taken at face value.
+    ///
+    /// The validating constructor is [`parse`](Self::parse), and it is the only
+    /// way a label gets *in*. This is the way one comes back out, and it does
+    /// not re-check: the value already passed on the way in, and a read is the
+    /// wrong place to start failing. Refusing here would mean a single
+    /// hand-edited row could take away a story's whole history — punishing the
+    /// person trying to diagnose the damage.
+    ///
+    /// It is not a hole in the constraint. Nothing reachable from a caller
+    /// hands bytes to this: it is `pub(crate)` and its one caller is the SQLite
+    /// row decoder.
+    #[must_use]
+    pub(crate) fn trusted(stored: String) -> Self {
+        Self(stored)
+    }
+
     /// The label as written.
     #[must_use]
     pub fn as_str(&self) -> &str {

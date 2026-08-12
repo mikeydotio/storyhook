@@ -254,6 +254,7 @@ story project settings unset <key>
 
 story new <title> [--state <slug>] [--type <slug>] [--description "<text>"] [--priority <level>] [--assignee <member>] [--label <name>] [--labels <csv>] [--draft]
 story show <id>
+story log <id>
 story comment <id> "<text>"
 story assign <id> <member>
 story move <id> <slug> [--if-state <expected>] [--reason <text>] ["<comment>"]

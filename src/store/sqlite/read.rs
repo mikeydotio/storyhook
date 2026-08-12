@@ -15,6 +15,7 @@ use std::path::PathBuf;
 
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 
+use crate::domain::provenance::{ActorLabel, Provenance};
 use crate::domain::remote::RemoteUrl;
 use crate::domain::{Member, StateDef, StoryEvent, StorySnapshot, TypeDef};
 use crate::store::error::StoreError;
@@ -352,7 +353,14 @@ pub(super) fn settings(
 /// This is the SH-54 contract in one function: a kind this binary has never
 /// heard of produces a [`StoredPayload::Unknown`] carrying the original JSON,
 /// not an error that fails the whole read.
-fn decode(kind: String, at: String, seq: i64, global_seq: i64, payload: String) -> StoredEvent {
+fn decode(
+    kind: String,
+    at: String,
+    seq: i64,
+    global_seq: i64,
+    payload: String,
+    provenance: Provenance,
+) -> StoredEvent {
     let decoded = match serde_json::from_str::<StoryEvent>(&payload) {
         Ok(event) => StoredPayload::Known(event),
         Err(_) => StoredPayload::Unknown {
@@ -366,6 +374,22 @@ fn decode(kind: String, at: String, seq: i64, global_seq: i64, payload: String) 
         kind,
         at,
         payload: decoded,
+        provenance,
+    }
+}
+
+/// Rebuilds a row's provenance from its two nullable columns (SH-246).
+///
+/// A stored `actor` is trusted back verbatim rather than re-parsed: it passed
+/// [`ActorLabel::parse`] on the way in, and a read is the wrong place to start
+/// failing over bytes that are already durable. A value that somehow violates
+/// the constraint — hand-edited into the file, say — is still bounded by what
+/// the renderer will do with it, and refusing the whole read would take a
+/// story's history away over a label.
+fn provenance_of(command: Option<String>, actor: Option<String>) -> Provenance {
+    Provenance {
+        command,
+        actor: actor.map(ActorLabel::trusted),
     }
 }
 
@@ -376,7 +400,7 @@ pub(super) fn events_for(
 ) -> Result<Vec<StoredEvent>, StoreError> {
     let mut stmt = sql(
         conn.prepare_cached(
-            "SELECT seq, global_seq, kind, at, payload FROM events \
+            "SELECT seq, global_seq, kind, at, payload, command, actor FROM events \
              WHERE project_id = ?1 AND story_no = ?2 ORDER BY seq",
         ),
         "preparing events_for",
@@ -389,6 +413,7 @@ pub(super) fn events_for(
                 row.get(0)?,
                 row.get(1)?,
                 row.get(4)?,
+                provenance_of(row.get(5)?, row.get(6)?),
             ))
         }),
         "reading a story's events",
@@ -422,7 +447,7 @@ pub(super) fn events_since(
 ) -> Result<Vec<FeedEvent>, StoreError> {
     let mut stmt = sql(
         conn.prepare_cached(
-            "SELECT story_no, seq, global_seq, kind, at, payload FROM events \
+            "SELECT story_no, seq, global_seq, kind, at, payload, command, actor FROM events \
              WHERE project_id = ?1 AND global_seq > ?2 ORDER BY global_seq LIMIT ?3",
         ),
         "preparing events_since",
@@ -437,6 +462,7 @@ pub(super) fn events_since(
                     row.get(1)?,
                     row.get(2)?,
                     row.get(5)?,
+                    provenance_of(row.get(6)?, row.get(7)?),
                 ),
             })
         }),

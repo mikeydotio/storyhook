@@ -192,6 +192,7 @@ fn foreign_prefix_refusal<S: Store>(
 fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
     match invocation {
         Invocation::Show { id }
+        | Invocation::Log { id }
         | Invocation::ClearAwaiting { id }
         | Invocation::Comment { id, .. }
         | Invocation::Assign { id, .. }
