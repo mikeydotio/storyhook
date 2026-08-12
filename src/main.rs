@@ -153,9 +153,7 @@ fn main() {
                 Err(error) => fail(&error, json),
             };
         let environment = match port {
-            Some(port) => {
-                environment.daemon_addr(std::net::SocketAddr::from(([127, 0, 0, 1], port)))
-            }
+            Some(port) => environment.daemon_port(port),
             None => environment,
         };
         let result = storyhook::invoke::open_store(&environment)

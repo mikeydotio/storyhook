@@ -1199,3 +1199,65 @@ fn await_published_port(probe: &Probe) -> Option<u16> {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
+
+// ---------------------------------------------------------------------------
+// SH-253: the variable's IP means something, or it is refused
+// ---------------------------------------------------------------------------
+
+/// `$STORYHOOK_DAEMON_ADDR` names an address the daemon will actually bind, or
+/// the command stops and says so.
+///
+/// **The unit tests in `env::tests` cover which IPs are refused; this covers
+/// that the refusal reaches a person.** It is a CLI test rather than a second
+/// parser test because the refusal's cost lives out here: `Environment::from_process`
+/// runs at the top of *every* `story` invocation, so a value that was inert
+/// yesterday now stops `story project list` as surely as it stops `story daemon
+/// start`. A message that only said "no" would read as a total outage, which is
+/// why the assertions below are about what the text offers rather than merely
+/// that it refused.
+///
+/// The loopback spelling is run first, and its success is the control: without
+/// it, a refusal for some entirely unrelated reason — a missing store, an
+/// unrelated usage error — would pass this test while proving nothing.
+#[test]
+fn a_daemon_address_naming_an_ip_the_daemon_will_not_bind_is_refused_out_loud() {
+    let probe = Probe::new();
+    let repo = probe.dir("repo");
+    let data = probe.dir("data");
+
+    ok(probe
+        .story(&repo)
+        .env("STORYHOOK_DATA_DIR", &data)
+        .args(["project", "list"]));
+    probe.quiesce(&repo, &data);
+
+    let stderr = refused(
+        probe
+            .story(&repo)
+            .env("STORYHOOK_DATA_DIR", &data)
+            .env("STORYHOOK_DAEMON_ADDR", "0.0.0.0:3456")
+            .args(["project", "list"]),
+    );
+
+    assert!(
+        stderr.contains("STORYHOOK_DAEMON_ADDR"),
+        "the refusal must name the variable it is about:\n{stderr}"
+    );
+    for offer in ["127.0.0.1:PORT", "--port", "tailnet"] {
+        assert!(
+            stderr.contains(offer),
+            "the refusal fires on every `story` command, so it has to name the way \
+             out — `{offer}` is missing from:\n{stderr}"
+        );
+    }
+
+    // Nothing was started. The control run above spawned a daemon and
+    // `quiesce` stood it down, so an unpublished port here is the refused run
+    // declining to start another — a value refused during environment
+    // resolution is refused before anything binds.
+    assert_eq!(
+        published_port(&probe),
+        None,
+        "a refused address must not leave a daemon behind"
+    );
+}

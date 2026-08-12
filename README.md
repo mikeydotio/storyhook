@@ -655,6 +655,14 @@ export STORYHOOK_DAEMON_ADDR=127.0.0.1:0   # a kernel-assigned port, not 3456
 export STORYHOOK_PARENT_PID=$$             # the daemon dies with this run
 ```
 
+`STORYHOOK_DAEMON_ADDR` chooses a **port**, and `127.0.0.1` is the only IP it
+accepts — any other one is refused with an error rather than accepted and
+ignored, because the daemon binds loopback (plus your tailnet interface, when
+you have one) and has no other address to offer. `--port N` says the same thing
+without naming an address. To reach the dashboard from another machine, use the
+tailnet address the daemon already binds for you: a wider bind would put a
+full-privilege API on the local network.
+
 `story` also refuses, on its own, to create a project at a path under a
 temporary directory when the store it would write to is not itself temporary —
 a backstop for a suite that built a fixture but forgot to name a store at all.

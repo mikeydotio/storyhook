@@ -1853,7 +1853,11 @@ backed by the same validated write path the CLI uses.
 The server always binds 127.0.0.1, and also binds your Tailscale IP
 if the 'tailscale' CLI reports one — reachable from localhost and
 your tailnet only, never the public internet or a plain LAN address.
-Default port is 3456. Data refreshes every 3 seconds via polling.
+Default port is 3456; --port or STORYHOOK_DAEMON_ADDR moves it. That
+variable chooses the port only: 127.0.0.1 is the one IP it accepts,
+and any other is refused rather than accepted and quietly ignored,
+because there is no other address for it to name. Data refreshes
+every 3 seconds via polling.
 
 Commands:
   start        Start the dashboard as a background daemon (does not
