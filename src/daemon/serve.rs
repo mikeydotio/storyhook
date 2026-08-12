@@ -175,6 +175,11 @@ struct Serving<'a, S: Store> {
     /// needs nothing from the store, so it is answered on the `worker` thread
     /// and must never queue behind the dispatcher pool.
     handoff: Arc<crate::api::handoff::HandoffRegistry>,
+    /// Every scoped dashboard capability a redeemed coupon has bought and
+    /// nobody has revoked (SH-254). An `Arc` for `handoff`'s reason, and it
+    /// deliberately outlives no daemon: a capability is process state, never
+    /// written to disk, so a restart ends every one of them.
+    sessions: Arc<crate::api::session::SessionRegistry>,
     /// Everything this daemon is serving right now (SH-173, SH-144). An `Arc`
     /// so the detached thread [`worker`] spawns on the shutdown path — which
     /// has no `'scope` of its own — can still poll it while draining.
@@ -263,6 +268,7 @@ where
         },
         dispatch_registry: Arc::new(crate::api::dispatch::DispatchRegistry::load(env)),
         handoff: Arc::new(crate::api::handoff::HandoffRegistry::new()),
+        sessions: Arc::new(crate::api::session::SessionRegistry::new()),
         inflight: Arc::new(crate::daemon::lifecycle::InFlight::new(env.clone())),
         draining: AtomicBool::new(false),
     };
@@ -709,6 +715,7 @@ fn accept_loop<S: Store>(
     let env = serving.env.clone();
     let dispatch_registry = Arc::clone(&serving.dispatch_registry);
     let handoff = Arc::clone(&serving.handoff);
+    let sessions = Arc::clone(&serving.sessions);
 
     // One closure per listener, cloned by `http1::serve_connections` once per
     // accepted connection (and, within a kept-alive connection, called again
@@ -730,6 +737,7 @@ fn accept_loop<S: Store>(
             &env,
             &dispatch_registry,
             &handoff,
+            &sessions,
         )
     };
 
@@ -789,6 +797,7 @@ fn worker(
     env: &Environment,
     dispatch_registry: &Arc<crate::api::dispatch::DispatchRegistry>,
     handoff: &Arc<crate::api::handoff::HandoffRegistry>,
+    sessions: &Arc<crate::api::session::SessionRegistry>,
 ) {
     let mut request = request;
     let method = request.method().clone();
@@ -821,6 +830,8 @@ fn worker(
         trusted_hosts,
         token,
         loopback,
+        std::time::Instant::now(),
+        sessions,
     ) {
         finish(request, reply);
         return;
@@ -845,6 +856,25 @@ fn worker(
         loopback,
         std::time::Instant::now(),
         handoff,
+        sessions,
+    ) {
+        finish(request, reply);
+        return;
+    }
+
+    // Listing and revoking dashboard capabilities (SH-254), answered here for
+    // `handoff::intercept`'s reason and one of its own: `story web revoke` is
+    // most likely to be run *because* this daemon is busy with something the
+    // operator wants stopped, so it must never queue behind the dispatcher
+    // pool. `rpc::admission` above has already required loopback and the
+    // master token; the duplicate inside is labelled as such.
+    if let Some(reply) = crate::api::session::intercept(
+        &segments,
+        &method,
+        &headers,
+        token,
+        std::time::Instant::now(),
+        sessions,
     ) {
         finish(request, reply);
         return;
@@ -1474,6 +1504,8 @@ mod tests {
             &crate::api::http::TrustedHosts::default(),
             "the-real-token",
             loopback,
+            std::time::Instant::now(),
+            &crate::api::session::SessionRegistry::new(),
         )
         .is_none()
     }

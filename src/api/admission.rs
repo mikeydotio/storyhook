@@ -59,10 +59,43 @@
 //! one: a DNS-rebound page is same-origin with `http://127.0.0.1:PORT` and can
 //! read what it gets back. That is conjunct 3, and it is why this module grew
 //! a `Host` requirement on reads that it never had.
+//!
+//! # The scoped dashboard capability (SH-254)
+//!
+//! A fourth thing can now admit a request, and it is asked **last**: a
+//! [`crate::api::session`] capability, which `POST /handoff` issues to a
+//! browser instead of the master token it used to hand over. Everything above
+//! it in [`admission`] is unchanged — the guard, [`token_exempt`] and
+//! [`token_ok`] each decide exactly what they decided before, and a caller
+//! holding the master token returns before the capability is consulted at all.
+//!
+//! What a capability may reach is not decided here. It is decided by
+//! [`crate::api::routes::authority`], one answer per named route, in a module
+//! that imports nothing but a `Method` — so a route added to the dashboard's
+//! API cannot inherit the grant, because it does not compile until somebody has
+//! classified it. The alternative, which this module already documents and
+//! forbids a few lines below, is a path-shape guess: matching by arity hands
+//! every future route under a project whatever its neighbours had, on the day
+//! it is written, with no test going red.
+//!
+//! Two refusals rather than one, and that difference is the whole of the
+//! feature surviving contact with its own error path. A capability on a route
+//! it does not reach is a **403** carrying `session_scope`; a capability the
+//! daemon does not recognize is a **401** carrying `session_unknown`. The
+//! dashboard clears its stored credential and opens the master-token modal on
+//! an unmarked 401 and on nothing else, so answering either of these that way
+//! would end with a user pasting full authority back into the tab — least
+//! privilege undone by its own error handler.
+
+use std::time::Instant;
 
 use crate::api::http::{Reply, TrustedHosts, local_request, mutation_guard_ok, text_reply};
 use crate::api::rest::mutating;
+use crate::api::routes::{ProjectRoute, Route, classify};
 use crate::api::rpc::{constant_time_eq, token_ok};
+use crate::api::session::{
+    SessionRegistry, SessionVerdict, scope_refusal, session_admission, unrecognized_refusal,
+};
 use crate::daemon::http1::{Header, Method};
 
 /// Whether a request under `/api/**` — other than `/api/v1/*`, which
@@ -77,6 +110,7 @@ use crate::daemon::http1::{Header, Method};
 /// Decided entirely from the head — no body access, so a caller can run
 /// this before reading one, the same reasoning [`crate::api::rpc::admission`]
 /// documents for the same purpose (SH-172).
+#[allow(clippy::too_many_arguments)]
 pub fn admission(
     segments: &[&str],
     method: &Method,
@@ -85,6 +119,8 @@ pub fn admission(
     trusted_hosts: &TrustedHosts,
     token: &str,
     loopback: bool,
+    now: Instant,
+    sessions: &SessionRegistry,
 ) -> Option<Reply> {
     match segments {
         ["api", "v1", ..] => return None,
@@ -99,13 +135,52 @@ pub fn admission(
     }
     let is_events_stream = segments == ["api", "events"];
     let authorized = token_ok(headers, token) || (is_events_stream && query_token_ok(query, token));
-    if !authorized {
-        return Some(text_reply(
+    if authorized {
+        return None;
+    }
+    // The scoped dashboard capability (SH-254), asked **last**. Everything
+    // above this line is what it was, byte for byte: the guard, the exemption
+    // and the token each still decide exactly what they decided before, and a
+    // caller holding the master token never reaches here — so a tab that has
+    // both credentials is never scope-refused for holding the weaker one.
+    match session_admission(
+        segments,
+        method,
+        headers,
+        trusted_hosts,
+        loopback,
+        now,
+        sessions,
+    ) {
+        SessionVerdict::Admitted => None,
+        SessionVerdict::OutOfScope => Some(scope_refusal(cli_equivalent(segments, method))),
+        SessionVerdict::Unrecognized => Some(unrecognized_refusal()),
+        // Byte-identical to the refusal this route has always given, because
+        // nothing about a request that offers no capability has changed.
+        SessionVerdict::Absent => Some(text_reply(
             401,
             "storyhook daemon: missing or invalid token",
-        ));
+        )),
     }
-    None
+}
+
+/// The `story` command that does what a scope-refused request was asking for.
+///
+/// Carried in the refusal so a user who meets the boundary is told the way
+/// through it rather than left with a button that did nothing. Only the three
+/// routes a capability is actually refused *in the course of using the
+/// dashboard* need an answer; everything else is a path the dashboard does not
+/// call, and a generic pointer is the honest reply there.
+fn cli_equivalent(segments: &[&str], method: &Method) -> &'static str {
+    match classify(segments, method) {
+        Route::ReposCreate => "story project new",
+        Route::RepoDelete { .. } => "story project delete",
+        Route::Project {
+            route: ProjectRoute::Dispatch { .. } | ProjectRoute::DispatchPoll,
+            ..
+        } => "story dispatch",
+        _ => "story --help",
+    }
 }
 
 /// Whether this request may be admitted with **no token at all** (SH-250).
@@ -205,6 +280,41 @@ mod tests {
     use crate::api::http::FORWARDING_HEADERS;
 
     const TOKEN: &str = "the-real-token";
+
+    /// The gate, asked with no dashboard capability anywhere in play.
+    ///
+    /// **Shadows [`super::admission`] on purpose.** SH-254 gave the real gate
+    /// two more parameters, and every test below this line is about the three
+    /// decisions that come *before* a capability is consulted — the CSRF guard,
+    /// SH-250's tokenless read exemption, and the token. Routing them through a
+    /// helper that supplies an empty registry keeps all of them byte-identical
+    /// across that change, and an unmodified diff is the only cheap proof that
+    /// a story which promised not to weaken those three did not weaken them.
+    ///
+    /// The capability's own truth table lives in `crate::api::session`, where
+    /// it can be read beside the thing it describes.
+    #[allow(clippy::too_many_arguments)]
+    fn admission(
+        segments: &[&str],
+        method: &Method,
+        query: Option<&str>,
+        headers: &[Header],
+        trusted_hosts: &TrustedHosts,
+        token: &str,
+        loopback: bool,
+    ) -> Option<Reply> {
+        super::admission(
+            segments,
+            method,
+            query,
+            headers,
+            trusted_hosts,
+            token,
+            loopback,
+            Instant::now(),
+            &SessionRegistry::new(),
+        )
+    }
 
     fn headers(pairs: &[(&str, &str)]) -> Vec<Header> {
         pairs

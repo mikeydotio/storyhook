@@ -1688,6 +1688,78 @@ pub fn arm_handoff(info: &DaemonInfo) -> Result<String, AppError> {
     Ok(armed.coupon)
 }
 
+/// Asks a daemon to end every scoped dashboard capability it has issued
+/// (SH-254).
+///
+/// Answers with how many there were, so `story web revoke` can say whether it
+/// took anything away rather than reporting success at having done nothing.
+///
+/// Loopback and the portfile's token, like [`arm_handoff`] and for the same
+/// reason: `/api/v1/*` is [`crate::api::rpc::admission`]'s, and revoking is an
+/// administrative act. A dashboard capability must never be able to revoke its
+/// siblings, which is why this lives on the control surface and not on the
+/// surface the capability itself reaches.
+pub fn revoke_sessions(info: &DaemonInfo) -> Result<usize, AppError> {
+    let url = format!(
+        "http://127.0.0.1:{}{}",
+        info.port,
+        crate::api::session::SESSIONS_PATH
+    );
+    let response = control_agent()
+        .delete(&url)
+        .header(crate::api::rpc::TOKEN_HEADER, &info.token)
+        .call()
+        .map_err(|e| AppError::Storage(format!("the daemon did not revoke its sessions: {e}")))?;
+    let revoked: RevokedSessions = response
+        .into_body()
+        .read_json()
+        .map_err(|e| AppError::Storage(format!("the daemon's answer was unreadable: {e}")))?;
+    Ok(revoked.revoked)
+}
+
+/// Asks a daemon how long each of its live dashboard capabilities has sat idle.
+///
+/// Idle seconds, never the capabilities: a listing that carried them would put
+/// credentials into whatever the caller prints them into.
+pub fn list_sessions(info: &DaemonInfo) -> Result<Vec<u64>, AppError> {
+    let url = format!(
+        "http://127.0.0.1:{}{}",
+        info.port,
+        crate::api::session::SESSIONS_PATH
+    );
+    let response = control_agent()
+        .get(&url)
+        .header(crate::api::rpc::TOKEN_HEADER, &info.token)
+        .call()
+        .map_err(|e| AppError::Storage(format!("the daemon did not list its sessions: {e}")))?;
+    let listed: ListedSessions = response
+        .into_body()
+        .read_json()
+        .map_err(|e| AppError::Storage(format!("the daemon's answer was unreadable: {e}")))?;
+    Ok(listed
+        .sessions
+        .into_iter()
+        .map(|s| s.idle_seconds)
+        .collect())
+}
+
+/// [`revoke_sessions`]'s answer.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RevokedSessions {
+    revoked: usize,
+}
+
+/// [`list_sessions`]'s answer. Carries no capability, by construction.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ListedSessions {
+    sessions: Vec<ListedSession>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ListedSession {
+    idle_seconds: u64,
+}
+
 /// [`arm_handoff`]'s answer.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct ArmedHandoff {

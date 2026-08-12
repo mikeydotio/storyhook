@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use storyhook::api::handoff::{ARM_PATH, COUPON_HEADER, REDEEM_PATH};
 use storyhook::api::rpc::TOKEN_HEADER;
+use storyhook::api::session::SESSION_HEADER;
 use storyhook::cli::parse_invocation;
 use storyhook::invoke::dispatch_unscoped;
 use storyhook::store::SqliteStore;
@@ -171,31 +172,41 @@ fn redeem(port: u16, headers: &[(&str, String)]) -> RawResponse {
 }
 
 #[test]
-fn a_coupon_armed_over_the_control_surface_redeems_for_the_token() {
+fn a_coupon_armed_over_the_control_surface_redeems_for_a_capability() {
     // The whole feature in one test: `story web open` arms, the browser
-    // spends, and what comes back is the credential every `/api/**` write
-    // requires -- with nobody having typed anything.
+    // spends, and what comes back is a credential that works -- with nobody
+    // having typed anything.
+    //
+    // What comes back changed in SH-254. It was this daemon's master token,
+    // which made the browser tab able to delete every project on the machine
+    // and to reach `POST /api/v1/invoke`. It is a scoped capability now, and
+    // the two assertions below are the two halves of that: the token is not in
+    // the reply, and what *is* in the reply authorizes a write.
     let (_env, _store, server) = served();
     let coupon = arm(server.port(), &server.token);
 
     let redeemed = redeem(server.port(), &redeem_headers(server.port(), &coupon));
     assert_eq!(redeemed.status, 200, "redemption failed: {}", redeemed.body);
+    assert!(
+        !redeemed.body.contains(&server.token),
+        "redemption handed the browser the master token: {}",
+        redeemed.body
+    );
 
     let parsed: serde_json::Value =
         serde_json::from_str(&redeemed.body).expect("the redemption reply is JSON");
-    assert_eq!(
-        parsed["token"].as_str(),
-        Some(server.token.as_str()),
-        "redemption must answer with this daemon's token"
-    );
+    let capability = parsed["session"]
+        .as_str()
+        .expect("redemption must answer with a session capability");
 
-    // And the token it handed over actually works, which is the only thing
-    // that makes the exchange worth anything.
+    // And the capability actually works, which is the only thing that makes
+    // the exchange worth anything. A read, because this fixture has no project
+    // to write to -- `tests/session_capability.rs` carries the write half.
     let read = request(
         server.port(),
         "GET",
         "/api/repos",
-        &[("Host", "127.0.0.1"), (TOKEN_HEADER, &server.token)],
+        &[("Host", "127.0.0.1"), (SESSION_HEADER, capability)],
     );
     assert_eq!(read.status, 200);
 }
@@ -386,7 +397,7 @@ fn nothing_this_daemon_serves_contains_the_token() {
 /// belt-and-braces check defended by nothing but a comment — is exactly what
 /// a later reviewer deletes as redundant.
 #[test]
-fn locality_is_derived_in_exactly_two_places() {
+fn locality_is_derived_only_where_it_was_decided_it_should_be() {
     use std::path::Path;
 
     fn sources(dir: &Path, into: &mut Vec<(String, String)>) {
@@ -412,13 +423,20 @@ fn locality_is_derived_in_exactly_two_places() {
 
     // `http.rs` defines the type and its one constructor. `admission.rs` is
     // SH-250's tokenless read exemption; `handoff.rs` is SH-251's redemption
-    // gate. Adding a fourth means a new route has been given the authority to
-    // conclude "this caller is local" -- which may well be right, and must be
-    // a decision somebody took on purpose rather than a line that slipped in.
-    const ALLOWED: [&str; 3] = [
+    // gate; `session.rs` is SH-254's scoped dashboard capability, which is
+    // honoured only for a caller on this machine -- the single largest thing
+    // that story takes away, since the master token it replaced was spendable
+    // from any tailnet peer.
+    //
+    // Adding a fifth means a new route has been given the authority to conclude
+    // "this caller is local" -- which may well be right, and must be a decision
+    // somebody took on purpose rather than a line that slipped in. Widening
+    // this list is that decision, and this comment is where the reason goes.
+    const ALLOWED: [&str; 4] = [
         "src/api/http.rs",
         "src/api/admission.rs",
         "src/api/handoff.rs",
+        "src/api/session.rs",
     ];
 
     let mut breaches = Vec::new();
