@@ -771,6 +771,7 @@ fn worker(
         &headers,
         trusted_hosts,
         token,
+        loopback,
     ) {
         finish(request, reply);
         return;

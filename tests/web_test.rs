@@ -2614,7 +2614,7 @@ fn web_put_on_story_path_is_405() {
     assert_eq!(status_of(err), 405);
 }
 
-// --- Mutation guard: bearer token (SH-187) ---
+// --- Mutation guard: bearer token (SH-187, split by listener in SH-250) ---
 //
 // Every request in the rest of this file already carries the token, via
 // `Served::agent`'s middleware -- these are the ones that deliberately
@@ -2623,23 +2623,105 @@ fn web_put_on_story_path_is_405() {
 // the same house rule the tailnet section below documents at
 // `assert_the_listener_accepts_a_trusted_host`: a 401 proves nothing on its
 // own if nothing here has proven a real request can still succeed.
+//
+// SH-250 exempted loopback *reads* from the token, and nothing else. So the
+// read tests here changed and the mutation tests deliberately did not: a
+// mutation still needs the token on every listener, loopback included,
+// because the write surface registers projects at caller-named filesystem
+// paths, deletes projects, and reaches `sh -c` through configured event
+// hooks. `web_mutation_without_a_token_is_401` and its event-hook sibling
+// below are unchanged by SH-250 on purpose -- if either ever starts passing
+// for the wrong reason, the exemption has grown past reads.
 
+/// SH-250: a read on the loopback listener needs no token. `ureq` sends
+/// `Host: 127.0.0.1:<port>` for this URL, which is conjunct 3 satisfied the
+/// way a browser on this machine satisfies it.
 #[test]
-fn web_read_without_a_token_is_401() {
+fn web_loopback_read_needs_no_token() {
     let fixture = served();
     fixture.seed(&["new", "Story"]);
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
+    let served_response = ureq::get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .expect("a tokenless loopback read must be served");
+    assert_eq!(served_response.status(), 200);
+
+    // And it really is the project's data, not an empty shell that happens to
+    // return 200 -- otherwise this would pass just as well if the exemption
+    // admitted the request and the route then refused to answer it.
+    let body: serde_json::Value =
+        serde_json::from_str(&served_response.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(body["stories"][0]["story"]["title"], "Story");
+}
+
+/// The `Host` conjunct, at the wire. Before SH-250 no read carried a `Host`
+/// check at all -- `mutation_guard_ok` runs only for a mutating method -- so
+/// this assertion is new coverage, not a restatement of an old rule.
+#[test]
+fn web_loopback_read_from_a_rebound_host_is_401() {
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let err = ureq::get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .header("Host", "evil.example")
+        .call()
+        .unwrap_err();
+    assert_eq!(status_of(err), 401);
+
+    // Positive control: credentialed, the same rebound read still works, so
+    // the refusal above is the exemption being withheld rather than a new
+    // rule against a `Host` this daemon used to serve.
     let ok = fixture
         .agent()
         .get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .header("Host", "evil.example")
         .call()
-        .expect("the positive control failed: an authenticated read must succeed here");
-    assert_eq!(ok.status(), 200, "the positive control must return 200");
+        .expect("the positive control failed: a credentialed read must still succeed");
+    assert_eq!(ok.status(), 200);
+}
 
-    let err = ureq::get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
-        .call()
-        .unwrap_err();
+/// The forwarding-header conjunct, at the wire: the request looks local, but
+/// says a proxy forwarded it, so the exemption is withheld. This is what
+/// catches nginx's own recommended snippet, caddy, traefik and
+/// `tailscale serve`, none of which the daemon can otherwise distinguish from
+/// a local caller.
+#[test]
+fn web_loopback_read_claiming_to_be_forwarded_is_401() {
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    for (name, value) in [
+        ("X-Forwarded-For", "203.0.113.1"),
+        ("X-Forwarded-Host", "dash.example"),
+        ("X-Forwarded-Proto", "https"),
+        ("Forwarded", "for=203.0.113.1"),
+        ("X-Real-IP", "203.0.113.1"),
+    ] {
+        let err = ureq::get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+            .header(name, value)
+            .call()
+            .unwrap_err();
+        assert_eq!(status_of(err), 401, "{name} must withdraw the exemption");
+    }
+}
+
+/// The exemption covers reads. `GET .../dispatch/{handle}` is a read, so
+/// every other conjunct holds -- and it is still refused, because that route
+/// spawns processes.
+#[test]
+fn web_loopback_dispatch_poll_still_needs_a_token() {
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let err = ureq::get(format!(
+        "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/dispatch/nonexistent-handle"
+    ))
+    .call()
+    .unwrap_err();
     assert_eq!(status_of(err), 401);
 }
 
@@ -4263,20 +4345,54 @@ fn sse_status_line(port: u16, request_line: &str) -> String {
     line
 }
 
-/// `EventSource` cannot set headers, so `/api/events` is the one route that
-/// also accepts the token as `?token=` -- and, like every other route
-/// (SH-187), refuses a request with neither.
+/// `/api/events` is a read on the loopback listener, so since SH-250 it is
+/// served with no token at all -- which is what lets a fresh tab at
+/// `127.0.0.1` connect its live-update channel without anyone fetching a
+/// credential. `EventSource` cannot set headers, so this is also the route
+/// that most needed the exemption: its only other way in is the `?token=`
+/// query parameter below.
 #[test]
-fn sse_without_a_token_is_401() {
+fn sse_on_loopback_needs_no_token() {
     let _sse_guard = sse_test_lock();
     let fixture = served();
 
-    // Positive control: the same route, header token present, succeeds --
-    // or the 401 below would prove nothing.
+    let served_line = sse_status_line(
+        fixture.port,
+        "GET /api/events HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(
+        served_line.contains("200"),
+        "a tokenless loopback SSE read must be served, got: {served_line:?}"
+    );
+}
+
+/// The conjunct that stops the exemption above from reaching a DNS-rebound
+/// origin. `mutation_guard_ok` never runs on a read, so before SH-250 the
+/// token was the only thing checking `Host` here -- and a rebound page is
+/// same-origin with `http://127.0.0.1:PORT`, so it can read the stream it
+/// opens. Paired with a positive control, since a 401 proves nothing on its
+/// own.
+#[test]
+fn sse_from_a_rebound_host_is_still_401() {
+    let _sse_guard = sse_test_lock();
+    let fixture = served();
+
+    let refused = sse_status_line(
+        fixture.port,
+        "GET /api/events HTTP/1.1\r\nHost: evil.example\r\nConnection: close\r\n\r\n",
+    );
+    assert!(
+        refused.contains("401"),
+        "a rebound Host must not inherit the loopback exemption, got: {refused:?}"
+    );
+
+    // The same rebound request, credentialed, is admitted exactly as it was
+    // before SH-250 -- so the 401 above is the exemption being withheld, not
+    // a new refusal of a request that used to work.
     let ok = sse_status_line(
         fixture.port,
         &format!(
-            "GET /api/events HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Storyhook-Token: {}\r\n\
+            "GET /api/events HTTP/1.1\r\nHost: evil.example\r\nX-Storyhook-Token: {}\r\n\
              Connection: close\r\n\r\n",
             fixture.token
         ),
@@ -4284,15 +4400,6 @@ fn sse_without_a_token_is_401() {
     assert!(
         ok.contains("200"),
         "the positive control must return 200, got: {ok:?}"
-    );
-
-    let refused = sse_status_line(
-        fixture.port,
-        "GET /api/events HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-    );
-    assert!(
-        refused.contains("401"),
-        "expected a 401 status line, got: {refused:?}"
     );
 }
 

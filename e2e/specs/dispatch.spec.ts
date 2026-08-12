@@ -115,22 +115,24 @@ test("Dispatch sits at the leading edge, before Delete", async ({ page }) => {
   await expect(footerButtons.nth(2)).toHaveText("Delete");
 });
 
-test("the dashboard prompts for the daemon token at load, then a dispatch runs with no second prompt (AC2)", async ({
+test("a dispatch from a tokenless tab prompts once, then runs with no second prompt (AC2)", async ({
   page,
 }) => {
   // Two dispatches to wait out here, at DISPATCH_COMPLETION_TIMEOUT apiece.
   test.setTimeout(2 * DISPATCH_COMPLETION_TIMEOUT + 30_000);
 
-  // No token seeded: SH-187 requires one for every `/api/**` route, so the
-  // app's own bootstrap sequence -- not a Dispatch click -- is what surfaces
-  // the modal now. `bootstrap()` never gets to fetch the repo list until
-  // this resolves.
+  // No token seeded, and since SH-250 none is needed to *look*: a loopback
+  // read is answered without one, so the app boots and renders the repo list
+  // with no modal in the way. This assertion is the reason that half of
+  // SH-250 cannot regress unnoticed from here either.
+  //
+  // SH-187 briefly made the app's own bootstrap surface the modal instead,
+  // and this spec asserted that. SH-250 puts it back where it was: the
+  // *Dispatch click* is what needs a credential, so it is the click that
+  // prompts.
   await page.goto("/");
-  await expect(page.locator("#token-modal")).toHaveClass(/open/);
-  await page.locator("#token-input").fill(DASHBOARD_TOKEN);
-  await page.locator("#token-submit").click();
-  await expect(page.locator("#token-modal")).not.toHaveClass(/open/);
   await expect(page.locator("#home-view")).toBeVisible();
+  await expect(page.locator("#token-modal")).not.toHaveClass(/open/);
 
   await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
   await page
@@ -142,10 +144,19 @@ test("the dashboard prompts for the daemon token at load, then a dispatch runs w
   await expect(dispatchButton).toBeVisible();
   await dispatchButton.click();
 
-  // The token is already on hand from the bootstrap prompt above -- no
-  // second modal, straight to a running dispatch. The button goes
-  // non-interactive immediately (the POST's 202 lands well
-  // under a second); the toast lands only after at least one 5s poll cycle.
+  // Dispatch is not a read, so it still needs the token: the POST is refused
+  // 401 and `api()`'s own handler opens the modal and holds the request.
+  await expect(page.locator("#token-modal")).toHaveClass(/open/);
+  await page.locator("#token-input").fill(DASHBOARD_TOKEN);
+  await page.locator("#token-submit").click();
+  await expect(page.locator("#token-modal")).not.toHaveClass(/open/);
+
+  // `api()` retries the exact request it was holding, so the dispatch runs
+  // without the user clicking Dispatch again -- the "no second prompt" half
+  // of AC2, now measured across the retry rather than across the bootstrap.
+  // The button goes non-interactive immediately (`startDispatch` marks the
+  // story in-flight before the POST, so the state survives the 401 detour);
+  // the toast lands only after at least one 5s poll cycle.
   await expect(dispatchButton).toBeDisabled();
   await expect(dispatchButton).toHaveText("Dispatching…");
   // The OTHER button disables too (the daemon dedupes a second POST by

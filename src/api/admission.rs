@@ -42,8 +42,27 @@
 //! route accepts it that way — a token in a URL lands in more places (proxy
 //! logs, browser history) than one in a header, so the exception stays as
 //! narrow as the one caller that has no alternative.
+//!
+//! # The loopback read exemption (SH-250)
+//!
+//! A **read** arriving on the loopback listener is admitted with no token, so
+//! a browser tab opened at `127.0.0.1` renders without anyone fetching a
+//! credential first. Six conjuncts have to hold — see [`token_exempt`] — and
+//! writes are not among them: every mutation still needs the token on every
+//! listener, and so does `.../dispatch`.
+//!
+//! **The guard did not, and does not, protect a read.** [`mutation_guard_ok`]
+//! runs only for a mutating method, so before this exemption the token was the
+//! *only* thing checking `Host` on `GET /api/repos/{id}/data` (every story in
+//! a project) and `GET /api/events` (every live change). Removing it from a
+//! read therefore had to *add* a `Host` check rather than lean on an existing
+//! one: a DNS-rebound page is same-origin with `http://127.0.0.1:PORT` and can
+//! read what it gets back. That is conjunct 3, and it is why this module grew
+//! a `Host` requirement on reads that it never had.
 
-use crate::api::http::{Reply, TrustedHosts, mutation_guard_ok, text_reply};
+use crate::api::http::{
+    Reply, TrustedHosts, header_value, host_is_loopback, mutation_guard_ok, text_reply,
+};
 use crate::api::rest::mutating;
 use crate::api::rpc::{constant_time_eq, token_ok};
 use crate::daemon::http1::{Header, Method};
@@ -67,6 +86,7 @@ pub fn admission(
     headers: &[Header],
     trusted_hosts: &TrustedHosts,
     token: &str,
+    loopback: bool,
 ) -> Option<Reply> {
     match segments {
         ["api", "v1", ..] => return None,
@@ -75,6 +95,9 @@ pub fn admission(
     }
     if mutating(method) && !mutation_guard_ok(headers, trusted_hosts) {
         return Some(text_reply(403, "Forbidden"));
+    }
+    if token_exempt(segments, method, headers, trusted_hosts, loopback) {
+        return None;
     }
     let is_events_stream = segments == ["api", "events"];
     let authorized = token_ok(headers, token) || (is_events_stream && query_token_ok(query, token));
@@ -85,6 +108,99 @@ pub fn admission(
         ));
     }
     None
+}
+
+/// The headers a reverse proxy adds when it forwards a request. Their mere
+/// presence retracts the loopback exemption (conjunct 4).
+///
+/// None of these is authentication and none is trusted — a caller may set any
+/// of them freely. That is exactly what makes them safe to consult here: under
+/// [`token_exempt`]'s governing rule they can only ever *withhold* the
+/// exemption, so forging one refuses nobody but the forger. What they buy is
+/// the *honest* proxy — nginx's own recommended configuration, caddy, traefik
+/// and `tailscale serve` each set at least one, which turns every one of them
+/// from silently exempt into "token required, exactly as before".
+const FORWARDING_HEADERS: [&str; 5] = [
+    "X-Forwarded-For",
+    "X-Forwarded-Host",
+    "X-Forwarded-Proto",
+    "Forwarded",
+    "X-Real-IP",
+];
+
+/// Whether this request may be admitted with **no token at all** (SH-250).
+///
+/// # The governing rule
+///
+/// **An attacker-supplied header may only withhold trust, never confer it.**
+///
+/// The single affirmative grant here is `loopback`, stamped on the listener at
+/// bind time — the one input in this function no caller can supply. Every
+/// other conjunct can only turn the exemption *off*. Keep it that way: a
+/// future edit that lets a request-borne value *grant* the exemption breaks
+/// the rule however reasonable it looks on its own, because every such value
+/// is forgeable by exactly the caller the exemption must not reach.
+///
+/// # The conjuncts, and what each one is for
+///
+/// 1. **`loopback`** — it arrived on the listener bound to `127.0.0.1`.
+/// 2. **`Get | Head`, affirmatively.** Not `!mutating(method)`: `Put`,
+///    `Options` and `Other(_)` all parse ([`Method`]) and none of them is
+///    [`mutating`], so the negative spelling would hand a future `PUT` route
+///    the exemption the day it was added, silently.
+/// 3. **`Host` is a loopback literal** — [`host_is_loopback`], deliberately
+///    *not* [`crate::api::http::host_is_trusted`], which also matches the
+///    allowlists. A configured proxy hostname must never be able to answer
+///    "is this caller local?". This is also the conjunct that keeps DNS
+///    rebinding out of the newly-tokenless read surface, which no guard has
+///    ever covered (see the module doc).
+/// 4. **No [`FORWARDING_HEADERS`]** — see that constant.
+/// 5. **No reverse-proxy allowlist is configured**
+///    ([`TrustedHosts::behind_a_proxy`]). A reverse proxy connects to this
+///    daemon *over loopback*, so an operator declaring one is telling this
+///    daemon that "arrived on loopback" has stopped meaning "came from this
+///    machine". Reading it from the `proxy` half alone is what stops a bound
+///    tailnet interface — which is not an indirection — from withdrawing the
+///    exemption on every Tailscale machine.
+/// 6. **Not `.../dispatch`.** That route spawns processes.
+///    [`crate::api::dispatch::intercept`] refuses a tokenless dispatch on its
+///    own regardless, since it is never told about the exemption and both
+///    gates fail closed — this conjunct stops *this* gate from admitting
+///    something the next one will refuse, which would be merely confusing
+///    today and load-bearing the day somebody acts on the standing note that
+///    `intercept`'s duplicated checks look redundant.
+///
+/// `/api/v1/*` needs no conjunct: [`admission`] returns before reaching here,
+/// leaving that surface entirely to [`crate::api::rpc::admission`].
+///
+/// # What is deliberately *not* relaxed
+///
+/// Every mutation, on every listener. The write surface registers projects at
+/// caller-named filesystem paths, deletes projects, and reaches `sh -c`
+/// through configured event hooks — so where this rule can be evaded (see the
+/// residual in `docs/spec/dashboard-authorization.md`) a read exemption costs
+/// disclosure where a write exemption would cost process execution.
+///
+/// (Spelled `sh -c` rather than naming the constructor: `tests/spawn_inventory.rs`
+/// scans this file's text for process spawns, and cannot tell a doc comment
+/// from a call site. Prose about spawning must not read as spawning.)
+fn token_exempt(
+    segments: &[&str],
+    method: &Method,
+    headers: &[Header],
+    trusted_hosts: &TrustedHosts,
+    loopback: bool,
+) -> bool {
+    loopback
+        && matches!(method, Method::Get | Method::Head)
+        && !trusted_hosts.behind_a_proxy()
+        && !crate::api::dispatch::is_dispatch_path(segments)
+        && !headers.iter().any(|header| {
+            FORWARDING_HEADERS
+                .iter()
+                .any(|name| header.field.equiv(name))
+        })
+        && header_value(headers, "Host").is_some_and(host_is_loopback)
 }
 
 /// Whether `query`'s `token=` value matches `token`, constant-time.
@@ -147,11 +263,12 @@ mod tests {
                 None,
                 &[],
                 &trusted_hosts(),
-                TOKEN
+                TOKEN,
+                false,
             )
             .is_none()
         );
-        assert!(admission(&[], &Method::Get, None, &[], &trusted_hosts(), TOKEN).is_none());
+        assert!(admission(&[], &Method::Get, None, &[], &trusted_hosts(), TOKEN, false).is_none());
     }
 
     #[test]
@@ -164,6 +281,7 @@ mod tests {
                 &[],
                 &trusted_hosts(),
                 TOKEN,
+                false,
             )
             .is_none(),
             "an unauthenticated /api/v1 request must pass through untouched, \
@@ -180,6 +298,7 @@ mod tests {
             &[],
             &trusted_hosts(),
             TOKEN,
+            false,
         )
         .expect("a tokenless read must be refused");
         assert_eq!(reply.status, 401);
@@ -195,6 +314,7 @@ mod tests {
                 &authed_headers(),
                 &trusted_hosts(),
                 TOKEN,
+                false,
             )
             .is_none()
         );
@@ -212,6 +332,7 @@ mod tests {
             &bad,
             &trusted_hosts(),
             TOKEN,
+            false,
         )
         .expect("a wrong token must be refused");
         assert_eq!(reply.status, 401);
@@ -228,6 +349,7 @@ mod tests {
             &[],
             &trusted_hosts(),
             TOKEN,
+            false,
         )
         .expect("an unguarded mutation must be refused");
         assert_eq!(reply.status, 403);
@@ -242,6 +364,7 @@ mod tests {
             &guard_headers(),
             &trusted_hosts(),
             TOKEN,
+            false,
         )
         .expect("a guarded-but-tokenless mutation must be refused");
         assert_eq!(reply.status, 401);
@@ -257,6 +380,7 @@ mod tests {
                 &authed_headers(),
                 &trusted_hosts(),
                 TOKEN,
+                false,
             )
             .is_none()
         );
@@ -276,6 +400,7 @@ mod tests {
             &headers,
             &trusted_hosts(),
             TOKEN,
+            false,
         )
         .expect("a spoofed Host must be refused regardless of the token");
         assert_eq!(reply.status, 403);
@@ -291,6 +416,7 @@ mod tests {
                 &[],
                 &trusted_hosts(),
                 TOKEN,
+                false,
             )
             .is_none()
         );
@@ -305,6 +431,7 @@ mod tests {
             &[],
             &trusted_hosts(),
             TOKEN,
+            false,
         )
         .expect("a wrong query token must be refused");
         assert_eq!(reply.status, 401);
@@ -319,6 +446,7 @@ mod tests {
             &[],
             &trusted_hosts(),
             TOKEN,
+            false,
         )
         .expect("a query token must not authenticate a route other than /api/events");
         assert_eq!(reply.status, 401);
@@ -340,8 +468,270 @@ mod tests {
             &empty_offered_token,
             &trusted_hosts(),
             "",
+            false,
         )
         .expect("an empty configured token must admit nothing, even to an empty offered header");
         assert_eq!(reply.status, 401);
+    }
+
+    // --- The loopback read exemption (SH-250) ---
+    //
+    // A truth table over `token_exempt`'s six conjuncts: one admitted case,
+    // then one test per conjunct falsifying that conjunct alone and asserting
+    // 401. Every conjunct is load-bearing, so every one of these fails if its
+    // conjunct is deleted as "redundant".
+
+    /// The headers a browser on this machine actually sends for a read: no
+    /// token, no `X-Storyhook` (a read never needed one), just a `Host`.
+    fn loopback_read_headers() -> Vec<Header> {
+        headers(&[("Host", "127.0.0.1:3456")])
+    }
+
+    /// A read on loopback, with no token anywhere.
+    fn loopback_read(
+        segments: &[&str],
+        method: &Method,
+        headers: &[Header],
+        trusted: &TrustedHosts,
+    ) -> Option<Reply> {
+        admission(segments, method, None, headers, trusted, TOKEN, true)
+    }
+
+    #[test]
+    fn a_loopback_read_needs_no_token() {
+        assert!(
+            loopback_read(
+                &["api", "repos"],
+                &Method::Get,
+                &loopback_read_headers(),
+                &trusted_hosts(),
+            )
+            .is_none(),
+            "the whole point of SH-250: a tab opened at 127.0.0.1 renders \
+             without anyone fetching a credential first"
+        );
+    }
+
+    #[test]
+    fn a_loopback_head_needs_no_token() {
+        assert!(
+            loopback_read(
+                &["api", "repos"],
+                &Method::Head,
+                &loopback_read_headers(),
+                &trusted_hosts(),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn the_loopback_events_stream_needs_no_token() {
+        // The route that cannot send a custom header at all (`EventSource`),
+        // which is why conjunct 3 -- the `Host` check -- has to carry it.
+        assert!(
+            loopback_read(
+                &["api", "events"],
+                &Method::Get,
+                &loopback_read_headers(),
+                &trusted_hosts(),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn conjunct_1_the_same_read_on_the_tailnet_listener_is_401() {
+        let reply = admission(
+            &["api", "repos"],
+            &Method::Get,
+            None,
+            &loopback_read_headers(),
+            &trusted_hosts(),
+            TOKEN,
+            false,
+        )
+        .expect("only the loopback listener is exempt");
+        assert_eq!(reply.status, 401);
+    }
+
+    #[test]
+    fn conjunct_2_a_loopback_put_is_not_exempt() {
+        // `Put` parses, is not `mutating`, and routes nowhere today. The
+        // affirmative `Get | Head` spelling is what stops a future PUT route
+        // from inheriting the exemption on the day it is added; `!mutating`
+        // would have handed it over silently. Deleting this test's conjunct
+        // turns that into a live hole rather than a hypothetical one.
+        let reply = loopback_read(
+            &["api", "repos"],
+            &Method::Put,
+            &loopback_read_headers(),
+            &trusted_hosts(),
+        )
+        .expect("only GET and HEAD are exempt");
+        assert_eq!(reply.status, 401);
+    }
+
+    #[test]
+    fn conjunct_3_a_loopback_read_from_a_rebound_host_is_401() {
+        // DNS rebinding: the page is same-origin with http://127.0.0.1:PORT
+        // and can read what comes back, and `mutation_guard_ok` never runs on
+        // a read -- so this conjunct is the *only* thing standing between a
+        // rebound origin and every story in the project.
+        let rebound = headers(&[("Host", "evil.example:3456")]);
+        let reply = loopback_read(&["api", "repos"], &Method::Get, &rebound, &trusted_hosts())
+            .expect("a rebound Host must not be exempt");
+        assert_eq!(reply.status, 401);
+
+        // Positive control: the same rebound request *with* the token is
+        // admitted, exactly as it was before SH-250 -- so the 401 above is the
+        // exemption being withheld, not a new refusal of a credentialed read.
+        let mut credentialed = rebound;
+        credentialed.push(Header::from_bytes("X-Storyhook-Token", TOKEN).unwrap());
+        assert!(
+            loopback_read(
+                &["api", "repos"],
+                &Method::Get,
+                &credentialed,
+                &trusted_hosts()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn conjunct_3_a_loopback_read_with_no_host_header_is_401() {
+        // An absent input can never grant. HTTP/1.0 clients may omit `Host`.
+        let reply = loopback_read(&["api", "repos"], &Method::Get, &[], &trusted_hosts())
+            .expect("a missing Host must not be exempt");
+        assert_eq!(reply.status, 401);
+    }
+
+    #[test]
+    fn conjunct_3_a_trusted_host_is_not_thereby_a_loopback_host() {
+        // The exemption asks `host_is_loopback`, never `host_is_trusted`.
+        // Here the allowlist would happily *trust* `proxy.example` for a
+        // mutation -- and it still must not read as "this caller is local".
+        // Note the allowlist's `bound` half is used, so `behind_a_proxy` is
+        // false and conjunct 5 is not what produces this 401.
+        let trusted = TrustedHosts::from_parts(vec!["proxy.example".to_string()], Vec::new());
+        let reply = loopback_read(
+            &["api", "repos"],
+            &Method::Get,
+            &headers(&[("Host", "proxy.example")]),
+            &trusted,
+        )
+        .expect("a merely-trusted Host must not be exempt");
+        assert_eq!(reply.status, 401);
+    }
+
+    #[test]
+    fn conjunct_4_any_forwarding_header_withdraws_the_exemption() {
+        for name in FORWARDING_HEADERS {
+            let mut forwarded = loopback_read_headers();
+            forwarded.push(Header::from_bytes(name, "203.0.113.1").unwrap());
+            let reply = loopback_read(
+                &["api", "repos"],
+                &Method::Get,
+                &forwarded,
+                &trusted_hosts(),
+            )
+            .unwrap_or_else(|| panic!("a request carrying {name} must not be exempt"));
+            assert_eq!(reply.status, 401, "{name}");
+        }
+    }
+
+    #[test]
+    fn conjunct_5_a_configured_proxy_allowlist_re_arms_the_token() {
+        // The first assertion anywhere that STORYHOOK_WEB_TRUSTED_HOSTS being
+        // set changes any outcome at all -- the residual SH-187 recorded and
+        // could not close.
+        let behind_proxy = TrustedHosts::from_parts(Vec::new(), vec!["proxy.example".to_string()]);
+        let reply = loopback_read(
+            &["api", "repos"],
+            &Method::Get,
+            &loopback_read_headers(),
+            &behind_proxy,
+        )
+        .expect("a declared reverse proxy must re-arm the token on loopback");
+        assert_eq!(reply.status, 401);
+    }
+
+    #[test]
+    fn conjunct_5_a_bound_host_allowlist_does_not_withdraw_the_exemption() {
+        // The test that fails against a naive `trusted_hosts.is_empty()`
+        // implementation of conjunct 5. A bound tailnet interface is an
+        // interface this daemon serves directly, not an indirection it was
+        // told about -- so on every Tailscale machine, where the allowlist is
+        // non-empty with zero proxies configured, loopback stays exempt.
+        let tailnet_bound = TrustedHosts::from_parts(
+            vec![
+                "100.71.206.33".to_string(),
+                "psamathe.tail983f02.ts.net".to_string(),
+            ],
+            Vec::new(),
+        );
+        assert!(
+            loopback_read(
+                &["api", "repos"],
+                &Method::Get,
+                &loopback_read_headers(),
+                &tailnet_bound,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn conjunct_6_a_loopback_dispatch_poll_is_not_exempt() {
+        // `GET .../dispatch/{handle}` is a read, so every other conjunct
+        // holds -- this one is what refuses it. `dispatch::intercept` would
+        // refuse it too; this keeps the two gates from disagreeing.
+        let reply = loopback_read(
+            &[
+                "api", "repos", "proj", "story", "SH-1", "dispatch", "h4nd1e",
+            ],
+            &Method::Get,
+            &loopback_read_headers(),
+            &trusted_hosts(),
+        )
+        .expect("the process-spawning route is never exempt");
+        assert_eq!(reply.status, 401);
+    }
+
+    #[test]
+    fn a_loopback_mutation_still_needs_the_token() {
+        // The exemption is for reads. The write surface registers projects at
+        // caller-named paths, deletes projects, and reaches `sh -c` through
+        // event hooks, so it keeps its credential on every listener.
+        let reply = admission(
+            &["api", "repos", "x", "story"],
+            &Method::Post,
+            None,
+            &guard_headers(),
+            &trusted_hosts(),
+            TOKEN,
+            true,
+        )
+        .expect("a loopback mutation must still be refused without the token");
+        assert_eq!(reply.status, 401);
+    }
+
+    #[test]
+    fn the_exemption_relaxes_the_token_and_never_the_guard() {
+        // If this ever returns 200, `mutation_guard_ok` has been dissolved
+        // along with the token and the CSRF / DNS-rebinding defence is gone.
+        // The story asked for exactly this test.
+        let reply = admission(
+            &["api", "repos", "x", "story"],
+            &Method::Post,
+            None,
+            &[],
+            &trusted_hosts(),
+            TOKEN,
+            true,
+        )
+        .expect("an unguarded loopback mutation must be refused");
+        assert_eq!(reply.status, 403);
     }
 }

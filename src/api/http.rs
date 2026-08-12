@@ -582,6 +582,80 @@ mod tests {
         assert!(!host_is_trusted("evil.tail983f02.ts.net", &hosts));
     }
 
+    // --- host_is_loopback, and the provenance split (SH-250) ---
+
+    #[test]
+    fn host_is_loopback_accepts_every_spelling_of_loopback() {
+        for host in [
+            "127.0.0.1",
+            "127.0.0.1:3456",
+            "localhost",
+            "LOCALHOST:3456",
+            "[::1]",
+            "[::1]:3456",
+            "localhost.",
+        ] {
+            assert!(host_is_loopback(host), "{host} names loopback");
+        }
+    }
+
+    #[test]
+    fn host_is_loopback_rejects_everything_else_including_a_trusted_host() {
+        // The last two are the point of the predicate existing: a tailnet
+        // FQDN and a configured proxy name are both *trusted* for a mutation,
+        // and neither means "this caller is local". `host_is_trusted` says
+        // yes to them; this must say no.
+        for host in [
+            "evil.example",
+            "evil.example:3456",
+            "",
+            "127.0.0.2",
+            "psamathe.tail983f02.ts.net",
+            "proxy.example",
+        ] {
+            assert!(!host_is_loopback(host), "{host} does not name loopback");
+        }
+    }
+
+    #[test]
+    fn behind_a_proxy_is_false_for_a_bind_only_allowlist() {
+        // The regression test for the naive implementation of SH-250's
+        // conjunct 5. On every Tailscale machine the allowlist is non-empty
+        // with zero proxies configured, so `!is_empty()` would report a proxy
+        // that does not exist and withhold the loopback exemption from the
+        // one machine class most likely to want it.
+        let bound_only = tailnet_trusted_hosts();
+        assert!(!bound_only.behind_a_proxy());
+        assert!(bound_only.allows("psamathe.tail983f02.ts.net"));
+    }
+
+    #[test]
+    fn behind_a_proxy_is_true_only_for_the_env_derived_half() {
+        let proxied = TrustedHosts::from_parts(Vec::new(), vec!["proxy.example".to_string()]);
+        assert!(proxied.behind_a_proxy());
+        assert!(proxied.allows("proxy.example"));
+    }
+
+    #[test]
+    fn a_late_bound_host_cannot_change_the_proxy_verdict() {
+        // `add_bound` is the late tailnet bind (SH-146), the only thing that
+        // widens an allowlist after startup. It must never be able to flip
+        // `behind_a_proxy` in either direction, or an authorization decision
+        // would change mid-daemon-life on a self-heal.
+        let mut bound_only = TrustedHosts::for_daemon(Vec::new());
+        let before = bound_only.behind_a_proxy();
+        bound_only.add_bound(["100.71.206.33".to_string()]);
+        assert_eq!(bound_only.behind_a_proxy(), before);
+        assert!(bound_only.allows("100.71.206.33"));
+
+        let mut proxied = TrustedHosts::from_parts(Vec::new(), vec!["proxy.example".to_string()]);
+        proxied.add_bound(["100.71.206.33".to_string()]);
+        assert!(
+            proxied.behind_a_proxy(),
+            "a late bind must not retire a configured proxy"
+        );
+    }
+
     #[test]
     fn request_query_extracts_everything_after_the_first_question_mark() {
         assert_eq!(
