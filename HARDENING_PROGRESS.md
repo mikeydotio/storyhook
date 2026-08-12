@@ -10220,3 +10220,115 @@ tradeoff.
 carve-out from the pre-push test hook.
 
 **Next:** run `story next` fresh.
+
+### SH-205 — done, 2026-08-11/12
+
+**Outcome:** `story next` surfaced SH-205 next, matching this run's own
+"unresolved, low priority" queue. Filed as the deliberately-deferred write-path
+UX half of SH-126's council verdict ("should dropping a card into Blocked, or
+`story block` generally, prompt for or require an `awaiting` reason?") — the
+story's own text named this a genuine design question, not a bug, and asked
+for `council:council-vote` if the tradeoffs weren't obvious. They weren't.
+
+**Council, unanimous 3-0 in round 1 — no deliberation round needed.** Panel:
+ux-designer-web, software-architect, skeptic (mirroring SH-126's own panel).
+Full audit trail: `.council/sh205-block-reason-capture/DECISION.md`
+(gitignored, not in the PR diff). Two of the three round-1 proposals
+(ux-designer-web's and software-architect's) independently recommended
+teaching `story block`/`POST /block` to also flip state to `blocked`, closing
+what looked like a confusing two-mechanism split — `state==blocked` and
+`awaiting.is_some()` are today two *independent* signals `is_ready` checks
+(SH-126), and getting a fully-explained blocked card takes two separate
+writes. The third proposal (skeptic) investigated the dashboard's story
+drawer directly first and found `buildBlockForm` — a real, already-shipped,
+undocumented affordance that calls `/block` with only `{reason}`, deliberately
+**without** moving the card, so a still-active story can be flagged as
+stalled without evicting it from its column. When all three proposals were
+shown in the round-1 vote, both losing authors reversed their own votes on
+sight of that code evidence: unifying `block` with a state change would have
+silently regressed a real feature. A genuine mind-change driven by
+verification, not deference — worth naming since it's the clearest instance
+this run has logged of the vote phase actually doing its job rather than
+rubber-stamping round 1.
+
+**Decided (implementation notes were part of the council's own output, not
+improvised after):** `story move <id> blocked --reason "<text>"` /
+`POST .../move`'s optional `reason` sets `awaiting` atomically with the state
+change, threaded through `set_state`'s existing private `extra: Vec<StoryEvent>`
+batching seam — the same one `comment` already uses, so this reuses an
+already-hardened atomicity guarantee rather than inventing a second one.
+Strictly opt-in: every unmodified caller (scripts, agents, CI, this run's own
+`story move <id> blocked` calls) sees zero behavior change — the non-interactive
+contract holds by construction, not by convention. Refused when combined with
+a move to a CLOSED state, since closing already clears `awaiting`
+unconditionally (`state_transition_events`) — setting one in the same breath
+it gets cleared has no coherent meaning. `story block`/`POST /block` stay
+completely untouched. Dashboard: dropping a card into Blocked opens a
+skippable inline modal for the reason — Skip, the backdrop, or Escape all
+still complete the move, matching the council's explicit verdict that
+write-time capture is a human-legibility nicety, never a gate on the drop
+itself. A card left blocked with no reason gets a distinct "● blocked (no
+reason)" badge. `story doctor` gained a matching informational notice
+(`state==blocked && awaiting==None`), mirroring SH-242's active-role notice in
+shape and severity: never contributes to `report()`'s health verdict,
+`fix()`'s outcome, or the exit code.
+
+**TDD across every layer.** Service: `set_state`'s new `awaiting` parameter —
+sets both atomically, refuses a blank reason (mirroring `set_awaiting`'s own
+validation), refuses combined with a closed target, leaves an unmodified call
+byte-for-byte unchanged (`tests/service_story.rs`). CLI: `--reason` parsing —
+either order with `--if-state`, requires a value, a typoed flag is refused
+and names the real one, the existing "comment past the leading flag run is
+inert text" regression extended to cover `--reason` too
+(`tests/move_reason.rs`, mirroring `move_if_state.rs`'s own pattern). REST:
+`/move`'s optional `reason`, the closed-state refusal surfaces as 422
+(`tests/web_test.rs`). Doctor: notice fires/silent/one-line-per-story/never-
+guesses-a-reason (`tests/required_states.rs`). Dashboard: a new Playwright
+spec drives a **real drag-and-drop in a real browser** — submit a reason,
+skip, dismiss via Escape — all three verified moving the card and setting (or
+not setting) `awaiting` correctly (`e2e/specs/blocked-drop-reason.spec.ts`).
+This is the first e2e spec in the suite to exercise actual HTML5
+drag-and-drop rather than driving state changes through the drawer's own
+controls — no precedent existed for it working reliably here; it did, first
+try, no flakiness across two full runs.
+
+**One real bug caught by running the e2e spec for real, not the feature.**
+The first draft asserted `.banner-blocked` renders exactly `"Blocked:
+waiting on SH-9"` — failed, because that div also carries the pre-existing
+"Unblock" button, whose text playwright's `toHaveText` folds in
+(`"Blocked: waiting on SH-9Unblock"`). Fixed by switching to `toContainText`;
+`drawer-detail-race.spec.ts` already used that form for the same element,
+which the new spec should have matched from the start rather than
+rediscovering the hard way.
+
+**Naming collision avoided, not created.** The new drop-into-Blocked modal
+was drafted with ids `block-reason-*`, which would have read as the *same*
+mechanism as the pre-existing drawer's `buildBlockForm` (`dataset.field:
+"block-reason"`, no `id`) to a future reader skimming `grep`. Renamed to
+`drop-blocked-reason-*` (HTML ids and the JS functions/vars alike) before
+landing — two related but genuinely distinct features now read as distinct
+in the source.
+
+**The gate, once clean, once caught by its own first step.** First `make
+test` run failed immediately on `cargo fmt --all -- --check` — test edits
+made after an earlier `cargo fmt` pass (over `src/` only) had drifted.
+Re-ran `cargo fmt --all`, confirmed clean, restarted. Second run green end to
+end, supervised (log-growth heartbeat, 120s stall bound): 142 `test result:
+ok` blocks, 0 `FAILED`, 0 clippy warnings, plugin suite 29/29, e2e **48/48**
+(45 pre-existing + this story's 3 new). No wedge either run.
+
+**No version bump** — left for the next batched `/semver` pass per this
+run's standing practice.
+
+**PR:** #275, three commits (`feat(cli)`, `feat(doctor)`, `feat(web)` — each
+independently coherent, matching this story's own layered scope rather than
+a two-hats split since none of the three is a refactor of another), merged
+as `9d91f41` (`gh pr view` confirmed `MERGED`), fast-forwarded onto `main` in
+this checkout. `Closes SH-205.` in the first commit's body auto-closed the
+story on merge — confirmed via `story show SH-205 --json` reporting
+`state: done` immediately after, same mechanism SH-126/SH-236/SH-242 all
+exercised.
+
+**Council:** convened, unanimous — see above.
+
+**Next:** run `story next` fresh.
