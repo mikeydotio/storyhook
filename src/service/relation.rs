@@ -12,6 +12,16 @@
 //! transaction. The store keeps the relations *table* symmetric by
 //! construction; what this module guarantees is the thing the store cannot,
 //! which is that both *histories* agree.
+//!
+//! [`RelationService::relate`]'s `a` is the story the command is about, and
+//! stays under [`super::resolve_open_story`]'s full closed-story guard, same
+//! as every other write. `b` is a target, not a subject: a still-open story
+//! is allowed to record a relationship onto a closed one (SH-207) — for every
+//! kind except `parent-of`/`child-of`, where a closed epic gaining a new open
+//! child would move that epic's own displayed progress after it already
+//! closed, so `b` stays guarded in exactly the role that would cause that.
+//! Removal never grows a closed story's scope, so it has no such exception:
+//! `unrelate` relaxes `b` uniformly, for every kind and every role.
 
 use crate::domain::{
     StoryEvent, StoryRelation, StorySnapshot, relation_edges, would_create_parent_cycle,
@@ -20,7 +30,7 @@ use crate::error::AppError;
 use crate::event_hooks::HookEventType;
 use crate::store::{ExpectedSeq, ReadOps, Store};
 
-use super::{Ctx, append_and_fold, project_prefix, query, resolve_open_story};
+use super::{Ctx, append_and_fold, project_prefix, query, resolve_open_story, resolve_story};
 
 /// What [`RelationService::relate`] did.
 #[derive(Clone, Debug)]
@@ -69,11 +79,49 @@ impl<'ctx, S: Store> RelationService<'ctx, S> {
             // `story relate SH-9 relates-to SH-9` on a project with no SH-9
             // reports the missing story, not the loop.
             let (a_no, a_row) = resolve_open_story(&*tx, project, &prefix, a)?;
-            let (b_no, b_row) = resolve_open_story(&*tx, project, &prefix, b)?;
+            // `b` is the target, not the story the command is about: guarding
+            // it exactly like `a` blocked a living story from ever recording
+            // a relationship to one that has closed (SH-207) — the
+            // asymmetric-relation failure this module exists to prevent,
+            // reached from the opposite direction. So `b`'s existence is
+            // resolved unconditionally here; whether it must also be open
+            // depends on the role it is about to take, decided below once
+            // `edges` is known.
+            let (b_no, b_row) = resolve_story(&*tx, project, &prefix, b)?;
             if a == b {
                 return Err(AppError::Validation(
                     "stories cannot relate to themselves".to_string(),
                 )
+                .into());
+            }
+
+            let edges = relation_edges(relation).ok_or_else(|| {
+                AppError::Validation(format!("unsupported relationship `{relation}`"))
+            })?;
+
+            // `parent-of`/`child-of` is the one pair where relaxing `b`
+            // unconditionally is not safe: a closed epic's displayed progress
+            // rollup (`compute_progress`) is recomputed from every
+            // `parent-of` edge with no guard on the epic's own superstate, so
+            // letting a closed epic gain a NEW open child would change that
+            // epic's own numbers after it already closed. Attaching a closed
+            // story as a child of a still-open epic carries no such risk.
+            // What decides it is the role `b` is about to take, not which
+            // literal the caller typed first — read off `edges` rather than
+            // the input string, since `relation_edges` assigns "parent" by
+            // verb, so both phrasings of "attach a new child to a closed
+            // epic" hit this the same way. Removal never grows a closed
+            // story's scope, so `remove` always skips this guard, mirroring
+            // `resolve_open_story`'s exemption for every other relation kind.
+            if !remove
+                && b_row.archived
+                && edges
+                    .iter()
+                    .any(|(_, b_relation)| *b_relation == "parent-of")
+            {
+                return Err(AppError::Validation(format!(
+                    "story `{b}` is closed and cannot be modified"
+                ))
                 .into());
             }
 
@@ -88,10 +136,6 @@ impl<'ctx, S: Store> RelationService<'ctx, S> {
                     &b_row.snapshot,
                 )?;
             }
-
-            let edges = relation_edges(relation).ok_or_else(|| {
-                AppError::Validation(format!("unsupported relationship `{relation}`"))
-            })?;
 
             let mut a_events = Vec::new();
             let mut b_events = Vec::new();
