@@ -11957,3 +11957,93 @@ that any future claim about a browser's durable stores must be re-run by hand
 against a real browser and **never inferred from a green suite**, because
 Playwright's chromium writes no History database and would answer green to a
 question it never asked.
+
+### SH-254 — the dashboard holds a scoped capability, not the master token · PR #317 · merged
+
+**Outcome:** done. Four commits, gate green (3400+ Rust tests, 98 browser specs).
+
+**What it closes.** SH-251 handed the browser the daemon's master token and said
+so in its own module doc — *"it is not least privilege"* — and its council named
+the consequence in one sentence: *"a dashboard tab can delete every project on
+the machine."* It could also reach `POST /api/v1/invoke`, which runs every verb
+the CLI has, and the token was spendable for **writes from any tailnet peer** for
+the daemon's whole run. Redemption issues a scoped capability now. The transport
+did not move: the same five conjuncts in the same order decide a redemption, and
+the only change in `handoff.rs` is that `redemption_admitted` returns the
+`LocalRequest` it already built instead of a `bool`.
+
+**Council:** yes, and it was worth it. Round 1 split 1-2-0; deliberation moved
+**all three seats** and collapsed the split into three variants of one design;
+the runoff was unanimous on first preference. Two things the panel settled
+against code rather than preference are worth recording, because both were
+wrong in the brief the chair wrote:
+
+- The security seat's `X-Storyhook-Scope: denied` header was refuted twice
+  independently — `Reply` carries no header field, so it would have threaded a
+  new one through `finish` and every reply path. A JSON `code` marker instead.
+- The skeptic's headline correction — *don't widen the locality source-scan* —
+  was refuted by the architect: the scan matches the bare string `LocalRequest`,
+  so a registry that merely **takes** a witness turns it red from `session.rs`
+  whoever derives it. The refusal bought nothing and cost a second
+  `local_request` call in the hot gate.
+
+The skeptic seat also **inverted its own proposal** in deliberation. It had
+argued for a wide scope on the grounds that a loopback tab holding the master
+token can run every CLI verb through `/api/v1/invoke` — then wrote that the fact
+cuts the other way: *every drop into the master-token fallback hands a browser
+tab the entire CLI, so the fallback must be rare, not the capability wide.* That
+is SH-251's pattern repeating deliberately rather than by luck: a seat changing
+its mind on a fact it went and checked.
+
+**The scope, and the honest claim.** `Session` covers the board's own work;
+`MasterToken` covers project create, project delete and dispatch, plus every
+route this daemon does not have (so a holder cannot map the surface by
+403-versus-404); `/api/v1/*` is out **by topology** rather than by a rule.
+Presenting a capability requires a `LocalRequest`, so it is worth nothing off
+this machine — the largest single thing the story takes away.
+
+And it reaches `sh -c`, which the spec says in as many words: every write it
+authorizes fires the project's configured hooks. That is not prose. It is
+`session_capability.rs::a_capability_authorized_move_fires_the_projects_shell_hook`,
+which configures a real hook, moves a story with nothing but a capability, and
+asserts the shell ran. The story's own standard: *"Shipping a false security
+claim is worse than shipping a narrow one."*
+
+**Two hats, held.** The router had to become a classified table for the scope to
+be construction-enforced — ~30 arms of the most security-load-bearing routing in
+the daemon. So: commit 1 was ~95 characterization rows written **before anything
+moved**, covering the four regressions the council named (the
+`(Post, _) => 404` vs `_ => 405` asymmetry, project resolution before routing,
+every `guarded` wrapper's 403/415, and `Routed::changing` vs `quiet` — the last
+not observable on the wire, which is why the table drives `route` in process).
+Commit 2 moved the router with that file **byte-unmodified**, which `git diff
+--stat -- tests/rest_routing.rs` reports as empty and is the whole proof the
+refactor preserved behaviour. Commits 3 and 4 were the capability and the spec.
+
+**Two mutations, run rather than assumed.** A `_ => Authority::Session` arm and
+a declared-but-unprobed route variant were each introduced and confirmed to turn
+the source-scanning guards red, then reverted. The second one also produced a
+better result than expected: the router refused to *compile*, which is the
+compile-time half of the guarantee demonstrating itself.
+
+**What is byte-unmodified, and why that mattered.** `token_ok`,
+`constant_time_eq` and `token_exempt`, as the story required — and SH-250's and
+SH-251's own truth tables too, via test-local helpers that shadow the widened
+functions. Those tests are about the three decisions that come *before* a
+capability is consulted, and an unmodified diff is the only cheap proof this
+story did not weaken them. Worth reusing: widening a function's signature does
+not have to cost the byte-identity of the tests that pin its old behaviour.
+
+**Deviation from the verdict, recorded in the spec.** The third binding
+amendment asked `classify` to call `dispatch::is_dispatch_path`. It does not:
+importing `dispatch` would have cost `routes.rs` the dependency-free property
+the panel ranked it first for. The verdict's own agreement test carries the
+guarantee instead.
+
+**Supervision:** three `make test` runs (baseline, post-refactor, final), each
+backgrounded under the log-growth heartbeat with a 120s stall bound. No stalls,
+no wedges, all exit 0. One aborted early — killed deliberately two seconds in,
+to fix two clippy warnings rather than let a doomed run finish. `target/` is at
+54 GB with 205 GB free; worth watching, not yet a problem.
+
+**Filed nothing new.** SH-255 was already filed and is next in the queue.
