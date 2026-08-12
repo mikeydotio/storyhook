@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { deleteStory, seedToken } from "./support";
+import { cleanUpCreatedStories, deleteStory, seedToken } from "./support";
 
 /**
  * Exercises SH-44: the "+ New" create-story modal preselects the project's
@@ -19,6 +19,8 @@ import { deleteStory, seedToken } from "./support";
  *     have. This spec's job is to prove the modal reads them from the
  *     catalog rather than assuming they'd always be those values regardless.
  */
+
+cleanUpCreatedStories("Alpha Project");
 
 test.beforeEach(async ({ page }) => {
   await seedToken(page);
