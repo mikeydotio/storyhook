@@ -318,6 +318,55 @@ pub fn wait_for_addr(addr: &str) {
     }
 }
 
+/// The port the daemon with pid `pid` bound, once it has published one.
+///
+/// **This is where the pid the client will talk to is checked against the pid
+/// the test armed.** The portfile is how a client finds a daemon, so a portfile
+/// naming somebody else is a client about to send its work to the wrong process
+/// — caught before the command is sent rather than inferred afterwards from a
+/// corpse.
+///
+/// Read from the portfile rather than remembered from the reservation, because
+/// the reservation is only a *preference*: [`bind_preferred`] falls back to a
+/// kernel-assigned port, and a test that waited on the number it asked for would
+/// wait forever on the day that fallback fired.
+///
+/// For the spawns this crate cannot wait on: `daemon --serve` and `web --serve`
+/// run the daemon in the calling process and never return, so there is no exit
+/// to synchronise with and the portfile is the only readiness signal there is. A
+/// client-side `start` needs none of this — it blocks until the daemon is
+/// healthy, so its portfile is already there when it returns.
+///
+/// [`bind_preferred`]: storyhook::daemon::lifecycle::bind_preferred
+pub fn port_of(env: &crate::env::TestEnv, pid: u32) -> u16 {
+    let deadline = Instant::now() + PORTFILE_DEADLINE;
+    loop {
+        match env.daemon() {
+            Some(info) if info.pid == pid => return info.port,
+            other => assert!(
+                Instant::now() < deadline,
+                "the daemon this test armed (pid {pid}) never became the one a client would \
+                 find. The portfile names {:?} — if that is another daemon, the command below \
+                 would go to it and the armed process would never run the work.",
+                other.map(|info| info.pid),
+            ),
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// How long a hand-spawned daemon has to publish its portfile.
+///
+/// **Chosen, not derived**, in the sense [`ACCEPT_DEADLINE`] documents that
+/// phrase for — but not arbitrary: a daemon binds its listeners before it
+/// publishes, and `bind_listeners` probes the tailnet on the way, which is
+/// bounded at `TAILNET_PROBE_TIMEOUT` (3s). A `tailscale` wedged for the whole
+/// probe therefore delays publication by that much and no more; measured at
+/// 3.36s against a `tailscale` shim that sleeps for two minutes. The rest is
+/// margin for process start, and what is being told apart is "published
+/// somewhere else" from "never published at all".
+const PORTFILE_DEADLINE: Duration = Duration::from_secs(10);
+
 /// Sends `GET /` and returns the response's status line, or `None` while the
 /// server is not answering. A read timeout is essential: the failure this
 /// exists to catch is a listener that accepts the connection and then says
