@@ -542,18 +542,31 @@ If the `web-serve` tool is present on your `PATH` (coderig/agentsmith environmen
 
 ### Security
 
-Every dashboard request — reads and writes alike, on both `127.0.0.1` and your tailnet
-IP — requires the daemon's bearer token. Get it with:
+Every dashboard request requires the daemon's bearer token, with one exception: a
+**read** arriving on `127.0.0.1` is answered without one, so opening the dashboard
+locally just works. Writes always need it, on every interface, and so does everything
+reached over your tailnet IP — reads included. Get it with:
 
 ```bash
 story daemon token
 ```
 
-The dashboard's own page prompts for it on first load and holds it in
+On a terminal that also copies it to your clipboard and says so on stderr; over SSH or
+Mosh it reaches the clipboard of the machine you're actually sitting at, via OSC 52.
+Piped or redirected, it prints the bare token and nothing else, so
+`TOKEN=$(story daemon token)` is safe.
+
+The dashboard's own page asks for it the first time a request needs one and holds it in
 `sessionStorage` (gone when the tab closes; entering it again after a browser restart
 or a daemon restart — the token rotates then — is expected). Anything that can't
 supply it, including a peer on your tailnet that only knows how to forge the checks
 below, is refused.
+
+The loopback read exemption is narrow on purpose. It applies only when the request is a
+`GET`/`HEAD`, its `Host` is a loopback literal, it carries no `X-Forwarded-*` /
+`Forwarded` / `X-Real-IP` header, it isn't the dispatch endpoint, and no reverse-proxy
+allowlist is configured. Any one of those failing means the token is required exactly as
+before. Full reasoning: [`docs/spec/dashboard-authorization.md`](docs/spec/dashboard-authorization.md).
 
 Mutating requests (creating or deleting a project; creating, moving, editing, or deleting a story) additionally require:
 
@@ -564,13 +577,25 @@ These two checks alone are not authentication — anything that can set two head
 
 `GET /` is the one exception, reachable with no token at all: it serves the dashboard's own page, which is what prompts for the token in the first place. `GET /api/events` (the live-update stream) accepts the token as a `?token=` query parameter as well as a header, since a browser's `EventSource` API cannot set headers — no other route accepts it that way.
 
-If you reverse-proxy the dashboard under a different hostname (e.g. via `web-serve`) and want writes to work there too, set `STORYHOOK_WEB_TRUSTED_HOSTS` to a comma-separated allowlist before starting the server:
+### Reverse-proxying the dashboard
+
+**Set `STORYHOOK_WEB_TRUSTED_HOSTS` before you put any reverse proxy in front of this
+daemon.** It is security-load-bearing, not a convenience:
 
 ```bash
-STORYHOOK_WEB_TRUSTED_HOSTS=my-tailnet-host story web start
+STORYHOOK_WEB_TRUSTED_HOSTS=my-proxy-host story web start
 ```
 
-This only widens the `Host` allowlist for writes — it does not change what the server binds, and a proxied caller still needs the token like any other caller. Only set it to hostnames that are themselves no more exposed than your tailnet.
+It does two things. It widens the `Host` allowlist so writes work under the proxy's own
+hostname — its original purpose — and it **switches off the loopback read exemption**,
+because a reverse proxy connects to the daemon over loopback, so "arrived on
+`127.0.0.1`" stops meaning "came from this machine" the moment one exists.
+
+If you skip it, a proxy that rewrites `Host` to the upstream address and forwards no
+`X-Forwarded-*` headers — which is nginx's default for `proxy_pass http://127.0.0.1:PORT`
+— is indistinguishable from a local caller, and your read surface is exposed to whoever
+can reach the proxy. The daemon says which posture it is in on startup. Only list
+hostnames that are themselves no more exposed than your tailnet.
 
 ## Automation and scripting
 
