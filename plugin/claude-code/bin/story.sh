@@ -278,11 +278,28 @@ require_story() {
 # and $PROJECT_SLUG is pinned at that moment, which is what keeps every call
 # after the cd talking about the project the caller named rather than the one
 # the new directory would answer for.
+# story_cli [--actor <label>] <args...> — the CLI, scoped to $PROJECT_SLUG.
+#
+# **Declares who is writing** (SH-246). Storyhook records the command it
+# dispatched against every event, but this script's claim and its
+# claim-rollback are both `story move` — indistinguishable in a trail without
+# something more. That ambiguity is exactly what made SH-239's reversion take a
+# store dump and three source files to explain, so every write here says which
+# code path it came from.
+#
+# The label is per-call rather than exported once: a script-wide value would say
+# only "story.sh", which is the part a reader can already infer. `--actor` must
+# lead, and is consumed here rather than passed on.
 story_cli() {
+  local cli_actor="${STORY_ACTOR_DEFAULT:-story.sh}"
+  if [ "$1" = "--actor" ]; then
+    cli_actor="story.sh:$2"
+    shift 2
+  fi
   if [ -n "$PROJECT_SLUG" ]; then
     set -- --project "$PROJECT_SLUG" "$@"
   fi
-  "$STORY" "$@"
+  STORYHOOK_ACTOR="$cli_actor" "$STORY" "$@"
 }
 
 # _load_ready_stories — `story list --ready --json` into $_READY_JSON, or a hard
@@ -525,7 +542,7 @@ dispatch_ready_note() {
 claim_rollback_note() {
   local id="$1" pre_state="$2"
   local rb_json rb_result
-  rb_json=$(story_cli move "$id" "$pre_state" --if-state in-progress --json 2>/dev/null) || true
+  rb_json=$(story_cli --actor dispatch-rollback move "$id" "$pre_state" --if-state in-progress --json 2>/dev/null) || true
   rb_result=$(printf '%s' "$rb_json" | jq -r '.result // ""' 2>/dev/null || printf '')
   if [ "$rb_result" = "ok" ]; then
     printf ' Rolled the claim back to `%s`.' "$pre_state"
@@ -644,7 +661,7 @@ cmd_dispatch() {
 
   if [ -z "$DRY_RUN" ]; then
     local move_json move_result
-    move_json=$(story_cli move "$id" in-progress --if-state "$state" --json 2>/dev/null) || true
+    move_json=$(story_cli --actor dispatch move "$id" in-progress --if-state "$state" --json 2>/dev/null) || true
     move_result=$(printf '%s' "$move_json" | jq -r '.result // ""' 2>/dev/null || printf '')
     case "$move_result" in
       ok)

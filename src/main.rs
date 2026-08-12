@@ -319,11 +319,32 @@ fn main() {
     // `invoke::failure_is_silent`: `story session-start` answers `{}` rather
     // than putting a diagnosis it cannot avoid into a model's context window.
     let silent_on_failure = storyhook::invoke::failure_is_silent(&invocation);
+    // Read here for the same reason `$STORYHOOK_PROJECT` is: it belongs to the
+    // caller's shell, and a daemon reading it directly would label every write
+    // with whatever the process that happened to start it had exported
+    // (SH-246). Refused rather than sanitized, and refused *before* the request
+    // is built, so a malformed label costs the caller nothing but a fixable
+    // error message — the alternative is a store that quietly holds something
+    // the caller did not say.
+    let actor = match env::var(storyhook::domain::provenance::ACTOR_VAR) {
+        Ok(raw) => match storyhook::domain::provenance::ActorLabel::parse(&raw) {
+            Ok(actor) => actor,
+            Err(error) => fail(
+                &storyhook::error::AppError::Validation(error.to_string()),
+                json,
+            ),
+        },
+        // A variable that is absent, or holds bytes this platform cannot
+        // decode, is simply no declaration. Refusing on non-UTF-8 would fail
+        // commands over a label nothing needs.
+        Err(_) => None,
+    };
     let request = InvokeRequest::new(invocation)
         .no_hooks(flags.no_hooks)
         .stdin(piped)
         .project(selector)
-        .github_token(github_token);
+        .github_token(github_token)
+        .actor(actor);
     let depth = storyhook::event_hooks::depth_from_env();
     // **The CLI's only door.** There was a second — `--local`, which built a
     // `StoreInvoker` here and ran the work in this process — and it is gone

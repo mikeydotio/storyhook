@@ -164,6 +164,17 @@ pub const MIGRATIONS: &[Migration] = &[
         // CHECK. Migration 5's `events_reject_delete` warning does not apply.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 13,
+        name: "event_provenance",
+        sql: include_str!("schema/0013_event_provenance.sql"),
+        // Two `ALTER TABLE ... ADD COLUMN` on `events`, both NULL-able and
+        // neither backfilled — see the migration's own header for why the NULLs
+        // are the point. Nothing is rebuilt, so migration 5's
+        // `events_reject_delete` warning does not apply, and the append-only
+        // triggers are untouched: adding a column is not an UPDATE of a row.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

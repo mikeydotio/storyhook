@@ -30,6 +30,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cli::MemberInput;
+use crate::domain::provenance::Provenance;
 use crate::domain::{
     FieldEdit, Member, StateChanges, StateDef, StateUsage, StoryEvent, SuperState, TypeChanges,
     TypeDef, validate_required_states, validate_state_defs_for_write, validate_type_glyph,
@@ -196,7 +197,14 @@ impl<'ctx, S: Store> ConfigService<'ctx, S> {
                     "change the superstate of",
                 )?
             {
-                moved = migrate_occupants(tx, project, slug, &destination, &now)?;
+                moved = migrate_occupants(
+                    tx,
+                    project,
+                    slug,
+                    &destination,
+                    &now,
+                    self.ctx.provenance(),
+                )?;
             }
 
             write_states(tx, project, &next_states)?;
@@ -258,7 +266,7 @@ impl<'ctx, S: Store> ConfigService<'ctx, S> {
             if let Some(destination) =
                 resolve_migration(tx, project, &retained, slug, move_stories_to, "remove")?
             {
-                moved = migrate_occupants(tx, project, slug, &destination, &now)?;
+                moved = migrate_occupants(tx, project, slug, &destination, &now, self.ctx.provenance())?;
             }
             write_states(tx, project, &retained)?;
             Ok(moved)
@@ -569,6 +577,7 @@ fn migrate_occupants(
     from: &str,
     to: &StateDef,
     now: &str,
+    provenance: &Provenance,
 ) -> Result<usize, AppError> {
     let prefix = project_prefix(&*tx, project)?;
     let states = tx.state_map(project)?;
@@ -596,6 +605,7 @@ fn migrate_occupants(
             &states,
             ExpectedSeq::Exact(row.head_seq),
             &events,
+            provenance,
         )?;
     }
     Ok(occupants.len())

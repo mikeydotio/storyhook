@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::domain::provenance::Provenance;
 use crate::domain::{StateDef, StoryEvent, SuperState, TypeDef};
 use crate::error::AppError;
 use crate::output::{DeletePlan, SetPrefixPlan};
@@ -1100,6 +1101,7 @@ pub struct ProjectService<'a, S: Store> {
     store: &'a S,
     root: PathBuf,
     clock: Clock,
+    provenance: Provenance,
 }
 
 impl<'a, S: Store> ProjectService<'a, S> {
@@ -1109,6 +1111,7 @@ impl<'a, S: Store> ProjectService<'a, S> {
             store,
             root: root.into(),
             clock: Clock::System,
+            provenance: Provenance::unrecorded(),
         }
     }
 
@@ -1116,6 +1119,19 @@ impl<'a, S: Store> ProjectService<'a, S> {
     #[must_use]
     pub fn clock(mut self, clock: Clock) -> Self {
         self.clock = clock;
+        self
+    }
+
+    /// Sets who is performing this service's writes (SH-246).
+    ///
+    /// A field rather than a [`Ctx`] borrow because this service deliberately
+    /// has no context: it is the one that brings a project *into being*, so it
+    /// runs before there is a project to be a context for. Left unset it writes
+    /// [`Provenance::unrecorded`], which is what a fixture calling it directly
+    /// honestly is.
+    #[must_use]
+    pub fn provenance(mut self, provenance: Provenance) -> Self {
+        self.provenance = provenance;
         self
     }
 
@@ -1554,6 +1570,7 @@ impl<'a, S: Store> ProjectService<'a, S> {
                         &states,
                         ExpectedSeq::Exact(row.head_seq),
                         &events,
+                        &self.provenance,
                     )?;
                 }
 

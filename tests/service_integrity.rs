@@ -56,7 +56,13 @@ fn append_to_one_end(fixture: &ServiceFixture, id: &str, events: &[StoryEvent]) 
     fixture
         .store()
         .write(|tx| {
-            let head = tx.append_events(project, story, ExpectedSeq::Any, events)?;
+            let head = tx.append_events(
+                project,
+                story,
+                ExpectedSeq::Any,
+                events,
+                &storyhook::domain::provenance::Provenance::unrecorded(),
+            )?;
             let stored = tx.events_for(project, story)?;
             let (known, _unknown) = partition_known(story, &stored);
             let states = tx.state_map(project)?;
@@ -77,7 +83,13 @@ fn try_append_to_one_end(
     let project = fixture.project();
     let story = StoryNo::parse_id("SH", id).expect("a well-formed id");
     fixture.store().write(|tx| {
-        let head = tx.append_events(project, story, ExpectedSeq::Any, events)?;
+        let head = tx.append_events(
+            project,
+            story,
+            ExpectedSeq::Any,
+            events,
+            &storyhook::domain::provenance::Provenance::unrecorded(),
+        )?;
         let stored = tx.events_for(project, story)?;
         let (known, _unknown) = partition_known(story, &stored);
         let states = tx.state_map(project)?;

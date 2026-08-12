@@ -1,0 +1,53 @@
+-- storyhook store — schema version 13: `events.command` and `events.actor`,
+-- SH-246's write provenance.
+--
+-- # Why two columns and not one
+--
+-- They are facts of different standing, and collapsing them destroys the only
+-- property that makes either worth reading.
+--
+--   * `command` is derived by the daemon from the arm it dispatched (`move`,
+--     `commit-sync`). A caller cannot misstate it, because a caller is never
+--     asked for it.
+--   * `actor` is whatever the caller put in `$STORYHOOK_ACTOR`
+--     (`story.sh:dispatch-rollback`). It is self-attested.
+--
+-- The council's first instinct was one column — a declared actor "falling back
+-- to" the verb — but that discards an attested fact in exactly the case where a
+-- declaration exists, and leaves a reader unable to tell which kind of thing
+-- they are looking at. See `.council/sh246-state-change-audit-trail/DECISION.md`.
+--
+-- # Why on `events` rather than in the payload or in a table of its own
+--
+-- Provenance is a fact about the *write*, not about the story, so it belongs
+-- beside `kind` and `at` — columns that already mirror write-time facts — and
+-- not inside the JSON `payload`, whose shape is the `StoryEvent` domain enum
+-- that `fold_story` and every replay path decode. A separate
+-- `story_transitions` table was rejected for needing its own join and its own
+-- replay-fidelity discipline in migrate and transfer, to hold strictly less
+-- than this.
+--
+-- # Both are NULL-able, and the NULLs are load-bearing
+--
+-- Nothing is backfilled. Every event written before this migration has
+-- provenance that was never captured, and it is unknowable — not merely absent.
+-- NULL is what SQL already means by that, and a sentinel string would be data
+-- that looks like a record of something. Readers render this as `(unrecorded)`,
+-- deliberately not as the `-` this codebase uses for a genuinely unset field
+-- (an assignee), because `-` invites "nobody did this" where the truth is "no
+-- one was watching".
+--
+-- `actor` stays NULL-able *after* this migration too, and permanently: most
+-- callers declare nothing, and an undeclared actor must never be filled in from
+-- the command beside it.
+--
+-- No rebuild: two `ALTER TABLE ... ADD COLUMN` statements are the whole change,
+-- so this migration runs with `foreign_keys_off: false` and migration 5's
+-- `events_reject_delete` warning does not apply. Neither column carries a
+-- CHECK — SQLite's `ADD COLUMN` cannot add one that refers to another column,
+-- and the constraint that matters (an actor is bounded, single-line and free of
+-- control characters) is enforced where this codebase puts invariants a schema
+-- cannot see: at the edge that parses it, in `domain::provenance`.
+
+ALTER TABLE events ADD COLUMN command TEXT;
+ALTER TABLE events ADD COLUMN actor TEXT;

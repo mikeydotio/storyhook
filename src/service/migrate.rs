@@ -40,6 +40,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use crate::domain::provenance::Provenance;
 use crate::domain::{
     StateDef, StoryEvent, StorySnapshot, fold_story, inverse_relation,
     validate_state_defs_for_write, validate_type_slug,
@@ -468,6 +469,14 @@ impl MigrationPlan {
                     // and must project, or the first sync after a migration
                     // re-links the repository's whole log.
                     LinkSource::Replayed,
+                    // Unrecorded, not `migrate` (SH-246). These events describe
+                    // things that happened in a `.storyhook` tree months ago;
+                    // `migrate` copied them, it did not perform them. Stamping
+                    // this command on them would make every migrated story read
+                    // as though one `story migrate` run had moved, commented on
+                    // and closed it — a trail that is confidently wrong, which
+                    // is worse than one that admits it was told nothing.
+                    &Provenance::unrecorded(),
                 )?;
                 heads.push(head);
             }

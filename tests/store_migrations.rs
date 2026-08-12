@@ -1154,6 +1154,57 @@ fn insert_v8_story_row(
     .unwrap();
 }
 
+/// Writes `events` onto one story with **raw SQL**, and advances the project's
+/// change-feed counter to match.
+///
+/// Deliberately not through `WriteOps::append_events`, for the same reason
+/// [`insert_v8_story_row`] does not use `put_story`: that path writes the
+/// *current* binary's full column set, which since migration 13 includes
+/// `command` and `actor` — columns a genuine v8 database does not have. A
+/// fixture that could only be built by the code the migration is catching up
+/// with would be testing nothing.
+///
+/// The counter matters as much as the rows: migration 9 appends events of its
+/// own, and a stale `next_global_seq` collides with these on
+/// `UNIQUE (project_id, global_seq)`.
+fn append_v8_events(
+    conn: &Connection,
+    project: storyhook::store::ProjectId,
+    story: StoryNo,
+    events: &[StoryEvent],
+) {
+    let base: i64 = conn
+        .query_row(
+            "SELECT next_global_seq FROM projects WHERE id = ?1",
+            rusqlite::params![project.get()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    for (index, event) in events.iter().enumerate() {
+        let value = serde_json::to_value(event).unwrap();
+        let offset = i64::try_from(index).unwrap();
+        conn.execute(
+            "INSERT INTO events (project_id, story_no, seq, global_seq, kind, at, payload) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                project.get(),
+                story.get(),
+                offset + 1,
+                base + offset,
+                value["kind"].as_str().unwrap(),
+                value["at"].as_str().unwrap(),
+                serde_json::to_string(&value).unwrap(),
+            ],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "UPDATE projects SET next_global_seq = ?2 WHERE id = ?1",
+        rusqlite::params![project.get(), base + i64::try_from(events.len()).unwrap()],
+    )
+    .unwrap();
+}
+
 fn v8_store_with_renamed_and_retired_type_stories(
     dir: &Path,
 ) -> (
@@ -1164,7 +1215,7 @@ fn v8_store_with_renamed_and_retired_type_stories(
     StoryNo,
 ) {
     use storyhook::domain::{StateDef, SuperState, fold_story};
-    use storyhook::store::{EventSeq, ExpectedSeq, NewProject, ReadOps, WriteOps};
+    use storyhook::store::{EventSeq, NewProject, ReadOps, WriteOps};
 
     let store = SqliteStore::open(dir.join("store.db")).unwrap();
     store.migrate_with(&migrate::MIGRATIONS[..8]).unwrap();
@@ -1218,10 +1269,15 @@ fn v8_store_with_renamed_and_retired_type_stories(
                         },
                     ];
                     let no = tx.allocate_story_no(project)?;
-                    let head =
-                        tx.append_events(project, no, ExpectedSeq::Exact(EventSeq::ZERO), &events)?;
+                    // The events are written below with raw SQL, for the same
+                    // reason the read-model rows are (see this function's
+                    // header): `WriteOps::append_events` writes the *current*
+                    // binary's full column set, which since migration 13
+                    // includes `command` and `actor` — columns a genuine v8
+                    // database does not have.
+                    let head = EventSeq::new(i64::try_from(events.len()).unwrap());
                     let snapshot = fold_story(&no.to_id("SH"), &events, &state_map).unwrap();
-                    Ok::<_, storyhook::store::StoreError>((no, head, snapshot))
+                    Ok::<_, storyhook::store::StoreError>((no, head, snapshot, events))
                 };
 
             let task_row = make_story(
@@ -1248,9 +1304,37 @@ fn v8_store_with_renamed_and_retired_type_stories(
         .unwrap();
 
     let conn = Connection::open(store.path()).unwrap();
-    for (no, head, snapshot) in &rows {
+    let mut global_seq = 0i64;
+    for (no, head, snapshot, events) in &rows {
         insert_v8_story_row(&conn, project, *no, *head, snapshot);
+        for (index, event) in events.iter().enumerate() {
+            let value = serde_json::to_value(event).unwrap();
+            global_seq += 1;
+            conn.execute(
+                "INSERT INTO events (project_id, story_no, seq, global_seq, kind, at, payload) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    project.get(),
+                    no.get(),
+                    i64::try_from(index).unwrap() + 1,
+                    global_seq,
+                    value["kind"].as_str().unwrap(),
+                    value["at"].as_str().unwrap(),
+                    serde_json::to_string(&value).unwrap(),
+                ],
+            )
+            .unwrap();
+        }
     }
+    // The raw inserts above bypass `allocate_global_seqs`, so the project's
+    // own counter has to be advanced by hand — migration 9 appends events of
+    // its own, and would otherwise collide with these on
+    // `UNIQUE (project_id, global_seq)`.
+    conn.execute(
+        "UPDATE projects SET next_global_seq = ?2 WHERE id = ?1",
+        rusqlite::params![project.get(), global_seq + 1],
+    )
+    .unwrap();
     let [(task_story, ..), (story_story, ..), (epic_story, ..)] = rows;
 
     for (position, slug) in [
@@ -1541,13 +1625,13 @@ fn migration_nine_does_not_invent_an_emoji_for_a_custom_type() {
 #[test]
 fn migration_nine_leaves_a_project_with_no_task_stories_and_no_task_type_untouched() {
     use storyhook::domain::{StateDef, SuperState, fold_story};
-    use storyhook::store::{EventSeq, ExpectedSeq, NewProject, ReadOps, WriteOps};
+    use storyhook::store::{EventSeq, NewProject, ReadOps, WriteOps};
 
     let dir = scratch_dir();
     let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
     store.migrate_with(&migrate::MIGRATIONS[..8]).unwrap();
 
-    let (project, no, head, snapshot) = store
+    let (project, no, head, snapshot, events) = store
         .write(|tx| {
             let project = tx.create_project(&NewProject {
                 uuid: "clean".into(),
@@ -1580,19 +1664,18 @@ fn migration_nine_leaves_a_project_with_no_task_stories_and_no_task_type_untouch
                 state: "todo".into(),
             }];
             let no = tx.allocate_story_no(project)?;
-            let head =
-                tx.append_events(project, no, ExpectedSeq::Exact(EventSeq::ZERO), &events)?;
+            // Events are written with raw SQL after this transaction — see
+            // `append_v8_events` for why the store's own write path cannot
+            // build a v8 fixture.
+            let head = EventSeq::new(i64::try_from(events.len()).unwrap());
             let snapshot = fold_story(&no.to_id("SH"), &events, &state_map).unwrap();
-            Ok((project, no, head, snapshot))
+            Ok((project, no, head, snapshot, events))
         })
         .unwrap();
-    insert_v8_story_row(
-        &Connection::open(store.path()).unwrap(),
-        project,
-        no,
-        head,
-        &snapshot,
-    );
+    let conn = Connection::open(store.path()).unwrap();
+    insert_v8_story_row(&conn, project, no, head, &snapshot);
+    append_v8_events(&conn, project, no, &events);
+    drop(conn);
     let before = story_type_updated_head(&store, project, no);
     let before_global_seq = next_global_seq(&store, project);
 
@@ -1607,13 +1690,13 @@ fn migration_nine_leaves_a_project_with_no_task_stories_and_no_task_type_untouch
 #[test]
 fn migration_nine_removes_an_unused_task_catalog_entry_without_touching_any_story() {
     use storyhook::domain::{StateDef, SuperState, fold_story};
-    use storyhook::store::{EventSeq, ExpectedSeq, NewProject, ReadOps, WriteOps};
+    use storyhook::store::{EventSeq, NewProject, ReadOps, WriteOps};
 
     let dir = scratch_dir();
     let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
     store.migrate_with(&migrate::MIGRATIONS[..8]).unwrap();
 
-    let (project, no, head, snapshot) = store
+    let (project, no, head, snapshot, events) = store
         .write(|tx| {
             let project = tx.create_project(&NewProject {
                 uuid: "unused-task".into(),
@@ -1646,14 +1729,17 @@ fn migration_nine_removes_an_unused_task_catalog_entry_without_touching_any_stor
                 state: "todo".into(),
             }];
             let no = tx.allocate_story_no(project)?;
-            let head =
-                tx.append_events(project, no, ExpectedSeq::Exact(EventSeq::ZERO), &events)?;
+            // Events are written with raw SQL after this transaction — see
+            // `append_v8_events` for why the store's own write path cannot
+            // build a v8 fixture.
+            let head = EventSeq::new(i64::try_from(events.len()).unwrap());
             let snapshot = fold_story(&no.to_id("SH"), &events, &state_map).unwrap();
-            Ok((project, no, head, snapshot))
+            Ok((project, no, head, snapshot, events))
         })
         .unwrap();
     let conn = Connection::open(store.path()).unwrap();
     insert_v8_story_row(&conn, project, no, head, &snapshot);
+    append_v8_events(&conn, project, no, &events);
     for (position, slug) in [(0, "story"), (1, "task")] {
         conn.execute(
             "INSERT INTO project_types (project_id, position, slug, description) \

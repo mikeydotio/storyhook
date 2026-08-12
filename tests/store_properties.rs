@@ -371,7 +371,7 @@ proptest! {
         let story = store.write(|tx| tx.allocate_story_no(project)).unwrap();
 
         store
-            .write(|tx| tx.append_events(project, story, ExpectedSeq::Exact(EventSeq::ZERO), &events))
+            .write(|tx| tx.append_events(project, story, ExpectedSeq::Exact(EventSeq::ZERO), &events, &storyhook::domain::provenance::Provenance::unrecorded()))
             .unwrap();
 
         let stored = store.read(|tx| tx.events_for(project, story)).unwrap();
@@ -404,6 +404,7 @@ proptest! {
                     ExpectedSeq::Any,
                     &[RawEvent { kind: kind.clone(), at: at.clone(), payload: payload.clone() }],
                     LinkSource::Replayed,
+                    &storyhook::domain::provenance::Provenance::unrecorded(),
                 )
             })
             .unwrap();

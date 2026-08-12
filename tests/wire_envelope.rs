@@ -483,6 +483,34 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
             ]),
         ),
         (
+            "story_log",
+            Response::StoryLog {
+                id: "SH-246".to_string(),
+                title: "A story — with ünïcödé".to_string(),
+                entries: vec![
+                    // Both provenance halves present.
+                    storyhook::output::LogEntry {
+                        seq: 1,
+                        at: "2026-01-01T00:00:00Z".to_string(),
+                        kind: "StoryCreated".to_string(),
+                        detail: Some("created in todo — A story".to_string()),
+                        command: Some("new".to_string()),
+                        actor: Some("story.sh:dispatch-rollback".to_string()),
+                    },
+                    // Neither: the shape every pre-SH-246 row reads back as,
+                    // which must survive the hop as null rather than as "".
+                    storyhook::output::LogEntry {
+                        seq: 2,
+                        at: "2026-01-01T00:01:00Z".to_string(),
+                        kind: "StoryStateChanged".to_string(),
+                        detail: None,
+                        command: None,
+                        actor: None,
+                    },
+                ],
+            },
+        ),
+        (
             "confirmation_required",
             Response::ConfirmationRequired(Box::new(ConfirmationPlan::Delete(DeletePlan {
                 slug: "storyhook".to_string(),
@@ -664,13 +692,14 @@ fn the_response_corpus_covers_every_variant() {
             Response::RawJson(_) => "raw_json",
             Response::ProjectSnapshot(_) => "project_snapshot",
             Response::StoryHistory(_) => "story_history",
+            Response::StoryLog { .. } => "story_log",
             Response::ConfirmationRequired(_) => "confirmation_required",
             Response::Project(_) => "project",
             Response::SetupRequired(_) => "setup_required",
         }
     }
 
-    const EVERY_VARIANT: [&str; 15] = [
+    const EVERY_VARIANT: [&str; 16] = [
         "message",
         "message_with_warnings",
         "story",
@@ -683,6 +712,7 @@ fn the_response_corpus_covers_every_variant() {
         "raw_json",
         "project_snapshot",
         "story_history",
+        "story_log",
         "confirmation_required",
         "project",
         "setup_required",
@@ -1439,6 +1469,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::MemberAdd { .. } => "MemberAdd",
         Invocation::State { .. } => "State",
         Invocation::List { .. } => "List",
+        Invocation::Log { .. } => "Log",
         Invocation::Search { .. } => "Search",
         Invocation::Next { .. } => "Next",
         Invocation::Summary => "Summary",

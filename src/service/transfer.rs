@@ -22,6 +22,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::domain::provenance::Provenance;
 use crate::domain::remote::{OwnedOrigin, RemoteUrl};
 use crate::domain::{
     ImportStory, Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState, TypeDef,
@@ -535,6 +536,7 @@ impl<'ctx, S: Store> TransferService<'ctx, S> {
                     &states,
                     ExpectedSeq::Exact(EventSeq::ZERO),
                     &events,
+                    self.ctx.provenance(),
                 )?;
                 created_ids.push(snapshot.id);
             }
@@ -544,6 +546,7 @@ impl<'ctx, S: Store> TransferService<'ctx, S> {
                 prefix: &prefix,
                 states: &states,
                 now: &now,
+                provenance: self.ctx.provenance(),
             };
             let lines = link_batch(tx, &batch, stories, &created_ids)?;
             Ok((created_ids, lines))
@@ -871,6 +874,13 @@ pub fn import_project<S: Store>(
                 ExpectedSeq::Exact(EventSeq::ZERO),
                 &raw,
                 link_source,
+                // Unrecorded for the same reason `story migrate` writes it
+                // (SH-246): this is a restore of a history that happened
+                // elsewhere, and `import-project` copied it rather than
+                // performing it. The document carries no provenance to
+                // replay — `ExportedEvent` predates these columns — so
+                // inventing one here would be manufacturing a record.
+                &Provenance::unrecorded(),
             )?;
             if story_no.get() > highest.get() {
                 highest = story_no;
@@ -1108,6 +1118,10 @@ struct Batch<'a> {
     prefix: &'a str,
     states: &'a BTreeMap<String, StateDef>,
     now: &'a str,
+    /// Who is performing this import, carried here for the same reason `now` is:
+    /// every event the batch writes shares it, and a free function in this
+    /// module has no context to ask.
+    provenance: &'a Provenance,
 }
 
 /// The second pass: every relation a batch's descriptions asked for.
@@ -1186,6 +1200,7 @@ fn append_relation(
             other_id: other_id.to_string(),
             relation: relation.to_string(),
         }],
+        batch.provenance,
     )?;
     Ok(())
 }

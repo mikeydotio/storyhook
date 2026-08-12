@@ -320,6 +320,7 @@ impl<S: Store> SyncStorage for StoreSyncStorage<'_, S> {
                 &states,
                 ExpectedSeq::Any,
                 events,
+                self.ctx.provenance(),
             )?;
             Ok(())
         })?)

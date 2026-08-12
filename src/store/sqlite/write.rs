@@ -19,6 +19,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, params};
 
+use crate::domain::provenance::{ActorLabel, Provenance};
 use crate::domain::remote::RemoteUrl;
 use crate::domain::{
     KIND_STORY_COMMIT_LINKED, Member, StateDef, StoryEvent, StorySnapshot, TypeDef,
@@ -500,12 +501,21 @@ pub(super) fn append_events(
     story: StoryNo,
     expected: ExpectedSeq,
     events: &[StoryEvent],
+    provenance: &Provenance,
 ) -> Result<EventSeq, StoreError> {
     let raw = events
         .iter()
         .map(RawEvent::from_event)
         .collect::<Result<Vec<_>, _>>()?;
-    append(conn, project, story, expected, &raw, LinkSource::Live)
+    append(
+        conn,
+        project,
+        story,
+        expected,
+        &raw,
+        LinkSource::Live,
+        provenance,
+    )
 }
 
 /// [`append_events`], for callers holding bytes rather than a decoded event.
@@ -520,10 +530,18 @@ pub(super) fn append_raw_events(
     expected: ExpectedSeq,
     events: &[RawEvent],
     source: LinkSource,
+    provenance: &Provenance,
 ) -> Result<EventSeq, StoreError> {
-    append(conn, project, story, expected, events, source)
+    append(conn, project, story, expected, events, source, provenance)
 }
 
+/// Appends events, stamping each with the provenance of the write.
+///
+/// `provenance` is an argument for exactly the reason [`LinkSource`] is: it is a
+/// fact about the *caller*, and a caller cannot state a fact it is never asked
+/// for. A [`Provenance::unrecorded`] is a legitimate answer — a fixture, a
+/// replay, a path with genuinely nothing to declare — and it writes NULLs, which
+/// is what every pre-SH-246 row already holds.
 fn append(
     conn: &Connection,
     project: ProjectId,
@@ -531,6 +549,7 @@ fn append(
     expected: ExpectedSeq,
     events: &[RawEvent],
     source: LinkSource,
+    provenance: &Provenance,
 ) -> Result<EventSeq, StoreError> {
     let head = read::head_seq(conn, project, story)?;
     if let ExpectedSeq::Exact(required) = expected
@@ -550,10 +569,13 @@ fn append(
     }
 
     let first_global = allocate_global_seqs(conn, project, events.len())?;
+    let command = provenance.command.as_deref();
+    let actor = provenance.actor.as_ref().map(ActorLabel::as_str);
     let mut stmt = sql(
         conn.prepare_cached(
-            "INSERT INTO events (project_id, story_no, seq, global_seq, kind, at, payload) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO events \
+             (project_id, story_no, seq, global_seq, kind, at, payload, command, actor) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         ),
         "preparing an event append",
     )?;
@@ -567,7 +589,9 @@ fn append(
                 first_global + offset,
                 event.kind,
                 event.at,
-                event.payload
+                event.payload,
+                command,
+                actor
             ]),
             "appending an event",
         )?;

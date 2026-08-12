@@ -205,7 +205,8 @@ fn invoke<S: Store>(store: &S, env: &Environment, entry: &Entry<'_>, body: &str)
                     .no_hooks(request.no_hooks)
                     .stdin(request.stdin.clone())
                     .project(request.project.clone())
-                    .github_token(request.github_token.clone()),
+                    .github_token(request.github_token.clone())
+                    .actor(request.actor.clone()),
             )
     }))
     .unwrap_or_else(|_| {

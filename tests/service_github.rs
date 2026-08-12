@@ -320,6 +320,7 @@ fn a_backup_preserves_an_event_kind_this_binary_does_not_understand() {
                         .to_string(),
                 }],
                 storyhook::store::LinkSource::Replayed,
+                &storyhook::domain::provenance::Provenance::unrecorded(),
             )?;
             Ok(())
         })

@@ -34,6 +34,7 @@ use std::time::Duration;
 
 use rusqlite::Connection;
 
+use crate::domain::provenance::Provenance;
 use crate::domain::remote::RemoteUrl;
 use crate::domain::{Member, StateDef, StoryEvent, StorySnapshot, TypeDef};
 use crate::store::error::StoreError;
@@ -790,8 +791,9 @@ impl WriteOps for SqliteWriteTx<'_> {
         story: StoryNo,
         expected: ExpectedSeq,
         events: &[StoryEvent],
+        provenance: &Provenance,
     ) -> Result<EventSeq, StoreError> {
-        write::append_events(&self.conn, project, story, expected, events)
+        write::append_events(&self.conn, project, story, expected, events, provenance)
     }
 
     fn append_raw_events(
@@ -801,8 +803,11 @@ impl WriteOps for SqliteWriteTx<'_> {
         expected: ExpectedSeq,
         events: &[RawEvent],
         source: LinkSource,
+        provenance: &Provenance,
     ) -> Result<EventSeq, StoreError> {
-        write::append_raw_events(&self.conn, project, story, expected, events, source)
+        write::append_raw_events(
+            &self.conn, project, story, expected, events, source, provenance,
+        )
     }
 
     fn put_story(
