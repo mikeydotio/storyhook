@@ -31,8 +31,8 @@ its behavior from memory, and do not skip steps it defines.
 | `<id>` (e.g. `SH-45`) | View + Offer | **View + Offer** flow below. A bare first token is a story id only if it matches `^[A-Za-z0-9]+-[0-9]+$`; otherwise it is a malformed verb. |
 | `do <id> [--auto]` | Dispatch to a fresh session | **Dispatch** flow below. `--auto` hands the child an autonomous charter: after the one plan approval it runs to completion unattended — council-voting its own open questions, merging its own PR, closing the story itself, and (SH-208) then running `story.sh reap <id>` as its very last act to reclaim its own worktree, branch and tmux window. |
 | `view <id>` | Show a story | Run `story.sh view <id>`, show `display`, stop. |
-| `new <description>` | File a story | Read `references/story-new.md` and follow it. |
-| `complete <id>` | Close + clean up | Read `references/story-complete.md` and follow it. |
+| `new <description>` | File a story | Read `${CLAUDE_PLUGIN_ROOT}/references/story-new.md` and follow it. |
+| `complete <id>` | Close + clean up | Read `${CLAUDE_PLUGIN_ROOT}/references/story-complete.md` and follow it. |
 | `capture <id>` | Peek at a dispatched session | Run `story.sh capture <id>`, show `display`, stop. Read-only. |
 | `doctor` | Self-test | Run `story.sh doctor`, show `display`. Checks project data integrity **and** whether this Claude build's readiness/paste path is still recognised. |
 | `work [id]` | Start work in this session | Read `skills/story-work/SKILL.md` and follow it, passing `[id]` through. |
