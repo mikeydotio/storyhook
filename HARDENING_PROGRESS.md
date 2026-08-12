@@ -10378,3 +10378,72 @@ was foreclosed by discovery, not a judgment call.
 **No version bump** — left for the next batched `/semver` pass.
 
 **Next:** run `story next` fresh.
+
+### SH-207 — done, 2026-08-11/12
+
+`story next --count 3` (same call SH-206's entry logged) surfaced SH-207, SH-209,
+SH-210, all low; SH-197 was the only `in-progress` story and had a live tmux window
+(`storyhook:4`) with an open PR (#274) — left untouched, per the never-touch-a-live-
+worktree rule. Claimed SH-207 immediately.
+
+**The bug, confirmed as filed:** `RelationService::relate`/`unrelate`
+(`src/service/relation.rs`) resolved both `a` and `b` through the same strict
+`resolve_open_story`, so `story relate A relates-to B` refused whenever *either* side
+was closed — even with `A` open and the only story actually being edited, `B` merely
+the target. The module's own stated invariant ("a relation is asserted by both of its
+ends or by neither") was being violated from the opposite direction: a refused
+transaction means *neither* side gets the edge.
+
+**Council convened** (software-architect, api-designer, skeptic) — the story's own "What
+is asked" section named two genuine judgment calls: whether every relation kind
+qualifies for the relaxation, and whether `unrelate` should mirror `relate`. Two rounds:
+round 1 split 2-1 (all three had independently proposed uniform relaxation across every
+kind, differing only on confidence); deliberation is where it sharpened — Seat 3
+(skeptic) found that `relation_edges` assigns the "parent" role by which verb the caller
+types (`parent-of` vs `child-of`), not by argument position, so a naive "relax `b`
+uniformly except for the parent-of/child-of *pair*" rule doesn't actually hold the line
+it's meant to: a caller can reach "attach a new open child to an already-closed epic"
+through either phrasing. `compute_progress` recomputes a closed epic's displayed
+progress from every `parent-of` edge with no guard on the epic's own superstate, so that
+specific case needed to stay refused. Seats 2 and 3 converged independently on the same
+concrete fix — condition the guard on `b`'s *role* (read off the already-computed
+`(a_relation, b_relation)` edge pair, not the input string) rather than the relation-kind
+string. Round 2 ranked-choice gave that framing (Seat 3's) an outright majority, 2 of 3
+first-place votes. Full audit trail: `.council/sh-207-relation-guard-relaxation-scope/`
+(gitignored). Verdict recorded as a `story comment` on SH-207 before implementing.
+
+**The fix:** `a` stays under `resolve_open_story` unchanged. `b` now resolves via the
+unguarded `resolve_story`; a role-conditioned guard fires only when `!remove` and `b` is
+about to take the `parent-of` role, reusing `edges` (already computed for the write loop)
+rather than re-deriving it. `unrelate` relaxes `b` uniformly across every kind and role —
+removal can only shrink a closed story's scope, never grow it, and today a stale edge
+becomes permanently unremovable the instant its target closes, which turned out to be
+the sharper of the two defects once the council's deliberation surfaced it.
+
+**TDD:** six new tests written first and confirmed red against the unmodified guard,
+covering every distinguishing case the council's reasoning turned on: relate refused
+from the closed side but not onto it (for a plain cross-reference kind), all five
+non-hierarchy kinds relaxed uniformly, a closed story attachable as a child of an open
+epic, a new open child refused onto a closed epic **from either phrasing**, and every
+kind's `unrelate` succeeding against a closed target. Also fixed a doc comment in
+`tests/story_purge.rs`'s `claimed_then_deleted` fixture that cited the now-false blanket
+claim ("relate refuses any closed story") as its rationale for ordering relate before
+delete.
+
+**Sibling sweep:** `resolve_open_story`'s other five call sites (`grouping.rs`,
+`story.rs` ×4, `github.rs`, `pr_link.rs` ×2, `git.rs`) each resolve exactly one story the
+command is directly about, with no second "target" argument in the shape `relate`/
+`unrelate` has — none of them share the asymmetric-guard defect, so none needed the same
+carve-out.
+
+**Gate:** full `make test`, supervised (log-growth heartbeat, 120s stall bound, no
+stall): `cargo fmt`/`clippy -D warnings` clean, Rust suite green (29/29 in
+`service_relations.rs` alone), plugin bash harness 29/29, e2e 48/48,
+`check-no-orphan-servers.sh` clean after.
+
+**PR:** #279, one commit, merged as `2026058`, fast-forwarded onto `main` in this
+checkout, remote branch confirmed deleted after `git fetch --prune`.
+
+**No version bump** — left for the next batched `/semver` pass.
+
+**Next:** run `story next` fresh.
