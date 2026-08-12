@@ -10904,3 +10904,83 @@ record exist.
 schema-13 migration lands on first run of a build that carries it.
 
 **Next:** run `story next` fresh.
+
+---
+
+### SH-213 — a wrong key where a refusal would have been safe · PR #293 · merged
+
+`story next` handed back SH-213, top of a queue of 26 open / 24 ready. Claimed
+before reading it. No re-spec in the comments; the description was the whole
+brief, and unusually good — it named the defect, the file, the exact garbage
+key, and the empirical method that found it.
+
+**The defect.** `classify()` split scp-like `[user@]host:path` on the *first*
+colon in the string. Git's own rule, except that git also accepts a bracketed
+IPv6 literal there, and in `git@[::1]:acme/widgets.git` the first colon is the
+one right after `[`. Normalization did not refuse — it returned
+`Ok("[/:1]:acme/widgets")`, reproduced red on the first test run, byte for byte
+as filed eleven days earlier. That key can never equal the one
+`ssh://git@[::1]/acme/widgets.git` produces for the *same repository*, and the
+registration that mints it succeeds, so nothing surfaces until some later
+command resolves the other spelling and is told it is a different, unregistered
+project.
+
+**Verified against git, not against a memory of git.** Three `GIT_TRACE=1 git
+ls-remote` runs (git 2.50.1) settled every question the fix had to answer, and
+one of them overturned the shape I would otherwise have written:
+
+| input | git resolves | key now |
+|---|---|---|
+| `git@[::1]:acme/widgets.git` | host `::1`, path `acme/widgets.git` | `[::1]/acme/widgets` |
+| `git@[::1]:22/acme/widgets.git` | host `::1`, path **`22/acme/widgets.git`** | `[::1]/22/acme/widgets` |
+| `git@[::1:acme/widgets.git` | host `git@[` — unanswerable | refused |
+
+The middle row is the one worth stating: there is **no port** in this form. The
+digits that look like one are path. Parsing them as a port would invent an
+endpoint git never contacts *and* split the spelling off from the `ssh://` form
+of the same repository — the very failure being fixed, re-introduced one row
+down. The story predicted this edge; the trace confirmed it rather than
+assuming it.
+
+**One deliberate deviation from git, and why it wasn't a council question.** For
+an authority that opens a bracket and never closes it, git resolves a host
+literally spelled `git@[`. Matching that byte-for-byte would mint a key for a
+URL nothing can ever resolve — a garbage key, which is this story's own
+complaint. It refuses instead. That looks like a judgment call and isn't: the
+module header already decided it in as many words ("the failure mode to be a
+refusal rather than a guess"), so this applies an existing rule rather than
+choosing between two defensible answers, and a council would have been
+ceremony. Recorded as a story comment either way, because the *next* reader
+cannot tell a rule-application from an unexamined choice without being told.
+
+**Sibling sweep, per CLAUDE.md's pattern-defect rule.** Three other
+colon-splitting parsers in the tree; only one parses a host —
+`src/api/http.rs::host_without_port` — and it was already bracket-aware, with
+the bracket branch ahead of the `rsplit_once(':')`. The other two split a commit
+`sha:subject` and a TUI filter token. No hits, nothing filed.
+
+**Tests pin keys, not non-panic** — the pattern SH-139 set for the scheme-form
+shapes, and the reason this defect was findable at all: SH-139's tests asserted
+real keys for the shapes it decided, which is what made the *undecided* shape
+next door visible. Six new tests (the split point, scp-like/scheme identity
+agreement, the port edge, `path_on` for a bracketed host, the unclosed-bracket
+refusal, and a bracket that does not open an authority — `/srv/git/[wip]/repo.git`
+stays a path), plus six bracket-shaped hostile inputs added to
+`normalize_never_panics_on_hostile_input`. Five of the six failed before the fix
+and pass after; the sixth passed throughout, pinning behaviour the fix must not
+change.
+
+**Gate:** full `make test`, supervised (log-growth heartbeat, 120s stall bound).
+Exit 0, zero failing legs, no stall, no orphan daemons. One run, no wedges — the
+first time in several cycles the gate went green on the first attempt, which the
+narrow diff earns rather than luck.
+
+**PR:** #293, one commit — behaviour fix and its regression tests, no refactor
+riding along. Merged as `0af5683`, branch deleted, `main` fast-forwarded.
+
+**No version bump** — left for the next batched `/semver` pass.
+
+**Noise:** a stale council ballot from SH-246's `story log` naming vote arrived
+mid-cycle from another session. That story landed in #291/#292; ignored.
+
+**Next:** run `story next` fresh.
