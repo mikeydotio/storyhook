@@ -187,6 +187,75 @@ fn show_suppresses_the_derived_halves_of_a_relationship() {
         .stdout(contains("\"descendent-of\"").not());
 }
 
+/// SH-211: `hidden_at` carries no schema CHECK against `superstate` —
+/// `schema/0010_story_hidden.sql` explains why SQLite cannot express one
+/// without the full table-rebuild migration 4 used for `archived`. "Hidden
+/// implies closed" is instead kept true by the service layer (`hide` refuses
+/// an open story) and by the fold (`fold_story` clears `hidden_at` the moment
+/// a superstate resolves back to OPEN) — neither of which a write that reaches
+/// the `hidden_at` *column* directly, the way a raw migration or an admin
+/// script would, ever goes through. Fabricated the same way: a second
+/// connection, one column, no event behind it.
+#[test]
+fn doctor_reports_and_fixes_a_hidden_story_whose_superstate_reads_open() {
+    let env = TestEnv::shared();
+    let project = env.project().seed_story("A story").build();
+    let store = project.open_store();
+    let id = project.project_id(&store);
+    let story = project.story_no(&store, "SH-1");
+
+    let conn = rusqlite::Connection::open(store.path()).expect("opening the store");
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .expect("setting a busy timeout");
+    conn.execute(
+        "UPDATE stories SET hidden_at = ?3 WHERE project_id = ?1 AND story_no = ?2",
+        rusqlite::params![id.get(), story.get(), AT],
+    )
+    .expect("fabricating a hidden-but-open row");
+
+    project
+        .run(&["doctor"])
+        .code(5)
+        .stderr(contains("story 1: hidden_at is").and(contains("but the events say `<none>`")));
+
+    project.run(&["doctor", "--fix"]).success();
+    project.run(&["doctor"]).success();
+    project
+        .run(&["--json", "show", "SH-1"])
+        .success()
+        .stdout(contains("\"hidden_at\"").not());
+}
+
+/// The sibling gap found alongside SH-211: `draft` (SH-175) is the only other
+/// dedicated `stories` column `diff()` never compared against the fold, for
+/// the identical reason — nothing but `StoryPublished` and the fold itself
+/// ever kept it in sync, and a write that reaches the column directly skips
+/// both.
+#[test]
+fn doctor_reports_and_fixes_a_draft_flag_that_disagrees_with_its_events() {
+    let env = TestEnv::shared();
+    let project = env.project().seed_story("A story").build();
+    let store = project.open_store();
+    let id = project.project_id(&store);
+    let story = project.story_no(&store, "SH-1");
+
+    let conn = rusqlite::Connection::open(store.path()).expect("opening the store");
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .expect("setting a busy timeout");
+    conn.execute(
+        "UPDATE stories SET draft = 1 WHERE project_id = ?1 AND story_no = ?2",
+        rusqlite::params![id.get(), story.get()],
+    )
+    .expect("fabricating an unpublished flag with no event behind it");
+
+    project.run(&["doctor"]).code(5).stderr(contains(
+        "story 1: draft is `true` but the events say `false`",
+    ));
+
+    project.run(&["doctor", "--fix"]).success();
+    project.run(&["doctor"]).success();
+}
+
 #[test]
 fn doctor_does_not_flag_known_story_type() {
     let env = TestEnv::shared();
