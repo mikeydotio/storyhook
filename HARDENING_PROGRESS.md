@@ -10984,3 +10984,99 @@ riding along. Merged as `0af5683`, branch deleted, `main` fast-forwarded.
 mid-cycle from another session. That story landed in #291/#292; ignored.
 
 **Next:** run `story next` fresh.
+
+### SH-216 — the coalescing window deleted, not narrowed · PRs #295, #296
+
+**Outcome:** done. `ChangeBus::publish` no longer suppresses anything.
+
+**The defect, stated precisely.** `publish` coalesced on the **leading** edge: a
+change equal to one published within 200ms was dropped, and it was the *earlier*
+publish that was kept. That is sound only while the kept notice is still
+undelivered. Once a subscriber has taken it and refetched off it, a second write
+committing inside the window is suppressed with nothing left to announce it — the
+dashboard goes on showing state that write already superseded. Keyed on a change's
+*value*, the rule could not tell one cause from another, and two publishes of one
+slug from different causes are not duplicates.
+
+**Both of the window's jobs had already moved elsewhere**, which is what made
+deleting it rather than repairing it the answer:
+
+| job | now done by | why it belongs there |
+|---|---|---|
+| dedup by *cause* | `ChangeWatcher`'s shared baseline (SH-202) | attributes a commit once, however many callers notice it |
+| throttling a burst | the browser's `scheduleDataFetch` | throttles on the **trailing** edge, so every absorbed event is still followed by a refetch |
+
+The server's leading-edge drop was *defeating* the browser's correct
+trailing-edge throttle. That is the whole defect, in one sentence.
+
+**Council: yes** — three seats convened, two voting.
+`.council/sh-216-changebus-coalescing-cause-blindness/`. Round 1 split 1-1
+(architect: per-subscriber dedup against undelivered queue contents; QA: delete
+coalescing outright). Both revised and converged in the single deliberation round,
+each conceding a specific point *under challenge* rather than deferring: the
+architect withdrew its own proposal after conceding that overflow-to-`Resync`
+needs a subscriber that has stopped reading — exactly what `Resync` is for — and
+QA withdrew the correctness half of its own masking argument, conceding
+queue-dedup could not actually lose an update. Deciding argument was
+defect-**class**: a silent suppression rule whose correctness argument sounded
+sound and was wrong is best replaced by no suppression rule at all, which is also
+the only version under which a test can assert an exact frame count instead of a
+one-sided inequality.
+
+**The seat that abstained, and what it cost.** The performance-engineer seat
+completed an investigation and then went idle three times without emitting a
+parseable proposal, including after the protocol's retry. Its seat existed to
+supply numbers, so the chair read them out of the code instead — `DISPATCHERS = 8`
+(`serve.rs:122`, compile-time asserted) bounds concurrent request-boundary
+publishes, so a same-slug burst cannot overflow `QUEUE_CAPACITY = 32` unless a
+subscriber has stopped draining. That fact is what collapsed the architect's
+position. **A panel voting without the facts its own seat owed it would have
+decided this differently**, which is the argument for the chair doing the reading
+when a seat goes dark rather than tallying what's in hand.
+
+**A contradiction between two seats, settled by reading rather than voting.** The
+architect said `sse_coalesces_rapid_mutations_within_debounce_window` asserted the
+old behaviour and must be retired; QA said it never depended on the window at all.
+QA was right: `Fixture::seed` dispatches **in process**, so those six mutations
+never cross a request boundary and only `poll_change_token`'s 250ms tick can see
+them. The chair supplied the correction into the ballot rather than letting the
+panel vote on a false premise. Its name and doc were wrong before this story and
+merely more visible after — renamed in a second commit, no assertion changed.
+
+**The integration test passed against the defect, and nearly shipped that way.**
+First draft: two REST mutations, assert ≥2 `repo-changed` frames. Green — then
+green *again* with the old coalescing rule temporarily restored. The reason is the
+poller: with the safety net free to tick it re-publishes the same project ~250ms
+later, **outside** the old 200ms window, so a second frame arrives even when the
+second mutation's own publish was dropped. Rewritten onto the real-daemon-
+subprocess pattern with `STORYHOOK_CHANGE_POLL_MS` beyond the test's own timeout,
+which leaves the two request boundaries as the only publishers that can fire; now
+red at 1-of-2 against the defect and green at exactly 2 with the fix.
+
+**Toggle-the-failure is why that was caught.** Every one of the three new tests
+was run against a deliberately restored copy of the old rule before being trusted.
+The two unit tests went red immediately; the integration test did not, and only
+that check distinguished "pins the fix" from "passes near it." A regression test
+nobody has watched fail is a guess.
+
+**Sibling sweep.** `Slot::push`'s overflow-collapse is the one remaining place a
+message may be dropped, and it is deliberate, counted, and announced as `Resync` —
+kept. No other value-keyed suppression in the tree.
+
+**Gate:** full `make test`, supervised (log-growth heartbeat, 120s stall bound).
+Exit 0 — 3252 Rust tests plus 89 Playwright E2E, zero failing legs, no stall, no
+orphan daemons. One earlier run failed at `cargo fmt --check` before running a
+single test; formatted and re-ran.
+
+**PRs:** #295 (two commits, two hats — behaviour fix with its regression tests,
+then the test rename with no assertion changed), merged as `ed6aa2d`, branch
+deleted and pruned. #296 carries this entry.
+
+**Follow-on filed:** SH-247 — the TUI turns every change into one full reload with
+no debounce, so it is the subscriber that now sees every publish. Bounded and not
+a correctness defect; the fix is a trailing-edge throttle on the client, mirroring
+the browser. Explicitly *not* putting suppression back into the bus.
+
+**No version bump** — left for the next batched `/semver` pass.
+
+**Next:** run `story next` fresh.
