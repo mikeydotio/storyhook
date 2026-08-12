@@ -106,10 +106,11 @@ pub struct LegacyStory {
 /// Everything one legacy `.storyhook` tree holds.
 ///
 /// Deliberately wider than [`crate::storage::ProjectExport`]: an export
-/// document carries states, types, members and stories, and a *tree* also
-/// carries the project's creation time, its settings tables and its story-number
-/// counter. A migration that went through the export document alone would drop
-/// those three without saying so.
+/// document carries states, types, members, stories, the project's settings
+/// (SH-133) and github-sync's configuration with its merge bases (SH-189), and a
+/// *tree* also carries the project's creation time and its story-number counter.
+/// A migration that went through the export document alone would drop those two
+/// without saying so.
 #[derive(Clone, Debug)]
 pub struct LegacyProject {
     /// The checkout the tree was read from.
