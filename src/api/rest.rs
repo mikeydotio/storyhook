@@ -1224,21 +1224,6 @@ mod tests {
         json_reply(200, "{}")
     }
 
-    /// A directory that is **not** under any temporary root.
-    ///
-    /// Under `target/`, inside the checkout, for the same reason
-    /// `tests/temp_project_refusal.rs` puts it there: every other scratch path
-    /// a test can reach is deliberately temporary, and "the store is a real
-    /// one" cannot be expressed with one of those.
-    fn non_temporary_dir(label: &str) -> PathBuf {
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join(label);
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("creating a non-temporary directory");
-        dir
-    }
-
     /// The headers a same-origin dashboard `fetch` sends, which is the only
     /// shape [`guarded`] lets through.
     fn dashboard_headers() -> Vec<Header> {
@@ -1261,7 +1246,7 @@ mod tests {
     /// form instead of from a test fixture.
     #[test]
     fn creating_a_project_at_a_throwaway_path_in_a_real_store_is_refused() {
-        let home = non_temporary_dir("sh117-rest-guard-home");
+        let home = storyhook_test_support::non_temporary_dir("sh117-rest-guard-home");
         let env = Environment::at(&home);
         let store = crate::invoke::open_store(&env).expect("opening the store");
         let throwaway = crate::env::canonical_ish(&std::env::temp_dir())
