@@ -13608,13 +13608,13 @@ SH-270's own scope (a failed story-level repair must not skip the catalog
 sweep) is untouched — this story only changes what the sweep reports once it
 runs.
 
-**Gate:** `make test` green three times — twice for this story's own commit
+**Gate:** `make test` green four times — twice for this story's own commit
 (RED confirmed against unmodified source, GREEN after the fix, both before
-the rebase), and a third full run after rebasing onto SH-270's merged
-change — **153 suites, 3546 tests, 32/32 plugin, 130/130 e2e, no orphan
+any rebase), then once after each of the two rebases onto a moving
+`main` — **153 suites, 3546 tests, 32/32 plugin, 130/130 e2e, no orphan
 daemons before or after any run**. Supervised background runs, 60s heartbeat
-against a 300s stall bound; no stalls. `cargo fmt` and `cargo clippy
---workspace --all-targets -- -D warnings` clean on every run. This worktree
-had never run `make e2e-install`; bootstrapped it (chromium was already
-cached from another worktree, so it was a fast no-op download) rather than
-letting the gate's e2e leg fail loudly as designed.
+against a 300s stall bound; no stalls across any of the four. `cargo fmt` and
+`cargo clippy --workspace --all-targets -- -D warnings` clean on every run.
+This worktree had never run `make e2e-install`; bootstrapped it (chromium was
+already cached from another worktree, so it was a fast no-op download) rather
+than letting the gate's e2e leg fail loudly as designed.
