@@ -215,7 +215,9 @@ impl From<StoreError> for AppError {
                 Self::StateConflict(expected.to_string(), format!("seq {actual}"))
             }
             StoreError::Busy(detail) => Self::LockTimeout(detail),
-            StoreError::Invariant(detail) | StoreError::Corrupt(detail) => Self::Integrity(detail),
+            StoreError::Invariant(detail) | StoreError::Corrupt(detail) => {
+                Self::Integrity(detail.into())
+            }
             StoreError::Validation(detail) => Self::Validation(detail),
             other @ (StoreError::SchemaTooNew { .. }
             | StoreError::Migration { .. }

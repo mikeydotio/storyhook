@@ -23,11 +23,12 @@ use storyhook::cli::{
     PhaseAction, PluginAction, ProjectAction, SettingsAction, SetupMode, SetupStrategy,
     StateAction, StoreAction, TypeAction, WebAction,
 };
+use storyhook::domain::finding::{Finding, FindingCode, FindingData};
 use storyhook::domain::{
     CommentMention, CommitReference, Member, Priority, ProgressRollup, StateDef, StoryComment,
     StoryEvent, StoryRelation, StorySnapshot, SuperState,
 };
-use storyhook::error::{AppError, WireError};
+use storyhook::error::{AppError, IntegrityDetail, WireError};
 use storyhook::output::{
     BlockedChainView, ConfirmationPlan, DeletePlan, GraphOverview, GraphView, PhaseView,
     ProjectSnapshotView, PurgePlan, ReferencedBy, Response, SetPrefixPlan, SettingKind,
@@ -798,7 +799,36 @@ fn error_corpus() -> Vec<AppError> {
         AppError::Validation("invalid priority `urgent`".to_string()),
         AppError::NotFound("story `SH-99` not found".to_string()),
         AppError::LockTimeout("another process holds the project lock".to_string()),
-        AppError::Integrity("SH-1: dangling relation".to_string()),
+        // The one variant whose payload is a document. Deliberately carries a
+        // context, two findings of different codes, both optional story
+        // fields, a structured payload, and advice — so a hop that dropped or
+        // flattened any of them fails here rather than in a user's `jq`.
+        AppError::Integrity(IntegrityDetail {
+            context: Some("while checking the project".to_string()),
+            findings: vec![
+                Finding::new(
+                    FindingCode::MissingInverseRelation,
+                    "SH-1: missing inverse relation `blocked-by` on story `SH-2`",
+                )
+                .about("SH-1")
+                .repaired_on("SH-2")
+                .carrying(FindingData::Relation {
+                    relation: "blocks".to_string(),
+                    other: "SH-2".to_string(),
+                }),
+                Finding::new(
+                    FindingCode::ReadModelDivergence,
+                    "story 3: draft is `true` but the events say `false`",
+                )
+                .about("SH-3")
+                .carrying(FindingData::Divergence {
+                    field: "draft".to_string(),
+                    persisted: "true".to_string(),
+                    rebuilt: "false".to_string(),
+                }),
+            ],
+            advice: vec!["story 9: event 4 is of kind `StoryVibed`, …".to_string()],
+        }),
         AppError::Storage("failed to read .storyhook/stories: no such file".to_string()),
         // The prefixed variants: their `Display` is not their payload, so a
         // wire form that carried the rendered message would double the prefix.
