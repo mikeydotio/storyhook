@@ -814,9 +814,9 @@ Manage the durable GitHub credential the daemon's background poll uses
 to check linked pull requests unattended (SH-212). Separate from the
 STORYHOOK_GITHUB_TOKEN environment variable `story github-sync` and
 `story pr-check` read per invocation: this one is stored once, in your
-OS keychain (macOS Keychain, Windows Credential Manager, or the Secret
-Service on Linux), and spent by the daemon on a five-minute timer with
-nobody typing a command.
+OS keychain (macOS Keychain, or the Secret Service on Linux), and
+spent by the daemon on a five-minute timer with nobody typing a
+command.
 
 login    Prompts for a GitHub Personal Access Token (always
          interactive — there is no non-interactive form) and stores it.

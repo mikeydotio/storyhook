@@ -13241,6 +13241,89 @@ against a 120s stall bound; no stalls, no wedges, no restarts, ~9 minutes each.
 --check` over the new test file. Cheap, but avoidable — `cargo fmt` costs
 nothing and belongs before the gate, not inside it.
 
+## SH-260 — the Windows keyring dependency, unbuilt and unbacked
+
+**The finding.** `Cargo.toml` declared `windows-native-keyring-store` under
+`cfg(target_os = "windows")`, activated by the default `github-sync`
+feature, for a platform this project neither builds, tests, nor ships.
+SH-259's sibling sweep found it: Linux and Windows were the two
+platform-gated keyring dependencies, Linux was broken and shipped (SH-259),
+Windows was unbuilt and unshipped — the same blind spot, one release earlier
+in its own lifecycle.
+
+**The decision, and the evidence behind it.** SH-259 left the story's fix
+direction open (support Windows, or drop the dependency) and deliberately
+did not generalize `tests/release_targets.rs`'s Linux-only assertion,
+because the general form fails today. Investigating which direction this
+project could actually take found the answer was not close: `libc` is an
+*unconditional* dependency, and 35 `libc::*`/`std::os::unix::*` calls run
+with no `cfg` gate at all across the daemon's spawn/portfile/fd-hygiene
+path, `src/api/dispatch.rs`, `src/hooks.rs`, `src/update.rs`,
+`src/event_hooks.rs`, `src/store/fault.rs`, and the shared
+`storyhook-test-support` crate — `kill`, `getdtablesize`, `fcntl`, `getuid`,
+`openpty`, `pre_exec`, `process_group`, `PermissionsExt`. `src/update.rs`
+already asserts `target_for("x86_64", "windows") == None`. `install.sh` is
+POSIX `sh` handling only `Linux`/`Darwin`. The README advertises "Quick
+install (Linux / macOS)." Adding Windows to the release matrix is not a
+matrix line, it is a program that rewrites the daemon's process-spawn layer;
+dropping the unbuilt dependency is the honest edit, and
+`src/github/credential_store.rs` already had the fallback arm that answers
+"no keychain backend on this platform" for exactly this case.
+
+**The fix.** `Cargo.toml` loses the `cfg(target_os = "windows")` table and
+its `github-sync` feature activation; `Cargo.lock` drops the crate and its
+20 lines of unique dependents. `credential_store.rs` loses the Windows arm —
+which named the now-deleted crate, so its removal was a forced consequence,
+not a discretionary edit — and narrows its fallback to macOS+Linux.
+`help_topics.rs` drops "Windows Credential Manager" from the `github-auth`
+topic, a support claim no artifact backed.
+
+**The generalized invariant SH-259 left unshipped.**
+`tests/release_targets.rs`'s `the_release_matrix_still_ships_linux` —
+narrow on purpose, because the general form failed at the time — is now
+`every_platform_gated_dependency_table_targets_a_built_platform`: every
+`cfg(target_os = ...)` dependency table, in every tracked `Cargo.toml`
+(`git ls-files -- '*Cargo.toml'`, this repo's derived-not-enumerated idiom,
+same as `store_isolation.rs`'s `data_dir_harnesses` and
+`harness_path_entries.rs`), corresponds to a target the release matrix
+actually builds. The `target_os` → matrix-triple-shape mapping
+(`macos` → `-apple-darwin`, `linux` → `-unknown-linux-`, `windows` →
+`-pc-windows-`) is closed and explicit — an OS this function has not been
+taught panics rather than silently passing, so a third platform-gated
+dependency can't slip through the same way twice. Confirmed red against the
+unmodified manifest first (naming `windows`, citing SH-260), confirmed green
+after; 13/13 in `tests/release_targets.rs`.
+
+**Scope held by council vote, not by default.** Implementation surfaced two
+more `#[cfg(target_os = "windows")]` arms with no Cargo dependency —
+`src/clipboard.rs:50` (`clip`) and `src/web.rs:273` (`cmd /C start`) — the
+same string, a different defect shape. A `/council-vote` (software-architect,
+skeptic, project-manager) ran two rounds: round 1 was 2–1 for scoping SH-260
+narrow and filing separately; the single-choice vote after all three saw
+each other's reasoning went unanimous 3–0 for the narrow scope, the architect
+switching off its own round-1 proposal once the skeptic showed the
+`credential_store.rs` edit was *forced* (it named a crate this fix deletes)
+where `clipboard.rs`/`web.rs` have no such forcing function — deleting them
+is purely discretionary, and a `git ls-files` source scan pinning "no
+tracked `src/` file may name `target_os = "windows"`" would be a policy gate
+against future Windows work, a bigger commitment than a `low`-priority
+sibling-sweep finding is chartered to make unilaterally. Filed as SH-276,
+framed as a decision (delete outright, or keep and pin with a scan) rather
+than a chore, linked back to SH-260. Full audit trail:
+`.council/sh-260-windows-clipboard-web-scope/` in the SH-260 worktree.
+
+**Gate:** `make test` green, single run, cold `target/` (fresh worktree,
+first build) — `cargo fmt` and `cargo clippy --workspace --all-targets -- -D
+warnings` clean, 154 suites / 3514 tests via `cargo test --workspace
+--test-threads=4`, the plugin bash harness 32/32, `make e2e-install`'s
+Playwright suite 130/130 in 3.3m, orphan-daemon check clean pre- and
+post-run. No stalls under a 180s log-growth watch. 91 GB free after.
+
+**Not done here, on purpose:** no version bump, no deploy — this worktree
+never runs either. SH-276 filed rather than resolved, deliberately: the
+delete-vs-pin decision it poses is real and belongs to whoever picks it up
+next, not defaulted inside this fix.
+
 ### SH-270 — done
 
 **Outcome:** merged (PR #349). `story doctor --fix` sweeps the catalog whatever the
