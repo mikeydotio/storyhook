@@ -104,6 +104,10 @@ rusqlite = { version = "0.32.1", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { workspace = true }
 serde_yml = "0.0.12"
+# The OS CSPRNG, for minting named dashboard tokens (SH-255) — 32 bytes with
+# none of a UUID's fixed version/variant nibbles, so the token's own shape
+# cannot be mistaken for (or "simplified" back into) a v4 UUID.
+rand = "0.9"
 # The digest behind a store's daemon-state directory name. A store's identity
 # determines its daemon's identity (docs/spec/store-isolation.md), and the
 # directory that identity names must not depend on the path's length or on

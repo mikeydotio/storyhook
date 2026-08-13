@@ -2310,6 +2310,7 @@ dependencies = [
  "libc",
  "predicates",
  "proptest",
+ "rand",
  "ratatui 0.30.0",
  "ratatui-macros",
  "rusqlite",
