@@ -1,0 +1,175 @@
+import { test, expect } from "@playwright/test";
+import {
+  cleanUpCreatedStories,
+  openProject,
+  projectSlug,
+  requiredEnv,
+  seedToken,
+} from "./support";
+
+/**
+ * Exercises SH-203 consumer 2: a story card lists every OPEN story still
+ * blocking it, each with its own status light. When a blocker closes, its
+ * light turns green (stateColor()'s CLOSED anchor -- see
+ * story-status-light.spec.ts for the semantic-vs-positional palette
+ * proof) and the entry dwells on the card for a few seconds before being
+ * removed -- the point of the dwell being that the reader sees *which*
+ * blocker cleared, not merely that the list got shorter.
+ *
+ * The blocker is closed through the API, not a UI click in this page --
+ * the same reasoning card-keyboard.spec.ts's "survives a live update"
+ * test gives: the resulting re-render has to be a genuine SSE-pushed one,
+ * the exact path the cleared-blocker ledger (recordClearedBlockers(),
+ * populateCard()) exists for, not an optimistic local update that would
+ * exercise a completely different code path.
+ *
+ * This spec creates and deletes its own stories rather than touching the
+ * "Alpha Project" fixture, whose exact two-story shape other specs
+ * (filter-persistence.spec.ts, column-visibility.spec.ts) assert on
+ * byte-for-byte per run-e2e.sh's own comment.
+ */
+
+cleanUpCreatedStories("Alpha Project");
+
+const DASHBOARD_TOKEN = requiredEnv("DASHBOARD_TOKEN");
+
+test.beforeEach(async ({ page }) => {
+  await seedToken(page);
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+});
+
+async function createStory(
+  page: import("@playwright/test").Page,
+  title: string,
+) {
+  await page.locator("#new-story-btn").click();
+  await expect(page.locator("#create-modal")).toHaveClass(/open/);
+  await page.locator("#create-title").fill(title);
+  await page.locator("#create-submit").click();
+  await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
+  const card = page.locator('.column[data-state="todo"] .card', {
+    hasText: title,
+  });
+  await expect(card).toBeVisible();
+  return card;
+}
+
+/** Deletes `title`'s "todo"-column story through the drawer, the same shape
+ * every other spec's local `deleteStory` uses -- support.ts's own shared
+ * helper. Not used for the blocker: a CLOSED story is already `archived`
+ * at the store row level (`StoryClosedAndArchived` -- distinct from the
+ * dashboard's own `hidden_at`/"Archive" action), so `DELETE` answers 404
+ * for one until it's reopened first. `cleanUpCreatedStories`'s own
+ * afterEach already does exactly that reopen-then-delete dance for any
+ * stray it finds (its own doc comment names the same 404), so the blocker
+ * -- left CLOSED on purpose, to prove the dwell -- is swept there rather
+ * than duplicating that dance here. */
+async function deleteStory(
+  page: import("@playwright/test").Page,
+  title: string,
+) {
+  const card = page.locator('.column[data-state="todo"] .card', {
+    hasText: title,
+  });
+  await card.click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
+  await expect(page.locator("#delete-modal")).toHaveClass(/open/);
+  await page.locator("#delete-reason").fill("e2e cleanup");
+  await page.locator("#delete-modal-submit").click();
+  await expect(card).not.toBeVisible();
+}
+
+async function resolvedTokenColor(
+  page: import("@playwright/test").Page,
+  token: string,
+): Promise<string> {
+  return page.evaluate((t) => {
+    const probe = document.createElement("div");
+    probe.style.background = `var(${t})`;
+    document.body.appendChild(probe);
+    const color = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    return color;
+  }, token);
+}
+
+test("a card lists its open blocker with a light; closing the blocker turns it green then, after a dwell, drops the entry", async ({
+  page,
+  request,
+}) => {
+  const blockerTitle = "SH-203 card blockers — the blocker";
+  const workerTitle = "SH-203 card blockers — the blocked story";
+  const blockerCard = await createStory(page, blockerTitle);
+  const blockerId = (await blockerCard.getAttribute("data-id"))!;
+  await createStory(page, workerTitle);
+
+  // blocked-by, from the worker's own drawer -- openBlockers() reads the
+  // worker's OWN relationships, so the edge has to be recorded in this
+  // direction (RelationService writes the inverse "blocks" onto the
+  // blocker automatically; either direction of `/relate` call would do,
+  // this one just matches which story's drawer is already open).
+  await page.locator(".card", { hasText: workerTitle }).click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await page.locator('input[placeholder="Story ID (e.g. SH-2)"]').fill(blockerId);
+  await page.locator("#drawer-body .inline-add select").selectOption("blocked-by");
+  await page
+    .locator("#drawer-body .inline-add button", { hasText: "Add" })
+    .click();
+  await expect(page.locator(".rel-row", { hasText: blockerId })).toBeVisible();
+  await page.locator("#drawer-close").click();
+  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
+
+  const workerCard = page.locator(".card", { hasText: workerTitle });
+  const blockersRow = workerCard.locator(".card-blockers");
+  await expect(blockersRow.locator(".rel-id")).toHaveText(blockerId);
+  // The blocker is still in "todo" -- an OPEN, non-active, non-blocked
+  // state, stateColor()'s deliberately quiet default.
+  await expect(blockersRow.locator(".story-light")).toHaveCSS(
+    "background-color",
+    await resolvedTokenColor(page, "--fg-faint"),
+  );
+
+  // Closes the blocker from outside this tab, forcing a genuine SSE-pushed
+  // re-render rather than an optimistic local one -- moveStory()'s own
+  // request shape (POST .../move, { state: targetSlug }).
+  const slug = await projectSlug(request, "Alpha Project");
+  const resp = await request.post(
+    `/api/repos/${slug}/story/${blockerId}/move`,
+    {
+      headers: {
+        "X-Storyhook": "1",
+        "X-Storyhook-Token": DASHBOARD_TOKEN,
+        "Content-Type": "application/json",
+      },
+      data: { state: "done" },
+    },
+  );
+  expect(resp.ok()).toBe(true);
+
+  // Still listed, still lit -- but green now, and marked cleared: the
+  // dwell's whole point is that the reader sees *this* blocker turn
+  // green, not merely that the list eventually shrinks.
+  await expect(blockersRow.locator(".rel-id")).toHaveText(blockerId, {
+    timeout: 8000,
+  });
+  await expect(blockersRow.locator(".story-ref.blocker-cleared")).toHaveCount(
+    1,
+  );
+  await expect(blockersRow.locator(".story-light")).toHaveCSS(
+    "background-color",
+    await resolvedTokenColor(page, "--success"),
+  );
+
+  // After the dwell (BLOCKER_CLEARED_DWELL_MS, 4s) the whole blockers row
+  // is gone -- populateCard() only appends .card-blockers at all when
+  // there's something (open or still-dwelling) to show.
+  await expect(workerCard.locator(".card-blockers")).toHaveCount(0, {
+    timeout: 8000,
+  });
+
+  // The blocker is left CLOSED -- cleanUpCreatedStories' afterEach reopens
+  // then deletes it, per this file's own deleteStory() comment.
+  await deleteStory(page, workerTitle);
+});

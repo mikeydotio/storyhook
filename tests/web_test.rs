@@ -914,6 +914,39 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     // SH-197: the context menu's Delete item, reaching the same shared
     // modal (commit 3) the drawer footer's own Delete button opens.
     assert!(body.contains("\"Delete\", danger: true"));
+
+    // SH-203: the status-light component and its consumers -- storyLight()
+    // (the dot alone), storyRef() (light + the existing .rel-id id
+    // button), and linkifyStoryIds() (splitting free text around bare
+    // mentions), adopted by the drawer's relationships/referenced-by
+    // sections, comment bodies, and the blocked banner's awaiting reason.
+    assert!(body.contains("function storyLight"));
+    assert!(body.contains("function storyRef"));
+    assert!(body.contains("function linkifyStoryIds"));
+    assert!(body.contains(".story-ref"));
+    assert!(body.contains(".story-light"));
+    assert!(body.contains(r#"role: "img""#));
+    assert!(body.contains(r#""Status: " + slug"#));
+    // stateColor() re-colours by meaning, not board position (SH-203): the
+    // four REQUIRED_STATES anchors, checked in this order so a renamed or
+    // reordered catalog still reads right.
+    assert!(body.contains("function stateColor"));
+    assert!(body.contains(r#"slug === "blocked""#));
+    assert!(body.contains(r#"def.super_state === "CLOSED""#));
+    assert!(body.contains(r#"def.role === "active""#));
+    assert!(body.contains(r#"slug === "todo""#));
+
+    // SH-203 consumer 2: the card blockers list and its cleared-blocker
+    // dwell -- openBlockers() mirrors the server's is_ready rule client-
+    // side; the ledger functions keep a cleared entry visible, lit green,
+    // for a beat after openBlockers() itself would already drop it.
+    assert!(body.contains("function openBlockers"));
+    assert!(body.contains(".card-blockers"));
+    assert!(body.contains("function recordClearedBlockers"));
+    assert!(body.contains("function dwellingBlockerIds"));
+    assert!(body.contains("var clearedBlockers"));
+    assert!(body.contains(".blocker-cleared"));
+    assert!(body.contains("BLOCKER_CLEARED_DWELL_MS"));
 }
 
 /// The dashboard's `<style>` block, so a selector assertion below cannot
@@ -1214,10 +1247,16 @@ fn web_serve_root_html_meets_wcag_tap_target_size() {
     // Selectors whose fix needed both axes -- each is a glyph-only icon
     // button (a chip's "x", a relation's delete button, a dismiss "x")
     // narrower than --tap-min on its own.
+    //
+    // `.rel-row button` was replaced by `.rel-id`/`.rel-remove` (SH-203):
+    // storyRef()'s id button now also renders outside any `.rel-row`
+    // (`.referenced-by-text`, `.comment-text`, `.card-blockers`), so its
+    // tap-target floor had to move off a `.rel-row`-scoped selector too.
     for selector in [
         ".status-reorder button",
         ".label-chip button",
-        ".rel-row button",
+        ".rel-id",
+        ".rel-remove",
         ".dispatch-history-dismiss",
     ] {
         let decl = declarations(css, selector);
@@ -1245,6 +1284,57 @@ fn web_serve_root_html_meets_wcag_tap_target_size() {
             "`{selector}` must set `{expected}`"
         );
     }
+}
+
+/// SH-203: the status light itself never carries the `unknown` colour --
+/// stateColor() runs and sets an inline `background` instead -- so the
+/// only place its own colour comes from CSS is the "id doesn't resolve"
+/// case, `.story-light.unknown`, which must actually paint something
+/// (a hollow ring) rather than default to invisible-on-white.
+#[test]
+fn web_serve_root_html_styles_the_status_light_and_card_blockers() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    assert!(
+        declarations(css, ".story-ref").contains("display: inline-flex"),
+        ".story-ref must lay its light and id out inline, not stacked"
+    );
+    let unknown = declarations(css, ".story-light.unknown");
+    assert!(
+        unknown.contains("background: transparent"),
+        ".story-light.unknown must not paint stateColor()'s inline background"
+    );
+    assert!(
+        unknown.contains("border:"),
+        ".story-light.unknown must render a ring -- an id that can't resolve \
+         should read as \"unresolvable\", not silently blank"
+    );
+    assert!(
+        declarations(css, ".card-blockers").contains("flex-wrap: wrap"),
+        ".card-blockers must wrap rather than overflow a narrow card"
+    );
+    // The cleared-blocker pulse is reduced-motion-gated the same way every
+    // other flash-* animation in this file is (see the block's own
+    // comment) -- pinned by finding the rule inside that block, not just
+    // anywhere in the stylesheet.
+    let motion_block_start = css
+        .find("@media (prefers-reduced-motion: no-preference) {")
+        .expect("the reduced-motion block exists");
+    let motion_block = &css[motion_block_start..];
+    assert!(
+        motion_block.contains(".blocker-cleared .story-light"),
+        "the cleared-blocker pulse must be gated behind prefers-reduced-motion, \
+         like every other card flash animation"
+    );
 }
 
 /// SH-235: the filter bar's dropdowns, checkboxes and sort buttons collapse
