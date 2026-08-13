@@ -89,11 +89,73 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
 
+  # The release body, written here rather than left to GitHub.
+  #
+  # `generate_release_notes` counts from the newest TAG, published or not. A tag
+  # that never published — v2.1.0, whose build died on one target — makes the
+  # next release's generated notes describe the gap between two tags while the
+  # reader upgrades between two releases. For v2.1.1 that was six pull requests
+  # shown against seven hundred and forty-three commits delivered, with nothing
+  # on the page saying so (SH-262).
+  #
+  # Deliberately not gated on a tag: this is the one check whose failure is
+  # cheap only before the tag exists. `release` below is tag-gated and tags are
+  # never moved here, so a body that cannot be rendered on a tag push leaves a
+  # second permanently dangling tag. Running it on `workflow_dispatch` too means
+  # the rehearsal that already proves the four targets build now also proves the
+  # release has something honest to say.
+  notes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Render the release body
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            version="$(cat VERSION)"
+          fi
+
+          # The newest published release is the version a user actually
+          # upgrades FROM: `install.sh` and `story update` both resolve
+          # `/releases/latest`, which is the newest release that is neither a
+          # draft nor a prerelease. This asks the list endpoint for the same
+          # thing and skips the version being cut, so re-running the workflow
+          # on a tag that already published still renders the body it should
+          # have had, instead of trying to measure a release from itself.
+          # Nothing published at all yields an empty string — a first release,
+          # not an error.
+          since="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=30" \
+            --jq "[.[] | select(.draft == false and .prerelease == false and .tag_name != \"${version}\")][0].tag_name // empty" \
+            2>/dev/null || true)"
+
+          arguments=(--version "$version" --repo "$GITHUB_REPOSITORY")
+          if [ -n "$since" ]; then
+            arguments+=(--since "$since")
+          fi
+
+          scripts/render-release-body.sh "${arguments[@]}" > release-body.md
+
+          {
+            echo "### Release body for \`${version}\`"
+            echo
+            cat release-body.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-body
+          path: release-body.md
+
   release:
     # Strict on purpose, and the deliberate counterweight to `fail-fast:
     # false`: one failed target still blocks the release rather than
-    # publishing a partial one.
-    needs: build
+    # publishing a partial one. `notes` joins it for the same reason — a failed
+    # render must stop the release, not fall back to generated-only notes.
+    needs: [build, notes]
     # A dispatched run has no tag to release. Without this guard, adding the
     # `workflow_dispatch` trigger above would turn every on-demand build into
     # a failed publish step.
@@ -102,13 +164,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Scoped to the build artifacts by name: an unfiltered download would
+      # sweep `release-body` into the same directory, and `files:` below
+      # uploads everything in it as a release asset.
       - uses: actions/download-artifact@v4
         with:
+          pattern: story-*
           path: artifacts
           merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-body
+          path: notes
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
+          # GitHub pre-pends this to the generated notes rather than replacing
+          # them, so the PR list and contributors survive underneath a body
+          # that states the span the reader is actually crossing.
+          body_path: notes/release-body.md
           generate_release_notes: true
           files: artifacts/*

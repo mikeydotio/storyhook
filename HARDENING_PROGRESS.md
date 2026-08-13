@@ -12368,6 +12368,73 @@ with a 120s stall bound and a monitor covering both stall and completion. Green 
 — exit 0, 107 Playwright specs, no stalls, no wedges, no orphans, no restarts. The clone was
 removed after the merge. `target/` unchanged; 194 GB free.
 
+### SH-262 — the release body is rendered from the changelog · PR #328
+
+**Outcome: a release can no longer publish notes that measure the wrong span.**
+`scripts/render-release-body.sh` builds the body from `CHANGELOG.md`, measured
+from the newest *published* release, and `release.yml` feeds it to the publish
+step as `body_path`. The manual `gh release edit` SH-257 fell back on is gone.
+
+**What the mechanism actually fixes.** `generate_release_notes` counts from the
+newest **tag**, published or not. `v2.1.0` was tagged and never published, so the
+notes GitHub would generate for `v2.1.1` describe six pull requests, while a user
+upgrading from the newest release they can install receives 743 commits. Nothing
+about those notes is false; they answer a question nobody asked. The renderer
+measures from what `install.sh` and `story update` both resolve — the release, not
+the tag — so the span in the body is the span the reader crosses.
+
+**Two design points that are the whole value, and would each have been cheaper to
+skip.**
+
+*The failure is moved to where it is still cheap.* Publishing is tag-gated and
+tags are never moved here, so a body that first fails on a tag push mints a second
+permanently dangling tag beside `v2.1.0`. The `notes` job is therefore **not**
+gated on a tag: the dispatch rehearsal that SH-259 added to prove the four targets
+build now also proves the release has something honest to say. `release` needs
+that job, so a failed render stops the release rather than falling back to the
+notes it replaces — the fallback being precisely the failure under repair.
+
+*Re-running the workflow on a published tag still renders.* The first draft
+resolved `/releases/latest` and refused when it equalled the version being cut —
+which is exactly what a re-run of an already-published release looks like, and
+"re-run failed jobs" is the first thing anyone reaches for. It now asks the list
+endpoint for the newest non-draft, non-prerelease release *other than this one*,
+so a re-run reproduces the body it should have had. Found by reading the workflow
+back rather than by running it; there is no way to test this one locally.
+
+**A bug I wrote, and the test that caught it.** The breaking-change disclosure
+never fired on the real changelog. `section_of "$v" | grep -q '^### Breaking'`:
+`grep -q` exits on its first match, the upstream `awk` dies of SIGPIPE, and under
+`pipefail` that becomes the pipeline's status — so the pipeline reports "no match"
+precisely when there **is** one. A here-string fixes it. The failure is invisible
+in output (a body that simply omits the disclosure), it only bites on the branch
+that matters, and it was caught because
+`a_breaking_change_among_the_skipped_versions_is_disclosed` was written before the
+script existed. The comment naming it sits above the loop.
+
+**The local gate refused twice before it passed**, both times for something the
+targeted `cargo test` I ran first could not see: `cargo fmt --check` on a
+collapsible closure, then `clippy`'s `disallowed_methods` on `tempfile::tempdir`
+in the new test file — `$TMPDIR` is Spotlight-indexed, and the harness has
+`storyhook_test_support::scratch_dir_named` for exactly this. Worth recording
+because a targeted test run reads as "green" and is not the gate; only `make test`
+is.
+
+**Coverage.** 16 renderer tests (`tests/release_body.rs`) over fixture changelogs
+plus the real one, and 4 new workflow invariants in `tests/release_targets.rs`:
+`body_path` is supplied, publishing needs the render, the render is not tag-gated,
+the body is not swept into the release assets, the span is measured from a release
+rather than from a tag, and the script carries its executable bit. The refusals
+are tested as carefully as the successes — a renderer that exits 0 on bad input is
+worse than one that crashes, because the workflow publishes whatever it printed.
+
+**Supervision:** four `make test` runs under a log-growth heartbeat with a 120s
+stall bound. Two failed fast on the gate's own lint steps; the third was **killed
+deliberately** after ~1m when reading the workflow back surfaced the re-run
+footgun above, since a gate on a tree I was about to change proves nothing —
+orphan check run after the kill, clean. The fourth is the one that counts: green in ~14m — exit 0, 3457 Rust tests, 31 plugin harness scripts, 107 Playwright specs.
+No stalls, no wedges, no orphans. 194 GB free, `target/` unchanged at 72 GB.
+
 ### SH-258 — a temp-rooted checkout, and the extent the story undercounted · no PR yet
 
 **The story's own extent section was wrong, and it explains why.** It reads "One
