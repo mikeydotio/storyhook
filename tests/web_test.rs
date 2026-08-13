@@ -1375,6 +1375,46 @@ fn web_serve_root_html_has_coarse_pointer_actions_buttons() {
     assert!(declarations(css, ".list-table-wrap").contains("contain: layout"));
 }
 
+/// SH-235 (D8): `.column`'s base rule (`flex: 0 0 18rem; max-width: 18rem`)
+/// is nearly the entire screen on the narrowest supported phones -- 288px
+/// of a 320px viewport leaves only a 32px (10%) sliver of the next column,
+/// not enough to read as "there's more this way". The `<=768px` layout
+/// block (not `pointer: coarse` -- this is a screen-width question, the
+/// same distinction the coarse-pointer block's own comment draws the other
+/// way) narrows the ceiling to `min(18rem, 85vw)`, which only bites below
+/// ~339px (18rem / 0.85) -- `responsive.mobile.spec.ts`'s own pair of
+/// tests is what proves the browser actually resolves that expression
+/// correctly at 320px and leaves 375px+ alone.
+#[test]
+fn web_serve_root_html_lets_the_next_board_column_peek_on_narrow_phones() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    assert!(
+        declarations(css, ".column").contains("flex: 0 0 18rem")
+            && declarations(css, ".column").contains("max-width: 18rem"),
+        ".column's base rule must keep its full 18rem ceiling outside the narrow-phone override"
+    );
+
+    let block_start = css
+        .find("@media (max-width: 768px) {")
+        .expect("the <=768px layout block is what narrows .column on the smallest phones");
+    let block = &css[block_start..];
+    let block = &block[..block.find("\n}").expect("the <=768px block closes")];
+    assert!(
+        block.contains(".column { flex-basis: min(18rem, 85vw); max-width: min(18rem, 85vw); }"),
+        "the <=768px block must narrow .column to min(18rem, 85vw)"
+    );
+}
+
 #[test]
 fn web_serve_api_data_empty_project() {
     let fixture = served();

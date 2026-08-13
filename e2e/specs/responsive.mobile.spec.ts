@@ -616,3 +616,65 @@ test("the card's actions button is deliberately not a Tab stop; the list row's i
   await expect(page.locator("#board-view")).toBeVisible();
   await deleteStory(page, title);
 });
+
+/**
+ * SH-235 (D8): `.column`'s fixed `flex: 0 0 18rem` (288px) is nearly the
+ * entire screen on the narrowest supported phones -- at 320px wide it
+ * leaves only a 32px (10%) sliver of the next column, not enough to read
+ * as "there's more this way" rather than "this is the last column".
+ * `min(18rem, 85vw)` keeps 288px everywhere that already peeks
+ * comfortably (375px+) and only shrinks the column where it wouldn't
+ * peek at all.
+ */
+test("the next board column peeks on the narrowest supported phone", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.goto("/");
+  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await expect(page.locator("#board-view")).toBeVisible();
+  // Alpha's own fixture carries five states (todo/in-progress/blocked/
+  // done/review, column-visibility.spec.ts's own comment) -- a second
+  // column to peek at is never in question here.
+  await expect(page.locator(".column")).toHaveCount(5);
+
+  const width = await page
+    .locator(".column")
+    .first()
+    .evaluate((el) => el.getBoundingClientRect().width);
+  expect(
+    width,
+    `a board column measures ${width}px at a 320px viewport -- expected ` +
+      "min(18rem, 85vw) = 272px, not the unshrunk 288px ceiling",
+  ).toBeCloseTo(272, 0);
+
+  const firstRight = await page
+    .locator(".column")
+    .first()
+    .evaluate((el) => el.getBoundingClientRect().right);
+  expect(
+    firstRight,
+    "the first column's own right edge should leave room for the next " +
+      "column to start peeking in before the 320px viewport ends",
+  ).toBeLessThan(320);
+  await expect(page.locator(".column").nth(1)).toBeInViewport({ ratio: 0 });
+});
+
+/** Confirms the fix above is additive, not a universal shrink -- a wider
+ * phone (390px, comfortably above the 85vw crossover) keeps the original
+ * 288px column width unchanged. */
+test("a wider phone keeps the board column at its original 18rem width", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await expect(page.locator("#board-view")).toBeVisible();
+  await expect(page.locator(".column").first()).toBeVisible();
+
+  const width = await page
+    .locator(".column")
+    .first()
+    .evaluate((el) => el.getBoundingClientRect().width);
+  expect(width).toBeCloseTo(288, 0);
+});
