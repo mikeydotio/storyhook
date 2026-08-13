@@ -3,6 +3,7 @@ import {
   cleanUpCreatedStories,
   deleteStory,
   latch,
+  openProject,
   seedToken,
 } from "./support";
 
@@ -66,8 +67,7 @@ function stubbedDispatchBody(storyId: string, auto: boolean) {
 test("Dispatch and Dispatch Auto are present for an open story with a checkout", async ({
   page,
 }) => {
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
   const title = "SH-197 context menu — dispatch present";
   const card = await createStory(page, title);
 
@@ -85,8 +85,7 @@ test("Dispatch and Dispatch Auto are present for an open story with a checkout",
 test("Dispatch and Dispatch Auto are absent for a story with no checkout, and no stray separator is left behind (AC1)", async ({
   page,
 }) => {
-  await page.locator(".repo-card-name", { hasText: "Gamma Archive" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Gamma Archive");
 
   const card = page.locator(".card", { hasText: "Archived idea" });
   await card.click({ button: "right" });
@@ -110,8 +109,7 @@ test("Dispatch and Dispatch Auto are absent for a story with no checkout, and no
 });
 
 test("Dispatch issues POST .../dispatch", async ({ page }) => {
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
   const title = "SH-197 context menu — dispatch stubbed";
   const card = await createStory(page, title);
   const id = await card.getAttribute("data-id");
@@ -140,8 +138,7 @@ test("Dispatch issues POST .../dispatch", async ({ page }) => {
 });
 
 test("Dispatch Auto issues POST .../dispatch?auto=1", async ({ page }) => {
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
   const title = "SH-197 context menu — dispatch auto stubbed";
   const card = await createStory(page, title);
   const id = await card.getAttribute("data-id");
@@ -177,8 +174,7 @@ test("Dispatch Auto issues POST .../dispatch?auto=1", async ({ page }) => {
 test("both items are aria-disabled while a dispatch for this story is in flight", async ({
   page,
 }) => {
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
   const title = "SH-197 context menu — dispatch in flight";
   const card = await createStory(page, title);
   const id = await card.getAttribute("data-id");

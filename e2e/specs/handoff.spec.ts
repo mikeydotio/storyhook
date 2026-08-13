@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import type { APIRequestContext, Page } from "@playwright/test";
-import { cleanUpCreatedStories, requiredEnv } from "./support";
+import { cleanUpCreatedStories, openProject, requiredEnv } from "./support";
 
 /**
  * SH-251's one-click dashboard, in a real browser: a tab opened at
@@ -155,8 +155,7 @@ test("that same tab writes without ever being asked for a token", async ({
   const coupon = await armCoupon(request);
   await page.goto(`/#h=${coupon}`);
 
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
 
   await page.locator("#new-story-btn").click();
   await expect(page.locator("#create-modal")).toHaveClass(/open/);
@@ -182,8 +181,7 @@ test("that same tab is shown the boundary rather than a button that 403s", async
   const coupon = await armCoupon(request);
   await page.goto(`/#h=${coupon}`);
 
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
   await page.locator(".card").first().click();
 
   const dispatch = page.locator("#dispatch-btn");

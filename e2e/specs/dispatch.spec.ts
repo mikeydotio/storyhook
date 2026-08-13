@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { test, expect } from "@playwright/test";
-import { requiredEnv, seedToken } from "./support";
+import { openProject, requiredEnv, seedToken } from "./support";
 
 /**
  * Exercises the dashboard's Dispatch button (SH-50) against a real daemon
@@ -82,7 +82,7 @@ test("Dispatch and Dispatch Auto are both absent for a story in a project with n
 }) => {
   await seedToken(page);
   await page.goto("/");
-  await page.locator(".repo-card-name", { hasText: "Gamma Archive" }).click();
+  await openProject(page, "Gamma Archive");
   await page.locator(".card-title", { hasText: "Archived idea" }).click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
 
@@ -99,7 +99,7 @@ test("Dispatch and Dispatch Auto are both absent for a story in a project with n
 test("Dispatch sits at the leading edge, before Delete", async ({ page }) => {
   await seedToken(page);
   await page.goto("/");
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await openProject(page, "Alpha Project");
   await page
     .locator(".card-title", { hasText: "Wire up the auth flow" })
     .click();
@@ -134,7 +134,7 @@ test("a dispatch from a tokenless tab prompts once, then runs with no second pro
   await expect(page.locator("#home-view")).toBeVisible();
   await expect(page.locator("#token-modal")).not.toHaveClass(/open/);
 
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await openProject(page, "Alpha Project");
   await page
     .locator(".card-title", { hasText: "Wire up the auth flow" })
     .click();
@@ -206,7 +206,7 @@ test("Dispatch Auto sends ?auto=1 and runs a real autonomous dispatch (SH-208)",
   await seedToken(page);
   await page.goto("/");
 
-  await page.locator(".repo-card-name", { hasText: "Delta Project" }).click();
+  await openProject(page, "Delta Project");
   await page
     .locator(".card-title", { hasText: "Roll out the new onboarding flow" })
     .click();
@@ -274,7 +274,7 @@ test("a saved token is not asked for again on a second dispatch", async ({
   await seedToken(page);
   await page.goto("/");
 
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await openProject(page, "Alpha Project");
   await page
     .locator(".card-title", { hasText: "Fix the flaky upload test" })
     .click();

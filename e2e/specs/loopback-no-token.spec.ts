@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { cleanUpCreatedStories } from "./support";
+import { cleanUpCreatedStories, openProject } from "./support";
 
 /**
  * SH-250's acceptance criterion, asserted the only way it can honestly be
@@ -59,8 +59,7 @@ test("a fresh tab at 127.0.0.1 renders without ever asking for a token", async (
   // And a project's own board, which is the second read (`/data`) and the one
   // that returns every story in the project -- the disclosure the token used
   // to be the only thing standing in front of.
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
   await expect(page.locator(".column .card").first()).toBeVisible();
   await expect(page.locator("#token-modal")).not.toHaveClass(/open/);
 
@@ -81,8 +80,7 @@ test("the first write from that same tokenless tab still prompts", async ({
   page,
 }) => {
   await page.goto("/");
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
 
   await page.locator("#new-story-btn").click();
   await expect(page.locator("#create-modal")).toHaveClass(/open/);
