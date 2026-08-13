@@ -119,10 +119,7 @@ impl<'ctx, S: Store> RelationService<'ctx, S> {
                     .iter()
                     .any(|(_, b_relation)| *b_relation == "parent-of")
             {
-                return Err(AppError::Validation(format!(
-                    "story `{b}` is closed and cannot be modified"
-                ))
-                .into());
+                return Err(AppError::Validation(super::closed_story_refusal(b)).into());
             }
 
             if !remove {

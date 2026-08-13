@@ -4,8 +4,11 @@
 # `complete execute`, refusal is ALL-OR-NOTHING: every guard case below
 # must leave the worktree AND the branch exactly as it found them, never a
 # partial cleanup nobody is left to observe. There is no comment assertion
-# anywhere in this file on purpose -- a closed story cannot be commented on
-# (`resolve_open_story`), so reap's exit JSON is its only record.
+# anywhere in this file on purpose -- reap has no record step to assert. It
+# once had no choice, because a closed story refused a comment; since SH-261
+# it would be accepted, and the absence is a design decision instead (see
+# `reap`'s own block in bin/story.sh). If a record step is ever added, this
+# file is where its assertion belongs.
 source "$(dirname "$0")/lib.sh"
 
 export PATH="$TESTS_DIR/fakes:$PATH"
