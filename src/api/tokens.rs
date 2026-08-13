@@ -1167,7 +1167,7 @@ mod tests {
     // --- Test fixtures ---
 
     fn tempdir() -> tempfile::TempDir {
-        tempfile::tempdir().expect("a scratch directory")
+        storyhook_test_support::scratch_dir()
     }
 
     fn env_at(dir: &tempfile::TempDir) -> Environment {
