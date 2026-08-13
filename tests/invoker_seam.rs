@@ -688,6 +688,119 @@ fn an_origin_is_registered_in_exactly_one_place() {
     );
 }
 
+/// **Exactly one write may reach a closed story on a person's behalf** (SH-261).
+///
+/// `Intent::Append` resolves through `resolve_appendable_story`, which permits a
+/// closed story where `resolve_open_story` refuses one. That relaxation was
+/// argued for, and granted to, a single verb: `story comment`. The argument was
+/// specific — a comment reaches nothing but the comment list and `updated_at`,
+/// so it cannot touch the state, scope or rollups that closing a story is
+/// supposed to freeze. Nothing about that argument generalizes to a verb that
+/// has not made it.
+///
+/// The failure this prevents is not someone deliberately widening the rule. It
+/// is someone writing a sixth single-story write, seeing two intents, and
+/// picking the one that does not refuse — which is exactly how the relaxation
+/// stops being a decision and becomes an ambient permission. Adding a second
+/// `Intent::Append` fails here until whoever added it comes and says so on
+/// purpose.
+///
+/// Greps the source for the reason [`the_legacy_write_path_is_gone`] does: it is
+/// what a reviewer would do, it needs no build graph, and it cannot be satisfied
+/// by a re-export.
+#[test]
+fn only_the_comment_path_appends_to_a_closed_story() {
+    use std::path::Path;
+
+    fn sources(dir: &Path, into: &mut Vec<(String, String)>) {
+        for entry in std::fs::read_dir(dir).expect("reading src/") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                sources(&path, into);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let text = std::fs::read_to_string(&path).expect("reading a source file");
+                into.push((path.to_string_lossy().into_owned(), text));
+            }
+        }
+    }
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    sources(&root, &mut files);
+    assert!(
+        files.len() > 20,
+        "expected the whole tree, got {}",
+        files.len()
+    );
+
+    // `service/mod.rs` declares the intent and owns the only call of the
+    // resolver it maps to; it is the definition, not a call site.
+    const DEFINITION: &str = "src/service/mod.rs";
+
+    let mut appenders = Vec::new();
+    let mut resolvers = Vec::new();
+    for (path, text) in &files {
+        let relative = path
+            .rsplit_once("/src/")
+            .map_or_else(|| path.clone(), |(_, rest)| format!("src/{rest}"));
+        if relative == DEFINITION {
+            continue;
+        }
+        for (number, line) in text.lines().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            let site = format!("{relative}:{}: {}", number + 1, code.trim());
+            if code.contains("Intent::Append") {
+                appenders.push(site.clone());
+            }
+            // Reaching the resolver directly would route around the intent
+            // entirely, which is the same widening by a quieter road.
+            if code.contains("resolve_appendable_story") {
+                resolvers.push(site);
+            }
+        }
+    }
+
+    assert_eq!(
+        appenders.len(),
+        1,
+        "`Intent::Append` is `story comment` and nothing else — SH-261 granted it to that verb \
+         on an argument about what a comment can reach. A new one needs its own argument, and \
+         this assertion updated to record that it was made:\n  {}",
+        appenders.join("\n  ")
+    );
+    assert!(
+        appenders[0].starts_with("src/service/story.rs:"),
+        "the single append lives in the story service's `comment`, got {}",
+        appenders[0]
+    );
+    assert!(
+        resolvers.is_empty(),
+        "`resolve_appendable_story` is reached through `Intent::Append`, never directly, so the \
+         guard cannot be picked up without the intent that names it:\n  {}",
+        resolvers.join("\n  ")
+    );
+
+    // And the seam is really there — a rename that emptied both greps would
+    // otherwise pass this test by deleting the thing it protects.
+    let definition =
+        std::fs::read_to_string(root.join("service/mod.rs")).expect("reading src/service/mod.rs");
+    assert!(
+        definition.contains("fn resolve_appendable_story("),
+        "`resolve_appendable_story` holds the closed-story relaxation; if it moved, move this \
+         assertion with it"
+    );
+    assert_eq!(
+        definition
+            .matches("resolve_appendable_story(tx, project, prefix, id)")
+            .count(),
+        1,
+        "`Intent::resolve` holds the single call to it"
+    );
+}
+
 /// `.storyhook` is a path literal, and after the flip a production module that
 /// still holds one is a module that still writes into the user's repository.
 ///

@@ -89,6 +89,93 @@ fn comment_and_assign_append_events() {
         .stdout(contains("First pass done"));
 }
 
+/// SH-261's own repro, end to end over `/api/v1/invoke`: verification that
+/// arrives after a story closes lands on the story it verifies.
+#[test]
+fn a_closed_story_takes_a_comment_from_the_command_line() {
+    let dir = tempdir().unwrap();
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["new", "Ship it"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["move", "SH-1", "done"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .args([
+            "comment",
+            "SH-1",
+            "verified in CI: run 31657323566, four green targets",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["show", "SH-1"])
+        .assert()
+        .success()
+        .stdout(contains("verified in CI: run 31657323566"))
+        // Still closed: the comment records something about the story, it does
+        // not reopen it.
+        .stdout(contains("(CLOSED)"));
+}
+
+/// The other half of SH-261's line: a soft-deleted story is a tombstone, and a
+/// tombstone takes no new observations.
+#[test]
+fn a_soft_deleted_story_refuses_a_comment_from_the_command_line() {
+    let dir = tempdir().unwrap();
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["new", "Never mind"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["delete", "SH-1", "filed twice"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["comment", "SH-1", "one more thing"])
+        .assert()
+        .failure()
+        .stderr(contains(
+            "story `SH-1` is deleted and cannot be commented on",
+        ))
+        .stderr(contains("story reopen SH-1 --force"));
+}
+
 /// A comment naming another story surfaces on *that* story's `referenced_by`
 /// block, in the `[comment]` shape beside `[git]` and `[pr]` (SH-220) — and
 /// never as a comment on it.
