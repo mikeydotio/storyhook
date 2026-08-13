@@ -1,6 +1,11 @@
 import { test, expect } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
-import { openFilters, seedToken } from "./support";
+import {
+  cleanUpCreatedStories,
+  deleteStory,
+  openFilters,
+  seedToken,
+} from "./support";
 
 /**
  * SH-235: the dashboard's shape at phone and tablet widths, on top of
@@ -25,9 +30,26 @@ import { openFilters, seedToken } from "./support";
 const SWEEP_WIDTHS = [320, 375, 390, 768];
 const SWEEP_HEIGHT = 844;
 
+cleanUpCreatedStories("Alpha Project");
+
 test.beforeEach(async ({ page }) => {
   await seedToken(page);
 });
+
+/**
+ * Creates a story in Alpha Project's `todo` column -- default state/type,
+ * same helper shape as `zoom.mobile.spec.ts`'s own local `createStory`.
+ */
+async function createStory(page: Page, title: string): Promise<void> {
+  await page.locator("#new-story-btn").click();
+  await expect(page.locator("#create-modal")).toHaveClass(/open/);
+  await page.locator("#create-title").fill(title);
+  await page.locator("#create-submit").click();
+  await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
+  await expect(
+    page.locator('.column[data-state="todo"] .card', { hasText: title }),
+  ).toBeVisible();
+}
 
 /**
  * Fails if the page itself scrolls horizontally at the current viewport --
@@ -477,4 +499,120 @@ test("the topbar and collapsed filter bar together stay within a measured chrome
     `the topbar + collapsed filter bar take up ${chromeBottom}px of a ` +
       `${height}px screen -- over the ${budget}px (40%) budget`,
   ).toBeLessThanOrEqual(budget);
+});
+
+/**
+ * SH-235 (D9): HTML5 native drag-and-drop (`card.draggable` + `dragstart`
+ * in `buildCard`) never fires on touch at all -- before this, the only way
+ * to move or act on a card without a mouse was an undocumented long-press
+ * raising the same context menu a right-click does. `.card-actions-btn`
+ * (board) and `.row-actions-btn` (list) make that path visible, and this
+ * proves it's genuinely the *same* menu -- not a second one that could
+ * silently drift out of step with the first as items are added/removed.
+ *
+ * Both buttons are `display: none` outside `pointer: coarse` (see their
+ * own CSS) -- this file only runs under `mobile-chromium`, where that
+ * media query matches, so no extra gating is needed to reach them here.
+ */
+test("the card and list-row actions menus have the same items as right-click", async ({
+  page,
+}) => {
+  const title = "SH-235 actions-menu parity";
+  await page.goto("/");
+  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await expect(page.locator("#board-view")).toBeVisible();
+  await createStory(page, title);
+
+  const card = page.locator('.column[data-state="todo"] .card', {
+    hasText: title,
+  });
+  await card.click({ button: "right" });
+  await expect(page.locator(".ctxmenu")).toBeVisible();
+  const rightClickItems = await page
+    .locator(".ctxmenu .ctxmenu-item")
+    .allTextContents();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".ctxmenu")).not.toBeVisible();
+
+  await card.locator(".card-actions-btn").click();
+  await expect(page.locator(".ctxmenu")).toBeVisible();
+  const cardActionsItems = await page
+    .locator(".ctxmenu .ctxmenu-item")
+    .allTextContents();
+  expect(
+    cardActionsItems,
+    "the card's (...) menu must offer exactly what right-click offers",
+  ).toEqual(rightClickItems);
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".ctxmenu")).not.toBeVisible();
+
+  await page.locator('#view-toggle button[data-view="list"]').click();
+  const row = page.locator("tr[data-id]", { hasText: title });
+  await row.click({ button: "right" });
+  await expect(page.locator(".ctxmenu")).toBeVisible();
+  const rowRightClickItems = await page
+    .locator(".ctxmenu .ctxmenu-item")
+    .allTextContents();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".ctxmenu")).not.toBeVisible();
+
+  await row.locator(".row-actions-btn").click();
+  await expect(page.locator(".ctxmenu")).toBeVisible();
+  const rowActionsItems = await page
+    .locator(".ctxmenu .ctxmenu-item")
+    .allTextContents();
+  expect(
+    rowActionsItems,
+    "the list row's (...) menu must offer exactly what right-click offers",
+  ).toEqual(rowRightClickItems);
+  // Right-click already proved this menu has real items (not an empty
+  // shell) -- both parity checks above would pass trivially against two
+  // empty arrays otherwise.
+  expect(rowActionsItems.length).toBeGreaterThan(0);
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".ctxmenu")).not.toBeVisible();
+
+  // deleteStory() targets the board's own card markup -- switch back from
+  // list view first, or the card it's looking for is (correctly) hidden.
+  await page.locator('#view-toggle button[data-view="board"]').click();
+  await expect(page.locator("#board-view")).toBeVisible();
+  await deleteStory(page, title);
+});
+
+/**
+ * The card's own trade-off (documented in buildCard and
+ * docs/spec/responsive-dashboard.md): `.card` is `role="button"`, so a
+ * nested interactive element is ARIA-presentational regardless of markup
+ * -- `.card-actions-btn` ships `tabIndex: -1` on purpose, deliberately
+ * unreachable by Tab, with Shift+F10 / the Menu key left as the keyboard
+ * path to the same menu. The list row carries no such constraint (a `<tr>`
+ * is not `role="button"`), so `.row-actions-btn` is a real, natively
+ * tabbable button.
+ */
+test("the card's actions button is deliberately not a Tab stop; the list row's is", async ({
+  page,
+}) => {
+  const title = "SH-235 actions-menu tab reachability";
+  await page.goto("/");
+  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await expect(page.locator("#board-view")).toBeVisible();
+  await createStory(page, title);
+
+  await expect(
+    page.locator(".card", { hasText: title }).locator(".card-actions-btn"),
+  ).toHaveAttribute("tabindex", "-1");
+
+  await page.locator('#view-toggle button[data-view="list"]').click();
+  const rowActionsBtn = page
+    .locator("tr[data-id]", { hasText: title })
+    .locator(".row-actions-btn");
+  await expect(rowActionsBtn).not.toHaveAttribute("tabindex", "-1");
+  await rowActionsBtn.focus();
+  await expect(rowActionsBtn).toBeFocused();
+
+  // deleteStory() targets the board's own card markup -- switch back from
+  // list view first, or the card it's looking for is (correctly) hidden.
+  await page.locator('#view-toggle button[data-view="board"]').click();
+  await expect(page.locator("#board-view")).toBeVisible();
+  await deleteStory(page, title);
 });
