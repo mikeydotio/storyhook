@@ -159,7 +159,26 @@ PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this rep
 # means the worktree and the main checkout are the same project, and telling an
 # autonomous agent to `cd` elsewhere for every write was friction bought with a
 # defect that no longer exists.
-AUTO_PROMPT_TPL="${STORY_AUTO_PROMPT:-Investigate and plan a fix for story <n> in this repo. Begin by reading it with ‘story show <n> --json’ -- its comments carry the discussion history. This is an AUTONOMOUS session: the user approves your plan once and is then unavailable -- ask no further questions after that approval and never block waiting on input. When your plan is finalized and approved, post it as a comment on <n> before you start implementing. For every later decision without a single obvious answer, convene ‘/council-vote’ instead of asking, and record the outcome as a comment on <n>. Run the full local suite with ‘make test’ and confirm it passes before pushing -- the pre-push hook enforces it. Open a pull request whose body references story <n>, comment the PR link on <n>, then merge it yourself with ‘gh pr merge --merge’ -- a merge commit, the only method this org allows -- verify the merge actually landed, and delete the source branch. Merging yourself deliberately overrides the standing \"in a linked worktree, stop after opening the PR\" rule, for the merge only. Do not bump the version or deploy from this worktree: do not run semver bump, deployit deploy, or any release/version step, and do not plan for them -- versioning and deployment happen later from the main branch, not here. Once the merge lands, judge from your own record of the work whether <n> is genuinely complete: default to closing it with ‘story move <n> done’ -- or the CLOSED-superstate state this project uses, if not ‘done’ -- a closed story cannot be commented on again, so say everything worth recording BEFORE that move, not after. Once <n> is closed, run ‘<reap>’ as your absolute last action -- it reclaims this worktree, deletes its branch, and then closes this very tmux window, so nothing you do after it can be observed. Never run ‘/story complete’ yourself: it asks a question, and a session with nobody left to answer it cannot survive one. If your own output shows further PRs or testing are still needed, leave <n> open, comment naming exactly what remains, and do not run ‘<reap>’ -- it refuses a story that is not yet closed, but do not rely on that refusal. If you hit a hard stop a council vote cannot resolve -- red tests, a failing merge, an unresolvable conflict -- post a comment on <n> with full diagnostics, run ‘story block <n> the-reason’, leave the PR open and this worktree intact, and stop. Never merge past a hard stop, and never run ‘<reap>’ after a hard stop.}"
+#
+# SH-219: whether the dispatched session can actually reach ‘/council-vote’
+# isn't knowable from prose alone, so the charter is assembled from a shared
+# HEAD and TAIL plus one of two swappable decision clauses — COUNCIL when
+# council_vote_available (below cmd_dispatch's own helpers) finds the skill on
+# disk, SOLO when it does not. Composed here, once, so the two rendered
+# charters can never drift on the obligations they share. STORY_AUTO_PROMPT
+# and STORY_AUTO_PROMPT_SOLO still let a caller override either wholesale, same
+# as STORY_PROMPT always has for the attended template.
+AUTO_PROMPT_HEAD="Investigate and plan a fix for story <n> in this repo. Begin by reading it with ‘story show <n> --json’ -- its comments carry the discussion history. This is an AUTONOMOUS session: the user approves your plan once and is then unavailable -- ask no further questions after that approval and never block waiting on input. When your plan is finalized and approved, post it as a comment on <n> before you start implementing. For every later decision, first judge whether it has one clear best answer: when it does, research current best practice for it, decide it yourself, and note the decision and your reasoning as a comment on <n>."
+AUTO_COUNCIL_CLAUSE="Only when a decision has two or more genuinely defensible answers -- a question of scope, direction, or technical approach that research alone cannot settle -- convene ‘/council-vote’ instead of asking, and record its outcome as a comment on <n>. If ‘/council-vote’ turns out not to be available to you, or the council aborts without a decision, do not stall: research the alternatives, choose the one you can best defend, and comment on <n> naming the decision, what you weighed, and why you chose as you did."
+AUTO_SOLO_CLAUSE="When a decision has two or more genuinely defensible answers -- a question of scope, direction, or technical approach that research alone cannot settle -- do not stall waiting for a person to answer: choose the one you can best defend, and comment on <n> naming the decision, what you weighed, and why you chose as you did."
+AUTO_PROMPT_TAIL="Run the full local suite with ‘make test’ and confirm it passes before pushing -- the pre-push hook enforces it. Every pull request you open must reference story <n> in its body and have its link commented on <n>, and you merge each one yourself with ‘gh pr merge --merge’ -- a merge commit, the only method this org allows -- verify the merge actually landed, and delete the source branch. Merging yourself deliberately overrides the standing \"in a linked worktree, stop after opening the PR\" rule, for the merge only. Do not bump the version or deploy from this worktree: do not run semver bump, deployit deploy, or any release/version step, and do not plan for them -- versioning and deployment happen later from the main branch, not here. Once every merge lands, judge <n> against its own acceptance criteria and your record of the work: if it is genuinely complete, default to closing it with ‘story move <n> done’ -- or the CLOSED-superstate state this project uses, if not ‘done’ -- a closed story cannot be commented on again, so say everything worth recording BEFORE that move, not after. Once <n> is closed, run ‘<reap>’ as your absolute last action -- it reclaims this worktree, deletes its branch, and then closes this very tmux window, so nothing you do after it can be observed. Never run ‘/story complete’ yourself: it asks a question, and a session with nobody left to answer it cannot survive one. If your own output shows further PRs or testing are still needed, leave <n> open, comment naming exactly what remains, and do not run ‘<reap>’ -- it refuses a story that is not yet closed, but do not rely on that refusal. If you hit a hard stop you cannot resolve -- red tests, a failing merge, an unresolvable conflict -- post a comment on <n> with full diagnostics, run ‘story block <n> the-reason’, leave the PR open and this worktree intact, and stop. Never merge past a hard stop, and never run ‘<reap>’ after a hard stop."
+AUTO_PROMPT_TPL="${STORY_AUTO_PROMPT:-$AUTO_PROMPT_HEAD $AUTO_COUNCIL_CLAUSE $AUTO_PROMPT_TAIL}"
+AUTO_PROMPT_SOLO_TPL="${STORY_AUTO_PROMPT_SOLO:-$AUTO_PROMPT_HEAD $AUTO_SOLO_CLAUSE $AUTO_PROMPT_TAIL}"
+# Which charter --auto gets: 'auto' (default) probes council_vote_available
+# for a real answer, 'on'/'off' force it without touching disk — the escape
+# hatch AND the test seam, same shape as READY_PROCESS_PATTERN's own hatch
+# below.
+COUNCIL_MODE="${STORY_COUNCIL:-auto}"
 # Extra clause a caller appends to the handoff prompt (daemon-caller seam).
 # Appended VERBATIM with a single space separator, AFTER <n>/<name> templating.
 PROMPT_EXTRA="${STORY_PROMPT_EXTRA:-}"
@@ -574,6 +593,84 @@ ready_gate_reason() {
       end'
 }
 
+# _council_plugin_enabled <plugin-key> <project-root> — "false" if <plugin-key>
+# is explicitly disabled for enabledPlugins in the MOST SPECIFIC settings file
+# that mentions it — the project's own .claude/settings.local.json, then its
+# .claude/settings.json, then the user's own ~/.claude/settings.json — "true"
+# otherwise, including when nothing mentions it at all: that is Claude Code's
+# own default for an installed plugin, and this probe must agree with it.
+_council_plugin_enabled() {
+  local key="$1" project_root="$2" cfg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  local candidates=()
+  if [ -n "$project_root" ]; then
+    candidates+=("$project_root/.claude/settings.local.json" "$project_root/.claude/settings.json")
+  fi
+  candidates+=("$cfg/settings.json")
+  local f val
+  for f in "${candidates[@]}"; do
+    [ -f "$f" ] || continue
+    # NOT `.enabledPlugins[$k] // empty` -- jq's `//` treats a `false` value
+    # as absent, same as null, which is exactly the one value this lookup
+    # exists to detect. `has` distinguishes "explicitly false" from "key
+    # missing" instead.
+    val=$(jq -r --arg k "$key" \
+      '(.enabledPlugins // {}) | if has($k) then (.[$k] | tostring) else "" end' \
+      "$f" 2>/dev/null) || continue
+    case "$val" in
+      false) printf 'false'; return 0 ;;
+      true) printf 'true'; return 0 ;;
+    esac
+  done
+  printf 'true'
+}
+
+# council_vote_available <project-root> — true (exit 0) if a ‘/council-vote’
+# skill will resolve in a session dispatched under this identity: a bare skill
+# file directly under ~/.claude/skills or <project-root>/.claude/skills, OR a
+# plugin from installed_plugins.json whose own tree ships
+# skills/council-vote/SKILL.md and that isn't explicitly disabled. Probes for
+# the SKILL FILE, not for a plugin literally named "council" — SH-219 asks
+# "is the council-vote plugin installed", but what actually matters is whether
+# the skill answers, the same "ask what it IS, not how it is spelled" rule
+# SH-239 wrote into this project's CLAUDE.md over a process-name lookalike.
+#
+# COUNCIL_MODE overrides this entirely: 'on'/'off' force the answer without
+# touching disk (the escape hatch and this probe's own test seam); 'auto' (the
+# default) runs the probe. ANY probe failure — no config dir, an unreadable or
+# malformed registry — answers "not available", silently: a broken registry
+# file must never fail a dispatch.
+council_vote_available() {
+  local project_root="${1:-}"
+  case "$COUNCIL_MODE" in
+    on) return 0 ;;
+    off) return 1 ;;
+  esac
+  local cfg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+
+  [ -f "$cfg/skills/council-vote/SKILL.md" ] && return 0
+  [ -n "$project_root" ] && [ -f "$project_root/.claude/skills/council-vote/SKILL.md" ] && return 0
+
+  local registry="$cfg/plugins/installed_plugins.json"
+  [ -f "$registry" ] || return 1
+
+  local keys
+  keys=$(jq -r '(.plugins // {}) | keys[]?' "$registry" 2>/dev/null) || return 1
+  [ -n "$keys" ] || return 1
+
+  local key install_path enabled
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    install_path=$(jq -r --arg k "$key" '.plugins[$k][0].installPath // empty' "$registry" 2>/dev/null) || continue
+    [ -n "$install_path" ] || continue
+    [ -f "$install_path/skills/council-vote/SKILL.md" ] || continue
+    enabled=$(_council_plugin_enabled "$key" "$project_root")
+    [ "$enabled" = "false" ] && continue
+    return 0
+  done < <(printf '%s\n' "$keys")
+
+  return 1
+}
+
 # ---- subcommand: dispatch ---------------------------------------------------
 cmd_dispatch() {
   # <story-id> may appear before or after --auto; anything past that (a
@@ -682,8 +779,29 @@ cmd_dispatch() {
   worktree_path="$dir/$wt_container/$wname"
   worktree_branch="worktree-$wname"
 
-  local prompt_tpl="$PROMPT_TPL"
-  [ -n "$auto" ] && prompt_tpl="$AUTO_PROMPT_TPL"
+  # SH-219: --auto gets one of TWO charters, decided here rather than left to
+  # the child's own judgment about its skill roster -- council_vote_available
+  # probes for the actual ‘/council-vote’ skill file (see its own doc comment
+  # above cmd_dispatch). $council is also surfaced in the result JSON below so
+  # a caller can tell which charter went out without re-deriving it from
+  # prompt text.
+  local prompt_tpl="$PROMPT_TPL" council="false"
+  if [ -n "$auto" ]; then
+    if council_vote_available "$dir"; then
+      council="true"
+    fi
+    # An explicit STORY_AUTO_PROMPT is a wholesale override of the ENTIRE
+    # autonomous charter -- same seam contract it has always had -- so it
+    # wins regardless of what the probe found; $council above still reports
+    # the probe's own ground truth for the result JSON either way. Only a
+    # caller who left STORY_AUTO_PROMPT unset gets the composed charter that
+    # actually matches this machine.
+    if [ -n "${STORY_AUTO_PROMPT:-}" ] || [ "$council" = "true" ]; then
+      prompt_tpl="$AUTO_PROMPT_TPL"
+    else
+      prompt_tpl="$AUTO_PROMPT_SOLO_TPL"
+    fi
+  fi
   # The autonomous charter's own last act (SH-208): the exact `reap` command
   # for THIS story, in THIS project, via THIS script -- an unattended session
   # cannot reliably reconstruct any of the three on its own, so it is handed
@@ -701,7 +819,11 @@ cmd_dispatch() {
   # stalls the unattended run forever.
   local auto_note=""
   if [ -n "$auto" ]; then
-    auto_note=" Autonomous (--auto): choose auto-accept edits at the plan-approval prompt, or a later permission prompt can stall the unattended run. From there it runs to completion on its own -- council-voting its open questions, merging its own PR, closing $id itself, and reclaiming its own worktree, branch and window once it does."
+    if [ "$council" = "true" ]; then
+      auto_note=" Autonomous (--auto): choose auto-accept edits at the plan-approval prompt, or a later permission prompt can stall the unattended run. From there it runs to completion on its own -- researching and deciding its easy questions itself, convening council-vote for the genuinely hard ones, merging its own PR, closing $id itself, and reclaiming its own worktree, branch and window once it does."
+    else
+      auto_note=" Autonomous (--auto): choose auto-accept edits at the plan-approval prompt, or a later permission prompt can stall the unattended run. No council-vote skill was found, so it researches and decides its hard questions too, rather than convening a council. From there it runs to completion on its own -- merging its own PR, closing $id itself, and reclaiming its own worktree, branch and window once it does."
+    fi
   fi
 
   local ignore_status
@@ -724,11 +846,12 @@ cmd_dispatch() {
       --arg ignore_status "$ignore_status" \
       --arg detach "$detach" --arg target "$target" \
       --argjson auto "$([ -n "$auto" ] && echo true || echo false)" --arg auto_note "$auto_note" \
+      --argjson council "$council" \
       --arg wtpath "$worktree_path" --arg wtbranch "$worktree_branch" '
       {
         ok: true, dry_run: true,
         id: $id, title: $title, dir: $dir,
-        window_name: $wname, prompt: $prompt, state: $state, auto: $auto,
+        window_name: $wname, prompt: $prompt, state: $state, auto: $auto, council: $council,
         worktree_branch: $wtbranch, worktree_path: $wtpath,
         gitignore: (if $ignore_status == "already-ignored" then "already-ignored" else "would-add" end),
         commands: [
@@ -996,7 +1119,7 @@ cmd_dispatch() {
     --arg gitignore "$gitignore_result" \
     --argjson ready "$readiness_confirmed" --argjson pconf "$prompt_confirmed" \
     --argjson paccept "$prompt_accepted_flag" \
-    --argjson auto "$([ -n "$auto" ] && echo true || echo false)" \
+    --argjson auto "$([ -n "$auto" ] && echo true || echo false)" --argjson council "$council" \
     --arg warning "$warning" --arg tail "$tail_evidence" --arg display "$display" \
     --arg default "$default" --arg base_oid "$base_oid" --argjson base_fresh "$base_fresh" \
     --arg wtbranch "$worktree_branch" --arg wtpath "$worktree_path" \
@@ -1006,7 +1129,7 @@ cmd_dispatch() {
       ok: true,
       id: $id, title: $title,
       window: $window, window_name: $wname, pane: $pane,
-      state: $state, auto: $auto,
+      state: $state, auto: $auto, council: $council,
       readiness_confirmed: $ready, prompt_confirmed: $pconf, prompt_accepted: $paccept,
       claimed: true, gitignore: $gitignore,
       base_branch: $default, base_ref: ("origin/" + $default),
