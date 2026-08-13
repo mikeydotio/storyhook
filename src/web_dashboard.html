@@ -4384,6 +4384,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function openDrawer(id) {
     state.drawerId = id;
     state.drawerDetail = null;
+    // Scratch belonging to whichever story's form was last on screen.
+    clearPendingRelation();
     $("drawer").classList.add("open");
     $("drawer").setAttribute("aria-hidden", "false");
     $("drawer-backdrop").hidden = false;
@@ -4402,6 +4404,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function closeDrawer() {
     state.drawerId = null;
     state.drawerDetail = null;
+    clearPendingRelation();
     $("drawer").classList.remove("open");
     $("drawer").setAttribute("aria-hidden", "true");
     $("drawer-backdrop").classList.remove("open");
@@ -4675,17 +4678,53 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     }, children);
   }
 
+  /** The add-a-relation form's unsubmitted contents, held outside the DOM.
+   *
+   * `renderDrawer()` clears and rebuilds the whole drawer body, and it runs
+   * on every board fetch that reports a change while a drawer is open — a
+   * story created in another tab is enough. Rebuilding a `<select>` resets
+   * it to its first option, and the first option is whatever heads
+   * `meta().relations`: `relates-to`. So a refresh landing between choosing
+   * "blocked-by" and pressing Add recorded a **relates-to** edge instead —
+   * the wrong relation, written on the user's behalf, with no error and a
+   * Relationships list that looks perfectly plausible afterwards (SH-281).
+   *
+   * `captureDrawerFocus` cannot cover this. It preserves one field, the
+   * focused one, and the natural order is to choose the kind and *then* type
+   * the id — so the select is precisely the control that is never focused
+   * when the rebuild lands. The id input beside it has always been restored
+   * (it carries `data-field` and is usually focused), which is why the
+   * failure looked like a wrong choice rather than a lost form.
+   *
+   * Scratch for one form, not a preference: cleared when the relation is
+   * recorded, and whenever a drawer opens or closes. */
+  var pendingRelation = { kind: null, id: "" };
+
+  function clearPendingRelation() {
+    pendingRelation.kind = null;
+    pendingRelation.id = "";
+  }
+
   function buildRelationshipsSection(st, full) {
     var rels = (st.relationships || []).concat((full && full.derived_relationships) || []);
     var wrap = el("div", {}, [buildSectionToggle("relationships", "Relationships", rels.length)]);
     if (!state.drawerSections.relationships) return wrap;
     var m = meta();
-    var relationSelect = el("select", {}, m.relations.map(function(r) { return el("option", { value: r }, [r]); }));
+    var relationSelect = el("select", { dataset: { field: "relationship-kind" } }, m.relations.map(function(r) { return el("option", { value: r }, [r]); }));
+    // Only a kind this project still offers — a vocabulary can change under
+    // an open drawer, and assigning an absent value would leave the select
+    // showing nothing at all.
+    if (pendingRelation.kind && m.relations.indexOf(pendingRelation.kind) !== -1) {
+      relationSelect.value = pendingRelation.kind;
+    }
+    relationSelect.addEventListener("change", function() { pendingRelation.kind = relationSelect.value; });
     var idInput = el("input", { type: "text", placeholder: "Story ID (e.g. SH-2)", dataset: { field: "relationship-id" } });
+    idInput.value = pendingRelation.id;
+    idInput.addEventListener("input", function() { pendingRelation.id = idInput.value; });
     var addBtn = el("button", { class: "btn", onClick: function() {
       if (!idInput.value.trim()) return;
       api("POST", apiBase() + "/relate", { a: st.id, relation: relationSelect.value, b: idInput.value.trim() })
-        .then(function(r) { idInput.value = ""; handleMutationSuccess(r); }).catch(toastError);
+        .then(function(r) { idInput.value = ""; clearPendingRelation(); handleMutationSuccess(r); }).catch(toastError);
     } }, ["Add"]);
     wrap.appendChild(el("div", { class: "inline-add" }, [relationSelect, idInput, addBtn]));
     if (rels.length) {
