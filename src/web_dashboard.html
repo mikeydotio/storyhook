@@ -247,6 +247,13 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
 .btn-ghost:hover { background: var(--bg-sunken); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .topbar-right { display: flex; align-items: center; gap: 0.625rem; flex-shrink: 0; margin-left: auto; }
+/* SH-235: Home/Settings/Drafts go icon-only under the same <=768px block
+   that already wraps the topbar -- see that block's own comment for why.
+   `.btn-icon` carries no text a screen reader would read twice over
+   (aria-hidden); `.btn-text` is the real accessible name and stays in the
+   layout normally above the breakpoint, visually hidden (not display:none,
+   which would also remove it from the accessibility tree) below it. */
+.btn-icon { line-height: 1; }
 .connection { display: flex; align-items: center; gap: 0.375rem; font-size: 0.75rem; color: var(--fg-muted); }
 .conn-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--fg-faint); transition: background 0.2s; }
 .conn-dot.live { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
@@ -380,10 +387,33 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
 .status-empty { font-size: 0.8125rem; color: var(--fg-muted); padding: 1rem 0; }
 
 /* ---- Filter bar ---- */
-.filter-bar {
+/* SH-235: collapsed behind a disclosure at every viewport size, not just a
+   `max-width` breakpoint -- the filter bar alone measured 145px tall at a
+   390px width (on top of the topbar's own 108px), roughly a third of an
+   iPhone 14's screen before a single card renders, and a narrow desktop
+   window has the exact same wrapping problem a phone does. One code path
+   for both, rather than a second, viewport-gated one to keep in sync with
+   this one. `.filter-summary` stays visible always -- the toggle, the
+   N-of-M count and Clear filters are how a reader knows a filter is
+   active without opening the panel; `.filter-panel` is what collapses. */
+.filter-bar { flex-shrink: 0; background: var(--bg); border-bottom: 1px solid var(--border); }
+.filter-summary { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1.25rem; }
+.filter-toggle-btn {
+  display: inline-flex; align-items: center; gap: 0.375rem; padding: 0.3125rem 0.625rem;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-raised);
+  font-size: 0.75rem; font-weight: 600; color: var(--fg-muted); min-height: var(--tap-min);
+}
+.filter-toggle-btn:hover { border-color: var(--fg-faint); color: var(--fg); }
+/* Active means "the board isn't showing everything" (state.js's own
+   updateFilterToggleActive) -- distinct from aria-expanded, which the
+   chevron glyph already communicates on its own. A reader who has never
+   opened the panel this session still sees that a filter is narrowing the
+   board. */
+.filter-toggle-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.filter-toggle-btn .chevron { display: inline-block; width: 0.625rem; font-size: 0.625rem; }
+.filter-panel {
   display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
-  padding: 0.5rem 1.25rem; background: var(--bg); border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
+  padding: 0 1.25rem 0.75rem;
 }
 .fdd { position: relative; }
 .fdd-btn {
@@ -793,9 +823,31 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
 /* ---- Mobile ---- */
 @media (max-width: 768px) {
-  .topbar { flex-wrap: wrap; }
+  .topbar { flex-wrap: wrap; gap: 0.375rem; }
   .search-wrap { order: 3; max-width: none; flex-basis: 100%; }
   .projsel-btn { max-width: none; }
+  /* SH-235: the topbar's chrome budget (responsive.mobile.spec.ts's own
+     "topbar and collapsed filter bar" test) is what forced this -- at a
+     375px width every one of Home/Settings/+ New/Drafts/the connection
+     indicator, each already at a natural, un-compacted width, cannot share
+     a row with anything else; four buttons' worth of prose text was most
+     of the measured overage. The `.sr-only` recipe (see that class's own
+     rule above) hides each label from sighted readers without removing it
+     from the accessibility tree -- an icon-only button still announces
+     "Home", it just doesn't spend layout width saying so. */
+  .icon-compact-btn .btn-text, .conn-text, .brand h1 {
+    position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap;
+  }
+  /* WCAG 2.2 SC 2.5.8 needs both axes -- the icon alone, once its label
+     stops taking up width, is narrower than --tap-min on its own. */
+  .icon-compact-btn { gap: 0; justify-content: center; min-width: var(--tap-min); }
+  /* The "STORYHOOK" wordmark (`.brand h1`) is what's redundant, not the
+     project selector next to it -- the wordmark orients a reader arriving
+     fresh; once a project is open, its name is what matters and the
+     document's own <title> already says "Storyhook" for a screen reader's
+     landmark navigation, so hiding this visually loses nothing a phone
+     reader needs. 252px for the pair was the single largest reason brand
+     and .view-toggle couldn't share a row (see topbar's own comment). */
   .drawer { width: 100vw; }
   .field-grid { grid-template-columns: 1fr; }
   .home-grid { grid-template-columns: 1fr; }
@@ -834,33 +886,40 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       <button type="button" data-view="list">List</button>
     </div>
     <div class="topbar-right">
-      <button type="button" class="btn btn-ghost" id="home-btn">Home</button>
-      <button type="button" class="btn btn-ghost" id="settings-btn">Settings</button>
+      <button type="button" class="btn btn-ghost icon-compact-btn" id="home-btn"><span class="btn-icon" aria-hidden="true">⌂</span><span class="btn-text">Home</span></button>
+      <button type="button" class="btn btn-ghost icon-compact-btn" id="settings-btn"><span class="btn-icon" aria-hidden="true">⚙</span><span class="btn-text">Settings</span></button>
       <button type="button" class="btn btn-primary" id="new-story-btn">+ New</button>
-      <button type="button" class="btn btn-ghost" id="drafts-btn">No Drafts</button>
+      <button type="button" class="btn btn-ghost icon-compact-btn" id="drafts-btn"><span class="btn-icon" aria-hidden="true">✎</span><span class="btn-text" id="drafts-btn-text">No Drafts</span></button>
       <div class="connection">
         <span class="conn-dot" id="conn-dot"></span>
-        <span id="conn-text">Connecting…</span>
+        <span id="conn-text" class="conn-text">Connecting…</span>
       </div>
     </div>
   </header>
 
   <div class="filter-bar" id="filter-bar">
-    <div class="fdd" id="fdd-priorities"></div>
-    <div class="fdd" id="fdd-assignees"></div>
-    <div class="fdd" id="fdd-types"></div>
-    <div class="fdd" id="fdd-states"></div>
-    <div class="fdd" id="fdd-columns"></div>
-    <label class="filter-toggle"><input type="checkbox" id="toggle-closed" checked> Show closed</label>
-    <label class="filter-toggle"><input type="checkbox" id="toggle-archived"> Show archived</label>
-    <label class="filter-toggle"><input type="checkbox" id="toggle-hide-empty-columns"> Hide empty columns</label>
-    <div class="board-sort" id="board-sort" role="group" aria-label="Board sort order">
-      <span class="board-sort-label">Sort</span>
-      <button type="button" class="board-sort-btn" data-key="priority" id="boardsort-priority">Priority<span class="sort-arrow" id="boardsort-arrow-priority"></span></button>
-      <button type="button" class="board-sort-btn" data-key="order" id="boardsort-order">Order<span class="sort-arrow" id="boardsort-arrow-order"></span></button>
+    <div class="filter-summary" id="filter-summary">
+      <button type="button" class="filter-toggle-btn" id="filter-toggle-btn" aria-expanded="false" aria-controls="filter-panel">
+        <span class="chevron" id="filter-toggle-chevron">▸</span> Filters
+      </button>
+      <span class="filter-count" id="filter-count"></span>
+      <button type="button" class="filter-clear" id="filter-clear">Clear filters</button>
     </div>
-    <span class="filter-count" id="filter-count"></span>
-    <button type="button" class="filter-clear" id="filter-clear">Clear filters</button>
+    <div class="filter-panel" id="filter-panel" hidden>
+      <div class="fdd" id="fdd-priorities"></div>
+      <div class="fdd" id="fdd-assignees"></div>
+      <div class="fdd" id="fdd-types"></div>
+      <div class="fdd" id="fdd-states"></div>
+      <div class="fdd" id="fdd-columns"></div>
+      <label class="filter-toggle"><input type="checkbox" id="toggle-closed" checked> Show closed</label>
+      <label class="filter-toggle"><input type="checkbox" id="toggle-archived"> Show archived</label>
+      <label class="filter-toggle"><input type="checkbox" id="toggle-hide-empty-columns"> Hide empty columns</label>
+      <div class="board-sort" id="board-sort" role="group" aria-label="Board sort order">
+        <span class="board-sort-label">Sort</span>
+        <button type="button" class="board-sort-btn" data-key="priority" id="boardsort-priority">Priority<span class="sort-arrow" id="boardsort-arrow-priority"></span></button>
+        <button type="button" class="board-sort-btn" data-key="order" id="boardsort-order">Order<span class="sort-arrow" id="boardsort-arrow-order"></span></button>
+      </div>
+    </div>
   </div>
 
   <span class="sr-only" id="board-kbd-hint">Arrow keys move between stories, Enter opens the selected one, and Shift+F10 or the Menu key opens its actions.</span>
@@ -1344,6 +1403,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // the same thing in any project — so it's a durable cross-project
     // preference like `showArchived` above, not a session/prune value.
     hideEmptyColumns: localStorage.getItem("storyhook.hideEmptyColumns") === "true",
+    // SH-235: the filter panel's own open/closed state, at every viewport
+    // size -- not `hideEmptyColumns`'s sessionStorage-adjacent category,
+    // but the exact same durable, cross-project, `sectionOpenDefault`
+    // shape the drawer's own sections use below. Defaults closed: the
+    // filter bar's dropdowns, sort buttons and checkboxes cost real
+    // vertical space (145px measured at a 390px width) that most sessions
+    // never touch after the first filter is set, and `.filter-summary`
+    // stays visible regardless, so a reader always sees whether a filter
+    // is active without opening this.
+    filtersOpen: sectionOpenDefault("filters", false),
     // Drawer section open/closed state (SH-169). A durable cross-project
     // preference like `showArchived`/`hideEmptyColumns` above, not a
     // per-story or per-repo value — a reader who collapses "Referenced By"
@@ -2722,7 +2791,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * behind the next poll tick already updated the button for. */
   function updateDraftsButton() {
     var drafts = (state.data && state.data.drafts) || [];
-    $("drafts-btn").textContent = (drafts.length || "No") + " Drafts";
+    $("drafts-btn-text").textContent = (drafts.length || "No") + " Drafts";
     if (!$("drafts-modal").classList.contains("open")) return;
     renderDraftsList();
   }
@@ -2791,6 +2860,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var visible = filteredStories();
     var total = state.data ? state.data.stories.length : 0;
     $("filter-count").textContent = total ? (visible.length + " / " + total) : "";
+    syncFilterToggle(visible.length, total);
     $("empty-msg").hidden = visible.length !== 0 || !state.data;
 
     // Consumed here, once, regardless of which view actually renders below
@@ -2863,12 +2933,22 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * click/Escape wiring below is what should dismiss it too.
    *
    * The `aria-expanded` reset is generic on purpose: only the project
-   * selector's button sets it today, but a future popover-with-a-button
-   * gets this for free rather than needing its own copy. */
+   * selector's button sets it today, but a future *transient* popover
+   * button gets this for free rather than needing its own copy.
+   * `:not(.section-toggle):not(.filter-toggle-btn)` excludes the two
+   * *persistent* disclosures that also happen to carry `aria-expanded` --
+   * the drawer's own section toggles (SH-169) and the filter panel's
+   * (SH-235). Both are driven by `state`, not by "is a popover open right
+   * now", and this handler runs on every click anywhere in the document
+   * (`dismissPopoversOnOutsideClick`, bound below): an unscoped reset would
+   * flip either one to `aria-expanded="false"` on any outside click that
+   * doesn't happen to trigger that disclosure's own re-render (e.g.
+   * opening a card's drawer while the filter panel is still open) -- wrong
+   * and, unlike the visible panel it no longer matches, silent. */
   function closeAllPopovers() {
     document.querySelectorAll(".fdd-panel").forEach(function(p) { p.hidden = true; });
     document.querySelectorAll(".fdd-btn, .projsel-btn").forEach(function(b) { b.classList.remove("active"); });
-    document.querySelectorAll('[aria-expanded="true"]').forEach(function(b) { b.setAttribute("aria-expanded", "false"); });
+    document.querySelectorAll('[aria-expanded="true"]:not(.section-toggle):not(.filter-toggle-btn)').forEach(function(b) { b.setAttribute("aria-expanded", "false"); });
     openFilterDropdown = null;
     projselFocusIndex = -1;
     closeStoryMenu(false);
@@ -3028,7 +3108,26 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     btn.classList.toggle("active", count > 0 || openFilterDropdown === "columns");
   }
 
+  /** Reflects `state.filtersOpen` onto the filter panel's visibility, the
+   * toggle button's `aria-expanded`/chevron, and (given `visible`/`total`,
+   * the same pair `renderView()` already computes for `#filter-count`)
+   * whether the toggle button reads as "active" -- so a reader who never
+   * opens the panel this session still sees that a filter is narrowing
+   * the board, per the same "collapsed but not hidden" shape
+   * `buildSectionToggle` (SH-169) uses for the drawer's own sections. */
+  function syncFilterToggle(visible, total) {
+    $("filter-panel").hidden = !state.filtersOpen;
+    $("filter-toggle-btn").setAttribute("aria-expanded", String(state.filtersOpen));
+    $("filter-toggle-chevron").textContent = state.filtersOpen ? "▾" : "▸";
+    $("filter-toggle-btn").classList.toggle("active", !!total && visible !== total);
+  }
+
   function bindFilterBar() {
+    $("filter-toggle-btn").addEventListener("click", function() {
+      state.filtersOpen = !state.filtersOpen;
+      localStorage.setItem("storyhook.section.filters.open", String(state.filtersOpen));
+      syncFilterToggle(filteredStories().length, state.data ? state.data.stories.length : 0);
+    });
     $("search-input").addEventListener("input", function() {
       state.filter.text = this.value;
       savePersistedFilters();

@@ -1245,6 +1245,57 @@ fn web_serve_root_html_meets_wcag_tap_target_size() {
     }
 }
 
+/// SH-235: the filter bar's dropdowns, checkboxes and sort buttons collapse
+/// behind a "Filters" disclosure, at every viewport size -- the filter bar
+/// alone measured 145px tall at a 390px width, on top of the topbar's own
+/// 108px. `#filter-summary` (the toggle, `#filter-count`, `#filter-clear`)
+/// stays outside `#filter-panel`'s `hidden` so a reader always sees whether
+/// a filter is active and can clear it without opening anything.
+///
+/// The interaction itself (default collapsed, opens on click, ARIA/chevron
+/// sync, survives a reload, the active-class heuristic) is
+/// `filter-bar-disclosure.spec.ts`'s job, under the desktop project -- this
+/// is not a mobile-only behavior, so it isn't gated behind
+/// `mobile-chromium`. This is the cheap, browser-free layer: the markup
+/// shape and the `closeAllPopovers` scoping fix the disclosure needed.
+#[test]
+fn web_serve_root_html_has_a_collapsible_filter_panel() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+
+    assert!(body.contains(r#"id="filter-summary""#));
+    assert!(body.contains(r#"id="filter-toggle-btn""#));
+    assert!(body.contains(r#"aria-controls="filter-panel""#));
+    // Collapsed by default in the served markup itself -- not just via a
+    // JS-applied class, so a reader whose JS is still loading (or fails)
+    // never sees the panel flash open before script runs.
+    assert!(body.contains(r#"id="filter-panel" hidden>"#));
+    // #filter-count and #filter-clear moved into the always-visible summary
+    // row -- pinned by each still appearing before filter-panel's own
+    // opening tag, i.e. outside it, not merely present somewhere in the file.
+    let panel_start = body
+        .find(r#"id="filter-panel""#)
+        .expect("the filter panel exists");
+    assert!(body[..panel_start].contains(r#"id="filter-count""#));
+    assert!(body[..panel_start].contains(r#"id="filter-clear""#));
+
+    // The generic aria-expanded reset in closeAllPopovers() must exclude
+    // this disclosure (and the drawer's own SH-169 section toggles) -- see
+    // that function's own comment for why an unscoped reset is a real,
+    // silent ARIA-state bug for a persistent disclosure, not merely a
+    // popover it's meant to dismiss.
+    assert!(
+        body.contains(r#"[aria-expanded="true"]:not(.section-toggle):not(.filter-toggle-btn)"#)
+    );
+}
+
 #[test]
 fn web_serve_api_data_empty_project() {
     let fixture = served();
