@@ -1363,3 +1363,69 @@ fn a_daemon_address_naming_an_ip_the_daemon_will_not_bind_is_refused_out_loud() 
         "a refused address must not leave a daemon behind"
     );
 }
+
+// ---------------------------------------------------------------------------
+// SH-263: the e2e harness's fixture knobs reach the dispatch child it configures
+// ---------------------------------------------------------------------------
+
+/// Every `FAKE_TMUX_*` the e2e harness exports is exported **before** the
+/// snapshot that carries the family across the dispatch child's cleared
+/// environment.
+///
+/// A dispatch child's environment is cleared and rebuilt from an allowlist
+/// (`src/env/spawn_env.rs`, SH-193) that no `FAKE_TMUX_*` name matches, so
+/// `scripts/run-e2e.sh` hands them over by snapshotting them to one file per
+/// knob and re-exporting them from a generated wrapper. The snapshot is a
+/// moment in time: a knob exported after it is set in the harness and absent
+/// from every dispatch child, which is precisely the failure this story is
+/// about — `FAKE_TMUX_STATE` was exported there for a long time while every
+/// dispatch child ignored it and used the fake's fixed shared default, and no
+/// test said so because the specs pass either way until something else writes
+/// to that directory.
+///
+/// Derived over the file rather than listing the knobs: the snapshot itself is
+/// derived (`compgen -e`), so a knob added later crosses for free, and the only
+/// way to break it is position.
+#[test]
+fn the_e2e_harness_exports_no_fake_tmux_knob_after_the_snapshot_that_forwards_them() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let relative = "scripts/run-e2e.sh";
+    let text = std::fs::read_to_string(root.join(relative))
+        .unwrap_or_else(|e| panic!("reading {relative}: {e}"));
+
+    let snapshots: Vec<usize> = text
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.contains("compgen -e"))
+        .map(|(number, _)| number)
+        .collect();
+    assert_eq!(
+        snapshots.len(),
+        1,
+        "{relative} must snapshot its FAKE_TMUX_* knobs exactly once (the \
+         `compgen -e` loop); found {} such lines, so this scan cannot say which \
+         exports are late",
+        snapshots.len()
+    );
+    let snapshot = snapshots[0];
+
+    let late: Vec<String> = text
+        .lines()
+        .enumerate()
+        .filter(|(number, line)| {
+            *number > snapshot
+                && line
+                    .trim_start()
+                    .strip_prefix("export ")
+                    .is_some_and(|rest| rest.trim_start().starts_with("FAKE_TMUX_"))
+        })
+        .map(|(number, line)| format!("line {}: {}", number + 1, line.trim()))
+        .collect();
+    assert!(
+        late.is_empty(),
+        "{relative} exports a fake-tmux knob after the snapshot that forwards \
+         them to dispatch children, so that knob is set for the harness and \
+         absent from every dispatch the daemon spawns (SH-263):\n{}",
+        late.join("\n")
+    );
+}

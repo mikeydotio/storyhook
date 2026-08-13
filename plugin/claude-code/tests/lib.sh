@@ -59,6 +59,29 @@ if [ -z "${STORYHOOK_TEST_HOME:-}" ]; then
   export STORYHOOK_PARENT_PID="$$"
 fi
 
+# --- fake-tmux state isolation ---------------------------------------------
+#
+# fakes/tmux keeps its whole model -- the input buffer, the `launched` flag, the
+# derived occupant, the pane pid, the absorb counter -- in files under
+# $FAKE_TMUX_STATE, because it is re-exec'd per call and can hold nothing in
+# memory. Two users of one directory corrupt each other: one's `new-window`
+# clears the other's `launched` and `input`, whose next Enter is then read as a
+# launch of nothing and writes a shell name over the first's occupant. That is
+# how test-dispatch-auto.sh came to fail a readiness gate against a pane it had
+# itself launched `claude` into (SH-263).
+#
+# It is minted HERE, and not in each test file, for the reason the data-home
+# block above it is: the fake used to default to a fixed shared path, five test
+# files relied on that default, and a fixture you can forget is one that will be
+# forgotten again. Tests needing a FRESH directory per case (a second dispatch
+# that must not see the first's state) still mint their own and override this;
+# the fake refuses outright if neither did.
+if [ -z "${FAKE_TMUX_STATE:-}" ]; then
+  FAKE_TMUX_STATE="$(mktemp -d /tmp/story-test-tmux.XXXXXX)"
+  export FAKE_TMUX_STATE
+  _TMP_REPOS+=("$FAKE_TMUX_STATE")
+fi
+
 # mk_story_repo — build a temp git repo with a real storyhook project
 # initialized (`story project new`), and a LOCAL bare origin so dispatch's `git
 # fetch` resolves fully offline and deterministically (no network, no
