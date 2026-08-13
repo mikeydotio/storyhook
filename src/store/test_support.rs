@@ -151,6 +151,41 @@ pub fn forget_story(
     })
 }
 
+/// Deletes a story's read-model row, leaving its events, its labels and its
+/// relations exactly where they are.
+///
+/// The store-side shape of "the read model lost a row its own history still
+/// supports" — the drift [`crate::store::repair_read_model`] heals by
+/// re-folding, and the one [`forget_story`] cannot fabricate: that helper
+/// deletes the relation rows first, because it works with foreign keys *on*,
+/// so the edges naming the story go with it. Here they stay. That difference is
+/// the fixture SH-271 needed: an edge that is perfectly valid in the events
+/// reads as *dangling* to every caller that resolves ids through the read
+/// model, so `doctor` advises retracting it — and the same run's read-model
+/// repair then puts the row back and makes the edge whole again.
+///
+/// Foreign keys are disabled for this connection only, the idiom
+/// [`replace_states`] and [`forget_state`] use; every other reader and writer
+/// keeps the constraint.
+pub fn forget_read_model_row(
+    store: &SqliteStore,
+    project: ProjectId,
+    story: StoryNo,
+) -> Result<(), StoreError> {
+    let conn = Connection::open(store.path())
+        .map_err(|e| StoreError::from_sqlite(e, "opening the store for injection"))?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| StoreError::from_sqlite(e, "setting the injection busy timeout"))?;
+    conn.pragma_update(None, "foreign_keys", false)
+        .map_err(|e| StoreError::from_sqlite(e, "lowering foreign keys for injection"))?;
+    conn.execute(
+        "DELETE FROM stories WHERE project_id = ?1 AND story_no = ?2",
+        rusqlite::params![project.get(), story.get()],
+    )
+    .map_err(|e| StoreError::from_sqlite(e, "forgetting a read-model row"))?;
+    Ok(())
+}
+
 /// Replaces a project's whole state catalog, stories be damned.
 ///
 /// The catalog-wide sibling of [`forget_state`], for the fixtures that need a
