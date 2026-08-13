@@ -3791,8 +3791,42 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     renderView();
   }
 
+  /** Positional fallback for a project-defined state beyond the four
+   * REQUIRED_STATES `stateColor` anchors below -- unchanged from before
+   * SH-203, and still what a state with no semantic anchor gets. */
   var STATE_PALETTE = ["#3b5bfd", "#1f9d55", "#d9a413", "#e5484d", "#8a5cf6", "#0891b2", "#db2777", "#65a30d"];
+
+  /** The colour a status light or column dot uses for `slug`.
+   *
+   * SH-203: was a pure positional lookup into STATE_PALETTE -- with the
+   * default four-state catalog (todo, in-progress, blocked, done, in that
+   * configured order) that put `done` at index 3, painting every
+   * completed story red. A status light that colours by column has to
+   * mean something, so the REQUIRED_STATES slugs every project's catalog
+   * is guaranteed to contain (src/domain.rs's REQUIRED_STATES, enforced
+   * by validate_required_states -- exact slug match, not just shape) are
+   * anchored to semantic tokens first; anything a project adds beyond
+   * that floor has no slug to anchor a colour to and keeps the original
+   * positional palette. Checked in an order that survives a reordered
+   * catalog:
+   *   - `blocked` (SH-126's reserved slug) -> --danger
+   *   - CLOSED super_state (however many closed states a project has)
+   *     -> --success, so "turns green" (SH-203's own cleared-blocker
+   *     dwell) is just a light adopting the colour its own column
+   *     already has, not a one-off exception
+   *   - the one state carrying role "active" (STATE_ROLE_ACTIVE) -> --accent
+   *   - `todo` -> --fg-faint, a deliberately quiet default
+   * CSS custom properties, not hex literals, so these four (and only
+   * these four) track the light/dark theme swap the rest of the
+   * dot/badge system already gets for free -- STATE_PALETTE itself does
+   * not, unchanged from before. */
   function stateColor(slug) {
+    if (slug === "blocked") return "var(--danger)";
+    var def = meta().states.filter(function(s) { return s.slug === slug; })[0];
+    if (!def) return "var(--fg-faint)";
+    if (def.super_state === "CLOSED") return "var(--success)";
+    if (def.role === "active") return "var(--accent)";
+    if (slug === "todo") return "var(--fg-faint)";
     var idx = meta().states.map(function(s) { return s.slug; }).indexOf(slug);
     return STATE_PALETTE[Math.max(idx, 0) % STATE_PALETTE.length];
   }
