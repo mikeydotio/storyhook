@@ -1,8 +1,9 @@
 import { test, expect } from "@playwright/test";
-import type { Page, Request } from "@playwright/test";
+import type { Page } from "@playwright/test";
+import type { HeldFetch } from "./support";
 import {
   cleanUpCreatedStories,
-  latch,
+  holdFetch,
   openProject,
   projectSlug,
   requiredEnv,
@@ -44,135 +45,28 @@ interface BoardSnapshot {
   stories: Array<{ story: { id: string; title: string } }>;
 }
 
-interface HeldFetch {
-  /** Resolves once the daemon has answered the held request -- i.e. once
-   * the snapshot the page will eventually receive has been taken. */
-  taken: Promise<void>;
-  /**
-   * Refuses every *later* board fetch, and resolves once the ones already in
-   * flight have landed.
-   *
-   * Without this the spec proves nothing: a mutation is followed by its own
-   * fetch and, `FETCH_DEBOUNCE_MS` later, the SSE-driven one, so a board
-   * this test un-renders would simply be re-rendered by the next reply to
-   * arrive, and a retrying assertion would never see the gap. Refusing them
-   * models the production case exactly -- there, the fetches that could
-   * repair the board have *already been spent* on the write, and the next
-   * one is a safety poll 25 seconds out, far beyond any assertion budget.
-   */
-  seal: () => Promise<void>;
-  /** Delivers the held snapshot to the page, and resolves once the page's
-   * own `onreadystatechange` has had its turn on the renderer's task
-   * queue. */
-  deliver: () => Promise<void>;
-}
-
 /**
  * Holds the first board fetch whose snapshot satisfies `until`, and answers
  * every board fetch before it from the daemon as usual.
  *
- * The predicate is what makes the spec deterministic. A mutation produces
- * *two* fetches (its own and the SSE-driven one), and the previous
- * mutation's second fetch can still be to come when this arms -- so "the
- * next fetch" is not a fixed snapshot, and a spec that assumed it was would
- * sometimes hold one taken before the story it is about even exists. The
- * test says which snapshot it needs instead, and the harness waits for it.
- *
- * `route.fetch()` rather than a delayed `route.continue()`: the point is a
- * snapshot *taken* before a later write and *delivered* after it, and
- * `continue()` would send the request only once released, by which time the
- * daemon would answer with the write already in it -- a test that exercises
- * nothing (`latch()`'s own doc comment names the same failure shape).
+ * `GET .../data` is the board's own endpoint and nothing else's, so matching
+ * on the path alone is enough to name it. Everything else this needs -- why
+ * the predicate rather than "the next fetch", why `route.fetch()` rather than
+ * a delayed `continue()`, and what `seal()`/`deliver()` are for -- is
+ * `holdFetch`'s own contract (`support.ts`), shared with every other spec
+ * about a reply that arrives too late.
  */
-async function holdBoardFetch(
+function holdBoardFetch(
   page: Page,
   until: (snapshot: BoardSnapshot) => boolean,
   options?: { sealOnHold?: boolean },
 ): Promise<HeldFetch> {
-  const taken = latch();
-  const gate = latch();
-  const isBoardFetch = (request: Request) => /\/data$/.test(request.url());
-  let heldRequest: Request | null = null;
-  let sealed = false;
-
-  // Board fetches still in flight. `seal()` drops the held one (which has no
-  // reply until `deliver()`) and waits for the rest to empty, because a reply
-  // already on the wire when the seal goes up would repair the board just as
-  // effectively as one issued after it.
-  const outstanding = new Set<Request>();
-  page.on("request", (request) => {
-    if (isBoardFetch(request)) outstanding.add(request);
-  });
-  const settled = (request: Request) => outstanding.delete(request);
-  page.on("requestfinished", settled);
-  page.on("requestfailed", settled);
-
-  await page.route(/\/data$/, async (route) => {
-    if (heldRequest) {
-      // Refused, not held, once sealed: an aborted fetch leaves `state.data`
-      // untouched (`fetchData`'s own `onerror` sets the connection flag and
-      // nothing else), which is precisely a board with no repair on the way.
-      if (sealed) await route.abort();
-      else await route.continue();
-      return;
-    }
-    // The bearer token by header, because the page's own credential is the
-    // `HttpOnly` cookie (SH-255) and `route.fetch()` does not carry the
-    // browser context's jar -- it answers 401, whose body the page then
-    // fails to parse, so the snapshot is never applied and the test passes
-    // having proved nothing. That vacuous pass is what this closes; the
-    // daemon accepts either channel (`src/api/admission.rs`), and the bytes
-    // are still the daemon's own.
-    const response = await route.fetch({
-      headers: {
-        ...route.request().headers(),
-        "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
-      },
-    });
-    if (!response.ok()) {
-      throw new Error(
-        `holdBoardFetch: the daemon answered ${response.status()} for a ` +
-          "snapshot this spec depends on — it would prove nothing",
-      );
-    }
-    if (!until((await response.json()) as BoardSnapshot)) {
-      await route.fulfill({ response });
-      return;
-    }
-    heldRequest = route.request();
-    // Sealing here rather than from the test body closes a window the test
-    // body cannot: a reply that lands between the hold and a later `seal()`
-    // is applied, and the held snapshot is then older than it -- so the
-    // *ordering* half of the guard would answer, and a spec meant to
-    // exercise the other half would pass without ever reaching it.
-    if (options && options.sealOnHold) sealed = true;
-    taken.release();
-    await gate.held;
-    await route.fulfill({ response });
-  });
-
-  return {
-    taken: taken.held,
-    seal: async () => {
-      sealed = true;
-      if (heldRequest) outstanding.delete(heldRequest);
-      await expect.poll(() => outstanding.size).toBe(0);
-    },
-    deliver: async () => {
-      // Identity, not the URL: every board fetch in this page shares one
-      // URL, so a URL match could be satisfied by an unrelated reply that
-      // happened to be in flight, and the assertion below would then read
-      // the DOM before the held body ever reached it.
-      const arrived = page.waitForResponse((r) => r.request() === heldRequest);
-      gate.release();
-      await arrived;
-      // The XHR's completion task was queued on the renderer before this
-      // `evaluate` could be, and a renderer runs its task queue in order, so
-      // a macrotask that resolves here is proof the page has already done
-      // whatever it intends to do with that body.
-      await page.evaluate(() => new Promise((r) => setTimeout(r, 0)));
-    },
-  };
+  return holdFetch<BoardSnapshot>(
+    page,
+    (url) => /\/data$/.test(url.pathname),
+    until,
+    options,
+  );
 }
 
 /** True once `title` is among the snapshot's stories. */
