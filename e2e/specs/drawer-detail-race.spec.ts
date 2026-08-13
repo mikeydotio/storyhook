@@ -5,6 +5,8 @@ import {
   holdDetailFetch,
   latch,
   openProject,
+  projectSlug,
+  requiredEnv,
   seedToken,
 } from "./support";
 
@@ -148,4 +150,88 @@ test("editing the title during the detail fetch survives the re-render without a
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
   await deleteStory(page, newTitle);
+});
+
+/**
+ * SH-281, and the reason that story spent a day looking like a stale-data
+ * bug: the rebuild does not need a *detail* fetch. `fetchData()` calls
+ * `renderDrawer()` whenever a board reply reports any change at all while a
+ * drawer is open — a story created in another tab will do it — and the
+ * rebuild used to reset the add-a-relation `<select>` to its first option.
+ * That option is `relates-to`, so a refresh landing between choosing
+ * "blocked-by" and pressing Add recorded a relates-to edge instead: the
+ * wrong relation, on the user's behalf, with no error anywhere and a
+ * Relationships list that reads as if it worked.
+ *
+ * Downstream this looked like a card that had lost its blockers row, which
+ * is what `card-blockers.spec.ts` reported twice inside `make test` and
+ * never once in `make e2e` — the difference being how much else was
+ * happening to make a board reply land inside that window.
+ */
+test("choosing a relation kind survives a board refresh that rebuilds the drawer", async ({
+  page,
+  request,
+}) => {
+  const blockerTitle = "SH-281 relation kind — the blocker";
+  const workerTitle = "SH-281 relation kind — the blocked story";
+  await createStory(page, blockerTitle);
+  await createStory(page, workerTitle);
+  const blockerId = (await page
+    .locator('.column[data-state="todo"] .card', { hasText: blockerTitle })
+    .getAttribute("data-id"))!;
+
+  await page
+    .locator('.column[data-state="todo"] .card', { hasText: workerTitle })
+    .click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+
+  const kind = page.locator("#drawer-body .inline-add select");
+  await kind.selectOption("blocked-by");
+  await page
+    .locator('input[placeholder="Story ID (e.g. SH-2)"]')
+    .fill(blockerId);
+
+  // The rebuild, from outside this tab and outside this drawer: a story
+  // created through the API raises SSE `repo-changed`, whose board fetch
+  // reports a change, whose `renderDrawer()` rebuilds the body under the
+  // form. Waiting for the new card is what makes it deterministic — the
+  // card cannot appear until that reply has been applied and rendered.
+  const nudgeTitle = "SH-281 relation kind — the nudge";
+  const slug = await projectSlug(request, "Alpha Project");
+  const nudge = await request.post(`/api/repos/${slug}/story`, {
+    headers: {
+      "X-Storyhook": "1",
+      "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
+      "Content-Type": "application/json",
+    },
+    data: { title: nudgeTitle },
+  });
+  expect(nudge.ok()).toBe(true);
+  await expect(
+    page.locator('.column[data-state="todo"] .card', { hasText: nudgeTitle }),
+  ).toBeVisible();
+
+  await expect(kind).toHaveValue("blocked-by");
+  await page
+    .locator("#drawer-body .inline-add button", { hasText: "Add" })
+    .click();
+
+  // The relation actually recorded, not merely that *a* relation was: the
+  // whole defect is that the Relationships list looked right while the edge
+  // underneath it was the wrong kind.
+  const row = page.locator(".rel-row", { hasText: blockerId });
+  await expect(row).toBeVisible();
+  await expect(row.locator(".rel-kind")).toHaveText("blocked-by");
+
+  await page.locator("#drawer-close").click();
+  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
+
+  // And the consequence the board draws from it: only `blocked-by` puts a
+  // blockers row on the card (`openBlockers`).
+  const workerCard = page.locator(".card", { hasText: workerTitle });
+  await expect(workerCard.locator(".card-blockers .rel-id")).toHaveText(
+    blockerId,
+  );
+
+  await deleteStory(page, workerTitle);
 });

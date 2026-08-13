@@ -1708,12 +1708,64 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     });
   }
 
+  /** Tickets for `fetchData()`'s replies, and the floor below which one is
+   * ignored, so the board can never be moved *backwards* (SH-281).
+   *
+   * Several board fetches are in flight at once as a matter of course — one
+   * per mutation (`handleMutationSuccess`), one per SSE `repo-changed`
+   * (`scheduleDataFetch`), one every `SAFETY_POLL_INTERVAL_MS` — and the
+   * daemon answers each on whichever of its eight dispatcher threads is free
+   * (`src/daemon/serve.rs`). Every reply used to be applied on arrival,
+   * whatever it was an answer to. Two things could then undo what the board
+   * had already, correctly, shown:
+   *
+   *   1. A reply issued *before* a write, answered *after* one issued behind
+   *      it. The older snapshot lands last and wins.
+   *   2. A reply issued before a write, answered after `applyStory()` has
+   *      already put that write on screen — no overtaking needed, just a
+   *      request that was in flight when the user acted.
+   *
+   * Both stick: the SSE event for the write has been spent by the time the
+   * board is wrong, so nothing re-renders until the 25s safety poll — 5x the
+   * budget of the assertion that caught this.
+   *
+   * So the floor rises on both events. Applying a reply raises it to that
+   * reply's own ticket (nothing older may follow it); applying a *write*
+   * raises it to the newest ticket issued (nothing already asked can know
+   * about that write, so no reply in flight may speak to it). The fetch
+   * `handleMutationSuccess` fires immediately after the write takes the next
+   * ticket, above the floor, and is what actually refreshes the board.
+   *
+   * Comparing tickets rather than payloads is sound because the store is
+   * read-after-write consistent — a read that *starts* after a commit sees
+   * it (`SqliteReadTx::begin`) — so a request issued later can never carry an
+   * older world than one issued earlier. What this can do is discard a reply
+   * that overtook a newer request's and was fresher than what is on screen;
+   * that costs one fetch's latency, and anything that could matter has an SSE
+   * event of its own already on the way. */
+  var boardFetchTicket = 0;
+  var boardFetchFloor = 0;
+
   function fetchData() {
+    var ticket = ++boardFetchTicket;
+    // The project this question was asked about. A reply that arrives after
+    // `selectRepo()` has moved on describes a board nobody is looking at,
+    // and painting it over the open one is not a stale render but the wrong
+    // project's stories entirely.
+    var askedFor = state.repoId;
     var xhr = new XMLHttpRequest();
     xhr.open("GET", apiBase() + "/data", true);
     xhr.timeout = 8000;
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
+      // Below the floor — a newer reply has already been applied, or a write
+      // has landed since this was asked — or the project it asked about is no
+      // longer the one on screen. Nothing is read from it, not even its
+      // freshness: whatever raised the floor knows a strictly newer world.
+      if (xhr.status === 200 && (ticket <= boardFetchFloor || askedFor !== state.repoId)) {
+        updateConnection();
+        return;
+      }
       if (xhr.status === 200) {
         try {
           var parsed = JSON.parse(xhr.responseText);
@@ -1750,6 +1802,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           // (below); populateCard() itself reads the ledger on every
           // render regardless, so a render this tick already shows it.
           var foundClearance = recordClearedBlockers(state.data, parsed, Date.now());
+          // Raised only once the body has parsed: a reply that turns out to
+          // be malformed has applied nothing, so it must not stop a later
+          // (higher-ticket) reply from applying either.
+          boardFetchFloor = ticket;
           state.data = parsed;
           state.lastFetchAt = Date.now();
           state.fetchOk = true;
@@ -3952,8 +4008,20 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       });
   }
 
+  /** Folds one story's post-mutation snapshot into the board.
+   *
+   * Every caller is a write this page has just made and the daemon has just
+   * acknowledged, which is why this is where the board fetch floor rises
+   * (SH-281): a request already in flight was asked before this write and
+   * cannot know about it, so its reply must not be allowed to un-render what
+   * the user was just told happened. Without that, a card could shed a
+   * relation it had visibly just gained the moment an older reply landed, and
+   * keep it shed until the fetch `handleMutationSuccess` fires behind this
+   * one comes back — which, on a machine loaded enough to have caused the
+   * overlap in the first place, is exactly when that fetch is slowest. */
   function applyStory(snapshot) {
     if (!state.data) return;
+    boardFetchFloor = boardFetchTicket;
     var idx = state.data.stories.findIndex(function(v) { return v.story.id === snapshot.id; });
     if (idx === -1) {
       state.data.stories.push({ story: snapshot, is_ready: false, is_blocked: false });
@@ -4316,6 +4384,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function openDrawer(id) {
     state.drawerId = id;
     state.drawerDetail = null;
+    // Scratch belonging to whichever story's form was last on screen.
+    clearPendingRelation();
     $("drawer").classList.add("open");
     $("drawer").setAttribute("aria-hidden", "false");
     $("drawer-backdrop").hidden = false;
@@ -4334,6 +4404,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function closeDrawer() {
     state.drawerId = null;
     state.drawerDetail = null;
+    clearPendingRelation();
     $("drawer").classList.remove("open");
     $("drawer").setAttribute("aria-hidden", "true");
     $("drawer-backdrop").classList.remove("open");
@@ -4607,17 +4678,53 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     }, children);
   }
 
+  /** The add-a-relation form's unsubmitted contents, held outside the DOM.
+   *
+   * `renderDrawer()` clears and rebuilds the whole drawer body, and it runs
+   * on every board fetch that reports a change while a drawer is open — a
+   * story created in another tab is enough. Rebuilding a `<select>` resets
+   * it to its first option, and the first option is whatever heads
+   * `meta().relations`: `relates-to`. So a refresh landing between choosing
+   * "blocked-by" and pressing Add recorded a **relates-to** edge instead —
+   * the wrong relation, written on the user's behalf, with no error and a
+   * Relationships list that looks perfectly plausible afterwards (SH-281).
+   *
+   * `captureDrawerFocus` cannot cover this. It preserves one field, the
+   * focused one, and the natural order is to choose the kind and *then* type
+   * the id — so the select is precisely the control that is never focused
+   * when the rebuild lands. The id input beside it has always been restored
+   * (it carries `data-field` and is usually focused), which is why the
+   * failure looked like a wrong choice rather than a lost form.
+   *
+   * Scratch for one form, not a preference: cleared when the relation is
+   * recorded, and whenever a drawer opens or closes. */
+  var pendingRelation = { kind: null, id: "" };
+
+  function clearPendingRelation() {
+    pendingRelation.kind = null;
+    pendingRelation.id = "";
+  }
+
   function buildRelationshipsSection(st, full) {
     var rels = (st.relationships || []).concat((full && full.derived_relationships) || []);
     var wrap = el("div", {}, [buildSectionToggle("relationships", "Relationships", rels.length)]);
     if (!state.drawerSections.relationships) return wrap;
     var m = meta();
-    var relationSelect = el("select", {}, m.relations.map(function(r) { return el("option", { value: r }, [r]); }));
+    var relationSelect = el("select", { dataset: { field: "relationship-kind" } }, m.relations.map(function(r) { return el("option", { value: r }, [r]); }));
+    // Only a kind this project still offers — a vocabulary can change under
+    // an open drawer, and assigning an absent value would leave the select
+    // showing nothing at all.
+    if (pendingRelation.kind && m.relations.indexOf(pendingRelation.kind) !== -1) {
+      relationSelect.value = pendingRelation.kind;
+    }
+    relationSelect.addEventListener("change", function() { pendingRelation.kind = relationSelect.value; });
     var idInput = el("input", { type: "text", placeholder: "Story ID (e.g. SH-2)", dataset: { field: "relationship-id" } });
+    idInput.value = pendingRelation.id;
+    idInput.addEventListener("input", function() { pendingRelation.id = idInput.value; });
     var addBtn = el("button", { class: "btn", onClick: function() {
       if (!idInput.value.trim()) return;
       api("POST", apiBase() + "/relate", { a: st.id, relation: relationSelect.value, b: idInput.value.trim() })
-        .then(function(r) { idInput.value = ""; handleMutationSuccess(r); }).catch(toastError);
+        .then(function(r) { idInput.value = ""; clearPendingRelation(); handleMutationSuccess(r); }).catch(toastError);
     } }, ["Add"]);
     wrap.appendChild(el("div", { class: "inline-add" }, [relationSelect, idInput, addBtn]));
     if (rels.length) {
