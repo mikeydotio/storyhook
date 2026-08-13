@@ -443,32 +443,171 @@ fn the_renderer_is_tracked_where_the_workflow_expects_it() {
 // The two files agree
 // ---------------------------------------------------------------------------
 
-/// The manifest invariants above are only worth holding for platforms this
-/// project actually ships, and the workflow's matrix is the list of those.
-/// If Linux ever leaves the matrix, the Linux dependency tests become dead
-/// weight and should go with it — this fails to say so.
-#[test]
-fn the_release_matrix_still_ships_linux() {
-    let workflow = release_workflow();
-    let matrix = workflow
+/// The release matrix's target triples, e.g. `x86_64-unknown-linux-gnu`.
+///
+/// Shared by every test in this section that needs "what does the release
+/// actually build" — the manifest invariants below are only worth holding
+/// for platforms this list names.
+fn release_matrix_targets(workflow: &serde_yml::Value) -> Vec<&str> {
+    workflow
         .get("jobs")
         .and_then(|jobs| jobs.get("build"))
         .and_then(|build| build.get("strategy"))
         .and_then(|strategy| strategy.get("matrix"))
         .and_then(|matrix| matrix.get("include"))
         .and_then(serde_yml::Value::as_sequence)
-        .expect("release.yml's build matrix must list its targets");
-
-    let targets: Vec<&str> = matrix
+        .expect("release.yml's build matrix must list its targets")
         .iter()
         .filter_map(|entry| entry.get("target").and_then(serde_yml::Value::as_str))
-        .collect();
+        .collect()
+}
 
+/// Every tracked `Cargo.toml`, found by `git ls-files` rather than a
+/// hand-maintained list — the same idiom `tests/store_isolation.rs`'s
+/// `data_dir_harnesses` and `tests/harness_path_entries.rs` use for shell
+/// scripts, applied to manifests instead.
+fn tracked_manifests(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let listed = std::process::Command::new("git")
+        .current_dir(root)
+        .args(["ls-files", "-z", "--", "*Cargo.toml"])
+        .output()
+        .expect("listing this repository's tracked manifests");
     assert!(
-        targets.iter().any(|target| target.contains("linux")),
-        "no Linux target in the release matrix, but Cargo.toml still declares \
-         Linux-only dependencies this file asserts against: {targets:?}"
+        listed.status.success(),
+        "`git ls-files` failed, so this scan proved nothing: {}",
+        String::from_utf8_lossy(&listed.stderr)
     );
+
+    listed
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .map(|path| root.join(std::str::from_utf8(path).expect("a UTF-8 path")))
+        .collect()
+}
+
+/// Every `target_os` a manifest's `[target.'cfg(...)'.dependencies]` tables
+/// name, paired with the manifest path and the cfg key itself (for a
+/// legible failure message).
+///
+/// Scans by shape — any `[target.*]` key containing `target_os = "…"`, with
+/// a non-empty `dependencies` sub-table — rather than by one literal key, so
+/// a new platform-gated dependency is caught the moment it is declared
+/// rather than only once someone remembers to extend this test.
+///
+/// Deliberately narrower than "every `cfg(...)`": a table gated on
+/// `cfg(unix)` or a bare target triple names no single OS, so it says
+/// nothing this function can check against the matrix's per-OS targets. That
+/// gap is real and is not what this test closes — it closes the gap SH-260
+/// found, which is a `target_os` literal naming a platform the matrix does
+/// not build.
+fn target_os_dependency_tables(manifest_path: &std::path::Path) -> Vec<(String, String)> {
+    let manifest: toml::Value = std::fs::read_to_string(manifest_path)
+        .unwrap_or_else(|e| panic!("{} must be readable: {e}", manifest_path.display()))
+        .parse()
+        .unwrap_or_else(|e| panic!("{} must be valid TOML: {e}", manifest_path.display()));
+
+    let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) else {
+        return Vec::new();
+    };
+
+    let mut found = Vec::new();
+    for (cfg, table) in targets {
+        let has_dependencies = table
+            .get("dependencies")
+            .and_then(toml::Value::as_table)
+            .is_some_and(|deps| !deps.is_empty());
+        if !has_dependencies {
+            continue;
+        }
+        // `cfg` is a key like `cfg(target_os = "windows")`. Extract every
+        // quoted value following a `target_os` mention, rather than
+        // requiring the key be exactly this shape, so `cfg(all(target_os =
+        // "windows", target_arch = "x86_64"))` is still caught.
+        let mut rest = cfg.as_str();
+        while let Some(at) = rest.find("target_os") {
+            rest = &rest[at + "target_os".len()..];
+            let Some(open) = rest.find('"') else { break };
+            let Some(close) = rest[open + 1..].find('"') else {
+                break;
+            };
+            let os = rest[open + 1..open + 1 + close].to_string();
+            found.push((cfg.clone(), os));
+            rest = &rest[open + 1 + close + 1..];
+        }
+    }
+    found
+}
+
+/// Maps a `target_os` literal to the substring the release matrix would
+/// spell it with, e.g. `"linux"` -> the targets ending
+/// `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`.
+///
+/// Explicit and closed on purpose: an OS this function has not been taught
+/// panics rather than silently passing, because "no dependency table names
+/// an OS the matrix doesn't build" is a claim this function can only make
+/// about OSes it knows how to look for.
+fn matrix_substring_for(target_os: &str) -> &'static str {
+    match target_os {
+        "macos" => "-apple-darwin",
+        "linux" => "-unknown-linux-",
+        "windows" => "-pc-windows-",
+        other => panic!(
+            "target_os \"{other}\" has no known release-matrix triple shape — \
+             teach `matrix_substring_for` what a target for it looks like \
+             before this test can vouch for it"
+        ),
+    }
+}
+
+/// The general invariant SH-259 deliberately left unshipped, because it
+/// failed at the time (SH-259's own Linux fix landed before this test could
+/// be written against a clean tree): every `cfg(target_os = ...)`
+/// dependency table, in every tracked manifest, corresponds to a target the
+/// release matrix actually builds. SH-260 found the instance this was
+/// generalized from — `windows-native-keyring-store`, gated on Windows and
+/// activated by the default `github-sync` feature, for a platform nothing
+/// here builds, tests, or ships.
+///
+/// If a platform's dependency table is later added deliberately (Windows
+/// joining the release matrix, say), this test starts passing for it without
+/// modification — the matrix, not this file, is what changes to add support.
+/// If a table is removed instead, as SH-260 did, there is nothing left for
+/// this test to check for that OS and it is silent about it, which is
+/// correct: an absent claim needs no verification.
+#[test]
+fn every_platform_gated_dependency_table_targets_a_built_platform() {
+    let root = repo_root();
+    let manifests = tracked_manifests(&root);
+    assert!(
+        manifests
+            .iter()
+            .any(|path| path == &root.join("Cargo.toml")),
+        "the manifest scan did not find the repository's own Cargo.toml — \
+         `git ls-files -- '*Cargo.toml'` proved nothing"
+    );
+
+    let workflow = release_workflow();
+    let matrix_targets = release_matrix_targets(&workflow);
+
+    for manifest_path in &manifests {
+        for (cfg, target_os) in target_os_dependency_tables(manifest_path) {
+            let substring = matrix_substring_for(&target_os);
+            let relative = manifest_path.strip_prefix(&root).unwrap_or(manifest_path);
+            assert!(
+                matrix_targets
+                    .iter()
+                    .any(|target| target.contains(substring)),
+                "{}'s `[target.'{cfg}'.dependencies]` names target_os \
+                 \"{target_os}\", but no target in release.yml's build \
+                 matrix matches (matrix targets: {matrix_targets:?}). Either \
+                 add {target_os} to the matrix and prove the dependency by \
+                 building it, or drop the dependency for a platform this \
+                 project does not ship (SH-260).",
+                relative.display()
+            );
+        }
+    }
 }
 
 /// A guard on the guard: `read` resolves against the repository, and a test
