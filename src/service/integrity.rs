@@ -208,7 +208,47 @@ impl<'a, S: Store> IntegrityService<'a, S> {
     /// catalog below the floor — went unmentioned whenever anything else
     /// remained, which reads as "nothing happened" to an operator who then
     /// repeats it.
+    ///
+    /// # Today's contract, over [`repair`](Self::repair)
+    ///
+    /// Kept while the callers that want a rendered string move across; the
+    /// verdict itself is minted by [`FixOutcome::verdict`], which is where the
+    /// mapping lives so nothing re-derives it.
     pub fn fix(&self) -> Result<String, AppError> {
+        self.repair().and_then(FixOutcome::verdict)
+    }
+
+    /// Everything a `--fix` run did, **before anything decides whether it
+    /// counts as a failure** — see [`fix`](Self::fix) for what the run itself
+    /// does, which is unchanged.
+    ///
+    /// # Why the verdict is a value and not an error (SH-270)
+    ///
+    /// Because `Err(AppError::Integrity)` cannot answer the question its one
+    /// caller has to ask. Three unrelated things reach that variant from here:
+    ///
+    /// * the **verdict** — repairs ran, findings remain — minted below;
+    /// * a story whose events will not fold, raised by
+    ///   [`crate::domain::fold_story`] from *inside* [`append_and_fold`] while
+    ///   a repair is being written, which rolls that write back; and
+    /// * whatever the store layer raises beneath either.
+    ///
+    /// A caller matching on the variant to mean the first would act on an
+    /// aborted repair as though it had completed. `story doctor --fix` is that
+    /// caller, and what it goes on to do — [`deregister_orphaned`] and
+    /// [`register_found_origins`] — are durable mutations spanning *every*
+    /// project in the store, so the misreading is not academic.
+    ///
+    /// Returning the outcome makes the distinction structural: the `?` in that
+    /// arm can now only carry a genuine failure, and the verdict is minted once,
+    /// after the caller has added what it knows. It also makes both `doctor`
+    /// arms the same three lines — [`report`](Self::report) already hands its
+    /// findings and advice to [`IntegrityDetail::report`] rather than deciding
+    /// its own health (SH-244).
+    ///
+    /// [`deregister_orphaned`]: super::CatalogService::deregister_orphaned
+    /// [`register_found_origins`]: super::CatalogService::register_found_origins
+    pub fn repair(&self) -> Result<FixOutcome, AppError> {
         let now = self.ctx.now();
         let project = self.project();
 
@@ -437,10 +477,6 @@ impl<'a, S: Store> IntegrityService<'a, S> {
             ));
         }
 
-        if let Some(detail) = IntegrityDetail::report(remaining, advice.clone()) {
-            return Err(AppError::Integrity(detail));
-        }
-
         let headline = if !touched.is_empty() || states_added > 0 {
             "doctor repaired supported integrity issues"
         } else if blocked.is_empty() {
@@ -450,14 +486,83 @@ impl<'a, S: Store> IntegrityService<'a, S> {
             // cannot be the one to fix it (SH-225).
             "doctor found nothing it could fix"
         };
-        Ok(std::iter::once(headline.to_string())
-            .chain(advice)
-            .collect::<Vec<_>>()
-            .join("\n"))
+        Ok(FixOutcome {
+            findings: remaining,
+            advice,
+            headline,
+        })
     }
 
     fn project(&self) -> ProjectId {
         self.ctx.project()
+    }
+}
+
+/// Everything a `--fix` run did, and everything still wrong after it.
+///
+/// The value [`IntegrityService::repair`] returns, so that "repairs ran,
+/// findings remain" is a *state of this struct* rather than an error variant
+/// three unrelated failures also reach. See that method for why.
+///
+/// # One advice list, still (SH-266)
+///
+/// `advice` arrives already holding everything the repair itself had to say,
+/// in the order it prints, and a caller with more to add **pushes onto it**
+/// rather than keeping a second list beside it. That is the whole point of the
+/// field: SH-266 fixed a defect whose shape was exactly two lists kept in step
+/// by hand, where the failing path carried a subset of the succeeding one. A
+/// caller that appends cannot reintroduce it, because both outcomes are
+/// rendered from this one vector — [`message`](Self::message) joins it, and
+/// [`verdict`](Self::verdict) hands it to [`IntegrityDetail`] whole.
+pub struct FixOutcome {
+    /// What is still wrong once every repair this command can make has been
+    /// made. Empty means the project is healthy.
+    ///
+    /// The emptiness question is **not** asked here — [`IntegrityDetail::report`]
+    /// owns it (SH-244), and [`verdict`](Self::verdict) is the one place that
+    /// asks it of this value.
+    pub findings: Vec<Finding>,
+    /// Everything this run has to say that is not damage, in the order it
+    /// prints: repairs made, repairs blocked, stories beyond repair, notices.
+    /// Each entry is one rendered block, so a multi-line one keeps its shape.
+    pub advice: Vec<String>,
+    /// The first line of a successful run's report, decided by what the run
+    /// actually did. Unused when `findings` is non-empty: a run that failed has
+    /// no headline, it has a report.
+    pub headline: &'static str,
+}
+
+impl FixOutcome {
+    /// The report a run with nothing left wrong prints: the headline, then
+    /// every advice entry.
+    ///
+    /// Borrows rather than consumes, because the caller that has to render this
+    /// on a *failure* path — where the error is what propagates and this is
+    /// merely context — still owns the outcome afterwards.
+    #[must_use]
+    pub fn message(&self) -> String {
+        std::iter::once(self.headline.to_string())
+            .chain(self.advice.iter().cloned())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// This outcome as the command's result: the rendered message, or the
+    /// integrity error a remaining finding makes it.
+    ///
+    /// The single place the verdict is minted, and it delegates the decision to
+    /// [`IntegrityDetail::report`] rather than re-asking it — so a caller cannot
+    /// disagree with `story doctor`'s read path about what "healthy" means.
+    pub fn verdict(self) -> Result<String, AppError> {
+        // Rendered before the fields move, and unconditionally: the branch below
+        // belongs to `IntegrityDetail::report`, and re-deciding here which of
+        // the two outputs is needed would be the second copy of the emptiness
+        // question that SH-244 exists to prevent.
+        let message = self.message();
+        match IntegrityDetail::report(self.findings, self.advice) {
+            Some(detail) => Err(AppError::Integrity(detail)),
+            None => Ok(message),
+        }
     }
 }
 
