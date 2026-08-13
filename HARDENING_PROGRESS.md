@@ -12435,6 +12435,99 @@ footgun above, since a gate on a tree I was about to change proves nothing —
 orphan check run after the kill, clean. The fourth is the one that counts: green in ~14m — exit 0, 3457 Rust tests, 31 plugin harness scripts, 107 Playwright specs.
 No stalls, no wedges, no orphans. 194 GB free, `target/` unchanged at 72 GB.
 
+### SH-238 — the unforced-stop test stops measuring a duration · PR #330
+
+**Outcome: the flake is gone because the clock is gone.** The test that went red
+on a 127ms shortfall no longer measures anything. Its hook blocks on a file the
+test creates, so the test decides when the in-flight work may finish, and it
+asserts the two facts that actually separate draining from abandoning.
+
+**The reproduction gate answered "already fixed", and that is where it got
+interesting.** SH-238 was filed at 20:53Z on 2026-08-11 from a failure seen
+minutes earlier. SH-209 — the same test, the same 2s assertion, filed three days
+before — was fixed at 01:37Z the next morning by `5b11017`, which moved the
+measurement's origin from "when the poll noticed the hook" to the daemon's own
+`started_at`. Two stories, one defect, and the second one's flake could not be
+reproduced because the first one's fix had landed in between.
+
+**What survived that fix was worse than flaky: it was vacuous.** `started_at` is
+stamped `SecondsFormat::Secs` (`src/api/rpc.rs:194`) — truncated to a whole
+second — and taken *before* the hook is spawned, so `now - started_at` overstates
+the real wait by up to a second and change. A stop that abandoned its work after
+1.1s still satisfies `>= 2s`.
+
+That is a claim worth testing rather than asserting, so it was tested. The old
+test, with its hook lengthened to `sleep 5` and its stop changed to `--force`,
+describes a daemon that provably abandons the request: it kills the hook at the
+2s grace and writes it into the abandoned ledger. **The old assertion passed
+3/3 against it.** Post-SH-209 that test could not fail in either direction — not
+under load, and not on the failure it exists to catch.
+
+**The repair replaces the duration with a rendezvous.** The hook blocks on a
+gate file (bounded at 20s, so a test that panics before opening it leaves no
+shell spinning), and the assertions are causal: `daemon stop` is *still running*
+while the gate is shut — polled across a 750ms window rather than sampled once,
+since the daemon notices shutdown on a 250ms `SHUTDOWN_CHECK` and one early
+sample would pass against a daemon that exits on the next — and the daemon still
+holds its pidfile. Then the gate opens, `stop` exits 0, the daemon is gone, and
+the comment it was serving is committed.
+
+**The load-bearing assertion is the client's exit status,** which the old test
+threw away (`child.wait()`, status unread). A daemon that exits underneath a
+request drops the connection mid-flight; that is `Transport::Sent`, the one
+failure storyhook deliberately never retries, so an abandoned client *cannot*
+report success. No clock is involved in that inference.
+
+**Both new arms were toggled red before either was trusted,** since a test that
+only ever passes is precisely the thing under repair:
+
+| experiment | toggle | result |
+|---|---|---|
+| A | `stop --force`, gate held past the 2s grace | red — "`daemon stop` returned (exit status: 0) while the hook it must wait for is still blocked" |
+| B | A, with the still-blocked check let through | red — "must have been served to completion rather than abandoned (exit status: 5): … io: Peer disconnected" |
+| C | the *old* test, `sleep 5` + `--force` | **green 3/3** — the vacuity, measured |
+
+The test also got faster: 2.75s against 5.09s, because a fixed 2s sleep became a
+750ms observation window. It passed inside the full suite at `--test-threads=4`,
+which is the contention that produced the original flake.
+
+**Sibling sweep: clean.** This was the suite's only lower-bound-on-elapsed
+assertion. Every other timing assertion in `tests/` is an upper bound (`<`) —
+the SH-140 shape, which fails loudly under load instead of passing quietly — or
+is relative to a baseline measured in the same run (`tests/daemon_concurrency.rs`).
+Nothing else to fix, nothing filed. The `started_at` truncation is left alone
+deliberately: it is a human-readable field on a record `daemon status` renders,
+nothing in production computes with it, and the client's own deadline uses
+`Instant`s.
+
+**One filing along the way — SH-263** (`medium`), and the first push attempt is
+what found it. The pre-push gate failed on `test-dispatch-auto.sh`, which had
+passed on the same tree eight minutes earlier and passed again standalone
+immediately after. Reading the fixture rather than re-running it found why it can
+flake at all: the fake tmux keeps its whole state — the input buffer, the
+`launched` flag, the derived `pane_current_command`, the pane pid — in
+`STATE="${FAKE_TMUX_STATE:-/tmp/issue-faketmux}"`, a **fixed path shared by five
+test scripts, persisting between runs, and shared with the `issue` plugin's own
+fake**. Eight other scripts mint their own with `mktemp`. The observed failure's
+signature is the fake reporting an occupant the test never wrote, which is what a
+stale `launched` flag produces. Filed with the lead marked unverified rather than
+chased: the run's rule is one story per context, and the flake did not recur on
+the push that landed.
+
+**Two notes on the loop itself.** `story comment` is refused on a closed story,
+so SH-238's verdict lives here rather than on the story — the gap SH-261 is
+about; comment *before* `story move done`, not after. And `main` moved twice
+mid-cycle (PR #326 landed underneath this branch); the merge was clean, but a
+cycle is never alone on `main`.
+
+**Supervision:** two full `make test` runs, both under a log-growth heartbeat
+with a 120s stall bound and a monitor covering stall and completion — one manual
+(**9m40s**, exit 0) and one by the pre-push hook on the push that landed (**~7m**,
+exit 0, warm build). One earlier pre-push run failed in ~2m on SH-263's flake and
+never reached the e2e leg. Six short targeted `cargo test` runs beside them
+(baseline, the rewrite, experiments A, B and C×3). No stalls, no wedges, no
+restarts; orphan check clean after the experiments. 136 GB free.
+
 ### SH-258 — a temp-rooted checkout, and the extent the story undercounted · no PR yet
 
 **The story's own extent section was wrong, and it explains why.** It reads "One
