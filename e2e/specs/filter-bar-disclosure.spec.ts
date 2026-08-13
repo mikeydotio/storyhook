@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { openFilters, seedToken } from "./support";
+import { openFilters, openProject, seedToken } from "./support";
 
 /**
  * SH-235: the filter bar's dropdowns, checkboxes and sort buttons collapse
@@ -25,8 +25,7 @@ import { openFilters, seedToken } from "./support";
 test.beforeEach(async ({ page }) => {
   await seedToken(page);
   await page.goto("/");
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
 });
 
 test("the panel defaults collapsed, with the toggle's ARIA and chevron matching", async ({

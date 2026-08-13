@@ -4,6 +4,7 @@ import {
   cleanUpCreatedStories,
   deleteStory,
   openFilters,
+  openProject,
   seedToken,
 } from "./support";
 
@@ -236,8 +237,7 @@ test("the app shell and an open modal fit inside a squeezed viewport height", as
   const height = 560; // roughly an iPhone's visible height with the URL bar shown
   await page.setViewportSize({ width, height });
   await page.goto("/");
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
 
   const appBottom = await page
     .locator(".app")
@@ -284,8 +284,7 @@ test("the list table scrolls sideways to its far columns instead of clipping the
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
   await page.locator('#view-toggle button[data-view="list"]').click();
   await expect(page.locator("#list-view")).toBeVisible();
   await expect(page.locator("#list-body tr").first()).toBeVisible();
@@ -401,8 +400,7 @@ test("every button, link and select meets the coarse-pointer tap-target minimum"
 
   await expectNoSmallTargets(page.locator("body"), "the home screen");
 
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
   await expectNoSmallTargets(page.locator("body"), "the board screen (filters collapsed)");
   // SH-235: the filter panel's own dropdowns, checkboxes and sort buttons
   // default collapsed and are excluded from the sweep above (a hidden
@@ -486,8 +484,7 @@ test("the topbar and collapsed filter bar together stay within a measured chrome
   const height = 667; // iPhone SE-class height, the tightest common phone
   await page.setViewportSize({ width: 375, height });
   await page.goto("/");
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
   await expect(page.locator("#filter-panel")).toBeHidden();
 
   const chromeBottom = await page
@@ -519,8 +516,7 @@ test("the card and list-row actions menus have the same items as right-click", a
 }) => {
   const title = "SH-235 actions-menu parity";
   await page.goto("/");
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
   await createStory(page, title);
 
   const card = page.locator('.column[data-state="todo"] .card', {
@@ -594,8 +590,7 @@ test("the card's actions button is deliberately not a Tab stop; the list row's i
 }) => {
   const title = "SH-235 actions-menu tab reachability";
   await page.goto("/");
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
   await createStory(page, title);
 
   await expect(
@@ -631,8 +626,7 @@ test("the next board column peeks on the narrowest supported phone", async ({
 }) => {
   await page.setViewportSize({ width: 320, height: 844 });
   await page.goto("/");
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
   // Alpha's own fixture carries five states (todo/in-progress/blocked/
   // done/review, column-visibility.spec.ts's own comment) -- a second
   // column to peek at is never in question here.
@@ -668,8 +662,7 @@ test("a wider phone keeps the board column at its original 18rem width", async (
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
   await expect(page.locator(".column").first()).toBeVisible();
 
   const width = await page
