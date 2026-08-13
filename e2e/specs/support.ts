@@ -106,14 +106,33 @@ async function waitForBoardData(page: Page): Promise<void> {
  * Opens `name`'s board from the Home screen and waits for its data.
  *
  * The one way a spec reaches a board by clicking its card — pinned by
- * `tests/e2e_harness.rs`, which fails the Rust suite if a spec clicks
- * `.repo-card-name` itself, because the two lines this replaces are exactly
- * the ones that look complete and aren't (see `waitForBoardData`).
+ * `tests/e2e_fixture_hygiene.rs`, which fails the Rust suite if a spec
+ * clicks `.repo-card-name` itself, because the two lines this replaces are
+ * exactly the ones that look complete and aren't (see `waitForBoardData`).
  */
 export async function openProject(page: Page, name: string): Promise<void> {
   await page.locator(".repo-card-name", { hasText: name }).click();
   await expect(page.locator("#board-view")).toBeVisible();
   await waitForBoardData(page);
+}
+
+/**
+ * Opens the filter bar's disclosure panel (SH-235) if it isn't already
+ * open, and waits for it to actually render. The panel defaults collapsed
+ * -- a fresh Playwright context has no localStorage, same reasoning as
+ * `seedToken`'s own comment above, so every spec that drives a control
+ * inside it (a priority/assignee/type/state/columns dropdown, "Show
+ * closed"/"Show archived"/"Hide empty columns", or the board-sort buttons)
+ * needs this first. `#filter-count` and `#filter-clear` are in the
+ * always-visible `.filter-summary` row, not the panel -- specs that touch
+ * only those don't need this at all.
+ */
+export async function openFilters(page: Page): Promise<void> {
+  const panel = page.locator("#filter-panel");
+  if (await panel.isHidden()) {
+    await page.locator("#filter-toggle-btn").click();
+  }
+  await expect(panel).toBeVisible();
 }
 
 /**

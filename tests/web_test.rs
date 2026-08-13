@@ -1038,6 +1038,383 @@ fn web_serve_root_html_keeps_text_controls_above_the_ios_zoom_threshold() {
     );
 }
 
+/// SH-235: `100vh`/`90vh`/`60vh` are the *largest* possible iOS Safari
+/// viewport -- with the URL bar showing, the true visible area is shorter,
+/// so a bare `vh` value overflows the screen (the app shell) or mis-sizes a
+/// modal/popover so its own footer sits behind the browser chrome. Every
+/// affected rule must carry the `vh` value first (the fallback for a
+/// browser that predates `dvh` -- CSS drops a declaration with an
+/// unsupported unit entirely, so without the `vh` line first that browser
+/// gets no height at all) and the matching `dvh` value second, so the later
+/// declaration wins in every browser that understands it.
+///
+/// Headless Blink has no dynamic toolbar, so `dvh` and `vh` compute
+/// identically there -- this is the layer that can guard the *mechanism*
+/// (the fallback pair itself) without a real device or a toolbar to hide.
+#[test]
+fn web_serve_root_html_sizes_the_shell_to_the_dynamic_viewport() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    for (selector, prop, vh_value) in [
+        (".app", "height", "100"),
+        (".modal", "max-height", "90"),
+        (".drafts-list", "max-height", "60"),
+    ] {
+        let decl = declarations(css, selector);
+        let vh_decl = format!("{prop}: {vh_value}vh;");
+        let dvh_decl = format!("{prop}: {vh_value}dvh;");
+        assert!(
+            decl.contains(&vh_decl),
+            "`{selector}` must keep its `{vh_decl}` fallback for browsers that predate `dvh`"
+        );
+        assert!(
+            decl.contains(&dvh_decl),
+            "`{selector}` must also set `{dvh_decl}`, so the dynamic (toolbar-aware) \
+             viewport wins over the fallback in every browser that supports it"
+        );
+        // The `dvh` declaration must come after the `vh` one -- CSS applies
+        // the last matching declaration, so a swapped order would silently
+        // put the fallback back in charge in every browser.
+        assert!(
+            decl.find(&vh_decl).unwrap() < decl.find(&dvh_decl).unwrap(),
+            "`{selector}`'s `{dvh_decl}` must be declared after `{vh_decl}`, not before"
+        );
+    }
+
+    // iOS's automatic post-rotation text-inflation heuristic, disabled --
+    // not the same thing as pinch-zoom or the OS's own accessibility text
+    // size, both of which stay untouched (see the rule's own comment).
+    let html_decl = declarations(css, "html");
+    assert!(
+        html_decl.contains("-webkit-text-size-adjust: 100%;"),
+        "`html` must set -webkit-text-size-adjust: 100% for Safari's still-prefixed property"
+    );
+    assert!(
+        html_decl.contains("text-size-adjust: 100%;"),
+        "`html` must set the unprefixed text-size-adjust: 100% too"
+    );
+}
+
+/// SH-235: `.toast-stack` and `.dispatch-history` are `position: fixed;
+/// right: 1rem` -- a bare `max-width` (22rem / 26rem) leaves no room for
+/// the matching 1rem the box needs on its *left* too, so on a narrow
+/// enough viewport it runs off the left edge. Each must cap itself at the
+/// viewport minus both margins instead.
+///
+/// This is the cheap, browser-free layer: it pins the source text of the
+/// `min()`/`calc()` expression so the mechanism can't be quietly reverted
+/// to a literal. Whether the browser actually *resolves* that expression
+/// to the intended pixel value is what `responsive.mobile.spec.ts`'s own
+/// test for this proves -- a text match here cannot catch a rounding or
+/// nesting mistake inside the expression.
+#[test]
+fn web_serve_root_html_clamps_overlay_widths_to_the_viewport() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    for (selector, rem_ceiling) in [(".toast-stack", "22rem"), (".dispatch-history", "26rem")] {
+        let decl = declarations(css, selector);
+        let expected = format!("max-width: min({rem_ceiling}, calc(100vw - 2rem));");
+        assert!(
+            decl.contains(&expected),
+            "`{selector}` must set `{expected}`, so it never exceeds the \
+             viewport minus its own left+right margins"
+        );
+    }
+}
+
+/// SH-235, WCAG 2.2 SC 2.5.8 (Target Size, Minimum): every tap target in
+/// the stylesheet reads `--tap-min` -- 24px everywhere (the floor SC 2.5.8
+/// sets for mouse input too), 44px under a coarse pointer (Apple's and
+/// Android's own guidance for a comfortable fingertip target). One token,
+/// many readers -- the same shape as `--control-font-*` (SH-256) and for
+/// the same reason: a literal value on any one of these selectors would be
+/// a silent, undetectable regression the moment `--tap-min` itself changed.
+///
+/// `responsive.mobile.spec.ts`'s own sweep is the layer that proves the
+/// browser actually *resolves* every one of these to 44px or more under a
+/// real coarse pointer, across every surface that renders them -- this
+/// test only pins the source text.
+#[test]
+fn web_serve_root_html_meets_wcag_tap_target_size() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    assert!(
+        css.contains("--tap-min: 24px;"),
+        ":root must set --tap-min: 24px, WCAG 2.2 SC 2.5.8's own floor"
+    );
+    let block_start = css
+        .find("@media (pointer: coarse) {")
+        .expect("the coarse-pointer block is what raises --tap-min");
+    let coarse_block = &css[block_start..];
+    let coarse_block = &coarse_block[..coarse_block
+        .find("\n}")
+        .expect("the coarse-pointer block closes")];
+    assert!(
+        coarse_block.contains("--tap-min: 44px;"),
+        "the coarse-pointer block must raise --tap-min to 44px"
+    );
+
+    // Selectors whose only fix was a min-height floor -- their width was
+    // already compliant (a full-width row, or a text label wide enough on
+    // its own).
+    for selector in [
+        ".btn",
+        ".projsel-btn",
+        ".projsel-item",
+        ".back-link",
+        ".fdd-option",
+        ".filter-toggle",
+        ".board-sort-btn",
+        ".filter-clear",
+        ".column-archive-btn",
+        ".section-toggle",
+        ".field select, .field input[type=text], .field textarea",
+        ".modal-body input[type=text], .modal-body select",
+        ".ctxmenu-item",
+        ".view-toggle button",
+        ".fdd-btn",
+        ".status-row select, .status-row input[type=text]",
+        ".status-add input[type=text], .status-add select",
+    ] {
+        assert!(
+            declarations(css, selector).contains("min-height: var(--tap-min)"),
+            "`{selector}` must read min-height from --tap-min"
+        );
+    }
+
+    // Selectors whose fix needed both axes -- each is a glyph-only icon
+    // button (a chip's "x", a relation's delete button, a dismiss "x")
+    // narrower than --tap-min on its own.
+    for selector in [
+        ".status-reorder button",
+        ".label-chip button",
+        ".rel-row button",
+        ".dispatch-history-dismiss",
+    ] {
+        let decl = declarations(css, selector);
+        assert!(
+            decl.contains("min-width: var(--tap-min)"),
+            "`{selector}` must read min-width from --tap-min"
+        );
+        assert!(
+            decl.contains("min-height: var(--tap-min)"),
+            "`{selector}` must read min-height from --tap-min"
+        );
+    }
+
+    // .field textarea and .description-field each had a taller rest height
+    // than --tap-min's own 24px desktop floor before this token existed
+    // (36px, 40px) -- max() keeps whichever floor is taller, rather than a
+    // bare var(--tap-min) silently shrinking either on a fine pointer.
+    for (selector, original) in [
+        (".field textarea", "2.25rem"),
+        (".description-field", "2.5rem"),
+    ] {
+        let expected = format!("min-height: max({original}, var(--tap-min))");
+        assert!(
+            declarations(css, selector).contains(&expected),
+            "`{selector}` must set `{expected}`"
+        );
+    }
+}
+
+/// SH-235: the filter bar's dropdowns, checkboxes and sort buttons collapse
+/// behind a "Filters" disclosure, at every viewport size -- the filter bar
+/// alone measured 145px tall at a 390px width, on top of the topbar's own
+/// 108px. `#filter-summary` (the toggle, `#filter-count`, `#filter-clear`)
+/// stays outside `#filter-panel`'s `hidden` so a reader always sees whether
+/// a filter is active and can clear it without opening anything.
+///
+/// The interaction itself (default collapsed, opens on click, ARIA/chevron
+/// sync, survives a reload, the active-class heuristic) is
+/// `filter-bar-disclosure.spec.ts`'s job, under the desktop project -- this
+/// is not a mobile-only behavior, so it isn't gated behind
+/// `mobile-chromium`. This is the cheap, browser-free layer: the markup
+/// shape and the `closeAllPopovers` scoping fix the disclosure needed.
+#[test]
+fn web_serve_root_html_has_a_collapsible_filter_panel() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+
+    assert!(body.contains(r#"id="filter-summary""#));
+    assert!(body.contains(r#"id="filter-toggle-btn""#));
+    assert!(body.contains(r#"aria-controls="filter-panel""#));
+    // Collapsed by default in the served markup itself -- not just via a
+    // JS-applied class, so a reader whose JS is still loading (or fails)
+    // never sees the panel flash open before script runs.
+    assert!(body.contains(r#"id="filter-panel" hidden>"#));
+    // #filter-count and #filter-clear moved into the always-visible summary
+    // row -- pinned by each still appearing before filter-panel's own
+    // opening tag, i.e. outside it, not merely present somewhere in the file.
+    let panel_start = body
+        .find(r#"id="filter-panel""#)
+        .expect("the filter panel exists");
+    assert!(body[..panel_start].contains(r#"id="filter-count""#));
+    assert!(body[..panel_start].contains(r#"id="filter-clear""#));
+
+    // The generic aria-expanded reset in closeAllPopovers() must exclude
+    // this disclosure (and the drawer's own SH-169 section toggles) -- see
+    // that function's own comment for why an unscoped reset is a real,
+    // silent ARIA-state bug for a persistent disclosure, not merely a
+    // popover it's meant to dismiss.
+    assert!(
+        body.contains(r#"[aria-expanded="true"]:not(.section-toggle):not(.filter-toggle-btn)"#)
+    );
+}
+
+/// SH-235 (D9): HTML5 native drag-and-drop (`card.draggable` + `dragstart`)
+/// never fires on touch, so before this the only touch path to a card's
+/// actions was an undocumented long-press. `.card-actions-btn` (board) and
+/// `.row-actions-btn` (list) open the exact same menu right-click does
+/// (`openStoryMenu`) -- coarse-pointer visible only, so desktop's rendering
+/// is untouched.
+///
+/// `responsive.mobile.spec.ts`'s own tests are the layer that proves the
+/// menu items actually match right-click's and that the coarse-pointer
+/// sizing resolves correctly in a real browser; this is the cheap,
+/// browser-free layer pinning the source text of the mechanism.
+#[test]
+fn web_serve_root_html_has_coarse_pointer_actions_buttons() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    // The list table's static thead grows a trailing, visually-hidden-label
+    // actions column -- present in the served markup itself, unlike the
+    // board/list bodies which are built client-side.
+    assert!(body.contains(r#"<th class="col-actions"><span class="sr-only">Actions</span></th>"#));
+
+    // Both buttons reuse openStoryMenu (the same menu right-click opens),
+    // not a second implementation that could drift out of step with it.
+    assert!(body.contains("class: \"card-actions-btn\""));
+    assert!(body.contains("openStoryMenu(e, v, cardActionsBtn)"));
+    assert!(body.contains("class: \"row-actions-btn\""));
+    assert!(body.contains("openStoryMenu(e, v, rowActionsBtn)"));
+
+    // The card's button is deliberately not a Tab stop (role="button" on
+    // .card makes any nested interactive element ARIA-presentational
+    // regardless of markup -- Shift+F10/the Menu key stays the keyboard
+    // path); the row's carries no tabIndex override, since a <tr> is not
+    // role="button" and the button is a normal part of the a11y tree there.
+    assert!(body.contains("type: \"button\", class: \"card-actions-btn\", tabIndex: -1,"));
+    assert!(!body.contains("type: \"button\", class: \"row-actions-btn\", tabIndex"));
+
+    // Hidden on a fine pointer (right-click already reaches this menu
+    // there); coarse-pointer-only, both axes -- an icon-only button is
+    // narrower than --tap-min once nothing else sets its width. Each
+    // button gets its own dedicated `@media (pointer: coarse)` block right
+    // beside its base rule (a third such block in the sheet, after the
+    // `:root` tokens' and `.card-actions-btn`'s own) -- checked as one
+    // literal snippet per button, the same way this file already pins
+    // `--tap-min`'s and `--control-font-*`'s own coarse-pointer values.
+    for (selector, coarse_block) in [
+        (
+            ".card-actions-btn",
+            "@media (pointer: coarse) {\n  .card-actions-btn {\n    display: inline-flex; align-items: center; justify-content: center;\n    min-width: var(--tap-min); min-height: var(--tap-min);\n  }\n}",
+        ),
+        (
+            ".row-actions-btn",
+            "@media (pointer: coarse) {\n  .col-actions { display: table-cell; }\n  .row-actions-btn {\n    display: inline-flex; align-items: center; justify-content: center;\n    min-width: var(--tap-min); min-height: var(--tap-min);\n  }\n}",
+        ),
+    ] {
+        assert!(
+            declarations(css, selector).contains("display: none"),
+            "`{selector}` must default to display: none on a fine pointer"
+        );
+        assert!(
+            css.contains(coarse_block),
+            "`{selector}` must be revealed and sized to --tap-min inside its own coarse-pointer block"
+        );
+    }
+
+    // The list table's own overflow-x scroll must not let the browser's
+    // mobile viewport-fit heuristic treat the table's un-clamped intrinsic
+    // width as the page's real content width -- contain: layout is what
+    // isolates the wrap's internal layout from that outer measurement.
+    assert!(declarations(css, ".list-table-wrap").contains("contain: layout"));
+}
+
+/// SH-235 (D8): `.column`'s base rule (`flex: 0 0 18rem; max-width: 18rem`)
+/// is nearly the entire screen on the narrowest supported phones -- 288px
+/// of a 320px viewport leaves only a 32px (10%) sliver of the next column,
+/// not enough to read as "there's more this way". The `<=768px` layout
+/// block (not `pointer: coarse` -- this is a screen-width question, the
+/// same distinction the coarse-pointer block's own comment draws the other
+/// way) narrows the ceiling to `min(18rem, 85vw)`, which only bites below
+/// ~339px (18rem / 0.85) -- `responsive.mobile.spec.ts`'s own pair of
+/// tests is what proves the browser actually resolves that expression
+/// correctly at 320px and leaves 375px+ alone.
+#[test]
+fn web_serve_root_html_lets_the_next_board_column_peek_on_narrow_phones() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    assert!(
+        declarations(css, ".column").contains("flex: 0 0 18rem")
+            && declarations(css, ".column").contains("max-width: 18rem"),
+        ".column's base rule must keep its full 18rem ceiling outside the narrow-phone override"
+    );
+
+    let block_start = css
+        .find("@media (max-width: 768px) {")
+        .expect("the <=768px layout block is what narrows .column on the smallest phones");
+    let block = &css[block_start..];
+    let block = &block[..block.find("\n}").expect("the <=768px block closes")];
+    assert!(
+        block.contains(".column { flex-basis: min(18rem, 85vw); max-width: min(18rem, 85vw); }"),
+        "the <=768px block must narrow .column to min(18rem, 85vw)"
+    );
+}
+
 #[test]
 fn web_serve_api_data_empty_project() {
     let fixture = served();
