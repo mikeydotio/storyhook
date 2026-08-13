@@ -68,7 +68,8 @@ use crate::store::{
 };
 
 pub use catalog::{
-    CatalogEntry, CatalogService, OriginFinding, OrphanedRegistration, UnregisteredOrigin,
+    CatalogEntry, CatalogService, OriginFinding, OriginSweep, OrphanedRegistration, RecordedOrigin,
+    UnregisteredOrigin,
 };
 pub use config::{ConfigService, StateEdit, StateListing};
 pub use git::GitService;
