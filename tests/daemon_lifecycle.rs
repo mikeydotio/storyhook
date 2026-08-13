@@ -273,9 +273,28 @@ fn stopping_nothing_says_so_and_succeeds() {
 /// An unforced `daemon stop` waits for in-flight work to finish rather than
 /// abandoning it — the whole point of the default not being `--force`.
 ///
-/// The fixture holds a request open with a 2s hook; `daemon stop` must not
-/// return before that hook does, and the daemon must actually be gone once
-/// it does return (drained, not merely told to drain).
+/// # Why no duration is measured here
+///
+/// This test used to hold a request open with a `sleep 2` hook and assert that
+/// the stop took at least two seconds, and both ways of timing that failed.
+/// Timed from the poll that first *noticed* the hook, the measurement silently
+/// omits however much of the sleep had already gone by, and a 127ms shortfall
+/// turned it red under load twice (SH-209, SH-238). Timed instead from the
+/// daemon's own `started_at`, it cannot go red — but that stamp is truncated to
+/// whole seconds (`api::rpc::invoke`) and is taken before the hook is even
+/// spawned, so "two seconds elapsed" can be bought with barely one second of
+/// real waiting, and a daemon that abandoned its work halfway through would
+/// still pass. One shape flakes, the other is nearly vacuous.
+///
+/// A duration was never the evidence. The hook here blocks on a file *this test*
+/// creates, so the test decides when the in-flight work is allowed to finish:
+/// `stop` must still be running while the gate is shut, and the client whose
+/// command the daemon was serving must exit **successfully** once it opens.
+/// That last one is the whole claim — a daemon that exits underneath a request
+/// drops the connection mid-flight, which is `Transport::Sent`, the one failure
+/// storyhook deliberately never retries (`invoke::HttpInvoker`, whose
+/// `Transport::NotDelivered` arm is the only one that sends again), so an
+/// abandoned client cannot report success.
 #[test]
 fn an_unforced_stop_waits_for_in_flight_work_to_finish() {
     use std::io::Write;
@@ -284,13 +303,22 @@ fn an_unforced_stop_waits_for_in_flight_work_to_finish() {
     let project = env.project().prefix("PB").build();
     let _guard = DaemonGuard(&env);
 
+    let gate = project.path().join("release-the-hook");
     std::fs::create_dir_all(project.path().join(".storyhook")).expect("the hooks directory");
     let mut hooks = std::fs::File::create(project.path().join(".storyhook/hooks.toml"))
         .expect("writing hooks.toml");
+    // The wait is bounded rather than unconditional: a test that panics before
+    // it opens the gate must not leave a shell spinning for the whole of the
+    // hook's own 60s timeout.
     hooks
         .write_all(
-            b"[settings]\ntimeout_seconds = 60\n\n\
-              [on_comment]\ncommand = \"sleep 2\"\ntimeout_seconds = 60\n",
+            format!(
+                "[settings]\ntimeout_seconds = 60\n\n\
+                 [on_comment]\ncommand = \"i=0; while [ ! -f '{}' ] && [ $i -lt 200 ]; \
+                 do sleep 0.1; i=$((i+1)); done\"\ntimeout_seconds = 60\n",
+                gate.display()
+            )
+            .as_bytes(),
         )
         .expect("writing the hook");
     drop(hooks);
@@ -300,8 +328,10 @@ fn an_unforced_stop_waits_for_in_flight_work_to_finish() {
         .success();
 
     let mut slow = env.raw_story(project.path());
-    let mut child = slow
+    let client = slow
         .args(["comment", "PB-1", "trip the hook"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawning the slow command");
 
@@ -314,35 +344,64 @@ fn an_unforced_stop_waits_for_in_flight_work_to_finish() {
                 .any(|r| r.command == "comment")
         },
     );
-    // `wait_for` only proves the record exists by the time it polls, which
-    // can be an arbitrary amount of the hook's 2s already spent — measuring
-    // "waited" from here (as this test used to) understates the daemon's
-    // own wait and goes flaky under scheduling contention (SH-209). The
-    // record's own `started_at`, set by the daemon before it ever spawns
-    // the hook (`api::rpc::invoke`), is the true origin.
-    let hook_started_at: chrono::DateTime<chrono::Utc> = lifecycle::read_inflight(&environment)
-        .into_iter()
-        .find(|r| r.command == "comment")
-        .expect("the in-flight record wait_for just found is still there")
-        .started_at
-        .parse()
-        .expect("started_at is RFC 3339");
 
-    env.story(project.path())
+    // Spawned rather than run to completion, because a correct `stop` cannot
+    // return until the gate below opens.
+    let mut stop_command = env.raw_story(project.path());
+    let mut stop = stop_command
         .args(["daemon", "stop"])
-        .assert()
-        .success();
-    let waited = chrono::Utc::now() - hook_started_at;
+        .spawn()
+        .expect("spawning `daemon stop`");
 
+    // The gate is shut, so the hook cannot have finished, so a stop that has
+    // already returned abandoned it. Watched across a window rather than
+    // sampled once: the daemon notices a shutdown request on a 250ms poll
+    // (`daemon::serve`'s `SHUTDOWN_CHECK`), and a single sample taken before
+    // the first of those would pass against a daemon that exits on the next.
+    let watched_until = Instant::now() + Duration::from_millis(750);
+    while Instant::now() < watched_until {
+        if let Some(status) = stop.try_wait().expect("polling `daemon stop`") {
+            panic!(
+                "`daemon stop` returned ({status}) while the hook it must wait for is \
+                 still blocked: it abandoned the in-flight request rather than draining it"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
     assert!(
-        waited >= chrono::Duration::seconds(2),
-        "an unforced stop must wait for the 2s hook to finish, not abandon it: took {waited}"
+        lifecycle::is_live(&environment),
+        "the daemon must still hold its pidfile while an unforced stop waits for it"
+    );
+
+    std::fs::File::create(&gate).expect("opening the gate");
+
+    let stopped = stop.wait().expect("`daemon stop` finishes");
+    assert!(stopped.success(), "`daemon stop` must succeed: {stopped}");
+
+    let served = client
+        .wait_with_output()
+        .expect("the slow command finishes");
+    assert!(
+        served.status.success(),
+        "the in-flight comment must have been served to completion rather than \
+         abandoned ({}): {}",
+        served.status,
+        String::from_utf8_lossy(&served.stderr)
     );
     assert!(
         !lifecycle::is_live(&environment),
         "the daemon must actually be gone once stop returns"
     );
-    child.wait().expect("the slow command finishes");
+
+    // Served *and* committed — the client's exit status proves it got an
+    // answer, this proves the answer was a real write. It starts a fresh
+    // daemon, which is why it comes after the assertion that the old one is
+    // gone rather than before it.
+    env.story(project.path())
+        .args(["show", "PB-1"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("trip the hook"));
 }
 
 /// `daemon stop --force` does not wait for a hook that outlives its grace
