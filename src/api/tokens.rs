@@ -16,9 +16,9 @@
 //! [`crate::daemon::http1::serve_connections`] requires its handler to be
 //! `Fn + Clone + Send + 'static`; the accept-loop thread that decides
 //! admission therefore cannot borrow the store, which is why
-//! [`crate::api::handoff`] and [`crate::api::session`] already answer off the
-//! store thread through `Arc`-held in-memory registries — this module follows
-//! the same shape for the same reason.
+//! [`crate::api::handoff`] already answers off the store thread through an
+//! `Arc`-held in-memory registry (as SH-254's now-deleted `session` module
+//! also did) — this module follows the same shape for the same reason.
 //!
 //! That alone would not rule out SQLite (an in-memory index over a durable
 //! SQLite table would satisfy the *read* side too). What rules it out is
@@ -72,8 +72,7 @@ use crate::env::Environment;
 /// Where `story token new|list|revoke` speak to the daemon. On the control
 /// surface — [`crate::api::rpc::admission`] already refuses anything off
 /// loopback or without the master token before [`intercept`] is reached, the
-/// same umbrella [`crate::api::handoff::ARM_PATH`] and
-/// [`crate::api::session`]'s listing route sit under.
+/// same umbrella [`crate::api::handoff::ARM_PATH`] sits under.
 pub const TOKENS_PATH: &str = "/api/v1/tokens";
 
 /// Where the SPA exchanges a pasted named token for a cookie (SH-255).
@@ -105,7 +104,7 @@ const PREFIX_HEX: usize = 8;
 /// How many named tokens may exist at once.
 ///
 /// Deliberately **not** LRU-evicted the way [`crate::api::handoff::HandoffRegistry`]'s
-/// coupons or [`crate::api::session::SessionRegistry`]'s capabilities are: a
+/// coupons (or SH-254's now-deleted `SessionRegistry`'s capabilities) were: a
 /// user named this token and expects it to persist until they revoke it.
 /// Minting past the cap is refused, naming what to revoke, rather than
 /// silently discarding a credential somebody is relying on.
@@ -611,10 +610,10 @@ fn write_tokens_file(env: &Environment, persisted: &Persisted) {
 /// is ever built. `None` means "not one of ours."
 ///
 /// Answered here, off the store thread, for the reason
-/// [`crate::api::handoff::intercept`] and [`crate::api::session::intercept`]
-/// already are: none of these three verbs needs the store, so none may queue
-/// behind the dispatcher pool. `story token revoke` in particular is the
-/// reason this matters most — see the module doc.
+/// [`crate::api::handoff::intercept`] already is: none of these verbs needs
+/// the store, so none may queue behind the dispatcher pool. `story token
+/// revoke` in particular is the reason this matters most — see the module
+/// doc.
 ///
 /// Every verb is decidable from the request head alone. Minting takes its
 /// name as a query parameter (`POST /api/v1/tokens?name=...`) rather than a

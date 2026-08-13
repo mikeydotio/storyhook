@@ -175,11 +175,6 @@ struct Serving<'a, S: Store> {
     /// needs nothing from the store, so it is answered on the `worker` thread
     /// and must never queue behind the dispatcher pool.
     handoff: Arc<crate::api::handoff::HandoffRegistry>,
-    /// Every scoped dashboard capability a redeemed coupon has bought and
-    /// nobody has revoked (SH-254). An `Arc` for `handoff`'s reason, and it
-    /// deliberately outlives no daemon: a capability is process state, never
-    /// written to disk, so a restart ends every one of them.
-    sessions: Arc<crate::api::session::SessionRegistry>,
     /// Every named, persistent, revocable dashboard token (SH-255). An `Arc`
     /// for `handoff`'s reason: `story token new|list|revoke` need nothing
     /// from the store, so they are answered on the `worker` thread and must
@@ -279,7 +274,6 @@ where
         },
         dispatch_registry: Arc::new(crate::api::dispatch::DispatchRegistry::load(env)),
         handoff: Arc::new(crate::api::handoff::HandoffRegistry::new()),
-        sessions: Arc::new(crate::api::session::SessionRegistry::new()),
         tokens: Arc::new(crate::api::tokens::TokenRegistry::load(env)),
         cookie_name: crate::api::tokens::cookie_name(env),
         inflight: Arc::new(crate::daemon::lifecycle::InFlight::new(env.clone())),
@@ -729,7 +723,6 @@ fn accept_loop<S: Store>(
     let env = serving.env.clone();
     let dispatch_registry = Arc::clone(&serving.dispatch_registry);
     let handoff = Arc::clone(&serving.handoff);
-    let sessions = Arc::clone(&serving.sessions);
     let tokens = Arc::clone(&serving.tokens);
 
     // One closure per listener, cloned by `http1::serve_connections` once per
@@ -752,7 +745,6 @@ fn accept_loop<S: Store>(
             &env,
             &dispatch_registry,
             &handoff,
-            &sessions,
             &tokens,
             &cookie_name,
         )
@@ -814,7 +806,6 @@ fn worker(
     env: &Environment,
     dispatch_registry: &Arc<crate::api::dispatch::DispatchRegistry>,
     handoff: &Arc<crate::api::handoff::HandoffRegistry>,
-    sessions: &Arc<crate::api::session::SessionRegistry>,
     tokens: &Arc<crate::api::tokens::TokenRegistry>,
     cookie_name: &str,
 ) {
@@ -844,13 +835,10 @@ fn worker(
     if let Some(reply) = crate::api::admission::admission(
         &segments,
         &method,
-        query.as_deref(),
         &headers,
         trusted_hosts,
         token,
-        loopback,
         std::time::Instant::now(),
-        sessions,
         tokens,
         cookie_name,
         chrono::Utc::now(),
@@ -878,7 +866,6 @@ fn worker(
         loopback,
         std::time::Instant::now(),
         handoff,
-        sessions,
         tokens,
         cookie_name,
         chrono::Utc::now(),
@@ -900,24 +887,6 @@ fn worker(
         tokens,
         chrono::Utc::now(),
         std::time::Instant::now(),
-    ) {
-        finish(request, reply);
-        return;
-    }
-
-    // Listing and revoking dashboard capabilities (SH-254), answered here for
-    // `handoff::intercept`'s reason and one of its own: `story web revoke` is
-    // most likely to be run *because* this daemon is busy with something the
-    // operator wants stopped, so it must never queue behind the dispatcher
-    // pool. `rpc::admission` above has already required loopback and the
-    // master token; the duplicate inside is labelled as such.
-    if let Some(reply) = crate::api::session::intercept(
-        &segments,
-        &method,
-        &headers,
-        token,
-        std::time::Instant::now(),
-        sessions,
     ) {
         finish(request, reply);
         return;
@@ -1545,39 +1514,6 @@ mod tests {
 
     // --- The loopback label follows the bind (SH-253) ---
 
-    /// A read on `/api/repos` with no credential anywhere, as a browser on this
-    /// machine sends it. `Host` names loopback, which is conjunct 3 of the
-    /// SH-250 exemption — so the *only* conjunct left in question below is the
-    /// one the listener supplies.
-    fn tokenless_read() -> Vec<Header> {
-        vec![Header::from_bytes("Host", "127.0.0.1:3456").expect("a valid header")]
-    }
-
-    /// Whether the real admission gate admits [`tokenless_read`] on a listener
-    /// with this `loopback` standing.
-    ///
-    /// `TrustedHosts::default()` rather than `for_daemon`: the latter reads
-    /// `$STORYHOOK_WEB_TRUSTED_HOSTS`, and a unit test whose verdict depends on
-    /// the developer's environment is not a test. Default is the empty
-    /// allowlist, which is what a machine with no proxy configured has.
-    fn admits_a_tokenless_read(loopback: bool) -> bool {
-        crate::api::admission::admission(
-            &["api", "repos"],
-            &Method::Get,
-            None,
-            &tokenless_read(),
-            &crate::api::http::TrustedHosts::default(),
-            "the-real-token",
-            loopback,
-            std::time::Instant::now(),
-            &crate::api::session::SessionRegistry::new(),
-            &crate::api::tokens::TokenRegistry::new(chrono::Utc::now(), std::time::Instant::now()),
-            "storyhook_test",
-            chrono::Utc::now(),
-        )
-        .is_none()
-    }
-
     /// The flag is a consequence of the bind, not a claim made beside it.
     ///
     /// Binds for real rather than fabricating a `SocketAddr`: the property
@@ -1611,36 +1547,6 @@ mod tests {
             .expect("a freshly bound socket reports its address");
 
         assert!(local.is_loopback(), "127.0.0.1 is the loopback interface");
-    }
-
-    /// SH-250's tokenless read exemption follows the derived flag — the fourth
-    /// acceptance criterion of SH-253, and the reason the other three matter.
-    ///
-    /// Composes the two real pieces with nothing mocked between them: a socket
-    /// bound for real, the flag derived from it, and
-    /// [`crate::api::admission::admission`] itself deciding. Before SH-253 a
-    /// wildcard-bound listener would have carried `loopback: true` — the value
-    /// stamped beside the bind — and this daemon would have handed every story
-    /// in the store to any peer on the network with no credential at all.
-    #[test]
-    fn the_tokenless_read_exemption_follows_the_bind_rather_than_a_constant() {
-        let wildcard = Listener::adopt(
-            TcpListener::bind(("0.0.0.0", 0)).expect("binding the wildcard address"),
-        )
-        .expect("a freshly bound socket reports its address");
-        let local = Listener::adopt(TcpListener::bind(("127.0.0.1", 0)).expect("binding loopback"))
-            .expect("a freshly bound socket reports its address");
-
-        assert!(
-            !admits_a_tokenless_read(wildcard.is_loopback()),
-            "a read arriving on a listener bound to {} must be made to prove who \
-             it is, however loopback its Host header claims to be",
-            wildcard.addr()
-        );
-        assert!(
-            admits_a_tokenless_read(local.is_loopback()),
-            "and the exemption still reaches the listener it was written for"
-        );
     }
 
     /// `hook_depth` is peeked from the body only for `/api/v1/invoke`; every
