@@ -847,30 +847,37 @@ fn charter_inert_violation(value: &str) -> bool {
     stripped.contains(CHARTER_INERT_BANNED) || stripped.contains('\n')
 }
 
-/// The three env vars `story.sh` reads as user overrides of the rendered
+/// The four env vars `story.sh` reads as user overrides of the rendered
 /// handoff text (`render_template`'s `PROMPT_TPL`/`AUTO_PROMPT_TPL`/
-/// `PROMPT_EXTRA`) — the names [`prompt_override_violation`] checks and
-/// [`run_child`] reads from this daemon's own inherited environment.
-const PROMPT_OVERRIDE_ENV_VARS: [&str; 3] =
-    ["STORY_PROMPT", "STORY_AUTO_PROMPT", "STORY_PROMPT_EXTRA"];
+/// `AUTO_PROMPT_SOLO_TPL`/`PROMPT_EXTRA`) — the names
+/// [`prompt_override_violation`] checks and [`run_child`] reads from this
+/// daemon's own inherited environment. `STORY_AUTO_PROMPT_SOLO` joined this
+/// set in SH-219, alongside `story.sh` growing a second `--auto` charter for
+/// a machine with no `/council-vote` skill installed.
+const PROMPT_OVERRIDE_ENV_VARS: [&str; 4] = [
+    "STORY_PROMPT",
+    "STORY_AUTO_PROMPT",
+    "STORY_AUTO_PROMPT_SOLO",
+    "STORY_PROMPT_EXTRA",
+];
 
 /// Checks whichever of `story_prompt` / `story_auto_prompt` /
-/// `story_prompt_extra` this dispatch's mode would actually feed to
-/// `story.sh` against I4 CHARTER-INERT — a pure function of the three
-/// already-read values, deliberately, rather than one that reads
-/// `std::env::var` itself: process environment is global state, and reading
-/// it directly here would make every caller either mutate the real process
-/// environment to test this (racing every other test in the same binary,
-/// since `cargo test` runs them in parallel within one process) or not test
-/// it at all. [`run_child`] is the one real caller and does the actual
-/// reads.
+/// `story_auto_prompt_solo` / `story_prompt_extra` this dispatch's mode
+/// could actually feed to `story.sh` against I4 CHARTER-INERT — a pure
+/// function of the four already-read values, deliberately, rather than one
+/// that reads `std::env::var` itself: process environment is global state,
+/// and reading it directly here would make every caller either mutate the
+/// real process environment to test this (racing every other test in the
+/// same binary, since `cargo test` runs them in parallel within one process)
+/// or not test it at all. [`run_child`] is the one real caller and does the
+/// actual reads.
 ///
 /// `run_child`'s `Command` clears its environment and restores only
-/// [`crate::env::spawn_env`]'s dispatch allowlist (SH-193), but all three of
-/// these names are `STORY_`-prefixed and so are on it: any of the three, if
-/// set anywhere in the daemon's own process environment, still flows straight
+/// [`crate::env::spawn_env`]'s dispatch allowlist (SH-193), but all four of
+/// these names are `STORY_`-prefixed and so are on it: any of them, if set
+/// anywhere in the daemon's own process environment, still flows straight
 /// through to the child (SH-232's own finding, which SH-193 did not close for
-/// these three by design — they are storyhook's own configuration surface,
+/// these by design — they are storyhook's own configuration surface,
 /// not a third-party credential). `story.sh`'s
 /// `render_template` does pure literal substring substitution — no shell
 /// interpretation of its own — so a template and `PROMPT_EXTRA` that are
@@ -879,12 +886,17 @@ const PROMPT_OVERRIDE_ENV_VARS: [&str; 3] =
 /// spawned, is therefore sufficient to enforce I4 over them without
 /// duplicating `render_template`'s substitution logic in Rust.
 ///
-/// Only the template relevant to `auto` is checked — `story_prompt` for an
-/// attended dispatch, `story_auto_prompt` for `--auto` — matching
-/// `story.sh`'s own `prompt_tpl` selection, so an unrelated bad override in
-/// the *other* mode's template does not refuse a dispatch that would never
-/// have read it. `story_prompt_extra` applies to both, since `story.sh`
-/// appends it to either template unconditionally.
+/// `story_prompt` is checked only for an attended dispatch, matching
+/// `story.sh`'s own `prompt_tpl` selection, so a bad override in it never
+/// refuses an `--auto` run that would never have read it. For `--auto`,
+/// BOTH `story_auto_prompt` and `story_auto_prompt_solo` are checked, not
+/// just one — SH-219's `council_vote_available` probe that picks between
+/// them runs inside `story.sh`, entirely below this daemon, which has no way
+/// to predict its answer; the safe reading of "before `story.sh` is ever
+/// run" is to refuse if EITHER could be the one pasted, never to guess and
+/// risk approving the one the probe was about to pick. `story_prompt_extra`
+/// applies to every mode, since `story.sh` appends it to whichever template
+/// it selected unconditionally.
 ///
 /// Returns the violating env var's name (one of
 /// [`PROMPT_OVERRIDE_ENV_VARS`]) on a hit, `None` when the relevant values
@@ -893,14 +905,18 @@ fn prompt_override_violation(
     auto: bool,
     story_prompt: Option<&str>,
     story_auto_prompt: Option<&str>,
+    story_auto_prompt_solo: Option<&str>,
     story_prompt_extra: Option<&str>,
 ) -> Option<&'static str> {
-    let template = if auto {
-        ("STORY_AUTO_PROMPT", story_auto_prompt)
+    let mut candidates: Vec<(&'static str, Option<&str>)> = Vec::with_capacity(3);
+    if auto {
+        candidates.push(("STORY_AUTO_PROMPT", story_auto_prompt));
+        candidates.push(("STORY_AUTO_PROMPT_SOLO", story_auto_prompt_solo));
     } else {
-        ("STORY_PROMPT", story_prompt)
-    };
-    [template, ("STORY_PROMPT_EXTRA", story_prompt_extra)]
+        candidates.push(("STORY_PROMPT", story_prompt));
+    }
+    candidates.push(("STORY_PROMPT_EXTRA", story_prompt_extra));
+    candidates
         .into_iter()
         .find(|(_, value)| value.is_some_and(charter_inert_violation))
         .map(|(name, _)| name)
@@ -915,12 +931,17 @@ fn run_child(
     auto: bool,
     env: &Environment,
 ) -> Classification {
-    let [story_prompt, story_auto_prompt, story_prompt_extra] =
-        PROMPT_OVERRIDE_ENV_VARS.map(|name| std::env::var(name).ok());
+    let [
+        story_prompt,
+        story_auto_prompt,
+        story_auto_prompt_solo,
+        story_prompt_extra,
+    ] = PROMPT_OVERRIDE_ENV_VARS.map(|name| std::env::var(name).ok());
     let violation = prompt_override_violation(
         auto,
         story_prompt.as_deref(),
         story_auto_prompt.as_deref(),
+        story_auto_prompt_solo.as_deref(),
         story_prompt_extra.as_deref(),
     );
     if let Some(name) = violation {
@@ -2021,35 +2042,63 @@ mod tests {
     #[test]
     fn the_shipped_default_templates_are_charter_inert() {
         let script = include_str!("../../plugin/claude-code/bin/story.sh");
-        for (var, tpl_prefix, line_prefix) in [
-            ("PROMPT_TPL", "PROMPT_TPL=\"${STORY_PROMPT:-", "PROMPT_TPL="),
-            (
-                "AUTO_PROMPT_TPL",
-                "AUTO_PROMPT_TPL=\"${STORY_AUTO_PROMPT:-",
-                "AUTO_PROMPT_TPL=",
-            ),
+
+        // PROMPT_TPL is still one "${STORY_PROMPT:-literal}" default.
+        let line = script
+            .lines()
+            .find(|l| l.starts_with("PROMPT_TPL="))
+            .expect("story.sh must still define PROMPT_TPL on its own line");
+        let default = line
+            .strip_prefix("PROMPT_TPL=\"${STORY_PROMPT:-")
+            .and_then(|rest| rest.strip_suffix("}\""))
+            .expect("PROMPT_TPL's default-value shape changed -- update this extraction");
+        assert!(
+            !charter_inert_violation(default),
+            "PROMPT_TPL's shipped default must itself be CHARTER-INERT"
+        );
+
+        // SH-219: AUTO_PROMPT_TPL and AUTO_PROMPT_SOLO_TPL are no longer
+        // single literals -- each composes a HEAD, one of two decision
+        // CLAUSEs, and a shared TAIL, themselves plain literal assignments
+        // defined just above the composition. Checking each piece on its
+        // own (rather than the composed line, which by now names OTHER
+        // SHELL VARIABLES, not charter text) covers both rendered charters
+        // transitively: a single space joins clean pieces into a still-clean
+        // whole.
+        for var in [
+            "AUTO_PROMPT_HEAD",
+            "AUTO_COUNCIL_CLAUSE",
+            "AUTO_SOLO_CLAUSE",
+            "AUTO_PROMPT_TAIL",
         ] {
+            let prefix = format!("{var}=\"");
             let line = script
                 .lines()
-                .find(|l| l.starts_with(line_prefix))
+                .find(|l| l.starts_with(&prefix))
                 .unwrap_or_else(|| panic!("story.sh must still define {var} on its own line"));
             let default = line
-                .strip_prefix(tpl_prefix)
-                .and_then(|rest| rest.strip_suffix("}\""))
+                .strip_prefix(&prefix)
+                .and_then(|rest| rest.strip_suffix('"'))
                 .unwrap_or_else(|| {
-                    panic!("{var}'s default-value shape changed -- update this extraction")
+                    panic!("{var}'s literal-assignment shape changed -- update this extraction")
                 });
             assert!(
                 !charter_inert_violation(default),
-                "{var}'s shipped default must itself be CHARTER-INERT"
+                "{var}'s shipped text must itself be CHARTER-INERT"
             );
         }
     }
 
     #[test]
     fn prompt_override_violation_is_none_when_everything_is_absent() {
-        assert_eq!(prompt_override_violation(false, None, None, None), None);
-        assert_eq!(prompt_override_violation(true, None, None, None), None);
+        assert_eq!(
+            prompt_override_violation(false, None, None, None, None),
+            None
+        );
+        assert_eq!(
+            prompt_override_violation(true, None, None, None, None),
+            None
+        );
     }
 
     #[test]
@@ -2059,6 +2108,17 @@ mod tests {
                 false,
                 Some("a clean prompt"),
                 Some("also clean"),
+                Some("also clean too"),
+                Some("extra")
+            ),
+            None
+        );
+        assert_eq!(
+            prompt_override_violation(
+                true,
+                Some("a clean prompt"),
+                Some("also clean"),
+                Some("also clean too"),
                 Some("extra")
             ),
             None
@@ -2068,7 +2128,7 @@ mod tests {
     #[test]
     fn prompt_override_violation_catches_story_prompt_when_attended() {
         assert_eq!(
-            prompt_override_violation(false, Some("rm -rf `whoami`"), None, None),
+            prompt_override_violation(false, Some("rm -rf `whoami`"), None, None, None),
             Some("STORY_PROMPT")
         );
     }
@@ -2079,7 +2139,7 @@ mod tests {
         // never reads it, so a bad value there must not refuse a dispatch
         // that was never going to use it.
         assert_eq!(
-            prompt_override_violation(true, Some("rm -rf `whoami`"), None, None),
+            prompt_override_violation(true, Some("rm -rf `whoami`"), None, None, None),
             None
         );
     }
@@ -2087,13 +2147,30 @@ mod tests {
     #[test]
     fn prompt_override_violation_catches_story_auto_prompt_only_when_auto() {
         assert_eq!(
-            prompt_override_violation(true, None, Some("$(danger)"), None),
+            prompt_override_violation(true, None, Some("$(danger)"), None, None),
             Some("STORY_AUTO_PROMPT")
         );
         assert_eq!(
-            prompt_override_violation(false, None, Some("$(danger)"), None),
+            prompt_override_violation(false, None, Some("$(danger)"), None, None),
             None,
             "STORY_AUTO_PROMPT must not gate an attended dispatch"
+        );
+    }
+
+    /// SH-219: `council_vote_available`'s probe runs inside `story.sh`, below
+    /// this daemon entirely, so a `--auto` dispatch cannot know in advance
+    /// whether the COUNCIL or SOLO charter is the one about to be rendered —
+    /// it must refuse on a dirty override of EITHER.
+    #[test]
+    fn prompt_override_violation_catches_story_auto_prompt_solo_only_when_auto() {
+        assert_eq!(
+            prompt_override_violation(true, None, None, Some("$(danger)"), None),
+            Some("STORY_AUTO_PROMPT_SOLO")
+        );
+        assert_eq!(
+            prompt_override_violation(false, None, None, Some("$(danger)"), None),
+            None,
+            "STORY_AUTO_PROMPT_SOLO must not gate an attended dispatch"
         );
     }
 
@@ -2101,9 +2178,9 @@ mod tests {
     fn prompt_override_violation_catches_story_prompt_extra_in_either_mode() {
         for auto in [false, true] {
             assert_eq!(
-                prompt_override_violation(auto, None, None, Some("please; also do X")),
+                prompt_override_violation(auto, None, None, None, Some("please; also do X")),
                 Some("STORY_PROMPT_EXTRA"),
-                "STORY_PROMPT_EXTRA applies to both templates, auto={auto}"
+                "STORY_PROMPT_EXTRA applies to every mode, auto={auto}"
             );
         }
     }
@@ -2111,7 +2188,7 @@ mod tests {
     #[test]
     fn prompt_override_violation_reports_the_template_before_extra_when_both_are_dirty() {
         assert_eq!(
-            prompt_override_violation(false, Some("bad `here`"), None, Some("also; bad")),
+            prompt_override_violation(false, Some("bad `here`"), None, None, Some("also; bad")),
             Some("STORY_PROMPT")
         );
     }
