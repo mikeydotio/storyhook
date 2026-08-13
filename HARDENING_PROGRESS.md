@@ -12047,3 +12047,96 @@ to fix two clippy warnings rather than let a doomed run finish. `target/` is at
 54 GB with 205 GB free; worth watching, not yet a problem.
 
 **Filed nothing new.** SH-255 was already filed and is next in the queue.
+
+### SH-257 — v2.1.0 cut and tagged · PR #319 · the release itself did not publish
+
+**Outcome: three of four, and the headline one blocked.** The version bump landed
+(`v2.0.0` → `v2.1.0`, 743 commits), the plugin moved with it (`0.5.0` → `0.6.0`),
+the tag is pushed and is an ancestor of `main`, this machine runs 2.1.0 with a
+restarted daemon, and the installed Claude plugin is 0.6.0. **There is no GitHub
+release.** The release workflow failed, and the story's own words — *"install that
+release locally"* — could only be honoured from the tagged source rather than from
+a published asset. Filed as SH-259, `critical`, blocking this story; SH-257 goes
+back to `todo` rather than `done`.
+
+**A story may authorise what START HERE forbids.** Step 6 says *never bump the
+version, never deploy*. SH-257 says publish a release, and names where to do it
+("a temporary checkout of origin main"). The prohibition is a guard against
+releasing **as a side effect of ordinary story work**, not a veto on a
+deliberately filed release story from the repo's owner; read the other way it
+would strand every release the queue ever contains. Recorded here because the
+next session to draw a release story will hit the same apparent contradiction.
+
+**The first gate was red, and the checkout was the reason.**
+`api::rest::tests::creating_a_project_at_a_throwaway_path_in_a_real_store_is_refused`
+failed in the scratchpad clone with `left: 201, right: 201` — a message naming
+neither the store nor the cause. It builds its "real store" at
+`$CARGO_MANIFEST_DIR/target/…`, and the scratchpad is under `/private/tmp`, which
+`is_under_temp` classifies as throwaway. Both sides of the guard were therefore
+throwaway, the guard was correctly inert, and the route answered 201. The test's
+own doc comment states the assumption — *"every other scratch path a test can
+reach is deliberately temporary"* — without noticing that `CARGO_MANIFEST_DIR` is
+one more path that can be.
+
+**Proven by A/B, not by argument.** Same commit, same source, two locations:
+`/private/tmp/…` fails, `.worktrees/release-v2.1.0` passes, and the whole gate
+went green with no code change. That is the entire diagnosis, and it is why the
+red gate was not treated as *"red on arrival"* under START HERE's refuse-and-log
+rule: the red was the environment I chose, not the code under test. Filed as
+**SH-258** (`medium`, test-infra) — the fix worth making is the message, so a
+future temp-rooted run reports *"this test cannot run from a temp-rooted
+checkout"* instead of `201 != 201`.
+
+`.worktrees/` — gitignored, unused, and **not** a linked worktree — is where the
+release checkout went instead. `tests/store_isolation.rs` enumerates harnesses
+with `git ls-files`, so an ignored nested clone is invisible to it; that was
+checked before the clone was made, not after.
+
+**Why the plugin moved.** Twenty-one commits had touched `plugin/claude-code`
+since `c0a0ada` pinned it at 0.5.0. `claude plugin update` compares against the
+marketplace entry and the install cache is keyed by version directory, so
+installing "0.5.0" over a different 0.5.0 is a silent no-op — the failure
+`tests/plugin_contract.rs` already pins one field over, and the failure SH-196
+was originally filed for. Minor, not patch: dispatch's protocol declaration and
+actor labels, `story.sh reap`, pull-request linking, `import-project
+--legacy-links`, and the removal of the pre-SH-166 worktree-name fallback.
+
+**The plugin hold is discharged.** This file held plugin releases until SH-226
+landed (line 8467): the installed 0.5.0 carries the `story move <n> done`
+backtick but not the `<reap>` sentence, and releasing over it would have made
+that failure delete its own evidence. SH-226 and SH-239 are both `done`, so the
+hold is lifted — and the tag `story--v0.6.0` follows SH-196's precedent of a
+local-only plugin tag, unpushed.
+
+**The release build has never compiled on Linux.** `secret-service` 5.1.0 refuses
+to build unless the consumer picks a runtime feature, and nothing does;
+`zbus-secret-service-keyring-store` arrived with SH-212's credential work in
+`4c75833`, **after** `v2.0.0`. So v2.1.0 is the first tag to meet it. The second
+half is what made it total: the build matrix has no `fail-fast: false`, so one
+Linux failure **cancelled both macOS jobs mid-build** and the `release` job
+skipped. The platforms that compile fine produced nothing.
+
+**The gap that allowed it.** The Linux targets are built exactly once per
+release, at tag time, and never before. `make test` is a native macOS build and
+cannot see a `cfg(target_os = "linux")` dependency — it is honest about what it
+covers. The only thing that exercises those targets runs *after* the tag exists
+and cannot be moved. SH-259 carries all three pieces: the runtime feature,
+`fail-fast: false`, and a `workflow_dispatch` trigger so the cross-target build
+can be exercised without minting a tag.
+
+**What "installed locally" means here, exactly.** `story update` had nothing to
+fetch, so `make install` built from `main`, whose tree is byte-identical to
+`v2.1.0^{tree}` (checked, not assumed). The binary is genuinely 2.1.0; what was
+*not* exercised is the release artifact and the self-update path, which is
+precisely what SH-259 blocks. Daemon restarted deliberately rather than left to
+drift: PID 1787 at 2.0.0 stopped, PID 94427 at 2.1.0 started, `story daemon
+status` confirms the version rather than the port.
+
+**Supervision:** two `make test` runs under the log-growth heartbeat with a 120s
+stall bound. The first died in 90 seconds on the location defect; the second was
+green in **9m16s** — 1267 lib tests, the integration suites, the plugin harness,
+98 Playwright specs. No stalls, no wedges, no orphans. The release build was
+polled to a terminal state rather than waited on. `target/` 54 GB, 196 GB free.
+
+**Filed two:** SH-258 (temp-rooted checkout fails one test, `medium`) and SH-259
+(no release can publish, `critical`, blocks SH-257).
