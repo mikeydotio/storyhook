@@ -3,6 +3,21 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.1.1] - 2026-08-13
+
+### Fixed
+- repair the Linux build and contain a broken target (7c98440)
+- drop double-tap-to-zoom on the dashboard's tap targets (68db98f)
+- keep text controls at 16px on coarse pointers (84b08e9)
+
+### Documentation
+- record the build that proved SH-259, and file SH-261 (af02ab8)
+- log the release-build repair and its sibling sweep (294cfdf)
+- log SH-257, and the release that tagged but did not publish (5e26c0d)
+
+### Testing
+- give the browser suite a mobile-chromium project (05cf55e)
+
 ## [v2.1.0] - 2026-08-12
 
 ### Breaking
