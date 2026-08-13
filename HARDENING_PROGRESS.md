@@ -13041,3 +13041,128 @@ and its merge, so the tree that is now `main` is one no gate had seen — it
 brought the 154th suite. `cargo fmt`/`clippy` were also re-run alone over the
 final branch tree, because a doc comment landed after that gate started. 110 GB
 free.
+### SH-268 — done
+
+**Outcome:** merged (PR #344). `story doctor` reports a one-sided obviation edge
+like any other relation's, from whichever end claims it.
+
+**The rule's real target, found by archaeology rather than by reading it.**
+`is_suppressed` was `reason.contains("obviated") || reason.contains("conflicts")`.
+`git show aee7bac:src/app.rs` settles what it was for: it filtered
+`flagged_reasons`, whose only two matching producers were the **authoring flag
+sentences** — `story is obviated by another story` and `story conflicts with
+another story`, the second from a `conflicts-with` relation. Both targets were
+already gone. `conflicts-with` left the relation vocabulary, so that half has had
+no producer since; and SH-244 stopped `story_issues` reading `flagged_reasons`,
+so the obviation sentence cannot reach the filter either. **Everything it
+suppressed on the day it was deleted was collateral it had never been aimed at.**
+That reframed the story's own question — "which behaviour is correct?" — into a
+much easier one, and it cost two `git show`s.
+
+**The direction was recorded backwards everywhere, including here.** The story,
+`integrity.rs`'s own doc comment, and this file's SH-244 entry all said the
+suppressed spelling was `obviated-by`. Two council seats caught the inversion
+independently:
+
+| Finding | Message renders | Suppressed when the **claim** is |
+|---|---|---|
+| `MissingInverseRelation` | the expected *inverse* | `obviates` |
+| `DanglingRelation` | the *claimed* relation | `obviated-by` |
+
+The two kinds key off **opposite ends of the edge**. This was not pedantry: the
+story's own suggested fix — "suppress when the relation is one of the obviation
+pair" — implemented as the obvious `data.relation == "obviated-by"` would have
+**inverted** missing-inverse behaviour while claiming to preserve it. The same
+trap, one layer down, reached by taking a filed story's fix shape on trust.
+
+**And the filter was inverted with respect to harm.** `is_ready` excludes a story
+only when *that story* carries `obviated-by`. So the suppressed case — A claims
+`obviates` B, B lacks its half — is exactly the one where B, declared unnecessary
+by an author, **keeps being recommended by `story next`**, and doctor said
+nothing. The reported case was the cosmetic one. Meanwhile `--fix` never
+consulted the filter at all: it repaired these edges while `report` called the
+project healthy, so a scripted operator saw green from `doctor` and then watched
+`doctor --fix` change the store.
+
+**The council refuted the chair, and that is the entry's real content.** I asked
+it two questions. Q1 (delete the filter, or suppress the pair structurally in
+both directions) came back unanimous for deletion in round one. Q2 I asked on a
+proof of my own: that with no suppression, every `blocked` repair implies a
+surviving finding, so `fix()` always fails when `blocked` is non-empty, so the
+third headline `"doctor found nothing it could fix"` is dead code. **The proof
+was wrong.** `blocked` is computed inside the write at `integrity.rs:217`;
+`report()` runs at line 340, *after* `repair_read_model` at line 330. I compared
+a pre-repair set with a post-repair report — a temporal error, not the
+set-theoretic one I checked so carefully. `repair_read_model` restores a story
+row that has events and no row, which dissolves the finding in between, and
+`touched` ingests only `repaired.divergences` so it stays empty. The branch is
+reachable, with or without this story's change.
+
+The challenger seat found it and filed it as `REFUTED` with a counterexample
+fixture; I verified the mechanism myself before circulating it, and both other
+seats then verified it independently. Worth recording *how* it was caught: the
+challenger was told to try to falsify the proof, in those words, before being
+asked to propose anything. A seat asked to agree would have agreed — the two
+seats who were not asked to falsify it both accepted it in round one.
+
+**What the deliberation round then produced was better than either answer.** Told
+the branch was reachable, the CLI-UX seat asked what the operator actually *sees*
+on that path and found a second defect: `--fix` prints `doctor found nothing it
+could fix` about a run that **did** restore a read-model row, and renders a
+`blocked` entry computed before the repair that tells the operator to reopen a
+closed story and **retract an edge the same run just made valid**. Destructive
+advice. The architect seat found it independently; the challenger, who had built
+the fixture out, reached it too and **withdrew its own proposal**, calling its
+commit 2 "a test blessing a lying headline as correct behaviour". Three seats,
+three different routes, one finding — and the vote (P1 2–1) was on sequencing
+rather than substance by the end.
+
+**Scope discipline: the question dissolved, so the work shrank.** Q2 existed only
+because I believed deleting the filter killed that branch. It does not, so
+nothing in SH-268 touches it. Two stories filed instead: **SH-271** (`high`) for
+the stale-`blocked`/dishonest-headline defect, carrying the FK-off restored-row
+repro and an explicit warning **not** to delete the branch on the unreachability
+argument — "that argument is wrong and it is seductive; it was made and withdrawn
+during SH-268". **SH-273** (`low`) for the durable fix behind the whole family:
+`fix()` re-walks `story.relationships` instead of consuming `report()`'s
+findings, and that duplicate walk is the only reason report and fix can disagree
+at all. SH-268, SH-271 and SH-225 are three encounter points of that one origin.
+
+**Tests.** Both directions of a one-sided edge, asserting the *whole report*
+rather than a containment — the rebuild diff omits `asymmetric_relations`
+*because* `story_issues` reports them, and nothing pinned that the finding is not
+now printed twice in two vocabularies. The `obviated-by` direction **passed on
+arrival**: that is the asymmetry, and nothing had ever pinned it. Two tests were
+re-founded rather than deleted:
+`an_obviated_story_is_flagged_for_list_but_not_reported_by_doctor` read as the
+pin on `is_suppressed` and never was — `relate` writes both ends, so there was no
+finding to suppress and it held with the filter or without it, **vacuous since
+SH-244** — and it now asserts the half of its own name it never checked. And
+`a_blocked_repair_is_named_even_when_the_report_is_clean` moved to the failure
+path, because its "clean report" premise *was* the suppression. One test the
+council explicitly forbade writing:
+`a_blocked_repair_always_leaves_a_finding_so_fix_never_reports_success` is
+falsifiable as stated, and the restored-row fixture is its falsifier.
+
+**The lesson, which is not the one SH-244 left.** SH-244's was that a substring
+test over prose is not a classification. This one is about the *repair*: a filed
+story's stated fix shape is a hypothesis, not a specification. This story's said
+"suppress the obviation pair, both directions" and named the data to do it with;
+taking that on trust would have shipped an inversion and kept a filter whose
+every remaining target had been dead for months. What made the difference was
+asking what the rule was *originally for* — two `git show`s — and then handing a
+seat the job of refuting the answer rather than improving it.
+
+**Gate:** `make test` green — **154 suites, 3511 tests, 130/130 e2e, `EXIT=0`**.
+One supervised run with a 20-second log-growth heartbeat and a 120-second stall
+bound; no stalls, no wedges, no restarts, ~9 minutes wall clock. `cargo fmt` and
+`cargo clippy --all-targets --all-features` clean. No orphan daemons before or
+after. 113 GB free.
+
+**Bookkeeping defect worth naming:** `story new "<title>" --json` printed the
+human rendering, so a scripted `--json` parse came back empty and the wrapper
+created **two** stories (SH-271 and SH-272) before I noticed. SH-272 was
+soft-deleted with that reason. Not filed as its own story — I did not reproduce
+it deliberately and the global `--json` contract says every command honours it,
+so it may be my invocation rather than the CLI. Named here so the next session
+that scripts `story new` checks the flag's position before trusting the output.
