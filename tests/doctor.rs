@@ -55,6 +55,42 @@ fn doctor_reports_a_relation_only_one_end_records() {
         .stderr(contains("missing inverse relation"));
 }
 
+/// The same asymmetry on an **obviation** edge, which `doctor` used to answer
+/// `0` for (SH-268).
+///
+/// At the CLI because the change is an exit code, and no service-level test can
+/// see one. `is_suppressed` filtered any finding whose sentence contained
+/// "obviated" — which the expected inverse of `obviates` does — so a project
+/// holding this shape was pronounced healthy while `--fix` went on repairing
+/// it. A scripted operator gating on `story doctor` saw green and then watched
+/// `story doctor --fix` change the store.
+#[test]
+fn doctor_reports_a_one_sided_obviation_edge() {
+    let env = TestEnv::shared();
+    let project = env.project().seed_story("A").seed_story("B").build();
+    let store = project.open_store();
+    let id = project.project_id(&store);
+
+    inject_events(
+        &store,
+        id,
+        project.story_no(&store, "SH-1"),
+        &[StoryEvent::StoryRelationshipAdded {
+            at: AT.to_string(),
+            other_id: "SH-2".to_string(),
+            relation: "obviates".to_string(),
+        }],
+    )
+    .expect("injecting a one-sided obviation edge");
+
+    project.run(&["doctor"]).code(5).stderr(contains(
+        "SH-1: missing inverse relation `obviated-by` on story `SH-2`",
+    ));
+
+    project.run(&["doctor", "--fix"]).success();
+    project.run(&["doctor"]).success();
+}
+
 /// SH-164: a label written before the write-path guard existed — `web,sse` as
 /// one label, the SH-145 shape — is unreachable through any service today, so
 /// the doctor's coverage of it is pinned the same way as the relation
