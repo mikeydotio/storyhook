@@ -12287,3 +12287,83 @@ worked* that SH-261 is about.
 per-job heartbeat with a 120s stall bound — three `make test` runs and one polled
 Actions run. No stalls, no wedges, no orphans, no restarts. The dispatched build
 was polled to a terminal state rather than waited on.
+
+### SH-257 — attempt 2 · v2.1.1 bumped and merged (PR #324) · **on hold, blocked by Mikey**
+
+**Outcome: the bump landed and the gate is green; the tag was never minted.** Mikey put
+the story on hold before the release scope could be settled. `v2.1.1` exists as a merged
+commit (`1b055ca`, merged `98d2ecd`) and as a `[v2.1.1]` CHANGELOG section — **not** as a
+tag, so nothing is burned and either resumption path is still open.
+
+**The bump level went to a council, and it was worth it.** SH-257's title says *minor*;
+CLAUDE.md's level rule, applied to the delta, says *patch*. Rather than pick a side, three
+seats — devops-engineer, api-designer, skeptic — were convened blind. All three proposed
+**v2.1.1** independently in round 1, so the number was never in contention; the entire
+council was about which mitigation ships with it. Round 1 split 2-1, deliberation moved
+every seat, and the runoff was unanimous C > B > A on all three ballots. Audit trail in
+`.council/sh-257-release-semver-level/`, verdict recorded as a comment on SH-257.
+
+**Two findings from it outlive the story.**
+
+*Ask the endpoint, don't reason about it.* Seat 1 ran
+`gh api repos/mikeydotio/storyhook/releases/generate-notes -f tag_name=v2.1.1` against this
+repo rather than arguing from documentation. It returned `v2.1.0...v2.1.1` — **6 PRs, not
+743 commits**. GitHub bases generated notes on the latest *tag*, published or not, so a
+release cut here would show its own handful of fixes and silently hide everything a v2.0.0
+user actually receives. That falsified a premise inside the *winning* proposal, and the
+decision adopted the finding over it. Same shape as SH-259's `cargo metadata
+--filter-platform`: the resolver knows, the manifest text only implies.
+
+*Rank the irreversible guard above the better-argued recoverable one.* Every seat named the
+same decisive criterion in the runoff. A misleading release body, a missing disclosure, a
+wrongly-sized changelog paste — all repairable after publication with `gh release edit`.
+But `release.yml:96` gates publication on all four targets and tags are never moved here,
+so a build failure *after* the tag push mints a second permanently dangling tag beside
+v2.1.0. The winning proposal was the only one whose mitigation touched that: **dispatch the
+four-target build on the exact commit the tag will point at, before minting the tag.** The
+proposal that lost had the stronger argument; the one that won guarded the failure that
+cannot be undone.
+
+**Blocked on a permission wall, not a technical one.** `gh workflow run release.yml --ref
+main` was refused twice by this session's permission classifier — the council's condition 1
+is precisely the step this session cannot perform. Read-only `gh` works, so watching a
+dispatched run to a terminal state is available; starting one is not. Recorded because the
+next session to draw a release story hits the same wall, and the fix is a Bash permission
+rule for `gh workflow run`, not a workaround.
+
+**Then main moved, and the release stopped being honest.** SH-219 merged (`e5ac68a`) while
+this story was held at that gate, adding two `feat:` commits and 402 lines under
+`plugin/` — with `plugin.json` still declaring `0.6.0`. So main's tip can no longer carry a
+`v2.1.1` tag without shipping features under a patch digit and a silently-changed plugin,
+which is the exact mislabeling the council ruled out. Two clean paths remain, and choosing
+between them is a scope call Mikey deferred:
+
+| | tag `1b055ca` as v2.1.1 | re-cut main as v2.2.0 |
+|---|---|---|
+| content | SH-259 + SH-256 fixes only | + SH-219's two features |
+| plugin | `0.6.0`, accurate at that commit | needs `0.6.0` -> `0.7.0` |
+| gate | already green | needs a re-run |
+| leaves stale | SH-219 unreleased | nothing |
+
+The version number is not the open question — the content rule the council affirmed answers
+it mechanically once the commit is chosen. **Which commit to release is the open question**,
+and it is open because work is landing on `main` in parallel. Worth noting for the next
+attempt: a release cut from a moving `main` is a race, and the answer is to freeze a commit
+and let the release omit whatever lands after it, not to chase the tip.
+
+**What is already done and does not need repeating.** The council verdict and its five
+binding conditions (comment on SH-257). The lead block for the release body, drafted against
+the confirmed generate-notes behaviour. SH-262 filed (`medium`) to give `release.yml` a
+`body_path`, so the notes fix stops being a manual post-publish step. And the standing rule
+either path inherits: **never create a Release object for the dangling v2.1.0 tag.**
+
+**Deviation from START HERE.** Step 9 says freshen and stop; step 8 says land the log entry
+as its own docs PR *after the code PR merges*. Both hold here — the code PR (#324) did
+merge — but the story ends `todo` + `story block` rather than `done`, per the on-failure
+rule, with the blocking reason carrying enough state to resume cold.
+
+**Supervision:** one `make test` run in a fresh clone of origin/main at
+`.worktrees/release-next` (non-temp, per SH-258), backgrounded under a log-growth heartbeat
+with a 120s stall bound and a monitor covering both stall and completion. Green in **9m30s**
+— exit 0, 107 Playwright specs, no stalls, no wedges, no orphans, no restarts. The clone was
+removed after the merge. `target/` unchanged; 194 GB free.
