@@ -53,6 +53,21 @@ fn labels_of(fixture: &ServiceFixture, id: &str) -> Vec<String> {
         .labels
 }
 
+/// The edges a story's snapshot claims, as `(relation, other)` pairs.
+fn relations_of(fixture: &ServiceFixture, id: &str) -> Vec<(String, String)> {
+    let no = StoryNo::parse_id("SH", id).expect("a well-formed id");
+    fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), no))
+        .expect("reading the story")
+        .expect("the story exists")
+        .snapshot
+        .relationships
+        .into_iter()
+        .map(|relation| (relation.relation, relation.other_id))
+        .collect()
+}
+
 /// Appends events to **one** story and folds only that story, bypassing the
 /// services that would keep both ends of a relation in step.
 fn append_to_one_end(fixture: &ServiceFixture, id: &str, events: &[StoryEvent]) {
@@ -764,6 +779,150 @@ fn a_row_that_disagrees_with_its_events_is_reported_and_repaired() {
         "doctor repaired supported integrity issues"
     );
     assert!(report(&fixture).is_empty());
+}
+
+/// Deletes a story's read-model row while leaving its history — and every edge
+/// naming it — in place. See
+/// [`storyhook::store::test_support::forget_read_model_row`] for why
+/// `forget_story` cannot stand in for this.
+fn forget_row(fixture: &ServiceFixture, story: i64) {
+    storyhook::store::test_support::forget_read_model_row(
+        fixture.store(),
+        fixture.project(),
+        StoryNo::new(story),
+    )
+    .expect("forgetting a read-model row");
+}
+
+/// SH-271, the half that misdescribes the run: restoring a row a story's own
+/// history supports **is** a repair, and `touched` ingested only the diff's
+/// `divergences`. A run whose whole repair was a restored row therefore
+/// announced that it had found nothing to fix, which is SH-266's defect class
+/// verbatim — output that denies what its own run did.
+#[test]
+fn restoring_a_lost_row_is_a_repair_the_run_admits_to() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    new_story(&ctx, "A");
+    drop(ctx);
+
+    forget_row(&fixture, 1);
+    assert_eq!(
+        report(&fixture),
+        ["story 1: has events but no read-model row"]
+    );
+
+    assert_eq!(
+        fix(&fixture).expect("a row its events support is restorable"),
+        "doctor repaired supported integrity issues",
+        "the run restored a row and said it had found nothing to fix"
+    );
+    assert!(report(&fixture).is_empty(), "{:?}", report(&fixture));
+}
+
+/// SH-271, the half that is dangerous: `blocked` is computed *before* the
+/// read-model repair and rendered *after* it, so a run can advise undoing an
+/// edge it has itself just made whole.
+///
+/// A missing row makes a *valid* edge read as dangling — `all_stories` resolves
+/// ids through the read model — and when the claiming story is closed, that
+/// becomes a blocked repair: "reopen SH-1 and retract its dangling relation".
+/// `repair_read_model` then restores SH-2's row from its events and the edge is
+/// correct again. Following the advice at that point deletes good data, from a
+/// story the operator has to reopen to do it.
+///
+/// The assertion is on the whole message rather than on a substring: advice is
+/// spliced in after the headline, so an equality holds only if nothing was
+/// spliced.
+#[test]
+fn a_repair_the_run_itself_dissolved_is_not_still_advised() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let a = new_story(&ctx, "A");
+    let b = new_story(&ctx, "B");
+    RelationService::new(&ctx)
+        .relate(&a, "obviates", &b, false)
+        .expect("relating");
+    StoryService::new(&ctx)
+        .set_state(&a, "done", None, None, None)
+        .expect("closing A");
+    drop(ctx);
+
+    forget_row(&fixture, 2);
+    assert_eq!(
+        report(&fixture),
+        [
+            "SH-1: dangling relation `obviates` to missing story `SH-2`",
+            "story 2: has events but no read-model row",
+        ],
+        "the damage the fixture makes, as the pre-repair report sees it"
+    );
+
+    assert_eq!(
+        fix(&fixture).expect("the row is restorable"),
+        "doctor repaired supported integrity issues",
+        "the run advised retracting an edge its own repair had just made whole"
+    );
+    assert!(report(&fixture).is_empty(), "{:?}", report(&fixture));
+    assert_eq!(
+        relations_of(&fixture, &a),
+        [("obviates".to_string(), b.clone())],
+        "the edge the advice would have retracted"
+    );
+    assert_eq!(
+        relations_of(&fixture, &b),
+        [("obviated-by".to_string(), a.clone())]
+    );
+}
+
+/// The other direction, and the reason the reconciliation is per-entry rather
+/// than "a run that repaired something drops its whole blocked list": a repair
+/// the run did *not* dissolve is still named, in the same run that dissolved
+/// another one.
+///
+/// SH-3's labels are malformed and SH-3 is closed, so that repair is out of
+/// reach however much else the run puts right — and SH-225's whole point is
+/// that the operator is told which story to reopen. Meanwhile SH-1's "dangling"
+/// edge is dissolved by the same run's row restoration.
+#[test]
+fn a_blocked_repair_the_run_did_not_dissolve_is_still_named() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let a = new_story(&ctx, "A");
+    let b = new_story(&ctx, "B");
+    let c = new_story(&ctx, "C");
+    RelationService::new(&ctx)
+        .relate(&a, "obviates", &b, false)
+        .expect("relating");
+    StoryService::new(&ctx)
+        .set_state(&a, "done", None, None, None)
+        .expect("closing A");
+    StoryService::new(&ctx)
+        .set_state(&c, "done", None, None, None)
+        .expect("closing C");
+    drop(ctx);
+
+    append_to_one_end(
+        &fixture,
+        &c,
+        &[StoryEvent::StoryLabelsSet {
+            at: FIXTURE_NOW.to_string(),
+            labels: vec!["web,sse".to_string()],
+        }],
+    );
+    forget_row(&fixture, 2);
+
+    let message = fix(&fixture)
+        .expect_err("a closed story's malformed labels cannot be repaired")
+        .to_string();
+    assert!(
+        message.contains("SH-3: normalize its labels to [\"sse\", \"web\"]"),
+        "a blocked repair the run left standing went unnamed: {message}"
+    );
+    assert!(
+        !message.contains("retract its dangling relation"),
+        "the dissolved repair was still advised: {message}"
+    );
 }
 
 /// Injects an unrecognised-kind event (a newer storyhook's data, not this
