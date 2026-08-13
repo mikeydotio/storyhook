@@ -117,7 +117,15 @@ test("a card lists its open blocker with a light; closing the blocker turns it g
   await page
     .locator("#drawer-body .inline-add button", { hasText: "Add" })
     .click();
-  await expect(page.locator(".rel-row", { hasText: blockerId })).toBeVisible();
+  const relRow = page.locator(".rel-row", { hasText: blockerId });
+  await expect(relRow).toBeVisible();
+  // The *kind*, not merely that some row names the blocker. A drawer
+  // rebuild used to reset this form's relation select to its first option
+  // (SH-281), and a row asserting only "AA-13 appears here" let a
+  // `relates-to` edge through to be discovered five lines below as a card
+  // mysteriously missing its blockers row — a failure that names neither
+  // the control that changed nor the write that went wrong.
+  await expect(relRow.locator(".rel-kind")).toHaveText("blocked-by");
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
