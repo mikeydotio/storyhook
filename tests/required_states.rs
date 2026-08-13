@@ -96,7 +96,11 @@ fn doctor_reports_a_project_below_the_floor() {
     let ctx = fixture.ctx();
     let issues = IntegrityService::new(&ctx).report().expect("reporting");
     assert_eq!(issues.len(), 1, "{issues:#?}");
-    assert!(issues[0].contains("blocked"), "{}", issues[0]);
+    assert!(
+        issues[0].message.contains("blocked"),
+        "{}",
+        issues[0].message
+    );
 }
 
 #[test]
