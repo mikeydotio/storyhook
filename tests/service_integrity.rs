@@ -23,10 +23,10 @@ use storyhook::domain::finding::{Finding, FindingCode, FindingData};
 use storyhook::domain::{StateDef, StoryEvent, SuperState, TypeDef, fold_story};
 use storyhook::error::AppError;
 use storyhook::service::{
-    Ctx, IntegrityService, NewStoryInput, QueryService, RelationService, StoryService,
+    Ctx, Examination, IntegrityService, NewStoryInput, QueryService, RelationService, StoryService,
 };
 use storyhook::store::{
-    ExpectedSeq, ReadOps, SqliteStore, Store, StoreError, StoryNo, WriteOps, partition_known,
+    ExpectedSeq, ReadOps, SqliteStore, Store, StoreError, StoryNo, WriteOps, folds, partition_known,
 };
 use storyhook_test_support::{FIXTURE_NOW, ServiceFixture};
 
@@ -133,9 +133,15 @@ fn report(fixture: &ServiceFixture) -> Vec<String> {
 
 /// The findings themselves.
 fn findings(fixture: &ServiceFixture) -> Vec<Finding> {
+    examine(fixture).findings
+}
+
+/// A whole doctor read pass: the findings, and the notices that are not
+/// findings. One call because it is one fold of the project (SH-267).
+fn examine(fixture: &ServiceFixture) -> Examination {
     IntegrityService::new(&fixture.ctx())
-        .report()
-        .expect("reporting")
+        .examine()
+        .expect("examining")
 }
 
 /// A `--fix` run's rendered report, or the error its remaining findings make.
@@ -166,6 +172,51 @@ fn advisories(fixture: &ServiceFixture) -> Vec<String> {
         storyhook::output::Response::Issues(advice) => advice,
         other => panic!("`story doctor` must answer with Issues, got {other:?}"),
     }
+}
+
+// --- what the doctor costs -------------------------------------------------
+//
+// A fold is every event in the project, re-folded into every story. It is also
+// invisible: it produces no output of its own, so a doctor that performed four
+// of them answered exactly like one that performed a single fold — which is
+// how `doctor` came to fold the project twice and `--fix` four times without
+// anything saying so (SH-267). These count them, through the `test-seam`
+// counter inside the fold itself, because a caller can only see results.
+
+/// A doctor read folds the project exactly once.
+#[test]
+fn a_doctor_read_folds_the_project_once() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    new_story(&ctx, "A");
+    new_story(&ctx, "B");
+    drop(ctx);
+
+    let (examination, counted) = folds::counting(|| examine(&fixture));
+
+    assert_eq!(counted, 1, "one doctor read, one fold");
+    assert!(examination.findings.is_empty());
+    assert!(examination.notices.is_empty());
+}
+
+/// A `--fix` folds it exactly twice, and neither is spare: once to rebuild the
+/// read model from the events, once to see what the repair left behind.
+///
+/// The second is genuinely a different question from the first — it is asked of
+/// a project the run has since written to — which is what distinguishes it from
+/// the two this story removed.
+#[test]
+fn a_doctor_fix_folds_the_project_twice() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    new_story(&ctx, "A");
+    new_story(&ctx, "B");
+    drop(ctx);
+
+    let (message, counted) = folds::counting(|| fix(&fixture).expect("fixing"));
+
+    assert_eq!(counted, 2, "one fold to repair, one to re-examine");
+    assert_eq!(message, "doctor found nothing to fix");
 }
 
 // --- a healthy project -----------------------------------------------------
@@ -983,9 +1034,7 @@ fn an_unrecognised_event_kind_is_a_notice_not_a_finding() {
         "an unrecognised kind must not be a doctor finding"
     );
 
-    let notices = IntegrityService::new(&fixture.ctx())
-        .notices()
-        .expect("notices");
+    let notices = examine(&fixture).notices;
     assert_eq!(notices.len(), 1, "{notices:?}");
     assert!(
         notices[0].contains("event 2")
@@ -1030,10 +1079,7 @@ fn a_torn_known_event_payload_is_still_a_finding_fix_cannot_repair() {
         "a torn payload reads differently from a notice: {issues:?}"
     );
     assert!(
-        IntegrityService::new(&fixture.ctx())
-            .notices()
-            .expect("notices")
-            .is_empty(),
+        examine(&fixture).notices.is_empty(),
         "a torn payload is damage, not a notice"
     );
 

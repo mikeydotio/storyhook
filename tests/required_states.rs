@@ -45,6 +45,26 @@ fn fix(ctx: &Ctx<'_, SqliteStore>) -> Result<String, storyhook::error::AppError>
     IntegrityService::new(ctx).repair()?.verdict()
 }
 
+/// What `story doctor` finds wrong with the project.
+///
+/// Through [`IntegrityService::examine`], which answers both halves of a
+/// doctor read from one fold of the project (SH-267); this file asks about one
+/// half at a time, and [`notices`] is the other.
+fn findings(ctx: &Ctx<'_, SqliteStore>) -> Vec<storyhook::domain::finding::Finding> {
+    IntegrityService::new(ctx)
+        .examine()
+        .expect("examining")
+        .findings
+}
+
+/// What `story doctor` remarks on without calling it damage.
+fn notices(ctx: &Ctx<'_, SqliteStore>) -> Vec<String> {
+    IntegrityService::new(ctx)
+        .examine()
+        .expect("examining")
+        .notices
+}
+
 /// The catalog as slugs, in board order.
 fn slugs(fixture: &ServiceFixture) -> Vec<String> {
     fixture
@@ -111,7 +131,7 @@ fn the_floor_is_four_states_and_their_superstates() {
 fn doctor_reports_a_project_below_the_floor() {
     let fixture = below_the_floor();
     let ctx = fixture.ctx();
-    let issues = IntegrityService::new(&ctx).report().expect("reporting");
+    let issues = findings(&ctx);
     assert_eq!(issues.len(), 1, "{issues:#?}");
     assert!(
         issues[0].message.contains("blocked"),
@@ -130,12 +150,7 @@ fn doctor_fix_adds_the_missing_state_and_says_so() {
         "the repair must be reported, not silent: {message}"
     );
     assert_eq!(slugs(&fixture), ["todo", "in-progress", "blocked", "done"]);
-    assert!(
-        IntegrityService::new(&ctx)
-            .report()
-            .expect("re-reporting")
-            .is_empty()
-    );
+    assert!(findings(&ctx).is_empty());
 }
 
 /// A healthy project must not be told it was repaired.
@@ -336,13 +351,11 @@ fn doctor_notices_a_project_at_the_floor_with_no_active_role_state() {
         state("done", SuperState::Closed),
     ]);
     let ctx = fixture.ctx();
-    let service = IntegrityService::new(&ctx);
-
     assert!(
-        service.report().expect("reporting").is_empty(),
+        findings(&ctx).is_empty(),
         "a project exactly at the floor is healthy"
     );
-    let notices = service.notices().expect("notices");
+    let notices = notices(&ctx);
     assert_eq!(notices.len(), 1, "{notices:#?}");
     assert!(notices[0].contains("in-progress"), "{}", notices[0]);
     assert!(notices[0].contains("story state set"), "{}", notices[0]);
@@ -353,7 +366,7 @@ fn doctor_notices_a_project_at_the_floor_with_no_active_role_state() {
 fn doctor_is_silent_about_active_role_once_one_is_configured() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
-    let notices = IntegrityService::new(&ctx).notices().expect("notices");
+    let notices = notices(&ctx);
     assert!(notices.is_empty(), "{notices:#?}");
 }
 
@@ -369,7 +382,7 @@ fn doctor_notices_a_project_with_several_open_states_and_no_active_role() {
         state("done", SuperState::Closed),
     ]);
     let ctx = fixture.ctx();
-    let notices = IntegrityService::new(&ctx).notices().expect("notices");
+    let notices = notices(&ctx);
     assert_eq!(notices.len(), 1, "{notices:#?}");
 }
 
@@ -416,13 +429,10 @@ fn doctor_notices_a_story_blocked_with_no_reason() {
         .expect("blocking");
 
     assert!(
-        IntegrityService::new(&ctx)
-            .report()
-            .expect("reporting")
-            .is_empty(),
+        findings(&ctx).is_empty(),
         "a reason-less block is not damage"
     );
-    let notices = IntegrityService::new(&ctx).notices().expect("notices");
+    let notices = notices(&ctx);
     assert_eq!(notices.len(), 1, "{notices:#?}");
     assert!(notices[0].contains(&id), "{}", notices[0]);
     assert!(notices[0].contains("blocked"), "{}", notices[0]);
@@ -439,7 +449,7 @@ fn doctor_is_silent_about_a_blocked_story_once_a_reason_is_recorded() {
         .set_state(&id, "blocked", None, None, Some("waiting on SH-9"))
         .expect("blocking with a reason");
 
-    let notices = IntegrityService::new(&ctx).notices().expect("notices");
+    let notices = notices(&ctx);
     assert!(notices.is_empty(), "{notices:#?}");
 }
 
@@ -459,7 +469,7 @@ fn doctor_notices_one_line_per_reasonless_blocked_story() {
         .set_state(&b, "blocked", None, None, None)
         .expect("blocking b");
 
-    let notices = IntegrityService::new(&ctx).notices().expect("notices");
+    let notices = notices(&ctx);
     assert_eq!(notices.len(), 2, "{notices:#?}");
     assert!(notices.iter().any(|n| n.contains(&a)), "{notices:#?}");
     assert!(notices.iter().any(|n| n.contains(&b)), "{notices:#?}");
@@ -481,7 +491,7 @@ fn doctor_fix_does_not_guess_a_blocked_reason() {
         message.starts_with("doctor found nothing to fix"),
         "{message}"
     );
-    let notices = IntegrityService::new(&ctx).notices().expect("notices");
+    let notices = notices(&ctx);
     assert_eq!(notices.len(), 1, "{notices:#?}");
     let awaiting = fixture
         .store()
