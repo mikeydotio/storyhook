@@ -12587,3 +12587,125 @@ per call, `non_temporary_dir` reuses a small, fixed set of caller-chosen labels
 and resets each one (`remove_dir_all` + `create_dir_all`) on every call — so
 nothing accumulates for a sweep to reclaim. Adding one would have been
 complexity with no defect behind it.
+
+### SH-263 — the fake tmux's shared state directory · done
+
+**Reproduced before anything was changed, and not by the route the story
+guessed.** The story offered two repro suggestions. The first — seed
+`/tmp/issue-faketmux` with `launched=true` before running
+`test-dispatch-auto.sh` — does **not** reproduce it, and cannot:
+`new-window`'s exec form deletes that flag and re-derives the occupant
+unconditionally, so stale state alone is inert. The second — two concurrent
+plugin-suite runs — is right, and the mechanism it implies is exact:
+
+| step | what happens in the shared directory |
+|---|---|
+| A's `new-window` | writes `pane_command=claude`, `launched=true`, spawns a placeholder, records its pid |
+| B's `new-window` | `kill -9`s A's placeholder, deletes `pane_pid`, `launched` and `input` |
+| B's next `Enter` | `launched` is false, so `_submit_box` takes the *launch* branch, finds an empty `input`, and falls back to `${FAKE_TMUX_SHELL:-zsh}` — writing `zsh` over A's occupant |
+| A's readiness gate | correctly refuses a pane that correctly reads as holding a shell |
+
+The gate was right. The fixture lied to it.
+
+| experiment | before | after |
+|---|---|---|
+| the interleaving above, through the fake's own interface | occupant `claude` → `zsh`, pane pid emptied | occupant unchanged, pid unchanged |
+| `test-dispatch-auto.sh` under a loop making B's two calls | the same **four** assertions the field run failed | PASS, loop still running |
+| `test-dispatch-auto.sh` with `launched=true`/`pane_command=zsh` seeded | PASS — the suggested repro does not reproduce | PASS |
+
+The end-to-end failure matched the field report bar one detail: the pid arm of
+the gate fired before the occupant arm, so the message named "the pane no
+longer shows the process this dispatch launched" rather than "that pane is
+running `zsh`". Same test, same four assertions, same rollback, same cause.
+
+**Fix: refuse, rather than default.** An unset `$FAKE_TMUX_STATE` now exits 64
+naming the variable, and so does one pointing at a directory the caller never
+created. `lib.sh` mints one per test file, beside the data-home block it
+mirrors and for the same stated reason: five files forgot, and a fixture you
+can forget will be forgotten again.
+
+**Deviation from the fix direction, recorded on the story.** It asked for a
+fake that "refuses a state directory it did not create". Not implementable as
+written: the fake is re-exec'd per tmux call and carries no identity between
+calls, so every call after the first would refuse its own directory. The
+enforceable reading shipped — refuse to *create* one. The caller mints; the
+fake stores.
+
+**Then the gate went red in a leg the story never mentioned, and that is the
+more important half.** `make test`'s e2e leg failed three dispatch specs
+deterministically (reproduced alone: 3 of 5 failed, 2.3 minutes). The cause was
+not a mistake in the fix — it was the fix doing its job. A dispatch child's
+environment is **cleared** and rebuilt from an allowlist (`PATH`, `HOME`,
+`TMPDIR`, `TMUX`, `TMUX_PANE`, `STORY_*`/`STORYHOOK_*` — `src/env/spawn_env.rs`,
+SH-193), and no `FAKE_TMUX_*` name matches it. `scripts/run-e2e.sh` has
+exported `FAKE_TMUX_STATE` for a long time while every dispatch child ignored
+it and used the fake's fixed shared default. **The variable had never once
+reached the children it was written for, and the suite passed anyway** — which
+is the same defect as the one filed, one layer down and invisible, because a
+shared directory serves a lone dispatch perfectly well until something else
+writes to it.
+
+**Council, per this run's autonomy rule — unanimous, 3-0 after one
+deliberation round** (verdict recorded on SH-263; audit trail in
+`.council/e2e-fake-tmux-state-across-cleared-env/`). Three seats
+(software-architect, qa-engineer, security-researcher) independently rejected
+widening `DISPATCH_MAY_SEE_PREFIXES` — it falsifies the prefix rule's own
+stated safety argument, since `FAKE_TMUX_` belongs to the upstream fake, so a
+third party would decide future membership of a security allowlist — and
+rejected renaming the knob, which fixes one and leaves five silently inert. The
+harness bridges the boundary on its own side instead: a generated wrapper,
+named through `STORYHOOK_DISPATCH_SCRIPT`, re-exports the knobs and execs the
+real script. The live disagreement was per-run versus per-dispatch state; the
+architect reversed itself after finding that `$STATE/sessions` is the one thing
+`new-window` deliberately does not reset, and that per-invocation scoping would
+stop exercising `story.sh`'s has-session-HIT branch altogether. Four details
+the seats found by reading the code, each load-bearing: knob values are never
+interpolated into generated shell (`SESSIONS`/`TRANSCRIPT` are multi-line by
+design); `DISPATCH_PROTOCOL` must be copied because the check reads the
+*wrapper*; the wrapper must be silent on stdout because the daemon parses a
+child's whole stdout as one JSON object; and one-writer must be *checked*
+(published pid, queried liveness) rather than assumed, since `MAX_RUNNING`
+permits several children at once.
+
+E2E dispatch specs: **3 failed / 2 passed → 5 passed**.
+
+**Pinned by three tests, each watched fail first.**
+`test-fake-tmux-state.sh` carries the interleaving, both refusals, the "two
+sourcings never land in one directory" case, a structural check that no future
+edit can restore a default (negative-controlled: reintroducing the old line
+turns it red), and a derived scan that every `test-*.sh` sources `lib.sh`. On
+the e2e side, `run-e2e.sh` now fails a *passing* run whose dispatches never
+touched this run's fake-tmux state — read from the fake's own
+`new_window_args.log` rather than inferred — and `tests/store_isolation.rs`
+fails the build if `run-e2e.sh` ever exports a `FAKE_TMUX_*` knob after the
+snapshot that forwards them.
+
+**Sibling sweep: one hit, filed as SH-264** (`medium`). Sweeping the class — a
+fixture keeping mutable state at a fixed shared path — found nothing else; the
+other fixed `/tmp` literals in the tree are path *values* in pure unit tests.
+But reading the harness for that sweep turned up a different defect in the same
+wiring: `test-dispatch-actor-labels.sh:24` prepends the fake's **file** to
+`PATH` rather than its directory, so a PATH entry that is not a directory is
+skipped and the test runs against the **real** tmux. It passes anyway — with
+`TMUX="fake,0,0"` real tmux fails to reach a socket literally named `fake`,
+dispatch fails near where the fake would have failed it, and the claim rolls
+back — so it passes for a reason unrelated to the one it states, and is one
+existing socket away from driving a developer's real tmux server from `make
+test`. Not fixed here: correcting the PATH changes what that test observes,
+which is its own red-green cycle.
+
+**Supervision:** two full `make test` runs, both under a log-growth
+heartbeat with a 120s stall bound and a monitor covering stall and completion:
+the first **12m23s**, red in the e2e leg on the omission above; the second
+**9m47s**, exit 0. Three targeted e2e runs beside them — 2m23s red, 35s green,
+3m8s for the negative control — plus one full plugin leg at 1m14s and the
+`test-dispatch-auto.sh` reproductions at 8s each. No stalls, no wedges, no
+restarts; orphan check clean. 136 GB free.
+
+**One supervision defect of my own, worth writing down:** the wrapper I used to
+run the gate ended with `echo "EXIT=$?" >> log`, so the *shell's* exit status
+was 0 and the task notification reported "exit code 0" for a run that had
+failed with `make: *** [test] Error 1`. The log held `EXIT=2` and the failing
+leg, and reading it is what caught it. A supervision wrapper that reports its
+own success instead of the job's is the same shape as everything else in this
+entry — a signal that means less than it appears to.
