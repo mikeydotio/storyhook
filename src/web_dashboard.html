@@ -1553,6 +1553,19 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   function $(id) { return document.getElementById(id); }
 
+  /** Appends a mixed array of strings and DOM nodes to `node` -- strings
+   * become text nodes, `null`/`undefined`/`false` entries are skipped (so a
+   * conditional child can be written inline as `cond && el(...)`). Shared
+   * by `el()`'s own children param and by anything that re-renders a
+   * subtree built from `linkifyStoryIds()`'s mixed-array return, such as
+   * the description read view's click-to-edit swap. */
+  function appendChildren(node, children) {
+    (children || []).forEach(function(child) {
+      if (child === null || child === undefined || child === false) return;
+      node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+    });
+  }
+
   /** Builds a DOM element. `props` values are assigned as properties/attributes
    * (never via innerHTML); `children` are appended (strings become text nodes). */
   function el(tag, props, children) {
@@ -1573,10 +1586,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         }
       });
     }
-    (children || []).forEach(function(child) {
-      if (child === null || child === undefined || child === false) return;
-      node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
-    });
+    appendChildren(node, children);
     return node;
   }
 
