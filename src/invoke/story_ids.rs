@@ -265,6 +265,7 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         | Invocation::Plugin { .. }
         | Invocation::Web { .. }
         | Invocation::Daemon { .. }
+        | Invocation::Token { .. }
         | Invocation::Store { .. }
         | Invocation::SessionStart
         | Invocation::Update { .. }

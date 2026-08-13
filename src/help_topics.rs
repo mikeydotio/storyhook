@@ -1977,6 +1977,57 @@ Related:
         );
 
         m.insert(
+            "token",
+            r#"story token new <name>
+story token list
+story token revoke <name>
+
+Mint, list, and revoke the named tokens that authenticate the web
+dashboard. A token is created once, under a name you choose, and lasts
+30 days or until you revoke it — unlike the daemon's own bearer token
+('story daemon token'), which rotates every restart and is meant for
+the CLI's own use, a named token is meant to be pasted into a browser
+and to keep working across many sessions.
+
+Requires a running daemon: a token record lives in the daemon's own
+state directory, not in any project's store, so these commands speak
+to the daemon directly rather than to a project.
+
+new
+  Mints a fresh token under NAME and prints the raw secret on stdout —
+  and only the secret, so 'TOKEN=$(story token new laptop)' captures
+  exactly the value and nothing else. It is shown exactly this once;
+  the daemon keeps only a hash of it, so losing it means minting a new
+  one under a new name. A short prefix of the secret is kept in the
+  clear so 'story token list' can show you which token is which.
+
+list
+  Shows every live token: its name, its prefix, when it was created,
+  and when it expires. Never the secret itself — there is nothing
+  stored that could reproduce it.
+
+revoke
+  Ends the named token immediately, whether or not it has expired.
+  Anything holding it — a browser tab, a saved credential — starts
+  getting refused on its next request.
+
+When to use:
+  Mint one token per device or browser you use the dashboard from, so
+  you can tell them apart in 'story token list' and revoke just the
+  one that was on a machine you lost, without disturbing any other.
+
+Examples:
+  story token new laptop
+  story token list
+  story token revoke laptop
+
+Related:
+  story web open           — Open the dashboard in your browser
+  story daemon token       — The daemon's own rotating bearer token
+"#,
+        );
+
+        m.insert(
             "session-start",
             r#"story session-start
 
