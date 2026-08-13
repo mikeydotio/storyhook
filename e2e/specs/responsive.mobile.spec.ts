@@ -190,3 +190,51 @@ for (const width of SWEEP_WIDTHS) {
     ]);
   });
 }
+
+/**
+ * SH-235 (D1/D6): a phone browser's URL bar shrinks the *visible* viewport
+ * below `window.innerHeight`'s own largest-possible value -- headless
+ * Blink has no such toolbar, so it cannot reproduce the gap `100dvh` exists
+ * to close (see the `dvh`/`vh` fallback pair's own comment in
+ * `web_dashboard.html`, and `web_test.rs`'s structural test for that
+ * mechanism). What this test can still prove, even without a toolbar: the
+ * app shell and an open modal both fit fully within whatever viewport
+ * height they're given, all the way down to a height a squeezed phone
+ * screen might plausibly present -- so a regression that pins either to a
+ * literal pixel value (rather than the shell/viewport relationship) fails
+ * here regardless of `dvh` support.
+ */
+test("the app shell and an open modal fit inside a squeezed viewport height", async ({
+  page,
+}) => {
+  const width = 390;
+  const height = 560; // roughly an iPhone's visible height with the URL bar shown
+  await page.setViewportSize({ width, height });
+  await page.goto("/");
+  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await expect(page.locator("#board-view")).toBeVisible();
+
+  const appBottom = await page
+    .locator(".app")
+    .evaluate((el) => el.getBoundingClientRect().bottom);
+  expect(
+    appBottom,
+    `the app shell's bottom edge (${appBottom}) must not exceed the ` +
+      `viewport height (${height})`,
+  ).toBeLessThanOrEqual(height);
+
+  await page.locator("#new-story-btn").click();
+  await expect(page.locator("#create-modal")).toHaveClass(/open/);
+  const modalBottom = await page
+    .locator("#create-modal")
+    .evaluate((el) => el.getBoundingClientRect().bottom);
+  expect(
+    modalBottom,
+    `the create-story modal's bottom edge (${modalBottom}) must not exceed ` +
+      `the viewport height (${height}) -- its footer buttons would sit ` +
+      "behind the browser chrome otherwise",
+  ).toBeLessThanOrEqual(height);
+
+  await page.locator("#create-discard").click();
+  await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
+});

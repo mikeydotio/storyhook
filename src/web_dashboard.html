@@ -128,6 +128,16 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body { height: 100%; }
+/* Mobile Safari and Chrome both run a heuristic that inflates body text
+   after an orientation change if they judge the layout "too narrow to
+   read" -- a boost this dashboard's own responsive rules already handle,
+   so the heuristic only fights them. `-webkit-` because Safari never
+   dropped the prefix for this property; the unprefixed form is what
+   Firefox and recent Chromium read. Disables only that automatic
+   heuristic -- pinch-zoom and the OS's own accessibility text size are
+   both untouched, the same distinction SH-256 already drew for
+   `user-scalable=no`. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 /* An author rule setting `display` on an element (e.g. `.board { display:
    flex }`) otherwise ties the UA's `[hidden] { display: none }` rule in
    specificity and can win the cascade by source order, silently defeating
@@ -156,7 +166,17 @@ button { cursor: pointer; }
 button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-option, .filter-toggle { touch-action: manipulation; }
 ::selection { background: var(--accent); color: var(--accent-fg); }
 
-.app { display: flex; flex-direction: column; height: 100vh; }
+/* `100vh` is the *largest* possible viewport on iOS Safari -- with the URL
+   bar showing, the visual viewport is shorter than that, so a `100vh` app
+   shell overflows the screen and its bottom (the footer, the last inch of
+   the board) sits behind the browser chrome, unreachable without a scroll
+   `body { overflow: hidden }` also blocks. `100dvh` tracks the *current*
+   visual viewport as the chrome shows and hides; the `100vh` line stays
+   first as the fallback for a browser old enough to reject `dvh` outright
+   -- CSS ignores a declaration with an unsupported unit, so without a
+   `vh` line first that browser gets no height at all, not just the old
+   (imperfect but working) behavior. */
+.app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 
 /* ---- Topbar ---- */
 .topbar {
@@ -549,7 +569,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   position: fixed; top: 50%; left: 50%; transform: translate(-50%, -46%); width: min(30rem, 92vw);
   background: var(--bg-raised); border-radius: var(--radius); box-shadow: var(--shadow-lg); z-index: 51;
   opacity: 0; pointer-events: none; transition: opacity 0.15s, transform 0.15s;
-  max-height: 90vh; overflow-y: auto;
+  /* Same `vh`-then-`dvh` fallback pair as `.app` -- `90vh` against the
+     browser-chrome-hidden viewport can size the modal taller than what's
+     actually visible, pushing its own footer buttons behind the chrome. */
+  max-height: 90vh; max-height: 90dvh; overflow-y: auto;
 }
 .modal.open { opacity: 1; pointer-events: auto; transform: translate(-50%, -50%); }
 .modal-header { padding: 1rem 1.25rem 0.5rem; font-size: 1rem; font-weight: 700; }
@@ -570,7 +593,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .modal-body code { font-family: var(--mono); font-size: 0.75rem; background: var(--bg-sunken); padding: 0.0625rem 0.25rem; border-radius: var(--radius-sm); }
 
 /* ---- Drafts popover ---- */
-.drafts-list { list-style: none; display: flex; flex-direction: column; gap: 0.25rem; max-height: 60vh; overflow-y: auto; }
+/* Same `vh`-then-`dvh` fallback pair as `.app` and `.modal`. */
+.drafts-list { list-style: none; display: flex; flex-direction: column; gap: 0.25rem; max-height: 60vh; max-height: 60dvh; overflow-y: auto; }
 .drafts-list-empty { font-size: 0.8125rem; color: var(--fg-muted); padding: 0.5rem 0; }
 .drafts-row {
   display: flex; align-items: baseline; gap: 0.5rem; width: 100%; text-align: left;
