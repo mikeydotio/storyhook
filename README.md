@@ -543,7 +543,10 @@ The dashboard is reachable from **localhost and your tailnet only — never the 
 
 - It always binds `127.0.0.1`. This is hardcoded and not configurable.
 - If the `tailscale` CLI is installed and reports an IP, it *also* binds that tailnet IP, so other devices on your tailnet can reach it directly — no reverse proxy needed. This is best-effort: if the bind fails for any reason, the dashboard keeps serving on localhost and logs a warning.
-- It never binds `0.0.0.0` or any other wildcard/public-facing address, and it never binds a generic LAN IP.
+- It never binds `0.0.0.0` or any other wildcard/public-facing address, and it never binds a generic LAN IP — enforced, not merely never attempted: the daemon refuses to serve a socket bound anywhere else.
+- Every connection is checked again as it arrives, against the interface it arrived on: the loopback listener admits only a loopback peer, and the tailnet listener admits loopback plus Tailscale's own address ranges. A peer outside those ranges is refused before a single byte of its request is read — no `tailscale` process is ever consulted to decide this, so a wedged or missing `tailscale` CLI cannot affect it either way.
+
+**Residual**: a subnet router, an exit node, or `iptables` forwarding can put genuinely off-tailnet traffic inside the ranges above — Tailscale ACLs, not this daemon, are the real membership authority. This daemon enforces "arrived via an address shaped like your tailnet," not "is actually a device you added to it."
 
 If the `web-serve` tool is present on your `PATH` (coderig/agentsmith environments), `story web start`/`stop` additionally register/unregister the port with it — that tool's own access controls govern any exposure beyond what's described above.
 
