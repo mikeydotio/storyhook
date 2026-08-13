@@ -25,8 +25,7 @@
 //! exactly the oracle the read model lacked. So this service reports both
 //! dimensions:
 //!
-//! * **story-level integrity** — the legacy checks, reproduced verbatim,
-//!   including the two flag kinds `doctor` deliberately suppresses; and
+//! * **story-level integrity** — the legacy checks, reproduced verbatim; and
 //! * **read-model drift** — rows that disagree with their events, stories with
 //!   events and no row (or a row and no events), histories that will not fold,
 //!   and edges only one end's history claims.
@@ -471,11 +470,38 @@ fn catalog_issues(states: &[StateDef], types: &[TypeDef]) -> Vec<Finding> {
 /// One consequence is deliberate: `service::query` appends "story is obviated
 /// by another story" to `flagged_reasons` *after* the checks run, for
 /// `StoryView`'s benefit. Reading the checks directly means that sentence
-/// never reaches here at all, which is the same outcome the filter below used
-/// to produce for it — by construction now rather than by coincidence.
+/// never reaches here at all.
 ///
 /// `flagged_reasons` keeps its published `Vec<String>` shape; only this
 /// consumer stopped going through it.
+///
+/// # Nothing is filtered out, and that is a change (SH-268)
+///
+/// There used to be an `is_suppressed` here —
+/// `reason.contains("obviated") || reason.contains("conflicts")` — inherited
+/// from the legacy doctor, where it filtered `flagged_reasons` and its only two
+/// matching producers were the *authoring flag sentences* "story is obviated by
+/// another story" and "story conflicts with another story". Both targets are
+/// gone: `conflicts-with` left the relation vocabulary, and the paragraph above
+/// is why the obviation sentence can no longer arrive. What the substring test
+/// still caught was collateral it was never aimed at — structural findings
+/// about an obviation edge — and it caught them **asymmetrically**, because the
+/// two finding kinds spell opposite ends of the edge into their sentences: a
+/// missing inverse names the *expected inverse* (so the suppressed claim was
+/// `obviates`), a dangling edge names the *claimed relation* (so the suppressed
+/// claim was `obviated-by`). Which end of a broken pair survived decided
+/// whether `doctor` mentioned it.
+///
+/// It was the harmful end that went unmentioned. [`crate::domain::is_ready`]
+/// excludes a story only when *that story* carries `obviated-by`, so the
+/// suppressed missing-inverse case is exactly the one where a story an author
+/// declared unnecessary keeps being recommended by `story next`. And `--fix`
+/// never consulted the filter at all: it repaired these edges while `report`
+/// called the project healthy — one contract, two halves, disagreeing.
+///
+/// So it is deleted rather than made precise. The authoring decision it was
+/// written for is a *symmetric* obviation edge, which produces no finding here
+/// in the first place.
 ///
 /// The unknown-type check is separate because it is a property of the story
 /// *and the catalog*, which the cross-story integrity pass does not see.
@@ -497,15 +523,10 @@ fn story_issues(tx: &impl ReadOps, project: ProjectId) -> Result<Vec<Finding>, A
         let mut found = by_story.remove(&story.id).unwrap_or_default();
         found.sort_by(|a, b| a.message.cmp(&b.message));
         found.dedup_by(|a, b| a.message == b.message);
-        issues.extend(
-            found
-                .into_iter()
-                .filter(|finding| !is_suppressed(&finding.message))
-                .map(|finding| {
-                    let message = format!("{}: {}", story.id, finding.message);
-                    Finding { message, ..finding }
-                }),
-        );
+        issues.extend(found.into_iter().map(|finding| {
+            let message = format!("{}: {}", story.id, finding.message);
+            Finding { message, ..finding }
+        }));
 
         if let Some(slug) = &story.story_type
             && !types.contains(slug)
@@ -546,30 +567,6 @@ fn story_issues(tx: &impl ReadOps, project: ProjectId) -> Result<Vec<Finding>, A
         }
     }
     Ok(issues)
-}
-
-/// Whether a story-level finding is one `doctor` has always declined to
-/// report.
-///
-/// **Kept as a substring test on purpose, and it is not a good one.** The rule
-/// was `issue.contains("obviated") || issue.contains("conflicts")`, and what it
-/// actually suppresses is subtler than its authors' summary of it: not only
-/// `service::query`'s obviation sentence, but any finding whose *relation* is
-/// spelled `obviated-by` — a missing inverse, a dangling edge — because that
-/// spelling contains the word. It is therefore asymmetric, and knowably so:
-/// the mirrored finding, whose relation is spelled `obviates`, does **not**
-/// contain "obviated" and is reported. `tests/service_integrity.rs`'s
-/// `a_blocked_repair_is_named_even_when_the_report_is_clean` pins the
-/// suppressed direction.
-///
-/// Now that a finding carries a [`FindingData::Relation`], this could be asked
-/// precisely — and asking it precisely would change which findings `doctor`
-/// reports, which is a behaviour change and does not belong in the commit that
-/// restructured the payload. So the imprecise rule is preserved exactly,
-/// named, and filed. `"conflicts"` has no producer anywhere in the tree; that
-/// half was already dead when it was written.
-fn is_suppressed(reason: &str) -> bool {
-    reason.contains("obviated") || reason.contains("conflicts")
 }
 
 /// The read-model drift a doctor report adds to the story-level findings.

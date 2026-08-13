@@ -22,7 +22,9 @@ use rusqlite::Connection;
 use storyhook::domain::finding::{Finding, FindingCode, FindingData};
 use storyhook::domain::{StateDef, StoryEvent, SuperState, TypeDef, fold_story};
 use storyhook::error::AppError;
-use storyhook::service::{Ctx, IntegrityService, NewStoryInput, RelationService, StoryService};
+use storyhook::service::{
+    Ctx, IntegrityService, NewStoryInput, QueryService, RelationService, StoryService,
+};
 use storyhook::store::{
     ExpectedSeq, ReadOps, SqliteStore, Store, StoreError, StoryNo, WriteOps, partition_known,
 };
@@ -164,8 +166,19 @@ fn a_healthy_project_reports_nothing_and_has_nothing_to_fix() {
     );
 }
 
-/// `obviated-by` flags a story everywhere *except* in the doctor, which has
-/// always suppressed it: it is an authoring decision, not damage.
+/// `obviated-by` flags a story everywhere *except* in the doctor — and the
+/// reason is that a **symmetric** obviation edge is an authoring decision that
+/// no integrity check has anything to say about, not that the doctor filters
+/// anything out.
+///
+/// This test asserted only the doctor half and named the filter in its own doc
+/// comment, which made it read as the pin on `is_suppressed`. It never was:
+/// `relate` writes both ends, so `compute_integrity_issues` produces nothing
+/// here and the assertion held with the filter or without it — vacuously since
+/// SH-244 stopped `story_issues` reading `flagged_reasons` (SH-268). It now
+/// asserts the half of its own name it never checked, which is the half that
+/// makes the two surfaces' disagreement deliberate: the flag is still on the
+/// story, and only the doctor declines to call it damage.
 #[test]
 fn an_obviated_story_is_flagged_for_list_but_not_reported_by_doctor() {
     let fixture = ServiceFixture::new();
@@ -177,6 +190,112 @@ fn an_obviated_story_is_flagged_for_list_but_not_reported_by_doctor() {
         .expect("relating");
     drop(ctx);
 
+    assert!(report(&fixture).is_empty(), "{:?}", report(&fixture));
+
+    let flagged = fixture
+        .store()
+        .read(|tx| {
+            Ok(QueryService::new(tx, fixture.project(), FIXTURE_NOW)
+                .show(&a)?
+                .flagged_reasons)
+        })
+        .expect("showing SH-1");
+    assert!(
+        flagged.contains(&"story is obviated by another story".to_string()),
+        "the flag is the authoring decision, and it stays: {flagged:?}"
+    );
+}
+
+/// A one-sided obviation edge is damage like any other relation's, from
+/// whichever end claims it (SH-268).
+///
+/// This is the direction `is_suppressed` ate. The finding's sentence names the
+/// **expected inverse**, `obviated-by`, so it contained the substring; its
+/// mirror below spells the inverse `obviates` and was reported all along. Which
+/// end of a broken pair survived decided whether `doctor` mentioned it, and it
+/// was the harmful end that went unmentioned: `is_ready` excludes a story only
+/// when *that story* carries `obviated-by`, so SH-2 here — declared unnecessary
+/// by SH-1 — keeps being recommended by `story next` until the edge is whole.
+#[test]
+fn an_asymmetric_obviates_edge_is_reported_like_any_other_relation() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let a = new_story(&ctx, "A");
+    let b = new_story(&ctx, "B");
+    drop(ctx);
+
+    append_to_one_end(
+        &fixture,
+        &a,
+        &[StoryEvent::StoryRelationshipAdded {
+            at: FIXTURE_NOW.to_string(),
+            other_id: b.clone(),
+            relation: "obviates".to_string(),
+        }],
+    );
+
+    let issues = report(&fixture);
+    assert_eq!(
+        issues,
+        ["SH-1: missing inverse relation `obviated-by` on story `SH-2`"],
+        "the rebuild diff sees the same asymmetry and must not report it a \
+         second time in a second vocabulary"
+    );
+
+    assert_eq!(
+        fix(&fixture).expect("both ends are open"),
+        "doctor repaired supported integrity issues"
+    );
+    assert!(report(&fixture).is_empty(), "{:?}", report(&fixture));
+}
+
+/// The mirror of the test above, and the whole point of the pair: `doctor`'s
+/// answer must not depend on which end of an obviation edge survives.
+///
+/// This direction was reported before SH-268 and nothing pinned it, so the
+/// asymmetry could have been repaired in either direction without a test
+/// noticing. Both are pinned now.
+#[test]
+fn an_asymmetric_obviated_by_edge_is_reported_like_any_other_relation() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let a = new_story(&ctx, "A");
+    let b = new_story(&ctx, "B");
+    drop(ctx);
+
+    append_to_one_end(
+        &fixture,
+        &a,
+        &[StoryEvent::StoryRelationshipAdded {
+            at: FIXTURE_NOW.to_string(),
+            other_id: b.clone(),
+            relation: "obviated-by".to_string(),
+        }],
+    );
+
+    let issues = report(&fixture);
+    assert_eq!(
+        issues,
+        ["SH-1: missing inverse relation `obviates` on story `SH-2`"]
+    );
+
+    // Typed, not only rendered: the sentence names the *expected inverse*
+    // while the data carries the *claimed* relation, which is exactly the
+    // distinction the substring test could not draw (SH-268).
+    let finding = findings(&fixture).pop().expect("the one finding");
+    assert_eq!(finding.code, FindingCode::MissingInverseRelation);
+    assert_eq!(
+        finding.data,
+        Some(FindingData::Relation {
+            relation: "obviated-by".to_string(),
+            other: b.clone(),
+        })
+    );
+
+    assert_eq!(
+        fix(&fixture).expect("both ends are open"),
+        "doctor repaired supported integrity issues"
+    );
     assert!(report(&fixture).is_empty(), "{:?}", report(&fixture));
 }
 
@@ -399,16 +518,23 @@ fn fix_writes_an_inverse_an_open_story_lacks_of_a_closed_ones_relation() {
     assert!(report(&fixture).is_empty(), "{:?}", report(&fixture));
 }
 
-/// A blocked repair is not always a finding, which is why naming it cannot be
-/// left to the failure path alone.
+/// SH-225's blocked-repair naming, on an obviation edge — which is to say, on
+/// the same path as every other relation (SH-268).
 ///
-/// `story_issues` suppresses every issue whose text mentions obviation — a
-/// deliberate authoring decision, not damage — so an `obviates` edge whose
-/// inverse is missing on a *closed* story reports clean, and `--fix` used to
-/// return "doctor found nothing to fix" while silently skipping the very
-/// repair it had just identified.
+/// This test used to be the pin on `is_suppressed`, and it was founded *on*
+/// the suppression: it asserted a **clean report**, which only held because
+/// `doctor` was declining to mention the very finding whose repair it had just
+/// declined to make. Delete the filter and the premise goes with it — the
+/// finding is reported, so the run fails, and the naming lands on the failure
+/// path where it can be read beside the finding it explains.
+///
+/// What is left is worth keeping for a reason the old framing obscured: the
+/// story a repair must be appended to is not the story the finding names, and
+/// that holds for the obviation pair exactly as `fix_names_the_closed_end_an_
+/// inverse_repair_needs_reopened` holds it for `blocks`. Nothing about this
+/// pair is special any more, and that is the assertion.
 #[test]
-fn a_blocked_repair_is_named_even_when_the_report_is_clean() {
+fn a_blocked_obviation_repair_is_named_on_the_failure_path() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let a = new_story(&ctx, "A");
@@ -428,26 +554,27 @@ fn a_blocked_repair_is_named_even_when_the_report_is_clean() {
         }],
     );
 
-    assert!(
-        report(&fixture).is_empty(),
-        "doctor suppresses obviation findings: {:?}",
-        report(&fixture)
+    assert_eq!(
+        report(&fixture),
+        ["SH-1: missing inverse relation `obviated-by` on story `SH-2`"],
+        "an obviation asymmetry is damage, and damage is reported"
     );
 
-    let message = fix(&fixture).expect("an obviation asymmetry fails nothing");
+    let error = fix(&fixture).expect_err("the inverse belongs on a closed story");
+    let message = error.to_string();
     assert!(
-        message.starts_with("doctor found nothing it could fix"),
-        "`nothing to fix` would be a lie — there is something, and it is out of reach: {message}"
+        message.contains("SH-1: missing inverse relation `obviated-by` on story `SH-2`"),
+        "{message}"
     );
     assert!(
         message.contains(
             "SH-2: write the missing inverse relation `obviated-by` of SH-1's `obviates`"
         ),
-        "{message}"
+        "the finding names SH-1, so only this can tell the operator to reopen SH-2: {message}"
     );
 
-    // And the same recipe clears it — the fixture's own drop-time symmetry
-    // check is the assertion that it did.
+    // And the same recipe clears it — advice that does not actually clear the
+    // finding would be a worse failure than silence.
     let ctx = fixture.ctx();
     StoryService::new(&ctx).reopen(&b).expect("reopening SH-2");
     drop(ctx);
@@ -455,6 +582,7 @@ fn a_blocked_repair_is_named_even_when_the_report_is_clean() {
         fix(&fixture).expect("the destination is open now"),
         "doctor repaired supported integrity issues"
     );
+    assert!(report(&fixture).is_empty(), "{:?}", report(&fixture));
 }
 
 /// Three of the legacy doctor's findings are **unrepresentable** in the store,
