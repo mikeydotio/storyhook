@@ -36,10 +36,15 @@
 //!
 //! One kind of read-model drift is not a *question* at all: an event whose
 //! kind this build has never heard of. SH-185 gave that its own channel,
-//! [`IntegrityService::notices`], which never contributes to [`report`] or
-//! [`repair`]'s verdicts — see that method's doc comment for why.
+//! [`Examination::notices`], which never contributes to
+//! [`Examination::findings`] or [`repair`]'s verdicts — see that field's doc
+//! comment for why.
 //!
-//! [`report`]: IntegrityService::report
+//! Both halves come out of [`examine`], and out of **one** fold of the project:
+//! the drift oracle is the expensive question here, and asking it twice per
+//! `story doctor` was SH-267.
+//!
+//! [`examine`]: IntegrityService::examine
 //! [`repair`]: IntegrityService::repair
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -52,7 +57,7 @@ use crate::domain::{
 };
 use crate::error::{AppError, IntegrityDetail};
 use crate::store::{
-    ExpectedSeq, ProjectId, ReadOps, Store, StoryNo, StoryQuery, diff_read_model, repair_read_model,
+    ExpectedSeq, ProjectId, ReadOps, Store, StoryNo, StoryQuery, diff, repair_read_model,
 };
 
 use super::state_set::write_states_repairing;
@@ -72,81 +77,52 @@ impl<'a, S: Store> IntegrityService<'a, S> {
         Self { ctx }
     }
 
-    /// Every problem `story doctor` reports, in the order it reports them:
-    /// the catalog first, then story-level findings, then read-model drift.
+    /// Everything a `story doctor` read pass has to say about this project,
+    /// from **one** fold of it.
     ///
-    /// The catalog leads because it is a property of the *project*, and because
-    /// a project below the required-state floor cannot have its states edited
-    /// at all until this is cleared — so it is the finding that explains the
-    /// others' refusals.
+    /// # Why one method and not two (SH-267)
     ///
-    /// An empty vector means the project is healthy; the caller hands a
-    /// non-empty one to [`IntegrityDetail::report`]. Deliberately excludes
-    /// [`notices`](Self::notices): a project whose only anomaly is an event
-    /// kind this build has never heard of is healthy by this definition,
-    /// because that anomaly is a newer storyhook's data, not damage (SH-185).
+    /// The two halves used to be `report` and `notices`, and every caller
+    /// wanted both — the read arm of `story doctor` to print them, `repair`
+    /// below to decide its verdict and its advice. Each began by calling
+    /// [`crate::store::diff_read_model`], which is not a lookup: it re-folds
+    /// every story in the project from its own events. So a `story doctor`
+    /// folded the whole project twice and a `--fix` four times, and nothing
+    /// said so, because re-asking a question whose answer you already hold
+    /// moves no output. Invisible on a small project; on a large one it is the
+    /// dominant cost of the command an operator reaches for when the store is
+    /// *already* misbehaving.
     ///
-    /// Every element carries the sentence it used to *be* (SH-244), so the
-    /// rendered report is these findings' own messages joined and nothing
-    /// re-renders them.
-    pub fn report(&self) -> Result<Vec<Finding>, AppError> {
-        // One transaction for both: a report whose catalog half and story half
-        // came from different instants could name a state the other did not see.
-        let mut issues = self.ctx.store().read(|tx| {
-            let mut issues =
-                catalog_issues(&tx.states(self.project())?, &tx.types(self.project())?);
-            issues.extend(story_issues(tx, self.project())?);
-            Ok(issues)
-        })?;
+    /// Returning both halves is what makes the second fold unaskable rather
+    /// than merely unasked: there is no entry point left that computes one half
+    /// alone, so the pairing cannot drift back apart.
+    ///
+    /// # And one transaction
+    ///
+    /// For the reason the catalog and story halves already shared one: a report
+    /// assembled from several instants can name a state, a story, or a
+    /// divergence that the rest of it did not see. The drift half used to be
+    /// read from a transaction of its own, which is the same hazard one layer
+    /// down.
+    pub fn examine(&self) -> Result<Examination, AppError> {
+        let project = self.project();
+        Ok(self.ctx.store().read(|tx| {
+            let states = tx.states(project)?;
+            let mut findings = catalog_issues(&states, &tx.types(project)?);
+            findings.extend(story_issues(tx, project)?);
 
-        // The oracle the legacy read model never had. On a healthy project it
-        // contributes nothing, which is why adding it does not move a single
-        // byte of `doctor`'s existing output.
-        let prefix = self
-            .ctx
-            .store()
-            .read(|tx| project_prefix(tx, self.project()))?;
-        issues.extend(drift_issues(
-            &diff_read_model(self.ctx.store(), self.project())?,
-            &prefix,
-        ));
-        Ok(issues)
-    }
+            // The oracle the legacy read model never had, asked once. On a
+            // healthy project it contributes nothing, which is why adding it
+            // did not move a single byte of `doctor`'s existing output.
+            let drift = diff(tx, project)?;
+            let prefix = project_prefix(tx, project)?;
+            findings.extend(drift_issues(&drift, &prefix));
 
-    /// Findings that are informational rather than damage.
-    ///
-    /// Three occupants. An event whose kind this build has never heard of,
-    /// which is a newer storyhook's data (SH-67), not corruption. A
-    /// project with no state configured `role=active` (SH-242) — not damage
-    /// either, since `active_state`'s "exactly two open states" fallback
-    /// covers a project the required-states floor (SH-125) has already made
-    /// unreachable in practice (the floor alone puts three states OPEN), so
-    /// silence here is the *common* case for anything written before the
-    /// role concept existed, not a rare one. And a story sitting in the
-    /// reserved `blocked` state with no `awaiting` reason recorded (SH-205)
-    /// — human-legibility only, since `is_ready` (SH-126) already treats
-    /// `state == "blocked"` as not-ready with or without a reason attached,
-    /// so this is the backstop for a skipped dashboard prompt or a bare
-    /// scripted `move` rather than a dispatch-safety gap. None of the three
-    /// contribute to [`report`](Self::report)'s health verdict,
-    /// [`repair`](Self::repair)'s success or failure, or `story doctor`'s exit
-    /// code
-    /// — SH-185's council put the first one here specifically so it could
-    /// not, and the other two follow the same reasoning
-    /// [`crate::domain::with_required_states`] already gives for never
-    /// awarding a role during a floor repair: which state should be active,
-    /// or why a story is blocked, is not this command's to guess. The caller
-    /// still owes all three visibility: see `notice_issues`'s doc comment.
-    pub fn notices(&self) -> Result<Vec<String>, AppError> {
-        let mut notices = notice_issues(&diff_read_model(self.ctx.store(), self.project())?);
-        let (states, blocked) = self.ctx.store().read(|tx| {
-            let states = tx.states(self.project())?;
-            let blocked = blocked_without_reason_notices(tx, self.project())?;
-            Ok((states, blocked))
-        })?;
-        notices.extend(active_state_notice(&states));
-        notices.extend(blocked);
-        Ok(notices)
+            let mut notices = notice_issues(&drift);
+            notices.extend(active_state_notice(&states));
+            notices.extend(blocked_without_reason_notices(tx, project)?);
+            Ok(Examination { findings, notices })
+        })?)
     }
 
     /// Repairs what can be repaired, then reports what is left.
@@ -161,7 +137,7 @@ impl<'a, S: Store> IntegrityService<'a, S> {
     ///    subsumes the legacy path's archived-snapshot repair and covers every
     ///    story rather than only the archived ones.
     ///
-    /// Then [`report`](Self::report) runs again, and what it still finds rides
+    /// Then [`examine`](Self::examine) runs again, and what it still finds rides
     /// out on the returned [`FixOutcome`] rather than being raised here: a
     /// repair that did not actually fix the project must not exit zero, and
     /// [`FixOutcome::verdict`] is what makes sure of it.
@@ -187,7 +163,7 @@ impl<'a, S: Store> IntegrityService<'a, S> {
     /// When the only story a repair could append to is closed, the repair is
     /// skipped — a closed history stays closed — and named in the output, with
     /// the story to reopen. It used to be skipped in silence, which made
-    /// `--fix` indistinguishable from a broken one: `report` kept naming a
+    /// `--fix` indistinguishable from a broken one: the report kept naming a
     /// finding the operator had just told the doctor to fix, and nothing said
     /// that a manual reopen was the only way through. See
     /// [`blocked_repairs_detail`].
@@ -231,9 +207,9 @@ impl<'a, S: Store> IntegrityService<'a, S> {
     /// Returning the outcome makes the distinction structural: the `?` in that
     /// arm can now only carry a genuine failure, and the verdict is minted once,
     /// after the caller has added what it knows. It also makes both `doctor`
-    /// arms the same three lines — [`report`](Self::report) already hands its
-    /// findings and advice to [`IntegrityDetail::report`] rather than deciding
-    /// its own health (SH-244).
+    /// arms the same three lines — the read arm already hands
+    /// [`examine`](Self::examine)'s findings and advice to
+    /// [`IntegrityDetail::report`] rather than deciding its own health (SH-244).
     ///
     /// [`deregister_orphaned`]: super::CatalogService::deregister_orphaned
     /// [`register_found_origins`]: super::CatalogService::register_found_origins
@@ -401,8 +377,12 @@ impl<'a, S: Store> IntegrityService<'a, S> {
         // the run fails and never reaches the headline.
         touched.extend(repair.repaired.missing_rows.iter().map(ToString::to_string));
 
-        let remaining = self.report()?;
-        let notices = self.notices()?;
+        // One fold for both halves, and the *only* fold this run performs after
+        // the repair above (SH-267).
+        let Examination {
+            findings: remaining,
+            notices,
+        } = self.examine()?;
         // Everything `blocked` says was decided before `repair_read_model` ran,
         // against the read model it has since repaired — so an entry can name a
         // finding this very run dissolved (SH-271). Reconciling drops those and
@@ -485,6 +465,57 @@ impl<'a, S: Store> IntegrityService<'a, S> {
     fn project(&self) -> ProjectId {
         self.ctx.project()
     }
+}
+
+/// What a `story doctor` read pass found: the damage, and the remarks that are
+/// not damage.
+///
+/// One value rather than two calls because it is one fold of the project — see
+/// [`IntegrityService::examine`] for why that matters.
+pub struct Examination {
+    /// Every problem `story doctor` reports, in the order it reports them:
+    /// the catalog first, then story-level findings, then read-model drift.
+    ///
+    /// The catalog leads because it is a property of the *project*, and because
+    /// a project below the required-state floor cannot have its states edited
+    /// at all until this is cleared — so it is the finding that explains the
+    /// others' refusals.
+    ///
+    /// Empty means the project is healthy; the caller hands a non-empty one to
+    /// [`IntegrityDetail::report`]. Deliberately excludes
+    /// [`notices`](Self::notices): a project whose only anomaly is an event
+    /// kind this build has never heard of is healthy by this definition,
+    /// because that anomaly is a newer storyhook's data, not damage (SH-185).
+    ///
+    /// Every element carries the sentence it used to *be* (SH-244), so the
+    /// rendered report is these findings' own messages joined and nothing
+    /// re-renders them.
+    pub findings: Vec<Finding>,
+    /// Findings that are informational rather than damage.
+    ///
+    /// Three occupants. An event whose kind this build has never heard of,
+    /// which is a newer storyhook's data (SH-67), not corruption. A
+    /// project with no state configured `role=active` (SH-242) — not damage
+    /// either, since `active_state`'s "exactly two open states" fallback
+    /// covers a project the required-states floor (SH-125) has already made
+    /// unreachable in practice (the floor alone puts three states OPEN), so
+    /// silence here is the *common* case for anything written before the
+    /// role concept existed, not a rare one. And a story sitting in the
+    /// reserved `blocked` state with no `awaiting` reason recorded (SH-205)
+    /// — human-legibility only, since `is_ready` (SH-126) already treats
+    /// `state == "blocked"` as not-ready with or without a reason attached,
+    /// so this is the backstop for a skipped dashboard prompt or a bare
+    /// scripted `move` rather than a dispatch-safety gap. None of the three
+    /// contribute to [`findings`](Self::findings)' health verdict,
+    /// [`IntegrityService::repair`]'s success or failure, or `story doctor`'s
+    /// exit code
+    /// — SH-185's council put the first one here specifically so it could
+    /// not, and the other two follow the same reasoning
+    /// [`crate::domain::with_required_states`] already gives for never
+    /// awarding a role during a floor repair: which state should be active,
+    /// or why a story is blocked, is not this command's to guess. The caller
+    /// still owes all three visibility: see `notice_issues`'s doc comment.
+    pub notices: Vec<String>,
 }
 
 /// Everything a `--fix` run did, and everything still wrong after it.
@@ -591,7 +622,7 @@ struct OwnRepair {
 /// prints.
 ///
 /// Two producers have to agree on it: the repair loop, which knows the claim it
-/// is about to skip, and [`report`](IntegrityService::report), which recomputes
+/// is about to skip, and [`examine`](IntegrityService::examine), which recomputes
 /// findings from the repaired read model. Keying on the sentence would make
 /// them agree by string formatting; keying on the *fact* is why they agree at
 /// all — the same values `compute_integrity_issues` puts in
@@ -665,7 +696,7 @@ fn finding_key(finding: &Finding) -> Option<FindingKey> {
 /// exactly the SH-225 defect this list exists to end.
 ///
 /// The remaining findings are the oracle rather than a second walk of the
-/// graph, which is as close to SH-273's fix as this change goes: `report` is
+/// graph, which is as close to SH-273's fix as this change goes: the report is
 /// already the authority on what is wrong with the project, so asking it is the
 /// only way `fix` can be sure it is not answering a question that no longer
 /// exists.
@@ -757,7 +788,7 @@ fn catalog_issues(states: &[StateDef], types: &[TypeDef]) -> Vec<Finding> {
 /// excludes a story only when *that story* carries `obviated-by`, so the
 /// suppressed missing-inverse case is exactly the one where a story an author
 /// declared unnecessary keeps being recommended by `story next`. And `--fix`
-/// never consulted the filter at all: it repaired these edges while `report`
+/// never consulted the filter at all: it repaired these edges while the report
 /// called the project healthy — one contract, two halves, disagreeing.
 ///
 /// So it is deleted rather than made precise. The authoring decision it was
