@@ -89,13 +89,18 @@
 
 use std::time::Instant;
 
-use crate::api::http::{Reply, TrustedHosts, local_request, mutation_guard_ok, text_reply};
+use chrono::{DateTime, Utc};
+
+use crate::api::http::{
+    Reply, TrustedHosts, cookie_value, header_value, local_request, mutation_guard_ok, text_reply,
+};
 use crate::api::rest::mutating;
 use crate::api::routes::{ProjectRoute, Route, classify};
 use crate::api::rpc::{constant_time_eq, token_ok};
 use crate::api::session::{
     SessionRegistry, SessionVerdict, scope_refusal, session_admission, unrecognized_refusal,
 };
+use crate::api::tokens::TokenRegistry;
 use crate::daemon::http1::{Header, Method};
 
 /// Whether a request under `/api/**` — other than `/api/v1/*`, which
@@ -110,6 +115,14 @@ use crate::daemon::http1::{Header, Method};
 /// Decided entirely from the head — no body access, so a caller can run
 /// this before reading one, the same reasoning [`crate::api::rpc::admission`]
 /// documents for the same purpose (SH-172).
+///
+/// `tokens`/`cookie_name`/`wall_now` are SH-255's addition: a named token —
+/// offered as `X-Storyhook-Token` (explicit) or as the cookie named
+/// `cookie_name` (ambient, and so held to [`named_token_ok`]'s extra
+/// same-origin check on a read) — is now also sufficient, checked alongside
+/// the master token below. Additive only, for now: the exemption, the master
+/// token and the capability all still decide exactly what they decided
+/// before.
 #[allow(clippy::too_many_arguments)]
 pub fn admission(
     segments: &[&str],
@@ -121,6 +134,9 @@ pub fn admission(
     loopback: bool,
     now: Instant,
     sessions: &SessionRegistry,
+    tokens: &TokenRegistry,
+    cookie_name: &str,
+    wall_now: DateTime<Utc>,
 ) -> Option<Reply> {
     match segments {
         ["api", "v1", ..] => return None,
@@ -134,7 +150,9 @@ pub fn admission(
         return None;
     }
     let is_events_stream = segments == ["api", "events"];
-    let authorized = token_ok(headers, token) || (is_events_stream && query_token_ok(query, token));
+    let authorized = token_ok(headers, token)
+        || (is_events_stream && query_token_ok(query, token))
+        || named_token_ok(headers, method, cookie_name, tokens, wall_now, now);
     if authorized {
         return None;
     }
@@ -268,6 +286,53 @@ fn query_token_ok(query: Option<&str>, token: &str) -> bool {
     constant_time_eq(offered.as_bytes(), token.as_bytes())
 }
 
+/// Whether a named token (SH-255) authorizes this request — the master
+/// token's replacement, checked as an additional way to be admitted.
+///
+/// Two ways a token can arrive, held to different standards:
+///
+/// * **`X-Storyhook-Token`** — explicit. A page cannot forge a header on a
+///   plain navigation, and a cross-origin `fetch` setting one triggers a
+///   preflight this daemon never answers, so an offered header is already as
+///   trustworthy as the master token check just above. No further test.
+/// * **The cookie named `cookie_name`** — ambient. `SameSite=Strict` alone
+///   does not distinguish this daemon's own tab from every other tailnet
+///   peer's dashboard (cookies ignore port, and every peer under one
+///   tailnet's registrable domain is same-site with every other), so a
+///   **read** additionally requires `Sec-Fetch-Site: same-origin` — a
+///   forbidden header name no page can forge or suppress, sent by every
+///   browser request including `EventSource`. A **mutation** needs no extra
+///   check here: it has already passed [`mutation_guard_ok`] above, in
+///   [`admission`], which is what makes the cookie sufficient on its own.
+fn named_token_ok(
+    headers: &[Header],
+    method: &Method,
+    cookie_name: &str,
+    tokens: &TokenRegistry,
+    wall_now: DateTime<Utc>,
+    mono_now: Instant,
+) -> bool {
+    if let Some(offered) = header_value(headers, crate::api::rpc::TOKEN_HEADER)
+        && tokens.validate(offered, wall_now, mono_now).is_some()
+    {
+        return true;
+    }
+    let Some(offered) = cookie_value(headers, cookie_name) else {
+        return false;
+    };
+    if tokens.validate(offered, wall_now, mono_now).is_none() {
+        return false;
+    }
+    mutating(method) || same_origin_fetch(headers)
+}
+
+/// Whether `headers` carries the browser-supplied, unforgeable
+/// `Sec-Fetch-Site: same-origin`. See [`named_token_ok`] for why this is
+/// what a cookie-authenticated read is held to.
+fn same_origin_fetch(headers: &[Header]) -> bool {
+    header_value(headers, "Sec-Fetch-Site") == Some("same-origin")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,6 +368,7 @@ mod tests {
         token: &str,
         loopback: bool,
     ) -> Option<Reply> {
+        let now = Instant::now();
         super::admission(
             segments,
             method,
@@ -311,8 +377,11 @@ mod tests {
             trusted_hosts,
             token,
             loopback,
-            Instant::now(),
+            now,
             &SessionRegistry::new(),
+            &TokenRegistry::new(Utc::now(), now),
+            "storyhook_test",
+            Utc::now(),
         )
     }
 
@@ -820,5 +889,183 @@ mod tests {
         )
         .expect("an unguarded loopback mutation must be refused");
         assert_eq!(reply.status, 403);
+    }
+
+    // --- Named tokens (SH-255) ---
+    //
+    // These call `super::admission` directly, not the shadow above: the
+    // shadow's `TokenRegistry` is always empty, on purpose, so every test
+    // above this line stays byte-identical proof that the three decisions
+    // that come before a capability -- the CSRF guard, the exemption, the
+    // master token -- were not weakened. What is new is checked here, on its
+    // own account, against a registry that actually has a token in it.
+
+    const COOKIE_NAME: &str = "storyhook_test";
+
+    fn minted_tokens() -> (TokenRegistry, String) {
+        let registry = TokenRegistry::new(Utc::now(), Instant::now());
+        let minted = registry
+            .mint(
+                "laptop".to_string(),
+                Utc::now(),
+                Instant::now(),
+                crate::api::tokens::DEFAULT_TTL,
+            )
+            .expect("minting into a fresh registry");
+        (registry, minted.secret)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn admits_with_tokens(
+        segments: &[&str],
+        method: &Method,
+        headers: &[Header],
+        loopback: bool,
+        tokens: &TokenRegistry,
+    ) -> Option<Reply> {
+        super::admission(
+            segments,
+            method,
+            None,
+            headers,
+            &trusted_hosts(),
+            TOKEN,
+            loopback,
+            Instant::now(),
+            &SessionRegistry::new(),
+            tokens,
+            COOKIE_NAME,
+            Utc::now(),
+        )
+    }
+
+    // Every read below runs on the tailnet listener (`loopback: false`), not
+    // the loopback one: SH-250's exemption already admits an unauthenticated
+    // loopback `GET` regardless of any token, which would make these tests
+    // pass whether or not `named_token_ok` did anything at all. The tailnet
+    // listener never gets that exemption, so admission here can only come
+    // from the path under test. Mutations are unaffected either way — the
+    // exemption never covers them — and are exercised on loopback to match
+    // how the dashboard actually reaches this daemon most of the time.
+
+    #[test]
+    fn a_header_borne_named_token_admits_a_read() {
+        let (tokens, secret) = minted_tokens();
+        let headers = headers(&[("Host", "127.0.0.1"), ("X-Storyhook-Token", &secret)]);
+        assert!(
+            admits_with_tokens(&["api", "repos"], &Method::Get, &headers, false, &tokens).is_none(),
+            "a valid named token in the header must admit a read"
+        );
+    }
+
+    #[test]
+    fn a_header_borne_named_token_admits_a_mutation() {
+        let (tokens, secret) = minted_tokens();
+        let headers = headers(&[
+            ("X-Storyhook", "1"),
+            ("Host", "127.0.0.1"),
+            ("X-Storyhook-Token", &secret),
+        ]);
+        assert!(
+            admits_with_tokens(
+                &["api", "repos", "x", "story"],
+                &Method::Post,
+                &headers,
+                true,
+                &tokens
+            )
+            .is_none(),
+            "a valid named token in the header must admit a mutation"
+        );
+    }
+
+    #[test]
+    fn a_cookie_borne_named_token_admits_a_read_with_same_origin_fetch() {
+        let (tokens, secret) = minted_tokens();
+        let headers = headers(&[
+            ("Host", "127.0.0.1"),
+            ("Cookie", &format!("{COOKIE_NAME}={secret}")),
+            ("Sec-Fetch-Site", "same-origin"),
+        ]);
+        assert!(
+            admits_with_tokens(&["api", "repos"], &Method::Get, &headers, false, &tokens).is_none(),
+            "a valid cookie plus Sec-Fetch-Site: same-origin must admit a read"
+        );
+    }
+
+    #[test]
+    fn a_cookie_borne_named_token_without_same_origin_fetch_is_refused_on_a_read() {
+        // `SameSite=Strict` alone does not distinguish this daemon's own tab
+        // from every other tailnet peer's dashboard -- this is the check
+        // that closes that gap.
+        let (tokens, secret) = minted_tokens();
+        let headers = headers(&[
+            ("Host", "127.0.0.1"),
+            ("Cookie", &format!("{COOKIE_NAME}={secret}")),
+        ]);
+        let reply = admits_with_tokens(&["api", "repos"], &Method::Get, &headers, false, &tokens)
+            .expect("a cookie with no Sec-Fetch-Site must be refused on a read");
+        assert_eq!(reply.status, 401);
+    }
+
+    #[test]
+    fn a_cookie_borne_named_token_admits_a_mutation_without_same_origin_fetch() {
+        // A mutation has already passed `mutation_guard_ok` (X-Storyhook +
+        // trusted Host) before this check runs, which is what makes the
+        // cookie sufficient here with no extra header.
+        let (tokens, secret) = minted_tokens();
+        let headers = headers(&[
+            ("X-Storyhook", "1"),
+            ("Host", "127.0.0.1"),
+            ("Cookie", &format!("{COOKIE_NAME}={secret}")),
+        ]);
+        assert!(
+            admits_with_tokens(
+                &["api", "repos", "x", "story"],
+                &Method::Post,
+                &headers,
+                true,
+                &tokens
+            )
+            .is_none(),
+            "a valid cookie must admit a mutation once the CSRF guard already passed"
+        );
+    }
+
+    #[test]
+    fn a_cookie_under_the_wrong_name_is_never_a_credential() {
+        let (tokens, secret) = minted_tokens();
+        let headers = headers(&[
+            ("Host", "127.0.0.1"),
+            ("Cookie", &format!("some_other_cookie={secret}")),
+            ("Sec-Fetch-Site", "same-origin"),
+        ]);
+        let reply = admits_with_tokens(&["api", "repos"], &Method::Get, &headers, false, &tokens)
+            .expect("a cookie under a different name must never be parsed as a credential");
+        assert_eq!(reply.status, 401);
+    }
+
+    #[test]
+    fn an_invalid_named_token_is_refused() {
+        let (tokens, _secret) = minted_tokens();
+        let headers = headers(&[
+            ("Host", "127.0.0.1"),
+            ("X-Storyhook-Token", "not-a-real-token"),
+        ]);
+        let reply = admits_with_tokens(&["api", "repos"], &Method::Get, &headers, false, &tokens)
+            .expect("an unrecognized token must be refused");
+        assert_eq!(reply.status, 401);
+    }
+
+    #[test]
+    fn a_revoked_named_token_no_longer_admits() {
+        let (tokens, secret) = minted_tokens();
+        tokens
+            .revoke("laptop", Utc::now(), Instant::now())
+            .expect("revoking the freshly minted token");
+        let headers = headers(&[("Host", "127.0.0.1"), ("X-Storyhook-Token", &secret)]);
+        let reply = admits_with_tokens(&["api", "repos"], &Method::Get, &headers, false, &tokens)
+            .expect("a revoked token must be refused");
+        assert_eq!(reply.status, 401);
     }
 }

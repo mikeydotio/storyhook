@@ -67,11 +67,14 @@ use std::collections::VecDeque;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use chrono::{DateTime, Utc};
+
 use crate::api::http::{
     LocalRequest, Reply, TrustedHosts, header_value, json_reply, local_request, text_reply,
 };
 use crate::api::rpc::{constant_time_eq, token_ok};
 use crate::api::session::SessionRegistry;
+use crate::api::tokens::TokenRegistry;
 use crate::daemon::http1::{Header, Method};
 
 /// Where `story web open` arms a coupon: on the control surface, so
@@ -229,6 +232,11 @@ fn refusal() -> Reply {
 /// `now` is passed in rather than read here so the whole module — gate
 /// included, not just the registry — is clock-testable: a test can arm at one
 /// instant and attempt to redeem two hundred seconds later without sleeping.
+///
+/// `tokens`/`cookie_name`/`wall_now` are SH-255's addition: a successful
+/// redemption also mints a short-TTL named token and sets it as a cookie,
+/// alongside the [`SessionRegistry`] capability this route already issued —
+/// see [`handle_redeem`]'s own doc for why both are issued for now.
 #[allow(clippy::too_many_arguments)]
 pub fn intercept(
     segments: &[&str],
@@ -240,6 +248,9 @@ pub fn intercept(
     now: Instant,
     registry: &HandoffRegistry,
     sessions: &SessionRegistry,
+    tokens: &TokenRegistry,
+    cookie_name: &str,
+    wall_now: DateTime<Utc>,
 ) -> Option<Reply> {
     match segments {
         ["api", "v1", "handoff"] => Some(handle_arm(method, headers, token, now, registry)),
@@ -251,6 +262,9 @@ pub fn intercept(
             now,
             registry,
             sessions,
+            tokens,
+            cookie_name,
+            wall_now,
         )),
         _ => None,
     }
@@ -303,6 +317,25 @@ fn handle_arm(
 /// `no_store` rather than `no_cache`: `no-cache` permits a browser to *store*
 /// a response and revalidate it, which is the wrong instruction for the one
 /// reply in this daemon that carries a credential.
+///
+/// # Also sets a cookie now (SH-255), transitionally alongside the capability
+///
+/// A successful redemption additionally mints a short-TTL
+/// [`crate::api::tokens::HANDOFF_TTL`] named token and sets it as a cookie —
+/// the mechanism the whole named-token model is replacing the capability
+/// above with. Both are issued for now: `admission.rs` does not yet accept
+/// the cookie as a credential for anything (that lands next), so a redemption
+/// that stopped returning the capability today would leave a freshly opened
+/// tab unable to do a single write until the remaining steps land. The
+/// capability, `token_exempt`, and this dual-issuance all go away together
+/// once the model is fully switched over.
+///
+/// Minting is non-fatal, the same resilience idiom [`crate::web::armed_handoff`]'s
+/// own doc describes for arming: if the registry is at capacity or the coupon
+/// header is unreadable, the capability redemption still succeeds and no
+/// cookie is set — a degraded outcome identical to what redemption already
+/// was before this, never a failure this route did not have before.
+#[allow(clippy::too_many_arguments)]
 fn handle_redeem(
     method: &Method,
     headers: &[Header],
@@ -311,17 +344,52 @@ fn handle_redeem(
     now: Instant,
     registry: &HandoffRegistry,
     sessions: &SessionRegistry,
+    tokens: &TokenRegistry,
+    cookie_name: &str,
+    wall_now: DateTime<Utc>,
 ) -> Reply {
     let Some(witness) =
         redemption_admitted(method, headers, trusted_hosts, loopback, now, registry)
     else {
         return refusal();
     };
-    json_reply(
+    let reply = json_reply(
         200,
         serde_json::json!({ "session": sessions.issue(&witness, now) }).to_string(),
     )
-    .no_store()
+    .no_store();
+    match mint_handoff_token(headers, tokens, wall_now, now) {
+        Some(minted) => reply.with_cookie(crate::api::tokens::set_cookie_header(
+            cookie_name,
+            &minted.secret,
+            crate::api::tokens::HANDOFF_TTL.num_seconds(),
+        )),
+        None => reply,
+    }
+}
+
+/// Mints a token for a just-redeemed coupon, named from a slice of the
+/// coupon's own high-entropy value (`handoff-<12 hex chars>`) so it needs no
+/// separate randomness source and is vanishingly unlikely to collide with
+/// another live name — [`TokenRegistry::mint`] refuses a genuine collision
+/// rather than silently overwriting, so this degrades to `None` rather than
+/// clobbering an existing token in the astronomically unlikely case it does.
+///
+/// `None` on any failure — an unreadable coupon header (should not happen;
+/// [`redemption_admitted`] already required one), the registry at capacity,
+/// or a name collision. See [`handle_redeem`]'s doc for why a failure here
+/// must not fail the redemption itself.
+fn mint_handoff_token(
+    headers: &[Header],
+    tokens: &TokenRegistry,
+    wall_now: DateTime<Utc>,
+    mono_now: Instant,
+) -> Option<crate::api::tokens::MintedToken> {
+    let coupon = header_value(headers, COUPON_HEADER)?;
+    let name = format!("handoff-{}", &coupon[..12.min(coupon.len())]);
+    tokens
+        .mint(name, wall_now, mono_now, crate::api::tokens::HANDOFF_TTL)
+        .ok()
 }
 
 /// Whether a redemption is admitted — and, if it is, the coupon is now spent
@@ -422,6 +490,9 @@ mod tests {
             now,
             registry,
             &SessionRegistry::new(),
+            &TokenRegistry::new(Utc::now(), now),
+            "storyhook_test",
+            Utc::now(),
         )
     }
 
@@ -576,6 +647,7 @@ mod tests {
         let now = Instant::now();
         let (registry, coupon) = armed(now);
         let sessions = SessionRegistry::new();
+        let tokens = TokenRegistry::new(Utc::now(), now);
         let reply = super::intercept(
             &path_segments(REDEEM_PATH),
             &Method::Post,
@@ -586,6 +658,9 @@ mod tests {
             now,
             &registry,
             &sessions,
+            &tokens,
+            "storyhook_test",
+            Utc::now(),
         )
         .expect("the redemption path is this module's");
 
@@ -606,6 +681,29 @@ mod tests {
         assert!(
             sessions.present(&witness(), &issued, now),
             "the capability handed to the browser must be one this daemon knows"
+        );
+
+        // SH-255: a named token is also minted and set as a cookie, alongside
+        // the capability above -- the mechanism replacing it.
+        let cookie = reply.cookie().expect("a redemption must set a cookie");
+        assert!(cookie.starts_with("storyhook_test="), "{cookie}");
+        assert!(cookie.contains("HttpOnly"), "{cookie}");
+        assert!(cookie.contains("SameSite=Strict"), "{cookie}");
+        assert!(cookie.contains("Path=/"), "{cookie}");
+        assert!(!cookie.contains("Domain="), "{cookie}");
+        let secret = cookie
+            .split(';')
+            .next()
+            .and_then(|kv| kv.split_once('='))
+            .map(|(_, v)| v)
+            .expect("a name=value pair");
+        assert!(
+            tokens.validate(secret, Utc::now(), now).is_some(),
+            "the cookie's value must be a token this daemon's registry recognizes"
+        );
+        assert!(
+            !reply.body().contains(secret),
+            "the minted secret must never also appear in the JSON body"
         );
     }
 

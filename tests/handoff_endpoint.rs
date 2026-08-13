@@ -292,6 +292,37 @@ fn a_redemption_from_a_rebound_host_is_refused() {
 }
 
 #[test]
+fn redemption_sets_a_named_token_cookie_over_the_wire() {
+    // SH-255: alongside the capability `a_coupon_armed_over_the_control_
+    // surface_redeems_for_a_capability` already covers, a successful
+    // redemption now also sets a cookie -- this is the assertion that goes
+    // through `finish()` and a real socket, where the earlier unit test in
+    // `src/api/handoff.rs` only exercises `intercept` directly.
+    let (env, _store, server) = served();
+    let coupon = arm(server.port(), &server.token);
+
+    let redeemed = redeem(server.port(), &redeem_headers(server.port(), &coupon));
+    assert_eq!(redeemed.status, 200, "redemption failed: {}", redeemed.body);
+
+    let expected_name = storyhook::api::tokens::cookie_name(&env.environment());
+    let cookie = redeemed
+        .header("set-cookie")
+        .unwrap_or_else(|| panic!("no Set-Cookie header on: {:?}", redeemed.headers));
+    assert!(
+        cookie.starts_with(&format!("{expected_name}=")),
+        "cookie {cookie:?} must be named {expected_name:?}, matching the portfile"
+    );
+    assert!(cookie.contains("HttpOnly"), "{cookie}");
+    assert!(cookie.contains("SameSite=Strict"), "{cookie}");
+    assert!(cookie.contains("Path=/"), "{cookie}");
+    assert!(!cookie.contains("Domain="), "{cookie}");
+    assert!(
+        !cookie.contains(&server.token),
+        "the cookie must never carry the master token: {cookie}"
+    );
+}
+
+#[test]
 fn arming_needs_the_token_over_the_wire() {
     // `/api/v1/*` is loopback-and-token-gated by `rpc::admission` before
     // `handoff::intercept` is ever reached, and the module checks again on

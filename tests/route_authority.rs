@@ -26,10 +26,13 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::Instant;
 
+use chrono::Utc;
+
 use storyhook::api::admission::admission;
 use storyhook::api::http::TrustedHosts;
 use storyhook::api::routes::{Authority, authority, classify};
 use storyhook::api::session::SessionRegistry;
+use storyhook::api::tokens::TokenRegistry;
 use storyhook::daemon::http1::{Header, Method};
 
 /// The route table's own source.
@@ -254,9 +257,13 @@ fn public_means_exactly_what_the_loopback_read_exemption_admits() {
             TOKEN,
             true,
             Instant::now(),
-            // Empty, and no capability is offered above: this asks about the
-            // exemption alone, which is the claim `Authority::Public` makes.
+            // Empty, and no capability or named token is offered above: this
+            // asks about the exemption alone, which is the claim
+            // `Authority::Public` makes.
             &SessionRegistry::new(),
+            &TokenRegistry::new(Utc::now(), Instant::now()),
+            "storyhook_test",
+            Utc::now(),
         )
         .is_none();
 

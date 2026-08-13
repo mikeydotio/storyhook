@@ -78,6 +78,12 @@ pub struct Reply {
     body: String,
     caching: Caching,
     retry_after: Option<u32>,
+    /// A pre-formatted `Set-Cookie` header value, verbatim. This module knows
+    /// nothing about what a cookie is *for* — a route builds the value
+    /// (`crate::api::tokens::set_cookie_header`/`clear_cookie_header`) and
+    /// this only carries it to [`finish`], the same division of labour every
+    /// other `Reply` field already keeps.
+    cookie: Option<String>,
 }
 
 impl Reply {
@@ -88,6 +94,7 @@ impl Reply {
             body: body.into(),
             caching: Caching::Unset,
             retry_after: None,
+            cookie: None,
         }
     }
 
@@ -128,6 +135,21 @@ impl Reply {
         self.retry_after = Some(secs);
         self
     }
+
+    /// Attaches a `Set-Cookie: {value}` header, verbatim.
+    #[must_use]
+    pub fn with_cookie(mut self, value: String) -> Self {
+        self.cookie = Some(value);
+        self
+    }
+
+    /// The `Set-Cookie` value this reply carries, if any — for the same
+    /// reason [`Self::body`] is exposed: a test asserting what a
+    /// credential-issuing route did needs this without picking it out of a
+    /// `Debug` rendering.
+    pub fn cookie(&self) -> Option<&str> {
+        self.cookie.as_deref()
+    }
 }
 
 pub fn text_reply(status: u16, body: impl Into<String>) -> Reply {
@@ -161,6 +183,9 @@ pub fn finish(request: Request, reply: Reply) {
     }
     if let Some(secs) = reply.retry_after {
         resp = resp.with_header(Header::from_bytes("Retry-After", secs.to_string()).unwrap());
+    }
+    if let Some(cookie) = reply.cookie {
+        resp = resp.with_header(Header::from_bytes("Set-Cookie", cookie).unwrap());
     }
     let _ = request.respond(resp);
 }
@@ -225,6 +250,25 @@ pub fn header_value<'a>(headers: &'a [Header], name: &'static str) -> Option<&'a
         .iter()
         .find(|h| h.field.equiv(name))
         .map(|h| h.value.as_str())
+}
+
+/// The value of one cookie named `name` in the request's `Cookie` header, if
+/// present.
+///
+/// A browser's `Cookie` header carries every cookie for the origin as
+/// `name1=value1; name2=value2` on one line — this is the one place that
+/// syntax is parsed, so every caller reads it the same way. Deliberately
+/// permissive about what surrounds the pair it wants: a foreign cookie this
+/// daemon did not set (a different store's, or an unrelated site sharing the
+/// same loopback port history) is skipped rather than tripping a parse
+/// error, because the presence of cookies this function does not recognize
+/// is the ordinary case, not a malformed request.
+pub fn cookie_value<'a>(headers: &'a [Header], name: &str) -> Option<&'a str> {
+    let raw = header_value(headers, "Cookie")?;
+    raw.split(';').find_map(|pair| {
+        let (key, value) = pair.trim().split_once('=')?;
+        (key == name).then_some(value)
+    })
 }
 
 /// Strips an optional `:port` suffix from a `Host` header value, correctly
@@ -663,6 +707,41 @@ pub fn carries_body(method: &Method) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reply_carries_no_cookie_by_default() {
+        assert_eq!(text_reply(200, "ok").cookie(), None);
+    }
+
+    #[test]
+    fn with_cookie_attaches_the_value_verbatim() {
+        let reply = text_reply(200, "ok").with_cookie("storyhook_abc=secret".to_string());
+        assert_eq!(reply.cookie(), Some("storyhook_abc=secret"));
+    }
+
+    fn header(name: &'static str, value: &str) -> Header {
+        Header::from_bytes(name, value).unwrap()
+    }
+
+    #[test]
+    fn cookie_value_finds_one_pair_among_several() {
+        let headers = vec![header(
+            "Cookie",
+            "unrelated=1; storyhook_abc=the-secret; other=2",
+        )];
+        assert_eq!(cookie_value(&headers, "storyhook_abc"), Some("the-secret"));
+    }
+
+    #[test]
+    fn cookie_value_is_none_without_a_cookie_header() {
+        assert_eq!(cookie_value(&[], "storyhook_abc"), None);
+    }
+
+    #[test]
+    fn cookie_value_is_none_for_a_name_not_present() {
+        let headers = vec![header("Cookie", "other=1")];
+        assert_eq!(cookie_value(&headers, "storyhook_abc"), None);
+    }
 
     fn tailnet_trusted_hosts() -> TrustedHosts {
         TrustedHosts::from_parts(
