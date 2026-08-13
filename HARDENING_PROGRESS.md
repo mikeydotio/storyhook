@@ -13618,3 +13618,133 @@ against a 300s stall bound; no stalls across any of the four. `cargo fmt` and
 This worktree had never run `make e2e-install`; bootstrapped it (chromium was
 already cached from another worktree, so it was a fast no-op download) rather
 than letting the gate's e2e leg fail loudly as designed.
+
+### SH-261 — done · PR #359
+
+**Outcome:** merged as `42400c4`. `story comment` now takes a **closed** story;
+a **soft-deleted** one still refuses, naming the way back. Verification that
+arrives after a story closes finally lands on the story it verifies.
+
+**The council overturned a written ruling, and both sides' reasoning was
+wrong.** Unanimous 3/3 for option B on first preference — no deliberation round
+— but the value was in what the seats demolished on the way. Audit trail in
+`.council/sh-261-comment-on-a-closed-story/`; verdict recorded as a comment on
+the story before any code was written.
+
+*This story's own argument does not hold.* Its headline claim — "git commits
+may annotate the archive and people may not" — is false: `record_commit`
+resolves through `resolve_open_story` and **silently skips** a closed story
+(`src/service/git.rs:372-378`), so a merge commit naming a closed story records
+exactly as much as a human comment did, which is nothing. Its second claim
+("the next reader sees a closed story with no proof attached") is overstated —
+`derive_comment_mentions` projects other stories' comments onto a closed story's
+`referenced_by` at read time, so the workaround this run used *did* reach
+SH-259's record. Its third ("a comment does not modify a story") is narrowly
+false: the fold writes `updated_at`. Two of three seats found this
+independently; the chair verified it against the source rather than taking
+either seat's word.
+
+*The status quo's written defence is equally false, and that is what decided
+it.* SH-208 recorded the refusal as deliberate — *"a closed story being
+immutable is a real invariant this codebase relies on elsewhere, not an
+oversight to route around"* (`docs/spec/dashboard-dispatch.md`). That ruling was
+reached without noticing that **SH-43 had already shipped two append paths onto
+closed stories**: `hide`/`unhide` append through `resolve_story`. `purge`
+appends retractions onto closed claimants; `history::restore` appends
+compensating events to anything; SH-207 deliberately let a closed story be a
+relation target. The archive was already an appendable log. The one append it
+refused was the one made on a person's behalf.
+
+So the invariant actually held is narrower — **a closed story's state, scope and
+rollups cannot change** — which is the standard SH-207's own council applied.
+A comment clears it on the merits, not on this story's rhetoric.
+
+**A seat's evidence was wrong too, and checking it mattered.** Seat 1 offered
+`src/github/mod.rs:820` as shipped precedent — GitHub-imported comments
+appending to closed stories with "no guard at all". They are guarded: that call
+site reaches `GithubSyncService::write_events`, which resolves through
+`resolve_open_story` (`src/service/github.rs:314`). Seat 1 had flagged the
+adjacent uncertainty in its own risks. Had the chair accepted it, the decision
+would have rested on a precedent that does not exist — the same failure the
+story itself made.
+
+**Built in three commits, two hats throughout.** (1) `refactor:` `edit_open` →
+`edit_story(id, intent, build)`, all five call sites passing `Intent::Edit`,
+zero behaviour change. (2) `fix:` the relaxation — `Intent::Append` resolving
+through a new `resolve_appendable_story`. (3) `fix:` the surviving refusal stops
+claiming an immutability this codebase does not have.
+
+**The change was not service-layer-only, which only the skeptic seat caught.**
+Four sites asserted the old rule as fact and three were *live instructions*, not
+prose: the autonomous charter every dispatched agent reads
+(`plugin/claude-code/bin/story.sh:174`), `reap`'s rationale, `test-reap.sh`'s
+header, and the dashboard's `statusMenuItems` doc comment. Their instructions
+survive — `reap` still kills the window moments after the close — but their
+*reasons* were replaced, and `docs/spec/dashboard-dispatch.md` now records that
+its own ruling was overturned and why it was reached from a false premise.
+
+**Tests.** The old `commenting_on_a_closed_story_is_refused` was **deleted, not
+inverted**: it characterized the behaviour being overturned, and an inverted
+copy would have hidden that a deliberate rule was reversed. In its place: a
+field-by-field assertion that a comment moves *only* `updated_at` and the
+comment list (the claim the whole argument rests on, asserted rather than
+believed); hidden-stays-hidden; the tombstone refusal writing no events; a
+table over the six writes that must still refuse; SH-261's own repro end to end
+over `/api/v1/invoke`; and — the condition the council attached to "done" —
+a post-closure comment surviving `store → export → legacy tree`, because
+`migrate_round_trip.rs` is what the W4 revert policy is conditional on. It
+passed first try, so the exporter already handled it; verified rather than
+assumed, which was the point.
+
+**The enforcement mechanism was mutation-tested before it was trusted.**
+`only_the_comment_path_appends_to_a_closed_story` derives the call-site set from
+the source tree and fails if a second `Intent::Append` ever appears. A guard
+that has never failed is not evidence, so a second one was planted: the scan
+failed and named both sites, and was then restored. This run has already logged
+one test that could not have failed (SH-247); that is the cheap way not to
+repeat it.
+
+**A grep that was too specific cost one gate run.** The reworded refusal broke
+`a_closed_story_cannot_be_phased`, which asserted the *fragment* `"closed and
+cannot be modified"` — my sweep searched the full literal `"is closed and
+cannot be modified"`, which does not match it. Found by the gate rather than by
+the sweep, ~9 minutes. The fix was folded into the wording commit rather than
+landing on top of it, so no commit in this branch's history is red; that test
+now asserts the whole sentence, for exactly the reason it survived the last
+change.
+
+**Filed, not fixed — the sibling sweep:** **SH-279**, `commit-sync` silently
+drops a merge commit that names a closed story (the sharper form of the defect
+this story mis-stated: a vanishing merge commit is worse than a sentence with
+nowhere to go); **SH-280**, `story handoff` reports a long-closed story as
+newly closed when anything bumps `updated_at` — pre-existing via `hide`/`unhide`
+since SH-43, but this change makes it reachable by a verb people use constantly.
+
+**Dogfooding, honestly:** commenting on the now-closed SH-261 through the
+*installed* `story` still fails — that binary and its running daemon predate
+this merge, and installing a rebuilt one would restart the daemon under several
+other live sessions, which is not this story's call to make. Demonstrated
+against the merged build instead, in an isolated store: the closed story took
+its comment, the deleted one refused and named `story reopen --force`, and an
+edit returned the new wording.
+
+**Gate:** `make test` green — **155 suites, 32/32 plugin, 130/130 e2e**, plus a
+green baseline captured on arrival before any edit. Two full runs (one red, from
+the fragment assertion above; one green after), each supervised with a 20s
+heartbeat against a 120s stall bound. No stalls. No orphan daemons left by this
+session — the ones observed belong to other sessions' worktrees (SH-199, SH-203,
+SH-274, reconcile-pr/355) and were left alone.
+
+**Postscript — the gate blocked this entry's own push, twice, on someone else's
+spec.** `e2e/specs/card-blockers.spec.ts` (landed on `main` hours earlier, from
+another session) failed identically in two consecutive `make test` runs, and the
+saved DOM shows the blocked story's card rendering with no blockers row at all.
+It is not reproducible the way anyone would try to reproduce it: 3/3 in
+isolation, 10/10 with its three predecessors in run order, and **134/134 as
+`make e2e`** — it needs the Rust and plugin legs to have run first. Both
+failures happened while four other sessions' gates were live on this machine,
+against an assertion with a hard 5s timeout on an SSE-driven re-render, so load
+is the leading hypothesis. Filed as **SH-281** (high — it blocks every push in
+the repo, not just this one) with the full matrix. This entry was then pushed
+with `SKIP_PREPUSH_TESTS=1` under CLAUDE.md's docs-only carve-out, after
+confirming the commit touches one markdown file and nothing else.
