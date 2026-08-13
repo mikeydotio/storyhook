@@ -1450,6 +1450,7 @@ impl Default for DataStore {
             states: Vec::new(),
             state_map: std::collections::BTreeMap::new(),
             stories: Vec::new(),
+            drafts: Vec::new(),
             prefix: String::new(),
             members: Vec::new(),
         }

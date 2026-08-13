@@ -28,7 +28,12 @@ pub struct FilterSpec {
     pub assignee: Option<String>,
     pub priority: Option<Priority>,
     pub label: Option<String>,
+    /// Keep only stories `story list --blocked` would keep: open, and
+    /// stopped by *something* — an `awaiting` reason, the `blocked` state,
+    /// an unmet `blocked-by` edge, or an `obviated-by` one.
     pub blocked: bool,
+    /// Keep only stories `story list --ready` would keep: unblocked, and not
+    /// already claimed by someone.
     pub ready: bool,
 }
 

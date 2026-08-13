@@ -1808,7 +1808,39 @@ pub fn compute_epic_display_state(
     has_active_child.then_some(active.slug)
 }
 
-pub fn is_ready(story: &StorySnapshot, all_stories: &BTreeMap<String, StorySnapshot>) -> bool {
+/// A by-id view of a project's stories — what [`is_ready`]'s `blocked-by`
+/// walk needs, and the only thing it needs.
+///
+/// Two shapes implement it. A service holds its stories **owned**, in the
+/// `BTreeMap<String, StorySnapshot>` [`QueryService::story_map`] builds, and
+/// passes that. A client that already holds the stories in a list — the TUI's
+/// `DataStore` — indexes them by **borrow**, so asking whether a story is
+/// ready costs pointers rather than a clone of every story in the project on
+/// every keystroke. Both answer the same question, through one implementation
+/// of it: the alternative, and what SH-240 was, is a second readiness rule
+/// written where the map was inconvenient.
+///
+/// A story the index does not carry reads as absent, never as blocking — see
+/// the `blocked-by` walk in [`is_ready`] for why that is the safe reading for
+/// a partial index.
+pub trait StoryIndex {
+    /// The story `id` names, if this index carries it.
+    fn story(&self, id: &str) -> Option<&StorySnapshot>;
+}
+
+impl StoryIndex for BTreeMap<String, StorySnapshot> {
+    fn story(&self, id: &str) -> Option<&StorySnapshot> {
+        self.get(id)
+    }
+}
+
+impl StoryIndex for BTreeMap<&str, &StorySnapshot> {
+    fn story(&self, id: &str) -> Option<&StorySnapshot> {
+        self.get(id).copied()
+    }
+}
+
+pub fn is_ready(story: &StorySnapshot, all_stories: &impl StoryIndex) -> bool {
     if story.superstate != SuperState::Open {
         return false;
     }
@@ -1839,9 +1871,14 @@ pub fn is_ready(story: &StorySnapshot, all_stories: &BTreeMap<String, StorySnaps
     {
         return false;
     }
+    // A blocker the index cannot answer for does not block. In a service's
+    // whole-project map that case is a dangling edge; in a client's partial
+    // one it is the ordinary case of a blocker that has been closed, deleted
+    // or archived out of the snapshot — none of which block. Reading absence
+    // as "blocked" instead would strand every story whose dependency landed.
     for relation in &story.relationships {
         if relation.relation == "blocked-by"
-            && let Some(other) = all_stories.get(&relation.other_id)
+            && let Some(other) = all_stories.story(&relation.other_id)
             && other.superstate == SuperState::Open
         {
             return false;
@@ -1873,7 +1910,7 @@ pub fn is_ready(story: &StorySnapshot, all_stories: &BTreeMap<String, StorySnaps
 /// reliable slug to treat as "claimed", nothing new is excluded.
 pub fn is_claimable(
     story: &StorySnapshot,
-    all_stories: &BTreeMap<String, StorySnapshot>,
+    all_stories: &impl StoryIndex,
     active: Option<&StateDef>,
 ) -> bool {
     if !is_ready(story, all_stories) {
@@ -4217,7 +4254,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(!is_ready(&story, &BTreeMap::new()));
+        assert!(!is_ready(&story, &empty_index()));
     }
 
     /// Regression test for SH-126 (council verdict,
@@ -4254,7 +4291,7 @@ mod tests {
             draft: false,
         };
 
-        assert!(!is_ready(&story, &BTreeMap::new()));
+        assert!(!is_ready(&story, &empty_index()));
     }
 
     /// Regression test for SH-236: `story next --count 3` handed back a
@@ -4293,32 +4330,24 @@ mod tests {
         // Untouched: this is still exactly what a claimed story reads as
         // before SH-236, so a caller that only wants "not blocked" keeps
         // seeing it that way.
-        assert!(is_ready(&story, &BTreeMap::new()));
-        assert!(!is_claimable(&story, &BTreeMap::new(), Some(&active)));
+        assert!(is_ready(&story, &empty_index()));
+        assert!(!is_claimable(&story, &empty_index(), Some(&active)));
 
         // A custom active-state slug is honoured, not just the default —
         // renaming it doesn't resurrect the bug.
         story.state = "doing".to_string();
         let renamed_active = state("doing", SuperState::Open, Some(STATE_ROLE_ACTIVE));
-        assert!(!is_claimable(
-            &story,
-            &BTreeMap::new(),
-            Some(&renamed_active)
-        ));
+        assert!(!is_claimable(&story, &empty_index(), Some(&renamed_active)));
 
         // A story in a *different* state than the active one is unaffected.
         story.state = "todo".to_string();
-        assert!(is_claimable(
-            &story,
-            &BTreeMap::new(),
-            Some(&renamed_active)
-        ));
+        assert!(is_claimable(&story, &empty_index(), Some(&renamed_active)));
 
         // No resolvable active state (legacy project, no role configured):
         // `is_claimable` falls back to exactly `is_ready` rather than
         // guessing at a slug.
         story.state = "in-progress".to_string();
-        assert!(is_claimable(&story, &BTreeMap::new(), None));
+        assert!(is_claimable(&story, &empty_index(), None));
     }
 
     #[test]
@@ -4366,6 +4395,73 @@ mod tests {
         all_stories.insert(dependent.id.clone(), dependent.clone());
 
         assert!(is_ready(&dependent, &all_stories));
+    }
+
+    /// The seam's own guarantee: a caller that indexes stories it already
+    /// holds by borrow gets the same answer as a service passing its owned
+    /// map. If the two ever disagreed, [`StoryIndex`] would have bought a
+    /// second readiness rule rather than one shared one.
+    #[test]
+    fn both_index_shapes_answer_the_same_question() {
+        let blocker = StorySnapshot {
+            id: "SH-1".to_string(),
+            title: "Blocker".to_string(),
+            created_at: "2026-03-13T00:00:00Z".to_string(),
+            updated_at: "2026-03-13T00:00:00Z".to_string(),
+            state: "todo".to_string(),
+            superstate: SuperState::Open,
+            assignee: None,
+            awaiting: None,
+            priority: Priority::None,
+            labels: Vec::new(),
+            story_type: None,
+            description: None,
+            comments: Vec::new(),
+            referenced_by_commits: Vec::new(),
+            relationships: Vec::new(),
+            closed_at: None,
+            deleted: false,
+            deleted_reason: None,
+            hidden_at: None,
+            draft: false,
+        };
+        let mut dependent = blocker.clone();
+        dependent.id = "SH-2".to_string();
+        dependent.title = "Dependent".to_string();
+        dependent.relationships.push(StoryRelation {
+            relation: "blocked-by".to_string(),
+            other_id: "SH-1".to_string(),
+        });
+
+        let stories = [blocker, dependent];
+        let owned: BTreeMap<String, StorySnapshot> = stories
+            .iter()
+            .map(|story| (story.id.clone(), story.clone()))
+            .collect();
+        let borrowed: BTreeMap<&str, &StorySnapshot> = stories
+            .iter()
+            .map(|story| (story.id.as_str(), story))
+            .collect();
+        let active = state("in-progress", SuperState::Open, Some(STATE_ROLE_ACTIVE));
+
+        for story in &stories {
+            assert_eq!(
+                is_ready(story, &owned),
+                is_ready(story, &borrowed),
+                "{} reads differently through the two index shapes",
+                story.id
+            );
+            assert_eq!(
+                is_claimable(story, &owned, Some(&active)),
+                is_claimable(story, &borrowed, Some(&active)),
+                "{} reads differently through the two index shapes",
+                story.id
+            );
+        }
+        // The fixture's own premise: one story is ready and one is not, so
+        // the agreement above is not two `false`s agreeing by accident.
+        assert!(is_ready(&stories[0], &borrowed));
+        assert!(!is_ready(&stories[1], &borrowed));
     }
 
     #[test]
@@ -4441,6 +4537,13 @@ mod tests {
         let stories = sample_story_map();
         assert!(would_create_parent_cycle(&stories, "SH-3", "SH-1"));
         assert!(!would_create_parent_cycle(&stories, "SH-1", "SH-4"));
+    }
+
+    /// An index carrying no stories, in the owned shape a service holds —
+    /// named rather than written inline because [`StoryIndex`] has two
+    /// implementations and a bare `BTreeMap::new()` no longer says which.
+    fn empty_index() -> BTreeMap<String, StorySnapshot> {
+        BTreeMap::new()
     }
 
     fn state_map() -> BTreeMap<String, StateDef> {
