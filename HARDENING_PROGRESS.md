@@ -13444,3 +13444,95 @@ the only way the log itself carries the verdict. Second, a `pgrep -f "make test"
 compilation — was benign and diagnosed the way this file's own rule says to: by confirming the
 process (load average 30, three live cargo processes) rather than by reading the log. Log growth
 is the right pulse for a test phase and the wrong one for a build.
+
+### SH-247 — done
+
+**Outcome:** merged (PR #353). The TUI throttles the change feed on the trailing edge, so a
+burst of changes costs one reload instead of one each.
+
+**The defect, restated as what it cost.** `spawn_change_thread` turned every `Change` off the
+subscription into one `Event::DataChanged`, and `main_loop` turns each of those into a full
+`ProjectSnapshot` invoke. That reload is synchronous inside the loop that also draws the board
+and reads the keyboard, so N changes arriving together did not merely refetch identical data N
+times — they stalled input N times. Not a correctness defect, exactly as filed.
+
+**The fix is the browser's shape, deliberately.** `web_dashboard.html`'s `scheduleDataFetch`
+arms a timer on the first event and refetches when it fires. `pump_changes` now does the same:
+the first change of a burst opens a window instead of reporting, everything arriving inside it
+is read off the feed and folded into the same reload, one reload follows when the window closes.
+Two properties come with that shape, both load-bearing:
+
+- **Trailing, never leading.** Every absorbed change is still followed by a reload. Dropping the
+  *later* of two changes is precisely the defect SH-216 was filed for, and this must never
+  become that.
+- **A fixed window, not a restarting one.** Measured from the first change, so a store written
+  to without pause — an import, a scripted sweep — still reloads on a cadence. A textbook
+  debounce restarts on every event and would defer the reload indefinitely, leaving the board
+  showing data from before the stream began.
+
+**The constant is derived, not inherited.** 150ms; that it is also the browser's number is a
+coincidence kept rather than the reason for it. Floor: it must exceed the gaps inside a real
+burst, and a `story` command against a warm daemon takes 10–50ms end to end (measured, three
+runs each of `show` and `list`), while the eight concurrent request-boundary publishes
+`DISPATCHERS` caps land within milliseconds of each other. Ceiling: it is added to the latency
+of every change, a lone one included, and the tick thread already quantises this interface at
+250ms — a window inside that adds no delay distinguishable from the cadence the TUI has anyway.
+
+**Four tests, and only one of them is the regression test.** The others constrain the fix, which
+matters because the wrong fixes all pass the first one:
+
+| Test | What fails it |
+|---|---|
+| `a_burst_of_changes_costs_a_single_reload` | the defect itself — five changes, five reloads (red: `left: 5, right: 1`) |
+| `a_lone_change_is_reported_once_the_window_closes` | a leading-edge throttle — SH-216's defect returning |
+| `a_change_after_the_window_gets_its_own_reload` | over-collapsing two causally separate changes |
+| `a_stream_that_never_goes_quiet_still_reloads` | a restarting window starving a busy store |
+
+**One test was weaker than it looked, and tightening it is most of the value here.** The
+lone-change test first asserted on total elapsed time — and passed against the *unfixed* loop,
+because this harness answers "quiet" by sleeping out its budget, so the clock runs past a window
+whatever the loop does. Measuring the delay from the change's own arrival instead made it a real
+red (`206µs`: the unthrottled loop reporting on arrival) and makes it a real guard against a
+leading-edge regression. A timing assertion that cannot fail is worse than none, because it
+reads as coverage.
+
+**The seam had to exist before the fix could be tested**, so it is its own commit. The loop lived
+inline in `spawn_change_thread`, where the only way to exercise it was to stand up a daemon,
+write through a second store handle and watch a channel — adequate for "a change is reported",
+useless for "how many times". `pump_changes` takes the two halves as closures
+(`wait_for_change`, `report`), so the counting tests need no daemon at all. Commit 1 is that
+extraction, behaviour identical; commit 2 is the throttle.
+
+**Why the burst is not driven through a real daemon.** It cannot be at this layer, and the
+attempt would have passed vacuously: two writes through a second store handle inside one
+`change_poll_interval` are collapsed by `ChangeWatcher`'s shared baseline before they are ever
+published (SH-202), so a test that wrote twice and asserted one reload would be measuring the
+daemon's dedup and calling it the TUI's. The four unit tests drive `pump_changes` directly for
+that reason; the existing daemon-backed tests still cover the wiring.
+
+**Sibling sweep: clean.** The TUI is the only production Rust subscriber to the feed
+(`Subscriber::new` has one non-test caller), and the other client — the browser — already
+throttles correctly. Nothing else consumes changes without coalescing.
+
+**No council.** The story already carries SH-216's council verdict on the design (trailing edge,
+client-side, not `ChangeBus`), which left one number to choose; it is derived above from
+measurement and this interface's existing cadence, and recorded in the constant's own doc
+comment rather than in a vote.
+
+**Gate:** one full `make test` on the branch tree, green — 155 Rust suites, 32 plugin tests,
+130/130 e2e, `EXIT=0`. 72 GB free. Supervised with a log-growth heartbeat, a 120s stall bound,
+and a completion watcher keyed on an `EXIT=` marker the wrapper appends (`make test; echo
+"EXIT=$?"`), which is the only way the log itself carries the verdict. No stall alarms fired in
+the test phase. The compile phase went quiet for minutes, as SH-270's entry predicted it would,
+and liveness was settled by confirming the processes (`cargo test`, `cargo build`) rather than by
+reading the log: log growth is the right pulse for a test phase and the wrong one for a build.
+
+**Supervision finding, worth more than the story.** The push completed in seconds, which means
+the global `pre-push-tests.sh` hook did not run — the suite cannot finish in seconds, and the
+hook has no skip path that would explain it. The push was issued as a backgrounded Bash call, and
+a `run_in_background` command appears not to be intercepted by the `PreToolUse` gate at all. That
+gate is the *only* CI in this project by deliberate policy, so a push shape that silently skips it
+is a hole in the policy rather than a convenience. Nothing unverified landed here — `make test`
+had been run to green on this exact tree minutes earlier, which is what the policy actually asks
+for — but the next session should assume the hook is not a backstop for a backgrounded push and
+run the gate itself, as this one did.
