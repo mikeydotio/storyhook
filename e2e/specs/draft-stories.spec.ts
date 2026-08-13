@@ -88,8 +88,14 @@ test("Save Draft creates a draft: it is not a board card, and the Drafts button 
   page,
 }) => {
   const title = "A sketch worth keeping";
+  // SH-235: #drafts-btn's accessible name is now an icon span plus this
+  // text span (icon-only at narrow widths, its own text hidden there via
+  // .sr-only-equivalent CSS -- see .icon-compact-btn) -- the count text
+  // itself lives on the label span, not the button's own concatenated
+  // textContent.
   const draftsBtn = page.locator("#drafts-btn");
-  const before = await draftsBtn.textContent();
+  const draftsBtnText = page.locator("#drafts-btn-text");
+  const before = await draftsBtnText.textContent();
 
   await page.locator("#new-story-btn").click();
   await page.locator("#create-title").fill(title);
@@ -99,9 +105,9 @@ test("Save Draft creates a draft: it is not a board card, and the Drafts button 
   // Not a board card anywhere.
   await expect(page.locator(".card", { hasText: title })).toHaveCount(0);
   // The Drafts button's count went up by exactly one.
-  await expect(draftsBtn).not.toHaveText(before ?? "");
+  await expect(draftsBtnText).not.toHaveText(before ?? "");
   const beforeCount = parseInt((before ?? "0").split(" ")[0], 10) || 0;
-  await expect(draftsBtn).toHaveText(`${beforeCount + 1} Drafts`);
+  await expect(draftsBtnText).toHaveText(`${beforeCount + 1} Drafts`);
 
   // Cleanup via the popover, exercised properly by the next test — here,
   // just discard it directly so this test doesn't depend on that one.
@@ -113,7 +119,7 @@ test("Save Draft creates a draft: it is not a board card, and the Drafts button 
   await expect(page.locator("#create-modal-header")).toHaveText("Edit draft");
   await page.locator("#create-discard").click();
   await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
-  await expect(draftsBtn).toHaveText(`${beforeCount || "No"} Drafts`);
+  await expect(draftsBtnText).toHaveText(`${beforeCount || "No"} Drafts`);
 });
 
 test("the Drafts popover dismisses on an outside click, unlike the New Story modal", async ({

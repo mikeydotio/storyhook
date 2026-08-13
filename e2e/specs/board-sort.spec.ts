@@ -2,6 +2,7 @@ import { test, expect } from "@playwright/test";
 import {
   cleanUpCreatedStories,
   deleteStory,
+  openFilters,
   openProject,
   seedToken,
 } from "./support";
@@ -33,6 +34,9 @@ test.beforeEach(async ({ page }) => {
   await seedToken(page);
   await page.goto("/");
   await openProject(page, "Alpha Project");
+  // SH-235: the Priority/Order buttons this spec drives live in the filter
+  // panel, which now defaults collapsed.
+  await openFilters(page);
 });
 
 async function createStory(

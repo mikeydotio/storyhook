@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { openProject, seedToken } from "./support";
+import { openFilters, openProject, seedToken } from "./support";
 
 /**
  * Exercises SH-155: the filter bar and sort column carry over across a
@@ -88,6 +88,9 @@ test("a state filter absent from the next project is pruned, with a toast, not s
   page,
 }) => {
   await openProject(page, "Alpha Project");
+  // SH-235: the State dropdown lives in the filter panel, which now
+  // defaults collapsed.
+  await openFilters(page);
 
   await page.locator("#fdd-states .fdd-btn").click();
   await page
