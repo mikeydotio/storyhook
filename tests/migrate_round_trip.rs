@@ -76,7 +76,7 @@ use std::path::Path;
 use legacy_support::{custom_config_tree, golden_export_path, migrate, real_tree, store_snapshots};
 use storyhook::domain::StorySnapshot;
 use storyhook::service::transfer::ProjectExport;
-use storyhook::service::{Clock, Ctx, StoryService, TransferService};
+use storyhook::service::{Clock, Ctx, GitService, StoryService, TransferService};
 use storyhook::storage;
 use storyhook::store::{ReadOps, SqliteStore, Store as _, WriteOps as _};
 
@@ -298,6 +298,100 @@ fn a_comment_added_after_a_story_closed_survives_the_round_trip() {
             .iter()
             .any(|comment| comment.text == "verified after closure"),
         "the comment itself must be in the rebuilt tree, not merely an equal-looking snapshot"
+    );
+}
+
+/// A commit link added *after* a story closed reaches the tree a rollback
+/// hands back (SH-279).
+///
+/// The same structural risk `a_comment_added_after_a_story_closed_survives_the_round_trip`
+/// guards for the sibling append SH-261 granted: an exporter that decided
+/// where a story lives before replaying its whole log, or stopped reading
+/// events at the closure, would lose exactly the evidence SH-279 exists to
+/// preserve, and only on rollback.
+#[test]
+fn a_commit_link_added_after_a_story_closed_survives_the_round_trip() {
+    let (_tree, root) = custom_config_tree();
+    let (_store_dir, store, _report) = migrate(&root);
+
+    // ADA-3 is the fixture's archived story: closed into `wont-fix` and moved
+    // to `archive/` by the legacy writer before the migration ever saw it.
+    let project = store
+        .read(|tx| Ok(tx.projects()?.first().expect("one project").id))
+        .expect("reading");
+
+    // `commit_sync` reads `git log` over its cwd, which must be a real
+    // repository — a fresh one, separate from `root`, since all that matters
+    // is a commit whose message names the closed story.
+    let repo = storyhook_test_support::scratch_dir_named("commit-sync-repo-");
+    for args in [
+        vec!["init", "-q", "-b", "main"],
+        vec!["config", "user.email", "t@t"],
+        vec!["config", "user.name", "t"],
+    ] {
+        let output = std::process::Command::new("git")
+            .current_dir(repo.path())
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .args(&args)
+            .output()
+            .expect("running git");
+        assert!(output.status.success(), "git {args:?} failed");
+    }
+    let output = std::process::Command::new("git")
+        .current_dir(repo.path())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .args([
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "chore: reference ADA-3 after close",
+        ])
+        .output()
+        .expect("running git commit");
+    assert!(output.status.success(), "git commit failed");
+
+    let ctx = Ctx::new(
+        &store,
+        project,
+        repo.path(),
+        storyhook::env::Environment::at(repo.path()),
+    )
+    .no_hooks(true)
+    .clock(Clock::Fixed("2026-02-02T00:00:00Z".to_string()));
+    let message = GitService::new(&ctx)
+        .commit_sync(None)
+        .expect("a closed story takes a commit link");
+    assert!(
+        message.contains("linked 1 commits to 1 stories"),
+        "{message}"
+    );
+
+    let after = store
+        .read(|tx| {
+            let no = storyhook::store::StoryNo::parse_id("ADA", "ADA-3").expect("a well-formed id");
+            Ok(tx.story(project, no)?.expect("the story exists").snapshot)
+        })
+        .expect("reading");
+    assert_eq!(
+        after.state, "wont-fix",
+        "the fixture story must still be closed, or this proves nothing"
+    );
+    assert_eq!(after.referenced_by_commits.len(), 1);
+
+    let document = export(&store);
+    let (_dir, rebuilt) = rebuild_legacy_tree(&document);
+
+    let from_store = store_snapshots(&store);
+    let from_legacy = legacy_snapshots(&rebuilt);
+    assert_eq!(
+        from_legacy["ADA-3"], from_store["ADA-3"],
+        "a closed story's post-closure commit link must survive store -> document -> legacy tree"
+    );
+    assert_eq!(
+        from_legacy["ADA-3"].referenced_by_commits.len(),
+        1,
+        "the link itself must be in the rebuilt tree, not merely an equal-looking snapshot"
     );
 }
 

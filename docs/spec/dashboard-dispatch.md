@@ -341,6 +341,15 @@ after.
 > to record everything before closing. Both were re-justified rather than reverted —
 > `reap` because a step reporting on its own destruction has not been designed, the
 > charter because `reap` closes the tmux window moments after the close.
+>
+> **A second write joined `story comment` on the append side (SH-279, 2026-08-13):**
+> `commit-sync`'s commit link. Found by this very council, checking SH-261's own claim
+> that "git commits may annotate the archive and people may not" — false in that
+> direction: `record_commit` resolved through `resolve_open_story` too, so a merge
+> commit naming a story its own PR had just closed recorded nothing, silently. Same
+> argument as the comment: `StoryCommitLinked` reaches only `referenced_by_commits`
+> and `updated_at`. It now resolves through `Intent::Append` and links every time,
+> never moving a closed story — moving is still the edit SH-261 kept refused.
 
 **Self-reap needed a deterministic verb, not prose.** The charter could have simply
 told the agent to `git worktree remove` its own worktree, delete its branch, and kill
