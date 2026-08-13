@@ -516,10 +516,24 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
   margin-left: auto; flex-shrink: 0; text-transform: uppercase;
 }
 .dot { width: 0.4375rem; height: 0.4375rem; border-radius: 50%; flex-shrink: 0; }
+/* SH-203: a story-ID reference is its status light (`.dot.story-light`,
+   background set inline per story by stateColor()) immediately before a
+   clickable `.rel-id` -- see storyRef()/storyLight(). `.unknown` is the
+   one case stateColor() never runs for: the id didn't resolve against
+   this project's loaded stories at all (another project, soft-deleted,
+   a draft), so there is no status to colour -- a hollow ring rather than
+   an omitted dot, so the gap reads as "unresolvable", not as a missing
+   feature. */
+.story-ref { display: inline-flex; align-items: center; gap: 0.25rem; }
+.story-light.unknown { background: transparent; border: 1.5px solid var(--fg-faint); }
 .card-flags { display: flex; gap: 0.3125rem; margin-top: 0.375rem; }
 .flag-blocked { color: var(--danger); }
 .flag-archived { color: var(--fg-faint); }
 .flag { font-size: 0.6875rem; font-weight: 600; display: inline-flex; align-items: center; gap: 0.1875rem; }
+/* SH-203 consumer 2: the card's own blockers list -- see openBlockers()
+   and populateCard(). `.blocker-cleared`'s dwell/pulse are added in the
+   cleared-blocker-dwell change alongside this one. */
+.card-blockers { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; margin-top: 0.375rem; }
 
 /* ---- List ---- */
 .list { flex: 1; overflow: auto; padding: 0 1.25rem 1.25rem; }
@@ -661,19 +675,29 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .rel-list { display: flex; flex-direction: column; gap: 0.375rem; }
 .rel-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8125rem; }
 .rel-row .rel-kind { color: var(--fg-muted); font-size: 0.75rem; }
-.rel-row .rel-id { font-family: var(--mono); color: var(--accent); background: none; border: none; padding: 0; font-size: 0.8125rem; }
-/* Matches both `.rel-id` (the relation's own button, e.g. "SH-241" -- its
-   own more specific rule just above wins on color/font/padding, not on
-   the sizing added here) and the unclassed delete "x" button after it --
-   SH-235 measured both under 24px tall. `min-width` only matters for the
-   glyph-only delete button; `.rel-id`'s text content already exceeds
-   --tap-min's width in every case that's shipped today. */
-.rel-row button {
+/* Unscoped -- was `.rel-row .rel-id` -- because SH-203 made storyRef()
+   (and so this button) a shared building block that also appears outside
+   any `.rel-row`: `.referenced-by-text`, `.comment-text` (via
+   linkifyStoryIds()) and `.card-blockers`. SH-235 measured this under
+   24px tall, hence the tap-target floor alongside the relation's own
+   color/font/padding rather than a bare link-reset. */
+.rel-id {
+  font-family: var(--mono); color: var(--accent); background: none; border: none; padding: 0;
+  font-size: 0.8125rem; display: inline-flex; align-items: center; justify-content: center;
+  min-width: var(--tap-min); min-height: var(--tap-min);
+}
+.rel-id:hover { text-decoration: underline; }
+/* The relation-row delete "x" button. Shares `.rel-id`'s tap-target floor
+   (SH-235: also measured under 24px tall) without its color/font, and --
+   SH-203 -- carries `margin-left: auto` on its own rather than through a
+   shared `.rel-row button` rule, which would otherwise also right-align
+   the `.story-ref` wrapper now sitting before it in the row. */
+.rel-remove {
   margin-left: auto; border: none; background: none; color: var(--fg-faint);
   display: inline-flex; align-items: center; justify-content: center;
   min-width: var(--tap-min); min-height: var(--tap-min);
 }
-.rel-row button:hover { color: var(--danger); }
+.rel-remove:hover { color: var(--danger); }
 .drawer-footer { display: flex; gap: 0.5rem; padding: 1rem 1.25rem; border-top: 1px solid var(--border); flex-shrink: 0; }
 .confirm-delete { display: flex; flex-direction: column; gap: 0.5rem; width: 100%; }
 .confirm-delete input { padding: 0.375rem 0.5rem; border: 1px solid var(--danger); border-radius: var(--radius-sm); background: var(--bg); font-size: var(--control-font-sm); }
@@ -826,6 +850,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     0% { box-shadow: 0 0 0 3px var(--success-soft); }
     100% { box-shadow: var(--shadow-sm); }
   }
+
+  /* SH-203's cleared-blocker dwell: unlike every other flash-* rule in
+     this block, the dwell itself (dwellingBlockerIds(), populateCard())
+     is not gated behind this media query -- it is information (which
+     blocker cleared), not decoration, so it stays under reduced motion.
+     Only this pulse, the decorative half, drops. Reuses pulse-success
+     rather than a near-duplicate keyframe: the light is already its
+     CLOSED colour by the time this plays (stateColor's super_state ===
+     "CLOSED" anchor), so the halo pulsing the same green is the same
+     "this turned green" statement the board's own flash-ready makes. */
+  .blocker-cleared .story-light { animation: pulse-success 0.9s ease-out; }
 
   /* Neutral "this changed" flash for a home repo card (a change in
      aggregate counts, not any one field, so no single field color to key
@@ -1682,6 +1717,30 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           // accordingly. Skipped on the first load of a repo, so opening a
           // repo never animates every card in as if it had just appeared.
           if (state.data) pendingAnimations = diffSnapshots(state.data, parsed, state.pending);
+          // SH-203: an open drawer's relation and referenced-by rows carry
+          // a status light (storyRef() -> findStory(), reading state.data)
+          // for whichever OTHER story they name -- but renderAll() below
+          // only re-renders the board/list; renderDrawer() otherwise runs
+          // only from handleMutationSuccess(), and only for the drawer's
+          // own story. Without this, a blocker (or any referenced story)
+          // closing elsewhere would leave every light in an open drawer
+          // stale until it was closed and reopened. Checked before
+          // `pendingAnimations` is consumed by renderView() (it's nulled
+          // out there) and gated on the diff actually holding a change, so
+          // the 25s safety poll's ordinary no-op tick doesn't churn the
+          // drawer -- clobbering in-progress focus/caret for nothing.
+          var hasChanges = !!(pendingAnimations && (
+            pendingAnimations.entered.length || pendingAnimations.exited.length ||
+            pendingAnimations.moved.length || Object.keys(pendingAnimations.changed).length
+          ));
+          // SH-203 consumer 2's cleared-blocker dwell: same "diff before
+          // replacing" timing as pendingAnimations above, and the same
+          // reason -- recordClearedBlockers needs both snapshots, not
+          // just the fresh one. `foundClearance` decides whether a
+          // follow-up render is worth scheduling once the dwell elapses
+          // (below); populateCard() itself reads the ledger on every
+          // render regardless, so a render this tick already shows it.
+          var foundClearance = recordClearedBlockers(state.data, parsed, Date.now());
           state.data = parsed;
           state.lastFetchAt = Date.now();
           state.fetchOk = true;
@@ -1692,7 +1751,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           // repo's data.
           if (isFirstLoadForRepo) pruneCarriedFilters();
           renderAll();
+          if (hasChanges && state.drawerId) renderDrawer();
           if (isFirstLoadForRepo) consumeDeepLinkStory();
+          // Nothing else re-renders once the dwell window closes (no
+          // further fetch is guaranteed to land exactly then) -- one
+          // extra tick, timed just past the ledger entry's own expiry, so
+          // the cleared blocker's card drops it instead of it lingering
+          // until the next unrelated update happens to trigger a render.
+          if (foundClearance) setTimeout(renderView, BLOCKER_CLEARED_DWELL_MS + 50);
         } catch (e) {
           state.fetchOk = false;
         }
@@ -2698,6 +2764,61 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return result;
   }
 
+  /** SH-203's cleared-blocker dwell ledger: `"<storyId>|<blockerId>" ->
+   * the Date.now() this client first observed the blocker crossing OPEN
+   * -> CLOSED`, kept for BLOCKER_CLEARED_DWELL_MS so populateCard() can
+   * still render it -- lit its own CLOSED colour, then gone -- for a beat
+   * after openBlockers() would already have dropped it. Module state, not
+   * per-render: populateCard() rebuilds a card's children from scratch on
+   * every render (`clear(card)`), so nothing here could survive inside
+   * the DOM itself. */
+  var clearedBlockers = {};
+  var BLOCKER_CLEARED_DWELL_MS = 4000;
+
+  /** Scans every `blocked-by` relationship across the whole snapshot for a
+   * blocker that crossed OPEN -> CLOSED between `oldData` and `newData`,
+   * recording each into `clearedBlockers`. Runs alongside `diffSnapshots`
+   * in `fetchData()`, before `oldData` is discarded, for the same reason:
+   * both need the snapshot pair, not just the fresh one. Not itself pure
+   * (it mutates the ledger) but returns whether it found anything new, so
+   * the caller knows whether a follow-up render is worth scheduling once
+   * the dwell elapses. */
+  function recordClearedBlockers(oldData, newData, now) {
+    if (!oldData || !newData) return false;
+    var oldById = {}, newById = {};
+    oldData.stories.forEach(function(v) { oldById[v.story.id] = v; });
+    newData.stories.forEach(function(v) { newById[v.story.id] = v; });
+    var found = false;
+    newData.stories.forEach(function(v) {
+      (v.story.relationships || []).forEach(function(r) {
+        if (r.relation !== "blocked-by") return;
+        var was = oldById[r.other_id], current = newById[r.other_id];
+        if (was && was.story.superstate === "OPEN" && current && current.story.superstate === "CLOSED") {
+          clearedBlockers[v.story.id + "|" + r.other_id] = now;
+          found = true;
+        }
+      });
+    });
+    return found;
+  }
+
+  /** Blocker ids still inside their SH-203 dwell window for `st.id` --
+   * openBlockers() itself no longer counts them (their target closed),
+   * but the dwell hasn't finished reading out which one it was yet. An
+   * expired entry is pruned from the ledger as a side effect of being
+   * asked about, so `clearedBlockers` never holds more than what's
+   * actually still dwelling. */
+  function dwellingBlockerIds(storyId, now) {
+    var prefix = storyId + "|";
+    var ids = [];
+    Object.keys(clearedBlockers).forEach(function(key) {
+      if (key.indexOf(prefix) !== 0) return;
+      if (now - clearedBlockers[key] >= BLOCKER_CLEARED_DWELL_MS) { delete clearedBlockers[key]; return; }
+      ids.push(key.slice(prefix.length));
+    });
+    return ids;
+  }
+
   // ============================================================
   // RENDER: SHELL
   // ============================================================
@@ -3555,6 +3676,25 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * given id (its identity-bound event listeners) live here; everything
    * that *can* change across renders lives in `populateCard`, called both
    * here (for the initial fill) and directly on reuse. */
+  /** The stories still blocking `st` -- SH-203's card blockers list.
+   *
+   * Mirrors the server's own `is_ready` rule (src/domain.rs): a
+   * `blocked-by` relationship only blocks while its target resolves in
+   * this project's loaded stories AND is still OPEN. Relations are
+   * written on both ends in one transaction (RelationService::relate), so
+   * `st.relationships` already carries every `blocked-by` edge -- no
+   * reverse index or second fetch is needed to answer "who blocks this
+   * one". A blocker the client can't resolve (another project, deleted, a
+   * draft) does not block, the same as the daemon's own blocked_ids
+   * computation already treats it. */
+  function openBlockers(st) {
+    return (st.relationships || []).filter(function(r) {
+      if (r.relation !== "blocked-by") return false;
+      var v = findStory(r.other_id);
+      return !!v && v.story.superstate === "OPEN";
+    });
+  }
+
   function buildCard(v, ready, blocked, isClosed) {
     var id = v.story.id;
     // role="button" + tabIndex (SH-197): every card starts as a Tab stop
@@ -3652,6 +3792,32 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // into a CLOSED column's cards doesn't read as an ordinary closed one.
     if (st.hidden_at) flags.appendChild(el("span", { class: "flag flag-archived" }, ["🗄 archived"]));
     if (flags.childNodes.length) card.appendChild(flags);
+
+    // SH-203 consumer 2: every OPEN story still blocking this one, each
+    // with its own status light -- capped and overflow-chipped the same
+    // way .card-labels above is, so a heavily-blocked card doesn't grow
+    // without bound. Plus, uncapped, any blocker still inside its
+    // cleared-blocker dwell window (dwellingBlockerIds) -- it closed just
+    // now, openBlockers() itself no longer counts it, but the whole point
+    // of the dwell is that it stays visible -- lit its own CLOSED colour
+    // via storyLight(), marked `.blocker-cleared` for the pulse below --
+    // long enough for the reader to see *which* blocker cleared. The two
+    // sets never overlap: a dwelling entry's target is CLOSED by
+    // definition, so openBlockers() (which requires OPEN) can never also
+    // include it.
+    var blockers = openBlockers(st);
+    var dwelling = dwellingBlockerIds(st.id, Date.now());
+    if (blockers.length || dwelling.length) {
+      var blockersWrap = el("div", { class: "card-blockers" }, []);
+      blockers.slice(0, 3).forEach(function(r) { blockersWrap.appendChild(storyRef(r.other_id)); });
+      if (blockers.length > 3) blockersWrap.appendChild(el("span", { class: "chip" }, ["+" + (blockers.length - 3)]));
+      dwelling.forEach(function(id) {
+        var ref = storyRef(id);
+        ref.classList.add("blocker-cleared");
+        blockersWrap.appendChild(ref);
+      });
+      card.appendChild(blockersWrap);
+    }
   }
 
   function bindColumnDrop(column, targetSlug, isClosed) {
@@ -3785,13 +3951,141 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     renderView();
   }
 
+  /** Positional fallback for a project-defined state beyond the four
+   * REQUIRED_STATES `stateColor` anchors below -- unchanged from before
+   * SH-203, and still what a state with no semantic anchor gets. */
   var STATE_PALETTE = ["#3b5bfd", "#1f9d55", "#d9a413", "#e5484d", "#8a5cf6", "#0891b2", "#db2777", "#65a30d"];
+
+  /** The colour a status light or column dot uses for `slug`.
+   *
+   * SH-203: was a pure positional lookup into STATE_PALETTE -- with the
+   * default four-state catalog (todo, in-progress, blocked, done, in that
+   * configured order) that put `done` at index 3, painting every
+   * completed story red. A status light that colours by column has to
+   * mean something, so the REQUIRED_STATES slugs every project's catalog
+   * is guaranteed to contain (src/domain.rs's REQUIRED_STATES, enforced
+   * by validate_required_states -- exact slug match, not just shape) are
+   * anchored to semantic tokens first; anything a project adds beyond
+   * that floor has no slug to anchor a colour to and keeps the original
+   * positional palette. Checked in an order that survives a reordered
+   * catalog:
+   *   - `blocked` (SH-126's reserved slug) -> --danger
+   *   - CLOSED super_state (however many closed states a project has)
+   *     -> --success, so "turns green" (SH-203's own cleared-blocker
+   *     dwell) is just a light adopting the colour its own column
+   *     already has, not a one-off exception
+   *   - the one state carrying role "active" (STATE_ROLE_ACTIVE) -> --accent
+   *   - `todo` -> --fg-faint, a deliberately quiet default
+   * CSS custom properties, not hex literals, so these four (and only
+   * these four) track the light/dark theme swap the rest of the
+   * dot/badge system already gets for free -- STATE_PALETTE itself does
+   * not, unchanged from before. */
   function stateColor(slug) {
+    if (slug === "blocked") return "var(--danger)";
+    var def = meta().states.filter(function(s) { return s.slug === slug; })[0];
+    if (!def) return "var(--fg-faint)";
+    if (def.super_state === "CLOSED") return "var(--success)";
+    if (def.role === "active") return "var(--accent)";
+    if (slug === "todo") return "var(--fg-faint)";
     var idx = meta().states.map(function(s) { return s.slug; }).indexOf(slug);
     return STATE_PALETTE[Math.max(idx, 0) % STATE_PALETTE.length];
   }
   function priorityColor(p) {
     return { critical: "var(--p-critical)", high: "var(--p-high)", medium: "var(--p-medium)", low: "var(--p-low)" }[p] || "transparent";
+  }
+
+  /** A small coloured dot standing in for `id`'s status -- SH-203's
+   * "status light": rendered immediately before an ID wherever the
+   * dashboard names another story, coloured via stateColor() so it
+   * always matches that story's own board column. The status word is
+   * reachable as `title`/`aria-label` rather than occupying space --
+   * colour alone would be a WCAG 1.4.1 use-of-color violation, the same
+   * reasoning buildTypeBadge's role="img" already follows for the type
+   * glyph.
+   *
+   * `id` resolves against state.data.stories (`findStory`) -- the same
+   * project-scoped set the board itself renders from, so a story from
+   * another project, a soft-deleted story, or a draft (routed to a
+   * separate array, never `stories`) all resolve to nothing. That's
+   * rendered as a hollow "unknown" ring (`.story-light.unknown`) rather
+   * than silently omitted, so the gap reads as "this dashboard cannot
+   * answer for that ID" rather than as a missing feature.
+   *
+   * Reads `display_state || story.state`, the same expression the board
+   * itself places a card by (`renderBoard`), so an epic's light never
+   * disagrees with the column its own card sits in. */
+  function storyLight(id) {
+    var v = findStory(id);
+    if (!v) {
+      return el("span", {
+        class: "dot story-light unknown", role: "img",
+        title: "unknown", "aria-label": "Status: unknown"
+      }, []);
+    }
+    var slug = v.display_state || v.story.state;
+    return el("span", {
+      class: "dot story-light", role: "img", style: "background:" + stateColor(slug),
+      title: slug, "aria-label": "Status: " + slug
+    }, []);
+  }
+
+  /** A reference to another story: its status light immediately before a
+   * `.rel-id` button that opens its drawer -- SH-203's consumer 1, the
+   * shape every inline mention of another story takes (relation rows,
+   * referenced-by mentions, comment-body links via `linkifyStoryIds`, and
+   * consumer 2's card blockers list). `stopPropagation` matters in that
+   * last case specifically: a board card is itself a whole-card click
+   * target (`openDrawer` bound in `buildCard`), so without it a click on
+   * a blocker chip would open both the blocker's drawer and the card's
+   * own -- harmless everywhere else this renders, since nothing else it
+   * sits inside listens for clicks. */
+  function storyRef(id) {
+    return el("span", { class: "story-ref" }, [
+      storyLight(id),
+      el("button", { class: "rel-id", onClick: function(e) { e.stopPropagation(); openDrawer(id); } }, [id])
+    ]);
+  }
+
+  /** Splits free text into an array of plain strings and storyRef()
+   * elements, one per bare mention of another story in this project --
+   * SH-203 consumer 1's comment-body and block-reason case, where an id
+   * is typed inline rather than picked from a relation control.
+   *
+   * Mirrors the server's own id-finding rule (`ids_in_line` in
+   * src/domain.rs, which derive_comment_mentions runs) closely enough for
+   * the UI's purposes: a run of the project's prefix, a dash, and one or
+   * more digits, not itself preceded by an alphanumeric character (so
+   * "ASH-9" doesn't match the prefix "SH") -- and, matching that
+   * function's own choice, no check on what follows the digits either.
+   * The prefix is read off `selfId` -- the drawer always has one open
+   * story's id in hand, and every id in a project shares its prefix
+   * (src/domain/prefix.rs: one alphabetic character then any number of
+   * alphanumerics, no hyphen) -- rather than requiring a server field
+   * just for this.
+   *
+   * Two cases are deliberately left as plain text, not a light: `selfId`
+   * itself (a self-reference names nothing to navigate to), and an id
+   * this project's loaded stories can't resolve (`findStory` returns
+   * null) -- linking it would render storyLight()'s "unknown" ring for
+   * what may simply be a typo or a reference to another project, which
+   * reads as this feature being broken rather than as an honest gap. */
+  function linkifyStoryIds(text, selfId) {
+    var prefixMatch = /^([A-Za-z][A-Za-z0-9]*)-\d+$/.exec(selfId || "");
+    if (!prefixMatch) return [text];
+    var re = new RegExp("(^|[^A-Za-z0-9])(" + prefixMatch[1] + "-\\d+)", "g");
+    var parts = [];
+    var lastIndex = 0;
+    var match;
+    while ((match = re.exec(text)) !== null) {
+      var id = match[2];
+      var idStart = match.index + match[1].length;
+      parts.push(text.slice(lastIndex, idStart));
+      parts.push(id === selfId || !findStory(id) ? id : storyRef(id));
+      lastIndex = idStart + id.length;
+      re.lastIndex = lastIndex;
+    }
+    parts.push(text.slice(lastIndex));
+    return parts.filter(function(p) { return p !== ""; });
   }
 
   // ============================================================
@@ -4065,10 +4359,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     }
 
     if (st.awaiting) {
-      body.appendChild(el("div", { class: "banner banner-blocked" }, [
-        "Blocked: " + st.awaiting,
-        el("button", { class: "btn btn-ghost", onClick: function() { runFieldMutation(st.id, "POST", "unblock", null); } }, ["Unblock"])
-      ]));
+      body.appendChild(el("div", { class: "banner banner-blocked" }, ["Blocked: "]
+        .concat(linkifyStoryIds(st.awaiting, st.id))
+        .concat([el("button", { class: "btn btn-ghost", onClick: function() { runFieldMutation(st.id, "POST", "unblock", null); } }, ["Unblock"])])));
     } else {
       body.appendChild(buildBlockForm(st));
     }
@@ -4309,8 +4602,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       rels.forEach(function(r) {
         list.appendChild(el("div", { class: "rel-row" }, [
           el("span", { class: "rel-kind" }, [r.relation]),
-          el("button", { class: "rel-id", onClick: function() { openDrawer(r.other_id); } }, [r.other_id]),
-          el("button", { type: "button", onClick: function() {
+          storyRef(r.other_id),
+          el("button", { type: "button", class: "rel-remove", onClick: function() {
             api("POST", apiBase() + "/unrelate", { a: st.id, relation: r.relation, b: r.other_id })
               .then(handleMutationSuccess).catch(toastError);
           } }, ["×"])
@@ -4338,7 +4631,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     comments.slice().reverse().forEach(function(c) {
       list.appendChild(el("div", { class: "comment" }, [
         el("div", { class: "comment-meta" }, [(c.at || "").replace("T", " ").slice(0, 16)]),
-        el("div", { class: "comment-text" }, [c.text])
+        el("div", { class: "comment-text" }, linkifyStoryIds(c.text, st.id))
       ]));
     });
     wrap.appendChild(list);
@@ -4387,12 +4680,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       ]));
     });
     // The mentioning story is a button, not text: a backlink you cannot follow
-    // is half of one. Same `rel-id` affordance the relationships list uses.
+    // is half of one. Same storyRef() affordance the relationships list uses.
     mentions.forEach(function(m) {
       list.appendChild(el("div", { class: "referenced-by-row" }, [
         el("span", { class: "referenced-by-meta" }, [(m.at || "").replace("T", " ").slice(0, 16)]),
         el("span", { class: "referenced-by-text" }, [
-          el("button", { class: "rel-id", onClick: function() { openDrawer(m.other_id); } }, [m.other_id]),
+          storyRef(m.other_id),
           " " + m.snippet
         ])
       ]));
