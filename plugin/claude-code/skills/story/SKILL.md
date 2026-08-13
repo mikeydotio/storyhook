@@ -29,7 +29,7 @@ its behavior from memory, and do not skip steps it defines.
 |-----------|------|--------|
 | _(empty)_ | List → Pick | **List → Pick** flow below. |
 | `<id>` (e.g. `SH-45`) | View + Offer | **View + Offer** flow below. A bare first token is a story id only if it matches `^[A-Za-z0-9]+-[0-9]+$`; otherwise it is a malformed verb. |
-| `do <id> [--auto]` | Dispatch to a fresh session | **Dispatch** flow below. `--auto` hands the child an autonomous charter: after the one plan approval it runs to completion unattended — council-voting its own open questions, merging its own PR, closing the story itself, and (SH-208) then running `story.sh reap <id>` as its very last act to reclaim its own worktree, branch and tmux window. |
+| `do <id> [--auto]` | Dispatch to a fresh session | **Dispatch** flow below. `--auto` hands the child an autonomous charter: after the one plan approval it runs to completion unattended — researching and deciding its own easy questions, convening `/council-vote` for the genuinely hard ones (SH-219: only if that skill is actually reachable — otherwise it decides those too), merging every PR it opens, closing the story itself, and (SH-208) then running `story.sh reap <id>` as its very last act to reclaim its own worktree, branch and tmux window. |
 | `view <id>` | Show a story | Run `story.sh view <id>`, show `display`, stop. |
 | `new <description>` | File a story | Read `${CLAUDE_PLUGIN_ROOT}/references/story-new.md` and follow it. |
 | `complete <id>` | Close + clean up | Read `${CLAUDE_PLUGIN_ROOT}/references/story-complete.md` and follow it. |
@@ -104,15 +104,23 @@ opened a new tmux window rooted **in** that worktree, running
 Nothing further is needed from you.
 
 `--auto` changes only the handoff prompt, never the launch command — plan approval stays the
-one and only human interaction. Past that approval, the autonomous charter tells the child to
-resolve ambiguity by `/council-vote` instead of asking, run `make test` before pushing, merge
-its own PR with a merge commit, and close the story itself (or `story block` and stop on a hard
-stop it cannot resolve). Once closed, it runs `bin/story.sh reap <id>` as its absolute last
-action (SH-208) — this reclaims the worktree, deletes its branch, and closes the tmux window the
-child was running in; it refuses outright unless the story is closed and the worktree/branch are
-safe to discard (dirty, locked, unmerged or protected all refuse the *whole* reap, nothing
-partial), so a hard stop or an unmerged branch can never lose work. See `bin/story.sh`'s
-`AUTO_PROMPT_TPL` for the exact charter.
+one and only human interaction. Past that approval, the autonomous charter tells the child that
+for any later decision with one clear best answer, research current best practice and decide it
+itself, recording the decision as a comment. For a genuinely hard decision — two or more
+defensible answers research alone can't settle — it convenes `/council-vote` (SH-219: **only
+when that skill will actually resolve in this session**; `story.sh` decides this itself, via
+`council_vote_available`, before rendering the charter, rather than leaving the child to guess
+at its own skill roster). On a machine with no council installed, the charter says so plainly and
+tells the child to research, decide, and record instead — never to stall. Either way it runs
+`make test` before pushing, merges every PR it opens with a merge commit, and closes the story
+itself once its own acceptance criteria are met (or `story block` and stops on a hard stop it
+cannot resolve). Once closed, it runs `bin/story.sh reap <id>` as its absolute last action
+(SH-208) — this reclaims the worktree, deletes its branch, and closes the tmux window the child
+was running in; it refuses outright unless the story is closed and the worktree/branch are safe
+to discard (dirty, locked, unmerged or protected all refuse the *whole* reap, nothing partial),
+so a hard stop or an unmerged branch can never lose work. See `bin/story.sh`'s
+`council_vote_available`, `AUTO_PROMPT_TPL` (council-available charter) and
+`AUTO_PROMPT_SOLO_TPL` (no-council charter) for the exact text.
 
 ## Notes
 
@@ -145,6 +153,10 @@ partial), so a hard stop or an unmerged branch can never lose work. See `bin/sto
   story but was killed before it could reap itself: it refuses anything not closed-and-safe, so
   there's nothing to double-check first.
 - The launch command and handoff prompt are overridable via `STORY_LAUNCH_CMD`/`STORY_PROMPT`,
-  the autonomous charter via `STORY_AUTO_PROMPT` (same seam, `--auto` only), and the state
-  `complete` closes into via `STORY_DONE_STATE` (see `bin/story.sh`'s config block) for
-  advanced/non-interactive callers. **The helper owns these — don't rewrite them here.**
+  the two autonomous charters via `STORY_AUTO_PROMPT` (council-available) and
+  `STORY_AUTO_PROMPT_SOLO` (no council found) — same seam, `--auto` only, and either wins
+  outright over `council_vote_available`'s own probe result, same wholesale-override contract
+  `STORY_AUTO_PROMPT` has always had — and the state `complete` closes into via
+  `STORY_DONE_STATE` (see `bin/story.sh`'s config block) for advanced/non-interactive callers.
+  `STORY_COUNCIL` (`auto`/`on`/`off`) overrides the probe itself, without touching either
+  charter's text. **The helper owns these — don't rewrite them here.**
