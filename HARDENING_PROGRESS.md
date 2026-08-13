@@ -12709,3 +12709,98 @@ failed with `make: *** [test] Error 1`. The log held `EXIT=2` and the failing
 leg, and reading it is what caught it. A supervision wrapper that reports its
 own success instead of the job's is the same shape as everything else in this
 entry — a signal that means less than it appears to.
+
+### SH-222 — three load-only failures, and the budget that was not one · PR #335 · **done**
+
+Absorbed SH-223 and SH-241. Three e2e failures reported over four gating
+sessions, all timing out against Playwright's 15s test budget on a loaded
+machine, none reproducing on a quiet one. The story suspected the budget.
+**None of the three causes was the budget.**
+
+| Reported signature | What it actually was |
+|---|---|
+| `filter-persistence.spec.ts:87` reading `0 / 3`, `0 / 4` | a **closed** stray in Alpha, which SH-245's sweep skipped |
+| `board-sort` / `create-story-defaults` "did not find some options" | a spec acting **before the board had data** |
+| `deleteStory`'s 15s "detached from the DOM, retrying" | against code SH-197 removed; not reproducible in the current flow |
+| "15s is too tight after a full gate" | refuted by measurement |
+
+**(A) SH-245 fixed half of its own defect.** `cleanUpCreatedStories` skipped
+every non-OPEN stray on two premises, both false. `StoryService::delete` does
+not *refuse* a closed story — it answers **404**, because closing appends
+`StoryClosedAndArchived`, which sets the row's `archived` flag, and `delete`
+maps an archived row to NotFound. And a closed stray is not "counted by
+nothing": `/data` excludes only deleted and draft stories, so it sits in
+`state.data.stories`, which is exactly `#filter-count`'s denominator. So the
+two kinds of stray behaved *oppositely* — an open one swept by the next test,
+a closed one surviving the whole run and shifting every later count assertion
+by one. Live today: `story-context-menu-status.spec.ts` moves a story it
+created to `done` and deletes it two statements later.
+
+**(B) "under load" had a mechanism, and it was not slowness.** `selectRepo()`
+sets `state.data = null`, renders the board screen, and fetches *afterwards*,
+so `#board-view` is visible — no stories, no vocabulary — for one `/data`
+round trip. Every spec read the click plus `toBeVisible()` as arrival. Losing
+that race is not a slow assertion that retries: the create modal and the
+filter dropdowns are built **once, synchronously** from `meta()` when they
+open, so one opened in that window holds only placeholders and never
+repopulates, and `selectOption("critical")` spins out the entire test timeout.
+**Reproduced with a route delay on `/data`, no load required** — the board
+renders empty and the modal opens holding `["Default priority"]` alone. The
+machine was only ever supplying the delay.
+
+**(C) The budget, measured rather than argued.** Three full runs with the
+machine loaded by spinners into the 32–88 band the story reports:
+
+| load avg | suite | slowest test on the 15s budget |
+|---|---|---|
+| idle (~3) | 2.9m | 7.7s |
+| ~44 | 4.4m | 8.6s |
+| ~100 | 6.4m | 10.0s |
+
+111/111 green in all three; a third of the budget unspent at a load average
+*above* anything the story saw. Nothing changed but the rationale, which now
+lives in `playwright.config.ts` instead of in a story — the absence of one is
+most of why the number was suspected. **Raising it would have hidden (A) and
+(B) until the next machine was slower.**
+
+**Two experiments that refuted rather than confirmed**, both worth the time.
+The original repro — a footer click lost to the drawer's detail-fetch
+re-render — was tried twice against the current modal flow: release the held
+detail response on the button's own `mousedown`, and hold a 400ms
+human-length press across it. Neither could lose the click; the footer is torn
+down exactly once and the click survives. So no app change: nothing was
+demonstrated broken, and "reproduce before you fix" applies to a fix that
+would have looked defensible.
+
+**Pinned by three tests, each watched fail first.**
+`fixture-isolation.spec.ts` gains the closed-stranding case, asserting on
+Alpha's *count* as well as the title, because the count is what an unrelated
+spec actually reads (red before the fix: the stray sits in the list).
+`board-readiness.spec.ts` pins both halves of (B) — that the window exists
+(from the deep-link side, so it does not go through the helper under test) and
+that `openProject()` closes it, asserting a **lower** bound on how long it
+waited, which load can only make safer (red without the wait: 48ms against a
+2000ms delay). `tests/e2e_fixture_hygiene.rs` fences the rule the way it
+already fences SH-245's: derived over `git ls-files`, whitespace-insensitive
+(the click is often chained across two lines), the predicate's own readings
+unit-tested beside it, and refusing to report a clean tree if the pattern has
+stopped matching `support.ts` itself. Negative-controlled — reintroducing one
+direct click turns it red, naming the file.
+
+**Sibling filed: SH-265** (`low`). The same pre-data window is reachable by a
+**user**: clicking "+ New Story" before a project's data lands gives a modal
+whose Priority select offers only "Default priority", with nothing to explain
+it and no repopulation. The fix here is test-side, deliberately — it stops the
+suite racing the fetch and leaves the user-facing half named rather than
+quietly absorbed.
+
+**Supervision:** one full `make test` (green: 153 targets, plugin harness,
+111/111 e2e), five targeted e2e runs for the red→green cycles, and the three
+loaded runs above under a log-growth heartbeat with a 120s stall bound. No
+stalls, no wedges, no restarts. Load generators killed by both a trap and a
+self-destruct timer; zero survivors confirmed after each run. 133 GB free.
+
+**One bookkeeping note:** the merge's own commit-sync hook auto-closed SH-222
+before the findings comment could land, and `story comment` on a closed story
+refuses — correctly. Reopen, comment, re-close. Worth knowing for any cycle
+whose commit bodies say `Closes` and whose write-up comes after the merge.
