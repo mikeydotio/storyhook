@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Fake `tmux` for story.sh's real-dispatch (non-dry-run) tests. VENDORED
-# verbatim from agentics' plugins/issue/tests/fakes/tmux (forked 2026-07-24,
-# alongside lib/session.sh — see that file's header) — it's already fully
-# provider-agnostic (no gh/issue-specific behavior anywhere in it), so no
-# adaptation was needed beyond this header note. Implements only the
+# Fake `tmux` for story.sh's real-dispatch (non-dry-run) tests. Vendored from
+# agentics' plugins/issue/tests/fakes/tmux (forked 2026-07-24, alongside
+# lib/session.sh — see that file's header) — it was already fully
+# provider-agnostic (no gh/issue-specific behavior anywhere in it), so the copy
+# needed no adaptation beyond this header note. It has since diverged, and the
+# divergence is deliberate: SH-263 removed the upstream default state directory
+# (`/tmp/issue-faketmux`, whose name is the fork's own fingerprint) in favour of
+# a refusal — see THE STATE DIRECTORY below. Implements only the
 # subcommands cmd_dispatch drives, enough to let the helper run to
 # completion headlessly without a live tmux server:
 #
@@ -57,8 +60,8 @@
 # EXACTLY the same base fixture as before, so every readiness/gitignore test is
 # byte-for-byte unaffected.
 #
-#   * A virtual input buffer lives in $STATE/input (STATE = $FAKE_TMUX_STATE, or a
-#     fixed /tmp dir otherwise). `send-keys -l <text>` APPENDS <text> to it (a
+#   * A virtual input buffer lives in $STATE/input (STATE = $FAKE_TMUX_STATE,
+#     which is mandatory — see the refusal below). `send-keys -l <text>` APPENDS <text> to it (a
 #     literal paste); `send-keys ... Enter` SUBMITS (clears it) — with two twists:
 #       - The FIRST Enter after launch always clears (it submits the launch
 #         command line); it also flips $STATE/launched so later Enters are treated
@@ -181,11 +184,34 @@
 #
 # The fake is re-exec'd per tmux call and holds no in-process state, so ALL of the
 # above (the input buffer, the launched flag, the absorb counter, the churn
-# counter) live in files under $STATE. `churn` still advances $STATE/count and
-# falls back to $RANDOM when $FAKE_TMUX_STATE is unset.
+# counter) live in files under $STATE — which is why $STATE being private to one
+# test is load-bearing rather than housekeeping (SH-263, below).
 
-STATE="${FAKE_TMUX_STATE:-/tmp/issue-faketmux}"
-mkdir -p "$STATE" 2>/dev/null || true
+# THE STATE DIRECTORY is NAMED BY THE CALLER, always (SH-263). It used to fall
+# back to a fixed /tmp path when $FAKE_TMUX_STATE was unset, and five of this
+# suite's test files left it unset — so they shared one directory with each
+# other, with every concurrent run of the suite, and with the `issue` plugin's
+# fake of the same name that this one was forked from. Sharing it is not a
+# tidiness problem: one user's `new-window` clears another's `launched` and
+# `input`, whose next Enter is then read as a launch line of nothing and writes
+# the fallback shell name over the first user's occupant — which is how a
+# dispatch came to refuse a pane it had itself launched `claude` into, saying it
+# held `zsh`.
+#
+# Refuse rather than default, and refuse rather than create: this fake STORES
+# state, it does not own it. A caller that has not minted a directory has not
+# decided where its state lives, and inventing a shared path on its behalf is
+# the silent failure this whole harness exists to avoid. lib.sh mints one for
+# every test in this suite, so no test file has to remember to.
+if [ -z "${FAKE_TMUX_STATE:-}" ]; then
+  printf 'fake tmux: $FAKE_TMUX_STATE is unset — refusing to invent a shared state directory (SH-263). Source tests/lib.sh, which mints one per test.\n' >&2
+  exit 64
+fi
+if [ ! -d "$FAKE_TMUX_STATE" ]; then
+  printf 'fake tmux: $FAKE_TMUX_STATE [%s] is not a directory — the caller mints it (`mktemp -d`), this fake never does.\n' "$FAKE_TMUX_STATE" >&2
+  exit 64
+fi
+STATE="$FAKE_TMUX_STATE"
 NL='
 '   # a single literal newline, for splitting -l keystroke text on line breaks
 
@@ -271,9 +297,11 @@ case "${1:-}" in
   new-window)
     # First side effect of a dispatch: reset the virtual input box so every run
     # starts clean, and seed the prompt-Enter absorb counter from the knob. Also
-    # clears the buffer store + submit bookkeeping (issue #87) so a reused $STATE
-    # dir (e.g. the shared /tmp/issue-faketmux the readiness cases use) can't read
-    # stale state.
+    # clears the buffer store + submit bookkeeping (issue #87) so a $STATE dir
+    # reused across the several dispatches one test file makes can't read stale
+    # state. (It resets only what THIS caller left behind; a second, concurrent
+    # caller in the same dir is a different problem, and not one a reset can
+    # solve — see SH-263 at the top.)
     #
     # `\;`-CHAINED EXEC FORM (SH-230). story.sh's dispatch path no longer opens
     # an empty pane and types the launch command into it later — it passes the
@@ -603,13 +631,8 @@ EOF
       busy)
         printf '  \342\234\273 Working... (esc to interrupt)\n' ;;
       churn)
-        c=0
-        if [ -n "${FAKE_TMUX_STATE:-}" ]; then
-          c=$(cat "$FAKE_TMUX_STATE/count" 2>/dev/null || echo 0)
-          c=$((c + 1)); echo "$c" > "$FAKE_TMUX_STATE/count"
-        else
-          c=$RANDOM
-        fi
+        c=$(cat "$STATE/count" 2>/dev/null || echo 0)
+        c=$((c + 1)); echo "$c" > "$STATE/count"
         printf '  building worktree... step %s\n' "$c" ;;
       legacy|*)
         printf '  ? for shortcuts\n' ;;
