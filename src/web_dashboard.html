@@ -3907,6 +3907,48 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     ]);
   }
 
+  /** Splits free text into an array of plain strings and storyRef()
+   * elements, one per bare mention of another story in this project --
+   * SH-203 consumer 1's comment-body and block-reason case, where an id
+   * is typed inline rather than picked from a relation control.
+   *
+   * Mirrors the server's own id-finding rule (`ids_in_line` in
+   * src/domain.rs, which derive_comment_mentions runs) closely enough for
+   * the UI's purposes: a run of the project's prefix, a dash, and one or
+   * more digits, not itself preceded by an alphanumeric character (so
+   * "ASH-9" doesn't match the prefix "SH") -- and, matching that
+   * function's own choice, no check on what follows the digits either.
+   * The prefix is read off `selfId` -- the drawer always has one open
+   * story's id in hand, and every id in a project shares its prefix
+   * (src/domain/prefix.rs: one alphabetic character then any number of
+   * alphanumerics, no hyphen) -- rather than requiring a server field
+   * just for this.
+   *
+   * Two cases are deliberately left as plain text, not a light: `selfId`
+   * itself (a self-reference names nothing to navigate to), and an id
+   * this project's loaded stories can't resolve (`findStory` returns
+   * null) -- linking it would render storyLight()'s "unknown" ring for
+   * what may simply be a typo or a reference to another project, which
+   * reads as this feature being broken rather than as an honest gap. */
+  function linkifyStoryIds(text, selfId) {
+    var prefixMatch = /^([A-Za-z][A-Za-z0-9]*)-\d+$/.exec(selfId || "");
+    if (!prefixMatch) return [text];
+    var re = new RegExp("(^|[^A-Za-z0-9])(" + prefixMatch[1] + "-\\d+)", "g");
+    var parts = [];
+    var lastIndex = 0;
+    var match;
+    while ((match = re.exec(text)) !== null) {
+      var id = match[2];
+      var idStart = match.index + match[1].length;
+      parts.push(text.slice(lastIndex, idStart));
+      parts.push(id === selfId || !findStory(id) ? id : storyRef(id));
+      lastIndex = idStart + id.length;
+      re.lastIndex = lastIndex;
+    }
+    parts.push(text.slice(lastIndex));
+    return parts.filter(function(p) { return p !== ""; });
+  }
+
   // ============================================================
   // RENDER: LIST
   // ============================================================
@@ -4178,10 +4220,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     }
 
     if (st.awaiting) {
-      body.appendChild(el("div", { class: "banner banner-blocked" }, [
-        "Blocked: " + st.awaiting,
-        el("button", { class: "btn btn-ghost", onClick: function() { runFieldMutation(st.id, "POST", "unblock", null); } }, ["Unblock"])
-      ]));
+      body.appendChild(el("div", { class: "banner banner-blocked" }, ["Blocked: "]
+        .concat(linkifyStoryIds(st.awaiting, st.id))
+        .concat([el("button", { class: "btn btn-ghost", onClick: function() { runFieldMutation(st.id, "POST", "unblock", null); } }, ["Unblock"])])));
     } else {
       body.appendChild(buildBlockForm(st));
     }
@@ -4451,7 +4492,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     comments.slice().reverse().forEach(function(c) {
       list.appendChild(el("div", { class: "comment" }, [
         el("div", { class: "comment-meta" }, [(c.at || "").replace("T", " ").slice(0, 16)]),
-        el("div", { class: "comment-text" }, [c.text])
+        el("div", { class: "comment-text" }, linkifyStoryIds(c.text, st.id))
       ]));
     });
     wrap.appendChild(list);
