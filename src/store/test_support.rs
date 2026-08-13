@@ -164,20 +164,14 @@ pub fn forget_story(
 /// model, so `doctor` advises retracting it — and the same run's read-model
 /// repair then puts the row back and makes the edge whole again.
 ///
-/// Foreign keys are disabled for this connection only, the idiom
-/// [`replace_states`] and [`forget_state`] use; every other reader and writer
-/// keeps the constraint.
+/// Written through [`foreign_keys_down`], so the constraint stands for every
+/// other reader and writer.
 pub fn forget_read_model_row(
     store: &SqliteStore,
     project: ProjectId,
     story: StoryNo,
 ) -> Result<(), StoreError> {
-    let conn = Connection::open(store.path())
-        .map_err(|e| StoreError::from_sqlite(e, "opening the store for injection"))?;
-    conn.busy_timeout(std::time::Duration::from_secs(5))
-        .map_err(|e| StoreError::from_sqlite(e, "setting the injection busy timeout"))?;
-    conn.pragma_update(None, "foreign_keys", false)
-        .map_err(|e| StoreError::from_sqlite(e, "lowering foreign keys for injection"))?;
+    let conn = foreign_keys_down(store)?;
     conn.execute(
         "DELETE FROM stories WHERE project_id = ?1 AND story_no = ?2",
         rusqlite::params![project.get(), story.get()],
@@ -194,20 +188,14 @@ pub fn forget_read_model_row(
 /// layer, and — since SH-130 — by the composite foreign key on `stories`, which
 /// is what makes this back door necessary rather than merely convenient.
 ///
-/// Foreign keys are disabled for this connection only, so the constraint is
-/// back in force for every other reader and writer.
+/// Written through [`foreign_keys_down`], so the constraint is in force for
+/// every other reader and writer.
 pub fn replace_states(
     store: &SqliteStore,
     project: ProjectId,
     states: &[crate::domain::StateDef],
 ) -> Result<(), StoreError> {
-    let conn = Connection::open(store.path())
-        .map_err(|e| StoreError::from_sqlite(e, "opening the store for injection"))?;
-    conn.busy_timeout(std::time::Duration::from_secs(5))
-        .map_err(|e| StoreError::from_sqlite(e, "setting the injection busy timeout"))?;
-    conn.pragma_update(None, "foreign_keys", false)
-        .map_err(|e| StoreError::from_sqlite(e, "lowering foreign keys for injection"))?;
-
+    let conn = foreign_keys_down(store)?;
     conn.execute(
         "DELETE FROM project_states WHERE project_id = ?1",
         rusqlite::params![project.get()],
@@ -243,16 +231,11 @@ pub fn replace_states(
 /// storyhook can hold it, so the rebuild oracle has to keep *reporting* it
 /// rather than propagating it, and `doctor --fix` has to refuse to guess at it.
 ///
-/// Foreign keys are disabled for this connection only. The store's own
-/// connections are unaffected, so the constraint is back in force the moment
-/// anything reads or writes normally.
+/// Written through [`foreign_keys_down`]. The store's own connections are
+/// unaffected, so the constraint is back in force the moment anything reads or
+/// writes normally.
 pub fn forget_state(store: &SqliteStore, project: ProjectId, slug: &str) -> Result<(), StoreError> {
-    let conn = Connection::open(store.path())
-        .map_err(|e| StoreError::from_sqlite(e, "opening the store for injection"))?;
-    conn.busy_timeout(std::time::Duration::from_secs(5))
-        .map_err(|e| StoreError::from_sqlite(e, "setting the injection busy timeout"))?;
-    conn.pragma_update(None, "foreign_keys", false)
-        .map_err(|e| StoreError::from_sqlite(e, "lowering foreign keys for injection"))?;
+    let conn = foreign_keys_down(store)?;
     conn.execute(
         "DELETE FROM project_states WHERE project_id = ?1 AND slug = ?2",
         rusqlite::params![project.get(), slug],
@@ -286,10 +269,7 @@ pub fn corrupt_snapshot(
     let snapshot: crate::domain::StorySnapshot = serde_json::from_value(value)
         .map_err(|e| StoreError::Invariant(format!("the edited snapshot is not one: {e}")))?;
 
-    let conn = Connection::open(store.path())
-        .map_err(|e| StoreError::from_sqlite(e, "opening the store for corruption"))?;
-    conn.busy_timeout(std::time::Duration::from_secs(5))
-        .map_err(|e| StoreError::from_sqlite(e, "setting the corruption busy timeout"))?;
+    let conn = second_connection(store)?;
     let encoded = serde_json::to_string(&snapshot)
         .map_err(|e| StoreError::Invariant(format!("encoding a snapshot: {e}")))?;
     // `closed_at` and `archived` travel with the edit, not just `state` and
@@ -336,6 +316,35 @@ fn refold(tx: &mut impl WriteOps, project: ProjectId, story: StoryNo) -> Result<
     Ok(())
 }
 
+/// A connection to the store outside the store — the thing every back door in
+/// this module needs first.
+///
+/// The busy timeout is the one setting a fixture inherits rather than subverts:
+/// a helper racing a live daemon's write should wait for it, not fail the test
+/// with `SQLITE_BUSY` and send its author looking for a defect that is not
+/// there.
+fn second_connection(store: &SqliteStore) -> Result<Connection, StoreError> {
+    let conn = Connection::open(store.path())
+        .map_err(|e| StoreError::from_sqlite(e, "opening the store for injection"))?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| StoreError::from_sqlite(e, "setting the injection busy timeout"))?;
+    Ok(conn)
+}
+
+/// [`second_connection`], with foreign keys lowered for it alone.
+///
+/// Three fixtures need a write referential integrity refuses: a state a story
+/// still sits in, a catalog replaced under its stories, a read-model row whose
+/// edges outlive it. The pragma is per connection, so the constraint is in
+/// force for every other reader and writer — including the rest of the run this
+/// helper was called from.
+fn foreign_keys_down(store: &SqliteStore) -> Result<Connection, StoreError> {
+    let conn = second_connection(store)?;
+    conn.pragma_update(None, "foreign_keys", false)
+        .map_err(|e| StoreError::from_sqlite(e, "lowering foreign keys for injection"))?;
+    Ok(conn)
+}
+
 /// Runs `f` against a raw connection with the append-only trigger removed, then
 /// puts the trigger back.
 ///
@@ -347,10 +356,7 @@ fn with_append_guard_down<T>(
     store: &SqliteStore,
     f: impl FnOnce(&Connection) -> Result<T, rusqlite::Error>,
 ) -> Result<T, StoreError> {
-    let conn = Connection::open(store.path())
-        .map_err(|e| StoreError::from_sqlite(e, "opening the store for injection"))?;
-    conn.busy_timeout(std::time::Duration::from_secs(5))
-        .map_err(|e| StoreError::from_sqlite(e, "setting the injection busy timeout"))?;
+    let conn = second_connection(store)?;
     conn.pragma_update(None, "foreign_keys", true)
         .map_err(|e| StoreError::from_sqlite(e, "enabling foreign keys for injection"))?;
 
