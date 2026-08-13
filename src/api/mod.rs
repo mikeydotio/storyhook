@@ -18,6 +18,9 @@
 //! * [`rpc`] — the daemon's control surface: loopback only, token-authenticated.
 //! * [`session`] — the dashboard's scoped, revocable capability (SH-254): what
 //!   a redeemed coupon buys, instead of the daemon's master token.
+//! * [`tokens`] — named, persistent, revocable bearer tokens (SH-255): the
+//!   one credential concept that replaces the loopback read exemption,
+//!   `Authority::Public`/`Session`, and [`session`] itself.
 //! * [`wire`] — the `/api/v1/invoke` envelope, shared by the daemon and its
 //!   client.
 //!
@@ -34,4 +37,5 @@ pub mod rest;
 pub mod routes;
 pub mod rpc;
 pub mod session;
+pub mod tokens;
 pub mod wire;
