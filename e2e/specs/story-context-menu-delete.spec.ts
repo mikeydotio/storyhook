@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { cleanUpCreatedStories, seedToken } from "./support";
+import { cleanUpCreatedStories, openProject, seedToken } from "./support";
 
 /**
  * Exercises SH-197's context menu Delete item: it reaches the exact same
@@ -22,8 +22,7 @@ cleanUpCreatedStories("Alpha Project");
 test.beforeEach(async ({ page }) => {
   await seedToken(page);
   await page.goto("/");
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
 });
 
 async function createStory(page: import("@playwright/test").Page, title: string) {

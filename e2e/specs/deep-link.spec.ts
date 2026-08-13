@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { projectSlug, requiredEnv, seedToken } from "./support";
+import { openProject, projectSlug, requiredEnv, seedToken } from "./support";
 
 /**
  * Exercises SH-197's `?project=<slug>&story=<id>` deep link against a real
@@ -97,8 +97,7 @@ test("selecting a project and a story updates the address bar; closing keeps the
   await page.goto("/");
   expect(new URL(page.url()).searchParams.get("project")).toBeNull();
 
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
   expect(new URL(page.url()).searchParams.get("project")).toBe(alpha);
   expect(new URL(page.url()).searchParams.get("story")).toBeNull();
 
@@ -122,8 +121,7 @@ test("unrelated query parameters survive selecting a project", async ({
   const alpha = await projectSlug(request, "Alpha Project");
   await page.goto("/?sseStaleAfterMs=400");
 
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
 
   const url = new URL(page.url());
   expect(url.searchParams.get("sseStaleAfterMs")).toBe("400");

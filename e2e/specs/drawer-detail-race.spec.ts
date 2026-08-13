@@ -4,6 +4,7 @@ import {
   deleteStory,
   holdDetailFetch,
   latch,
+  openProject,
   seedToken,
 } from "./support";
 
@@ -35,8 +36,7 @@ cleanUpCreatedStories("Alpha Project");
 test.beforeEach(async ({ page }) => {
   await seedToken(page);
   await page.goto("/");
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
 });
 
 async function createStory(

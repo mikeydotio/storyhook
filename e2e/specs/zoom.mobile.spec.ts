@@ -1,6 +1,11 @@
 import { test, expect } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
-import { cleanUpCreatedStories, deleteStory, seedToken } from "./support";
+import {
+  cleanUpCreatedStories,
+  deleteStory,
+  openProject,
+  seedToken,
+} from "./support";
 
 /**
  * SH-256: on a coarse pointer (a finger, not a mouse), no text-entry control
@@ -194,8 +199,7 @@ test("every text-entry control the document ships with is at least 16px", async 
 
 test("the topbar's search field is at least 16px", async ({ page }) => {
   await page.goto("/");
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
 
   await expectNoZoomingControls(page.locator(".topbar"), "the topbar", 1);
 
@@ -216,8 +220,7 @@ test("the create-story modal's controls are at least 16px", async ({
   page,
 }) => {
   await page.goto("/");
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
 
   await page.locator("#new-story-btn").click();
   await expect(page.locator("#create-modal")).toHaveClass(/open/);
@@ -237,8 +240,7 @@ test("the create-story modal's controls are at least 16px", async ({
 test("the story drawer's controls are at least 16px", async ({ page }) => {
   const title = "SH-256 zoom sweep — drawer";
   await page.goto("/");
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
   await createStory(page, title);
 
   const detailLoaded = page.waitForResponse(
@@ -276,8 +278,7 @@ test("the delete-confirmation modal's reason field is at least 16px", async ({
 }) => {
   const title = "SH-256 zoom sweep — delete modal";
   await page.goto("/");
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
   await createStory(page, title);
 
   await page
@@ -346,8 +347,7 @@ test("tap targets carry touch-action: manipulation, and the page itself does not
   page,
 }) => {
   await page.goto("/");
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
 
   // This asserts the CSS *declaration*, not the gesture it produces:
   // Playwright's locator.click() injects mouse events even with

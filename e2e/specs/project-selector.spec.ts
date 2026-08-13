@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { seedToken } from "./support";
+import { openProject, seedToken } from "./support";
 
 /**
  * Exercises the dashboard's header project selector against a real daemon
@@ -52,8 +52,7 @@ test("first load lands on Home with a card per seeded project", async ({
 test("clicking a project's card opens its board and updates the selector label", async ({
   page,
 }) => {
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
   await expect(
     page.locator(".card-title", { hasText: "Wire up the auth flow" }),
   ).toBeVisible();
@@ -63,7 +62,7 @@ test("clicking a project's card opens its board and updates the selector label",
 test("choosing another project from the selector switches the board", async ({
   page,
 }) => {
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await openProject(page, "Alpha Project");
   await expect(
     page.locator(".card-title", { hasText: "Wire up the auth flow" }),
   ).toBeVisible();
@@ -85,7 +84,7 @@ test("choosing another project from the selector switches the board", async ({
 test("the menu lists every project and marks the open one as checked", async ({
   page,
 }) => {
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await openProject(page, "Alpha Project");
   await openMenu(page);
 
   const menu = page.locator("#projsel-menu");
@@ -99,17 +98,14 @@ test("the menu lists every project and marks the open one as checked", async ({
 test("a project with no checkout on this machine is reachable from its home card", async ({
   page,
 }) => {
-  await page
-    .locator(".repo-card-name", { hasText: "Gamma Archive" })
-    .click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Gamma Archive");
   await expect(page.locator("#projsel-btn")).toContainText("GA · Gamma Archive");
 });
 
 test("the selector is fully operable by keyboard, with no mouse involved", async ({
   page,
 }) => {
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await openProject(page, "Alpha Project");
 
   await page.locator("#projsel-btn").focus();
   await page.keyboard.press("Enter");
@@ -128,7 +124,7 @@ test("the selector is fully operable by keyboard, with no mouse involved", async
 test("Escape closes the menu and returns focus to the button", async ({
   page,
 }) => {
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await openProject(page, "Alpha Project");
   await openMenu(page);
   await expect(page.locator("#projsel-menu")).toBeVisible();
 
@@ -153,7 +149,7 @@ test("Escape closes the menu and returns focus to the button", async ({
 test("a project with no checkout is not disabled in the selector menu", async ({
   page,
 }) => {
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await openProject(page, "Alpha Project");
   await openMenu(page);
 
   const item = page.locator("#projsel-menu .projsel-item", {
@@ -169,10 +165,7 @@ test("a project with no checkout is not disabled in the selector menu", async ({
 test("reloading while a project with no checkout is open keeps it open", async ({
   page,
 }) => {
-  await page
-    .locator(".repo-card-name", { hasText: "Gamma Archive" })
-    .click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Gamma Archive");
 
   await page.reload();
 

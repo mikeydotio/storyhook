@@ -1,5 +1,11 @@
 import { test, expect } from "@playwright/test";
-import { cleanUpCreatedStories, deleteStory, projectSlug, seedToken } from "./support";
+import {
+  cleanUpCreatedStories,
+  deleteStory,
+  openProject,
+  projectSlug,
+  seedToken,
+} from "./support";
 
 /**
  * Exercises SH-197's story context menu: right-click (or a keyboard-raised
@@ -22,8 +28,7 @@ test.beforeEach(async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await seedToken(page);
   await page.goto("/");
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
 });
 
 async function createStory(

@@ -70,6 +70,53 @@ export async function projectSlug(
 }
 
 /**
+ * Waits until the board is showing the current project's data, rather than
+ * merely showing the board.
+ *
+ * `selectRepo()` sets `state.data = null`, renders the screen, and *then*
+ * fetches — so `#board-view` becomes visible with no stories, no metadata and
+ * no vocabulary, and every spec that waited only for that was racing the
+ * fetch (SH-222). Losing that race is not a slow assertion, which would
+ * simply retry: the create modal is built **once**, synchronously, from
+ * `meta()` at the moment it opens, so a modal opened in that window has a
+ * Priority select holding nothing but "Default priority" and never
+ * repopulates. `selectOption("critical")` against it then spins out the whole
+ * 15s test timeout with "did not find some options" — the failure SH-223
+ * recorded twice against `board-sort.spec.ts` and once against
+ * `create-story-defaults.spec.ts`, each time on a machine that was busy. The
+ * filter-bar dropdowns (`#fdd-states` and friends) are built from `meta()`
+ * the same way, which is the same trap in `filter-persistence.spec.ts`.
+ *
+ * The predicate is exact rather than a proxy for "some cards showed up".
+ * `renderView()` writes `visible / total` into `#filter-count` only when
+ * `total` is non-zero, and unhides `#empty-msg` only when there is data and
+ * nothing passes the filter. So before data both are false, and after data at
+ * least one is true — including for a project with no stories at all, where
+ * waiting for a card would hang forever.
+ */
+async function waitForBoardData(page: Page): Promise<void> {
+  await page.waitForFunction(() => {
+    const count = document.getElementById("filter-count");
+    const empty = document.getElementById("empty-msg") as HTMLElement | null;
+    return Boolean(count?.textContent) || Boolean(empty && !empty.hidden);
+  });
+}
+
+/**
+ * Opens `name`'s board from the Home screen and waits for its data.
+ *
+ * The one way a spec reaches a board by clicking its card — pinned by
+ * `tests/e2e_harness.rs`, which fails the Rust suite if a spec clicks
+ * `.repo-card-name` itself, because the two lines this replaces are exactly
+ * the ones that look complete and aren't (see `waitForBoardData`).
+ */
+export async function openProject(page: Page, name: string): Promise<void> {
+  await page.locator(".repo-card-name", { hasText: name }).click();
+  await expect(page.locator("#board-view")).toBeVisible();
+  await waitForBoardData(page);
+}
+
+/**
  * Deletes the "todo"-column story titled `title` through the drawer's
  * footer Delete button and the shared delete-confirmation modal (SH-197),
  * and waits for the card to disappear. Was six near-identical copies (one
