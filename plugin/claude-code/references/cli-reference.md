@@ -513,6 +513,8 @@ A closed story still links — the common shape is a merge commit whose body clo
 
 Each run reports why a story that linked did not also move — no claim word, `sync.auto_transition` off, no active state configured, the story is closed, or it is already out of its default state. `story project settings set sync.auto_transition false` stops even a claim from moving a story.
 
+An id naming no story in this project, or a deleted one, links nothing — also reported, as `named but not linked`, rather than dropped silently.
+
 ```bash
 story commit-sync --since 1d
 ```

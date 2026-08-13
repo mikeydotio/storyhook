@@ -577,8 +577,10 @@ fn a_second_run_over_a_closed_story_adds_nothing() {
     assert_eq!(referenced_by_commits_of(&fixture, StoryNo::new(1)).len(), 1);
 }
 
+/// SH-279: a decline is named, not swallowed — the same doctrine SH-178
+/// already applies to a link that landed but did not move its story.
 #[test]
-fn a_commit_naming_a_story_that_does_not_exist_is_skipped() {
+fn a_commit_naming_a_story_that_does_not_exist_is_declined_and_named() {
     let fixture = ServiceFixture::new();
     git_init(&fixture);
     commit(&fixture, "feat: implements SH-404, which nobody filed");
@@ -586,6 +588,68 @@ fn a_commit_naming_a_story_that_does_not_exist_is_skipped() {
     let message = sync(&fixture).expect("a phantom reference is not an error");
     assert!(
         message.contains("linked 0 commits to 0 stories"),
+        "{message}"
+    );
+    assert!(
+        message.contains("named but not linked: SH-404 (no such story)"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_commit_naming_a_deleted_story_is_declined_and_named() {
+    let fixture = ServiceFixture::new();
+    git_init(&fixture);
+    let id = create(&fixture, "will be deleted");
+    StoryService::new(&fixture.ctx())
+        .delete(&id, "duplicate")
+        .expect("deleting it");
+    commit(&fixture, &format!("chore: mentions {id}"));
+
+    let message = sync(&fixture).expect("syncing");
+    assert!(
+        message.contains("linked 0 commits to 0 stories"),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!(
+            "named but not linked: {id} (deleted; restore first with `story reopen <id> --force`)"
+        )),
+        "{message}"
+    );
+    assert!(
+        referenced_by_commits_of(&fixture, StoryNo::new(1)).is_empty(),
+        "a deleted story must not receive a link"
+    );
+}
+
+/// Two declines of the same cause share one report line, batched like every
+/// other reason (`NotMovedReason`'s `by_reason` grouping) — but the restore
+/// hint stays a placeholder rather than naming one of the two ids as if it
+/// were the only one.
+#[test]
+fn two_deleted_stories_share_one_report_line() {
+    let fixture = ServiceFixture::new();
+    git_init(&fixture);
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let first = create(&fixture, "first to go");
+    let second = create(&fixture, "second to go");
+    service.delete(&first, "duplicate").expect("deleting");
+    service.delete(&second, "duplicate").expect("deleting");
+    commit(&fixture, &format!("chore: mentions {first} and {second}"));
+
+    let message = sync(&fixture).expect("syncing");
+    assert!(
+        message.contains(&format!(
+            "named but not linked: {first}, {second} (deleted; restore first with `story reopen <id> --force`)"
+        )),
+        "{message}"
+    );
+    // One line, not two — the point of grouping by reason at all.
+    assert_eq!(
+        message.matches("named but not linked").count(),
+        1,
         "{message}"
     );
 }

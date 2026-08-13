@@ -710,6 +710,10 @@ moving a story:
 
   story project settings set sync.auto_transition false
 
+An id that names no story in this project, or a story that has been
+deleted, links nothing at all — also reported, as 'named but not
+linked', rather than dropped without a trace.
+
 When to use:
   After git operations (commit, merge, pull) to link code changes to
   stories. Safe to run repeatedly — skips already-synced commits.
