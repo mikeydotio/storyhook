@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { seedToken } from "./support";
+import { openProject, seedToken } from "./support";
 
 /**
  * SH-145: a dashboard tab must not stay silently stale forever.
@@ -40,8 +40,7 @@ test("a stale connection is replaced without a page reload", async ({
   await page.goto(
     `/?sseStaleAfterMs=${staleAfterMs}&sseWatchdogIntervalMs=${watchdogIntervalMs}`,
   );
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
   await expect(page.locator("#conn-text")).toHaveText("Live");
 
   // Bootstrap's own fetches (the initial page load, `onopen` of the first

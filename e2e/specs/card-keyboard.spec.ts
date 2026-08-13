@@ -2,6 +2,7 @@ import { test, expect } from "@playwright/test";
 import {
   cleanUpCreatedStories,
   deleteStory,
+  openProject,
   projectSlug,
   requiredEnv,
   seedToken,
@@ -30,8 +31,7 @@ const DASHBOARD_TOKEN = requiredEnv("DASHBOARD_TOKEN");
 test.beforeEach(async ({ page }) => {
   await seedToken(page);
   await page.goto("/");
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
 });
 
 /** `priority` defaults to unset. Alpha's own seeded stories (ready, default

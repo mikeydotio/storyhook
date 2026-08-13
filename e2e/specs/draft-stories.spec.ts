@@ -1,5 +1,10 @@
 import { test, expect } from "@playwright/test";
-import { cleanUpCreatedStories, deleteStory, seedToken } from "./support";
+import {
+  cleanUpCreatedStories,
+  deleteStory,
+  openProject,
+  seedToken,
+} from "./support";
 
 /**
  * Exercises SH-175: the New Story modal's redesigned footer (Discard
@@ -18,8 +23,7 @@ cleanUpCreatedStories("Alpha Project");
 test.beforeEach(async ({ page }) => {
   await seedToken(page);
   await page.goto("/");
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
 });
 
 test("the New Story modal shows Discard Draft, Save Draft and Create Story, in that order", async ({

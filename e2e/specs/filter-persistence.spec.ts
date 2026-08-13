@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { seedToken } from "./support";
+import { openProject, seedToken } from "./support";
 
 /**
  * Exercises SH-155: the filter bar and sort column carry over across a
@@ -42,7 +42,7 @@ function switchToProject(page: import("@playwright/test").Page, name: string) {
 test("a text search carries over across a project switch", async ({
   page,
 }) => {
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await openProject(page, "Alpha Project");
   await page.locator("#search-input").fill("flow");
   await expect(
     page.locator(".card-title", { hasText: "Wire up the auth flow" }),
@@ -65,7 +65,7 @@ test("a text search carries over across a project switch", async ({
 test("Clear filters wipes the carried-over search for the next switch too", async ({
   page,
 }) => {
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await openProject(page, "Alpha Project");
   await page.locator("#search-input").fill("flow");
 
   await switchToProject(page, "Beta Project");
@@ -87,7 +87,7 @@ test("Clear filters wipes the carried-over search for the next switch too", asyn
 test("a state filter absent from the next project is pruned, with a toast, not silently hiding everything", async ({
   page,
 }) => {
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await openProject(page, "Alpha Project");
 
   await page.locator("#fdd-states .fdd-btn").click();
   await page
@@ -117,7 +117,7 @@ test("a state filter absent from the next project is pruned, with a toast, not s
 });
 
 test("sort order carries over across a project switch", async ({ page }) => {
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await openProject(page, "Alpha Project");
   await page.locator('#view-toggle button[data-view="list"]').click();
   await page.locator('thead th[data-col="priority"]').click();
   await expect(page.locator("#sort-priority")).toHaveText("▲");
@@ -130,7 +130,7 @@ test("sort order carries over across a project switch", async ({ page }) => {
 test("filters survive a page reload on the same project", async ({
   page,
 }) => {
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await openProject(page, "Alpha Project");
   await page.locator("#search-input").fill("flow");
 
   await page.reload();

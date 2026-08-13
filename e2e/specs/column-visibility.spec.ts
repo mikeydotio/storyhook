@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { seedToken } from "./support";
+import { openProject, seedToken } from "./support";
 
 /**
  * Exercises SH-162: a "Columns" filter-bar dropdown picks which board
@@ -42,7 +42,7 @@ function switchToProject(page: import("@playwright/test").Page, name: string) {
 test("hiding a column via the Columns dropdown removes its cards without changing the filter count", async ({
   page,
 }) => {
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await openProject(page, "Alpha Project");
   await expect(page.locator("#filter-count")).toHaveText("2 / 2");
 
   await page.locator("#fdd-columns .fdd-btn").click();
@@ -74,7 +74,7 @@ test("hiding a column via the Columns dropdown removes its cards without changin
 test("Hide empty columns collapses columns with no visible cards", async ({
   page,
 }) => {
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await openProject(page, "Alpha Project");
 
   await expect(page.locator('.column[data-state="in-progress"]')).toHaveCount(1);
   await page.locator("#toggle-hide-empty-columns").check();
@@ -98,7 +98,7 @@ test("Hide empty columns collapses columns with no visible cards", async ({
 test("a hidden column persists across a reload on the same project", async ({
   page,
 }) => {
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await openProject(page, "Alpha Project");
   await page.locator("#fdd-columns .fdd-btn").click();
   await page
     .locator("#fdd-columns .fdd-option", { hasText: "todo" })
@@ -116,7 +116,7 @@ test("a hidden column persists across a reload on the same project", async ({
 test("a hidden column absent from the next project is pruned, with a toast", async ({
   page,
 }) => {
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await openProject(page, "Alpha Project");
   await page.locator("#fdd-columns .fdd-btn").click();
   await page
     .locator("#fdd-columns .fdd-option", { hasText: "review" })
@@ -139,7 +139,7 @@ test("a hidden column absent from the next project is pruned, with a toast", asy
 test("Hide empty columns is a durable preference that carries across a project switch", async ({
   page,
 }) => {
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await openProject(page, "Alpha Project");
   await page.locator("#toggle-hide-empty-columns").check();
 
   await switchToProject(page, "Beta Project");

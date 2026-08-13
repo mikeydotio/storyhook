@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { seedToken } from "./support";
+import { openProject, seedToken } from "./support";
 
 /**
  * The topbar's `#subtitle`, per screen (SH-234).
@@ -25,8 +25,7 @@ test.beforeEach(async ({ page }) => {
 test("a board carries no story-count summary in the topbar", async ({
   page,
 }) => {
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
   // The cards are on screen, so the data the label was rendered from has
   // arrived — this is the moment the counts would have appeared, not a
   // window before them.
@@ -48,7 +47,7 @@ test("Home still names how many projects there are", async ({ page }) => {
 test("returning to Home from a board restores its subtitle", async ({
   page,
 }) => {
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await openProject(page, "Alpha Project");
   await expect(page.locator("#subtitle")).toBeHidden();
 
   await page.locator("#home-btn").click();

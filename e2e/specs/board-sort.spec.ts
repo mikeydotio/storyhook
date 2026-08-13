@@ -1,5 +1,10 @@
 import { test, expect } from "@playwright/test";
-import { cleanUpCreatedStories, deleteStory, seedToken } from "./support";
+import {
+  cleanUpCreatedStories,
+  deleteStory,
+  openProject,
+  seedToken,
+} from "./support";
 
 /**
  * Exercises SH-128: two glyph-based buttons in the filter bar ("Priority",
@@ -27,8 +32,7 @@ cleanUpCreatedStories("Alpha Project");
 test.beforeEach(async ({ page }) => {
   await seedToken(page);
   await page.goto("/");
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
 });
 
 async function createStory(
