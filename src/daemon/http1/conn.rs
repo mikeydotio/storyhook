@@ -552,20 +552,30 @@ where
 
 /// Accepts connections from `listener` until it errors, handing each one to
 /// its own thread running `handler` for as long as the connection stays
-/// alive. A connection past `slots`'s ceiling is answered `503` and closed
-/// on the accept thread itself, *without* a thread ever being spawned for
-/// it — the bound SH-177 exists to add over SH-172's per-request threads,
-/// which had no ceiling at all.
-pub fn serve_connections<F>(
+/// alive. Two refusals happen on the accept thread itself, *without* a
+/// thread ever being spawned for the connection: a peer `admit` refuses
+/// (`403`, SH-255 — off-tailnet refusal, checked first so a peer this
+/// daemon should never talk to cannot even consume a capacity slot) and a
+/// connection past `slots`'s ceiling (`503`, SH-177's bound over SH-172's
+/// per-request threads, which had no ceiling at all).
+///
+/// `admit` is deliberately just `SocketAddr -> bool`, not a richer type this
+/// module would have to understand: `conn.rs` knows nothing about
+/// loopback/tailnet/CGNAT, and that ignorance is structural (see this
+/// module's own doc comment) — the caller decides the policy and any
+/// refusal logging it wants from *why*; this loop only ever needs *whether*.
+pub fn serve_connections<F, A>(
     listener: TcpListener,
     limits: Limits,
     slots: Arc<ConnectionSlots>,
+    admit: A,
     handler: F,
 ) where
     F: Fn(Request) + Clone + Send + 'static,
+    A: Fn(std::net::SocketAddr) -> bool,
 {
     loop {
-        let (stream, _addr) = match listener.accept() {
+        let (stream, addr) = match listener.accept() {
             Ok(accepted) => accepted,
             Err(e) => {
                 eprintln!(
@@ -575,6 +585,11 @@ pub fn serve_connections<F>(
                 return;
             }
         };
+        if !admit(addr) {
+            let mut stream = stream;
+            refuse(&mut stream, REFUSAL_WRITE_BUDGET, 403, None);
+            continue;
+        }
         match slots.try_acquire() {
             Some(permit) => {
                 let handler = handler.clone();
@@ -829,5 +844,48 @@ mod tests {
             }
         }
         assert!(saw_retry_after, "a refusal should carry Retry-After");
+    }
+
+    /// End-to-end through the real accept loop, not just `refuse()` called
+    /// directly: a peer the `admit` closure refuses gets a `403` on the wire
+    /// and never reaches `handler` at all — no thread spawned, no `Request`
+    /// built, the same shape [`ConnectionSlots`]'s own over-cap refusal
+    /// already has (SH-255, off-tailnet refusal's wiring into this module).
+    #[test]
+    fn a_peer_the_admit_closure_refuses_never_reaches_the_handler() {
+        let listener = listen();
+        let addr = listener.local_addr().unwrap();
+        let limits = Limits::for_tests(Duration::from_secs(5));
+        let slots = ConnectionSlots::new(4);
+        let handler_calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&handler_calls);
+
+        thread::spawn(move || {
+            serve_connections(
+                listener,
+                limits,
+                slots,
+                |_peer_addr| false,
+                move |_request: Request| {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                },
+            );
+        });
+
+        let mut client = StdTcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut reader = BufReader::new(&mut client);
+        let mut status_line = String::new();
+        reader.read_line(&mut status_line).unwrap();
+        assert!(status_line.starts_with("HTTP/1.1 403"), "{status_line}");
+
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            handler_calls.load(Ordering::SeqCst),
+            0,
+            "a refused peer must never reach the request handler"
+        );
     }
 }

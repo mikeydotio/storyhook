@@ -503,9 +503,10 @@ that way is rejected in review.
 - **SH-254** — a server-issued scoped capability, so the browser stops holding the master
   token. `POST /handoff`'s redemption handler is the seam; revocation and
   construction-enforced scope are requirements.
-- **SH-255** — reassess SH-250's read exemption now that a handoff exists. The six
-  conjuncts now buy only bookmarks and hand-typed URLs, while the permanently-widened read
-  surface and the unclosable bare-nginx residual remain.
+- **SH-255** — reassess SH-250's read exemption now that a handoff exists. **Shipped, and
+  the direction changed mid-story**: rather than adjudicate the six conjuncts, SH-255
+  replaced the exemption itself, along with the capability tier SH-254 shipped and
+  `Authority::Public`/`Session` — see "As built — SH-255" below.
 
 ## As built — SH-254: the browser stops holding the master token
 
@@ -698,3 +699,170 @@ rather than done, as the verdict itself proposed.
 - `tests/handoff_endpoint.rs` — redemption answers with a capability and never the token.
 - `e2e/specs/handoff.spec.ts` — a real Chrome tab holds a 32-hex session and not the token,
   writes without prompting, and meets a disabled control with an explanation.
+
+## As built — SH-255: one credential, no exemption, the tailnet enforced twice
+
+SH-254's capability tier lasted one story. Its own "As built" section above catalogued four
+credential concepts already in the daemon by then — SH-250's tokenless loopback read
+exemption, `Authority::Public`/`Session`, and the scoped session capability itself — and
+named the residual each one carried. SH-255 does not narrow one of them; it deletes all
+three and replaces them with a single concept: a **named token**, minted by `story token
+new`, that authenticates everything the dashboard does — reads, project/story CRUD,
+dispatch — on every listener, with no exemption anywhere. Design of record: the council
+verdict comment on SH-255 (`.council/sh-255-named-token-model/`, local only).
+
+### What replaced what
+
+| Gone | Replaced by |
+|---|---|
+| SH-250's tokenless loopback read exemption | Nothing. Every read needs a token like every write always has. |
+| `Authority::Public`/`Session`/`MasterToken`, and `src/api/routes.rs::authority()` | Nothing — see "Deviation," below. |
+| SH-254's scoped session capability, `session.rs`, `X-Storyhook-Session` | A named token, full stop. There is no narrower tier a dispatch button or a project-CRUD route can be held to any more. |
+| `story web revoke`/`story web status`'s session-counting meaning | `story token new \| list \| revoke <name>` |
+| `?token=` on `GET /api/events` | Nothing to replace it with: a same-origin `EventSource` carries the cookie automatically. |
+
+### The one credential, and how it travels
+
+A named token is 32 bytes of OS CSPRNG material (not a v4 UUID — see the token registry's
+own module doc for why that distinction is load-bearing given this design's "256-bit
+secret, not a guessable password" justification for skipping a salt), stored hashed
+(SHA-256, unsalted, deliberately) in a 0600 `tokens.json` sidecar under `daemon_state_dir()`
+— not the SQLite store, decided in the council's runoff after the seat proposing SQLite
+conceded once the accept thread's actual write paths (`nested_lane` vs. the bounded
+dispatcher pool) were checked directly against the code. 30-day default lifetime, revocable,
+survives a daemon restart.
+
+It authenticates a request two ways, held to different standards:
+
+- **`X-Storyhook-Token`** — explicit. Trusted outright; a page cannot forge a header on a
+  plain navigation, and a cross-origin `fetch` that tries triggers a CORS preflight this
+  daemon never answers.
+- **The `storyhook_<StoreLocation::key()>` cookie** — ambient, `HttpOnly`, `SameSite=Strict`,
+  host-only (no `Domain=` — `ts.net` sits under the Public Suffix List, so a `Domain=` cookie
+  would broadcast to every tailnet peer). Because `SameSite=Strict` alone does not
+  distinguish this dashboard's own tab from any other tailnet peer's — cookies ignore port,
+  and every peer under one tailnet is same-site with every other — a **read** authenticated
+  by the cookie additionally requires the browser-supplied `Sec-Fetch-Site: same-origin`
+  header, which no page can forge or suppress. A **mutation** needs no extra check: it has
+  already passed the CSRF/DNS-rebinding guard (`X-Storyhook` + trusted `Host`), which is what
+  makes the cookie sufficient on its own for a write.
+
+`story web open`'s coupon still exists (SH-251's transport survives), but what it buys
+changed a second time: redemption now answers `204` with `Set-Cookie` and no body — the raw
+secret exists in exactly one place page JavaScript could ever have reached it, which is
+nowhere — rather than a JSON body the page read once and stored itself. The handed-off token
+is its own named, individually-revocable record with a shorter TTL (24h) than one minted by
+hand, since it was granted by a click rather than a deliberate `story token new`.
+
+### Deviation from the verdict as decided
+
+The work plan's own text said "collapse `Authority` to two levels." What shipped collapsed
+it to zero: `src/api/routes.rs`'s `Authority` enum, `authority()`, and `project_authority()`
+are deleted outright, not narrowed. The reason is structural rather than a style choice —
+`admission()` no longer consults per-route classification *at all*; every `/api/**` route
+answers behind one uniform check (a token, full stop), so there was nothing left for a
+two-level table to express. `routes.rs` still exists, for `classify()`'s routing job alone
+(`rest.rs` still needs to know which handler answers a path), but it no longer has an
+authority-classification job of any kind. `tests/route_authority.rs`'s own module doc records
+this directly: *"the scope tier they served no longer exists... there is nothing left to
+classify per-route."*
+
+### Off-tailnet refusal
+
+The council's fourth decision required both mechanisms, composed, never either alone:
+
+- **Bind-time** (`Listener::adopt`, `src/daemon/serve.rs`): a socket that bound anywhere
+  other than loopback or the tailnet IP `tailnet_identity()` just probed is refused outright
+  — the daemon will not construct a `Listener` for it, so "nothing is ever bound to `0.0.0.0`
+  or a LAN address" (this document's own long-standing claim) is now a property `adopt`
+  enforces, not merely a fact about its two callers' good behavior. Neither caller can
+  currently trigger the refusal — both only ever pass an address that already matches — which
+  is stated plainly rather than implied as coverage: this is defense-in-depth against a third
+  caller getting it wrong, not a fix for an exploitable gap.
+- **Accept-time** (`peer_admitted`, same file): a pure function of two `SocketAddr`s — the
+  bind address and the peer's — with zero syscalls, zero locks, and zero shelling out to
+  `tailscale`. The loopback listener admits only a loopback peer; the tailnet listener admits
+  loopback, `bind_addr` itself as a peer address (the OS does not always route a
+  locally-owned destination through `lo`, so a same-machine caller can arrive with the bind
+  address as its own source rather than as loopback — found the hard way, by a real test
+  failure: `tests/tailnet_rebind.rs`'s SH-146 self-heal test connects to a real local IP it
+  found by routing lookup, not a genuine Tailscale identity, and the first cut of this
+  function refused it), plus Tailscale's own CGNAT range (`100.64.0.0/10`) and IPv6 ULA range
+  (`fd7a:115c:a1e0::/48`), named as constants rather than resolved by any live probe.
+  Enforced in `http1::conn::serve_connections`, on the accept thread, before a thread is
+  ever spawned or a `Request` ever built — the same shape [`ConnectionSlots`]'s
+  over-capacity refusal already had, checked first so a peer this daemon should never talk
+  to cannot even consume a capacity slot.
+
+The zero-shell-out constraint is not a preference: `tailnet_reprobe`'s own doc comment
+already forbids tying a `tailscale` probe to request arrival, because doing so would let any
+peer that can reach a listener force repeated subprocess spawns — a self-inflicted local DoS
+(SH-186). `peer_admitted` cannot reopen that hole no matter where it is called from, because
+it has no code path that could shell out at all.
+
+The SH-146 late-rebind window needs no special case: `trusted_hosts.add_bound(...)` commits
+strictly before the new listener's `accept_loop` is spawned, so no connection is ever handed
+to `peer_admitted` (or anything else) before the allowlist already reflects the bind that
+produced it.
+
+**Residual, stated rather than implied away**: a subnet router, an exit node, or `iptables`
+forwarding can put genuinely off-tailnet traffic inside the ranges above. Tailscale ACLs, not
+this daemon, are the real membership authority — `peer_admitted` enforces "arrived via an
+address shaped like your tailnet," not "is actually a device you added to it." Recorded in
+the README's Network exposure section as well.
+
+### Residuals carried forward, and what changed under them
+
+- **SH-251's coupon residuals are unchanged in kind, and the theft window widened.** The
+  coupon still lands in Chrome's on-disk history and still crosses `open(1)` argv. What it
+  buys is now a 24-hour, restart-surviving named token rather than a capability that died
+  with the daemon or (before SH-254) the master token itself — so a stolen coupon is worth
+  more for longer than it was under SH-254, offset by being its own individually-revocable
+  record (`story token revoke handoff-<prefix>`) rather than something that could only be
+  ended by revoking every session at once.
+- **`STORYHOOK_WEB_TRUSTED_HOSTS` no longer disables anything.** Under SH-254 a configured
+  proxy allowlist withdrew the read exemption and the coupon's locality check together,
+  degrading the whole dashboard to the master-token modal. SH-255 deletes the exemption it
+  used to withdraw, so the variable's only remaining job — widening the `Host` allowlist for
+  a proxied mutation — is unaffected by whether one is declared. `tests/proxy_trusted_hosts.rs`
+  pins this directly.
+- **Browser storage and `Sec-Fetch-Site` behavior are still unmeasured by any automated
+  suite.** SH-251's standing rule against inferring a browser-storage or browser-header claim
+  from a green suite applies unchanged: whether `SameSite=Strict` survives `story web open`'s
+  navigation, and whether `Sec-Fetch-Site` arrives as expected, are asserted in this document
+  and in code comments by citation to RFC 6265bis and to Tailscale's own documentation, not
+  by an automated test that could regress silently. **This is the merge gate SH-255 has not
+  yet cleared** — a hand-run verification against real Chrome and Safari, per the council's
+  fifth decision — and it remains outstanding as of this section being written.
+- **A same-uid process still gains nothing from this.** Unchanged from SH-254's own residual:
+  the portfile is mode 0600 and carries the master token, so any process running as this user
+  already has everything a named token could offer.
+
+### Verification
+
+- `src/api/tokens.rs` unit tests — mint/list/revoke/validate, the sidecar's crash-durability
+  (a `SIGKILL` between an answered revoke and its durable write must not resurrect the
+  token), fail-closed on a corrupt `tokens.json`, the clock seam (a backwards jump cannot
+  revive a revoked token, and can only modestly extend an unrevoked one across a restart).
+- `src/api/admission.rs` unit tests — the full truth table for a header-borne and a
+  cookie-borne named token, `Sec-Fetch-Site` required on a cookie-authenticated read and not
+  a mutation, a cookie under the wrong name never parsed as a credential, a revoked token
+  refused.
+- `src/daemon/serve.rs` unit tests — `Listener::adopt` refuses a wildcard bind and a
+  mismatched tailnet bind, admits a matching one; `peer_admitted`'s full range table at its
+  exact edges (the CGNAT and ULA boundaries, one address outside each side).
+- `src/daemon/http1/conn.rs` unit tests — a peer the `admit` closure refuses is answered
+  `403` on the wire and never reaches the request handler, mirroring the existing
+  over-capacity refusal's own end-to-end test.
+- `tests/route_authority.rs` — route-table coverage only now; the authority-table guards
+  above are gone along with the table they guarded.
+- `tests/handoff_endpoint.rs` — the five-conjunct redemption gate unchanged; `locality_is_
+  derived_only_where_it_was_decided_it_should_be` pins `local_request`'s two remaining
+  callers.
+- `tests/proxy_trusted_hosts.rs`, `tests/web_test.rs` — every exemption-shaped assertion
+  inverted: a tokenless read is refused on every listener regardless of `Host`, a declared
+  reverse proxy changes nothing about that outcome.
+- `e2e/specs/loopback-requires-a-token.spec.ts`, `handoff.spec.ts`, `dispatch.spec.ts` — a
+  fresh tab is refused until it presents a token; a redeemed coupon's cookie is invisible to
+  `document.cookie`; a handed-off tab's Dispatch button is fully enabled, not held to a
+  narrower scope that no longer exists.
