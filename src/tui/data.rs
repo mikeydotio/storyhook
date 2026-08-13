@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::cli::Invocation;
-use crate::domain::{Member, StateDef, StorySnapshot, SuperState};
+use crate::domain::{self, Member, StateDef, StorySnapshot, SuperState};
 use crate::error::AppError;
 use crate::invoke::{InvokeRequest, Invoker};
 use crate::output::{ProjectSnapshotView, Response};
@@ -19,8 +19,59 @@ pub struct DataStore {
     pub states: Vec<StateDef>,
     pub state_map: BTreeMap<String, StateDef>,
     pub stories: Vec<StorySnapshot>,
+    /// The project's unpublished drafts, carried beside `stories` rather than
+    /// in it.
+    ///
+    /// The TUI never *displays* one — the snapshot deliberately keeps drafts
+    /// out of `stories` (SH-175). They are here because a draft can still be
+    /// somebody's blocker, and a `blocked-by` edge pointing at a story the
+    /// index cannot answer for reads as "not blocking" ([`domain::is_ready`]).
+    /// Without them the board would call a story ready that the CLI calls
+    /// blocked — the same disagreement SH-240 is about, one indirection out.
+    pub drafts: Vec<StorySnapshot>,
     pub prefix: String,
     pub members: Vec<Member>,
+}
+
+/// The cross-story context the readiness predicates need, resolved once for a
+/// project a caller already holds.
+///
+/// Exists so that "is this story ready?" cannot be asked with a story list
+/// from one project and a state catalog from another, and so that the answer
+/// stays [`domain::is_ready`]'s — this type routes to it, it does not restate
+/// it. A `DataStore` builds one with [`DataStore::readiness`]; the index
+/// borrows, so building it is pointers rather than a clone of the project.
+pub struct Readiness<'a> {
+    stories: BTreeMap<&'a str, &'a StorySnapshot>,
+    active: Option<StateDef>,
+}
+
+impl<'a> Readiness<'a> {
+    /// Indexes `stories` by id and resolves the project's active state — the
+    /// one a claim moves a story into ([`domain::active_state`]).
+    pub fn new(stories: impl IntoIterator<Item = &'a StorySnapshot>, states: &[StateDef]) -> Self {
+        Self {
+            stories: stories
+                .into_iter()
+                .map(|story| (story.id.as_str(), story))
+                .collect(),
+            active: domain::active_state(states),
+        }
+    }
+
+    /// Whether `story` is unblocked — nothing is stopping work on it.
+    /// Says nothing about whether someone is already doing that work; that is
+    /// [`Self::is_claimable`], and `story list --blocked` draws the same
+    /// distinction.
+    pub fn is_ready(&self, story: &StorySnapshot) -> bool {
+        domain::is_ready(story, &self.stories)
+    }
+
+    /// Whether `story` is ready *and* unclaimed — what "ready to pick up"
+    /// means to `story next` and `story list --ready`.
+    pub fn is_claimable(&self, story: &StorySnapshot) -> bool {
+        domain::is_claimable(story, &self.stories, self.active.as_ref())
+    }
 }
 
 impl DataStore {
@@ -46,9 +97,16 @@ impl DataStore {
             states: view.states,
             state_map,
             stories: view.stories,
+            drafts: view.drafts,
             prefix: view.prefix,
             members: view.members,
         }
+    }
+
+    /// The readiness context for this project: every story it carries,
+    /// drafts included, indexed by id, plus the active state.
+    pub fn readiness(&self) -> Readiness<'_> {
+        Readiness::new(self.stories.iter().chain(self.drafts.iter()), &self.states)
     }
 
     /// Construct a DataStore from pre-built data, for testing without filesystem.
@@ -64,9 +122,18 @@ impl DataStore {
             states,
             state_map,
             stories,
+            drafts: Vec::new(),
             prefix,
             members,
         }
+    }
+
+    /// The same, with drafts — only a test that asks what a *draft* blocker
+    /// does needs them, so they stay off the main constructor's signature.
+    #[cfg(test)]
+    pub fn with_drafts(mut self, drafts: Vec<StorySnapshot>) -> Self {
+        self.drafts = drafts;
+        self
     }
 
     /// Stories grouped by state, in state definition order.
