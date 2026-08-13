@@ -128,6 +128,23 @@ Standing rules for every wave:
   for update skew. Widening the *pattern* would have been the wrong repair twice over: the
   version changes under running sessions, and `.` re-opens SH-226. Ask what a process **is**,
   not what it is spelled.
+- **A test that needs a store the guards call "real" asks the harness for one, never the
+  checkout** (SH-258). `storyhook_test_support::non_temporary_dir` resolves a fixture root
+  `service::project::is_under_temp` will reject, independently of where the checkout sits —
+  `$STORYHOOK_TEST_REAL_ROOT`, then a directory beside the running test binary, then
+  `$HOME/.cache/storyhook/test-real-fixtures`, verified at each rung with the production
+  predicate. Four sites used to infer "not temporary" from `CARGO_MANIFEST_DIR` or
+  `CARGO_TARGET_TMPDIR` instead — the checkout's own `target/` — which is silently false from
+  a checkout that is itself temp-rooted: a fresh disposable clone, the correct tool for
+  cutting a release or reproducing against pristine `origin/main`. From there every one of
+  those guards read both sides as throwaway, went correctly inert, and the tests expecting a
+  refusal failed with messages naming neither the store nor the cause. Only one test read as
+  broken (`left: 201, right: 201`) because `cargo test` fail-fasts at the first failing
+  target; the true extent was three guards across four files, fourteen tests, found by
+  reproducing with `CARGO_TARGET_DIR` pointed under `/private/tmp` before writing the fix.
+  `tests/store_isolation.rs::nothing_outside_real_store_rs_re_infers_a_real_store_from_the_
+  checkout` fences the pattern the same way the daemon-containment scan does — derived over
+  `git ls-files`, not a hand-maintained list of the sites that do this.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes

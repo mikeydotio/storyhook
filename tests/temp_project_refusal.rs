@@ -17,22 +17,19 @@
 //! temporary project in a temporary store is what a correct test builds, and
 //! this project's own suite does it ~1977 times a run.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use storyhook::store::{ReadOps, SqliteStore, Store};
-use storyhook_test_support::{daemon_containment, scratch_dir, story_binary};
+use storyhook_test_support::{daemon_containment, non_temporary_dir, scratch_dir, story_binary};
 
 /// A data home that is **not** under any temporary directory.
 ///
-/// `CARGO_TARGET_TMPDIR` lives under `target/`, inside the checkout — which is
-/// the point. Every other scratch path this harness can reach is deliberately
-/// temporary, and a test for "the store is a real one" cannot be written with
-/// one of those.
-fn non_temporary_data_home(label: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(label);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("creating a non-temporary data home");
-    dir
+/// [`non_temporary_dir`] resolves this independently of the checkout (SH-258)
+/// rather than by inference from where the checkout happens to sit — the
+/// premise `CARGO_TARGET_TMPDIR` used to stand in for, and which was silently
+/// false whenever the checkout itself was temp-rooted.
+fn non_temporary_data_home(label: &str) -> std::path::PathBuf {
+    non_temporary_dir(label)
 }
 
 /// Runs `story init` in `cwd` against `data_home`, with nothing inherited.

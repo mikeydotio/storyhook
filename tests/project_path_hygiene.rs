@@ -19,23 +19,22 @@
 //! owns the origin, because R4 is explicit that anything else is reported and
 //! never guessed at.
 //!
-//! Everything runs against a data home under `CARGO_TARGET_TMPDIR`, which is
-//! inside the checkout rather than under any temporary directory. That is
-//! deliberate twice over: the catalog audit is deliberately silent in a
-//! throwaway store (a fixture that has vanished is not a finding), and project
-//! creation is refused for a temporary path in a real store, so the fixtures
-//! have to be real paths too.
+//! Everything runs against a data home [`non_temporary_dir`] resolves as
+//! non-temporary, independently of the checkout (SH-258). That is deliberate
+//! twice over: the catalog audit is deliberately silent in a throwaway store
+//! (a fixture that has vanished is not a finding), and project creation is
+//! refused for a temporary path in a real store, so the fixtures have to be
+//! real paths too — including from a checkout that is itself temp-rooted.
 
 use std::path::{Path, PathBuf};
 
-use storyhook_test_support::assert_selection_is_not_inherited;
+use storyhook_test_support::{assert_selection_is_not_inherited, non_temporary_dir};
 
-/// A directory under `target/`, which is not a temporary directory.
+/// A directory the store guards classify as **not** temporary.
 fn real_dir(label: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(label);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("creating a fixture directory");
-    dir.canonicalize().expect("canonicalizing a fixture")
+    non_temporary_dir(label)
+        .canonicalize()
+        .expect("canonicalizing a fixture")
 }
 
 fn story(cwd: &Path, data_home: &Path, args: &[&str]) -> std::process::Output {
@@ -62,11 +61,12 @@ fn stdout(out: &std::process::Output) -> String {
 /// A data home, a persistent project to run commands from, and a second
 /// project that the test is free to delete or move.
 ///
-/// The working directory matters more than it looks. `CARGO_TARGET_TMPDIR` is
-/// inside this checkout, and project resolution walks *up* from the working
-/// directory — so a command run from a bare directory under `target/` resolves
-/// storyhook's own pointer file and reports on storyhook. Every command below
-/// therefore runs from a directory with a pointer file of its own.
+/// The working directory matters more than it looks. `non_temporary_dir`'s
+/// usual choice of base is still inside this checkout (`target/`), and project
+/// resolution walks *up* from the working directory — so a command run from a
+/// bare directory under `target/` resolves storyhook's own pointer file and
+/// reports on storyhook. Every command below therefore runs from a directory
+/// with a pointer file of its own.
 ///
 /// That sentence used to be the whole defence, and a convention is one forgotten
 /// `project new` from silence — the failure would be a green test asserting

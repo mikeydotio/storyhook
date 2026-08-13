@@ -342,11 +342,13 @@ const POINTER: &str = ".storyhook.toml";
 /// against the wrong tracker.
 ///
 /// This is not hypothetical. `tests/project_path_hygiene.rs` builds its
-/// fixtures under `CARGO_TARGET_TMPDIR`, which is `target/` inside this
-/// checkout, and storyhook's own committed `.storyhook.toml` is four levels
-/// above it. That file defended itself in prose — *"every command below
-/// therefore runs from a directory with a pointer file of its own"* — which is
-/// a convention, and a convention is one forgotten `project new` from silence.
+/// fixtures under `target/` inside this checkout (today, via
+/// [`crate::non_temporary_dir`]; originally `CARGO_TARGET_TMPDIR` directly,
+/// before SH-258), and storyhook's own committed `.storyhook.toml` is four
+/// levels above it. That file defended itself in prose — *"every command
+/// below therefore runs from a directory with a pointer file of its own"* —
+/// which is a convention, and a convention is one forgotten `project new` from
+/// silence.
 ///
 /// The predicate is deliberately an **either**, because both shapes are
 /// legitimate: a checkout that carries its own pointer selects explicitly, and

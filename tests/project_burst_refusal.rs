@@ -18,18 +18,18 @@
 
 use std::path::{Path, PathBuf};
 
-use storyhook_test_support::{TestEnv, daemon_containment, scratch_dir, story_binary};
+use storyhook_test_support::{
+    TestEnv, daemon_containment, non_temporary_dir, scratch_dir, story_binary,
+};
 
 /// A data home that is **not** under any temporary directory.
 ///
-/// Same helper as `temp_project_refusal.rs`'s, and the same reason:
-/// `CARGO_TARGET_TMPDIR` lives under `target/`, inside the checkout, so a
-/// store built here is the "real store" case this guard exists for.
+/// Same helper as `temp_project_refusal.rs`'s: [`non_temporary_dir`] resolves
+/// this independently of the checkout (SH-258), rather than inferring it from
+/// `CARGO_TARGET_TMPDIR`, which is silently false whenever the checkout itself
+/// is temp-rooted — exactly the case this guard exists for.
 fn non_temporary_data_home(label: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(label);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("creating a non-temporary data home");
-    dir
+    non_temporary_dir(label)
 }
 
 /// Runs `story project new --prefix SH --name <name> --no-attach` against
