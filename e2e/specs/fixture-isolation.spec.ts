@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import {
   cleanUpCreatedStories,
+  openProject,
   projectSlug,
   requiredEnv,
   seedToken,
@@ -31,8 +32,7 @@ const STRAY = "SH-245 stray — never cleaned up by its own test";
 test.beforeEach(async ({ page }) => {
   await seedToken(page);
   await page.goto("/");
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
-  await expect(page.locator("#board-view")).toBeVisible();
+  await openProject(page, "Alpha Project");
 });
 
 test("a test can end without deleting the story it created", async ({
