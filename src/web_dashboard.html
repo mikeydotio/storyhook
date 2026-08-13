@@ -851,6 +851,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     100% { box-shadow: var(--shadow-sm); }
   }
 
+  /* SH-203's cleared-blocker dwell: unlike every other flash-* rule in
+     this block, the dwell itself (dwellingBlockerIds(), populateCard())
+     is not gated behind this media query -- it is information (which
+     blocker cleared), not decoration, so it stays under reduced motion.
+     Only this pulse, the decorative half, drops. Reuses pulse-success
+     rather than a near-duplicate keyframe: the light is already its
+     CLOSED colour by the time this plays (stateColor's super_state ===
+     "CLOSED" anchor), so the halo pulsing the same green is the same
+     "this turned green" statement the board's own flash-ready makes. */
+  .blocker-cleared .story-light { animation: pulse-success 0.9s ease-out; }
+
   /* Neutral "this changed" flash for a home repo card (a change in
      aggregate counts, not any one field, so no single field color to key
      off of the way the board's flash-* classes do). */
@@ -1722,6 +1733,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
             pendingAnimations.entered.length || pendingAnimations.exited.length ||
             pendingAnimations.moved.length || Object.keys(pendingAnimations.changed).length
           ));
+          // SH-203 consumer 2's cleared-blocker dwell: same "diff before
+          // replacing" timing as pendingAnimations above, and the same
+          // reason -- recordClearedBlockers needs both snapshots, not
+          // just the fresh one. `foundClearance` decides whether a
+          // follow-up render is worth scheduling once the dwell elapses
+          // (below); populateCard() itself reads the ledger on every
+          // render regardless, so a render this tick already shows it.
+          var foundClearance = recordClearedBlockers(state.data, parsed, Date.now());
           state.data = parsed;
           state.lastFetchAt = Date.now();
           state.fetchOk = true;
@@ -1734,6 +1753,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           renderAll();
           if (hasChanges && state.drawerId) renderDrawer();
           if (isFirstLoadForRepo) consumeDeepLinkStory();
+          // Nothing else re-renders once the dwell window closes (no
+          // further fetch is guaranteed to land exactly then) -- one
+          // extra tick, timed just past the ledger entry's own expiry, so
+          // the cleared blocker's card drops it instead of it lingering
+          // until the next unrelated update happens to trigger a render.
+          if (foundClearance) setTimeout(renderView, BLOCKER_CLEARED_DWELL_MS + 50);
         } catch (e) {
           state.fetchOk = false;
         }
@@ -2739,6 +2764,61 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return result;
   }
 
+  /** SH-203's cleared-blocker dwell ledger: `"<storyId>|<blockerId>" ->
+   * the Date.now() this client first observed the blocker crossing OPEN
+   * -> CLOSED`, kept for BLOCKER_CLEARED_DWELL_MS so populateCard() can
+   * still render it -- lit its own CLOSED colour, then gone -- for a beat
+   * after openBlockers() would already have dropped it. Module state, not
+   * per-render: populateCard() rebuilds a card's children from scratch on
+   * every render (`clear(card)`), so nothing here could survive inside
+   * the DOM itself. */
+  var clearedBlockers = {};
+  var BLOCKER_CLEARED_DWELL_MS = 4000;
+
+  /** Scans every `blocked-by` relationship across the whole snapshot for a
+   * blocker that crossed OPEN -> CLOSED between `oldData` and `newData`,
+   * recording each into `clearedBlockers`. Runs alongside `diffSnapshots`
+   * in `fetchData()`, before `oldData` is discarded, for the same reason:
+   * both need the snapshot pair, not just the fresh one. Not itself pure
+   * (it mutates the ledger) but returns whether it found anything new, so
+   * the caller knows whether a follow-up render is worth scheduling once
+   * the dwell elapses. */
+  function recordClearedBlockers(oldData, newData, now) {
+    if (!oldData || !newData) return false;
+    var oldById = {}, newById = {};
+    oldData.stories.forEach(function(v) { oldById[v.story.id] = v; });
+    newData.stories.forEach(function(v) { newById[v.story.id] = v; });
+    var found = false;
+    newData.stories.forEach(function(v) {
+      (v.story.relationships || []).forEach(function(r) {
+        if (r.relation !== "blocked-by") return;
+        var was = oldById[r.other_id], current = newById[r.other_id];
+        if (was && was.story.superstate === "OPEN" && current && current.story.superstate === "CLOSED") {
+          clearedBlockers[v.story.id + "|" + r.other_id] = now;
+          found = true;
+        }
+      });
+    });
+    return found;
+  }
+
+  /** Blocker ids still inside their SH-203 dwell window for `st.id` --
+   * openBlockers() itself no longer counts them (their target closed),
+   * but the dwell hasn't finished reading out which one it was yet. An
+   * expired entry is pruned from the ledger as a side effect of being
+   * asked about, so `clearedBlockers` never holds more than what's
+   * actually still dwelling. */
+  function dwellingBlockerIds(storyId, now) {
+    var prefix = storyId + "|";
+    var ids = [];
+    Object.keys(clearedBlockers).forEach(function(key) {
+      if (key.indexOf(prefix) !== 0) return;
+      if (now - clearedBlockers[key] >= BLOCKER_CLEARED_DWELL_MS) { delete clearedBlockers[key]; return; }
+      ids.push(key.slice(prefix.length));
+    });
+    return ids;
+  }
+
   // ============================================================
   // RENDER: SHELL
   // ============================================================
@@ -3716,12 +3796,26 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // SH-203 consumer 2: every OPEN story still blocking this one, each
     // with its own status light -- capped and overflow-chipped the same
     // way .card-labels above is, so a heavily-blocked card doesn't grow
-    // without bound.
+    // without bound. Plus, uncapped, any blocker still inside its
+    // cleared-blocker dwell window (dwellingBlockerIds) -- it closed just
+    // now, openBlockers() itself no longer counts it, but the whole point
+    // of the dwell is that it stays visible -- lit its own CLOSED colour
+    // via storyLight(), marked `.blocker-cleared` for the pulse below --
+    // long enough for the reader to see *which* blocker cleared. The two
+    // sets never overlap: a dwelling entry's target is CLOSED by
+    // definition, so openBlockers() (which requires OPEN) can never also
+    // include it.
     var blockers = openBlockers(st);
-    if (blockers.length) {
+    var dwelling = dwellingBlockerIds(st.id, Date.now());
+    if (blockers.length || dwelling.length) {
       var blockersWrap = el("div", { class: "card-blockers" }, []);
       blockers.slice(0, 3).forEach(function(r) { blockersWrap.appendChild(storyRef(r.other_id)); });
       if (blockers.length > 3) blockersWrap.appendChild(el("span", { class: "chip" }, ["+" + (blockers.length - 3)]));
+      dwelling.forEach(function(id) {
+        var ref = storyRef(id);
+        ref.classList.add("blocker-cleared");
+        blockersWrap.appendChild(ref);
+      });
       card.appendChild(blockersWrap);
     }
   }
