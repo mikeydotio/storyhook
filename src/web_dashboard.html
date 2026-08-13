@@ -2841,6 +2841,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     renderView();
     updateSubtitle();
     updateDraftsButton();
+    syncCreateAvailability();
   }
 
   /** SH-175: the topbar's Drafts button label — "No Drafts" or "N Drafts",
@@ -2884,6 +2885,25 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     node.hidden = text === "";
   }
 
+  /** The "+ New" button is live only once this project's own vocabulary is
+   * in hand (SH-265). `openCreateModal()` builds its State/Type/Priority
+   * selects and its label suggestions once, synchronously, from `meta()` —
+   * `selectRepo()` renders the board screen from `state.data = null` and
+   * fetches afterwards, so for one `/data` round trip that button would open
+   * a modal holding nothing but placeholders, which never repopulate.
+   * Disabling it is what makes that modal unreachable rather than merely
+   * unlikely; a failed or unauthorized load leaves it disabled on purpose —
+   * the connection indicator is what explains a store that never answered.
+   * Called from `renderScreen()` (the `state.data = null` edge) and
+   * `renderAll()` (the arrival edge); `openCreateModal()` itself re-checks
+   * `state.data` as a second line of defense, the same belt-and-braces
+   * `openProjectMenu()` already applies to `#projsel-btn`. */
+  function syncCreateAvailability() {
+    var btn = $("new-story-btn");
+    btn.disabled = !state.data;
+    btn.title = state.data ? "" : "Loading this project's states, types and labels…";
+  }
+
   /** Switches between the three top-level screens, showing/hiding the
    * shared topbar controls (search, view toggle, + New) that only make
    * sense while a repo is selected, and the three mutually-exclusive
@@ -2899,6 +2919,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("search-wrap").hidden = !isRepo;
     $("view-toggle").hidden = !isRepo;
     $("new-story-btn").hidden = !isRepo;
+    syncCreateAvailability();
 
     if (isRepo) {
       renderView();
@@ -5740,8 +5761,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   /** Opens the New Story modal. Pass a `StoryView`-shaped draft (from
    * `state.data.drafts`) to reuse it as the Edit Draft modal instead —
-   * same fields, retitled header, and a relabeled submit button (SH-175). */
+   * same fields, retitled header, and a relabeled submit button (SH-175).
+   *
+   * Refuses without `state.data` (SH-265): every field below is built once,
+   * synchronously, from `meta()`, which is empty until then, and nothing
+   * repopulates the modal after it opens. `#new-story-btn` is kept disabled
+   * for the same reason (`syncCreateAvailability()`) — this is the second
+   * line of defense for the modal's other entry point, `renderDraftsList()`'s
+   * row click, which reaches here directly. */
   function openCreateModal(draft) {
+    if (!state.data) return;
     editingDraft = draft || null;
     var story = editingDraft ? editingDraft.story : null;
     $("create-modal-header").textContent = story ? "Edit draft" : "New story";
