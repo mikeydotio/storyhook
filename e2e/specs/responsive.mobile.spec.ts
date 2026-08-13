@@ -238,3 +238,68 @@ test("the app shell and an open modal fit inside a squeezed viewport height", as
   await page.locator("#create-discard").click();
   await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
 });
+
+/**
+ * SH-235 (D2): `.list-table-wrap` is narrower than the table it holds at
+ * phone widths -- seven columns (ID, Title, State, Priority, Labels,
+ * Assignee, Updated) don't fit 350-ish CSS px. `overflow: hidden` there
+ * doesn't shrink the table, it clips it: Labels, Assignee and Updated
+ * render past the wrap's own right edge and are removed from the box
+ * entirely, not merely scrolled out of view -- the story's own "text is
+ * clipped", measured (390px viewport: table scrollWidth 630px inside
+ * clientWidth 348px, ~45% of every row gone).
+ *
+ * `overflow-x: auto` doesn't make the table narrower either; the fix here
+ * is reachability, not a redesign -- every column is still present,
+ * reading a value the wrap has means a horizontal scroll rather than
+ * `display: none`.
+ */
+test("the list table scrolls sideways to its far columns instead of clipping them", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await expect(page.locator("#board-view")).toBeVisible();
+  await page.locator('#view-toggle button[data-view="list"]').click();
+  await expect(page.locator("#list-view")).toBeVisible();
+  await expect(page.locator("#list-body tr").first()).toBeVisible();
+
+  const wrap = page.locator(".list-table-wrap");
+  const before = await wrap.evaluate((el) => ({
+    overflowX: getComputedStyle(el).overflowX,
+    scrollWidth: el.scrollWidth,
+    clientWidth: el.clientWidth,
+    scrollLeft: el.scrollLeft,
+  }));
+  // The premise: the table really is wider than the wrap at this width.
+  // If it weren't, scrolling it wouldn't prove anything either way.
+  expect(
+    before.scrollWidth,
+    `the table (${before.scrollWidth}px) is expected to be wider than ` +
+      `.list-table-wrap (${before.clientWidth}px) at 390px -- if it isn't, ` +
+      "this test can no longer tell a scrollable table from a clipped one",
+  ).toBeGreaterThan(before.clientWidth);
+  expect(
+    before.overflowX,
+    ".list-table-wrap must be horizontally scrollable (overflow-x: auto), " +
+      "not overflow: hidden, so the columns past its right edge stay reachable",
+  ).toBe("auto");
+
+  // Reachability, not just the declaration: actually scroll, and confirm
+  // a far column (Updated, the last one) becomes visible.
+  await wrap.evaluate((el) => {
+    el.scrollLeft = el.scrollWidth;
+  });
+  const after = await wrap.evaluate((el) => el.scrollLeft);
+  expect(
+    after,
+    "scrolling .list-table-wrap did not move it -- the far columns are " +
+      "still unreachable",
+  ).toBeGreaterThan(0);
+  await expect(
+    page.locator("thead th", { hasText: "Updated" }),
+  ).toBeInViewport();
+
+  await expectNoClippedElements(page.locator("#list-view"), "the list view @ 390px");
+});

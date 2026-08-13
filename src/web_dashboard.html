@@ -455,7 +455,14 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
 
 /* ---- List ---- */
 .list { flex: 1; overflow: auto; padding: 0 1.25rem 1.25rem; }
-.list-table-wrap { background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; margin-top: 0.75rem; }
+/* SH-235: seven columns don't fit a phone-width wrap -- `overflow: hidden`
+   didn't shrink the table, it silently dropped Labels/Assignee/Updated
+   past the wrap's own right edge. `overflow-y` stays `hidden` (the wrap
+   never scrolls vertically -- it's sized to its content, and this is what
+   keeps the table's square cell corners from poking out past the wrap's
+   own `border-radius`); `overflow-x: auto` is what makes the far columns
+   reachable by a horizontal scroll instead of gone. */
+.list-table-wrap { background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius); overflow-x: auto; overflow-y: hidden; margin-top: 0.75rem; }
 table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
 thead th {
   text-align: left; padding: 0.5625rem 0.75rem; background: var(--bg-sunken); border-bottom: 1px solid var(--border);
