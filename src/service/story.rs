@@ -135,10 +135,19 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         Ok(snapshot)
     }
 
-    /// Adds a comment to an open story.
+    /// Adds a comment to a story, **including a closed one** (SH-261).
+    ///
+    /// The one [`Intent::Append`] call site in the codebase. A comment records
+    /// an observation about a story without changing what the story is, so it
+    /// outlives the story's closure the way the evidence it usually carries
+    /// does: verification that arrives after a story closes belongs on the
+    /// story it verifies, not on whichever open story happened to be nearby.
+    ///
+    /// A soft-deleted story still refuses — see
+    /// [`super::resolve_appendable_story`].
     pub fn comment(&self, id: &str, text: &str) -> Result<StorySnapshot, AppError> {
         let now = self.ctx.now();
-        let snapshot = self.edit_story(id, Intent::Edit, |_row, _states| {
+        let snapshot = self.edit_story(id, Intent::Append, |_row, _states| {
             Ok(vec![StoryEvent::StoryCommentAdded {
                 at: now.clone(),
                 text: text.to_string(),

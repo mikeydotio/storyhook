@@ -2219,9 +2219,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * ordinary `/move`.
    *
    * Closed story: only OPEN-superstate states. The server refuses every
-   * mutation of a closed story outright (`resolve_open_story`,
-   * `src/service/mod.rs`), so closed -> closed is not expressible here at
-   * all; closed -> open is `setStoryState`'s reopen-then-move chain. */
+   * *edit* of a closed story (`resolve_open_story`, `src/service/mod.rs`),
+   * so closed -> closed is not expressible here at all; closed -> open is
+   * `setStoryState`'s reopen-then-move chain. A state change is an edit and
+   * stays refused; commenting is not, and is permitted on a closed story
+   * since SH-261 -- which is why the drawer's comment box needs no
+   * corresponding rule here. */
   function statusMenuItems(st) {
     var states = meta().states.filter(function(s) { return s.slug !== st.state; });
     if (stateSuperstate(st.state) === "CLOSED") {
