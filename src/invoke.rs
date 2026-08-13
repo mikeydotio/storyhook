@@ -677,34 +677,17 @@ pub fn dispatch<S: Store>(
                 }
                 Ok(Response::Message(message))
             } else {
-                let notices = service.notices()?;
+                let findings = service.report()?;
+                let advice = doctor_advice(ctx, &catalog, service.notices()?, audit_catalog)?;
                 // The emptiness question is asked once, by the constructor
                 // that owns the invariant (SH-244): `Some` *is* the unhealthy
                 // verdict, and neither branch re-decides it.
-                match crate::error::IntegrityDetail::report(service.report()?, notices.clone()) {
-                    None => {
-                        let (orphans, origins) = if audit_catalog {
-                            (catalog.orphaned()?, catalog.unregistered_origins()?)
-                        } else {
-                            (Vec::new(), Vec::new())
-                        };
-                        // The notice channel SH-185's council settled on: it
-                        // never made the project unhealthy, so it rides along
-                        // as advice rather than as a finding.
-                        let mut advice = notices;
-                        advice.extend(orphan_advice(&orphans));
-                        advice.extend(origin_advice(&origins));
-                        advice.extend(github_remote_advice(ctx)?);
-                        advice.extend(abandoned_advice(ctx.env()));
-                        advice.extend(pointer_origin_advice(ctx)?);
-                        advice.extend(pointer_prefix_advice(ctx)?);
-                        advice.extend(legacy_link_advice(ctx)?);
-                        Ok(Response::Issues(advice))
-                    }
-                    // A real finding still fails the command, but a notice
-                    // present in the same run must not vanish just because it
-                    // played no part in that verdict — it rides `advice`,
-                    // where nothing can mistake it for damage.
+                match crate::error::IntegrityDetail::report(findings, advice.clone()) {
+                    None => Ok(Response::Issues(advice)),
+                    // A real finding still fails the command, but everything
+                    // this run had to say that is *not* damage must not vanish
+                    // just because it played no part in that verdict — it
+                    // rides `advice`, where nothing can mistake it for damage.
                     Some(detail) => Err(AppError::Integrity(detail)),
                 }
             }
@@ -3539,6 +3522,52 @@ fn is_project_less(invocation: &Invocation) -> bool {
         Invocation::Store { .. } => true,
         _ => false,
     }
+}
+
+/// Everything `story doctor` has to say that is not damage.
+///
+/// **The single assembly, and the reason it is one** (SH-266). These eight
+/// sources used to be gathered inside the healthy branch of the `doctor` arm,
+/// with the unhealthy branch passing `notices` alone — so a project was told
+/// about its orphaned registrations, its unregistered origins, a github remote
+/// that had drifted, a command the daemon abandoned, a stale pointer file or a
+/// legacy commit link **only while nothing else was wrong**. One real finding
+/// and seven of the eight went silent, which is exactly when an operator is
+/// most likely to be reading. The list is built once here and both outcomes
+/// carry it; there is no second copy to fall behind, and an advisory added
+/// later reaches a damaged project by construction rather than by remembering.
+///
+/// Nothing in it can decide health: advice is a `Vec<String>` and
+/// [`IntegrityDetail::report`](crate::error::IntegrityDetail::report) asks its
+/// emptiness question of the *findings* alone, which is what makes handing the
+/// same list to both outcomes safe (SH-185's separation, by type rather than
+/// by convention).
+///
+/// `audit_catalog` is the caller's answer to "is this a real store", not a
+/// preference: an orphaned registration in a throwaway store is a fixture that
+/// was supposed to disappear.
+fn doctor_advice<S: Store>(
+    ctx: &Ctx<'_, S>,
+    catalog: &crate::service::CatalogService<'_, S>,
+    notices: Vec<String>,
+    audit_catalog: bool,
+) -> Result<Vec<String>, AppError> {
+    let (orphans, origins) = if audit_catalog {
+        (catalog.orphaned()?, catalog.unregistered_origins()?)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    // The notice channel SH-185's council settled on leads: it never made the
+    // project unhealthy, so it rides along as advice rather than as a finding.
+    let mut advice = notices;
+    advice.extend(orphan_advice(&orphans));
+    advice.extend(origin_advice(&origins));
+    advice.extend(github_remote_advice(ctx)?);
+    advice.extend(abandoned_advice(ctx.env()));
+    advice.extend(pointer_origin_advice(ctx)?);
+    advice.extend(pointer_prefix_advice(ctx)?);
+    advice.extend(legacy_link_advice(ctx)?);
+    Ok(advice)
 }
 
 /// How `story doctor` describes registrations pointing at directories that are
