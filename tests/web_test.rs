@@ -1296,6 +1296,85 @@ fn web_serve_root_html_has_a_collapsible_filter_panel() {
     );
 }
 
+/// SH-235 (D9): HTML5 native drag-and-drop (`card.draggable` + `dragstart`)
+/// never fires on touch, so before this the only touch path to a card's
+/// actions was an undocumented long-press. `.card-actions-btn` (board) and
+/// `.row-actions-btn` (list) open the exact same menu right-click does
+/// (`openStoryMenu`) -- coarse-pointer visible only, so desktop's rendering
+/// is untouched.
+///
+/// `responsive.mobile.spec.ts`'s own tests are the layer that proves the
+/// menu items actually match right-click's and that the coarse-pointer
+/// sizing resolves correctly in a real browser; this is the cheap,
+/// browser-free layer pinning the source text of the mechanism.
+#[test]
+fn web_serve_root_html_has_coarse_pointer_actions_buttons() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    // The list table's static thead grows a trailing, visually-hidden-label
+    // actions column -- present in the served markup itself, unlike the
+    // board/list bodies which are built client-side.
+    assert!(body.contains(r#"<th class="col-actions"><span class="sr-only">Actions</span></th>"#));
+
+    // Both buttons reuse openStoryMenu (the same menu right-click opens),
+    // not a second implementation that could drift out of step with it.
+    assert!(body.contains("class: \"card-actions-btn\""));
+    assert!(body.contains("openStoryMenu(e, v, cardActionsBtn)"));
+    assert!(body.contains("class: \"row-actions-btn\""));
+    assert!(body.contains("openStoryMenu(e, v, rowActionsBtn)"));
+
+    // The card's button is deliberately not a Tab stop (role="button" on
+    // .card makes any nested interactive element ARIA-presentational
+    // regardless of markup -- Shift+F10/the Menu key stays the keyboard
+    // path); the row's carries no tabIndex override, since a <tr> is not
+    // role="button" and the button is a normal part of the a11y tree there.
+    assert!(body.contains("type: \"button\", class: \"card-actions-btn\", tabIndex: -1,"));
+    assert!(!body.contains("type: \"button\", class: \"row-actions-btn\", tabIndex"));
+
+    // Hidden on a fine pointer (right-click already reaches this menu
+    // there); coarse-pointer-only, both axes -- an icon-only button is
+    // narrower than --tap-min once nothing else sets its width. Each
+    // button gets its own dedicated `@media (pointer: coarse)` block right
+    // beside its base rule (a third such block in the sheet, after the
+    // `:root` tokens' and `.card-actions-btn`'s own) -- checked as one
+    // literal snippet per button, the same way this file already pins
+    // `--tap-min`'s and `--control-font-*`'s own coarse-pointer values.
+    for (selector, coarse_block) in [
+        (
+            ".card-actions-btn",
+            "@media (pointer: coarse) {\n  .card-actions-btn {\n    display: inline-flex; align-items: center; justify-content: center;\n    min-width: var(--tap-min); min-height: var(--tap-min);\n  }\n}",
+        ),
+        (
+            ".row-actions-btn",
+            "@media (pointer: coarse) {\n  .col-actions { display: table-cell; }\n  .row-actions-btn {\n    display: inline-flex; align-items: center; justify-content: center;\n    min-width: var(--tap-min); min-height: var(--tap-min);\n  }\n}",
+        ),
+    ] {
+        assert!(
+            declarations(css, selector).contains("display: none"),
+            "`{selector}` must default to display: none on a fine pointer"
+        );
+        assert!(
+            css.contains(coarse_block),
+            "`{selector}` must be revealed and sized to --tap-min inside its own coarse-pointer block"
+        );
+    }
+
+    // The list table's own overflow-x scroll must not let the browser's
+    // mobile viewport-fit heuristic treat the table's un-clamped intrinsic
+    // width as the page's real content width -- contain: layout is what
+    // isolates the wrap's internal layout from that outer measurement.
+    assert!(declarations(css, ".list-table-wrap").contains("contain: layout"));
+}
+
 #[test]
 fn web_serve_api_data_empty_project() {
     let fixture = served();

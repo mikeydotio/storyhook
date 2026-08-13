@@ -486,6 +486,23 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
 .card-id-row { display: flex; align-items: center; gap: 0.3125rem; }
 .card-id { font-family: var(--mono); font-size: 0.6875rem; color: var(--fg-faint); font-weight: 600; }
 .type-badge { font-size: 0.8125rem; line-height: 1; }
+/* SH-235: hidden on a fine pointer -- right-click already reaches this
+   exact menu there, and a mouse-only affordance on every card would be
+   pure visual noise. `pointer: coarse`, not the `max-width: 768px` layout
+   breakpoint further down this sheet, for the same reason the SH-256
+   control-font tokens use it: a wide tablet needs this as much as a
+   phone, and a narrow desktop window needs neither. */
+.card-actions-btn {
+  display: none; margin-left: auto; border: none; background: none; color: var(--fg-faint);
+  font-size: 1rem; line-height: 1; border-radius: var(--radius-sm);
+}
+.card-actions-btn:hover { color: var(--fg); background: var(--bg-sunken); }
+@media (pointer: coarse) {
+  .card-actions-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: var(--tap-min); min-height: var(--tap-min);
+  }
+}
 .card-title { font-size: 0.8125rem; font-weight: 600; margin: 0.25rem 0 0.4375rem; line-height: 1.35; overflow-wrap: anywhere; }
 .card-meta { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; }
 .card-labels { display: flex; gap: 0.25rem; flex-wrap: wrap; }
@@ -513,7 +530,7 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
    keeps the table's square cell corners from poking out past the wrap's
    own `border-radius`); `overflow-x: auto` is what makes the far columns
    reachable by a horizontal scroll instead of gone. */
-.list-table-wrap { background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius); overflow-x: auto; overflow-y: hidden; margin-top: 0.75rem; }
+.list-table-wrap { background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius); overflow-x: auto; overflow-y: hidden; margin-top: 0.75rem; contain: layout; }
 table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
 thead th {
   text-align: left; padding: 0.5625rem 0.75rem; background: var(--bg-sunken); border-bottom: 1px solid var(--border);
@@ -529,6 +546,23 @@ tbody tr:hover { background: var(--bg-sunken); }
 tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .col-id { font-family: var(--mono); white-space: nowrap; font-size: 0.75rem; }
 .col-date { white-space: nowrap; color: var(--fg-muted); font-size: 0.75rem; }
+/* SH-235: same coarse-pointer-only gating as .card-actions-btn -- hidden
+   entirely on a fine pointer (`display: none` on a <td>/<th> removes it
+   from the row's layout, not just its paint, so desktop's column count
+   and widths stay exactly what they were). */
+.col-actions { display: none; width: 1%; white-space: nowrap; text-align: right; cursor: default; }
+.row-actions-btn {
+  display: none; border: none; background: none; color: var(--fg-faint);
+  font-size: 1rem; line-height: 1; border-radius: var(--radius-sm);
+}
+.row-actions-btn:hover { color: var(--fg); background: var(--bg-sunken); }
+@media (pointer: coarse) {
+  .col-actions { display: table-cell; }
+  .row-actions-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: var(--tap-min); min-height: var(--tap-min);
+  }
+}
 .state-pill { font-size: 0.6875rem; font-weight: 600; padding: 0.09375rem 0.5rem; border-radius: 9999px; background: var(--bg-sunken); border: 1px solid var(--border); }
 .empty { text-align: center; padding: 3rem 1rem; color: var(--fg-faint); font-size: 0.875rem; }
 
@@ -938,6 +972,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
             <th data-col="labels">Labels</th>
             <th data-col="assignee">Assignee <span class="sort-arrow" id="sort-assignee"></span></th>
             <th data-col="updated">Updated <span class="sort-arrow" id="sort-updated"></span></th>
+            <th class="col-actions"><span class="sr-only">Actions</span></th>
           </tr>
         </thead>
         <tbody id="list-body"></tbody>
@@ -3675,7 +3710,27 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
     clear(card);
     var badge = buildTypeBadge(st.story_type);
-    card.appendChild(el("div", { class: "card-id-row" }, [badge, el("span", { class: "card-id" }, [st.id])]));
+    // SH-235: a visible actions affordance, coarse pointers only (see
+    // .card-actions-btn's own CSS) -- HTML5 drag-and-drop (this card's own
+    // `dragstart` in buildCard) never fires on touch, so before this the
+    // only way to act on a card without a mouse was an undocumented
+    // long-press. Opens the exact same menu right-click does
+    // (openStoryMenu, storyMenuModel) -- not a second menu to keep in
+    // step with the first. `tabIndex: -1`: `card` is `role="button"`, and
+    // a nested interactive element inside an ARIA button role is
+    // presentational to assistive tech regardless of markup -- Shift+F10 /
+    // the Menu key (already implemented, already announced by
+    // #board-kbd-hint) stays the keyboard/AT path to this same menu.
+    // Rebuilding the card node to give this button a real place in the
+    // accessibility tree would touch dnd, roving tabindex, FLIP and
+    // reconcileColumnCards; recorded as a deliberate trade-off in
+    // docs/spec/responsive-dashboard.md rather than done here.
+    var cardActionsBtn = el("button", {
+      type: "button", class: "card-actions-btn", tabIndex: -1,
+      "aria-label": "Actions for " + st.id,
+      onClick: function(e) { e.stopPropagation(); openStoryMenu(e, v, cardActionsBtn); }
+    }, ["⋯"]);
+    card.appendChild(el("div", { class: "card-id-row" }, [badge, el("span", { class: "card-id" }, [st.id]), cardActionsBtn]));
     card.appendChild(el("div", { class: "card-title" }, [st.title]));
 
     var metaRow = el("div", { class: "card-meta" }, []);
@@ -3945,6 +4000,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     row.appendChild(el("td", {}, [labelChips(st.labels)]));
     row.appendChild(el("td", {}, [st.assignee ? memberName(st.assignee) : el("span", { style: "color:var(--fg-faint)" }, ["–"])]));
     row.appendChild(el("td", { class: "col-date" }, [updated]));
+    // SH-235: same reasoning as buildCard's own .card-actions-btn -- a
+    // visible, coarse-pointer-only path to the exact menu right-click
+    // already opens. Unlike a card, a <tr> is not `role="button"`
+    // (buildListRow's own comment on why), so a nested button here is a
+    // normal part of the accessibility tree and needs no tabIndex override.
+    var rowActionsBtn = el("button", {
+      type: "button", class: "row-actions-btn", "aria-label": "Actions for " + st.id,
+      onClick: function(e) { e.stopPropagation(); openStoryMenu(e, v, rowActionsBtn); }
+    }, ["⋯"]);
+    row.appendChild(el("td", { class: "col-actions" }, [rowActionsBtn]));
     row.style.borderLeft = blocked[st.id] ? "3px solid var(--danger)" : "";
   }
 
