@@ -175,13 +175,36 @@ impl DataStore {
         self.stories.len()
     }
 
+    /// The project's stories that match every filter in `filters`.
+    ///
+    /// A method rather than a free function over a story list, because two of
+    /// the filters — `ready` and `blocked` — are questions about a story's
+    /// place in the project, not about the story alone: they need the
+    /// `blocked-by` graph and the state catalog. Taking those as extra
+    /// arguments would let a caller pass one project's filters over another
+    /// project's graph.
+    pub fn filter(&self, filters: &[FilterSpec]) -> Vec<&StorySnapshot> {
+        if filters.is_empty() {
+            return self.stories.iter().collect();
+        }
+        let readiness = self.readiness();
+        self.stories
+            .iter()
+            .filter(|story| {
+                filters
+                    .iter()
+                    .all(|filter| matches_filter(filter, story, &readiness))
+            })
+            .collect()
+    }
+
     /// Stories grouped by state, in state definition order, filtered by active filters.
     /// Only includes states with OPEN superstates.
     pub fn filtered_stories_by_state(
         &self,
         filters: &[FilterSpec],
     ) -> Vec<(&StateDef, Vec<&StorySnapshot>)> {
-        let filtered = apply_filters(filters, &self.stories);
+        let filtered = self.filter(filters);
         self.states
             .iter()
             .filter(|state| state.super_state == SuperState::Open)
@@ -197,25 +220,9 @@ impl DataStore {
     }
 }
 
-/// Apply a set of filters to a list of stories.
-///
-/// Multiple filters AND together: a story must match ALL filters to be included.
-/// Returns references to matching stories.
-pub fn apply_filters<'a>(
-    filters: &[FilterSpec],
-    stories: &'a [StorySnapshot],
-) -> Vec<&'a StorySnapshot> {
-    if filters.is_empty() {
-        return stories.iter().collect();
-    }
-    stories
-        .iter()
-        .filter(|story| filters.iter().all(|f| matches_filter(f, story)))
-        .collect()
-}
-
-/// Check whether a single story matches a single filter spec.
-fn matches_filter(filter: &FilterSpec, story: &StorySnapshot) -> bool {
+/// Check whether a single story matches a single filter spec, given the
+/// project it sits in.
+fn matches_filter(filter: &FilterSpec, story: &StorySnapshot, readiness: &Readiness<'_>) -> bool {
     // Text filter: case-insensitive substring match on title or id
     if let Some(ref text) = filter.text {
         let lower = text.to_ascii_lowercase();
@@ -260,13 +267,16 @@ fn matches_filter(filter: &FilterSpec, story: &StorySnapshot) -> bool {
         }
     }
 
-    // Blocked filter: story has awaiting set
-    if filter.blocked && story.awaiting.is_none() {
+    // The `blocked` and `ready` chips claim what `story list --blocked` and
+    // `story list --ready` claim, so they answer with the same predicates.
+    // Both used to test `awaiting` alone, which is one of five ways a story
+    // can be stuck and no way at all of telling claimed work from free work
+    // (SH-240).
+    if filter.blocked && (story.superstate != SuperState::Open || readiness.is_ready(story)) {
         return false;
     }
 
-    // Ready filter: story has NO awaiting set
-    if filter.ready && story.awaiting.is_some() {
+    if filter.ready && !readiness.is_claimable(story) {
         return false;
     }
 
@@ -278,7 +288,7 @@ fn matches_filter(filter: &FilterSpec, story: &StorySnapshot) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::Priority;
+    use crate::domain::{Priority, StoryRelation};
 
     fn test_states() -> Vec<StateDef> {
         vec![
@@ -301,6 +311,13 @@ mod tests {
                 description: None,
             },
         ]
+    }
+
+    /// A project holding `stories` under the standard catalog — the shape a
+    /// filter question has to be asked of, since `ready` and `blocked` are
+    /// questions about a story's place in a project.
+    fn project(stories: Vec<StorySnapshot>) -> DataStore {
+        DataStore::from_test_data(test_states(), stories, "SH".to_string(), vec![])
     }
 
     fn test_snapshot(id: &str, state: &str) -> StorySnapshot {
@@ -608,7 +625,8 @@ mod tests {
             text: Some("login".to_string()),
             ..Default::default()
         }];
-        let result = apply_filters(&filters, &stories);
+        let store = project(stories.clone());
+        let result = store.filter(&filters);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "SH-1");
     }
@@ -623,7 +641,8 @@ mod tests {
             text: Some("SH-2".to_string()),
             ..Default::default()
         }];
-        let result = apply_filters(&filters, &stories);
+        let store = project(stories.clone());
+        let result = store.filter(&filters);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "SH-2");
     }
@@ -643,7 +662,8 @@ mod tests {
             text: Some("fix login".to_string()),
             ..Default::default()
         }];
-        let result = apply_filters(&filters, &stories);
+        let store = project(stories.clone());
+        let result = store.filter(&filters);
         assert_eq!(result.len(), 1);
     }
 
@@ -665,7 +685,8 @@ mod tests {
             state: Some("todo".to_string()),
             ..Default::default()
         }];
-        let result = apply_filters(&filters, &stories);
+        let store = project(stories.clone());
+        let result = store.filter(&filters);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "SH-1");
     }
@@ -697,7 +718,8 @@ mod tests {
             assignee: Some("mikey".to_string()),
             ..Default::default()
         }];
-        let result = apply_filters(&filters, &stories);
+        let store = project(stories.clone());
+        let result = store.filter(&filters);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "SH-1");
     }
@@ -713,7 +735,8 @@ mod tests {
             priority: Some(Priority::High),
             ..Default::default()
         }];
-        let result = apply_filters(&filters, &stories);
+        let store = project(stories.clone());
+        let result = store.filter(&filters);
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].id, "SH-1");
         assert_eq!(result[1].id, "SH-3");
@@ -746,7 +769,8 @@ mod tests {
             label: Some("bug".to_string()),
             ..Default::default()
         }];
-        let result = apply_filters(&filters, &stories);
+        let store = project(stories.clone());
+        let result = store.filter(&filters);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "SH-1");
     }
@@ -766,7 +790,8 @@ mod tests {
             label: Some("bug".to_string()),
             ..Default::default()
         }];
-        let result = apply_filters(&filters, &stories);
+        let store = project(stories.clone());
+        let result = store.filter(&filters);
         assert_eq!(result.len(), 1);
     }
 
@@ -788,7 +813,8 @@ mod tests {
             blocked: true,
             ..Default::default()
         }];
-        let result = apply_filters(&filters, &stories);
+        let store = project(stories.clone());
+        let result = store.filter(&filters);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "SH-1");
     }
@@ -811,9 +837,190 @@ mod tests {
             ready: true,
             ..Default::default()
         }];
-        let result = apply_filters(&filters, &stories);
+        let store = project(stories.clone());
+        let result = store.filter(&filters);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "SH-2");
+    }
+
+    /// The board's `ready` chip claims the same thing `story list --ready`
+    /// does, so it answers with the same predicate: a claimed story is
+    /// already someone's work (SH-236).
+    #[test]
+    fn ready_filter_excludes_a_claimed_story() {
+        let stories = vec![
+            make_rich_snapshot(
+                "SH-1",
+                "in-progress",
+                "Claimed",
+                Priority::None,
+                vec![],
+                None,
+                None,
+            ),
+            make_rich_snapshot("SH-2", "todo", "Free", Priority::None, vec![], None, None),
+        ];
+        let filters = vec![FilterSpec {
+            ready: true,
+            ..Default::default()
+        }];
+        let store = project(stories.clone());
+        let result = store.filter(&filters);
+        assert_eq!(
+            result.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            ["SH-2"]
+        );
+    }
+
+    #[test]
+    fn ready_filter_excludes_a_story_in_the_blocked_state() {
+        let stories = vec![
+            make_rich_snapshot(
+                "SH-1",
+                "blocked",
+                "Parked",
+                Priority::None,
+                vec![],
+                None,
+                None,
+            ),
+            make_rich_snapshot("SH-2", "todo", "Free", Priority::None, vec![], None, None),
+        ];
+        let filters = vec![FilterSpec {
+            ready: true,
+            ..Default::default()
+        }];
+        let store = project(stories.clone());
+        let result = store.filter(&filters);
+        assert_eq!(
+            result.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            ["SH-2"]
+        );
+    }
+
+    #[test]
+    fn ready_filter_excludes_a_story_blocked_by_an_open_dependency() {
+        let mut dependent = make_rich_snapshot(
+            "SH-2",
+            "todo",
+            "Dependent",
+            Priority::None,
+            vec![],
+            None,
+            None,
+        );
+        dependent.relationships.push(StoryRelation {
+            relation: "blocked-by".to_string(),
+            other_id: "SH-1".to_string(),
+        });
+        let stories = vec![
+            make_rich_snapshot(
+                "SH-1",
+                "todo",
+                "Blocker",
+                Priority::None,
+                vec![],
+                None,
+                None,
+            ),
+            dependent,
+        ];
+        let filters = vec![FilterSpec {
+            ready: true,
+            ..Default::default()
+        }];
+        let store = project(stories.clone());
+        let result = store.filter(&filters);
+        assert_eq!(
+            result.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            ["SH-1"]
+        );
+    }
+
+    /// `story list --blocked` means "open, and not ready" — every way a story
+    /// can be stuck, not just an `awaiting` reason. The chip meant only the
+    /// last of those, so the two halves of the same board disagreed about
+    /// which stories were blocked.
+    #[test]
+    fn blocked_filter_covers_every_way_a_story_is_stuck() {
+        let mut dependent = make_rich_snapshot(
+            "SH-3",
+            "todo",
+            "Dependent",
+            Priority::None,
+            vec![],
+            None,
+            None,
+        );
+        dependent.relationships.push(StoryRelation {
+            relation: "blocked-by".to_string(),
+            other_id: "SH-4".to_string(),
+        });
+        let stories = vec![
+            make_rich_snapshot(
+                "SH-1",
+                "todo",
+                "Awaiting",
+                Priority::None,
+                vec![],
+                None,
+                Some("waiting for deploy"),
+            ),
+            make_rich_snapshot(
+                "SH-2",
+                "blocked",
+                "Parked",
+                Priority::None,
+                vec![],
+                None,
+                None,
+            ),
+            dependent,
+            make_rich_snapshot(
+                "SH-4",
+                "todo",
+                "Blocker",
+                Priority::None,
+                vec![],
+                None,
+                None,
+            ),
+        ];
+        let filters = vec![FilterSpec {
+            blocked: true,
+            ..Default::default()
+        }];
+        let store = project(stories.clone());
+        let result = store.filter(&filters);
+        assert_eq!(
+            result.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            ["SH-1", "SH-2", "SH-3"],
+            "the blocker itself is not blocked"
+        );
+    }
+
+    /// A closed story is not blocked, whatever it was awaiting when it
+    /// closed — `story list --blocked` filters to OPEN first.
+    #[test]
+    fn blocked_filter_excludes_a_closed_story() {
+        let mut closed = make_rich_snapshot(
+            "SH-1",
+            "done",
+            "Finished",
+            Priority::None,
+            vec![],
+            None,
+            Some("waiting for deploy"),
+        );
+        closed.superstate = SuperState::Closed;
+        let filters = vec![FilterSpec {
+            blocked: true,
+            ..Default::default()
+        }];
+        let stories = vec![closed];
+        let store = project(stories.clone());
+        let result = store.filter(&filters);
+        assert!(result.is_empty());
     }
 
     #[test]
@@ -862,7 +1069,8 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let result = apply_filters(&filters, &stories);
+        let store = project(stories.clone());
+        let result = store.filter(&filters);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "SH-1");
     }
@@ -873,7 +1081,8 @@ mod tests {
             make_rich_snapshot("SH-1", "todo", "First", Priority::None, vec![], None, None),
             make_rich_snapshot("SH-2", "todo", "Second", Priority::None, vec![], None, None),
         ];
-        let result = apply_filters(&[], &stories);
+        let store = project(stories.clone());
+        let result = store.filter(&[]);
         assert_eq!(result.len(), 2);
     }
 
@@ -892,7 +1101,8 @@ mod tests {
             assignee: Some("nobody".to_string()),
             ..Default::default()
         }];
-        let result = apply_filters(&filters, &stories);
+        let store = project(stories.clone());
+        let result = store.filter(&filters);
         assert!(result.is_empty());
     }
 
@@ -964,7 +1174,9 @@ mod tests {
 
     #[test]
     fn blocked_and_ready_together_matches_nothing() {
-        // A story can't be both blocked (awaiting.is_some()) and ready (awaiting.is_none())
+        // Not a coincidence of the fixture: `blocked` is "open and not
+        // ready", `ready` is "ready and unclaimed", so the two chips are
+        // disjoint by construction for any project.
         let stories = vec![
             make_rich_snapshot(
                 "SH-1",
@@ -987,7 +1199,8 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let result = apply_filters(&filters, &stories);
+        let store = project(stories.clone());
+        let result = store.filter(&filters);
         assert!(result.is_empty(), "blocked AND ready should match nothing");
     }
 
@@ -1001,7 +1214,8 @@ mod tests {
             text: Some("anything".to_string()),
             ..Default::default()
         }];
-        let result = apply_filters(&filters, &[]);
+        let store = project(Vec::new());
+        let result = store.filter(&filters);
         assert!(result.is_empty());
     }
 }
