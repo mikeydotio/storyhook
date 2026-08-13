@@ -1214,10 +1214,16 @@ fn web_serve_root_html_meets_wcag_tap_target_size() {
     // Selectors whose fix needed both axes -- each is a glyph-only icon
     // button (a chip's "x", a relation's delete button, a dismiss "x")
     // narrower than --tap-min on its own.
+    //
+    // `.rel-row button` was replaced by `.rel-id`/`.rel-remove` (SH-203):
+    // storyRef()'s id button now also renders outside any `.rel-row`
+    // (`.referenced-by-text`, `.comment-text`, `.card-blockers`), so its
+    // tap-target floor had to move off a `.rel-row`-scoped selector too.
     for selector in [
         ".status-reorder button",
         ".label-chip button",
-        ".rel-row button",
+        ".rel-id",
+        ".rel-remove",
         ".dispatch-history-dismiss",
     ] {
         let decl = declarations(css, selector);
