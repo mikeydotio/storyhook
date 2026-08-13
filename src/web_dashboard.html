@@ -883,6 +883,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
      reader needs. 252px for the pair was the single largest reason brand
      and .view-toggle couldn't share a row (see topbar's own comment). */
   .drawer { width: 100vw; }
+  /* SH-235: 18rem (288px) is nearly the entire screen on the narrowest
+     supported phones (320-350px) -- 320px leaves only a 32px (10%) sliver
+     of the next column, not enough to read as "more content this way"
+     rather than "the last column". `min(18rem, 85vw)` keeps 18rem as the
+     ceiling everywhere it already reads fine (375px+, a 23%+ peek) and
+     only shrinks the column where it wouldn't otherwise peek at all. */
+  .column { flex-basis: min(18rem, 85vw); max-width: min(18rem, 85vw); }
   .field-grid { grid-template-columns: 1fr; }
   .home-grid { grid-template-columns: 1fr; }
   .settings-form { flex-direction: column; align-items: stretch; }
