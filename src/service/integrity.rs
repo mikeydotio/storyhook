@@ -190,6 +190,15 @@ impl<'a, S: Store> IntegrityService<'a, S> {
     /// finding the operator had just told the doctor to fix, and nothing said
     /// that a manual reopen was the only way through. See
     /// [`blocked_repairs_detail`].
+    ///
+    /// # What it *did*, it says — including when it failed (SH-266)
+    ///
+    /// The message and the failed run's `advice` are one list, assembled
+    /// before the verdict. They used to be two, and the failing half carried a
+    /// subset: a repair this command really made — states added back to a
+    /// catalog below the floor — went unmentioned whenever anything else
+    /// remained, which reads as "nothing happened" to an operator who then
+    /// repeats it.
     pub fn fix(&self) -> Result<String, AppError> {
         let now = self.ctx.now();
         let project = self.project();
@@ -331,40 +340,32 @@ impl<'a, S: Store> IntegrityService<'a, S> {
         let remaining = self.report()?;
         let notices = self.notices()?;
         let blocked_detail = blocked_repairs_detail(&blocked);
-        // The advice this run owes, in the order it printed before findings
-        // became data: what could not be repaired, then the notices. Each
-        // entry is one rendered block, so a multi-line one keeps its shape.
-        let mut advice: Vec<String> = Vec::new();
-        if !blocked_detail.is_empty() {
-            advice.push(blocked_detail.clone());
-        }
-        advice.extend(notices.iter().cloned());
-        if let Some(detail) = IntegrityDetail::report(remaining, advice) {
-            return Err(AppError::Integrity(detail));
-        }
 
-        let mut message = if !touched.is_empty() || states_added > 0 {
-            "doctor repaired supported integrity issues".to_string()
-        } else if blocked.is_empty() {
-            "doctor found nothing to fix".to_string()
-        } else {
-            // Not "nothing to fix": there is something, and this command
-            // cannot be the one to fix it (SH-225).
-            "doctor found nothing it could fix".to_string()
-        };
+        // Everything this run has to say that is not a finding, assembled
+        // once and in the order it prints. Each entry is one rendered block,
+        // so a multi-line one keeps its shape.
+        //
+        // **Built before the verdict, not inside either outcome** (SH-266).
+        // The success message used to be assembled here by hand and the
+        // failure path picked two of its four parts to carry as advice, so a
+        // repair that succeeded and a run that failed reported different
+        // things about the same run: the states this command had just added to
+        // the catalog went unmentioned, and "could not be repaired" was
+        // unreachable in *both* — a story the read model cannot fold is also a
+        // `FoldFailure` finding, so a run with one always fails.
+        let mut advice: Vec<String> = Vec::new();
         if states_added > 0 {
-            message.push_str(&format!(
-                "\nadded {states_added} required {} this project was missing",
+            advice.push(format!(
+                "added {states_added} required {} this project was missing",
                 if states_added == 1 { "state" } else { "states" }
             ));
         }
         if !blocked_detail.is_empty() {
-            message.push('\n');
-            message.push_str(&blocked_detail);
+            advice.push(blocked_detail);
         }
         if !repair.unrepairable.is_empty() {
-            message.push_str(&format!(
-                "\n{} stor{} could not be repaired:\n{}",
+            advice.push(format!(
+                "{} stor{} could not be repaired:\n{}",
                 repair.unrepairable.len(),
                 if repair.unrepairable.len() == 1 {
                     "y"
@@ -387,14 +388,31 @@ impl<'a, S: Store> IntegrityService<'a, S> {
         // they are all about an unrecognised event the way it once did —
         // each notice string is already a complete, self-describing sentence.
         if !notices.is_empty() {
-            message.push_str(&format!(
-                "\n{} notice{} — nothing to fix, by design:\n{}",
+            advice.push(format!(
+                "{} notice{} — nothing to fix, by design:\n{}",
                 notices.len(),
                 if notices.len() == 1 { "" } else { "s" },
                 notices.join("\n")
             ));
         }
-        Ok(message)
+
+        if let Some(detail) = IntegrityDetail::report(remaining, advice.clone()) {
+            return Err(AppError::Integrity(detail));
+        }
+
+        let headline = if !touched.is_empty() || states_added > 0 {
+            "doctor repaired supported integrity issues"
+        } else if blocked.is_empty() {
+            "doctor found nothing to fix"
+        } else {
+            // Not "nothing to fix": there is something, and this command
+            // cannot be the one to fix it (SH-225).
+            "doctor found nothing it could fix"
+        };
+        Ok(std::iter::once(headline.to_string())
+            .chain(advice)
+            .collect::<Vec<_>>()
+            .join("\n"))
     }
 
     fn project(&self) -> ProjectId {
