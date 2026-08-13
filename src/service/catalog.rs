@@ -298,26 +298,86 @@ impl<'a, S: Store> CatalogService<'a, S> {
     }
 
     /// Registers every origin [`unregistered_origins`](Self::unregistered_origins)
-    /// found registrable, and returns the whole set it looked at.
+    /// found registrable, and reports what each write actually did.
     ///
-    /// Only `Registrable` is written. The three other findings come back
-    /// untouched so the caller can report them, which is R4's "reported, never
-    /// guessed at" in the shape `doctor --fix` already uses for the checkout
-    /// audit above.
-    pub fn register_found_origins(&self) -> Result<Vec<UnregisteredOrigin>, AppError> {
+    /// Only `Registrable` is ever attempted. But attempting is not the same as
+    /// succeeding: [`register_origin`](super::project::register_origin) answers
+    /// [`Registration::HeldBy`](super::project::Registration::HeldBy) — writing
+    /// nothing — when a **later** finding in this same sweep names an origin an
+    /// **earlier** one already claimed. Two checkouts of one repository, neither
+    /// registered, both classify `Registrable` before either write runs; only
+    /// the first can land. [`OriginSweep`] is built from what
+    /// [`Registration`](super::project::Registration) actually said, so the
+    /// caller cannot repeat the mistake this exists to fix (SH-274): counting
+    /// the pre-write classification as the outcome.
+    pub fn register_found_origins(&self) -> Result<OriginSweep, AppError> {
         let found = self.unregistered_origins()?;
-        for finding in &found {
+        let mut sweep = OriginSweep {
+            recorded: Vec::new(),
+            left_alone: Vec::with_capacity(found.len()),
+        };
+        for finding in found {
             let OriginFinding::Registrable(owned) = &finding.finding else {
+                sweep.left_alone.push(finding);
                 continue;
             };
             let now = crate::service::Clock::System.now();
-            self.store.write(|tx| {
-                super::project::register_origin(tx, finding.project, owned, &now)?;
-                Ok(())
-            })?;
+            let registration = self
+                .store
+                .write(|tx| super::project::register_origin(tx, finding.project, owned, &now))?;
+            match registration {
+                super::project::Registration::Recorded => sweep.recorded.push(RecordedOrigin {
+                    slug: finding.slug,
+                    origin: owned.url().clone(),
+                }),
+                // A URL already claimed while this sweep was running. The
+                // finding read `Registrable` a moment ago; it is not any more —
+                // rewritten so a caller reading `left_alone` never sees a
+                // `Registrable` entry the write refused.
+                super::project::Registration::HeldBy(holder) => {
+                    let origin = owned.url().clone();
+                    sweep.left_alone.push(UnregisteredOrigin {
+                        finding: OriginFinding::HeldBy { origin, holder },
+                        ..finding
+                    });
+                }
+            }
         }
-        Ok(found)
+        Ok(sweep)
     }
+}
+
+/// What one call to
+/// [`register_found_origins`](CatalogService::register_found_origins) did.
+///
+/// A value rather than the pre-write list it used to return, so the count a
+/// caller reports is the count of writes that actually landed (SH-274).
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct OriginSweep {
+    /// Every origin this sweep recorded, in the order it recorded them.
+    pub recorded: Vec<RecordedOrigin>,
+    /// Everything this sweep looked at and did not write — including a
+    /// `Registrable` finding whose write lost to an earlier one in the same
+    /// sweep, reclassified as [`OriginFinding::HeldBy`] to match.
+    pub left_alone: Vec<UnregisteredOrigin>,
+}
+
+impl OriginSweep {
+    /// Whether this sweep has nothing to say at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.recorded.is_empty() && self.left_alone.is_empty()
+    }
+}
+
+/// One origin [`register_found_origins`](CatalogService::register_found_origins)
+/// actually wrote.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordedOrigin {
+    /// The project it was recorded against.
+    pub slug: String,
+    /// The origin.
+    pub origin: crate::domain::remote::RemoteUrl,
 }
 
 /// A project whose checkout knows an origin the store does not (SH-119, R4).
