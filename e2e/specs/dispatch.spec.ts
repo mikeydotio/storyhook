@@ -118,25 +118,27 @@ test("Dispatch sits at the leading edge, before Delete", async ({ page }) => {
   await expect(footerButtons.nth(2)).toHaveText("Delete");
 });
 
-test("a dispatch from a tokenless tab prompts once, then runs with no second prompt (AC2)", async ({
+test("a tab authenticates once on load, and dispatch needs no second prompt (AC2)", async ({
   page,
 }) => {
   // Two dispatches to wait out here, at DISPATCH_COMPLETION_TIMEOUT apiece.
   test.setTimeout(2 * DISPATCH_COMPLETION_TIMEOUT + 30_000);
 
-  // No token seeded, and since SH-250 none is needed to *look*: a loopback
-  // read is answered without one, so the app boots and renders the repo list
-  // with no modal in the way. This assertion is the reason that half of
-  // SH-250 cannot regress unnoticed from here either.
-  //
-  // SH-187 briefly made the app's own bootstrap surface the modal instead,
-  // and this spec asserted that. SH-250 puts it back where it was: the
-  // *Dispatch click* is what needs a credential, so it is the click that
-  // prompts.
+  // No token seeded. SH-255 deleted SH-250's tokenless loopback read
+  // exemption, so the very first read this tab makes (`fetchReposOnce`'s
+  // `GET /api/repos`, fired from `bootstrap()` before this page renders
+  // anything real) 401s, and that handler's own retry-on-401 logic opens
+  // the modal before the repo list ever appears -- not the Dispatch click.
   await page.goto("/");
-  await expect(page.locator("#home-view")).toBeVisible();
+  await expect(page.locator("#token-modal")).toHaveClass(/open/);
+  await page.locator("#token-input").fill(DASHBOARD_NAMED_TOKEN);
+  await page.locator("#token-submit").click();
   await expect(page.locator("#token-modal")).not.toHaveClass(/open/);
 
+  // That one exchange is the whole story now: `/token` traded the pasted
+  // value for an `HttpOnly` cookie, which the browser attaches to every
+  // request in this tab automatically -- reads, and the dispatch write
+  // below -- so nothing past this point prompts a second time.
   await openProject(page, "Alpha Project");
   await page
     .locator(".card-title", { hasText: "Wire up the auth flow" })
@@ -147,19 +149,12 @@ test("a dispatch from a tokenless tab prompts once, then runs with no second pro
   await expect(dispatchButton).toBeVisible();
   await dispatchButton.click();
 
-  // Dispatch is not a read, so it still needs the token: the POST is refused
-  // 401 and `api()`'s own handler opens the modal and holds the request.
-  await expect(page.locator("#token-modal")).toHaveClass(/open/);
-  await page.locator("#token-input").fill(DASHBOARD_NAMED_TOKEN);
-  await page.locator("#token-submit").click();
+  // The "no second prompt" half of AC2: the cookie already authenticates
+  // the POST, so the modal never reopens and the dispatch runs on the first
+  // click. The button goes non-interactive immediately (`startDispatch`
+  // marks the story in-flight before the POST resolves); the toast lands
+  // only after at least one 5s poll cycle.
   await expect(page.locator("#token-modal")).not.toHaveClass(/open/);
-
-  // `api()` retries the exact request it was holding, so the dispatch runs
-  // without the user clicking Dispatch again -- the "no second prompt" half
-  // of AC2, now measured across the retry rather than across the bootstrap.
-  // The button goes non-interactive immediately (`startDispatch` marks the
-  // story in-flight before the POST, so the state survives the 401 detour);
-  // the toast lands only after at least one 5s poll cycle.
   await expect(dispatchButton).toBeDisabled();
   await expect(dispatchButton).toHaveText("Dispatching…");
   // The OTHER button disables too (the daemon dedupes a second POST by

@@ -960,18 +960,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   var PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3, none: 4 };
 
-  /** The tooltip on a control a `story web open` session cannot reach (SH-254),
-   * naming the command that can.
-   *
-   * A disabled control with an explanation, rather than a hidden one: a missing
-   * button teaches nothing, and a button that 403s teaches it too late. The
-   * server refuses these routes regardless of what this file renders -- the
-   * boundary is `api::routes::authority`, not a `disabled` attribute. */
-  function OUT_OF_SCOPE_NOTE(command) {
-    return "This dashboard session can edit stories and states, but not this. Run `"
-      + command + "` instead, or paste a token from `story token new <name>`.";
-  }
-
   // ============================================================
   // HANDOFF (SH-251)
   // ============================================================
@@ -1442,7 +1430,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         xhr.open(method, path, true);
         xhr.setRequestHeader("X-Storyhook", "1");
         xhr.setRequestHeader("Content-Type", "application/json");
-        attachCredentials(xhr);
         if (opts.headers) {
           Object.keys(opts.headers).forEach(function(name) {
             xhr.setRequestHeader(name, opts.headers[name]);
@@ -1455,15 +1442,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           try { parsed = JSON.parse(xhr.responseText); } catch (e) { /* non-JSON error body */ }
           if (xhr.status >= 200 && xhr.status < 300) {
             resolve(parsed || {});
-          } else if (credentialVerdict(xhr.status, parsed) === "prompt") {
+          } else if (xhr.status === 401) {
             openTokenModal(attempt, function() {
               reject({ status: 401, message: "authentication cancelled" });
             });
-          } else if (credentialVerdict(xhr.status, parsed) === "session") {
-            // The capability was revoked, evicted, or minted by a daemon that
-            // has since restarted. Clear it and say so -- never escalate.
-            sessionEnded(parsed && parsed.error);
-            reject({ status: xhr.status, message: (parsed && parsed.error) || "session ended", body: parsed });
           } else {
             // Not every error body is JSON -- the dispatch endpoint's own
             // 500/429/403 (src/api/dispatch.rs) are plain text (SH-196), and
@@ -1486,7 +1468,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function fetchData() {
     var xhr = new XMLHttpRequest();
     xhr.open("GET", apiBase() + "/data", true);
-    attachCredentials(xhr);
     xhr.timeout = 8000;
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
@@ -1516,24 +1497,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         } catch (e) {
           state.fetchOk = false;
         }
-      } else if (xhr.status === 401 || xhr.status === 403) {
+      } else if (xhr.status === 401) {
         // The stored token is stale (the daemon restarted, minting a new
         // one) or was never set. The next poll tick retries on its own; the
         // modal gives the user a way to fix it sooner.
-        //
-        // Unless what came back names a capability (SH-254), in which case
-        // the modal is the wrong answer: a revoked session gets cleared and
-        // reported, and a scope refusal on a *read* cannot happen at all --
-        // every read is in scope -- so it is reported and nothing is touched.
         state.fetchOk = false;
-        var body = null;
-        try { body = JSON.parse(xhr.responseText); } catch (e) { /* plain-text refusal */ }
-        var verdict = credentialVerdict(xhr.status, body);
-        if (verdict === "prompt") {
-          openTokenModal(fetchData);
-        } else if (verdict === "session") {
-          sessionEnded(body && body.error);
-        }
+        openTokenModal(fetchData);
       } else {
         state.fetchOk = false;
       }
@@ -1606,7 +1575,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function fetchReposOnce(onDone) {
     var xhr = new XMLHttpRequest();
     xhr.open("GET", "/api/repos", true);
-    attachCredentials(xhr);
     xhr.timeout = 8000;
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
@@ -1618,21 +1586,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         } catch (e) {
           state.reposFetchOk = false;
         }
-      } else if (xhr.status === 401 || xhr.status === 403) {
+      } else if (xhr.status === 401) {
         // Reprompt and retry the whole call once a fresh token is saved,
         // rather than running `onDone` (and rendering) against a response
-        // that never arrived -- but only when a prompt is the right answer.
-        // A revoked capability (SH-254) is cleared and reported instead, and
-        // `onDone` still runs so the screen resolves rather than hanging.
+        // that never arrived.
         state.reposFetchOk = false;
-        var reposBody = null;
-        try { reposBody = JSON.parse(xhr.responseText); } catch (e) { /* plain-text refusal */ }
-        var reposVerdict = credentialVerdict(xhr.status, reposBody);
-        if (reposVerdict === "prompt") {
-          openTokenModal(function() { fetchReposOnce(onDone); });
-          return;
-        }
-        if (reposVerdict === "session") sessionEnded(reposBody && reposBody.error);
+        openTokenModal(function() { fetchReposOnce(onDone); });
+        return;
       } else {
         state.reposFetchOk = false;
       }
@@ -1691,101 +1651,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // Getting the credential into that cookie in the first place is
   // `submitTokenModal()`'s job: it POSTs whatever was pasted to `/token`
   // (`crate::api::tokens::EXCHANGE_PATH`), which answers with `Set-Cookie`
-  // on success and never echoes the value back. The page's only lasting
-  // memory of the exchange is `HAS_TOKEN_KEY`, a non-secret marker used
-  // solely for the `sessionOnly()` affordance below -- the server enforces
-  // the real boundary regardless of what this flag believes.
-
-  var HAS_TOKEN_KEY = "storyhookHasToken";
-  var SESSION_KEY = "storyhookDashboardSession";
-
-  /** Whether this tab has successfully exchanged a token for a cookie this
-   * session. Advisory only -- see the block comment above. */
-  function hasExchangedToken() {
-    try { return sessionStorage.getItem(HAS_TOKEN_KEY) === "1"; }
-    catch (e) { return false; }
-  }
-  function markTokenExchanged() {
-    try { sessionStorage.setItem(HAS_TOKEN_KEY, "1"); }
-    catch (e) { /* the affordance below just stays conservative; nothing breaks */ }
-  }
-
-  // --- The scoped session capability (SH-254) ---
-  //
-  // `story web open` hands this tab a capability rather than the daemon's
-  // token. It can edit stories and states; it cannot create or delete a
-  // project, cannot dispatch an agent, cannot reach the CLI through
-  // /api/v1/invoke, and is refused outright from any machine but this one.
-  //
-  // A SECOND KEY AND A SECOND ACCESSOR, never one key holding two kinds of
-  // credential told apart by their shape. A parser standing in for a type is
-  // exactly what the server side rejected, and it would be no better here.
-  // The two travel in different headers for the same reason.
-  function getSessionCapability() {
-    try { return sessionStorage.getItem(SESSION_KEY) || ""; }
-    catch (e) { return ""; }
-  }
-  function setSessionCapability(capability) {
-    try { sessionStorage.setItem(SESSION_KEY, capability); }
-    catch (e) { /* the tab still works; it will just prompt on its first write */ }
-  }
-  function clearSessionCapability() {
-    try { sessionStorage.removeItem(SESSION_KEY); }
-    catch (e) { /* ignore */ }
-  }
-
-  /** True when this tab's only credential is a scoped capability -- which is
-   * every tab `story web open` opened, until somebody pastes a token.
-   *
-   * Read by the three controls the capability deliberately cannot reach, so
-   * they render disabled with the CLI command that *can* do it. The server
-   * refuses them regardless (that is where the boundary actually lives); this
-   * is an affordance, so a user meets an explanation instead of a button that
-   * does nothing. */
-  function sessionOnly() {
-    return !hasExchangedToken() && !!getSessionCapability();
-  }
-
-  /** Attaches whichever credentials this tab holds to an open `XMLHttpRequest`.
-   *
-   * The named token itself is never attached here: it lives in an `HttpOnly`
-   * cookie the browser sends on its own, and this page has no way to read it
-   * even if it wanted to. Only the SH-254 session capability -- still a
-   * plain header, until the model it belongs to is retired -- is this
-   * function's job now. */
-  function attachCredentials(xhr) {
-    var capability = getSessionCapability();
-    if (capability) xhr.setRequestHeader("X-Storyhook-Session", capability);
-  }
-
-  /** What a failed response means for the credentials this tab is holding.
-   *
-   * The whole point of the two `code`s the daemon sends. Before SH-254 every
-   * 401 cleared the stored credential and opened the token modal, which is the
-   * right answer for a tab that has nothing -- and exactly the wrong answer for
-   * a scope refusal or a revoked capability. Either would have ended with the
-   * user pasting the master token into the tab, restoring full authority for
-   * its lifetime: least privilege undone by its own error handler.
-   *
-   * Returns "prompt" (clear the token and ask for one), "session" (the
-   * capability is gone; clear only that and say so), or "report" (tell the
-   * caller and change nothing). */
-  function credentialVerdict(status, parsed) {
-    var code = parsed && parsed.code;
-    if (code === "session_scope") return "report";
-    if (code === "session_unknown") return "session";
-    return status === 401 ? "prompt" : "report";
-  }
-
-  /** Handles the "your capability is gone" case, once, for every caller.
-   *
-   * Never opens the token modal: a tab that was working a moment ago should be
-   * told what happened and offered the one-command fix, not walked into pasting
-   * the strongest credential on the machine. */
-  function sessionEnded(message) {
-    clearSessionCapability();
-    toast(message || "This dashboard session ended. Run `story web open` again to start a new one.", "error");
-  }
+  // on success and never echoes the value back. This page keeps no memory of
+  // the exchange at all -- there is one credential tier now, so a 401 always
+  // means the same thing (nothing valid is held) and there is nothing left
+  // to distinguish it from.
 
   /** The request to retry once a fresh token is saved, or null when the
    * modal is closed with nothing pending. */
@@ -1848,7 +1717,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
       if (xhr.status === 204) {
-        markTokenExchanged();
         var callback = tokenModalCallback;
         tokenModalCancelCallback = null;
         closeTokenModal();
@@ -1898,22 +1766,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var entry = state.dispatches[st.id];
     var inFlight = !!entry;
     var runningAuto = inFlight && entry.auto;
-    // Dispatch spawns an agent process, which is outside what a `story web
-    // open` session may do (SH-254). The server refuses it either way -- that
-    // is where the boundary lives -- so this is an affordance, not the
-    // enforcement: a user meets the reason and the command rather than a 403.
-    var outOfScope = sessionOnly();
-    var scopeNote = outOfScope ? OUT_OF_SCOPE_NOTE("story dispatch " + st.id) : null;
     return [
       el("button", {
         id: "dispatch-btn",
         class: "btn btn-primary",
-        disabled: inFlight || outOfScope,
-        title: scopeNote,
+        disabled: inFlight,
         onClick: function() { startDispatch(st.id, false); }
       }, [inFlight && !runningAuto ? "Dispatching…" : "Dispatch"]),
       el("button", {
-        title: scopeNote,
         id: "dispatch-auto-btn",
         class: "btn",
         disabled: inFlight,
@@ -5193,7 +5053,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       if (!prefixTouched) prefixInput.value = derivePrefix(pathInput.value);
     });
     var error = el("div", { class: "modal-error" }, []);
-    var submit = el("button", { class: "btn btn-primary", disabled: sessionOnly(), title: sessionOnly() ? OUT_OF_SCOPE_NOTE("story project new") : null, onClick: function() {
+    var submit = el("button", { class: "btn btn-primary", onClick: function() {
       var path = pathInput.value.trim();
       if (!path) { error.textContent = "Path is required."; return; }
       var prefix = prefixInput.value.trim();
@@ -5275,7 +5135,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
     var error = el("div", { class: "modal-error" }, []);
     var typed = el("input", { type: "text", placeholder: "Type " + plan.slug + " to confirm" });
-    var confirm = el("button", { class: "btn btn-danger", disabled: sessionOnly(), title: sessionOnly() ? OUT_OF_SCOPE_NOTE("story project delete") : null, onClick: function() {
+    var confirm = el("button", { class: "btn btn-danger", onClick: function() {
       if (typed.value.trim() !== plan.slug) {
         error.textContent = "Type the project's id exactly to confirm.";
         return;
@@ -5877,25 +5737,26 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     setInterval(sseWatchdog, SSE_WATCHDOG_INTERVAL_MS);
   }
 
-  /** Spends the coupon `consumeHandoff()` took off the URL for a scoped
-   * session capability, then calls `done()` -- on every outcome, exactly once
-   * (SH-251, SH-254).
+  /** Spends the coupon `consumeHandoff()` took off the URL for a named token,
+   * then calls `done()` -- on every outcome, exactly once (SH-251, SH-255).
    *
-   * What comes back is a capability, not the daemon's token. It edits stories
-   * and states, works only from this machine, and lasts until the daemon stops
-   * or somebody runs `story web revoke`. Creating or deleting a project and
-   * dispatching an agent are outside it and ask for the token instead.
+   * Success answers `204` with `Set-Cookie` and no body: the token itself
+   * never reaches this page, the same as `submitTokenModal()`'s exchange.
+   * What was redeemed is a full named token -- same as one minted by `story
+   * token new` or pasted into the modal -- revocable on its own via `story
+   * token revoke`, distinct from any other tab's.
    *
    * `done` runs from the completion handler on success, on refusal and on
    * timeout alike, guarded by `finished`, so the app can neither be skipped
    * (a hung loopback socket leaving a blank dashboard) nor started twice (two
    * `EventSource` connections and two of every interval).
    *
-   * A refused coupon is reported once and never retried. It may mean somebody
-   * else redeemed it, and a retry loop would turn a possible theft into
-   * noise; it must also not open the token modal pre-emptively, which is the
-   * behaviour SH-250 removed. The dashboard renders either way and prompts on
-   * the first write, exactly as a hand-typed URL does. */
+   * A refused coupon is reported once and never retried -- it may mean
+   * somebody else redeemed it, and a retry loop would turn a possible theft
+   * into noise. Unlike before SH-255, this page holds no fallback credential
+   * for the refusal case: the very next read 401s, and the modal that opens
+   * for it (`fetchReposOnce`'s own 401 handler) is what actually recovers
+   * the tab, exactly as a hand-typed URL with no coupon at all would. */
   function redeemHandoff(done) {
     if (!handoffCoupon) { done(); return; }
     var coupon = handoffCoupon;
@@ -5905,7 +5766,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       if (finished) return;
       finished = true;
       if (!redeemed) {
-        toast("That one-time dashboard link was not accepted — you'll be asked for the daemon token on your first change.", "info");
+        toast("That one-time dashboard link was not accepted — you'll be asked for a token on your first request.", "info");
       }
       done();
     }
@@ -5917,12 +5778,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     xhr.timeout = HANDOFF_TIMEOUT_MS;
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
-      var capability = null;
-      if (xhr.status === 200) {
-        try { capability = JSON.parse(xhr.responseText).session; } catch (e) { capability = null; }
-      }
-      if (capability) setSessionCapability(capability);
-      complete(Boolean(capability));
+      complete(xhr.status === 204);
     };
     xhr.ontimeout = function() { complete(false); };
     xhr.onerror = function() { complete(false); };

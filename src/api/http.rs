@@ -385,12 +385,15 @@ pub struct LocalRequest(());
 ///
 /// # Why one function
 ///
-/// Two callers derive locality — [`crate::api::admission`]'s tokenless read
-/// exemption (SH-250) and [`crate::api::handoff`]'s redemption gate (SH-251) —
-/// and before this extraction the first spelled the rule inline. Answering
-/// *"the governing principle lives in two files, which is how it rots"*, both
-/// now derive it here. A third caller is a change to this doc comment and to
-/// the source-scanning test that names the two.
+/// [`crate::api::handoff`]'s redemption gate (SH-251) is the one remaining
+/// caller — [`crate::api::admission`]'s tokenless read exemption (SH-250)
+/// derived it too, before SH-255 deleted the exemption outright. Answering
+/// *"the governing principle lives in this one place, not scattered across
+/// callers that each spell it inline"* is still the reason it is a function
+/// rather than duplicated logic. A second caller is a change to this doc
+/// comment and to `tests/handoff_endpoint.rs`'s
+/// `locality_is_derived_only_where_it_was_decided_it_should_be`, which pins
+/// the allowed set.
 pub fn local_request(
     headers: &[Header],
     trusted: &TrustedHosts,
