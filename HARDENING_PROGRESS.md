@@ -12957,3 +12957,87 @@ allowed for explicitly: it required the drift finding to carry its four values
 typed *or* a written record that SH-244 does not close SH-243's use case. It
 carries them (`FindingData::Divergence`), pinned end to end by
 `doctor_json_hands_a_divergence_over_as_data_not_prose`.
+### SH-266 — done
+
+**Outcome:** merged (PR #342). `story doctor`'s advice is the same list whether
+or not the project is damaged.
+
+**The defect, and why it was invisible.** Eight advice sources were assembled
+*inside* the healthy branch of the doctor arm; the damaged branch was handed
+`notices` alone. So a project was told about its orphaned registrations, its
+unregistered origins, a github remote that had drifted, a command the daemon
+abandoned, pointer-origin drift, pointer-prefix drift and legacy commit links
+**only while nothing else was wrong** — seven of eight withheld exactly when an
+operator is most likely to be reading. It contradicted the SH-185 ruling the
+code records in its own doc comment one file over, and it survived because
+advice was folded into one prose blob until SH-244 made it a typed field. Two
+council seats found it independently, reading that code for an unrelated
+reason.
+
+**The fix is one assembly, not two lists kept in step.** `doctor_advice()` is
+called before the verdict and both outcomes carry what it returns.
+`IntegrityDetail::report` still asks its emptiness question of the *findings*
+alone, which is what makes handing the same list to both outcomes safe — the
+SH-185 separation is by type, so nothing in advice can decide health or an exit
+code. An advisory added later reaches a damaged project by construction rather
+than by somebody remembering two places.
+
+**The sweep found more on `--fix` than the story named.** Its success message
+was assembled by hand from four parts and its failure path carried two of them.
+
+| Part of the run | Success | Failure (before) | Failure (now) |
+|---|---|---|---|
+| states added back to a catalog below the floor | ✅ | ❌ | ✅ |
+| repairs a closed story blocked (SH-225) | ✅ | ✅ | ✅ |
+| `N stories could not be repaired` | unreachable | ❌ | ✅ |
+| notices | ✅ | ✅ | ✅ |
+
+Row three is the one worth the entry. A story the read model cannot fold is
+**also** a `FoldFailure` finding, so a run holding one *always* fails — which
+makes the failure path the only place that block can ever be read, and it was
+the path dropping it. Dead output on both sides, found by asking what could
+reach it rather than by reading the diff. Message and failure advice are one
+list now, rendered two ways; the success output is byte-identical.
+
+**Three tests, each watched fail first.** The first asserts an **equality** —
+the advice a damaged run carries *is* the advice a healthy one prints — rather
+than a containment, which would have passed on any surviving advice and let the
+next one-branch-only source through. It is provoked with a stale pointer prefix
+(SH-190): advice no feature flag switches off and no store-location guard
+suppresses, which the catalog advisories are (deliberately silent under a
+temporary store, which every fixture here has).
+
+**No orphan-plus-finding fixture, deliberately** — even though that is the
+story's own repro. The `audit_catalog` gate now lives *inside* the single
+assembly, so the orphan advisory cannot be present for one outcome and absent
+for the other: it is the same function call. What remained to pin was that the
+gate is in the assembly (`project_path_hygiene.rs` already pins the advisory
+itself) and that the assembly reaches the damaged path (the equality above). A
+real-store fixture with injected damage would have cost a third store harness to
+re-prove a composition. Worth recording that a CLI-only route to that fixture
+does not exist by design: the schema refuses a dangling relation outright and
+`import` refuses an unknown type, so any "real finding" has to be injected past
+the services.
+
+**Sibling filed: SH-270** (`medium`). `--fix` returns early on a failed
+story-level repair — `let mut message = service.fix()?;` — so it never reaches
+its catalog half at all: `deregister_orphaned` and `register_found_origins` are
+**skipped**, not merely unreported. The remedy an operator is handed for a stale
+registration is the one command that will not perform it while anything else is
+wrong. Filed rather than folded in because running mutations after a failed
+repair is a decision (the shape and a suggested council question are in the
+story), not a transcription of this fix.
+
+**Council:** none. No decision here had two defensible answers — the story's own
+filing named the fix shape, and the one question that did (SH-270) was filed
+rather than guessed at.
+
+**Gate:** two full `make test` runs, both green and both supervised with a
+log-growth heartbeat, a 120s stall bound and a monitor covering stall *and*
+completion — the branch (153 suites, 130/130 e2e, `EXIT=0`) and then the merged
+`main` (154 suites, 130/130, `EXIT=0`). No stalls, no wedges, no restarts. The
+second run is not ceremony: PR #341 (SH-264) landed between this branch's gate
+and its merge, so the tree that is now `main` is one no gate had seen — it
+brought the 154th suite. `cargo fmt`/`clippy` were also re-run alone over the
+final branch tree, because a doc comment landed after that gate started. 110 GB
+free.
