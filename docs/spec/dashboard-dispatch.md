@@ -324,6 +324,47 @@ after it in a hand-rolled sequence never runs. `story.sh reap <id>` collapses th
 sequence into one call with a fixed, tested order — git work, then the window kill,
 last — so there is no sequence for an agent to get subtly wrong under pressure.
 
+## As built — SH-219 (a council-conditional autonomous charter)
+
+**The charter used to name `/council-vote` unconditionally — on a machine with no council
+plugin installed, that was an instruction the child could never carry out.** SH-219 asked for
+the `--auto` charter to convene the council only when it is actually installed, and to
+otherwise trust its own researched judgment even on a hard question. Both halves were real
+gaps: nothing anywhere checked for the skill's presence, and the charter had no positive
+instruction for the *easy*-question case at all — only an implicit absence of "ask the human."
+
+**The check runs in `story.sh`, not in the child session, and not in this daemon.**
+`council_vote_available` (`plugin/claude-code/bin/story.sh`) probes for a real
+`skills/council-vote/SKILL.md` — bare under `~/.claude/skills` or the dispatched project's own
+`.claude/skills`, or shipped by an enabled entry in `installed_plugins.json` — before the
+charter is ever rendered, and picks one of two composed templates accordingly. Rejected: asking
+the *child* to judge its own skill roster and decide which charter to have followed, which
+would have made the decision unverifiable and non-deterministic across otherwise-identical
+dispatches. This daemon could have run the probe instead, but `story.sh` is what actually
+resolves `$HOME`/`installed_plugins.json` for the identity that matters — the one the launched
+`claude` process itself will read — and the daemon's own dispatch env allowlist
+(`src/env/spawn_env.rs`) deliberately does not forward `CLAUDE_CONFIG_DIR`, so a probe run here
+would silently answer for the wrong config directory on a dashboard-launched dispatch.
+
+**Composed from a shared HEAD/TAIL plus one of two decision clauses, not two independent
+charters.** `AUTO_PROMPT_TPL` and `AUTO_PROMPT_SOLO_TPL` differ only in the clause that
+governs a genuinely hard decision (convene the council vs. research-and-decide-and-record);
+every other obligation — plan-approval framing, `make test`, PR/merge conduct, closure against
+acceptance criteria, `reap` as the final act, the hard-stop escape — is written once and shared.
+Two independently-maintained ~2,000-character strings would have been a standing invitation for
+the two paths to drift on an obligation neither charter should ever have had a choice about.
+
+**I4 CHARTER-INERT now covers three rendered variants, not two**, and the daemon-side runtime
+rider (`prompt_override_violation`, `src/api/dispatch.rs`) checks a dirty override of *either*
+auto template on an `--auto` dispatch — it cannot know in advance which one
+`council_vote_available` is about to pick, so it refuses on either rather than guessing.
+
+**`STORY_COUNCIL` (`auto`/`on`/`off`) is the probe's own escape hatch and test seam** — the
+same shape `READY_PROCESS_PATTERN` already established for a heuristic that needs one. An
+explicit `STORY_AUTO_PROMPT` still overrides the entire charter outright, regardless of what
+the probe finds: it has always been a wholesale-override seam, and a caller who sets it clearly
+wants full control, not a probe result silently vetoing their text.
+
 ## As built — SH-196 (the version-skew diagnosis)
 
 **The bug this closes was found live, not hypothesized.** Mikey dispatched SH-68 from

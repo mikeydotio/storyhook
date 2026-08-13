@@ -119,6 +119,17 @@ Worth knowing before changing anything here:
   rather than best-effort, since nobody is watching to read a partial
   result. The attended path is unchanged: teardown there still stays a later
   `/story complete <id>` from the main checkout.
+- **`--auto` renders one of TWO charters, decided by `story.sh` itself, not
+  left to the child's own guess** (SH-219). `council_vote_available` probes
+  for a real `skills/council-vote/SKILL.md` — bare under `~/.claude/skills`
+  or the project's own `.claude/skills`, or shipped by an enabled entry in
+  `installed_plugins.json` — before the charter is ever rendered. Found: the
+  charter convenes `/council-vote` for a genuinely hard decision. Not found:
+  it says so, and tells the child to research, decide, and record instead —
+  never to stall waiting on a skill that was never going to answer. Either
+  charter tells the child that an *easy* decision (one clear best answer)
+  gets researched and decided on its own, full stop — `--auto` was never
+  meant to route every open question through a mechanism at all.
 
 ## Environment
 
@@ -129,7 +140,8 @@ All knobs are `STORY_*`. The commonly useful ones:
 | `STORY_DRY_RUN=1` | preview any side-effecting verb; changes nothing |
 | `STORY_LAUNCH_CMD` | what `dispatch` launches (must **not** include `-w`) |
 | `STORY_PROMPT` / `STORY_PROMPT_EXTRA` | the handoff prompt, and a clause appended to it |
-| `STORY_AUTO_PROMPT` | the `--auto` charter (same seam as `STORY_PROMPT`, autonomous runs only) |
+| `STORY_AUTO_PROMPT` / `STORY_AUTO_PROMPT_SOLO` | the two `--auto` charters — council-available and no-council, respectively (same seam as `STORY_PROMPT`; either wins outright over the probe below) |
+| `STORY_COUNCIL` | `auto` (default, probes for real)/`on`/`off` — which `--auto` charter `council_vote_available` picks |
 | `STORY_DONE_STATE` | the state `complete` closes into |
 | `STORY_TARGET_SESSION` | dispatch into a named session from outside tmux |
 | `STORY_PROTECTED_BRANCHES` | extra globs `complete` must never delete |
