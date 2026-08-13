@@ -13904,3 +13904,93 @@ Supervised background runs, 60s heartbeat against a 240s stall bound — 240
 rather than this file's 120 because `cargo clippy --workspace --all-targets`
 is legitimately silent for minutes on this tree. No stalls, no orphan daemons
 before or after any run.
+
+### SH-282 — done · PR #365
+
+**Outcome:** merged. SH-281's ordering guard transplanted to the project list,
+plus a defect in SH-281's own test harness that the transplant exposed.
+
+**Both consequences reproduced before anything was changed.** Against unfixed
+code the new spec file goes red twice, and for the right reasons rather than
+merely the expected ones: the Home card reverts `3 open` to `2 open`, and the
+dashboard toasts **"This project was deleted"** over a project the page had
+just created, opened and rendered. The second is the one that isn't cosmetic —
+`fetchReposOnce`'s deleted-elsewhere branch acts on `!state.repos.some(...)`,
+which a list predating the open project's creation satisfies exactly, so the
+user is evicted from a project that exists and nothing repairs it until the
+25s safety poll.
+
+**The guard is the ordering half alone, and the omission is the interesting
+part.** The board needed two floors because `applyStory` moves it *without* a
+fetch, so the board can be ahead of every reply applied; nothing anywhere
+assigns `state.repos` but `fetchReposOnce`'s own success path, so "the newest
+reply applied" is the whole of what that screen knows, and a write floor would
+protect nothing. Creating or deleting a project from this tab moves the list
+the way any other client's would: by fetching it again. The story said "the
+ordering half alone" and was right; the reasoning is now in the code rather
+than in the story, where the next reader will not find it.
+
+One decision the story asked for explicitly: may the deleted-elsewhere branch
+act on a snapshot at all? Answer: only on the newest one, achieved by
+discarding a stale reply *whole* rather than filtering what may be read from
+it. A discarded reply still runs its `onDone` — what that decides is
+`bootstrap()`'s initial screen, answered at least as well by the newer list
+already applied, and a callback that never fired would leave the dashboard on
+no screen at all.
+
+**A one-day-old harness had a race, and the proof was structural rather than
+statistical.** Generalising `holdBoardFetch` into `support.ts::holdFetch`
+(commit 1, a pure move) surfaced it on the very next run: `a board snapshot
+taken before a relation must not un-render it when it arrives late` failed
+inside `seal()` with `Expected: 0, Received: 1` — a message naming the harness
+and nothing about the dashboard. Two re-runs were green (12/12, 16/16), which
+is exactly the evidence that tempts one to shrug at a flake. The count is the
+proof instead: `await gate.held` is the *only* path in that harness leaving a
+request neither fulfilled nor failed, so an `outstanding` member that never
+settles can only be a second request that reached it. The predicate needs the
+reply's body, which needs an await; two candidates inside that window both
+claim the hold, the second overwrites `heldRequest`, and the first waits on a
+gate `deliver()` releases exactly once. Not rare by construction — a mutation
+is followed by its own fetch and, `FETCH_DEBOUNCE_MS` later, the SSE-driven
+one, and both carry the write the predicate looks for. It needs only the first
+`route.fetch()` still in flight when the second request arrives, which is the
+same load these specs exist to reproduce: **the harness got less reliable
+exactly when the behaviour it tests got more reachable.** Fixed by serializing
+the decision while deliberately *not* serializing the waiting (a request parked
+until `deliver()` must not block the ones behind it, which is what `seal()`
+counts on). Verified at `--repeat-each=3` across both staleness files, 18/18.
+
+**The eviction spec needed a fifth project, and that is a fixture decision, not
+an implementation detail.** A list lacking the open project can only be a list
+taken before that project existed, so the spec creates a real one through
+`POST /api/repos` — inside `run-e2e.sh`'s own `$seed_dir`, reached via the
+exported Alpha checkout, so it dies with the run's data root — and deletes it
+in an unconditional `afterEach`, the SH-245 shape. Both guards permit it
+because the e2e store is itself throwaway (`refuse_temp_project_in_real_store`,
+`refuse_project_burst_in_real_store` both short-circuit on a temp store). The
+evidence that it does not leak is that the 51 specs running alphabetically
+after it — `status-flags`, `story-*`, `topbar-subtitle`'s own "N projects",
+`zoom.mobile` — are green in the full run.
+
+**Two supervision lessons, one of them mine.** (a) The first `make test` was
+launched with `run_in_background: true` *and* `timeout: 600000`; it was killed
+at that ceiling mid-suite, a fresh run appeared under the same log path, and
+the truncated log read as a stall for several minutes of misdiagnosis. A
+background command takes no explicit timeout — that ceiling is the reason to
+background it. (b) A second `make test` was running concurrently the whole
+time, from the SH-265 session's `git push` hook in `.claude/worktrees/SH-265`.
+Different worktree, so different `target/` and ephemeral ports: the two could
+not corrupt each other and only competed for CPU. Worth confirming rather than
+assuming — `lsof -p <pid> -a -d cwd` answers it in one line.
+
+**PR #364 landed between this branch's gate and its merge**, touching the same
+two files (`e2e/specs/support.ts`, `src/web_dashboard.html`). Git merged them
+clean, but "merged clean" is not "tested together" and a merge commit preserves
+both parents forever — so `make test` was re-run on merged `main` rather than
+trusting the branch's own green.
+
+**Gate:** `make test` green on the branch — 155 `test result: ok` lines
+(Rust suites plus doctests), 32 plugin tests, 144 e2e specs, zero failures —
+and re-run green on merged `main`.
+Supervised background runs throughout, 240s stall bound. No orphan daemons
+before or after any run.
