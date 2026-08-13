@@ -69,8 +69,9 @@ fn a_failed_command_writes_its_error_only_to_stderr() {
 #[test]
 fn quiet_does_not_move_an_error_back_onto_stdout() {
     // The reported symptom: `story move ... --quiet 2>/dev/null || true` in
-    // the post-merge hook printed "error: story SH-41 is closed and cannot be
-    // modified" into the middle of a merge diffstat.
+    // the post-merge hook printed the closed-story refusal (then worded
+    // "error: story SH-41 is closed and cannot be modified") into the middle
+    // of a merge diffstat.
     let dir = project();
     let out = story(dir.path())
         .args(["move", "SH-1", "done", "already closed", "--quiet"])

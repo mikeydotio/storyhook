@@ -2,9 +2,10 @@
 //!
 //! Between [`crate::invoke::dispatch`], which knows the shape of a CLI
 //! command, and [`crate::store`], which knows how to persist bytes, sits this:
-//! the rules about what a story *is*. A story cannot be modified once it is
-//! closed; moving into a closed state clears what the story was awaiting and
-//! archives it; a relation is asserted by both of its ends or by neither.
+//! the rules about what a story *is*. A closed story's state, scope and rollups
+//! cannot change, though an observation may still be appended to it (SH-261);
+//! moving into a closed state clears what the story was awaiting and archives
+//! it; a relation is asserted by both of its ends or by neither.
 //!
 //! Under the previous design those rules lived wherever a command happened to
 //! need them, which is why the state-transition batch was written out four
@@ -359,6 +360,46 @@ pub(crate) fn resolve_story(
     Ok((story_no, row))
 }
 
+/// Which stories a single-story write is allowed to reach.
+///
+/// Every write to one story states this at its call site rather than inheriting
+/// it from whichever helper it happened to reach for. The distinction it draws
+/// is the one the resolvers below encode, and SH-261 is where it was settled:
+/// an **edit** changes what a story *is* and is refused once the story is
+/// closed; an **append** records an observation about it and is not.
+///
+/// The line is not "which verb is this" but **what derived state can this write
+/// touch** — the standard SH-207's council applied when it let a closed story be
+/// a relation *target* only where the write provably could not reach
+/// `compute_progress`. A comment reaches nothing but the comment list and
+/// `updated_at`, which is what puts it on the append side.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Intent {
+    /// Changes the story's own fields, state or relationships. Refused once the
+    /// story is closed — see [`resolve_open_story`].
+    Edit,
+    /// Records an observation about the story without changing what it is.
+    /// Permitted on a closed story, refused on a deleted one — see
+    /// [`resolve_appendable_story`].
+    Append,
+}
+
+impl Intent {
+    /// Resolves `id` under this intent, applying the guard that belongs to it.
+    pub(crate) fn resolve(
+        self,
+        tx: &impl ReadOps,
+        project: ProjectId,
+        prefix: &str,
+        id: &str,
+    ) -> Result<(StoryNo, StoryRow), AppError> {
+        match self {
+            Self::Edit => resolve_open_story(tx, project, prefix, id),
+            Self::Append => resolve_appendable_story(tx, project, prefix, id),
+        }
+    }
+}
+
 /// [`resolve_story`], rejecting a story that has been closed.
 ///
 /// The archived flag is the test, not the superstate: a story whose state slug
@@ -373,8 +414,60 @@ pub(crate) fn resolve_open_story(
 ) -> Result<(StoryNo, StoryRow), AppError> {
     let (story_no, row) = resolve_story(tx, project, prefix, id)?;
     if row.archived {
+        return Err(AppError::Validation(closed_story_refusal(id)));
+    }
+    Ok((story_no, row))
+}
+
+/// What a closed story says when an edit is refused.
+///
+/// One constructor rather than a literal per site, because there were two hand-
+/// copied copies of the previous sentence and they are the kind of thing that
+/// drifts apart the moment one of them is corrected.
+///
+/// The sentence it replaced — *"story `<id>` is closed and cannot be
+/// modified"* — was false, and had been since SH-43: `hide` and `unhide` modify
+/// closed stories, and since SH-261 so does `comment`. A refusal that overstates
+/// the rule teaches the wrong rule, and this one was quoted back as an invariant
+/// (`docs/spec/dashboard-dispatch.md`) by a later design that then built around
+/// it.
+pub(crate) fn closed_story_refusal(id: &str) -> String {
+    format!(
+        "story `{id}` is closed; reopen it with `story reopen {id}` to change it — a comment needs no reopen"
+    )
+}
+
+/// [`resolve_story`], rejecting a story that has been soft-deleted but
+/// permitting one that is merely closed (SH-261).
+///
+/// **A closed story's log is already appendable**, which is what makes this the
+/// smaller of the two guards rather than a hole in the larger one: `hide` and
+/// `unhide` append to archived stories, `purge` appends relationship retractions
+/// onto closed claimants, and `history::restore` appends compensating events to
+/// anything. What was refused was not appending — it was appending *on a
+/// person's behalf*.
+///
+/// The line stops at `deleted`, and deliberately: [`StoryService::purge`]
+/// destroys every event on a soft-deleted story, so an observation recorded here
+/// is evidence with an expiry date nothing warns its author about. A soft-deleted
+/// story's futures are restoration and destruction, and `StoryService::delete`
+/// already reports an *already*-deleted story as not found — so permitting a
+/// comment on one would make a story writable that another verb insists does not
+/// exist.
+///
+/// `hidden` is not consulted. It is a display fact layered on a closed story, so
+/// a hidden story takes a comment and stays hidden.
+pub(crate) fn resolve_appendable_story(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    prefix: &str,
+    id: &str,
+) -> Result<(StoryNo, StoryRow), AppError> {
+    let (story_no, row) = resolve_story(tx, project, prefix, id)?;
+    if row.deleted {
         return Err(AppError::Validation(format!(
-            "story `{id}` is closed and cannot be modified"
+            "story `{id}` is deleted and cannot be commented on; \
+             restore it first with `story reopen {id} --force`"
         )));
     }
     Ok((story_no, row))
