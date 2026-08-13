@@ -1104,6 +1104,42 @@ fn web_serve_root_html_sizes_the_shell_to_the_dynamic_viewport() {
     );
 }
 
+/// SH-235: `.toast-stack` and `.dispatch-history` are `position: fixed;
+/// right: 1rem` -- a bare `max-width` (22rem / 26rem) leaves no room for
+/// the matching 1rem the box needs on its *left* too, so on a narrow
+/// enough viewport it runs off the left edge. Each must cap itself at the
+/// viewport minus both margins instead.
+///
+/// This is the cheap, browser-free layer: it pins the source text of the
+/// `min()`/`calc()` expression so the mechanism can't be quietly reverted
+/// to a literal. Whether the browser actually *resolves* that expression
+/// to the intended pixel value is what `responsive.mobile.spec.ts`'s own
+/// test for this proves -- a text match here cannot catch a rounding or
+/// nesting mistake inside the expression.
+#[test]
+fn web_serve_root_html_clamps_overlay_widths_to_the_viewport() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    for (selector, rem_ceiling) in [(".toast-stack", "22rem"), (".dispatch-history", "26rem")] {
+        let decl = declarations(css, selector);
+        let expected = format!("max-width: min({rem_ceiling}, calc(100vw - 2rem));");
+        assert!(
+            decl.contains(&expected),
+            "`{selector}` must set `{expected}`, so it never exceeds the \
+             viewport minus its own left+right margins"
+        );
+    }
+}
+
 #[test]
 fn web_serve_api_data_empty_project() {
     let fixture = served();
