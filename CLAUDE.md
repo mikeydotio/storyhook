@@ -145,6 +145,19 @@ Standing rules for every wave:
   `tests/store_isolation.rs::nothing_outside_real_store_rs_re_infers_a_real_store_from_the_
   checkout` fences the pattern the same way the daemon-containment scan does — derived over
   `git ls-files`, not a hand-maintained list of the sites that do this.
+- **A fake that keeps state on disk names its directory or refuses to run** (SH-263).
+  `plugin/claude-code/tests/fakes/tmux` is re-exec'd per call, so its whole model lives in
+  files under `$FAKE_TMUX_STATE`; that variable used to default to a fixed `/tmp` path, and
+  five test files took the default — sharing one directory with each other, with every
+  concurrent run, and with the `issue` plugin's fake of the same name. Two users in one
+  directory corrupt each other: one's `new-window` clears the other's `launched` and `input`,
+  whose next Enter is read as a launch of nothing and writes the fallback shell name over the
+  first's occupant — so a dispatch refused a pane it had itself launched `claude` into,
+  reporting `zsh`. The gate was right; the fixture lied to it. `lib.sh` now mints one per test
+  and the fake refuses both an unset variable and a directory it would have to create.
+  `test-fake-tmux-state.sh` pins it. Note what did **not** reproduce it: stale state seeded
+  before a run, which `new-window` resets. It took a concurrent second writer, which is what a
+  fixed shared path is *for*.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
