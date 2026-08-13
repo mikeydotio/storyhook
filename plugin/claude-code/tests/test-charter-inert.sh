@@ -30,13 +30,21 @@ id=$(new_story "$repo" "Charter inertness")
 # STORY_DRY_RUN emits the fully rendered prompt, AFTER <n>/<reap> substitution and
 # after PROMPT_EXTRA is appended -- the real render path, not a re-derivation of
 # the template. That is what makes this a test of what actually gets typed.
+#
+# SH-219: --auto now has TWO charters -- COUNCIL (council_vote_available finds
+# a real ‘/council-vote’ skill on disk) and SOLO (it doesn't) -- so both are
+# rendered here, forced deterministically via STORY_COUNCIL, independent of
+# whatever plugins happen to be installed wherever this suite runs.
 attended=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$id" 2>&1 | jq -r '.prompt')
-auto=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$id" --auto 2>&1 | jq -r '.prompt')
+auto=$(cd "$repo" && STORY_DRY_RUN=1 STORY_COUNCIL=on bash "$SCRIPT" dispatch "$id" --auto 2>&1 | jq -r '.prompt')
+solo=$(cd "$repo" && STORY_DRY_RUN=1 STORY_COUNCIL=off bash "$SCRIPT" dispatch "$id" --auto 2>&1 | jq -r '.prompt')
 
 [ -n "$attended" ] && [ "$attended" != null ] \
   || fail_test "charter-inert: could not render the attended prompt"
 [ -n "$auto" ] && [ "$auto" != null ] \
-  || fail_test "charter-inert: could not render the auto prompt"
+  || fail_test "charter-inert: could not render the auto (council) prompt"
+[ -n "$solo" ] && [ "$solo" != null ] \
+  || fail_test "charter-inert: could not render the auto (solo) prompt"
 
 # Every character not on the allowlist. Kept as an explicit banned set so a
 # failure names the offending character rather than just failing a regex.
@@ -53,11 +61,12 @@ print("".join(sorted({c for c in text if c in BANNED})))')
 }
 
 check_inert "the attended prompt" "$attended"
-check_inert "the autonomous charter" "$auto"
+check_inert "the autonomous (council) charter" "$auto"
+check_inert "the autonomous (solo) charter" "$solo"
 
 # An even quote count: an unbalanced double quote wedges a shell at a
 # continuation prompt rather than executing anything, but it is still a wedge.
-for pair in "attended:$attended" "auto:$auto"; do
+for pair in "attended:$attended" "auto:$auto" "solo:$solo"; do
   label="${pair%%:*}"; text="${pair#*:}"
   n=$(printf '%s' "$text" | tr -cd '"' | wc -c | tr -d ' ')
   if [ $((n % 2)) -ne 0 ]; then
@@ -67,13 +76,31 @@ done
 
 # The invariant must never be satisfiable by deleting the instructions. These
 # are the load-bearing spans -- the things the agent is actually told to run.
+# Shared between both --auto charters (the head/tail SH-219 split in two):
 for needle in "story show $id --json" "story move $id done" "gh pr merge --merge" \
-              "make test" "council-vote" "story block $id"; do
-  case "$auto" in
-    *"$needle"*) ;;
-    *) fail_test "charter-inert: the auto charter no longer instructs '$needle' -- inertness must not be bought by removing the instructions" ;;
-  esac
+              "make test" "story block $id"; do
+  for variant in "auto:$auto" "solo:$solo"; do
+    label="${variant%%:*}"; text="${variant#*:}"
+    case "$text" in
+      *"$needle"*) ;;
+      *) fail_test "charter-inert: the $label charter no longer instructs '$needle' -- inertness must not be bought by removing the instructions" ;;
+    esac
+  done
 done
+# COUNCIL-only obligation:
+case "$auto" in
+  *"council-vote"*) ;;
+  *) fail_test "charter-inert: the council charter no longer instructs 'council-vote' -- inertness must not be bought by removing the instructions" ;;
+esac
+# SOLO must never name council-vote -- there is nothing there to convene.
+case "$solo" in
+  *"council-vote"*) fail_test "charter-inert: the solo charter names 'council-vote', which SH-219 exists to keep it from doing" ;;
+esac
+# SOLO's own load-bearing obligation the council charter doesn't carry:
+case "$solo" in
+  *"do not stall"*) ;;
+  *) fail_test "charter-inert: the solo charter no longer instructs 'do not stall' -- inertness must not be bought by removing the instructions" ;;
+esac
 case "$attended" in
   *"story show $id --json"*) ;;
   *) fail_test "charter-inert: the attended prompt no longer instructs 'story show'" ;;

@@ -12141,6 +12141,233 @@ polled to a terminal state rather than waited on. `target/` 54 GB, 196 GB free.
 **Filed two:** SH-258 (temp-rooted checkout fails one test, `medium`) and SH-259
 (no release can publish, `critical`, blocks SH-257).
 
+### SH-259 — the release build repaired · PR #321 · merged · **done**
+
+Two defects, one story, one commit (`7c98440`, merged `733d024`). No release
+could publish: `secret-service` 5.x is a bare `compile_error!` unless its
+consumer forwards a runtime choice, so `x86_64-unknown-linux-gnu` had not
+compiled since `4c75833` (SH-212) — and with the matrix defaulting to
+`fail-fast: true`, that one failure cancelled both macOS jobs and the aarch64
+Linux job **mid-compile**, so three healthy platforms produced nothing and
+`release` skipped for want of anything to upload.
+
+**Reproduced without a Linux toolchain.** This machine has Homebrew rust and no
+`rustup`, so `aarch64-apple-darwin` is the only installed target and a
+cross-target `cargo check` was not available. The root cause did not need one:
+feature resolution is not compilation, and
+
+```
+cargo metadata --filter-platform x86_64-unknown-linux-gnu
+```
+
+reported `secret-service@5.1.0 -> []` — precisely the condition its
+`compile_error!` fires on. After the fix it reports `['crypto-rust',
+'rt-async-io-crypto-rust']`, and `zbus` gains nothing, which confirms the
+runtime selected was already the one in the graph. **Ask the resolver, not the
+manifest text**: that is what made a red→green proof possible on a platform
+that cannot build the artifact.
+
+**Why `rt-async-io-crypto-rust`.** Both halves follow the rule the dependency's
+own comment already states — depend on nothing the target may not have.
+`crypto-rust` over `crypto-openssl` because `aarch64-unknown-linux-gnu` is
+cross-compiled under `cross`, where a system OpenSSL is exactly what cannot be
+counted on; `rt-async-io` over `rt-tokio` because this crate has no async
+runtime and wants none, and `zbus` enables `async-io` by default regardless.
+`Cargo.lock` gained seven pure-Rust crypto crates and changed **no** existing
+version: 72 insertions, 0 deletions.
+
+**Publishing stays all-or-nothing — a deliberate departure from the story's own
+fix direction.** SH-259 said `fail-fast: false` should mean "a broken platform
+costs that platform and not the release", which reads as publishing the three
+assets that built. It does not do that: `release` keeps a strict `needs:
+build`. A release published with one platform's asset missing is a 404 for that
+platform's `install.sh` and `story update`, on a release that *looks* complete
+— the silent-partial-success shape this file exists to catch, and worse than a
+loud failure. What `fail-fast: false` actually buys is the loss the story
+documents: every target now finishes and reports, and the healthy ones leave
+artifacts a maintainer can act on instead of being cancelled mid-compile. Not
+taken to council — the alternative breaks an install path with no signal, which
+is not a close call — but recorded as a `story comment` on SH-259 and as a
+comment beside `needs:` in the workflow, so it is not quietly "fixed" later.
+
+**The feedback loop, closed as far as it honestly can be.** `workflow_dispatch`
+on `release.yml` makes the same cross-target build runnable on any ref without
+minting a tag; the `release` job is guarded on `startsWith(github.ref,
+'refs/tags/')` so a dispatched run builds and publishes nothing. GitHub only
+offers the trigger once the file carrying it is on the default branch, so it is
+available **now** and was not before. SH-257 carries a comment saying to
+dispatch on `main` and confirm four green targets *before* bumping — turning
+"the release build works" from something discovered after an unmovable tag into
+a precondition.
+
+**`tests/release_targets.rs` — 7 tests, 4 red before the fix, 7 green after.**
+It reads `Cargo.toml` and `release.yml` as *files*, which is the only reason it
+runs on macOS at all, and it does not pretend to be the cross-target build. It
+pins: a `rt-*` feature is selected; that feature is a `-crypto-rust` one; the
+matrix sets `fail-fast: false`; the workflow is dispatchable and still tags;
+`release` is tag-guarded; Linux is still in the matrix; and — a guard on the
+guard — that the files it read are the repository's real ones, so the suite
+cannot pass by vacuum. The manifest scan finds the dependency by *shape*
+(any `cfg` naming linux, any crate named `*secret-service*`) rather than by one
+literal key, so replacing the backing crate keeps the invariant under test
+instead of silently retiring it. `actionlint` was also clean on the workflow —
+it is installed here but deliberately **not** added to `make test`, because the
+gate must not depend on a tool another machine may lack.
+
+**Sibling sweep — SH-260 filed** (`low`, bug). `windows-native-keyring-store` is
+declared under `cfg(target_os = "windows")` and activated by the default
+`github-sync` feature, for a platform the release matrix never builds,
+`src/update.rs:182-185` never maps, and `install.sh` cannot install. Same blind
+spot as SH-259, no user impact today because there are no Windows users — there
+is no artifact for them to install. The generalized invariant it implies —
+*every `cfg(target_os = ...)` dependency table corresponds to a target the
+release matrix actually builds* — is deliberately **not** shipped, because it
+fails today; `the_release_matrix_still_ships_linux` is the narrow version that
+passes, and SH-260 names generalizing it as part of its own fix. Shipping a red
+test to make a point would have made the gate a thing to ignore.
+
+**Supervision:** three `make test` runs under the log-growth heartbeat, 120s
+stall bound. No stalls, no wedges, no orphans, no restarts. The first was green
+before two cosmetic edits to the new test file, so it was re-run rather than
+have the pushed tree differ by a line from the gated one; the third covers
+merged `main`, because **PR #316 (worktree-SH-256) landed from another session
+between my gate and my merge**, making `main` a combination no local run had
+seen. Cheap insurance on the exact class of "nothing verified this combination"
+that produced SH-259 in the first place.
+
+**Not done here, on purpose:** no version bump and no deploy. SH-259 unblocks
+SH-257, which owns the re-release. Tags are not force-moved, so the fix ships as
+a new version rather than a re-cut of v2.1.0.
+
+### SH-259 addendum — the fix proven by a real build, and SH-261 filed
+
+The entry above was written when the evidence was the resolver agreeing. It is
+now a build. Run **31657323566** — the first use of the `workflow_dispatch`
+trigger SH-259 added, dispatched on `main` after the fix merged:
+
+| target | result |
+|---|---|
+| `x86_64-unknown-linux-gnu` | success — *had never compiled* |
+| `aarch64-unknown-linux-gnu` | success — cross-built, *never compiled* |
+| `x86_64-apple-darwin` | success |
+| `aarch64-apple-darwin` | success |
+| `release` | **skipped** — the tag guard, as designed |
+
+4m38s, four artifacts at 5.2–7.1 MB. `gh release list` still shows v2.0.0 as
+Latest, so a dispatched run publishes nothing.
+
+**Why this was not a formality.** The Linux build previously died *inside*
+`secret-service`, which means nothing downstream of it had ever been compiled
+for Linux — including this crate's own `src/domain/credential_store.rs` Linux
+arm. Selecting the runtime feature removes the first error; it says nothing
+about a second one waiting behind it. "The resolver now agrees" and "the target
+compiles" are different claims, and only one of them was worth closing the story
+on. Three things are proven rather than one: the feature fixes the build, the
+dispatch trigger works, and the tag guard refuses to publish from a dispatched
+run.
+
+**Generalisable:** when a fix removes a *first* error, the fix is unproven until
+something compiles past it. That is the whole argument for the dispatch trigger,
+and this run is its first repayment.
+
+**SH-261 filed** (`low`, bug) from trying to record the above. `story comment` on
+a closed story is refused — *"story `SH-259` is closed and cannot be
+modified"* — because the comment path resolves through `resolve_open_story`
+(`src/service/mod.rs:367`). That guard is named and reasoned about
+**modification**, but a comment is an *append* to the event log the story folds
+over, not an edit of it. The asymmetry is visible on SH-259 itself: a merged
+commit may still attach itself to the closed story via `referenced_by`, while a
+person or agent may not attach a sentence. The `reopen` -> comment -> `done`
+workaround is worse than the gap, writing two spurious transitions into history
+so a story reads as if it regressed. Verification went to SH-257 and to this
+file instead — which is exactly the separation of *fix* from *why we believe it
+worked* that SH-261 is about.
+
+**Supervision:** four background tasks this cycle, all under the log-growth or
+per-job heartbeat with a 120s stall bound — three `make test` runs and one polled
+Actions run. No stalls, no wedges, no orphans, no restarts. The dispatched build
+was polled to a terminal state rather than waited on.
+
+### SH-257 — attempt 2 · v2.1.1 bumped and merged (PR #324) · **on hold, blocked by Mikey**
+
+**Outcome: the bump landed and the gate is green; the tag was never minted.** Mikey put
+the story on hold before the release scope could be settled. `v2.1.1` exists as a merged
+commit (`1b055ca`, merged `98d2ecd`) and as a `[v2.1.1]` CHANGELOG section — **not** as a
+tag, so nothing is burned and either resumption path is still open.
+
+**The bump level went to a council, and it was worth it.** SH-257's title says *minor*;
+CLAUDE.md's level rule, applied to the delta, says *patch*. Rather than pick a side, three
+seats — devops-engineer, api-designer, skeptic — were convened blind. All three proposed
+**v2.1.1** independently in round 1, so the number was never in contention; the entire
+council was about which mitigation ships with it. Round 1 split 2-1, deliberation moved
+every seat, and the runoff was unanimous C > B > A on all three ballots. Audit trail in
+`.council/sh-257-release-semver-level/`, verdict recorded as a comment on SH-257.
+
+**Two findings from it outlive the story.**
+
+*Ask the endpoint, don't reason about it.* Seat 1 ran
+`gh api repos/mikeydotio/storyhook/releases/generate-notes -f tag_name=v2.1.1` against this
+repo rather than arguing from documentation. It returned `v2.1.0...v2.1.1` — **6 PRs, not
+743 commits**. GitHub bases generated notes on the latest *tag*, published or not, so a
+release cut here would show its own handful of fixes and silently hide everything a v2.0.0
+user actually receives. That falsified a premise inside the *winning* proposal, and the
+decision adopted the finding over it. Same shape as SH-259's `cargo metadata
+--filter-platform`: the resolver knows, the manifest text only implies.
+
+*Rank the irreversible guard above the better-argued recoverable one.* Every seat named the
+same decisive criterion in the runoff. A misleading release body, a missing disclosure, a
+wrongly-sized changelog paste — all repairable after publication with `gh release edit`.
+But `release.yml:96` gates publication on all four targets and tags are never moved here,
+so a build failure *after* the tag push mints a second permanently dangling tag beside
+v2.1.0. The winning proposal was the only one whose mitigation touched that: **dispatch the
+four-target build on the exact commit the tag will point at, before minting the tag.** The
+proposal that lost had the stronger argument; the one that won guarded the failure that
+cannot be undone.
+
+**Blocked on a permission wall, not a technical one.** `gh workflow run release.yml --ref
+main` was refused twice by this session's permission classifier — the council's condition 1
+is precisely the step this session cannot perform. Read-only `gh` works, so watching a
+dispatched run to a terminal state is available; starting one is not. Recorded because the
+next session to draw a release story hits the same wall, and the fix is a Bash permission
+rule for `gh workflow run`, not a workaround.
+
+**Then main moved, and the release stopped being honest.** SH-219 merged (`e5ac68a`) while
+this story was held at that gate, adding two `feat:` commits and 402 lines under
+`plugin/` — with `plugin.json` still declaring `0.6.0`. So main's tip can no longer carry a
+`v2.1.1` tag without shipping features under a patch digit and a silently-changed plugin,
+which is the exact mislabeling the council ruled out. Two clean paths remain, and choosing
+between them is a scope call Mikey deferred:
+
+| | tag `1b055ca` as v2.1.1 | re-cut main as v2.2.0 |
+|---|---|---|
+| content | SH-259 + SH-256 fixes only | + SH-219's two features |
+| plugin | `0.6.0`, accurate at that commit | needs `0.6.0` -> `0.7.0` |
+| gate | already green | needs a re-run |
+| leaves stale | SH-219 unreleased | nothing |
+
+The version number is not the open question — the content rule the council affirmed answers
+it mechanically once the commit is chosen. **Which commit to release is the open question**,
+and it is open because work is landing on `main` in parallel. Worth noting for the next
+attempt: a release cut from a moving `main` is a race, and the answer is to freeze a commit
+and let the release omit whatever lands after it, not to chase the tip.
+
+**What is already done and does not need repeating.** The council verdict and its five
+binding conditions (comment on SH-257). The lead block for the release body, drafted against
+the confirmed generate-notes behaviour. SH-262 filed (`medium`) to give `release.yml` a
+`body_path`, so the notes fix stops being a manual post-publish step. And the standing rule
+either path inherits: **never create a Release object for the dangling v2.1.0 tag.**
+
+**Deviation from START HERE.** Step 9 says freshen and stop; step 8 says land the log entry
+as its own docs PR *after the code PR merges*. Both hold here — the code PR (#324) did
+merge — but the story ends `todo` + `story block` rather than `done`, per the on-failure
+rule, with the blocking reason carrying enough state to resume cold.
+
+**Supervision:** one `make test` run in a fresh clone of origin/main at
+`.worktrees/release-next` (non-temp, per SH-258), backgrounded under a log-growth heartbeat
+with a 120s stall bound and a monitor covering both stall and completion. Green in **9m30s**
+— exit 0, 107 Playwright specs, no stalls, no wedges, no orphans, no restarts. The clone was
+removed after the merge. `target/` unchanged; 194 GB free.
+
 ### SH-258 — a temp-rooted checkout, and the extent the story undercounted · no PR yet
 
 **The story's own extent section was wrong, and it explains why.** It reads "One

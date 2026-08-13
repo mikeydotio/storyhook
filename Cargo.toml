@@ -28,7 +28,7 @@ ureq = "3"
 
 [package]
 name = "storyhook"
-version = "2.1.0"
+version = "2.1.1"
 edition = "2024"
 rust-version = "1.89"
 description = "CLI-first issue tracker for AI coding agents"
@@ -174,7 +174,27 @@ windows-native-keyring-store = { version = "1", optional = true }
 # The FreeDesktop Secret Service over D-Bus (GNOME Keyring, KWallet). `zbus`
 # is a pure-Rust D-Bus client, so this needs no system `libdbus` install —
 # unlike the crate ecosystem's `dbus`-based alternative.
-zbus-secret-service-keyring-store = { version = "1", optional = true }
+#
+# The feature is not optional in practice: `secret-service` 5.x is a bare
+# `compile_error!` unless its consumer forwards a runtime choice, so without
+# this the Linux artifact does not build at all (SH-259). Both halves of the
+# choice follow the same rule as the crate itself — depend on nothing the
+# target may not have:
+#
+# * `crypto-rust` over `crypto-openssl`, because `aarch64-unknown-linux-gnu`
+#   is cross-compiled and a system OpenSSL is exactly what cannot be counted
+#   on there. The pure-Rust primitives (`aes`, `cbc`, `sha2`, `hkdf`) build
+#   for any target the compiler has.
+# * `rt-async-io` over `rt-tokio`, because this crate has no async runtime and
+#   wants none: every I/O path here is blocking (`ureq`, our own HTTP/1.1
+#   layer). `async-io` is what `zbus` enables by default anyway, so this
+#   selects the runtime already in the graph rather than adding a second.
+#
+# `tests/release_targets.rs` pins both, since `make test` is a macOS build and
+# cannot otherwise see this line at all.
+zbus-secret-service-keyring-store = { version = "1", optional = true, features = [
+    "rt-async-io-crypto-rust",
+] }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
