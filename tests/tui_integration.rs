@@ -36,6 +36,7 @@ use storyhook::output::Response;
 use storyhook::store::{ProjectId, SqliteStore, Store as _, diff_read_model};
 use storyhook::tui::action::{FilterSpec, View};
 use storyhook::tui::components::board::{Board, RowItem};
+use storyhook::tui::components::dashboard::ready_stories;
 use storyhook::tui::data::DataStore;
 use storyhook::tui::focus::{FocusStack, FocusTarget, Modal};
 use storyhook::tui::state::AppState;
@@ -1207,6 +1208,121 @@ fn removing_an_occupied_status_without_a_destination_is_refused() {
 
     let store = load(&fixture).unwrap();
     assert!(store.states.iter().any(|s| s.slug == "in-review"));
+}
+
+/// SH-240, end to end: the dashboard's "Ready Stories" panel and `story
+/// next` are asked the same question about the same real project, and give
+/// the same answer.
+///
+/// The unit tests around `ready_stories` build a `DataStore` by hand, so
+/// they cannot see whether the *snapshot* carries what the answer needs —
+/// the project's real state catalog (which slug means "claimed"), and the
+/// drafts that live beside `stories`. This one goes through the seam the TUI
+/// runs on, so it does.
+///
+/// The fixture deliberately holds no epic: `story next` additionally
+/// excludes a story with children, which is a `next` rule rather than a
+/// readiness one, so an epic would make the two disagree for a reason that
+/// is not this test's subject.
+#[test]
+fn the_ready_panel_and_story_next_agree_over_a_real_project() {
+    let fixture = init_project("SH");
+
+    let free = create_story(&fixture, "Free");
+    let claimed = create_story(&fixture, "Claimed");
+    set_state(&fixture, &claimed, "in-progress");
+    let parked = create_story(&fixture, "Parked");
+    set_state(&fixture, &parked, "blocked");
+    let blocker = create_story(&fixture, "Blocker");
+    let dependent = create_story(&fixture, "Waits on the blocker");
+    relate(&fixture, &dependent, "blocked-by", &blocker);
+    let draft = create_draft(&fixture, "Still being specified");
+    let waiting_on_a_draft = create_story(&fixture, "Waits on the draft");
+    relate(&fixture, &waiting_on_a_draft, "blocked-by", &draft);
+
+    let data = load(&fixture).unwrap();
+    assert_eq!(
+        data.drafts
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect::<Vec<_>>(),
+        [draft.as_str()],
+        "the snapshot's drafts have to reach the DataStore, or a draft \
+         blocker is invisible to the readiness walk"
+    );
+
+    let panel: Vec<&str> = ready_stories(&data).iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(
+        panel,
+        [free.as_str(), blocker.as_str()],
+        "claimed, parked, blocked-by and draft-blocked work is not offered"
+    );
+
+    // The board's `ready` chip is the same claim through a different
+    // surface, so it answers the same set.
+    let chip = data.filter(&[FilterSpec {
+        ready: true,
+        ..Default::default()
+    }]);
+    assert_eq!(
+        chip.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+        panel,
+        "the board's `ready` chip and the dashboard panel are one question"
+    );
+
+    let next = match run(
+        &fixture,
+        Invocation::Next {
+            count: 10,
+            phase: None,
+        },
+    )
+    .unwrap()
+    {
+        Response::Stories(views, _) => views
+            .iter()
+            .map(|view| view.story.id.clone())
+            .collect::<Vec<_>>(),
+        other => panic!("expected a list of stories, got {other:?}"),
+    };
+    assert_eq!(next, panel, "the TUI offers what `story next` offers");
+}
+
+/// Helper: relate two stories, the way `story relate <a> <rel> <b>` does.
+fn relate(fixture: &Fixture, a: &str, relation: &str, b: &str) {
+    run(
+        fixture,
+        Invocation::Relate {
+            a: a.to_string(),
+            relation: relation.to_string(),
+            b: b.to_string(),
+            remove: false,
+        },
+    )
+    .unwrap();
+}
+
+/// Helper: create an unpublished draft, which the snapshot carries beside
+/// its stories rather than among them (SH-175).
+fn create_draft(fixture: &Fixture, title: &str) -> String {
+    match run(
+        fixture,
+        Invocation::New {
+            title: title.to_string(),
+            state: None,
+            story_type: None,
+            description: None,
+            priority: None,
+            labels: None,
+            assignee: None,
+            draft: true,
+        },
+    )
+    .unwrap()
+    {
+        Response::Story(view) => view.story.id,
+        other => panic!("expected a story, got {other:?}"),
+    }
 }
 
 // ─── Helper struct for TOML serialization of states ─────────────────

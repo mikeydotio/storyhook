@@ -4,8 +4,9 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::domain::{Priority, StorySnapshot, SuperState, ready_order};
+use crate::domain::{Priority, StorySnapshot, ready_order};
 use crate::tui::action::{Action, View};
+use crate::tui::data::DataStore;
 use crate::tui::state::AppState;
 use crate::tui::theme::Theme;
 
@@ -73,7 +74,7 @@ impl Dashboard {
 
         // Ready stories
         self.items.push(DashboardItem::Header); // "Ready Stories"
-        let ready = ready_stories(&state.data.stories);
+        let ready = ready_stories(&state.data);
         if ready.is_empty() {
             self.items.push(DashboardItem::Header); // "(none)"
         } else {
@@ -236,7 +237,7 @@ impl Component for Dashboard {
             "  Ready Stories",
             theme.section_header,
         )));
-        let ready = ready_stories(&state.data.stories);
+        let ready = ready_stories(&state.data);
         if ready.is_empty() {
             lines.push(Line::from(Span::styled("    (none)", theme.section_count)));
         } else {
@@ -295,7 +296,7 @@ impl Component for Dashboard {
 impl Dashboard {
     /// Check if the ready story at index `i` is currently selected by the cursor.
     fn is_ready_story_selected(&self, state: &AppState, story_idx: usize) -> bool {
-        let ready = ready_stories(&state.data.stories);
+        let ready = ready_stories(&state.data);
         if story_idx >= ready.len() {
             return false;
         }
@@ -440,15 +441,33 @@ pub fn priority_breakdown(stories: &[StorySnapshot]) -> PriorityBreakdown {
     b
 }
 
-/// Get stories that are "ready" (no awaiting), ranked the way `story next`
-/// ranks them: [`domain::ready_order`](crate::domain::ready_order), priority
-/// then story number. Sorting by priority alone (as this used to) has no
-/// second key at all, so two same-priority stories fell back to whatever
-/// order `stories` arrived in — the same tie SH-63 fixed on the CLI side.
-pub fn ready_stories(stories: &[StorySnapshot]) -> Vec<&StorySnapshot> {
-    let mut ready: Vec<&StorySnapshot> = stories
+/// The stories this project offers as work to pick up, ranked the way `story
+/// next` ranks them: [`domain::ready_order`](crate::domain::ready_order),
+/// priority then story number. Sorting by priority alone (as this used to)
+/// has no second key at all, so two same-priority stories fell back to
+/// whatever order `stories` arrived in — the same tie SH-63 fixed on the CLI
+/// side.
+///
+/// "Ready to pick up" is [`domain::is_claimable`](crate::domain::is_claimable)
+/// and nothing else. This panel used to decide it here, with a filter that
+/// knew only about `awaiting` and the superstate — so it offered work parked
+/// in the required `blocked` state (SH-126), work waiting on an open
+/// `blocked-by` dependency, work an `obviated-by` edge had superseded, and
+/// work somebody had already claimed (SH-236). A human reading the panel was
+/// misled exactly the way `story next` misled an agent, and every check the
+/// domain predicate gained after this one was written failed to reach it
+/// (SH-240).
+///
+/// Takes the whole [`DataStore`] rather than a story list, because the
+/// question needs the project's state catalog and its `blocked-by` graph as
+/// well: passing three arguments that must come from the same project is an
+/// invalid state this signature cannot express.
+pub fn ready_stories(data: &DataStore) -> Vec<&StorySnapshot> {
+    let readiness = data.readiness();
+    let mut ready: Vec<&StorySnapshot> = data
+        .stories
         .iter()
-        .filter(|s| s.awaiting.is_none() && s.superstate == SuperState::Open)
+        .filter(|story| readiness.is_claimable(story))
         .collect();
     ready.sort_by(|a, b| ready_order(a, b));
     ready
@@ -465,7 +484,7 @@ pub fn recent_stories(stories: &[StorySnapshot]) -> Vec<&StorySnapshot> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{Priority, StateDef, StorySnapshot, SuperState};
+    use crate::domain::{Priority, StateDef, StoryRelation, StorySnapshot, SuperState};
 
     fn test_states() -> Vec<StateDef> {
         vec![
@@ -524,6 +543,13 @@ mod tests {
             hidden_at: None,
             draft: false,
         }
+    }
+
+    /// The project a readiness question is asked of, in the shape the TUI
+    /// actually holds one: a story list *and* the state catalog that says
+    /// which slug means "claimed".
+    fn project(stories: Vec<StorySnapshot>) -> DataStore {
+        DataStore::from_test_data(test_states(), stories, "SH".to_string(), vec![])
     }
 
     #[test]
@@ -633,7 +659,8 @@ mod tests {
                 "2026-01-01T00:00:00Z",
             ),
         ];
-        let ready = ready_stories(&stories);
+        let data = project(stories.clone());
+        let ready = ready_stories(&data);
         assert_eq!(ready.len(), 2);
         // Sorted by priority: Critical first, then High
         assert_eq!(ready[0].id, "SH-3");
@@ -660,7 +687,8 @@ mod tests {
                 "2026-01-01T00:00:00Z",
             ),
         ];
-        let ready = ready_stories(&stories);
+        let data = project(stories.clone());
+        let ready = ready_stories(&data);
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].id, "SH-1");
     }
@@ -688,11 +716,314 @@ mod tests {
                 "2026-01-01T00:00:00Z",
             ),
         ];
-        let ready = ready_stories(&stories);
+        let data = project(stories.clone());
+        let ready = ready_stories(&data);
         assert_eq!(
             ready.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
             ["SH-9", "SH-10"],
             "the lower-numbered story wins, not the input order or the id string"
+        );
+    }
+
+    /// `blocked` is one of the four required states (SH-125) and carries no
+    /// `awaiting` when a card is simply dragged into that column, so the
+    /// hand-rolled filter this panel used to run reported it ready —
+    /// SH-126's defect, reached through the TUI instead of the CLI.
+    #[test]
+    fn ready_stories_excludes_a_story_in_the_blocked_state() {
+        let stories = vec![
+            make_snapshot(
+                "SH-1",
+                "blocked",
+                "Parked",
+                Priority::High,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+            make_snapshot(
+                "SH-2",
+                "todo",
+                "Free",
+                Priority::Low,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+        ];
+        let data = project(stories.clone());
+        let ready = ready_stories(&data);
+        assert_eq!(
+            ready.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            ["SH-2"],
+            "a story parked in the required `blocked` state is not ready"
+        );
+    }
+
+    /// SH-236, reached through the TUI: a story someone has already moved to
+    /// the project's active state is claimed work, not free work.
+    #[test]
+    fn ready_stories_excludes_a_claimed_story() {
+        let stories = vec![
+            make_snapshot(
+                "SH-1",
+                "in-progress",
+                "Claimed",
+                Priority::High,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+            make_snapshot(
+                "SH-2",
+                "todo",
+                "Free",
+                Priority::Low,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+        ];
+        let data = project(stories.clone());
+        let ready = ready_stories(&data);
+        assert_eq!(
+            ready.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            ["SH-2"],
+            "a story in the active state has already been picked up"
+        );
+    }
+
+    #[test]
+    fn ready_stories_excludes_a_story_blocked_by_an_open_dependency() {
+        let mut dependent = make_snapshot(
+            "SH-2",
+            "todo",
+            "Dependent",
+            Priority::High,
+            None,
+            "2026-01-01T00:00:00Z",
+        );
+        dependent.relationships.push(StoryRelation {
+            relation: "blocked-by".to_string(),
+            other_id: "SH-1".to_string(),
+        });
+        let stories = vec![
+            make_snapshot(
+                "SH-1",
+                "todo",
+                "Blocker",
+                Priority::Low,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+            dependent,
+        ];
+        let data = project(stories.clone());
+        let ready = ready_stories(&data);
+        assert_eq!(
+            ready.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            ["SH-1"],
+            "the dependent waits on an open blocker; the blocker itself is free"
+        );
+    }
+
+    /// The TUI's snapshot holds only unarchived, undeleted, non-draft
+    /// stories, so a *closed* blocker is absent from the index rather than
+    /// present-and-closed. Absence has to read the same as closed, or every
+    /// story whose dependency has landed would show as blocked forever.
+    #[test]
+    fn a_blocker_the_snapshot_does_not_carry_does_not_block() {
+        let mut dependent = make_snapshot(
+            "SH-2",
+            "todo",
+            "Dependent",
+            Priority::High,
+            None,
+            "2026-01-01T00:00:00Z",
+        );
+        dependent.relationships.push(StoryRelation {
+            relation: "blocked-by".to_string(),
+            other_id: "SH-1".to_string(),
+        });
+        let stories = vec![dependent];
+        let data = project(stories.clone());
+        let ready = ready_stories(&data);
+        assert_eq!(
+            ready.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            ["SH-2"],
+            "a blocker that is closed, deleted or archived is not in the snapshot"
+        );
+    }
+
+    /// The other half of that reading: a draft blocker *is* open work, so it
+    /// blocks — which the panel can only know if the drafts the snapshot
+    /// carries beside `stories` reach the index. They are never displayed;
+    /// they are there to keep this answer the same one the CLI gives.
+    #[test]
+    fn a_draft_blocker_still_blocks() {
+        let mut dependent = make_snapshot(
+            "SH-2",
+            "todo",
+            "Dependent",
+            Priority::High,
+            None,
+            "2026-01-01T00:00:00Z",
+        );
+        dependent.relationships.push(StoryRelation {
+            relation: "blocked-by".to_string(),
+            other_id: "SH-1".to_string(),
+        });
+        let mut draft = make_snapshot(
+            "SH-1",
+            "todo",
+            "Still being specified",
+            Priority::Low,
+            None,
+            "2026-01-01T00:00:00Z",
+        );
+        draft.draft = true;
+
+        let data = project(vec![dependent]).with_drafts(vec![draft]);
+        assert!(
+            ready_stories(&data).is_empty(),
+            "a story waiting on an unpublished draft is not ready"
+        );
+    }
+
+    #[test]
+    fn ready_stories_excludes_an_obviated_story() {
+        let mut obviated = make_snapshot(
+            "SH-1",
+            "todo",
+            "Superseded",
+            Priority::Critical,
+            None,
+            "2026-01-01T00:00:00Z",
+        );
+        obviated.relationships.push(StoryRelation {
+            relation: "obviated-by".to_string(),
+            other_id: "SH-2".to_string(),
+        });
+        let stories = vec![
+            obviated,
+            make_snapshot(
+                "SH-2",
+                "todo",
+                "Successor",
+                Priority::Low,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+        ];
+        let data = project(stories.clone());
+        let ready = ready_stories(&data);
+        assert_eq!(
+            ready.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            ["SH-2"],
+            "an obviated story is not work anyone should pick up"
+        );
+    }
+
+    /// The anti-drift fence SH-240 asks for: over a project holding one story
+    /// of every excluded kind, this panel and [`domain::is_claimable`] agree
+    /// exactly. A check added to the domain predicate and not to this panel
+    /// (the shape of the defect) fails here.
+    #[test]
+    fn ready_stories_agrees_with_domain_is_claimable() {
+        let mut blocked_by = make_snapshot(
+            "SH-4",
+            "todo",
+            "Waits on SH-1",
+            Priority::None,
+            None,
+            "2026-01-01T00:00:00Z",
+        );
+        blocked_by.relationships.push(StoryRelation {
+            relation: "blocked-by".to_string(),
+            other_id: "SH-1".to_string(),
+        });
+        let mut obviated = make_snapshot(
+            "SH-5",
+            "todo",
+            "Superseded",
+            Priority::None,
+            None,
+            "2026-01-01T00:00:00Z",
+        );
+        obviated.relationships.push(StoryRelation {
+            relation: "obviated-by".to_string(),
+            other_id: "SH-1".to_string(),
+        });
+        let mut draft = make_snapshot(
+            "SH-7",
+            "todo",
+            "Unpublished",
+            Priority::None,
+            None,
+            "2026-01-01T00:00:00Z",
+        );
+        draft.draft = true;
+        let stories = vec![
+            make_snapshot(
+                "SH-1",
+                "todo",
+                "Free",
+                Priority::None,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+            make_snapshot(
+                "SH-2",
+                "in-progress",
+                "Claimed",
+                Priority::None,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+            make_snapshot(
+                "SH-3",
+                "blocked",
+                "Parked",
+                Priority::None,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+            blocked_by,
+            obviated,
+            make_snapshot(
+                "SH-6",
+                "todo",
+                "Awaiting an answer",
+                Priority::None,
+                Some("Mikey"),
+                "2026-01-01T00:00:00Z",
+            ),
+            draft,
+            make_snapshot(
+                "SH-8",
+                "done",
+                "Closed",
+                Priority::None,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+        ];
+
+        let index: std::collections::BTreeMap<String, StorySnapshot> = stories
+            .iter()
+            .map(|story| (story.id.clone(), story.clone()))
+            .collect();
+        let active = crate::domain::active_state(&test_states());
+        let expected: Vec<&str> = stories
+            .iter()
+            .filter(|story| crate::domain::is_claimable(story, &index, active.as_ref()))
+            .map(|story| story.id.as_str())
+            .collect();
+
+        assert_eq!(expected, ["SH-1"], "the fixture's own premise");
+        assert_eq!(
+            ready_stories(&project(stories.clone()))
+                .iter()
+                .map(|s| s.id.as_str())
+                .collect::<Vec<_>>(),
+            expected,
+            "the dashboard panel answers exactly what `is_claimable` does"
         );
     }
 
@@ -754,11 +1085,9 @@ mod tests {
 
     fn make_app_state(stories: Vec<StorySnapshot>) -> crate::tui::state::AppState {
         use crate::tui::action::View;
-        use crate::tui::data::DataStore;
         use crate::tui::focus::{FocusStack, FocusTarget};
-        let data = DataStore::from_test_data(test_states(), stories, "SH".to_string(), vec![]);
         crate::tui::state::AppState {
-            data,
+            data: project(stories),
             focus: FocusStack::new(FocusTarget::Dashboard),
             view: View::Dashboard,
             filters: Vec::new(),
@@ -804,7 +1133,8 @@ mod tests {
     #[test]
     fn empty_ready_and_recent_lists() {
         let stories: Vec<StorySnapshot> = vec![];
-        let ready = ready_stories(&stories);
+        let data = project(stories.clone());
+        let ready = ready_stories(&data);
         assert!(ready.is_empty());
         let recent = recent_stories(&stories);
         assert!(recent.is_empty());
@@ -830,7 +1160,8 @@ mod tests {
                 "2026-01-02T00:00:00Z",
             ),
         ];
-        let ready = ready_stories(&stories);
+        let data = project(stories.clone());
+        let ready = ready_stories(&data);
         assert!(ready.is_empty());
     }
 
