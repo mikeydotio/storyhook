@@ -23,6 +23,20 @@
 # original over time — a future maintainer syncing a fix from one side
 # should consider porting it to the other.
 #
+# SH-229 did exactly that once: SH-226 (the process-identity gate below —
+# rendered characters alone can't prove a pane is running Claude, a bare
+# shell prompt can satisfy both readiness tiers), SH-239 (pane_runs
+# recognising the launch binary by identity, not just by name — a
+# version-named install, e.g. Claude Code's native installer, defeats any
+# fixed name pattern), and SH-263 (the paired fake tmux's shared default
+# state directory, corruptible by two concurrent test files) all landed here
+# FIRST and were ported to agentics' own plugins/issue/lib/session.sh as
+# AGE-83 (mikeydotio/agentics#172). The two sides are aligned as of that PR;
+# the deliberate divergences above (the STORY_PROTECTED_BRANCHES rename, the
+# bare-id resolve_wname) were not touched by the port and remain intentional.
+# Since it's still two forks and not one shared file, this can drift again —
+# AGE-83's own header carries the same note pointing back here.
+#
 # A second deliberate divergence, added for SH-166: the agentics original's
 # resolve_wname always prefixes with a repo-derived stem (agentics' `issue`
 # plugin names windows from bare GitHub issue numbers like "118", which
