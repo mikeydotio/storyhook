@@ -190,6 +190,16 @@ impl<'a, S: Store> IntegrityService<'a, S> {
     /// that a manual reopen was the only way through. See
     /// [`blocked_repairs_detail`].
     ///
+    /// # What it *undid*, it stops saying (SH-271)
+    ///
+    /// That list is decided in step 1 and printed after step 3, so step 3 can
+    /// dissolve a finding step 1 wrote advice about: a story with events and no
+    /// read-model row is absent from `all_stories`, which makes a *valid* edge
+    /// naming it read as dangling — and the advice was then to reopen the
+    /// claiming story and retract an edge the same run had just made whole.
+    /// [`surviving_repairs`] reconciles the list against the post-repair
+    /// findings, per entry.
+    ///
     /// # What it *did*, it says — including when it failed (SH-266)
     ///
     /// The message and the failed run's `advice` are one list, assembled
@@ -219,26 +229,33 @@ impl<'a, S: Store> IntegrityService<'a, S> {
             let all = all_stories(&*tx, project)?;
             let open = open_stories(&*tx, project)?;
             let mut touched: BTreeSet<String> = BTreeSet::new();
-            let mut blocked: BTreeSet<(String, String)> = BTreeSet::new();
+            let mut blocked: BTreeSet<BlockedRepair> = BTreeSet::new();
 
             for (id, story) in &all {
-                // Each candidate carries the event *and* the imperative
-                // sentence describing it: a story too closed to be appended to
-                // owes the operator the sentence rather than the event.
-                let mut own_events: Vec<(StoryEvent, String)> = Vec::new();
+                // Each candidate carries the event, the imperative sentence
+                // describing it, and the finding it answers: a story too closed
+                // to be appended to owes the operator the sentence rather than
+                // the event, and owes this run's own verdict the finding.
+                let mut own_repairs: Vec<OwnRepair> = Vec::new();
                 for relation in &story.relationships {
+                    let claim = FindingKey::Edge {
+                        claimant: id.clone(),
+                        relation: relation.relation.clone(),
+                        other: relation.other_id.clone(),
+                    };
                     let Some(other) = all.get(&relation.other_id) else {
-                        own_events.push((
-                            StoryEvent::StoryRelationshipRemoved {
+                        own_repairs.push(OwnRepair {
+                            event: StoryEvent::StoryRelationshipRemoved {
                                 at: now.clone(),
                                 other_id: relation.other_id.clone(),
                                 relation: relation.relation.clone(),
                             },
-                            format!(
+                            repair: format!(
                                 "retract its dangling relation `{}` to the missing story `{}`",
                                 relation.relation, relation.other_id
                             ),
-                        ));
+                            cause: claim,
+                        });
                         continue;
                     };
                     let Some(expected) = inverse_relation(&relation.relation) else {
@@ -255,13 +272,14 @@ impl<'a, S: Store> IntegrityService<'a, S> {
                     // finding against `id`, which is the end that already has
                     // its half.
                     if !open.contains_key(&relation.other_id) {
-                        blocked.insert((
-                            relation.other_id.clone(),
-                            format!(
+                        blocked.insert(BlockedRepair {
+                            reopen: relation.other_id.clone(),
+                            repair: format!(
                                 "write the missing inverse relation `{expected}` of {id}'s `{}`",
                                 relation.relation
                             ),
-                        ));
+                            cause: claim,
+                        });
                         continue;
                     }
                     let other_no = StoryNo::parse_id(&prefix, &relation.other_id)
@@ -289,26 +307,36 @@ impl<'a, S: Store> IntegrityService<'a, S> {
                 let normalized_labels = normalize_labels(&story.labels);
                 if normalized_labels != story.labels {
                     let repair = format!("normalize its labels to {normalized_labels:?}");
-                    own_events.push((
-                        StoryEvent::StoryLabelsSet {
+                    own_repairs.push(OwnRepair {
+                        event: StoryEvent::StoryLabelsSet {
                             at: now.clone(),
                             labels: normalized_labels,
                         },
                         repair,
-                    ));
+                        cause: FindingKey::Labels {
+                            story: id.clone(),
+                            labels: story.labels.clone(),
+                        },
+                    });
                 }
 
-                if own_events.is_empty() {
+                if own_repairs.is_empty() {
                     continue;
                 }
-                let (events, repairs): (Vec<StoryEvent>, Vec<String>) =
-                    own_events.into_iter().unzip();
                 // Every repair above appends to `story` itself, so a closed one
                 // is out of reach and says so instead of vanishing (SH-225).
                 if !open.contains_key(id) {
-                    blocked.extend(repairs.into_iter().map(|repair| (id.clone(), repair)));
+                    blocked.extend(own_repairs.into_iter().map(|candidate| BlockedRepair {
+                        reopen: id.clone(),
+                        repair: candidate.repair,
+                        cause: candidate.cause,
+                    }));
                     continue;
                 }
+                let events: Vec<StoryEvent> = own_repairs
+                    .into_iter()
+                    .map(|candidate| candidate.event)
+                    .collect();
                 let story_no = StoryNo::parse_id(&prefix, id)
                     .map_err(|error| AppError::Storage(format!("unparseable id: {error}")))?;
                 append_and_fold(
@@ -335,9 +363,23 @@ impl<'a, S: Store> IntegrityService<'a, S> {
                 .iter()
                 .map(|divergence| divergence.story_no.to_string()),
         );
+        // A row a story's own history supports, put back — a repair, and one
+        // this command reported having *not* made until SH-271. Not
+        // `repair.rewritten`, which is every story that folds: ingesting that
+        // would make every run on a healthy project claim a repair. Nor
+        // `extra_rows`, which re-folding does not remove, or `fold_failures`,
+        // which it cannot fix — a story in either is still a finding below, so
+        // the run fails and never reaches the headline.
+        touched.extend(repair.repaired.missing_rows.iter().map(ToString::to_string));
 
         let remaining = self.report()?;
         let notices = self.notices()?;
+        // Everything `blocked` says was decided before `repair_read_model` ran,
+        // against the read model it has since repaired — so an entry can name a
+        // finding this very run dissolved (SH-271). Reconciling drops those and
+        // keeps the rest, per entry: a run that repairs one thing must not fall
+        // silent about another it could not.
+        let blocked = surviving_repairs(blocked, &remaining);
         let blocked_detail = blocked_repairs_detail(&blocked);
 
         // Everything this run has to say that is not a finding, assembled
@@ -417,6 +459,131 @@ impl<'a, S: Store> IntegrityService<'a, S> {
     fn project(&self) -> ProjectId {
         self.ctx.project()
     }
+}
+
+/// A repair [`IntegrityService::fix`] identified, could not make, and owes the
+/// operator a sentence about (SH-225).
+///
+/// It carries the finding it would have answered because the list is built
+/// *before* the read-model repair and rendered *after* it — see
+/// [`surviving_repairs`].
+///
+/// Ordered by the story to reopen, then the repair, which is the order
+/// [`blocked_repairs_detail`] prints; `cause` is last so it never reorders a
+/// report an operator reads.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct BlockedRepair {
+    /// The closed story whose history blocks the repair — the one to reopen.
+    reopen: String,
+    /// The imperative sentence describing what would have been written.
+    repair: String,
+    /// The finding this repair exists to clear.
+    cause: FindingKey,
+}
+
+/// A repair that appends to the story that raised it, before that story's state
+/// decides whether it is written or [`blocked`](BlockedRepair).
+struct OwnRepair {
+    /// What would be appended.
+    event: StoryEvent,
+    /// The sentence describing it, for the operator who has to make it happen
+    /// by hand.
+    repair: String,
+    /// The finding it answers.
+    cause: FindingKey,
+}
+
+/// A finding keyed by the fact it reports rather than by the sentence it
+/// prints.
+///
+/// Two producers have to agree on it: the repair loop, which knows the claim it
+/// is about to skip, and [`report`](IntegrityService::report), which recomputes
+/// findings from the repaired read model. Keying on the sentence would make
+/// them agree by string formatting; keying on the *fact* is why they agree at
+/// all — the same values `compute_integrity_issues` puts in
+/// [`Finding::subject`] and [`FindingData`].
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum FindingKey {
+    /// An edge as its claiming end records it. The [`FindingCode`] is
+    /// deliberately not part of the key: one claim produces at most one finding
+    /// — dangling *or* missing-inverse, never both — so the code adds nothing,
+    /// while including it would split a key over
+    /// [`FindingCode::MissingReciprocalRelation`], which is the same fact
+    /// spelled for a mutual relation.
+    Edge {
+        /// The story whose history asserts the edge, and which the finding is
+        /// reported against.
+        claimant: String,
+        /// The relation it asserts.
+        relation: String,
+        /// The story at the far end.
+        other: String,
+    },
+    /// A story's unrepaired label set (SH-164).
+    Labels {
+        /// The story carrying them.
+        story: String,
+        /// The labels, exactly as stored.
+        labels: Vec<String>,
+    },
+}
+
+/// The fact a finding reports, when it is one a blocked repair can answer.
+///
+/// `None` for every other finding — a cycle, an unknown type, read-model drift
+/// — none of which [`IntegrityService::fix`] ever puts in its blocked list, so
+/// none of which can keep an entry alive.
+fn finding_key(finding: &Finding) -> Option<FindingKey> {
+    let subject = finding.subject.clone()?;
+    match (finding.code, &finding.data) {
+        (
+            FindingCode::DanglingRelation
+            | FindingCode::MissingInverseRelation
+            | FindingCode::MissingReciprocalRelation,
+            Some(FindingData::Relation { relation, other }),
+        ) => Some(FindingKey::Edge {
+            claimant: subject,
+            relation: relation.clone(),
+            other: other.clone(),
+        }),
+        (FindingCode::MalformedLabels, Some(FindingData::Labels { labels })) => {
+            Some(FindingKey::Labels {
+                story: subject,
+                labels: labels.clone(),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The blocked repairs still worth advising, given what the run left behind.
+///
+/// SH-271: `blocked` is computed inside the write that repairs *stories*, and
+/// `repair_read_model` runs after it. A story with events and no read-model row
+/// is absent from `all_stories`, so a perfectly valid edge naming it reads as
+/// dangling — and when the claiming story is closed, the run advises reopening
+/// it to retract an edge the same run then makes whole again. Following that
+/// advice destroys good data.
+///
+/// So an entry whose finding is gone from the post-repair report is dropped.
+/// Dropping is per entry rather than wholesale, because a run that repairs one
+/// thing must not fall silent about another it could not: that silence is
+/// exactly the SH-225 defect this list exists to end.
+///
+/// The remaining findings are the oracle rather than a second walk of the
+/// graph, which is as close to SH-273's fix as this change goes: `report` is
+/// already the authority on what is wrong with the project, so asking it is the
+/// only way `fix` can be sure it is not answering a question that no longer
+/// exists.
+fn surviving_repairs(
+    blocked: BTreeSet<BlockedRepair>,
+    remaining: &[Finding],
+) -> BTreeSet<BlockedRepair> {
+    let live: BTreeSet<FindingKey> = remaining.iter().filter_map(finding_key).collect();
+    blocked
+        .into_iter()
+        .filter(|entry| live.contains(&entry.cause))
+        .collect()
 }
 
 /// Whether the project's catalog meets the required-state floor (SH-125).
@@ -758,7 +925,7 @@ fn blocked_without_reason_notices(
 /// reopens the wrong story — SH-225, where eight closed stories' malformed
 /// labels sat behind this silence for a week because nothing said a manual
 /// reopen was the only way through.
-fn blocked_repairs_detail(blocked: &BTreeSet<(String, String)>) -> String {
+fn blocked_repairs_detail(blocked: &BTreeSet<BlockedRepair>) -> String {
     if blocked.is_empty() {
         return String::new();
     }
@@ -769,7 +936,7 @@ fn blocked_repairs_detail(blocked: &BTreeSet<(String, String)>) -> String {
         if blocked.len() == 1 { "" } else { "s" },
         blocked
             .iter()
-            .map(|(story, repair)| format!("{story}: {repair}"))
+            .map(|entry| format!("{}: {}", entry.reopen, entry.repair))
             .collect::<Vec<_>>()
             .join("\n")
     )
