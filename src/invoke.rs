@@ -662,20 +662,33 @@ pub fn dispatch<S: Store>(
             // have been dropped yet.
             let audit_catalog = !crate::service::project::is_under_temp(ctx.env().store_path());
             if fix {
-                let mut message = service.fix()?;
-                if audit_catalog {
-                    let forgotten = catalog.deregister_orphaned()?;
-                    if !forgotten.is_empty() {
-                        message.push('\n');
-                        message.push_str(&deregistered_message(&forgotten));
+                // The outcome as a *value* (SH-270). This `?` can now only
+                // carry a genuine failure — a rolled-back repair write, or the
+                // store beneath it — because "repairs ran, findings remain" is
+                // no longer spelled as an error. It used to be, and the `?`
+                // returned on it, so everything below was skipped whenever the
+                // project carried a finding this command could not clear: the
+                // remedy `orphan_advice` hands an operator was the one command
+                // that would not perform it. See `IntegrityService::repair`.
+                let mut outcome = service.repair()?;
+                if audit_catalog && let Err(error) = catalog_sweep(&catalog, &mut outcome.advice) {
+                    // The sweep is store-wide and the repair above was not, so
+                    // a failure here must not discard a verdict already
+                    // computed about *this* project — nor, on the healthy path,
+                    // hide a failed store-wide write behind exit 0.
+                    if outcome.findings.is_empty() {
+                        return Err(error.with_context(&outcome.message()));
                     }
-                    let origins = catalog.register_found_origins()?;
-                    if !origins.is_empty() {
-                        message.push('\n');
-                        message.push_str(&registered_origins_message(&origins));
-                    }
+                    // Deliberately vague about what did land: `register_found_
+                    // origins` commits one registration per transaction, so a
+                    // mid-loop failure leaves some written and returns none of
+                    // them (SH-275). Claiming a count here would be inventing
+                    // one.
+                    outcome
+                        .advice
+                        .push(format!("the catalog sweep did not complete: {error}"));
                 }
-                Ok(Response::Message(message))
+                outcome.verdict().map(Response::Message)
             } else {
                 let findings = service.report()?;
                 let advice = doctor_advice(ctx, &catalog, service.notices()?, audit_catalog)?;
@@ -3546,6 +3559,39 @@ fn is_project_less(invocation: &Invocation) -> bool {
 /// `audit_catalog` is the caller's answer to "is this a real store", not a
 /// preference: an orphaned registration in a throwaway store is a fixture that
 /// was supposed to disappear.
+/// `story doctor --fix`'s catalog half: forget the links pointing at nothing,
+/// record the origins a checkout owns and the store does not.
+///
+/// Appends what it did to `advice` **as it goes**, one self-describing entry
+/// per half, rather than returning a report — so a failure in the second half
+/// cannot discard the first half's account of a write that already landed.
+/// That is also why `advice` is `&mut` rather than a return value.
+///
+/// Store-wide, unlike the per-project repair that runs before it
+/// ([`crate::service::CatalogService`] is deliberately not `Ctx`-shaped), which
+/// is why its outcome must not be gated on one project's health — SH-270.
+///
+/// The order is not arbitrary and does not commute with the repair above it:
+/// [`orphaned`] counts a project's stories from read-model rows, and
+/// `repair_read_model` has just put missing ones back, so a sweep running first
+/// would quote a pre-repair count.
+///
+/// [`orphaned`]: crate::service::CatalogService::orphaned
+fn catalog_sweep<S: Store>(
+    catalog: &crate::service::CatalogService<'_, S>,
+    advice: &mut Vec<String>,
+) -> Result<(), AppError> {
+    let forgotten = catalog.deregister_orphaned()?;
+    if !forgotten.is_empty() {
+        advice.push(deregistered_message(&forgotten));
+    }
+    let origins = catalog.register_found_origins()?;
+    if !origins.is_empty() {
+        advice.push(registered_origins_message(&origins));
+    }
+    Ok(())
+}
+
 fn doctor_advice<S: Store>(
     ctx: &Ctx<'_, S>,
     catalog: &crate::service::CatalogService<'_, S>,
