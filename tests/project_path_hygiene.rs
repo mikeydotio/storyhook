@@ -658,6 +658,80 @@ fn doctor_fix_registers_the_origin_and_then_has_nothing_to_say() {
     );
 }
 
+/// Two checkouts of one repository — a release clone beside a working clone,
+/// say — with neither origin registered. Both classify `Registrable` in the
+/// read pass, which completes before either write does, so this is the SH-274
+/// repro without any concurrency at all: only the first write can ever land.
+fn two_checkouts_of_one_unregistered_origin(label: &str) -> (Fixture, String) {
+    let f = fixture(label);
+    let clone = real_dir(&format!("{label}-clone"));
+    let out = story(&clone, &f.data_home, &["project", "new", "--prefix", "CL"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "creating the second checkout's project: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_selection_is_not_inherited(&clone);
+
+    let origin = format!("https://github.com/acme/{label}.git");
+    for dir in [&f.checkout, &clone] {
+        git(dir, &["init", "-q", "-b", "main"]);
+        git(dir, &["remote", "add", "origin", &origin]);
+    }
+    (f, origin)
+}
+
+/// `doctor`'s advice must promise only what a fix can actually deliver: one
+/// origin belongs to at most one project, however many checkouts claim it.
+#[test]
+fn doctor_advises_only_as_many_registrations_as_a_fix_can_actually_make() {
+    let (f, origin) = two_checkouts_of_one_unregistered_origin("origin-collision-advice");
+
+    let report = stdout(&story(&f.workdir, &f.data_home, &["doctor"]));
+    assert!(
+        report.contains(&origin),
+        "the report must name the shared origin: {report}"
+    );
+    assert!(
+        report.contains("1 of which `story doctor --fix` can record"),
+        "only one write can ever land for one origin, however many checkouts claim it: {report}"
+    );
+}
+
+/// The SH-274 repro: `--fix` must report only the origin it actually wrote,
+/// not every checkout that looked registrable before either write ran.
+#[test]
+fn doctor_fix_registers_only_the_origin_it_actually_wrote() {
+    let (f, origin) = two_checkouts_of_one_unregistered_origin("origin-collision-fix");
+
+    let fixed = story(&f.workdir, &f.data_home, &["doctor", "--fix"]);
+    assert_eq!(fixed.status.code(), Some(0));
+    let report = stdout(&fixed);
+    assert!(
+        report.contains("registered 1 origin"),
+        "only one write can succeed — the other project already holds the origin: {report}"
+    );
+    assert_eq!(
+        report.matches(&origin).count(),
+        1,
+        "the origin must be named once, for the write that actually recorded it — not once per \
+         checkout that merely looked registrable before either write ran: {report}"
+    );
+    assert!(
+        report.contains("left alone"),
+        "the write `--fix` refused must be reported, not silently dropped: {report}"
+    );
+
+    // The store agreed all along; the report was the one that lied.
+    let listed = stdout(&story(&f.workdir, &f.data_home, &["project", "list"]));
+    assert_eq!(
+        listed.matches(&origin).count(),
+        1,
+        "exactly one project may hold the origin: {listed}"
+    );
+}
+
 #[test]
 fn doctor_reports_but_never_registers_an_origin_the_checkout_does_not_own() {
     // A project in a subdirectory of a repository. Its checkout reports the
