@@ -5,6 +5,12 @@
 # (no tmux needed — every case here either refuses before the DRY_RUN branch
 # point or IS the dry-run branch), plus one real fake-tmux dispatch mirroring
 # test-dispatch-happy.sh for the confirmed-path `display`.
+#
+# SH-219: --auto now renders one of TWO charters depending on whether
+# council_vote_available finds a real ‘/council-vote’ skill on disk — the
+# probe itself is test-council-probe.sh's job. This file forces STORY_COUNCIL
+# to pin each charter's own content deterministically, independent of
+# whatever plugins happen to be installed wherever this suite runs.
 source "$(dirname "$0")/lib.sh"
 
 FAKE_TMUX_DIR="$TESTS_DIR/fakes"
@@ -32,8 +38,9 @@ expected_attended_prompt="Investigate and plan a fix for story $id in this repo.
 out=$(dry)
 assert_eq "$(jqf "$out" .ok)" "true" "attended: ok:true"
 assert_eq "$(jqf "$out" .auto)" "false" "attended: auto:false"
+assert_eq "$(jqf "$out" .council)" "false" "attended: council:false"
 assert_eq "$(jqf "$out" .prompt)" "$expected_attended_prompt" "attended: prompt is byte-identical to today's"
-for marker in "AUTONOMOUS" "council-vote" "gh pr merge" "story block" "story move $id" "reap"; do
+for marker in "AUTONOMOUS" "council-vote" "gh pr merge" "story block" "story move $id" "reap" "genuinely defensible answers" "do not stall"; do
   case "$(jqf "$out" .prompt)" in
     *"$marker"*) fail_test "attended: prompt leaked auto-charter marker [$marker]" ;;
   esac
@@ -43,10 +50,12 @@ case "$(jqf "$out" .display)" in
 esac
 
 # --- --auto dry run: charter content, auto:true, display warns about
-#     auto-accept-edits ---
-out=$(dry --auto)
+#     auto-accept-edits. STORY_COUNCIL=on pins the council charter regardless
+#     of what's actually installed wherever this suite runs. ---
+out=$(STORY_COUNCIL=on dry --auto)
 assert_eq "$(jqf "$out" .ok)" "true" "auto: ok:true"
 assert_eq "$(jqf "$out" .auto)" "true" "auto: auto:true"
+assert_eq "$(jqf "$out" .council)" "true" "auto+council-on: council:true"
 prompt=$(jqf "$out" .prompt)
 for marker in \
   "AUTONOMOUS" \
@@ -58,9 +67,33 @@ for marker in \
   "semver bump"; do
   case "$prompt" in
     *"$marker"*) : ;;
-    *) fail_test "auto: prompt missing charter obligation [$marker]" ;;
+    *) fail_test "auto+council-on: prompt missing charter obligation [$marker]" ;;
   esac
 done
+
+# --- SH-219: with no council reachable, the SOLO charter renders instead —
+#     every shared obligation still present, council-vote named nowhere. ---
+solo_out=$(STORY_COUNCIL=off dry --auto)
+assert_eq "$(jqf "$solo_out" .ok)" "true" "auto+council-off: ok:true"
+assert_eq "$(jqf "$solo_out" .auto)" "true" "auto+council-off: auto:true"
+assert_eq "$(jqf "$solo_out" .council)" "false" "auto+council-off: council:false"
+solo_prompt=$(jqf "$solo_out" .prompt)
+for marker in \
+  "AUTONOMOUS" \
+  "make test" \
+  "gh pr merge --merge" \
+  "story block $id" \
+  "story move $id done" \
+  "semver bump" \
+  "do not stall"; do
+  case "$solo_prompt" in
+    *"$marker"*) : ;;
+    *) fail_test "auto+council-off: solo prompt missing charter obligation [$marker]" ;;
+  esac
+done
+case "$solo_prompt" in
+  *"council-vote"*) fail_test "auto+council-off: solo prompt still names council-vote" ;;
+esac
 
 # SH-208: the charter's own last act is a fully-resolved `reap` command, not
 # instructions the child must reconstruct -- this project's own slug, this
@@ -72,6 +105,13 @@ assert_contains "$prompt" "run ‘${expected_reap}’ as your absolute last acti
   "auto: reap is framed as the session's final act"
 assert_contains "$prompt" "never run ‘${expected_reap}’ after a hard stop" \
   "auto: reap is explicitly forbidden past a hard stop"
+# The SOLO charter shares the same tail, so it carries the identical reap
+# framing — the two charters must never drift on this obligation.
+assert_contains "$solo_prompt" "$expected_reap" "auto+council-off: solo prompt carries the exact reap command"
+assert_contains "$solo_prompt" "run ‘${expected_reap}’ as your absolute last action" \
+  "auto+council-off: solo reap is framed as the session's final act"
+assert_contains "$solo_prompt" "never run ‘${expected_reap}’ after a hard stop" \
+  "auto+council-off: solo reap is explicitly forbidden past a hard stop"
 
 # The charter used to require every `story` write to be made from the main
 # checkout, and templated its absolute path in to say where that was. It said
@@ -111,11 +151,27 @@ out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$id" --bogus 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "unknown flag: ok:false"
 assert_contains "$(jqf "$out" .display)" "--auto" "unknown flag: usage names --auto"
 
-# --- STORY_AUTO_PROMPT overrides the charter, same seam as STORY_PROMPT ---
-out=$(cd "$repo" && STORY_DRY_RUN=1 STORY_AUTO_PROMPT="custom auto <n> <dir>" \
+# --- STORY_AUTO_PROMPT overrides the charter, same seam as STORY_PROMPT --
+#     wins even against STORY_COUNCIL=off: it's a wholesale override of the
+#     entire autonomous charter, not just the council-available half. ---
+out=$(cd "$repo" && STORY_DRY_RUN=1 STORY_COUNCIL=off STORY_AUTO_PROMPT="custom auto <n> <dir>" \
   bash "$SCRIPT" dispatch "$id" --auto 2>&1)
 assert_eq "$(jqf "$out" .prompt)" "custom auto $id $repo_phys" \
-  "STORY_AUTO_PROMPT: overrides the auto charter and renders <n>/<dir>"
+  "STORY_AUTO_PROMPT: overrides the auto charter and renders <n>/<dir>, even with no council"
+
+# --- SH-219: STORY_AUTO_PROMPT_SOLO is the equivalent seam for the no-council
+#     charter — dormant when council is available, since that path never
+#     reads it. ---
+out=$(cd "$repo" && STORY_DRY_RUN=1 STORY_COUNCIL=off STORY_AUTO_PROMPT_SOLO="custom solo <n> <dir>" \
+  bash "$SCRIPT" dispatch "$id" --auto 2>&1)
+assert_eq "$(jqf "$out" .prompt)" "custom solo $id $repo_phys" \
+  "STORY_AUTO_PROMPT_SOLO: overrides the solo charter and renders <n>/<dir>"
+
+out=$(cd "$repo" && STORY_DRY_RUN=1 STORY_COUNCIL=on STORY_AUTO_PROMPT_SOLO="custom solo <n> <dir>" \
+  bash "$SCRIPT" dispatch "$id" --auto 2>&1)
+case "$(jqf "$out" .prompt)" in
+  "custom solo"*) fail_test "STORY_AUTO_PROMPT_SOLO leaked into a council-available --auto dispatch" ;;
+esac
 
 # STORY_PROMPT (the attended override) must not leak into an --auto run.
 out=$(cd "$repo" && STORY_DRY_RUN=1 STORY_PROMPT="attended override <n>" \

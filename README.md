@@ -131,10 +131,14 @@ reason rather than dispatching it.
 
 `--auto` keeps plan approval as the *only* human interaction: choose
 auto-accept edits when you approve, and the session runs to completion on its
-own — resolving open questions by `/council-vote`, running the full test
-suite, merging its own PR with a merge commit, and closing the story if the
-work is genuinely done (or blocking it and stopping on a hard stop, such as
-red tests or a failed merge, that a vote can't resolve).
+own — researching and deciding an easy question itself, resolving a
+genuinely hard one by `/council-vote` (only when that skill can actually
+resolve in the session — `story.sh` checks before it ever writes the
+charter, and falls back to researching and deciding those too rather than
+naming a skill that isn't there), running the full test suite, merging every
+PR it opens with a merge commit, and closing the story once its own
+acceptance criteria are met (or blocking it and stopping on a hard stop,
+such as red tests or a failed merge, it can't resolve).
 
 `complete` is conservative by design. It never deletes an unmerged branch, never
 removes a dirty, locked, or current worktree, and never touches `main` or the
