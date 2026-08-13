@@ -57,7 +57,11 @@ export STORYHOOK_PARENT_PID="$$"
 # out.
 export STORYHOOK_DISPATCH_SCRIPT="$repo_root/plugin/claude-code/bin/story.sh"
 export PATH="$repo_root/plugin/claude-code/tests/fakes:$PATH"
+# Minted here, not by the fake: since SH-263 fakes/tmux stores state in the
+# directory it is handed and refuses to invent one, so that a caller who named
+# no directory can never be quietly given a shared one.
 export FAKE_TMUX_STATE="$data_root/faketmux"
+mkdir -p "$FAKE_TMUX_STATE"
 export STORY_READY_DELAY=0
 export STORY_READY_FALLBACK_DELAY=0
 export STORY_CONFIRM_DELAY=0
