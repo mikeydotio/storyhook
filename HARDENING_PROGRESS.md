@@ -12880,3 +12880,80 @@ which is the SH-222 lesson applied rather than re-learned. 132 GB free.
 `obviated-by` across `src/` finds no other hand-rolled readiness; the web board
 reads `ready_ids` from the server, and `graph.rs` walks the same edges for a
 dependency chain, which is a different question.
+
+### SH-244 — done
+
+**Outcome:** merged (PR #339). `story doctor --json` hands its findings over as
+data. The four values SH-243 regexed out of a 1.68MB string —
+`story`/`field`/`persisted`/`rebuilt` — are now fields, reachable with plain
+JSON access.
+
+**Council: yes, and it was worth it.** Three seats, two rounds, IRV. Round 1
+went C=2 / B=1 / A=0 with **every member voting against their own proposal**.
+In deliberation the author of B *withdrew it*, having gone looking for evidence
+to defend it and found the opposite: `tests/error_contract.rs:172-199` provokes
+the only live `Integrity` row **through `story doctor` itself**, so B — which
+moved doctor's damaged answer to `Ok(Response::DoctorReport)` — would have
+*vacated* that pin rather than tripped it, and would have put a second copy of
+`fail`'s stream/prefix/exit rules inside the Ok arm. The runoff also resolved
+version skew **against the seat that raised it** ("I rule against myself"),
+which flipped `code` from a stringly-typed field to a Rust enum. Verdict on
+SH-244; audit trail in `.council/doctor-json-structured-findings/`.
+
+Worth recording that the council's value here was not the shape it picked — it
+was the three *facts* it dug up that the story's own filing had wrong: the
+"four other callers" of `AppError::Integrity` are five (and `git_links.rs:144`
+is a doc comment, not a call site); `http.rs`'s `Integrity => 500` is the REST
+surface, not the invoke path (`rpc.rs:287-293` answers 200 for both arms);
+and the exact-key-set assertion in `error_contract.rs` — the real contract
+amendment this story needed — was named by nobody in the original filing.
+
+**Built:** `AppError::Integrity(IntegrityDetail { context, findings, advice })`,
+mirrored field-by-field into `WireError`. `Display` is *computed* from the
+payload, so `.error` **is** the findings' own messages joined — one string per
+finding, one place it lives, and the structured and prose forms cannot drift.
+Exit 5, `result: "error"` and `.error` are byte-identical;
+`golden_cli__doctor_human` is unchanged byte for byte, which is the proof
+nothing was traded away. `plugin/claude-code/bin/story.sh` needed no change.
+
+**The invariant that stopped being a call-site check:**
+`IntegrityDetail::report` returns `Option`, so "is anything wrong" is asked by
+the constructor rather than by each raise site, and `From<String>` is **total**
+— a caller with only prose mints one `Unstructured` finding. An integrity
+error carrying an empty `findings` array is unrepresentable at all six raise
+sites, not just doctor's two.
+
+**What the suite caught, and this is the entry's real content.** Replacing the
+`issue.contains("obviated")` prose filter with a structural read made
+`a_blocked_repair_is_named_even_when_the_report_is_clean` fail — and the reason
+is that the filter was doing a **second, undocumented job**: it suppressed not
+only `service::query`'s obviation sentence but any finding whose *relation* is
+spelled `obviated-by`, asymmetrically, since the mirrored `obviates` spelling
+does not contain the word. So a one-sided obviation edge is reported or
+suppressed depending on which end survives. I preserved the imprecise rule
+exactly (`is_suppressed`), named it in its own doc comment, and filed it —
+because fixing it changes which findings doctor reports, and that is a
+behaviour change riding in a restructuring commit. Two hats. **The lesson is
+the general one: a substring test over prose is not a classification, and the
+only reason anyone knew this one had a second job is that a test pinned the
+behaviour rather than the intent.**
+
+**Four defects filed, none of them this story's work:** SH-266 (doctor
+withholds seven of its eight advice sources *exactly when a project is
+damaged* — `invoke.rs:704-706` passes only `notices`, contradicting the SH-185
+ruling recorded in `integrity.rs:591-597`; found independently by two seats),
+SH-267 (`diff_read_model` re-folds every story 2× per `doctor` and 3–4× per
+`--fix`), SH-268 (the substring suppression above, plus its dead `"conflicts"`
+half), SH-269 (`SH-41:` vs `story 41:` in one report).
+
+**Gate:** `make test` green — 3497 tests, 153 suites, zero failures. One
+restart: the first `make test` was started before the work was finished and
+killed at ~40s; it left a daemon behind, which `check-no-orphan-servers.sh`
+named and I stopped before re-running. Supervised run took ~7m20s with a
+20-second log-growth heartbeat and a 120-second stall bound; no stalls.
+
+**Deviation from the verdict:** none in shape. One in scope the council
+allowed for explicitly: it required the drift finding to carry its four values
+typed *or* a written record that SH-244 does not close SH-243's use case. It
+carries them (`FindingData::Divergence`), pinned end to end by
+`doctor_json_hands_a_divergence_over_as_data_not_prose`.
