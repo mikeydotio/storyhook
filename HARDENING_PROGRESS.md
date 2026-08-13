@@ -13166,3 +13166,77 @@ soft-deleted with that reason. Not filed as its own story — I did not reproduc
 it deliberately and the global `--json` contract says every command honours it,
 so it may be my invocation rather than the CLI. Named here so the next session
 that scripts `story new` checks the flag's position before trusting the output.
+
+### SH-271 — done
+
+**Outcome:** merged (PR #346). `story doctor --fix` no longer advises undoing a
+repair it has just made, and no longer reports having found nothing to fix about
+a run that restored a read-model row.
+
+**The story was filed by the previous cycle's council and it was right about
+everything, which is worth recording on its own.** SH-268's seats traced the
+repro to source without executing it — the FK-off idiom to use (`replace_states`,
+not `forget_story`, and *why*: the latter runs with foreign keys on, so it
+deletes the relation rows first and the dangling edge goes with them), the exact
+lines, the reason `all_stories` reads the persisted snapshot rather than a join
+over `story_relations`. Every one of those held when the fixture was actually
+built. The repro test failed on first run with the story's own predicted output,
+verbatim: `doctor found nothing it could fix` followed by `SH-1: retract its
+dangling relation `obviates` to the missing story `SH-2``.
+
+**Two defects, one root: a list decided before the repairs, and a headline
+computed from an incomplete account of them.** `blocked` is built inside the
+write at line 217; `repair_read_model` runs at line 330; the rendering at 341.
+A story with events and no read-model row is absent from `all_stories`, so a
+*valid* edge naming it reads as dangling — and when the claiming story is closed,
+the retraction becomes advice. The repair then restores the row and the edge is
+whole. Following the advice reopens a closed story to delete good data.
+Meanwhile `touched` ingested only `repaired.divergences`, so the run that made
+that repair announced it had made none.
+
+**The fix keys on the fact, not the sentence.** Each blocked repair now carries
+a `FindingKey` built from the same `subject` and `FindingData` values
+`compute_integrity_issues` puts in the finding itself, and `surviving_repairs`
+drops the entries whose finding is gone from the post-repair report. Two calls
+worth naming:
+
+- **`FindingCode` is deliberately not part of the key.** One claim produces at
+  most one finding — dangling *or* missing-inverse, never both — so the code adds
+  nothing, while including it would split the key across
+  `MissingReciprocalRelation`, which is the same fact spelled for a mutual
+  relation. That is the SH-268 trap (two finding kinds spelling opposite ends of
+  one edge) declined rather than re-entered.
+- **`touched` ingests `missing_rows` and nothing else.** Not `rewritten`, which
+  is every story that folds — that would make every healthy run claim a repair.
+  Not `extra_rows` or `fold_failures`, which re-folding does not fix; either
+  leaves a finding, so the run fails and never reaches the headline.
+
+**The third test is the one that matters most and was not asked for.** Dropping
+dissolved entries is easy to over-do: "the run repaired something, so clear the
+blocked list" passes both of the story's own scenarios and silently re-opens
+SH-225 — the week of eight closed stories whose repairs went unmentioned.
+`a_blocked_repair_the_run_did_not_dissolve_is_still_named` runs both in one
+fixture: SH-1's "dangling" edge dissolves, SH-3's malformed labels on a closed
+story do not, and the survivor is still named. Reconciliation is per entry
+because of that test, not because of the story.
+
+**Scope held.** The origin the story names — repair the read model *first*, and
+have `fix()` consume `report()`'s findings instead of re-walking the graph — is
+SH-273, and nothing here touches it. The third headline branch is **not**
+deleted; the story's warning about that argument was heeded exactly as written.
+
+**One refactor, second commit, two hats:** four copies of the
+open-a-second-connection idiom in `test_support` became `second_connection` and
+`foreign_keys_down`. The fourth copy arrived with this story's own fixture,
+which is what made it worth extracting.
+
+**Gate:** `make test` green **twice** — once per commit, so history stays
+bisectable — **154 suites, 3506 tests, 130/130 e2e, no orphan daemons before or
+after**. Supervised background runs, log-growth heartbeat at ~115s intervals
+against a 120s stall bound; no stalls, no wedges, no restarts, ~9 minutes each.
+`cargo fmt` and `cargo clippy --workspace --all-targets -- -D warnings` clean.
+113 GB free, `target/` at 75 GB.
+
+**One process note:** the first gate run died in 40 seconds on `cargo fmt
+--check` over the new test file. Cheap, but avoidable — `cargo fmt` costs
+nothing and belongs before the gate, not inside it.
