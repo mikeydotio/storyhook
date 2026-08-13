@@ -1553,14 +1553,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   function $(id) { return document.getElementById(id); }
 
-  /** Escapes text for safe insertion as HTML by round-tripping through textContent. */
-  function esc(s) {
-    if (s === null || s === undefined) return "";
-    var d = document.createElement("div");
-    d.textContent = String(s);
-    return d.innerHTML;
-  }
-
   /** Builds a DOM element. `props` values are assigned as properties/attributes
    * (never via innerHTML); `children` are appended (strings become text nodes). */
   function el(tag, props, children) {

@@ -784,6 +784,28 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
         "served dashboard HTML must never contain a raw NUL byte"
     );
 
+    // SH-217: the dashboard builds DOM, never HTML text. With
+    // `script-src 'unsafe-inline'` (src/api/http.rs::CSP) a single
+    // string-to-markup sink turns any story description or comment body
+    // into script the moment the markdown renderer exists to build one
+    // from untrusted text. `esc()`, the file's one-time innerHTML reader
+    // with zero call sites, was removed so this assertion is true rather
+    // than aspirational.
+    for sink in [
+        "innerHTML =",
+        "innerHTML=",
+        "outerHTML",
+        "insertAdjacentHTML",
+        "document.write",
+        "new Function(",
+        "eval(",
+    ] {
+        assert!(
+            !body.contains(sink),
+            "the dashboard must never build markup from a string: found `{sink}`"
+        );
+    }
+
     // Board + List + view toggle
     assert!(body.contains(r#"id="board-view""#));
     assert!(body.contains(r#"id="list-view""#));
