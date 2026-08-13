@@ -91,7 +91,9 @@ Deliberately **not** adopted (filed as follow-on stories rather than folded in h
 since each needs its own design pass): the list view's `.state-pill` — colouring it is
 now an obvious, cheap follow-on that the semantic palette makes worth doing (SH-277)
 — and the description field, a `<textarea>` where linkification needs a read/edit
-split the drawer doesn't otherwise have (SH-278).
+split the drawer doesn't otherwise have (filed as SH-278; that story was later
+superseded by SH-217, which built the split as part of rendering the description as
+markdown — see [`markdown-in-the-dashboard.md`](markdown-in-the-dashboard.md)).
 
 ### Consumer 2 — the card blockers list
 
