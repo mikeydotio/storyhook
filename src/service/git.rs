@@ -79,6 +79,31 @@
 //! primary-key probe against the structured `story_commit_links` table, not a
 //! scan of comment text — see that function's doc comment for why a second
 //! probe (the seven-character abbreviation) still matters for a pre-#18 row.
+//!
+//! # A closed story still takes a link (SH-279)
+//!
+//! [`GitService::record_commit`] used to resolve every story through
+//! `resolve_open_story`, so a merge commit whose body named a story that had
+//! already closed — the shape this project's own workflow produces on every
+//! PR merge — recorded **nothing**: no [`StoryEvent::StoryCommitLinked`], no
+//! `referenced_by` entry, no diagnostic. A merged commit vanishing from the
+//! story it implements is a hole in the provenance record `referenced_by`
+//! exists to carry, and nothing said so.
+//!
+//! SH-261 had already drawn the line this needed: a closed story's *state,
+//! scope and rollups* cannot change, but an append that touches none of them
+//! is permitted, through [`super::Intent::Append`] and
+//! [`super::resolve_appendable_story`]. A commit link is such an append —
+//! `StoryCommitLinked` folds into `referenced_by_commits` and `updated_at`
+//! alone (`domain::fold_story`) — so `record_commit` now resolves under that
+//! intent instead. It still never *moves* a closed story: moving is exactly
+//! the edit SH-261 kept refused, and [`NotMovedReason::StoryIsClosed`] names
+//! the reason locally rather than leaving it to fall out of `default_open`
+//! never matching an archived story's resting state by accident.
+//!
+//! The intent's other refusal — a soft-deleted story — and an id naming no
+//! story at all are both still declined, and both are named in the run
+//! report rather than swallowed.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -90,7 +115,7 @@ use crate::error::AppError;
 use crate::store::{ExpectedSeq, ProjectId, ReadOps, Store, StoreError, StoryNo};
 
 use super::story::state_transition_events;
-use super::{Ctx, append_and_fold, project_prefix, resolve_open_story};
+use super::{Ctx, Intent, append_and_fold, project_prefix};
 
 /// The default scanning window, when `--since` is not given.
 const DEFAULT_WINDOW: &str = "7d";
@@ -160,6 +185,14 @@ enum NotMovedReason {
     /// produces it — the same-run dedup — is a genuine fifth cause, not an
     /// alias for one of the other four.
     AlreadyClaimedThisRun,
+    /// The story is closed (SH-279). Unlike the other reasons, this one is a
+    /// fact about the story rather than about this run or this commit's
+    /// grammar — declared after them so a run-level cause still wins the
+    /// declaration-order priority [`eligible_active_state`] documents, and
+    /// before [`NotInDefaultState`] because a closed story's resting state is
+    /// never the project's default *open* one, so this is the more specific,
+    /// more actionable of the two.
+    StoryIsClosed,
     /// The story has already moved out of the project's default open state.
     NotInDefaultState,
 }
@@ -181,6 +214,9 @@ impl NotMovedReason {
             NotMovedReason::AlreadyClaimedThisRun => format!(
                 "linked without moving: {ids} (an earlier commit in this run already claimed it)"
             ),
+            NotMovedReason::StoryIsClosed => {
+                format!("linked without moving: {ids} (the story is closed)")
+            }
             NotMovedReason::NotInDefaultState => format!(
                 "linked without moving: {ids} (already out of the project's default open state)"
             ),
@@ -353,9 +389,13 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
 
     /// Records one commit against one story, in one transaction.
     ///
-    /// `Ok(None)` means there was nothing to do: the story is not open, or it
-    /// is already linked to this commit. `Ok(Some(LinkOutcome::NotMoved(_)))`
-    /// means a link was added and names why the story did not move;
+    /// `Ok(None)` means there was nothing to do: the commit is already linked
+    /// to this story, or the id could not be resolved as an append target —
+    /// not a story of this project, or soft-deleted (SH-279 names both of
+    /// those in the run report rather than swallowing them here; see
+    /// `GitService::commit_sync`). `Ok(Some(LinkOutcome::NotMoved(_)))` means
+    /// a link was added and names why the story did not move — a closed
+    /// story links every time and never moves, same as any other reason.
     /// `Ok(Some(LinkOutcome::Moved { .. }))` means it was added and the story
     /// moved.
     fn record_commit(
@@ -369,12 +409,18 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
         let now = self.ctx.now();
         let project = self.ctx.project();
         Ok(self.ctx.store().write(|tx| {
-            let Ok((story_no, row)) = resolve_open_story(&*tx, project, prefix, story_id) else {
-                // Not open, or not a story of this project. The legacy path
-                // skipped it silently and so does this: a commit may name a
-                // story that has since been closed, or one belonging to another
-                // repository entirely.
-                return Ok(None);
+            // `Intent::Append`, not `resolve_open_story` (SH-279): a link
+            // reaches only `referenced_by_commits` and `updated_at`, which is
+            // the SH-261 argument for permitting an append against a closed
+            // story. `NotFound` (no such story in this project) and
+            // `Validation` (soft-deleted — `resolve_appendable_story`'s own
+            // refusal) are both declines, not failures; anything else is a
+            // real store error and must propagate rather than read as a
+            // silent skip.
+            let (story_no, row) = match Intent::Append.resolve(&*tx, project, prefix, story_id) {
+                Ok(resolved) => resolved,
+                Err(AppError::NotFound(_) | AppError::Validation(_)) => return Ok(None),
+                Err(err) => return Err(err.into()),
             };
             if already_linked(&*tx, project, story_no, &commit.sha)? {
                 return Ok(None);
@@ -391,7 +437,18 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
             // moved on to review is not dragged back. `default_open` is always
             // `Some` for a conforming project (`todo` is a REQUIRED_STATES OPEN
             // state, SH-125), but the match stays total rather than assuming it.
+            //
+            // A run-level refusal (`Err(reason)` — no claim word, sync off, no
+            // active state, already claimed this run) wins over the story's own
+            // closed-ness, per `NotMovedReason`'s declaration order: those are
+            // questions about this run, asked first. `row.archived` is checked
+            // next and explicitly, rather than left to fall out of `default_open`
+            // never matching an archived story's resting state by accident — a
+            // closed story never moves, and this is why, named rather than
+            // inferred.
             let outcome = match (active, default_open) {
+                (Err(reason), _) => LinkOutcome::NotMoved(reason),
+                (Ok(_), _) if row.archived => LinkOutcome::NotMoved(NotMovedReason::StoryIsClosed),
                 (Ok(active), Some(default_open)) if row.snapshot.state == default_open.slug => {
                     events.extend(state_transition_events(
                         active,
@@ -405,7 +462,6 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
                     }
                 }
                 (Ok(_), _) => LinkOutcome::NotMoved(NotMovedReason::NotInDefaultState),
-                (Err(reason), _) => LinkOutcome::NotMoved(reason),
             };
 
             append_and_fold(
@@ -673,6 +729,10 @@ mod tests {
             (
                 NotMovedReason::AlreadyClaimedThisRun,
                 "linked without moving: SH-1, SH-2 (an earlier commit in this run already claimed it)",
+            ),
+            (
+                NotMovedReason::StoryIsClosed,
+                "linked without moving: SH-1, SH-2 (the story is closed)",
             ),
             (
                 NotMovedReason::NotInDefaultState,
