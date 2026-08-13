@@ -195,8 +195,17 @@ const fixtureBaselines = new Map<string, Set<string>>();
  * whether the test passed or failed, so a stray cannot outlive the test
  * that created it, and a red spec stays one red spec.
  *
- * Deletes only OPEN stories: `StoryService::delete` refuses a closed one,
- * and a closed stray is off the board anyway, counted by nothing.
+ * A CLOSED stray is reopened first, then deleted (SH-222). Both halves of
+ * the rule this sweep originally skipped them under were wrong: closing a
+ * story sets the store row's `archived` flag (`StoryClosedAndArchived`), and
+ * `StoryService::delete` answers *404, not a refusal*, for such a row — so
+ * a bare `DELETE` here would have failed loudly for a story that is very
+ * much still there. And it is not "counted by nothing": `/data` excludes
+ * only deleted and draft stories, so a closed stray sits in
+ * `state.data.stories` and inflates `#filter-count`'s denominator for the
+ * rest of the run. That is the difference between SH-245's symptom and
+ * SH-223's: an open stray was swept by the next test, a closed one never
+ * was, so every later count assertion in the run read one too many.
  */
 export function cleanUpCreatedStories(projectName: string): void {
   test.beforeEach(async ({ request }) => {
@@ -209,21 +218,34 @@ export function cleanUpCreatedStories(projectName: string): void {
     const baseline = fixtureBaselines.get(projectName);
     if (!baseline) return;
     const slug = await projectSlug(request, projectName);
+    // `X-Storyhook` as well as the token: a mutation also has to clear
+    // `mutation_guard_ok`'s CSRF check, which a read does not
+    // (`src/api/admission.rs`). Without it these answer 403.
+    const headers = {
+      "X-Storyhook": "1",
+      "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
+    };
+    const storyUrl = (id: string) =>
+      `/api/repos/${encodeURIComponent(slug)}/story/${encodeURIComponent(id)}`;
+
     for (const story of await storiesInProject(request, projectName)) {
-      if (baseline.has(story.id) || story.superstate !== "OPEN") continue;
-      const deleted = await request.delete(
-        `/api/repos/${encodeURIComponent(slug)}/story/${encodeURIComponent(story.id)}`,
-        {
-          // `X-Storyhook` as well as the token: a mutation also has to clear
-          // `mutation_guard_ok`'s CSRF check, which a read does not
-          // (`src/api/admission.rs`). Without it this answers 403.
-          headers: {
-            "X-Storyhook": "1",
-            "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
-          },
-          data: { reason: "e2e afterEach cleanup (SH-245)" },
-        },
-      );
+      if (baseline.has(story.id)) continue;
+      if (story.superstate !== "OPEN") {
+        const reopened = await request.post(`${storyUrl(story.id)}/reopen`, {
+          headers,
+          data: {},
+        });
+        if (!reopened.ok()) {
+          throw new Error(
+            `cleanUpCreatedStories: POST ${story.id}/reopen answered ` +
+              `${reopened.status()}: ${await reopened.text()}`,
+          );
+        }
+      }
+      const deleted = await request.delete(storyUrl(story.id), {
+        headers,
+        data: { reason: "e2e afterEach cleanup (SH-245)" },
+      });
       // Loud on failure: a cleanup that quietly gives up leaves exactly the
       // stray it exists to remove, and the next spec pays for it instead.
       if (!deleted.ok()) {
