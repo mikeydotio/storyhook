@@ -19,6 +19,15 @@
 //! owns the origin, because R4 is explicit that anything else is reported and
 //! never guessed at.
 //!
+//! A fourth question is not about *what* the half does but about **when it
+//! runs**. Both its operations sweep every project in the store, while the
+//! repair that precedes them is one project's — so gating the sweep on that one
+//! project's health held every other project's stale registration hostage, and
+//! `--fix` was the one command that would not perform the remedy `doctor`
+//! prints (SH-270). The pair of tests below fixes both edges of that: a finding
+//! `--fix` cannot clear must not stop the sweep, and a repair write that
+//! *aborted* must not start it.
+//!
 //! Everything runs against a data home [`non_temporary_dir`] resolves as
 //! non-temporary, independently of the checkout (SH-258). That is deliberate
 //! twice over: the catalog audit is deliberately silent in a throwaway store
@@ -28,6 +37,9 @@
 
 use std::path::{Path, PathBuf};
 
+use storyhook::domain::{StoryEvent, TypeDef};
+use storyhook::store::test_support::{forget_events, inject_events};
+use storyhook::store::{ProjectId, ReadOps, SqliteStore, Store, StoryNo, WriteOps};
 use storyhook_test_support::{assert_selection_is_not_inherited, non_temporary_dir};
 
 /// A directory the store guards classify as **not** temporary.
@@ -97,6 +109,38 @@ fn fixture(label: &str) -> Fixture {
         data_home,
         workdir,
         checkout,
+    }
+}
+
+impl Fixture {
+    /// This fixture's store, opened in-process.
+    ///
+    /// The path is derived the one way the child processes derive it —
+    /// `$STORYHOOK_DATA_DIR/store.db`, which [`story`] sets to `data_home` —
+    /// rather than from this process's own environment, which still points at
+    /// the developer's real store (see `storyhook_test_support::store`'s module
+    /// doc for why that distinction has teeth).
+    ///
+    /// Safe while the fixture's daemon holds the store: this is WAL-mode SQLite
+    /// with a busy timeout, the same concurrency the CLI itself relies on. The
+    /// standing rule about standing the daemon down first is about reading
+    /// *bytes on disk*, which nothing here does.
+    fn open_store(&self) -> SqliteStore {
+        let store = SqliteStore::open(self.data_home.join("store.db")).expect("opening the store");
+        store.migrate().expect("migrating the store");
+        store
+    }
+
+    /// The project id and story-id prefix of the project whose checkout is at
+    /// `root`, for a test that has to reach past the services to fabricate
+    /// damage the schema refuses.
+    fn project_at(&self, store: &SqliteStore, root: &Path) -> (ProjectId, String) {
+        let id = storyhook_test_support::project_id_at(store, root)
+            .unwrap_or_else(|| panic!("no project for the checkout at {}", root.display()));
+        let prefix = store
+            .read(|tx| Ok(tx.project(id)?.expect("the project exists").prefix))
+            .expect("reading the project");
+        (id, prefix)
     }
 }
 
@@ -184,6 +228,150 @@ fn doctor_fix_deregisters_the_orphan_but_keeps_the_stories() {
         !stdout(&again).contains("no longer exists"),
         "the orphan must not be reported twice: {}",
         stdout(&again)
+    );
+}
+
+/// `at` for injected events: fixed, so nothing here depends on the clock.
+const AT: &str = "2026-03-11T00:00:01Z";
+
+/// A finding `--fix` cannot clear must not stop it sweeping the catalog
+/// (SH-270).
+///
+/// The defect this pins was not "the sweep went unreported" — it was that the
+/// sweep **never ran**. `let mut message = service.fix()?;` returned on the
+/// integrity verdict, so `deregister_orphaned` and `register_found_origins`
+/// were skipped entirely whenever the project carried a finding. Both are
+/// store-wide while the repair is one project's, so a single damaged project
+/// held every other project's stale registration hostage — and the remedy
+/// `orphan_advice` prints, *run `story doctor --fix`*, was the one command that
+/// would not perform it.
+///
+/// The damage has to be fabricated past the services. An unaddressable type
+/// slug is the finding this fixture wants because `--fix` is *documented* as
+/// unable to clear it (`tests/doctor.rs::doctor_reports_an_unaddressable_type_
+/// slug_and_cannot_fix_it`): both automatic repairs available are banned — a
+/// rename orphans every `StoryTypeSet` event naming the old slug, and retyping
+/// stories is not the doctor's to decide. So it survives every run, which is
+/// exactly the shape that made the old gate permanent rather than transient.
+///
+/// The two halves belong to **different projects** on purpose: the finding is
+/// the workdir project's and the stale registration is the checkout's. Nothing
+/// connects them, and before SH-270 the first silently suppressed the second.
+///
+/// Note the assertion is on the *store*, not on the message. A test that only
+/// read the output would pass against a version that reported the sweep and
+/// skipped it.
+#[test]
+fn doctor_fix_sweeps_the_catalog_even_when_the_project_keeps_a_finding() {
+    let f = fixture("orphan-plus-finding");
+
+    let store = f.open_store();
+    let (project, _) = f.project_at(&store, &f.workdir);
+    let mut types = store
+        .read(|tx| tx.types(project))
+        .expect("reading the catalog");
+    types.push(TypeDef {
+        slug: "in review".to_string(),
+        description: None,
+        emoji: None,
+    });
+    store
+        .write(|tx| tx.put_types(project, &types))
+        .expect("seeding a catalog written before the rule existed");
+
+    let stale = f.checkout.display().to_string();
+    std::fs::remove_dir_all(&f.checkout).expect("removing the checkout");
+
+    let fixed = story(&f.workdir, &f.data_home, &["doctor", "--fix"]);
+
+    let rendered = format!(
+        "stdout={} stderr={}",
+        stdout(&fixed),
+        String::from_utf8_lossy(&fixed.stderr)
+    );
+    assert_eq!(
+        fixed.status.code(),
+        Some(5),
+        "the finding still fails the command — the sweep must not launder a damaged project \
+         into a healthy exit; {rendered}"
+    );
+    let listed = stdout(&story(&f.workdir, &f.data_home, &["project", "list"]));
+    assert!(
+        !listed.contains(&stale),
+        "the stale registration must be gone even though the project kept a finding — this is \
+         the whole defect, and it is asked of the store rather than of the output: {listed}"
+    );
+    assert!(
+        rendered.contains("deregistered"),
+        "and the failing run must say it swept, not merely sweep: {rendered}"
+    );
+}
+
+/// ...but a repair that *aborted* must leave the catalog alone (SH-270).
+///
+/// The discriminating test, and the reason `IntegrityService::repair` returns a
+/// value instead of the caller matching on `Err(AppError::Integrity)`. That
+/// variant carries three unrelated things, and one of them is
+/// [`storyhook::domain::fold_story`] failing from inside `append_and_fold`
+/// while a repair is being written — which rolls the write back. A caller
+/// reading the variant as "repairs ran, findings remain" would go on to make
+/// two durable store-wide mutations on the strength of a repair that did not
+/// happen.
+///
+/// The fixture is that abort. `forget_events` leaves a read-model row with no
+/// history behind it, so the story is present in `all_stories` and open, is
+/// chosen as the destination for the other story's missing inverse, and folds
+/// to nothing when `append_and_fold` re-folds it.
+///
+/// **What this is really pinning** is that the arm distinguishes an aborted
+/// repair from a completed one — not the particular way this fixture aborts.
+/// It is coupled to `fold_story`'s required-field set (`state`, `title`,
+/// `created_at`); if those change so that an empty history folds cleanly, this
+/// goes green for the wrong reason and wants rebuilding around whatever else
+/// makes a repair write fail.
+#[test]
+fn doctor_fix_leaves_the_catalog_alone_when_the_repair_write_aborts() {
+    let f = fixture("orphan-plus-aborted-repair");
+    story(&f.workdir, &f.data_home, &["new", "A"]);
+    story(&f.workdir, &f.data_home, &["new", "B"]);
+
+    let store = f.open_store();
+    let (project, prefix) = f.project_at(&store, &f.workdir);
+    let id = |n: u32| StoryNo::parse_id(&prefix, &format!("{prefix}-{n}")).expect("parsing an id");
+
+    // A claims an edge to B that B does not record, so `fix` resolves to
+    // "append the inverse to B"...
+    inject_events(
+        &store,
+        project,
+        id(1),
+        &[StoryEvent::StoryRelationshipAdded {
+            at: AT.to_string(),
+            other_id: format!("{prefix}-2"),
+            relation: "blocks".to_string(),
+        }],
+    )
+    .expect("injecting a one-sided relation");
+    // ...and B's history is gone, so that append re-folds a story with no
+    // state, no title and no created_at, and the whole write rolls back.
+    forget_events(&store, project, id(2)).expect("truncating the second story's history");
+
+    let stale = f.checkout.display().to_string();
+    std::fs::remove_dir_all(&f.checkout).expect("removing the checkout");
+
+    let fixed = story(&f.workdir, &f.data_home, &["doctor", "--fix"]);
+
+    assert_ne!(
+        fixed.status.code(),
+        Some(0),
+        "an aborted repair is a failure: stdout={}",
+        stdout(&fixed)
+    );
+    let listed = stdout(&story(&f.workdir, &f.data_home, &["project", "list"]));
+    assert!(
+        listed.contains(&stale),
+        "the sweep must not have run — the repair write rolled back, and a command that acted \
+         on it anyway would be treating an aborted transaction as a completed one: {listed}"
     );
 }
 
