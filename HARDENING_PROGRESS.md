@@ -12140,3 +12140,101 @@ polled to a terminal state rather than waited on. `target/` 54 GB, 196 GB free.
 
 **Filed two:** SH-258 (temp-rooted checkout fails one test, `medium`) and SH-259
 (no release can publish, `critical`, blocks SH-257).
+
+### SH-259 — the release build repaired · PR #321 · merged · **done**
+
+Two defects, one story, one commit (`7c98440`, merged `733d024`). No release
+could publish: `secret-service` 5.x is a bare `compile_error!` unless its
+consumer forwards a runtime choice, so `x86_64-unknown-linux-gnu` had not
+compiled since `4c75833` (SH-212) — and with the matrix defaulting to
+`fail-fast: true`, that one failure cancelled both macOS jobs and the aarch64
+Linux job **mid-compile**, so three healthy platforms produced nothing and
+`release` skipped for want of anything to upload.
+
+**Reproduced without a Linux toolchain.** This machine has Homebrew rust and no
+`rustup`, so `aarch64-apple-darwin` is the only installed target and a
+cross-target `cargo check` was not available. The root cause did not need one:
+feature resolution is not compilation, and
+
+```
+cargo metadata --filter-platform x86_64-unknown-linux-gnu
+```
+
+reported `secret-service@5.1.0 -> []` — precisely the condition its
+`compile_error!` fires on. After the fix it reports `['crypto-rust',
+'rt-async-io-crypto-rust']`, and `zbus` gains nothing, which confirms the
+runtime selected was already the one in the graph. **Ask the resolver, not the
+manifest text**: that is what made a red→green proof possible on a platform
+that cannot build the artifact.
+
+**Why `rt-async-io-crypto-rust`.** Both halves follow the rule the dependency's
+own comment already states — depend on nothing the target may not have.
+`crypto-rust` over `crypto-openssl` because `aarch64-unknown-linux-gnu` is
+cross-compiled under `cross`, where a system OpenSSL is exactly what cannot be
+counted on; `rt-async-io` over `rt-tokio` because this crate has no async
+runtime and wants none, and `zbus` enables `async-io` by default regardless.
+`Cargo.lock` gained seven pure-Rust crypto crates and changed **no** existing
+version: 72 insertions, 0 deletions.
+
+**Publishing stays all-or-nothing — a deliberate departure from the story's own
+fix direction.** SH-259 said `fail-fast: false` should mean "a broken platform
+costs that platform and not the release", which reads as publishing the three
+assets that built. It does not do that: `release` keeps a strict `needs:
+build`. A release published with one platform's asset missing is a 404 for that
+platform's `install.sh` and `story update`, on a release that *looks* complete
+— the silent-partial-success shape this file exists to catch, and worse than a
+loud failure. What `fail-fast: false` actually buys is the loss the story
+documents: every target now finishes and reports, and the healthy ones leave
+artifacts a maintainer can act on instead of being cancelled mid-compile. Not
+taken to council — the alternative breaks an install path with no signal, which
+is not a close call — but recorded as a `story comment` on SH-259 and as a
+comment beside `needs:` in the workflow, so it is not quietly "fixed" later.
+
+**The feedback loop, closed as far as it honestly can be.** `workflow_dispatch`
+on `release.yml` makes the same cross-target build runnable on any ref without
+minting a tag; the `release` job is guarded on `startsWith(github.ref,
+'refs/tags/')` so a dispatched run builds and publishes nothing. GitHub only
+offers the trigger once the file carrying it is on the default branch, so it is
+available **now** and was not before. SH-257 carries a comment saying to
+dispatch on `main` and confirm four green targets *before* bumping — turning
+"the release build works" from something discovered after an unmovable tag into
+a precondition.
+
+**`tests/release_targets.rs` — 7 tests, 4 red before the fix, 7 green after.**
+It reads `Cargo.toml` and `release.yml` as *files*, which is the only reason it
+runs on macOS at all, and it does not pretend to be the cross-target build. It
+pins: a `rt-*` feature is selected; that feature is a `-crypto-rust` one; the
+matrix sets `fail-fast: false`; the workflow is dispatchable and still tags;
+`release` is tag-guarded; Linux is still in the matrix; and — a guard on the
+guard — that the files it read are the repository's real ones, so the suite
+cannot pass by vacuum. The manifest scan finds the dependency by *shape*
+(any `cfg` naming linux, any crate named `*secret-service*`) rather than by one
+literal key, so replacing the backing crate keeps the invariant under test
+instead of silently retiring it. `actionlint` was also clean on the workflow —
+it is installed here but deliberately **not** added to `make test`, because the
+gate must not depend on a tool another machine may lack.
+
+**Sibling sweep — SH-260 filed** (`low`, bug). `windows-native-keyring-store` is
+declared under `cfg(target_os = "windows")` and activated by the default
+`github-sync` feature, for a platform the release matrix never builds,
+`src/update.rs:182-185` never maps, and `install.sh` cannot install. Same blind
+spot as SH-259, no user impact today because there are no Windows users — there
+is no artifact for them to install. The generalized invariant it implies —
+*every `cfg(target_os = ...)` dependency table corresponds to a target the
+release matrix actually builds* — is deliberately **not** shipped, because it
+fails today; `the_release_matrix_still_ships_linux` is the narrow version that
+passes, and SH-260 names generalizing it as part of its own fix. Shipping a red
+test to make a point would have made the gate a thing to ignore.
+
+**Supervision:** three `make test` runs under the log-growth heartbeat, 120s
+stall bound. No stalls, no wedges, no orphans, no restarts. The first was green
+before two cosmetic edits to the new test file, so it was re-run rather than
+have the pushed tree differ by a line from the gated one; the third covers
+merged `main`, because **PR #316 (worktree-SH-256) landed from another session
+between my gate and my merge**, making `main` a combination no local run had
+seen. Cheap insurance on the exact class of "nothing verified this combination"
+that produced SH-259 in the first place.
+
+**Not done here, on purpose:** no version bump and no deploy. SH-259 unblocks
+SH-257, which owns the re-release. Tags are not force-moved, so the fix ships as
+a new version rather than a re-cut of v2.1.0.
