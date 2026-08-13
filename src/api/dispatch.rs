@@ -57,11 +57,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::daemon::http1::{Header, Method};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use wait_timeout::ChildExt;
 
+use crate::api::admission::named_token_ok;
 use crate::api::http::{Reply, TrustedHosts, mutation_guard_ok, text_reply};
 use crate::api::rpc::token_ok;
+use crate::api::tokens::TokenRegistry;
 use crate::daemon::bus::{Change, ChangeBus};
 use crate::env::Environment;
 use crate::env::spawn_env::apply_dispatch_allowlist;
@@ -645,6 +648,9 @@ pub fn intercept(
     env: &Environment,
     bus: &ChangeBus,
     registry: &Arc<DispatchRegistry>,
+    tokens: &TokenRegistry,
+    cookie_name: &str,
+    wall_now: DateTime<Utc>,
 ) -> Option<Reply> {
     if !is_dispatch_path(segments) {
         return None;
@@ -653,7 +659,21 @@ pub fn intercept(
     if !mutation_guard_ok(headers, trusted_hosts) {
         return Some(text_reply(403, "Forbidden"));
     }
-    if !token_ok(headers, token) {
+    // SH-255: a named token, via header or cookie, is now an alternative to
+    // the master token here too -- this route's own narrower copy of
+    // `admission::admission`'s gate must recognize everything the outer gate
+    // already does, or a request the outer gate admitted (a browser tab
+    // authenticated by its cookie) is refused here anyway.
+    if !token_ok(headers, token)
+        && !named_token_ok(
+            headers,
+            method,
+            cookie_name,
+            tokens,
+            wall_now,
+            Instant::now(),
+        )
+    {
         return Some(text_reply(
             401,
             "storyhook daemon: missing or invalid token",
@@ -1301,6 +1321,44 @@ fn installed_plugin_script(home: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The gate, asked with no named token anywhere in play.
+    ///
+    /// **Shadows [`super::intercept`] on purpose.** SH-255 gave the real gate
+    /// three more parameters, and every test below this line is about the
+    /// two decisions that came before a named token was a second way in —
+    /// the CSRF guard and the master token. Routing them through a helper
+    /// that supplies an empty registry keeps all of them byte-identical
+    /// across that change. The named-token half of the check has its own
+    /// tests, alongside `admission.rs`'s, since `named_token_ok` is the
+    /// single function both gates share.
+    #[allow(clippy::too_many_arguments)]
+    fn intercept(
+        segments: &[&str],
+        method: &Method,
+        query: Option<&str>,
+        headers: &[Header],
+        trusted_hosts: &TrustedHosts,
+        token: &str,
+        env: &Environment,
+        bus: &ChangeBus,
+        registry: &Arc<DispatchRegistry>,
+    ) -> Option<Reply> {
+        super::intercept(
+            segments,
+            method,
+            query,
+            headers,
+            trusted_hosts,
+            token,
+            env,
+            bus,
+            registry,
+            &TokenRegistry::new(Utc::now(), Instant::now()),
+            "storyhook_test",
+            Utc::now(),
+        )
+    }
 
     /// A placeholder environment for tests that never touch the filesystem
     /// through it — `Environment::at` and the accessors these tests call

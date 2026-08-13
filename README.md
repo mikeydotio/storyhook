@@ -345,7 +345,9 @@ story web stop
 story web status
 story web open
 story web address
-story web revoke
+story token new <name>
+story token list
+story token revoke <name>
 story daemon start [--port <PORT>]
 story daemon stop [--force]
 story daemon status
@@ -541,56 +543,63 @@ The dashboard is reachable from **localhost and your tailnet only — never the 
 
 - It always binds `127.0.0.1`. This is hardcoded and not configurable.
 - If the `tailscale` CLI is installed and reports an IP, it *also* binds that tailnet IP, so other devices on your tailnet can reach it directly — no reverse proxy needed. This is best-effort: if the bind fails for any reason, the dashboard keeps serving on localhost and logs a warning.
-- It never binds `0.0.0.0` or any other wildcard/public-facing address, and it never binds a generic LAN IP.
+- It never binds `0.0.0.0` or any other wildcard/public-facing address, and it never binds a generic LAN IP — enforced, not merely never attempted: the daemon refuses to serve a socket bound anywhere else.
+- Every connection is checked again as it arrives, against the interface it arrived on: the loopback listener admits only a loopback peer, and the tailnet listener admits loopback plus Tailscale's own address ranges. A peer outside those ranges is refused before a single byte of its request is read — no `tailscale` process is ever consulted to decide this, so a wedged or missing `tailscale` CLI cannot affect it either way.
+
+**Residual**: a subnet router, an exit node, or `iptables` forwarding can put genuinely off-tailnet traffic inside the ranges above — Tailscale ACLs, not this daemon, are the real membership authority. This daemon enforces "arrived via an address shaped like your tailnet," not "is actually a device you added to it."
 
 If the `web-serve` tool is present on your `PATH` (coderig/agentsmith environments), `story web start`/`stop` additionally register/unregister the port with it — that tool's own access controls govern any exposure beyond what's described above.
 
 ### Security
 
-Every dashboard request requires the daemon's bearer token, with one exception: a
-**read** arriving on `127.0.0.1` is answered without one, so opening the dashboard
-locally just works. Writes always need it, on every interface, and so does everything
-reached over your tailnet IP — reads included. Get it with:
+Every request against `/api/**` requires a token — reads and writes alike, on every
+interface including `127.0.0.1`. There is no exemption: opening the dashboard, browsing
+a board, and every mutation all need a credential. Two kinds exist:
 
-```bash
-story daemon token
-```
+- **The master token** — one per daemon, minted at first start.
 
-On a terminal that also copies it to your clipboard and says so on stderr; over SSH or
-Mosh it reaches the clipboard of the machine you're actually sitting at, via OSC 52.
-Piped or redirected, it prints the bare token and nothing else, so
-`TOKEN=$(story daemon token)` is safe.
+  ```bash
+  story daemon token
+  ```
 
-The dashboard's own page asks for it the first time a request needs one and holds it in
-`sessionStorage` (gone when the tab closes; entering it again after a browser restart
-or a daemon restart — the token rotates then — is expected). Anything that can't
-supply it, including a peer on your tailnet that only knows how to forge the checks
-below, is refused.
+  On a terminal that also copies it to your clipboard and says so on stderr; over SSH or
+  Mosh it reaches the clipboard of the machine you're actually sitting at, via OSC 52.
+  Piped or redirected, it prints the bare token and nothing else, so
+  `TOKEN=$(story daemon token)` is safe. It authenticates everything, including the CLI's
+  own control surface (`/api/v1/*`), and is never meant to reach a browser.
 
-**`story web open` hands the tab a scoped session instead, so it never sees the token.**
-That session can edit stories and states. It cannot create or delete a project, cannot
-dispatch an agent, cannot reach the CLI through `/api/v1/invoke`, and is refused outright
-from any machine but this one — where the token is spendable for writes from any peer on
-your tailnet. It lasts until the daemon stops or you end it:
+- **Named tokens** — one per device or tab, minted on purpose and revocable on purpose.
 
-```bash
-story web revoke     # ends every open dashboard session
-story web status     # says how many are open, and never prints one
-```
+  ```bash
+  story token new <name>      # mints and prints the raw secret once, to stdout only
+  story token list             # shows every live token by name, never the secret
+  story token revoke <name>    # ends one immediately
+  ```
 
-Be aware of what it *can* reach: every story or state change fires that project's
-configured event hooks, and a hook is a shell command. The session cannot choose or change
-what runs — hooks come from the checkout — but on a project with hooks configured it
-triggers the command you wrote. The boundary is "cannot run code you did not already
-configure, cannot create or destroy projects, cannot spawn an agent, cannot be used from
-another machine", not "cannot run code". Full reasoning:
-[`docs/spec/dashboard-authorization.md`](docs/spec/dashboard-authorization.md).
+  Persistent (30-day default lifetime, survives a daemon restart) and authenticate
+  everything the dashboard does — reads, project/story CRUD, dispatch — the same as the
+  master token, but scoped to one holder you can name and revoke without touching anyone
+  else's. Paste one into the dashboard's own token prompt and it never touches page
+  JavaScript: the page posts it once to be exchanged for an `HttpOnly` cookie, which the
+  browser then attaches automatically and no script can read.
 
-The loopback read exemption is narrow on purpose. It applies only when the request is a
-`GET`/`HEAD`, its `Host` is a loopback literal, it carries no `X-Forwarded-*` /
-`Forwarded` / `X-Real-IP` header, it isn't the dispatch endpoint, and no reverse-proxy
-allowlist is configured. Any one of those failing means the token is required exactly as
-before. Full reasoning: [`docs/spec/dashboard-authorization.md`](docs/spec/dashboard-authorization.md).
+**`story web open` arms a one-shot coupon instead of showing you a token.** Opening the
+URL it prints redeems that coupon for a fresh named token — its own, individually
+revocable via `story token revoke`, and shorter-lived (24 hours) than one you mint
+yourself, since it was granted by a click rather than a deliberate `story token new`. Every
+story or state change still fires that project's configured event hooks, and a hook is a
+shell command — a named token reaches that surface exactly as the master token does. Full
+reasoning: [`docs/spec/dashboard-authorization.md`](docs/spec/dashboard-authorization.md).
+
+A named token travels two ways, held to different standards. An explicit
+`X-Storyhook-Token` header is trusted outright — a page cannot forge one on a plain
+navigation, and a cross-origin `fetch` that tries triggers a CORS preflight this daemon
+never answers. The dashboard's own cookie is ambient instead, so a **read** authenticated
+by the cookie additionally requires the browser-supplied `Sec-Fetch-Site: same-origin`
+header, which no page can forge or suppress: `SameSite=Strict` alone doesn't distinguish
+this dashboard's own tab from any other tailnet peer's, because cookies ignore port and
+every peer under one tailnet is same-site with every other. A **mutation** needs no extra
+check here, because it has already passed the guard below.
 
 Mutating requests (creating or deleting a project; creating, moving, editing, or deleting a story) additionally require:
 
@@ -599,27 +608,20 @@ Mutating requests (creating or deleting a project; creating, moving, editing, or
 
 These two checks alone are not authentication — anything that can set two headers directly (a `curl` from any peer your tailnet lets reach the dashboard's bound IP) passes both with no credential at all. They defend a *browser* being tricked into sending a request on a victim's behalf; the token above is what actually establishes who is asking. (Full design and review: [`docs/spec/dashboard-authorization.md`](docs/spec/dashboard-authorization.md).)
 
-`GET /` is the one exception, reachable with no token at all: it serves the dashboard's own page, which is what prompts for the token in the first place. `GET /api/events` (the live-update stream) accepts the token as a `?token=` query parameter as well as a header, since a browser's `EventSource` API cannot set headers — no other route accepts it that way.
+`GET /` is the one exception, reachable with no token at all: it serves the dashboard's own page, which is what prompts for a token in the first place. `GET /api/events` (the live-update stream) needs a token like every other read — a same-origin `EventSource` carries the dashboard's own cookie automatically, so there is no `?token=` query parameter to fall back on, and no other route accepts one that way either.
 
 ### Reverse-proxying the dashboard
 
 **Set `STORYHOOK_WEB_TRUSTED_HOSTS` before you put any reverse proxy in front of this
-daemon.** It is security-load-bearing, not a convenience:
+daemon.** It widens the `Host` allowlist so mutations work under the proxy's own
+hostname, which a request arriving with `Host` rewritten to the proxy's name would
+otherwise fail as a DNS-rebinding attempt:
 
 ```bash
 STORYHOOK_WEB_TRUSTED_HOSTS=my-proxy-host story web start
 ```
 
-It does two things. It widens the `Host` allowlist so writes work under the proxy's own
-hostname — its original purpose — and it **switches off the loopback read exemption**,
-because a reverse proxy connects to the daemon over loopback, so "arrived on
-`127.0.0.1`" stops meaning "came from this machine" the moment one exists.
-
-If you skip it, a proxy that rewrites `Host` to the upstream address and forwards no
-`X-Forwarded-*` headers — which is nginx's default for `proxy_pass http://127.0.0.1:PORT`
-— is indistinguishable from a local caller, and your read surface is exposed to whoever
-can reach the proxy. The daemon says which posture it is in on startup. Only list
-hostnames that are themselves no more exposed than your tailnet.
+Only list hostnames that are themselves no more exposed than your tailnet.
 
 ## Automation and scripting
 

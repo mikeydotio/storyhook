@@ -78,68 +78,11 @@ pub fn handle_status() -> Result<String, AppError> {
     let env = environment()?;
     Ok(match running_daemon(&env) {
         Some(info) => format!(
-            "Web UI running at {} (PID {}){}",
+            "Web UI running at {} (PID {})",
             info.dashboard_url(),
             info.pid,
-            open_sessions(&info)
         ),
         None => "Web UI is not running".to_string(),
-    })
-}
-
-/// How many scoped dashboard capabilities this daemon is honouring, phrased for
-/// the end of a status line — and nothing at all when there are none, or when
-/// the daemon could not be asked.
-///
-/// **Never the capabilities themselves.** A status command prints into
-/// scrollback, and a credential in scrollback is the durable copy this whole
-/// design spends its effort avoiding. What is worth saying is that browser tabs
-/// hold live authority and how long they have been idle, which is what tells a
-/// user whether `story web revoke` would take anything away.
-fn open_sessions(info: &DaemonInfo) -> String {
-    match lifecycle::list_sessions(info) {
-        Ok(idle) if idle.is_empty() => String::new(),
-        Ok(idle) => {
-            let quietest = idle.iter().max().copied().unwrap_or_default();
-            format!(
-                "\n{} dashboard session{} open (longest idle {}s) — `story web revoke` ends them",
-                idle.len(),
-                if idle.len() == 1 { "" } else { "s" },
-                quietest
-            )
-        }
-        // A daemon that cannot answer this is still a daemon that is running,
-        // and that is what the caller asked about.
-        Err(_) => String::new(),
-    }
-}
-
-/// `story web revoke` — end every scoped dashboard capability at once.
-///
-/// The kill switch SH-254's design requires: a capability lives as long as the
-/// daemon does, deliberately (an expiring one would drop a long-open tab into
-/// the master-token modal, which is the escalation the whole story exists to
-/// prevent), so there has to be a way to end one on purpose.
-///
-/// Not routed through `/api/v1/invoke` like every other verb, and that is a
-/// consequence of what a capability *is* rather than a shortcut: capabilities
-/// are daemon process state, and the invoker builds a `StoreInvoker` that has
-/// no handle to the daemon serving the request. So this speaks to the control
-/// route directly over loopback, authenticated with the portfile's token — the
-/// same shape `story web open` already uses to arm a coupon.
-pub fn handle_revoke() -> Result<String, AppError> {
-    let env = environment()?;
-    let info = running_daemon(&env).ok_or_else(web_not_running_error)?;
-    let revoked = lifecycle::revoke_sessions(&info)?;
-    Ok(match revoked {
-        0 => "No dashboard sessions were open.".to_string(),
-        1 => "Ended 1 dashboard session. That tab will ask for the daemon's token, or you \
-              can run `story web open` again."
-            .to_string(),
-        n => format!(
-            "Ended {n} dashboard sessions. Those tabs will ask for the daemon's token, or you \
-             can run `story web open` again."
-        ),
     })
 }
 
@@ -159,7 +102,6 @@ web commands:
   story web status                  show whether it's running and its URL
   story web open                    open the dashboard in your browser
   story web address                 copy the dashboard URL to the clipboard
-  story web revoke                  end every open dashboard session
 ";
 
 /// The error returned when a `web` command requires the dashboard to be running
@@ -212,11 +154,13 @@ fn browser_target(url: &str, coupon: Option<&str>) -> String {
 
 /// Asks the daemon for a handoff coupon, or `None` with a note on stderr.
 ///
-/// **Non-fatal by design.** Without a coupon the dashboard still opens, still
-/// renders (SH-250's tokenless loopback read), and still prompts on the first
-/// write — which is exactly the behaviour that shipped before this feature
-/// existed. Turning a degraded convenience into a failed command would be a
-/// strictly worse answer to "open my dashboard".
+/// **Non-fatal by design.** Without a coupon the dashboard still opens the
+/// browser at the bare URL — a tab with no credential now, since SH-255
+/// retired the tokenless loopback read this used to fall back to, so the
+/// first request prompts immediately rather than only on the first write.
+/// Turning a degraded convenience into a failed command would still be a
+/// strictly worse answer to "open my dashboard": the modal is one paste
+/// away, and a failed `story web open` is not.
 ///
 /// Not silent either: the note says what was lost and what will happen
 /// instead. It can carry no coupon, because a failure never produced one.

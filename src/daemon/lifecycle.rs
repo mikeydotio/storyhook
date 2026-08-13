@@ -461,6 +461,16 @@ pub struct DaemonInfo {
     /// It reads as `None`, i.e. loopback, which is always true.
     #[serde(default)]
     pub tailnet: Option<crate::daemon::tailnet::TailnetBind>,
+    /// The `Set-Cookie` name a browser holds a named token in for this store
+    /// (SH-255) — `crate::api::tokens::cookie_name`, published so the CLI and
+    /// e2e suite read it here rather than recompute the digest themselves.
+    ///
+    /// Defaulted for the reason `store_path` and `tailnet` are: an older
+    /// portfile has to parse in order to be stood down. An empty string reads
+    /// as "unknown," which is the honest answer for a daemon that predates
+    /// this field.
+    #[serde(default)]
+    pub cookie_name: String,
 }
 
 impl DaemonInfo {
@@ -650,6 +660,7 @@ pub fn info_for(
         token,
         store_path: store.to_path_buf(),
         tailnet: bound.tailnet.clone(),
+        cookie_name: crate::api::tokens::cookie_name_for_store(store),
     })
 }
 
@@ -698,28 +709,6 @@ pub fn run<S: crate::store::Store>(store: &S, env: &Environment) -> Result<(), A
         info.pid,
         info.store_path.display()
     );
-
-    // The daemon's security posture, stated rather than assumed (SH-250).
-    //
-    // A loopback read is answered without the bearer token, and the one
-    // deployment that defeats every conjunct of that rule -- a reverse proxy
-    // that rewrites `Host` to the loopback address and forwards no
-    // `X-Forwarded-*` -- is one the daemon cannot detect from a request. It
-    // *can* be told, by the same variable that has always widened the `Host`
-    // allowlist. So an operator who is about to put a proxy in front of this
-    // needs to know both that the exemption exists and what turns it off, and
-    // the moment to say so is the one moment they are certain to have looked.
-    if crate::api::http::TrustedHosts::for_daemon(Vec::new()).behind_a_proxy() {
-        eprintln!(
-            "storyhook daemon: a reverse-proxy allowlist is configured, so every \
-             request needs the bearer token, loopback included"
-        );
-    } else {
-        eprintln!(
-            "storyhook daemon: loopback reads are answered without a token; set \
-             STORYHOOK_WEB_TRUSTED_HOSTS before reverse-proxying this daemon"
-        );
-    }
 
     // Before serving anything: one global database is one global blast radius,
     // and a daemon start is the only moment on this machine that reliably
@@ -1688,78 +1677,6 @@ pub fn arm_handoff(info: &DaemonInfo) -> Result<String, AppError> {
     Ok(armed.coupon)
 }
 
-/// Asks a daemon to end every scoped dashboard capability it has issued
-/// (SH-254).
-///
-/// Answers with how many there were, so `story web revoke` can say whether it
-/// took anything away rather than reporting success at having done nothing.
-///
-/// Loopback and the portfile's token, like [`arm_handoff`] and for the same
-/// reason: `/api/v1/*` is [`crate::api::rpc::admission`]'s, and revoking is an
-/// administrative act. A dashboard capability must never be able to revoke its
-/// siblings, which is why this lives on the control surface and not on the
-/// surface the capability itself reaches.
-pub fn revoke_sessions(info: &DaemonInfo) -> Result<usize, AppError> {
-    let url = format!(
-        "http://127.0.0.1:{}{}",
-        info.port,
-        crate::api::session::SESSIONS_PATH
-    );
-    let response = control_agent()
-        .delete(&url)
-        .header(crate::api::rpc::TOKEN_HEADER, &info.token)
-        .call()
-        .map_err(|e| AppError::Storage(format!("the daemon did not revoke its sessions: {e}")))?;
-    let revoked: RevokedSessions = response
-        .into_body()
-        .read_json()
-        .map_err(|e| AppError::Storage(format!("the daemon's answer was unreadable: {e}")))?;
-    Ok(revoked.revoked)
-}
-
-/// Asks a daemon how long each of its live dashboard capabilities has sat idle.
-///
-/// Idle seconds, never the capabilities: a listing that carried them would put
-/// credentials into whatever the caller prints them into.
-pub fn list_sessions(info: &DaemonInfo) -> Result<Vec<u64>, AppError> {
-    let url = format!(
-        "http://127.0.0.1:{}{}",
-        info.port,
-        crate::api::session::SESSIONS_PATH
-    );
-    let response = control_agent()
-        .get(&url)
-        .header(crate::api::rpc::TOKEN_HEADER, &info.token)
-        .call()
-        .map_err(|e| AppError::Storage(format!("the daemon did not list its sessions: {e}")))?;
-    let listed: ListedSessions = response
-        .into_body()
-        .read_json()
-        .map_err(|e| AppError::Storage(format!("the daemon's answer was unreadable: {e}")))?;
-    Ok(listed
-        .sessions
-        .into_iter()
-        .map(|s| s.idle_seconds)
-        .collect())
-}
-
-/// [`revoke_sessions`]'s answer.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct RevokedSessions {
-    revoked: usize,
-}
-
-/// [`list_sessions`]'s answer. Carries no capability, by construction.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct ListedSessions {
-    sessions: Vec<ListedSession>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct ListedSession {
-    idle_seconds: u64,
-}
-
 /// [`arm_handoff`]'s answer.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct ArmedHandoff {
@@ -1779,6 +1696,131 @@ pub struct Hello {
     pub pid: u32,
     /// When it started.
     pub started_at: String,
+}
+
+/// Asks a daemon to mint a fresh named token (SH-255): `story token new`.
+///
+/// Loopback and the portfile's token, like [`arm_handoff`] and
+/// [`revoke_named_token`] — `/api/v1/*` is [`crate::api::rpc::admission`]'s,
+/// and minting the credential that will itself authenticate the dashboard is
+/// an administrative act, not something a browser tab may ask for on its
+/// own.
+pub fn mint_named_token(info: &DaemonInfo, name: &str) -> Result<MintedNamedToken, AppError> {
+    let url = format!(
+        "http://127.0.0.1:{}{}?name={name}",
+        info.port,
+        crate::api::tokens::TOKENS_PATH,
+    );
+    let response = control_agent()
+        .post(&url)
+        .header(crate::api::rpc::TOKEN_HEADER, &info.token)
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .send_empty()
+        .map_err(|e| AppError::Storage(format!("the daemon did not answer: {e}")))?;
+    read_token_route_reply(response)
+}
+
+/// Asks a daemon for every live named token: `story token list`. Never a
+/// secret — [`crate::api::tokens::TokenRegistry::list`] cannot produce one
+/// after mint time, so there is nothing this route could leak beyond what
+/// the registry itself already lacks.
+pub fn list_named_tokens(
+    info: &DaemonInfo,
+) -> Result<Vec<crate::api::tokens::TokenSummary>, AppError> {
+    let url = format!(
+        "http://127.0.0.1:{}{}",
+        info.port,
+        crate::api::tokens::TOKENS_PATH
+    );
+    let response = control_agent()
+        .get(&url)
+        .header(crate::api::rpc::TOKEN_HEADER, &info.token)
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .call()
+        .map_err(|e| AppError::Storage(format!("the daemon did not answer: {e}")))?;
+    let listed: ListedNamedTokens = read_token_route_reply(response)?;
+    Ok(listed.tokens)
+}
+
+/// Asks a daemon to end one named token immediately, whether or not it has
+/// expired: `story token revoke`.
+pub fn revoke_named_token(info: &DaemonInfo, name: &str) -> Result<(), AppError> {
+    let url = format!(
+        "http://127.0.0.1:{}{}/{name}",
+        info.port,
+        crate::api::tokens::TOKENS_PATH,
+    );
+    let response = control_agent()
+        .delete(&url)
+        .header(crate::api::rpc::TOKEN_HEADER, &info.token)
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .call()
+        .map_err(|e| AppError::Storage(format!("the daemon did not answer: {e}")))?;
+    read_token_route_reply::<serde_json::Value>(response).map(|_| ())
+}
+
+/// Reads a `/api/v1/tokens` response: a 200 deserializes as `T`; anything
+/// else becomes an [`AppError`] carrying the daemon's own text explanation —
+/// a duplicate name, the registry at capacity, or an unknown name to revoke.
+///
+/// Every caller above asks for `http_status_as_error(false)` for exactly
+/// this reason: the default would collapse a 409 and a 404 alike into one
+/// opaque transport error and discard the body that says which happened,
+/// where the daemon has already written the human-readable answer.
+///
+/// The status maps to the [`AppError`] variant a caller of a `story token`
+/// command actually wants: 404 is [`AppError::NotFound`] (exit 3), 409 is
+/// [`AppError::Validation`] (exit 2, a duplicate name or the registry at
+/// capacity — the caller's input, not a broken daemon), 400 is
+/// [`AppError::Usage`] (exit 2, a malformed request this CLI should not have
+/// sent). Anything else is [`AppError::Storage`] (exit 5): genuinely
+/// unexpected, since nothing about a well-formed `story token` invocation
+/// should produce it.
+fn read_token_route_reply<T: serde::de::DeserializeOwned>(
+    mut response: ureq::http::Response<ureq::Body>,
+) -> Result<T, AppError> {
+    let status = response.status().as_u16();
+    if status != 200 {
+        let body = response.body_mut().read_to_string().unwrap_or_default();
+        let message = if body.is_empty() {
+            format!("the daemon answered with status {status}")
+        } else {
+            body
+        };
+        return Err(match status {
+            404 => AppError::NotFound(message),
+            409 => AppError::Validation(message),
+            400 => AppError::Usage(message),
+            _ => AppError::Storage(message),
+        });
+    }
+    response
+        .into_body()
+        .read_json()
+        .map_err(|e| AppError::Storage(format!("the daemon's answer was unreadable: {e}")))
+}
+
+/// [`mint_named_token`]'s answer — the raw secret, returned exactly once.
+/// Nothing the daemon holds afterward can reproduce it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MintedNamedToken {
+    pub token: String,
+    pub name: String,
+    pub prefix: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// [`list_named_tokens`]'s answer.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ListedNamedTokens {
+    tokens: Vec<crate::api::tokens::TokenSummary>,
 }
 
 /// Asks a daemon to shut down, and waits for it to let go of its pidfile.
@@ -2199,6 +2241,7 @@ mod tests {
             token: "t".to_string(),
             store_path: PathBuf::from("/private/tmp/storyhook-lifecycle/store.db"),
             tailnet: None,
+            cookie_name: "storyhook_test".to_string(),
         };
         assert!(!info.is_this_binary());
     }
@@ -2220,6 +2263,7 @@ mod tests {
             token: "t".to_string(),
             store_path: PathBuf::from("/private/tmp/storyhook-lifecycle/store.db"),
             tailnet: None,
+            cookie_name: "storyhook_test".to_string(),
         };
         assert!(
             !info.is_this_binary(),

@@ -1,22 +1,14 @@
-//! Every route the dashboard API serves, named once — and what authority each
-//! one requires.
+//! Every route the dashboard API serves, named once.
 //!
 //! # Why this module exists, and why it imports almost nothing
 //!
-//! SH-254 gives the browser a **scoped** capability instead of the daemon's
-//! master token, and the story makes one property binding: the scope must be
-//! *enforced by construction*, never by a path-shape guess. The design it
-//! rejected admitted `matches!(segments, ["api", "repos", _, _, ..])` — by
-//! arity — which is the defect [`crate::api::admission`] already documents and
-//! forbids, because every route added under a project would inherit the grant
-//! on the day it was written with no test going red.
-//!
-//! So the route table stops being implicit. [`classify`] turns a request head
-//! into a [`Route`], and two `match` expressions consume it: the router in
-//! [`crate::api::rest`], which answers it, and [`authority`], which says what
-//! credential it needs. **Neither has a wildcard arm.** A new route is a new
-//! variant, and a new variant is a compile error in both places until somebody
-//! has answered "what does this do?" and "who may do it?".
+//! [`classify`] turns a request head into a [`Route`], which the router in
+//! [`crate::api::rest`] consumes to decide what a request means. **The `match`
+//! has no wildcard arm.** A new route is a new variant, and a new variant is a
+//! compile error in the router until somebody has answered "what does this
+//! do?" — the same discipline [`crate::api::admission`] already documents and
+//! relies on for the request family it forbids classifying by path-shape
+//! arity.
 //!
 //! The module's imports are the other half of the guarantee. It reaches
 //! [`Method`] and nothing else — no store, no service layer, no
@@ -27,15 +19,18 @@
 //! store makes that a fact about the dependency graph rather than a rule
 //! somebody has to remember.
 //!
-//! # What "by construction" does and does not buy
+//! # What this module used to also do
 //!
-//! It closes the case that motivated the story: a route added to the router
-//! without an authority answer will not compile. It does **not** close the
-//! case where somebody widens an existing variant's *pattern* — routing a new
-//! path onto [`ProjectRoute::StoryAction`], say — which still grants the new
-//! path whatever the old variant had, with nothing going red. Enforcement here
-//! is at **enum granularity**, and `docs/spec/dashboard-authorization.md` says
-//! so rather than claiming more.
+//! Before SH-255, [`authority`] was a second `match` over the same [`Route`],
+//! answering what credential each one needed — `Public`, SH-254's scoped
+//! `Session` capability, or the master token. SH-255 replaced that whole
+//! three-level model with one: a named token now authenticates everything
+//! [`crate::api::admission::admission`] gates, checked uniformly and without
+//! consulting this module at all. There is nothing left to classify
+//! per-route, so `Authority`, `authority()` and `project_authority()` are
+//! gone rather than kept as dead code. See
+//! `docs/spec/dashboard-authorization.md`'s "As built" section for the full
+//! record of what this replaced and why.
 
 use crate::daemon::http1::Method;
 
@@ -43,8 +38,7 @@ use crate::daemon::http1::Method;
 /// `POST /api/repos/{id}/story/{story}/{action}`.
 ///
 /// Spelled as a type rather than matched as a string at the point of use, so
-/// [`authority`] and the router both enumerate the same set and a fourteenth
-/// cannot be added to one without the other refusing to compile.
+/// the router cannot answer a fourteenth action without adding it here first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoryAction {
     Move,
@@ -114,13 +108,15 @@ pub enum ProjectRoute<'a> {
     /// `POST .../story/{id}/dispatch` — spawns an agent process.
     ///
     /// Claimed by [`crate::api::dispatch::intercept`] in the accept loop, so it
-    /// never reaches the router in production. It is named here anyway because
-    /// [`authority`] must be able to refuse it: a variant that did not exist
-    /// could not be classified, and a route that spawns processes is precisely
-    /// the one a scoped capability must not reach.
+    /// never reaches the router in production. Named here anyway so
+    /// `tests/route_authority.rs` can assert this module's notion of the
+    /// dispatch route family agrees with
+    /// [`crate::api::dispatch::is_dispatch_path`]'s own independent check —
+    /// two gates disagreeing about which route spawns a process is the
+    /// failure that guards against.
     Dispatch { id: &'a str },
     /// `GET .../story/{id}/dispatch/{handle}` — the poll beside it. Also
-    /// answered by the accept loop; also named here so it can be refused.
+    /// answered by the accept loop; also named here for the same cross-check.
     DispatchPoll,
     /// `GET .../states`
     States,
@@ -177,42 +173,14 @@ pub enum Route<'a> {
     ///
     /// [`crate::api::rpc::admission`] owns it entirely and
     /// [`crate::api::admission::admission`] returns before consulting this
-    /// module, so no classification here can widen it. It is named so that
-    /// [`authority`]'s table is a complete statement about the surface rather
-    /// than a statement about the part somebody remembered.
+    /// module, so no classification here can widen it. Named so this route
+    /// table is a complete statement about the surface this daemon serves,
+    /// rather than a statement about the part somebody remembered.
     ControlSurface,
     /// A path this daemon routes, with a method it does not.
     MethodNotAllowed,
     /// No such path.
     NotFound,
-}
-
-/// What a caller must present to be allowed a route.
-///
-/// Three levels rather than two. `Public` is not redundant with `Session`: it
-/// records which routes SH-250's tokenless loopback read exemption already
-/// admits with no credential at all, which is a different fact from "a session
-/// capability may do this" — and it is the fact SH-255 is filed to reconsider.
-/// A two-level table could express neither state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Authority {
-    /// Reachable with no credential where SH-250's exemption applies, and with
-    /// any credential elsewhere. Every route here is a read.
-    Public,
-    /// Reachable with the dashboard's scoped session capability — the
-    /// per-project story, state and relation write surface.
-    ///
-    /// **Every route at this level fires the project's configured event hooks,
-    /// and a hook is a shell command.** That is stated plainly here, in
-    /// `docs/spec/dashboard-authorization.md`, and pinned by a test, because a
-    /// scope that claimed otherwise would be a false security claim — worse
-    /// than a narrow one.
-    Session,
-    /// Reachable only with the daemon's master token: creating a project at a
-    /// caller-named path, destroying one, spawning an agent — and every route
-    /// this daemon does not have, which fails closed here rather than
-    /// disclosing its absence to a caller holding only a session.
-    MasterToken,
 }
 
 /// Which route `segments` and `method` name.
@@ -305,44 +273,6 @@ fn classify_project<'a>(rest: &[&'a str], method: &Method) -> ProjectRoute<'a> {
     }
 }
 
-/// What credential `route` requires.
-///
-/// # This function has no wildcard arm, and must never grow one
-///
-/// Every variant is spelled out, so adding a route to [`Route`] or
-/// [`ProjectRoute`] fails to compile until somebody has decided what may reach
-/// it. A `_ => Authority::Session` added here for tidiness is the single edit
-/// that silently re-opens the whole surface, and an exhaustive `match` cannot
-/// catch its own widening — so `tests/route_authority.rs` reads this function's
-/// own source and fails if `_ =>` ever appears inside it.
-///
-/// # Why "not routed" is `MasterToken` rather than something weaker
-///
-/// [`Route::NotFound`] and every `MethodNotAllowed` are classified at the
-/// strongest level on purpose. They fail closed, and a caller holding only a
-/// session cannot use the difference between a 403 and a 404 to map the
-/// surface. The tokenless read exemption is unaffected: it runs first and is
-/// unchanged, so a loopback `GET` of an unknown path still gets its 404.
-pub fn authority(route: &Route<'_>) -> Authority {
-    match route {
-        Route::Shell => Authority::Public,
-        Route::Repos => Authority::Public,
-        Route::Events => Authority::Public,
-        // Registering a project at a caller-named filesystem path, and
-        // destroying one along with every story in it. Neither is something a
-        // browser tab should be able to do with a credential it was handed
-        // without anybody typing it.
-        Route::ReposCreate => Authority::MasterToken,
-        Route::RepoDelete { .. } => Authority::MasterToken,
-        Route::Project { route, .. } => project_authority(route),
-        // Owned entirely by `rpc::admission`, which runs first. Named here so
-        // this table is a complete statement about the surface.
-        Route::ControlSurface => Authority::MasterToken,
-        Route::MethodNotAllowed => Authority::MasterToken,
-        Route::NotFound => Authority::MasterToken,
-    }
-}
-
 impl Route<'_> {
     /// This route's variant name, as declared.
     ///
@@ -350,8 +280,8 @@ impl Route<'_> {
     /// spelling a pattern per case — and, more importantly, so
     /// `tests/route_authority.rs` can check the set of names the route table
     /// actually produces against the set of variants declared in this file's
-    /// own source. A variant nobody probes is a route nobody has an authority
-    /// answer for in practice, however exhaustive the `match` looks.
+    /// own source. A variant nobody probes is a route nobody has ever routed a
+    /// real request to, however exhaustive the `match` looks.
     ///
     /// The `match` is exhaustive, so a new variant does not compile until it is
     /// named here too.
@@ -405,36 +335,6 @@ impl ProjectRoute<'_> {
     }
 }
 
-/// What credential a per-project route requires. Split out only so
-/// [`authority`] stays readable; it is the same table and the same rule.
-fn project_authority(route: &ProjectRoute<'_>) -> Authority {
-    match route {
-        ProjectRoute::Data => Authority::Public,
-        ProjectRoute::StoryShow { .. } => Authority::Public,
-        ProjectRoute::States => Authority::Public,
-        // The board's own work. Every one of these fires the project's
-        // configured event hooks — see `Authority::Session`.
-        ProjectRoute::StoryCreate => Authority::Session,
-        ProjectRoute::StoryPatch { .. } => Authority::Session,
-        ProjectRoute::StoryDelete { .. } => Authority::Session,
-        ProjectRoute::StoryAction { .. } => Authority::Session,
-        ProjectRoute::StateCreate => Authority::Session,
-        ProjectRoute::StatesReorder => Authority::Session,
-        ProjectRoute::StatePatch { .. } => Authority::Session,
-        ProjectRoute::StateDelete { .. } => Authority::Session,
-        ProjectRoute::StateArchive { .. } => Authority::Session,
-        ProjectRoute::Relate => Authority::Session,
-        ProjectRoute::Unrelate => Authority::Session,
-        // Spawns an agent process, and polls one. The highest-consequence
-        // primitive this daemon has.
-        ProjectRoute::Dispatch { .. } => Authority::MasterToken,
-        ProjectRoute::DispatchPoll => Authority::MasterToken,
-        ProjectRoute::StoryActionUnknown => Authority::MasterToken,
-        ProjectRoute::MethodNotAllowed => Authority::MasterToken,
-        ProjectRoute::NotFound => Authority::MasterToken,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,10 +347,6 @@ mod tests {
         // Leaked deliberately: `classify` borrows from its input, and a test
         // helper returning a borrow of a local cannot compile otherwise.
         classify(Box::leak(segments(path).into_boxed_slice()), method)
-    }
-
-    fn authority_at(path: &str, method: &Method) -> Authority {
-        authority(&at(path, method))
     }
 
     #[test]
@@ -533,85 +429,14 @@ mod tests {
         // second opinion about a surface this module does not serve.
         for path in ["/api/v1", "/api/v1/hello", "/api/v1/invoke", "/api/v1/nope"] {
             assert_eq!(at(path, &Method::Post), Route::ControlSurface, "{path}");
-            assert_eq!(
-                authority_at(path, &Method::Post),
-                Authority::MasterToken,
-                "{path}"
-            );
-        }
-    }
-
-    // --- The authority table ---
-
-    #[test]
-    fn the_dangerous_routes_need_the_master_token() {
-        // The three the story exists to take away from a browser tab.
-        assert_eq!(
-            authority_at("/api/repos", &Method::Post),
-            Authority::MasterToken
-        );
-        assert_eq!(
-            authority_at("/api/repos/p", &Method::Delete),
-            Authority::MasterToken
-        );
-        assert_eq!(
-            authority_at("/api/repos/p/story/SH-1/dispatch", &Method::Post),
-            Authority::MasterToken
-        );
-        assert_eq!(
-            authority_at("/api/repos/p/story/SH-1/dispatch/h4nd1e", &Method::Get),
-            Authority::MasterToken
-        );
-    }
-
-    #[test]
-    fn the_board_s_own_work_is_session_authorized() {
-        for (path, method) in [
-            ("/api/repos/p/story", Method::Post),
-            ("/api/repos/p/story/SH-1", Method::Patch),
-            ("/api/repos/p/story/SH-1", Method::Delete),
-            ("/api/repos/p/story/SH-1/move", Method::Post),
-            ("/api/repos/p/story/SH-1/comment", Method::Post),
-            ("/api/repos/p/states", Method::Post),
-            ("/api/repos/p/states", Method::Patch),
-            ("/api/repos/p/states/todo", Method::Patch),
-            ("/api/repos/p/states/todo", Method::Delete),
-            ("/api/repos/p/states/todo/archive", Method::Post),
-            ("/api/repos/p/relate", Method::Post),
-            ("/api/repos/p/unrelate", Method::Post),
-        ] {
-            assert_eq!(
-                authority_at(path, &method),
-                Authority::Session,
-                "{method} {path}"
-            );
-        }
-    }
-
-    #[test]
-    fn every_read_the_board_makes_is_public() {
-        for path in [
-            "/",
-            "/api/repos",
-            "/api/events",
-            "/api/repos/p/data",
-            "/api/repos/p/story/SH-1",
-            "/api/repos/p/states",
-        ] {
-            assert_eq!(
-                authority_at(path, &Method::Get),
-                Authority::Public,
-                "{path}"
-            );
         }
     }
 
     #[test]
     fn the_dispatch_route_is_spelled_the_same_here_as_in_the_gate_that_refuses_it() {
-        // `dispatch::is_dispatch_path` is an arity check on segments, and it is
-        // reached by `admission::token_exempt`, which SH-254 requires to stay
-        // byte-unmodified. So this module cannot call it without importing
-        // `dispatch` — which would cost the property that makes this module
+        // `dispatch::is_dispatch_path` is [`crate::api::dispatch::intercept`]'s
+        // own arity check on segments, independent of this module. Calling it
+        // from here would cost the property that makes this module
         // trustworthy, that it imports nothing but a `Method` and so cannot
         // reach a store or a body.
         //
@@ -643,25 +468,6 @@ mod tests {
                 crate::api::dispatch::is_dispatch_path(&parts),
                 is_dispatch_family,
                 "{path}: the dispatch endpoint's two spellings disagree"
-            );
-        }
-    }
-
-    #[test]
-    fn what_this_daemon_does_not_route_fails_closed() {
-        // A caller holding only a session must not be able to map the surface
-        // by the difference between a 403 and a 404.
-        for (path, method) in [
-            ("/api/nope", Method::Get),
-            ("/api/repos/p/nope", Method::Get),
-            ("/api/repos/p/story/SH-1/nope", Method::Post),
-            ("/api/repos/p/data", Method::Put),
-            ("/", Method::Post),
-        ] {
-            assert_eq!(
-                authority_at(path, &method),
-                Authority::MasterToken,
-                "{method} {path}"
             );
         }
     }
