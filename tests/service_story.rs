@@ -295,8 +295,14 @@ fn a_comment_is_appended_to_the_story() {
     assert_eq!(after.comments[0].text, "a remark");
 }
 
+// The test this replaced — `commenting_on_a_closed_story_is_refused` — was
+// deleted rather than inverted (SH-261). It characterized the behaviour this
+// change overturns, and keeping it in an inverted form would have hidden that a
+// rule someone wrote down on purpose (SH-208, `docs/spec/dashboard-dispatch.md`)
+// was deliberately reversed.
+
 #[test]
-fn commenting_on_a_closed_story_is_refused() {
+fn a_closed_story_accepts_a_comment() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let service = StoryService::new(&ctx);
@@ -304,11 +310,178 @@ fn commenting_on_a_closed_story_is_refused() {
     service
         .set_state(&story.id, "done", None, None, None)
         .expect("closing");
-    let error = service.comment(&story.id, "too late").unwrap_err();
+
+    let after = service
+        .comment(&story.id, "verified in CI")
+        .expect("commenting on a closed story");
+
+    assert_eq!(
+        after.comments.last().expect("a comment").text,
+        "verified in CI"
+    );
+    assert_eq!(after.superstate, SuperState::Closed);
+}
+
+/// The whole argument for SH-261 rests on a comment reaching nothing but the
+/// comment list and `updated_at`. Assert that rather than believe it.
+#[test]
+fn a_comment_on_a_closed_story_moves_only_updated_at_and_the_comment_list() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let story = new_story(&ctx, "untouched by a remark");
+    service
+        .set_state(&story.id, "done", None, None, None)
+        .expect("closing");
+    let before = snapshot(&fixture, &story.id);
+
+    let after = service
+        .comment(&story.id, "a late note")
+        .expect("commenting");
+
+    assert_eq!(after.state, before.state);
+    assert_eq!(after.superstate, before.superstate);
+    assert_eq!(after.closed_at, before.closed_at);
+    assert_eq!(after.hidden_at, before.hidden_at);
+    assert_eq!(after.deleted, before.deleted);
+    assert_eq!(after.draft, before.draft);
+    assert_eq!(after.labels, before.labels);
+    assert_eq!(after.assignee, before.assignee);
+    assert_eq!(after.priority, before.priority);
+    assert_eq!(after.awaiting, before.awaiting);
+    assert_eq!(after.relationships, before.relationships);
+    assert_eq!(after.title, before.title);
+    // The two that do move, and the reason the story stays findable.
+    assert_eq!(after.comments.len(), before.comments.len() + 1);
+    assert!(after.updated_at >= before.updated_at);
+    // The archived flag is a store-level derivation of `closed_at`; a comment
+    // must not disturb it either, or the story would leave the archive.
+    let no = StoryNo::parse_id("SH", &story.id).expect("a well-formed id");
+    let row = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), no))
+        .expect("reading the row")
+        .expect("the story exists");
+    assert!(row.archived, "a commented closed story stays archived");
+}
+
+/// `hidden` is a display fact, not a permission one.
+#[test]
+fn a_hidden_closed_story_accepts_a_comment_and_stays_hidden() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let story = new_story(&ctx, "out of sight");
+    service
+        .set_state(&story.id, "done", None, None, None)
+        .expect("closing");
+    service.hide(&story.id).expect("hiding");
+
+    let after = service
+        .comment(&story.id, "still worth recording")
+        .expect("commenting on a hidden story");
+
+    assert!(after.hidden_at.is_some(), "the story stays hidden");
+    assert_eq!(
+        after.comments.last().expect("a comment").text,
+        "still worth recording"
+    );
+}
+
+/// A tombstone takes no new observations: `purge` erases every event on it, so
+/// a comment written here is evidence with an expiry date nothing warns about.
+#[test]
+fn a_soft_deleted_story_refuses_a_comment_and_names_the_way_back() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let story = new_story(&ctx, "gone but not forgotten");
+    service
+        .delete(&story.id, "created in error")
+        .expect("deleting");
+    let before = event_kinds(&fixture, &story.id);
+
+    let error = service.comment(&story.id, "one more thing").unwrap_err();
+
     assert_eq!(
         validation_message(error),
-        "story `SH-1` is closed and cannot be modified"
+        "story `SH-1` is deleted and cannot be commented on; restore it first with `story reopen SH-1 --force`"
     );
+    assert_eq!(
+        event_kinds(&fixture, &story.id),
+        before,
+        "a refused comment writes nothing"
+    );
+}
+
+#[test]
+fn a_restored_story_accepts_a_comment_again() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let story = new_story(&ctx, "back from the dead");
+    service.delete(&story.id, "an error").expect("deleting");
+    service.reopen(&story.id).expect("restoring");
+
+    let after = service
+        .comment(&story.id, "restored deliberately")
+        .expect("commenting after a restore");
+
+    assert!(!after.deleted);
+    assert_eq!(
+        after.comments.last().expect("a comment").text,
+        "restored deliberately"
+    );
+}
+
+/// The relaxation must not leak sideways: `comment` is the only append, and
+/// every other single-story write still refuses a closed story.
+#[test]
+fn a_closed_story_still_refuses_every_write_that_is_not_a_comment() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let story = new_story(&ctx, "sealed");
+    service
+        .set_state(&story.id, "done", None, None, None)
+        .expect("closing");
+    let refusal = "story `SH-1` is closed and cannot be modified";
+
+    let attempts: Vec<(&str, AppError)> = vec![
+        ("assign", service.assign(&story.id, "someone").unwrap_err()),
+        (
+            "set_priority",
+            service.set_priority(&story.id, "high").unwrap_err(),
+        ),
+        (
+            "set_labels",
+            service
+                .set_labels(&story.id, &["late".to_string()], &[])
+                .unwrap_err(),
+        ),
+        (
+            "set_awaiting",
+            service.set_awaiting(&story.id, "a reason").unwrap_err(),
+        ),
+        (
+            "clear_awaiting",
+            service.clear_awaiting(&story.id).unwrap_err(),
+        ),
+        (
+            "set_state",
+            service
+                .set_state(&story.id, "todo", None, None, None)
+                .unwrap_err(),
+        ),
+    ];
+
+    for (verb, error) in attempts {
+        assert_eq!(
+            validation_message(error),
+            refusal,
+            "`{verb}` must still refuse a closed story"
+        );
+    }
 }
 
 #[test]

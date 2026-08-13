@@ -76,7 +76,7 @@ use std::path::Path;
 use legacy_support::{custom_config_tree, golden_export_path, migrate, real_tree, store_snapshots};
 use storyhook::domain::StorySnapshot;
 use storyhook::service::transfer::ProjectExport;
-use storyhook::service::{Clock, Ctx, TransferService};
+use storyhook::service::{Clock, Ctx, StoryService, TransferService};
 use storyhook::storage;
 use storyhook::store::{ReadOps, SqliteStore, Store as _, WriteOps as _};
 
@@ -248,6 +248,57 @@ fn the_custom_config_tree_round_trips_through_the_store_and_back() {
     // state, a custom type, two members, an archived story and a deleted one.
     let (_tree, root) = custom_config_tree();
     assert_round_trips(&root, 4);
+}
+
+/// A comment appended *after* a story closed reaches the tree a rollback hands
+/// back (SH-261).
+///
+/// Named as its own case rather than folded into the fixture, because the risk
+/// it covers is structural and one-directional: SH-261 made a closed story
+/// appendable, and the legacy format's own writers put closed stories in
+/// `archive/`. An exporter that decided where a story lives *before* replaying
+/// its whole log, or that stopped reading events at the closure, would lose
+/// exactly the evidence SH-261 exists to preserve — and would lose it only on
+/// rollback, which is the one moment nobody is watching. `make test` gates the
+/// W4 revert policy on this file, so the guarantee belongs here.
+#[test]
+fn a_comment_added_after_a_story_closed_survives_the_round_trip() {
+    let (_tree, root) = custom_config_tree();
+    let (_store_dir, store, _report) = migrate(&root);
+
+    // ADA-3 is the fixture's archived story: closed into `wont-fix` and moved
+    // to `archive/` by the legacy writer before the migration ever saw it.
+    let project = store
+        .read(|tx| Ok(tx.projects()?.first().expect("one project").id))
+        .expect("reading");
+    let cwd = std::env::temp_dir();
+    let ctx = Ctx::new(&store, project, &cwd, storyhook::env::Environment::at(&cwd))
+        .no_hooks(true)
+        .clock(Clock::Fixed("2026-02-02T00:00:00Z".to_string()));
+    let commented = StoryService::new(&ctx)
+        .comment("ADA-3", "verified after closure")
+        .expect("a closed story takes a comment");
+    assert_eq!(
+        commented.state, "wont-fix",
+        "the fixture story must still be closed, or this proves nothing"
+    );
+
+    let document = export(&store);
+    let (_dir, rebuilt) = rebuild_legacy_tree(&document);
+
+    let from_store = store_snapshots(&store);
+    let from_legacy = legacy_snapshots(&rebuilt);
+    assert_eq!(
+        from_legacy["ADA-3"], from_store["ADA-3"],
+        "a closed story's post-closure comment must survive store -> document -> legacy tree"
+    );
+    assert!(
+        from_legacy["ADA-3"]
+            .comments
+            .iter()
+            .any(|comment| comment.text == "verified after closure"),
+        "the comment itself must be in the rebuilt tree, not merely an equal-looking snapshot"
+    );
 }
 
 #[test]
