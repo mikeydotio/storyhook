@@ -216,6 +216,230 @@ fn a_dispatched_run_builds_but_does_not_publish() {
 }
 
 // ---------------------------------------------------------------------------
+// The release body: rendered from the changelog, never generated alone
+// ---------------------------------------------------------------------------
+
+/// The job that renders the release body, found by the script it runs rather
+/// than by name — a renamed job should keep the invariant, not retire it.
+///
+/// Returns the job's name alongside it, because the publishing job has to
+/// depend on it and the dependency is spelled by name.
+fn body_rendering_job(workflow: &serde_yml::Value) -> (String, serde_yml::Value) {
+    let jobs = workflow
+        .get("jobs")
+        .and_then(serde_yml::Value::as_mapping)
+        .expect("release.yml must declare jobs");
+
+    let mut found: Vec<(String, serde_yml::Value)> = jobs
+        .iter()
+        .filter(|(_, job)| {
+            serde_yml::to_string(job)
+                .unwrap_or_default()
+                .contains("render-release-body.sh")
+        })
+        .map(|(name, job)| (name.as_str().unwrap_or_default().to_string(), job.clone()))
+        .collect();
+
+    assert_eq!(
+        found.len(),
+        1,
+        "exactly one job in release.yml must render the release body; found \
+         {:?}",
+        found.iter().map(|(name, _)| name).collect::<Vec<_>>()
+    );
+    found.pop().expect("the single rendering job")
+}
+
+/// The `Create release` step, found by the action it uses.
+fn create_release_step(workflow: &serde_yml::Value) -> serde_yml::Value {
+    workflow
+        .get("jobs")
+        .and_then(|jobs| jobs.get("release"))
+        .and_then(|release| release.get("steps"))
+        .and_then(serde_yml::Value::as_sequence)
+        .expect("the release job must declare steps")
+        .iter()
+        .find(|step| {
+            step.get("uses")
+                .and_then(serde_yml::Value::as_str)
+                .is_some_and(|uses| uses.contains("action-gh-release"))
+        })
+        .expect("the release job must publish with action-gh-release")
+        .clone()
+}
+
+/// GitHub generates release notes from the newest **tag**, published or not.
+/// `v2.1.0` was tagged and never published, so the notes generated for the
+/// next release describe `v2.1.0...v2.1.1` — six pull requests — while a user
+/// upgrading from the newest *release* receives seven hundred and forty-three
+/// commits. Generated notes are an appendix here, never the whole body.
+#[test]
+fn the_release_body_comes_from_the_repository_not_only_from_generated_notes() {
+    let workflow = release_workflow();
+    let with = create_release_step(&workflow)
+        .get("with")
+        .cloned()
+        .expect("the publishing step must configure the release");
+
+    let body_path = with
+        .get("body_path")
+        .and_then(serde_yml::Value::as_str)
+        .unwrap_or_default();
+
+    assert!(
+        !body_path.trim().is_empty(),
+        "release.yml must supply `body_path`, or every release publishes \
+         GitHub's generated notes alone — which measure from the newest tag \
+         rather than the newest release, and silently hide everything an \
+         unpublished tag swallowed (SH-262)"
+    );
+}
+
+/// Publishing depends on the body existing. Without the dependency the
+/// rendering job could fail and the release would publish anyway, with the
+/// fallback body this whole mechanism exists to prevent.
+#[test]
+fn publishing_depends_on_the_body_having_been_rendered() {
+    let workflow = release_workflow();
+    let (name, _) = body_rendering_job(&workflow);
+
+    let needs = workflow
+        .get("jobs")
+        .and_then(|jobs| jobs.get("release"))
+        .and_then(|release| release.get("needs"))
+        .expect("the release job must declare what it needs");
+
+    let needed: Vec<&str> = match needs {
+        serde_yml::Value::String(one) => vec![one.as_str()],
+        serde_yml::Value::Sequence(many) => {
+            many.iter().filter_map(serde_yml::Value::as_str).collect()
+        }
+        other => panic!("unexpected `needs` shape: {other:?}"),
+    };
+
+    assert!(
+        needed.contains(&name.as_str()),
+        "the release job must need `{name}`, or a failed render publishes \
+         generated-only notes instead of failing the release (SH-262); found \
+         needs: {needed:?}"
+    );
+}
+
+/// The rendering runs on a dispatched build too, which is the only place its
+/// failure is cheap. `release.yml:  the publishing job` is gated on a tag, and
+/// tags are never moved here — so a body that cannot be rendered on a tag push
+/// mints a second permanently dangling tag. The dispatch rehearsal that already
+/// proves the four targets build now proves the body renders as well.
+#[test]
+fn the_body_is_rendered_on_a_dispatched_run_too() {
+    let workflow = release_workflow();
+    let (name, job) = body_rendering_job(&workflow);
+
+    let guard = job
+        .get("if")
+        .and_then(serde_yml::Value::as_str)
+        .unwrap_or_default();
+
+    assert!(
+        !guard.contains("refs/tags/"),
+        "`{name}` is gated on a tag ref, so the body is first rendered when \
+         the tag can no longer be moved; it must run on a dispatched build as \
+         well (SH-262). Found `if: {guard}`"
+    );
+}
+
+/// The rendered body is not a release asset. The publishing step globs a
+/// directory of build artifacts, and the body must not be downloaded into it —
+/// `install.sh` and `story update` fetch assets by name, and a stray markdown
+/// file beside them is at best noise on the release page.
+#[test]
+fn the_rendered_body_is_not_published_as_an_asset() {
+    let workflow = release_workflow();
+    let with = create_release_step(&workflow)
+        .get("with")
+        .cloned()
+        .expect("the publishing step must configure the release");
+
+    let files = with
+        .get("files")
+        .and_then(serde_yml::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let body_path = with
+        .get("body_path")
+        .and_then(serde_yml::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+
+    let asset_directory = files.rsplit_once('/').map(|(head, _)| head).unwrap_or("");
+    let body_directory = body_path
+        .rsplit_once('/')
+        .map(|(head, _)| head)
+        .unwrap_or("");
+
+    assert_ne!(
+        asset_directory, body_directory,
+        "the release body (`{body_path}`) lands in the directory the \
+         publishing step uploads as assets (`{files}`), so it would be \
+         attached to the release"
+    );
+}
+
+/// The span is measured from a published *release*, which is what `install.sh`
+/// and `story update` resolve — never from a tag. Measuring from a tag is the
+/// original defect wearing the new mechanism's clothes: an unpublished tag
+/// silently shortens the span to nothing anyone can install.
+#[test]
+fn the_body_measures_from_a_published_release_rather_than_a_tag() {
+    let workflow = release_workflow();
+    let (name, job) = body_rendering_job(&workflow);
+    let step = serde_yml::to_string(&job).unwrap_or_default();
+
+    assert!(
+        step.contains("releases"),
+        "`{name}` must ask the releases API which version it is measuring \
+         from (SH-262)"
+    );
+    for tag_derived in ["git describe", "git tag"] {
+        assert!(
+            !step.contains(tag_derived),
+            "`{name}` derives the span with `{tag_derived}`, which counts \
+             from the newest tag — published or not — and that is the defect \
+             `body_path` exists to fix (SH-262)"
+        );
+    }
+}
+
+/// The renderer itself is tracked and runnable. A `body_path` pointing at a
+/// file nothing produces — or at one the runner may not execute — fails the
+/// release after the tag is unmovable.
+#[test]
+fn the_renderer_is_tracked_where_the_workflow_expects_it() {
+    let renderer = repo_root().join("scripts/render-release-body.sh");
+    assert!(
+        renderer.is_file(),
+        "release.yml renders the body with scripts/render-release-body.sh, \
+         which is not in the tree"
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = renderer
+            .metadata()
+            .expect("the renderer's metadata")
+            .permissions()
+            .mode();
+        assert_ne!(
+            mode & 0o111,
+            0,
+            "the workflow runs scripts/render-release-body.sh directly, so it \
+             has to carry the executable bit; found mode {mode:o}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The two files agree
 // ---------------------------------------------------------------------------
 
