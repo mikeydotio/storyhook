@@ -36,12 +36,18 @@
   --p-low: #2f9e6e;
   --p-none: #9aa1ac;
   /* Text-entry control sizes (SH-256). Every `font-size` that lands on an
-     <input>, <select> or <textarea> reads one of these, and nothing else
-     does -- that is what makes the coarse-pointer override below total
-     rather than a list someone has to remember to extend. iOS Safari zooms
-     the viewport whenever a focused text-entry control computes under 16
-     CSS pixels, and does not zoom back out when the field blurs, so the
-     page is left magnified and horizontally scrolled after every search. */
+     <input>, <select> or <textarea> reads one of these -- that is what
+     makes the coarse-pointer override below total rather than a list
+     someone has to remember to extend. iOS Safari zooms the viewport
+     whenever a focused text-entry control computes under 16 CSS pixels,
+     and does not zoom back out when the field blurs, so the page is left
+     magnified and horizontally scrolled after every search.
+     One documented non-control reader (SH-217): `.description-view`, the
+     drawer description's read-mode view, sizes its text from the same
+     token as `.description-field` on purpose -- the read<->edit swap
+     must never resize the text, and the read view is not itself a text
+     control, so it can't be reached through the `<input>`/`<select>`/
+     `<textarea>` list above. */
   --control-font-xs: 0.75rem;
   --control-font-sm: 0.8125rem;
   --control-font-md: 0.875rem;
@@ -657,7 +663,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .comments { display: flex; flex-direction: column; gap: 0.625rem; }
 .comment { background: var(--bg-sunken); border-radius: var(--radius-sm); padding: 0.5rem 0.625rem; font-size: 0.8125rem; }
 .comment-meta { font-size: 0.6875rem; color: var(--fg-faint); margin-bottom: 0.1875rem; }
-.comment-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* SH-217: `.comment-text` no longer carries `white-space: pre-wrap` --
+   its content is now block-structured markdown (paragraphs, lists, ...),
+   and pre-wrap would double every blank line the block parser already
+   consumed into real vertical space. Blank-line paragraph separation is
+   the renderer's job now (see the `.md` block below); `overflow-wrap`
+   stays, unrelated to that change, for long URLs in a 30rem drawer. */
+.comment-text { overflow-wrap: anywhere; }
 .comment-add { display: flex; flex-direction: column; gap: 0.375rem; }
 .comment-add textarea {
   width: 100%; min-height: 3.5rem; padding: 0.5rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
@@ -672,6 +684,77 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 }
 .description-field:hover { background: var(--bg-sunken); }
 .description-field:focus { outline: none; border-color: var(--accent); background: var(--bg-sunken); }
+
+/* SH-217: the description's read/edit split. Both `.description-view` and
+   `.description-field` stay in the DOM always -- these three rules are
+   the whole mechanism, and are pinned directly by a Rust CSS test rather
+   than only by a browser, since a selector rename here would otherwise
+   silently break the swap. */
+.description-section .description-field { display: none; }
+.description-section.editing .description-field { display: block; }
+.description-section.editing .description-view { display: none; }
+/* Mirrors .description-field's own box (min-height, padding, radius,
+   font-size) so the read<->edit swap causes no layout jump -- transparent
+   border rather than none, so border-box sizing keeps the same total
+   height either way. */
+.description-view {
+  width: 100%; min-height: max(2.5rem, var(--tap-min)); padding: 0.5rem;
+  border: 1px solid transparent; border-radius: var(--radius-sm);
+  font-size: var(--control-font-sm); cursor: text; overflow-wrap: anywhere;
+}
+.description-view:hover { background: var(--bg-sunken); }
+.description-view:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.description-view.empty { color: var(--fg-faint); }
+
+/* SH-217: rendered markdown (the description's read view, and comment
+   bodies). Every colour reads an existing token, so dark mode and the
+   `data-theme` overrides apply for free -- nothing here is new to theme. */
+.md > *:first-child { margin-top: 0; }
+.md > *:last-child { margin-bottom: 0; }
+.md p, .md ul, .md ol, .md blockquote, .md .md-table-wrap, .md pre { margin: 0.5rem 0; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 0.75rem 0 0.375rem; line-height: 1.3; font-weight: 700; }
+.md h1 { font-size: 1.25rem; }
+.md h2 { font-size: 1.125rem; }
+.md h3 { font-size: 1rem; }
+.md h4, .md h5, .md h6 { font-size: 0.875rem; }
+.md code { font-family: var(--mono); font-size: 0.75rem; background: var(--bg-sunken); padding: 0.0625rem 0.25rem; border-radius: var(--radius-sm); }
+/* A code block scrolls its own overflow rather than widening the drawer
+   or wrapping code onto new lines, which would change what it says
+   (docs/spec/responsive-dashboard.md's defect D2 is the same lesson,
+   applied there to the list view's table). */
+.md pre { overflow-x: auto; background: var(--bg-sunken); border-radius: var(--radius-sm); padding: 0.5rem 0.625rem; }
+.md pre code { background: none; padding: 0; font-size: 0.8125rem; }
+.md blockquote { margin-left: 0; padding-left: 0.75rem; border-left: 3px solid var(--border-strong); color: var(--fg-muted); }
+.md ul, .md ol { padding-left: 1.25rem; }
+.md li { margin: 0.1875rem 0; }
+.md li.task { list-style: none; margin-left: -1.25rem; padding-left: 0; display: flex; align-items: baseline; gap: 0.375rem; }
+.md li.task input[type=checkbox] { margin-top: 0.1875rem; }
+.md hr { border: none; border-top: 1px solid var(--border-strong); margin: 0.75rem 0; }
+/* No --tap-min here, deliberately: WCAG 2.2 SC 2.5.8 exempts a target
+   that sits inline within a sentence or block of running text, which is
+   exactly what a markdown link is -- a min-height floor would wreck the
+   paragraph's own line layout for no accessibility gain. `.rel-id` (a
+   standalone story reference, not inline in prose) keeps its own floor. */
+.md a { color: var(--accent); text-decoration: underline; }
+/* The list view styles bare `table`/`thead th`/`tbody tr` as its own
+   sortable, clickable board (`:183`, `:548`) -- without an override, a
+   rendered markdown table would silently inherit `cursor: pointer` and a
+   hover highlight meant for board rows, making it look and behave like a
+   clickable list row it isn't. (One coarse-pointer tap-action property
+   also rides along from that same shared selector and is deliberately
+   left as-is here -- a Rust test pins the sheet to exactly one such
+   declaration, on the tap-targets list, and the property does nothing
+   harmful on a table.) Same overflow-x pattern as `.list-table-wrap` for
+   a table wider than the drawer. */
+.md-table-wrap { overflow-x: auto; }
+.md table { width: auto; font-size: 0.8125rem; }
+.md thead th { cursor: default; user-select: text; white-space: normal; }
+.md tbody tr { cursor: default; }
+.md tbody tr:hover { background: none; }
+.md th[align=left], .md td[align=left] { text-align: left; }
+.md th[align=center], .md td[align=center] { text-align: center; }
+.md th[align=right], .md td[align=right] { text-align: right; }
+
 .rel-list { display: flex; flex-direction: column; gap: 0.375rem; }
 .rel-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8125rem; }
 .rel-row .rel-kind { color: var(--fg-muted); font-size: 0.75rem; }
@@ -1049,6 +1132,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   </div>
   <div class="drawer-body" id="drawer-body"></div>
   <div class="drawer-footer" id="drawer-footer"></div>
+  <span class="sr-only" id="description-view-kbd-hint">Press Enter to edit the description.</span>
 </aside>
 
 <div class="backdrop" id="modal-backdrop" hidden></div>
@@ -4103,6 +4187,697 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   // ============================================================
+  // MARKDOWN (SH-217)
+  // ============================================================
+
+  var MARKDOWN_LINK_SCHEMES = ["http:", "https:", "mailto:"];
+  var MARKDOWN_ESCAPABLE = "\\`*_{}[]()#+-.!|~<>";
+  var MARKDOWN_MAX_DEPTH = 8;
+  var MARKDOWN_WS_RE = new RegExp(
+    "[" +
+      "\\u0000-\\u0020" + // C0 controls + ASCII space
+      "\\u007f" + // DEL
+      "\\u00a0" + // NBSP
+      "\\u2000-\\u200a" + // various unicode spaces
+      "\\u2028\\u2029" + // line/paragraph separator
+      "\\u3000" + // ideographic space
+      "]",
+    "g"
+  );
+
+  /** Validates a markdown link destination against an allowlist of schemes.
+   * Every href this file ever sets is assigned through el()'s property path
+   * (`a.href = value`), never parsed as HTML -- so entity obfuscation
+   * (`&#106;avascript:`) is a no-op here; it only matters when a string is
+   * later parsed as markup, which this file never does. What survives a
+   * property assignment is whitespace/control characters inside the scheme,
+   * and case, so those are what get stripped before matching. Returns null
+   * for anything not on the allowlist -- the caller renders the link text
+   * with no <a> at all, never a "safer" href swapped in silently. */
+  function safeHref(raw) {
+    var s = String(raw).replace(MARKDOWN_WS_RE, "");
+    var lower = s.toLowerCase();
+    for (var i = 0; i < MARKDOWN_LINK_SCHEMES.length; i++) {
+      if (lower.indexOf(MARKDOWN_LINK_SCHEMES[i]) === 0) return s;
+    }
+    return null;
+  }
+
+  /** Renders a GFM-lite subset of markdown to a DOM fragment -- never an
+   * HTML string. Story IDs found in plain text (never inside code) are
+   * linkified via linkifyStoryIds(), the same as comment bodies and the
+   * blocked-reason banner. See docs/spec/markdown-in-the-dashboard.md for
+   * the exact supported subset and its deliberate divergences from
+   * CommonMark (the biggest: a single newline inside a paragraph is a soft
+   * wrap that collapses to a space, per SH-217's council ruling -- not a
+   * <br> the way GitHub's comment boxes render it). */
+  function renderMarkdown(text, selfId) {
+    var frag = document.createDocumentFragment();
+    var lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
+    appendBlocks(frag, lines, selfId, 0);
+    return frag;
+  }
+
+  function isBlank(line) {
+    return /^[ \t]*$/.test(line);
+  }
+
+  function leadingSpaces(line) {
+    var m = /^[ \t]*/.exec(line);
+    return m ? m[0].replace(/\t/g, "    ").length : 0;
+  }
+
+  function isThematicBreak(line) {
+    var stripped = line.replace(/[ \t]/g, "");
+    if (stripped.length < 3) return false;
+    var c = stripped.charAt(0);
+    if (c !== "-" && c !== "*" && c !== "_") return false;
+    for (var i = 1; i < stripped.length; i++) {
+      if (stripped.charAt(i) !== c) return false;
+    }
+    return true;
+  }
+
+  var TABLE_DELIM_RE = /^[ \t]*\|?[ \t]*:?-{1,}:?[ \t]*(\|[ \t]*:?-{1,}:?[ \t]*)*\|?[ \t]*$/;
+
+  /** Splits a table row into cells on unescaped "|", trimming a leading/
+   * trailing empty cell produced by outer pipes ("| a | b |"). */
+  function splitTableRow(line) {
+    var cells = [];
+    var buf = "";
+    for (var i = 0; i < line.length; i++) {
+      var c = line.charAt(i);
+      if (c === "\\" && i + 1 < line.length) {
+        buf += c + line.charAt(i + 1);
+        i++;
+        continue;
+      }
+      if (c === "|") {
+        cells.push(buf);
+        buf = "";
+        continue;
+      }
+      buf += c;
+    }
+    cells.push(buf);
+    cells = cells.map(function(c) {
+      return c.trim();
+    });
+    if (cells.length && cells[0] === "") cells.shift();
+    if (cells.length && cells[cells.length - 1] === "") cells.pop();
+    return cells;
+  }
+
+  function tableAlignments(delimCells) {
+    return delimCells.map(function(c) {
+      var left = c.charAt(0) === ":";
+      var right = c.charAt(c.length - 1) === ":";
+      if (left && right) return "center";
+      if (right) return "right";
+      if (left) return "left";
+      return null;
+    });
+  }
+
+  var LIST_ITEM_RE = /^([ \t]*)([-*+]|\d{1,9}[.)])[ \t]+(.*)$/;
+  var TASK_RE = /^\[([ xX])\][ \t]+(.*)$/;
+
+  /** Appends the block-level parse of `lines` to `parent`. First match wins
+   * per line group: blank, fenced code, thematic break, ATX heading,
+   * blockquote, GFM table, list, indented code, paragraph (fallback). */
+  function appendBlocks(parent, lines, selfId, depth) {
+    var i = 0;
+    while (i < lines.length) {
+      var line = lines[i];
+
+      if (isBlank(line)) {
+        i++;
+        continue;
+      }
+
+      // Fenced code: ``` or ~~~, closes on a same-or-longer fence of the
+      // same character, or EOF. Info string is read but never used (no
+      // syntax highlighter in a dependency-free renderer).
+      var fenceOpen = /^ {0,3}(`{3,}|~{3,})[ \t]*([^\r\n]*)$/.exec(line);
+      if (fenceOpen && !(fenceOpen[1].charAt(0) === "`" && fenceOpen[2].indexOf("`") !== -1)) {
+        var fenceChar = fenceOpen[1].charAt(0);
+        var fenceLen = fenceOpen[1].length;
+        var closeRe = new RegExp("^ {0,3}" + (fenceChar === "`" ? "`" : "~") + "{" + fenceLen + ",}[ \\t]*$");
+        var codeLines = [];
+        var j = i + 1;
+        while (j < lines.length && !closeRe.test(lines[j])) {
+          codeLines.push(lines[j]);
+          j++;
+        }
+        parent.appendChild(el("pre", {}, [el("code", {}, [codeLines.join("\n")])]));
+        i = j + 1; // skip the closing fence line too (or EOF)
+        continue;
+      }
+
+      // Thematic break.
+      if (isThematicBreak(line)) {
+        parent.appendChild(el("hr", {}, []));
+        i++;
+        continue;
+      }
+
+      // ATX heading.
+      var heading = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$/.exec(line);
+      if (heading) {
+        var level = heading[1].length;
+        var content = (heading[2] || "").replace(/[ \t]#+[ \t]*$/, "");
+        var h = el("h" + level, {}, []);
+        appendInline(h, content, selfId, false);
+        parent.appendChild(h);
+        i++;
+        continue;
+      }
+
+      // Blockquote: contiguous ">"-marked lines, no lazy continuation.
+      if (/^ {0,3}>/.test(line)) {
+        var quoteLines = [];
+        var k = i;
+        while (k < lines.length && /^ {0,3}>/.test(lines[k])) {
+          quoteLines.push(lines[k].replace(/^ {0,3}> ?/, ""));
+          k++;
+        }
+        var bq = el("blockquote", {}, []);
+        if (depth < MARKDOWN_MAX_DEPTH) {
+          appendBlocks(bq, quoteLines, selfId, depth + 1);
+        } else {
+          var fallback = el("p", {}, []);
+          appendInline(fallback, quoteLines.join(" "), selfId, false);
+          bq.appendChild(fallback);
+        }
+        parent.appendChild(bq);
+        i = k;
+        continue;
+      }
+
+      // GFM table: this line has a pipe, next line is a matching delimiter row.
+      if (line.indexOf("|") !== -1 && i + 1 < lines.length && TABLE_DELIM_RE.test(lines[i + 1])) {
+        var headerCells = splitTableRow(line);
+        var delimCells = splitTableRow(lines[i + 1]);
+        var aligns = tableAlignments(delimCells);
+        var bodyRows = [];
+        var t = i + 2;
+        while (t < lines.length && !isBlank(lines[t]) && lines[t].indexOf("|") !== -1) {
+          bodyRows.push(splitTableRow(lines[t]));
+          t++;
+        }
+        var thead = el("thead", {}, [
+          el(
+            "tr",
+            {},
+            headerCells.map(function(cellText, idx) {
+              var th = el("th", { align: aligns[idx] || null }, []);
+              appendInline(th, cellText, selfId, false);
+              return th;
+            })
+          ),
+        ]);
+        var tbody = el(
+          "tbody",
+          {},
+          bodyRows.map(function(row) {
+            return el(
+              "tr",
+              {},
+              headerCells.map(function(_, idx) {
+                var td = el("td", { align: aligns[idx] || null }, []);
+                appendInline(td, row[idx] || "", selfId, false);
+                return td;
+              })
+            );
+          })
+        );
+        parent.appendChild(el("div", { class: "md-table-wrap" }, [el("table", {}, [thead, tbody])]));
+        i = t;
+        continue;
+      }
+
+      // List: nested by indentation, tight vs loose by inter-item blank lines.
+      var listMatch = LIST_ITEM_RE.exec(line);
+      if (listMatch) {
+        i = appendList(parent, lines, i, selfId, depth);
+        continue;
+      }
+
+      // Indented code: 4+ spaces, only when not continuing a paragraph
+      // (a paragraph swallows an indented line as lazy continuation instead).
+      if (/^ {4}/.test(line)) {
+        var indentedLines = [line.replace(/^ {4}/, "")];
+        var m = i + 1;
+        while (m < lines.length && (/^ {4}/.test(lines[m]) || isBlank(lines[m]))) {
+          indentedLines.push(isBlank(lines[m]) ? "" : lines[m].replace(/^ {4}/, ""));
+          m++;
+        }
+        while (indentedLines.length && indentedLines[indentedLines.length - 1] === "") indentedLines.pop();
+        parent.appendChild(el("pre", {}, [el("code", {}, [indentedLines.join("\n")])]));
+        i = m;
+        continue;
+      }
+
+      // Paragraph -- the fallback. Consume to the next blank line or block start.
+      var paraLines = [line];
+      var p = i + 1;
+      while (
+        p < lines.length &&
+        !isBlank(lines[p]) &&
+        !isThematicBreak(lines[p]) &&
+        !/^ {0,3}(`{3,}|~{3,})/.test(lines[p]) &&
+        !/^ {0,3}#{1,6}(?:[ \t]|$)/.test(lines[p]) &&
+        !/^ {0,3}>/.test(lines[p]) &&
+        !LIST_ITEM_RE.test(lines[p])
+      ) {
+        paraLines.push(lines[p]);
+        p++;
+      }
+      var pEl = el("p", {}, []);
+      appendInline(pEl, paraLines.join("\n"), selfId, false);
+      parent.appendChild(pEl);
+      i = p;
+    }
+  }
+
+  /** Consumes one list (possibly nested) starting at lines[start], appends
+   * a <ul>/<ol> to `parent`, and returns the index just past it. A list
+   * continues while the next non-blank line is a marker of the same type
+   * (bullet char, or ordered with the same delimiter) at the SAME
+   * indentation as the first item's marker; deeper indentation is nested/
+   * continuation content, shallower ends the list. Deliberately no lazy
+   * continuation: every content line of an item must be indented to at
+   * least the item's own content column. */
+  function appendList(parent, lines, start, selfId, depth) {
+    var first = LIST_ITEM_RE.exec(lines[start]);
+    var markerIndent = leadingSpaces(lines[start]);
+    var isOrdered = /\d/.test(first[2]);
+    var bulletChar = isOrdered ? null : first[2];
+    var orderedDelim = isOrdered ? first[2].charAt(first[2].length - 1) : null;
+    var startNum = isOrdered ? parseInt(first[2], 10) : null;
+
+    var items = []; // { lines: [...], isTask, checked }
+    var i = start;
+    var sawBlankBetweenItems = false;
+    var isTask = null;
+
+    while (i < lines.length) {
+      var line = lines[i];
+      var m = LIST_ITEM_RE.exec(line);
+      if (m && leadingSpaces(line) === markerIndent) {
+        var itemIsOrdered = /\d/.test(m[2]);
+        var itemBullet = itemIsOrdered ? null : m[2];
+        var itemDelim = itemIsOrdered ? m[2].charAt(m[2].length - 1) : null;
+        if (itemIsOrdered !== isOrdered || itemBullet !== bulletChar || itemDelim !== orderedDelim) {
+          break; // a different list starts here
+        }
+        var contentCol = line.length - m[3].length;
+        var itemLines = [m[3]];
+        i++;
+        while (i < lines.length) {
+          if (isBlank(lines[i])) {
+            var peek = i + 1;
+            while (peek < lines.length && isBlank(lines[peek])) peek++;
+            if (peek < lines.length && leadingSpaces(lines[peek]) >= contentCol) {
+              itemLines.push("");
+              i++;
+              continue;
+            }
+            break;
+          }
+          if (leadingSpaces(lines[i]) >= contentCol) {
+            itemLines.push(lines[i].length >= contentCol ? lines[i].slice(contentCol) : "");
+            i++;
+            continue;
+          }
+          break;
+        }
+        while (itemLines.length && itemLines[itemLines.length - 1] === "") itemLines.pop();
+        var taskMatch = TASK_RE.exec(itemLines[0]);
+        var itemIsTask = !!taskMatch;
+        var itemChecked = taskMatch ? taskMatch[1].toLowerCase() === "x" : false;
+        if (taskMatch) itemLines[0] = taskMatch[2];
+        if (isTask === null) isTask = itemIsTask;
+        items.push({ lines: itemLines, isTask: itemIsTask, checked: itemChecked });
+        continue;
+      }
+      if (isBlank(line)) {
+        var p2 = i + 1;
+        while (p2 < lines.length && isBlank(lines[p2])) p2++;
+        if (p2 < lines.length && LIST_ITEM_RE.test(lines[p2]) && leadingSpaces(lines[p2]) === markerIndent) {
+          sawBlankBetweenItems = true;
+          i = p2;
+          continue;
+        }
+        break;
+      }
+      break; // anything else ends the list
+    }
+
+    // Render each item's lines as its own block-level parse. Looseness is
+    // driven ONLY by a blank line between sibling items -- an item that
+    // itself contains a leading paragraph followed by a nested list/quote
+    // is completely normal in a TIGHT list (the nested content is its own
+    // block regardless), so item block-count is not part of this test.
+    var renderedItems = items.map(function(item) {
+      var scratch = document.createDocumentFragment();
+      if (depth < MARKDOWN_MAX_DEPTH) {
+        appendBlocks(scratch, item.lines, selfId, depth + 1);
+      } else {
+        var p = el("p", {}, []);
+        appendInline(p, item.lines.join(" "), selfId, false);
+        scratch.appendChild(p);
+      }
+      return scratch;
+    });
+    var loose = sawBlankBetweenItems;
+
+    var listEl = el(isOrdered ? "ol" : "ul", startNum && startNum !== 1 ? { start: startNum } : {}, []);
+    if (isTask) listEl.classList.add("task-list");
+    items.forEach(function(item, idx) {
+      var li = el("li", {}, []);
+      if (item.isTask) {
+        li.classList.add("task");
+        li.appendChild(el("input", { type: "checkbox", disabled: "disabled", checked: item.checked ? "checked" : null }, []));
+      }
+      // Tight list: unwrap ONLY the item's leading paragraph (its text
+      // goes directly in the <li>); any further blocks (a nested list, a
+      // second paragraph in a de-facto-loose single item, ...) still
+      // render as their own elements, unwrapped or not.
+      var blocks = Array.prototype.slice.call(renderedItems[idx].childNodes);
+      if (!loose && blocks.length && blocks[0].tagName === "P") {
+        appendChildren(li, Array.prototype.slice.call(blocks[0].childNodes));
+        blocks = blocks.slice(1);
+      }
+      blocks.forEach(function(b) {
+        li.appendChild(b);
+      });
+      listEl.appendChild(li);
+    });
+    parent.appendChild(listEl);
+    return i;
+  }
+
+  /** Trims exactly one leading and one trailing space from code-span
+   * content per CommonMark, when the content both starts and ends with a
+   * space and isn't all spaces -- lets `` `  code with leading space` ``
+   * (a single leading space is meaningful) round-trip, while `` ` x ` ``
+   * (padding on both sides, common in prose) reads as just `x`. */
+  function trimCodeSpan(s) {
+    if (s.length >= 2 && s.charAt(0) === " " && s.charAt(s.length - 1) === " " && s.trim() !== "") {
+      return s.slice(1, -1);
+    }
+    return s;
+  }
+
+  /** Appends the inline-level parse of `text` to `parent`, left to right,
+   * in precedence order: backslash escape, code span, autolink, "![" as
+   * literal (no image support), link, emphasis/strong/strikethrough,
+   * otherwise plain text flushed through linkifyStoryIds(). A single
+   * newline inside the text is a soft break (collapses to a space) unless
+   * preceded by a hard-break marker (trailing 2+ spaces, or a backslash) --
+   * SH-217's council-decided divergence point from GitHub's comment
+   * rendering, which uses hard breaks by default. */
+  function appendInline(parent, text, selfId, inLink) {
+    var buf = "";
+    var i = 0;
+    var n = text.length;
+
+    function flush() {
+      if (buf === "") return;
+      appendChildren(parent, linkifyStoryIds(buf, selfId));
+      buf = "";
+    }
+
+    while (i < n) {
+      var c = text.charAt(i);
+
+      // Backslash escape.
+      if (c === "\\" && i + 1 < n) {
+        var next = text.charAt(i + 1);
+        if (next === "\n") {
+          flush();
+          parent.appendChild(el("br", {}, []));
+          i += 2;
+          continue;
+        }
+        if (MARKDOWN_ESCAPABLE.indexOf(next) !== -1) {
+          buf += next;
+          i += 2;
+          continue;
+        }
+        buf += c;
+        i++;
+        continue;
+      }
+
+      // Line ending: hard break if the buffer ends with 2+ trailing spaces,
+      // otherwise a soft break (a single space).
+      if (c === "\n") {
+        var trailingSpaces = /[ \t]{2,}$/.exec(buf);
+        if (trailingSpaces) {
+          buf = buf.slice(0, buf.length - trailingSpaces[0].length);
+          flush();
+          parent.appendChild(el("br", {}, []));
+        } else {
+          buf += " ";
+        }
+        i++;
+        continue;
+      }
+
+      // Code span: N backticks open, close on the same N-run.
+      if (c === "`") {
+        var openRun = /^`+/.exec(text.slice(i))[0];
+        var closeRe = new RegExp("`{" + openRun.length + "}(?!`)");
+        var rest = text.slice(i + openRun.length);
+        var closeMatch = closeRe.exec(rest);
+        if (closeMatch) {
+          flush();
+          var codeText = trimCodeSpan(rest.slice(0, closeMatch.index).replace(/\n/g, " "));
+          parent.appendChild(el("code", {}, [codeText]));
+          i = i + openRun.length + closeMatch.index + closeMatch[0].length;
+          continue;
+        }
+        buf += openRun;
+        i += openRun.length;
+        continue;
+      }
+
+      // Autolink: <scheme:...> or bare http(s):// with trailing-punctuation trim.
+      if (c === "<") {
+        var autoMatch = /^<((?:https?|mailto):[^<>\s]+)>/i.exec(text.slice(i));
+        if (autoMatch) {
+          flush();
+          appendChildren(parent, markdownLink([autoMatch[1]], autoMatch[1]));
+          i += autoMatch[0].length;
+          continue;
+        }
+        buf += c;
+        i++;
+        continue;
+      }
+      if (!inLink) {
+        var bareMatch = /^https?:\/\/[^\s<>]+/i.exec(text.slice(i));
+        if (bareMatch && (i === 0 || !/[A-Za-z0-9]/.test(text.charAt(i - 1)))) {
+          var url = trimBareUrlTrailingPunctuation(bareMatch[0]);
+          flush();
+          appendChildren(parent, markdownLink([url], url));
+          i += url.length;
+          continue;
+        }
+      }
+
+      // "![...](...)" -- no image support. The whole construct (not just
+      // the "!") is consumed as literal, unparsed text, so it degrades to
+      // the source rather than silently becoming a link to the image URL
+      // with its alt text as the link text.
+      if (c === "!" && text.charAt(i + 1) === "[") {
+        var imgMatch = matchLink(text, i + 1);
+        if (imgMatch) {
+          buf += text.slice(i, imgMatch.end);
+          i = imgMatch.end;
+          continue;
+        }
+        buf += c;
+        i++;
+        continue;
+      }
+
+      // Link: [text](dest "title") -- dest optionally <...>, balanced parens.
+      if (c === "[" && !inLink) {
+        var linkMatch = matchLink(text, i);
+        if (linkMatch) {
+          flush();
+          var tmp = document.createDocumentFragment();
+          appendInline(tmp, linkMatch.text, selfId, true);
+          appendChildren(parent, markdownLink(Array.prototype.slice.call(tmp.childNodes), linkMatch.dest));
+          i = linkMatch.end;
+          continue;
+        }
+        buf += c;
+        i++;
+        continue;
+      }
+
+      // Emphasis / strong / strikethrough.
+      if (c === "*" || c === "_" || c === "~") {
+        var emMatch = matchEmphasis(text, i);
+        if (emMatch) {
+          flush();
+          var inner = document.createDocumentFragment();
+          appendInline(inner, emMatch.text, selfId, inLink);
+          parent.appendChild(el(emMatch.tag, {}, Array.prototype.slice.call(inner.childNodes)));
+          i = emMatch.end;
+          continue;
+        }
+      }
+
+      buf += c;
+      i++;
+    }
+    flush();
+  }
+
+  /** Trims trailing punctuation (`.,;:!?` and unbalanced `)`) off a bare
+   * autolinked URL -- the standard GFM rule for "the sentence's period
+   * isn't part of the link". A `)` is kept if the URL contains more `(`
+   * than `)`, so a Wikipedia-style URL with a parenthesized segment isn't
+   * truncated mid-path. */
+  function trimBareUrlTrailingPunctuation(url) {
+    while (url.length) {
+      var last = url.charAt(url.length - 1);
+      if (".,;:!?".indexOf(last) !== -1) {
+        url = url.slice(0, -1);
+        continue;
+      }
+      if (last === ")") {
+        var opens = (url.match(/\(/g) || []).length;
+        var closes = (url.match(/\)/g) || []).length;
+        if (closes > opens) {
+          url = url.slice(0, -1);
+          continue;
+        }
+      }
+      break;
+    }
+    return url;
+  }
+
+  /** Builds a live link if `dest` passes safeHref(); otherwise the link's
+   * own children render as plain content with no anchor at all. */
+  function markdownLink(children, dest) {
+    var href = safeHref(dest);
+    if (!href) return children;
+    return [el("a", { href: href, target: "_blank", rel: "noopener noreferrer" }, children)];
+  }
+
+  /** Matches `[text](dest "optional title")` or `[text](<dest>)` starting
+   * at `text[i] === "["`. Returns {text, dest, end} or null. Balanced-paren
+   * scan on the destination (unless angle-bracketed). */
+  function matchLink(text, i) {
+    var depth0 = 0;
+    var j = i + 1;
+    var n = text.length;
+    while (j < n) {
+      if (text.charAt(j) === "\\") {
+        j += 2;
+        continue;
+      }
+      if (text.charAt(j) === "[") depth0++;
+      else if (text.charAt(j) === "]") {
+        if (depth0 === 0) break;
+        depth0--;
+      }
+      j++;
+    }
+    if (j >= n || text.charAt(j) !== "]") return null;
+    var linkText = text.slice(i + 1, j);
+    if (text.charAt(j + 1) !== "(") return null;
+    var k = j + 2;
+    var dest = "";
+    if (text.charAt(k) === "<") {
+      var closeAngle = text.indexOf(">", k + 1);
+      if (closeAngle === -1) return null;
+      dest = text.slice(k + 1, closeAngle);
+      k = closeAngle + 1;
+    } else {
+      var pdepth = 0;
+      var destStart = k;
+      while (k < n) {
+        var ch = text.charAt(k);
+        if (ch === "\\") {
+          k += 2;
+          continue;
+        }
+        if (ch === "(") pdepth++;
+        else if (ch === ")") {
+          if (pdepth === 0) break;
+          pdepth--;
+        } else if (/\s/.test(ch)) break;
+        k++;
+      }
+      dest = text.slice(destStart, k);
+    }
+    while (k < n && /\s/.test(text.charAt(k))) k++;
+    if (k < n && (text.charAt(k) === '"' || text.charAt(k) === "'")) {
+      var quote = text.charAt(k);
+      var closeQuote = text.indexOf(quote, k + 1);
+      if (closeQuote !== -1) k = closeQuote + 1;
+    }
+    while (k < n && /\s/.test(text.charAt(k))) k++;
+    if (k >= n || text.charAt(k) !== ")") return null;
+    return { text: linkText, dest: dest, end: k + 1 };
+  }
+
+  /** Matches an emphasis/strong/strikethrough run starting at `text[i]`.
+   * Pragmatic (non-CommonMark-complete) flanking rule: `_`/`*` only open
+   * after start/space/punctuation and only close before end/space/
+   * punctuation, which is what keeps `snake_case_name` from italicising.
+   * Returns {tag, text, end} or null. */
+  function matchEmphasis(text, i) {
+    var c = text.charAt(i);
+    var runLen = 1;
+    while (text.charAt(i + runLen) === c) runLen++;
+    if (c === "~" && runLen < 2) return null;
+    var marker = c === "~" ? "~~" : text.slice(i, i + Math.min(runLen, 2));
+    var tag = marker.length === 2 ? (c === "~" ? "del" : "strong") : "em";
+
+    var before = i === 0 ? " " : text.charAt(i - 1);
+    var afterOpen = text.charAt(i + marker.length);
+    if (c === "_" && /[A-Za-z0-9]/.test(before) && /[A-Za-z0-9]/.test(afterOpen)) return null;
+    if (/\s/.test(afterOpen) || afterOpen === "") return null;
+
+    var searchFrom = i + marker.length;
+    while (true) {
+      var closeIdx = text.indexOf(marker, searchFrom);
+      if (closeIdx === -1) return null;
+      // A single-char marker (em) must be an ISOLATED occurrence, not the
+      // first character of a longer run -- otherwise the opening star of a
+      // "**strong**" pair reads as this em's close, and the pair inside
+      // never gets a chance to match as its own strong run. Skip the whole
+      // run and keep searching.
+      if (marker.length === 1 && text.charAt(closeIdx + 1) === c) {
+        var runEnd = closeIdx;
+        while (text.charAt(runEnd) === c) runEnd++;
+        searchFrom = runEnd;
+        continue;
+      }
+      var beforeClose = text.charAt(closeIdx - 1);
+      var afterClose = text.charAt(closeIdx + marker.length);
+      if (/\s/.test(beforeClose)) {
+        searchFrom = closeIdx + marker.length;
+        continue;
+      }
+      if (c === "_" && /[A-Za-z0-9]/.test(beforeClose) && /[A-Za-z0-9]/.test(afterClose)) {
+        searchFrom = closeIdx + marker.length;
+        continue;
+      }
+      return { tag: tag, text: text.slice(i + marker.length, closeIdx), end: closeIdx + marker.length };
+    }
+  }
+
+  // ============================================================
   // RENDER: LIST
   // ============================================================
 
@@ -4371,7 +5146,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
     body.appendChild(buildTitleField(st));
     body.appendChild(buildFieldGrid(st));
-    body.appendChild(buildDescriptionSection(st));
+    // SH-217: edit mode is derived from the focus snapshot taken above
+    // (before teardown) -- if the description textarea held focus, the
+    // section rebuilds already in edit mode, so restoreDrawerFocus below
+    // finds the textarea it expects. See buildDescriptionSection's own
+    // doc comment for why this alone isn't the whole mechanism.
+    body.appendChild(buildDescriptionSection(st, !!(focused && focused.field === "description")));
 
     if (st.hidden_at) {
       body.appendChild(el("div", { class: "banner banner-archived" }, [
@@ -4460,22 +5240,136 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return grid;
   }
 
-  function buildDescriptionSection(st) {
-    var wrap = el("div", {}, [el("div", { class: "section-label" }, ["Description"])]);
+  /** Clears `view` and rebuilds its rendered-markdown content from
+   * `text`, or an empty-state ghost when there is none. The description
+   * and the create-story preview aren't the only future callers of this
+   * shape -- kept as its own function (not inlined into the two call
+   * sites below) so a re-render after a commit doesn't have to duplicate
+   * the empty-state branch. */
+  function renderDescriptionView(view, text, selfId) {
+    clear(view);
+    if (!text) {
+      view.classList.add("empty");
+      view.appendChild(document.createTextNode("Add a description…"));
+      return;
+    }
+    view.classList.remove("empty");
+    view.appendChild(renderMarkdown(text, selfId));
+  }
+
+  /** The description's read/edit split (SH-217, absorbing SH-278's own
+   * "linkify story IDs in the description field's read mode" -- rendered
+   * markdown subsumes plain linkification, since every text run inside
+   * it already passes through linkifyStoryIds()).
+   *
+   * Both `.description-view` (rendered markdown, tabindex="0") and the
+   * raw `.description-field` textarea stay in the DOM always; a class on
+   * the wrapper picks which one is visible (CSS: `.description-section
+   * .description-field { display: none }` and the `.editing` overrides,
+   * beside `.description-field`'s own rule). Keeping the textarea always
+   * present is what lets restoreDrawerFocus() keep working unchanged --
+   * it looks up `[data-field="description"]` and expects to find it.
+   *
+   * `editing` (the caller's second argument) only reproduces edit mode
+   * across a renderDrawer() rebuild -- see the call site's own comment.
+   * It is NOT the whole mechanism: entering/leaving edit mode day-to-day
+   * is driven directly by the interaction handlers below (toggling the
+   * wrapper's class, refreshing the view's content, moving focus),
+   * because a re-render only happens when the value actually changed
+   * (runFieldMutation -> handleMutationSuccess -> renderDrawer) -- focus
+   * in, change nothing, click away, and nothing would otherwise flip the
+   * view back on without this. */
+  function buildDescriptionSection(st, editing) {
+    var wrap = el("div", { class: "description-section" + (editing ? " editing" : "") },
+      [el("div", { class: "section-label" }, ["Description"])]);
+    var view = el("div", {
+      class: "description-view md", tabIndex: 0, dataset: { field: "description-view" },
+      "aria-describedby": "description-view-kbd-hint"
+    }, []);
+    renderDescriptionView(view, st.description || "", st.id);
     var textarea = el("textarea", {
       class: "description-field",
       placeholder: "Add a description…",
       value: st.description || "",
       dataset: { field: "description" }
     });
+
+    function enterEdit() {
+      if (wrap.classList.contains("editing")) return;
+      wrap.classList.add("editing");
+      // autoGrowTextarea measures scrollHeight, which is 0 on a
+      // display:none element -- must run only now that .editing has
+      // made the textarea visible, not at build time (requestAnimationFrame
+      // below covers the case where the section is BUILT already editing).
+      autoGrowTextarea(textarea);
+      textarea.focus();
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    }
+
+    // Blur always leaves edit mode and re-renders the view from the
+    // current value -- optimistically, ahead of the PATCH's own round
+    // trip, so the read view never shows stale content while the
+    // request is in flight. This is what makes "focus in, change
+    // nothing, click away" correctly return to the read view even
+    // though no mutation (and so no renderDrawer) ever fires.
+    function exitEdit(text) {
+      wrap.classList.remove("editing");
+      renderDescriptionView(view, text, st.id);
+    }
+
+    // Two clicks that must NOT enter edit mode: one landing on a
+    // rendered link or story-ref button (following it is the point),
+    // and one that ends a non-collapsed text selection (otherwise
+    // drag-to-copy out of the rendered view yanks the reader into the
+    // editor and throws their selection away).
+    view.addEventListener("click", function(e) {
+      if (e.target.closest && e.target.closest("a, button")) return;
+      var sel = window.getSelection && window.getSelection();
+      if (sel && !sel.isCollapsed && view.contains(sel.anchorNode)) return;
+      enterEdit();
+    });
+    // Activation only (Enter/Space), never the view's own `focus` event:
+    // triggering on focus would make Shift+Tab out of the textarea --
+    // which lands back on this Tab-reachable view -- re-enter edit mode
+    // on the way past. Activation-only avoids that by construction.
+    view.addEventListener("keydown", function(e) {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        enterEdit();
+      }
+    });
+
     textarea.addEventListener("input", function() { autoGrowTextarea(textarea); });
     textarea.addEventListener("blur", function() {
       if (drawerRerendering) return;
       var v = textarea.value.trim();
+      // blur fires mid-gesture, before mouseup/click, on whatever
+      // element the user's click is landing on next (that's what
+      // triggered this blur in the first place). exitEdit() changes the
+      // section's height, and doing that synchronously here would shift
+      // layout out from under the still-in-flight click, which can make
+      // it land on the wrong element or nothing at all. Deferring by one
+      // frame lets that click's mouseup/click resolve against the
+      // pre-swap layout first; committing the value is NOT deferred,
+      // since nothing about it depends on layout.
+      requestAnimationFrame(function() { exitEdit(v); });
       if (v !== (st.description || "")) runFieldMutation(st.id, "PATCH", "", { description: v });
     });
+    textarea.addEventListener("keydown", function(e) {
+      if (e.key !== "Escape") return;
+      // Stop the drawer's own document-level Escape handler from also
+      // closing the whole drawer -- Escape here means "cancel this
+      // edit," and the drawer should stay open exactly as it does for
+      // every other dismissible surface's own inner Escape.
+      e.stopPropagation();
+      textarea.value = st.description || "";
+      exitEdit(st.description || "");
+      view.focus();
+    });
+
+    wrap.appendChild(view);
     wrap.appendChild(textarea);
-    requestAnimationFrame(function() { autoGrowTextarea(textarea); });
+    if (editing) requestAnimationFrame(function() { autoGrowTextarea(textarea); });
     return wrap;
   }
 
@@ -4663,7 +5557,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       comments.slice().reverse().forEach(function(c) {
         list.appendChild(el("div", { class: "comment" }, [
           el("div", { class: "comment-meta" }, [(c.at || "").replace("T", " ").slice(0, 16)]),
-          el("div", { class: "comment-text" }, linkifyStoryIds(c.text, st.id))
+          el("div", { class: "comment-text md" }, [renderMarkdown(c.text, st.id)])
         ]));
       });
       wrap.appendChild(list);
