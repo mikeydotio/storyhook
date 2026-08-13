@@ -165,7 +165,16 @@ impl StoreLocation {
     /// A digest rather than an escaped path, because a directory name must not
     /// depend on the path's length or on characters a filesystem may refuse.
     pub fn key(&self) -> String {
-        let digest = Sha256::digest(self.path.as_os_str().as_encoded_bytes());
+        Self::key_for_path(&self.path)
+    }
+
+    /// The digest [`Self::key`] computes, exposed standalone for a caller
+    /// that has a store path but not a full `StoreLocation` — the
+    /// dashboard's per-store cookie name (SH-255), derived from the same
+    /// path this method already keys the daemon's own state directory by, so
+    /// the two identities can never disagree about what "this store" means.
+    pub fn key_for_path(path: &Path) -> String {
+        let digest = Sha256::digest(path.as_os_str().as_encoded_bytes());
         digest
             .iter()
             .flat_map(|byte| [HEX[(byte >> 4) as usize], HEX[(byte & 0xf) as usize]])

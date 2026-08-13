@@ -453,6 +453,7 @@ mod tests {
             token: token.to_string(),
             store_path: std::path::PathBuf::new(),
             tailnet: None,
+            cookie_name: "storyhook_test".to_string(),
         }
     }
 

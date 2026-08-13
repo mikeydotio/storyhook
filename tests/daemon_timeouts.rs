@@ -93,6 +93,7 @@ impl SilentPeer {
             token: "not-the-real-token".to_string(),
             store_path: std::path::PathBuf::from("/private/tmp/storyhook-timeouts/store.db"),
             tailnet: None,
+            cookie_name: "storyhook_timeouts".to_string(),
         }
     }
 }
@@ -173,6 +174,7 @@ fn a_refused_connection_still_fails_immediately() {
         token: "irrelevant".to_string(),
         store_path: std::path::PathBuf::from("/private/tmp/storyhook-timeouts/store.db"),
         tailnet: None,
+        cookie_name: "storyhook_timeouts".to_string(),
     };
 
     let started = Instant::now();

@@ -111,6 +111,52 @@ pub const DEFAULT_TTL: chrono::Duration = chrono::Duration::days(30);
 /// answer, and is called out as such in the spec.
 pub const HANDOFF_TTL: chrono::Duration = chrono::Duration::hours(24);
 
+/// The cookie a browser holds a named token in: `storyhook_<key>`, `key`
+/// being this store's own identity ([`crate::env::StoreLocation::key`]).
+///
+/// Reused rather than a second fingerprint minted for this: cookies ignore
+/// port entirely (RFC 6265 — port is not part of cookie scope), and a
+/// per-port name would go stale on every restart of a non-default store,
+/// which always gets a kernel-assigned port. Per-store is stable across
+/// restarts by construction, and store isolation (SH-113) already makes it
+/// the identity every other piece of daemon state is keyed by.
+pub fn cookie_name(env: &Environment) -> String {
+    cookie_name_for_store(env.store_path())
+}
+
+/// [`cookie_name`], for a caller that has a store path but not a full
+/// [`Environment`] — [`crate::daemon::lifecycle::info_for`], which builds
+/// the portfile before any `Environment` reads it back. One digest, called
+/// from both places, so the cookie a browser holds and the name the portfile
+/// publishes can never disagree about what they name.
+pub fn cookie_name_for_store(store: &std::path::Path) -> String {
+    format!(
+        "storyhook_{}",
+        crate::env::StoreLocation::key_for_path(store)
+    )
+}
+
+/// Formats a `Set-Cookie` value naming `value` under `name`, good for
+/// `max_age_secs` from now.
+///
+/// Host-only (no `Domain` attribute): `ts.net` sits under the Public Suffix
+/// List, so a `Domain=` cookie here would broadcast to every tailnet peer
+/// rather than staying scoped to this one host. `Path=/`, `HttpOnly` (never
+/// readable from page JS), `SameSite=Strict`. Never a session cookie —
+/// `max_age_secs` always names an explicit lifetime, because the record
+/// behind it has one, and a `Set-Cookie` that outlived its record would let
+/// a closed-then-reopened tab keep offering a credential the daemon has
+/// already forgotten.
+pub fn set_cookie_header(name: &str, value: &str, max_age_secs: i64) -> String {
+    format!("{name}={value}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age_secs}")
+}
+
+/// The clearing form of [`set_cookie_header`]: an empty value and
+/// `Max-Age=0`, which every browser treats as "delete this cookie now."
+pub fn clear_cookie_header(name: &str) -> String {
+    format!("{name}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0")
+}
+
 /// One named token, as stored on disk. Never the raw secret — only what is
 /// needed to recognize a future presentation of it and to describe it back to
 /// an operator.
@@ -1166,6 +1212,49 @@ mod tests {
             crate::api::http::path_segments(TOKENS_PATH),
             ["api", "v1", "tokens"]
         );
+    }
+
+    // --- The cookie ---
+
+    #[test]
+    fn the_cookie_name_is_storyhook_prefixed_and_deterministic() {
+        let dir = tempdir();
+        let env = env_at(&dir);
+        let name = cookie_name(&env);
+        assert!(name.starts_with("storyhook_"), "{name}");
+        assert_eq!(
+            name,
+            cookie_name(&env),
+            "the name must not vary call to call"
+        );
+    }
+
+    #[test]
+    fn two_different_stores_get_two_different_cookie_names() {
+        let a = tempdir();
+        let b = tempdir();
+        assert_ne!(cookie_name(&env_at(&a)), cookie_name(&env_at(&b)));
+    }
+
+    #[test]
+    fn a_set_cookie_value_carries_every_required_attribute_and_no_domain() {
+        let value = set_cookie_header("storyhook_abc123", "the-secret", 3600);
+        assert!(value.starts_with("storyhook_abc123=the-secret;"), "{value}");
+        assert!(value.contains("Path=/"), "{value}");
+        assert!(value.contains("HttpOnly"), "{value}");
+        assert!(value.contains("SameSite=Strict"), "{value}");
+        assert!(value.contains("Max-Age=3600"), "{value}");
+        assert!(
+            !value.contains("Domain="),
+            "a Domain attribute would broadcast to every tailnet peer under ts.net: {value}"
+        );
+    }
+
+    #[test]
+    fn a_clear_cookie_value_has_an_empty_value_and_zero_max_age() {
+        let value = clear_cookie_header("storyhook_abc123");
+        assert!(value.starts_with("storyhook_abc123=;"), "{value}");
+        assert!(value.contains("Max-Age=0"), "{value}");
     }
 
     // --- Test fixtures ---

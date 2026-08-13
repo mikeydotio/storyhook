@@ -461,6 +461,16 @@ pub struct DaemonInfo {
     /// It reads as `None`, i.e. loopback, which is always true.
     #[serde(default)]
     pub tailnet: Option<crate::daemon::tailnet::TailnetBind>,
+    /// The `Set-Cookie` name a browser holds a named token in for this store
+    /// (SH-255) — `crate::api::tokens::cookie_name`, published so the CLI and
+    /// e2e suite read it here rather than recompute the digest themselves.
+    ///
+    /// Defaulted for the reason `store_path` and `tailnet` are: an older
+    /// portfile has to parse in order to be stood down. An empty string reads
+    /// as "unknown," which is the honest answer for a daemon that predates
+    /// this field.
+    #[serde(default)]
+    pub cookie_name: String,
 }
 
 impl DaemonInfo {
@@ -650,6 +660,7 @@ pub fn info_for(
         token,
         store_path: store.to_path_buf(),
         tailnet: bound.tailnet.clone(),
+        cookie_name: crate::api::tokens::cookie_name_for_store(store),
     })
 }
 
@@ -2323,6 +2334,7 @@ mod tests {
             token: "t".to_string(),
             store_path: PathBuf::from("/private/tmp/storyhook-lifecycle/store.db"),
             tailnet: None,
+            cookie_name: "storyhook_test".to_string(),
         };
         assert!(!info.is_this_binary());
     }
@@ -2344,6 +2356,7 @@ mod tests {
             token: "t".to_string(),
             store_path: PathBuf::from("/private/tmp/storyhook-lifecycle/store.db"),
             tailnet: None,
+            cookie_name: "storyhook_test".to_string(),
         };
         assert!(
             !info.is_this_binary(),

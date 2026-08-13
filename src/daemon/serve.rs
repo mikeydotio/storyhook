@@ -186,6 +186,11 @@ struct Serving<'a, S: Store> {
     /// never queue behind the dispatcher pool — `story token revoke` most of
     /// all, per this registry's own module doc.
     tokens: Arc<crate::api::tokens::TokenRegistry>,
+    /// The `Set-Cookie` name a browser holds a named token in for this store
+    /// (SH-255) — computed once here rather than per request, since it never
+    /// changes for the life of this daemon. See
+    /// [`crate::api::tokens::cookie_name`].
+    cookie_name: String,
     /// Everything this daemon is serving right now (SH-173, SH-144). An `Arc`
     /// so the detached thread [`worker`] spawns on the shutdown path — which
     /// has no `'scope` of its own — can still poll it while draining.
@@ -276,6 +281,7 @@ where
         handoff: Arc::new(crate::api::handoff::HandoffRegistry::new()),
         sessions: Arc::new(crate::api::session::SessionRegistry::new()),
         tokens: Arc::new(crate::api::tokens::TokenRegistry::load(env)),
+        cookie_name: crate::api::tokens::cookie_name(env),
         inflight: Arc::new(crate::daemon::lifecycle::InFlight::new(env.clone())),
         draining: AtomicBool::new(false),
     };
@@ -717,6 +723,7 @@ fn accept_loop<S: Store>(
     nested_tx: mpsc::Sender<Job>,
 ) {
     let token: Arc<str> = Arc::from(serving.token.as_str());
+    let cookie_name: Arc<str> = Arc::from(serving.cookie_name.as_str());
     let bus = serving.bus.clone();
     let trusted_hosts = Arc::clone(&serving.trusted_hosts);
     let env = serving.env.clone();
@@ -747,6 +754,7 @@ fn accept_loop<S: Store>(
             &handoff,
             &sessions,
             &tokens,
+            &cookie_name,
         )
     };
 
@@ -808,6 +816,7 @@ fn worker(
     handoff: &Arc<crate::api::handoff::HandoffRegistry>,
     sessions: &Arc<crate::api::session::SessionRegistry>,
     tokens: &Arc<crate::api::tokens::TokenRegistry>,
+    cookie_name: &str,
 ) {
     let mut request = request;
     let method = request.method().clone();
@@ -842,6 +851,9 @@ fn worker(
         loopback,
         std::time::Instant::now(),
         sessions,
+        tokens,
+        cookie_name,
+        chrono::Utc::now(),
     ) {
         finish(request, reply);
         return;
@@ -867,6 +879,9 @@ fn worker(
         std::time::Instant::now(),
         handoff,
         sessions,
+        tokens,
+        cookie_name,
+        chrono::Utc::now(),
     ) {
         finish(request, reply);
         return;
@@ -1535,6 +1550,9 @@ mod tests {
             loopback,
             std::time::Instant::now(),
             &crate::api::session::SessionRegistry::new(),
+            &crate::api::tokens::TokenRegistry::new(chrono::Utc::now(), std::time::Instant::now()),
+            "storyhook_test",
+            chrono::Utc::now(),
         )
         .is_none()
     }
