@@ -1038,6 +1038,72 @@ fn web_serve_root_html_keeps_text_controls_above_the_ios_zoom_threshold() {
     );
 }
 
+/// SH-235: `100vh`/`90vh`/`60vh` are the *largest* possible iOS Safari
+/// viewport -- with the URL bar showing, the true visible area is shorter,
+/// so a bare `vh` value overflows the screen (the app shell) or mis-sizes a
+/// modal/popover so its own footer sits behind the browser chrome. Every
+/// affected rule must carry the `vh` value first (the fallback for a
+/// browser that predates `dvh` -- CSS drops a declaration with an
+/// unsupported unit entirely, so without the `vh` line first that browser
+/// gets no height at all) and the matching `dvh` value second, so the later
+/// declaration wins in every browser that understands it.
+///
+/// Headless Blink has no dynamic toolbar, so `dvh` and `vh` compute
+/// identically there -- this is the layer that can guard the *mechanism*
+/// (the fallback pair itself) without a real device or a toolbar to hide.
+#[test]
+fn web_serve_root_html_sizes_the_shell_to_the_dynamic_viewport() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    for (selector, prop, vh_value) in [
+        (".app", "height", "100"),
+        (".modal", "max-height", "90"),
+        (".drafts-list", "max-height", "60"),
+    ] {
+        let decl = declarations(css, selector);
+        let vh_decl = format!("{prop}: {vh_value}vh;");
+        let dvh_decl = format!("{prop}: {vh_value}dvh;");
+        assert!(
+            decl.contains(&vh_decl),
+            "`{selector}` must keep its `{vh_decl}` fallback for browsers that predate `dvh`"
+        );
+        assert!(
+            decl.contains(&dvh_decl),
+            "`{selector}` must also set `{dvh_decl}`, so the dynamic (toolbar-aware) \
+             viewport wins over the fallback in every browser that supports it"
+        );
+        // The `dvh` declaration must come after the `vh` one -- CSS applies
+        // the last matching declaration, so a swapped order would silently
+        // put the fallback back in charge in every browser.
+        assert!(
+            decl.find(&vh_decl).unwrap() < decl.find(&dvh_decl).unwrap(),
+            "`{selector}`'s `{dvh_decl}` must be declared after `{vh_decl}`, not before"
+        );
+    }
+
+    // iOS's automatic post-rotation text-inflation heuristic, disabled --
+    // not the same thing as pinch-zoom or the OS's own accessibility text
+    // size, both of which stay untouched (see the rule's own comment).
+    let html_decl = declarations(css, "html");
+    assert!(
+        html_decl.contains("-webkit-text-size-adjust: 100%;"),
+        "`html` must set -webkit-text-size-adjust: 100% for Safari's still-prefixed property"
+    );
+    assert!(
+        html_decl.contains("text-size-adjust: 100%;"),
+        "`html` must set the unprefixed text-size-adjust: 100% too"
+    );
+}
+
 #[test]
 fn web_serve_api_data_empty_project() {
     let fixture = served();
