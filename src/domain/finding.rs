@@ -39,7 +39,7 @@
 //! `remedy` is a **pointer, not a promise** — it names where a repair would
 //! land, never that `story doctor --fix` will succeed in landing one. Whether
 //! the destination is closed, and so out of reach, is knowable only inside
-//! [`crate::service::IntegrityService::fix`], which says so in its own output.
+//! [`crate::service::IntegrityService::repair`], which says so in its own output.
 
 use serde::{Deserialize, Serialize};
 

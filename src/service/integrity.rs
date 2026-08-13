@@ -37,10 +37,10 @@
 //! One kind of read-model drift is not a *question* at all: an event whose
 //! kind this build has never heard of. SH-185 gave that its own channel,
 //! [`IntegrityService::notices`], which never contributes to [`report`] or
-//! [`fix`]'s verdicts — see that method's doc comment for why.
+//! [`repair`]'s verdicts — see that method's doc comment for why.
 //!
 //! [`report`]: IntegrityService::report
-//! [`fix`]: IntegrityService::fix
+//! [`repair`]: IntegrityService::repair
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -129,7 +129,8 @@ impl<'a, S: Store> IntegrityService<'a, S> {
     /// so this is the backstop for a skipped dashboard prompt or a bare
     /// scripted `move` rather than a dispatch-safety gap. None of the three
     /// contribute to [`report`](Self::report)'s health verdict,
-    /// [`fix`](Self::fix)'s success or failure, or `story doctor`'s exit code
+    /// [`repair`](Self::repair)'s success or failure, or `story doctor`'s exit
+    /// code
     /// — SH-185's council put the first one here specifically so it could
     /// not, and the other two follow the same reasoning
     /// [`crate::domain::with_required_states`] already gives for never
@@ -160,9 +161,10 @@ impl<'a, S: Store> IntegrityService<'a, S> {
     ///    subsumes the legacy path's archived-snapshot repair and covers every
     ///    story rather than only the archived ones.
     ///
-    /// Then [`report`](Self::report) runs again and its verdict is the
-    /// command's: a repair that did not actually fix the project must not exit
-    /// zero.
+    /// Then [`report`](Self::report) runs again, and what it still finds rides
+    /// out on the returned [`FixOutcome`] rather than being raised here: a
+    /// repair that did not actually fix the project must not exit zero, and
+    /// [`FixOutcome::verdict`] is what makes sure of it.
     ///
     /// # Every story is asked; only an open one is written to
     ///
@@ -208,19 +210,6 @@ impl<'a, S: Store> IntegrityService<'a, S> {
     /// catalog below the floor — went unmentioned whenever anything else
     /// remained, which reads as "nothing happened" to an operator who then
     /// repeats it.
-    ///
-    /// # Today's contract, over [`repair`](Self::repair)
-    ///
-    /// Kept while the callers that want a rendered string move across; the
-    /// verdict itself is minted by [`FixOutcome::verdict`], which is where the
-    /// mapping lives so nothing re-derives it.
-    pub fn fix(&self) -> Result<String, AppError> {
-        self.repair().and_then(FixOutcome::verdict)
-    }
-
-    /// Everything a `--fix` run did, **before anything decides whether it
-    /// counts as a failure** — see [`fix`](Self::fix) for what the run itself
-    /// does, which is unchanged.
     ///
     /// # Why the verdict is a value and not an error (SH-270)
     ///
@@ -566,7 +555,7 @@ impl FixOutcome {
     }
 }
 
-/// A repair [`IntegrityService::fix`] identified, could not make, and owes the
+/// A repair [`IntegrityService::repair`] identified, could not make, and owes the
 /// operator a sentence about (SH-225).
 ///
 /// It carries the finding it would have answered because the list is built
@@ -636,7 +625,7 @@ enum FindingKey {
 /// The fact a finding reports, when it is one a blocked repair can answer.
 ///
 /// `None` for every other finding — a cycle, an unknown type, read-model drift
-/// — none of which [`IntegrityService::fix`] ever puts in its blocked list, so
+/// — none of which [`IntegrityService::repair`] ever puts in its blocked list, so
 /// none of which can keep an entry alive.
 fn finding_key(finding: &Finding) -> Option<FindingKey> {
     let subject = finding.subject.clone()?;
@@ -952,7 +941,7 @@ fn drift_issues(drift: &crate::store::ReadModelDiff, prefix: &str) -> Vec<Findin
 ///
 /// SH-185's council answer to what SH-67 left open: this is a *notice*, not a
 /// finding. It plays no part in [`IntegrityService::report`]'s health verdict,
-/// [`IntegrityService::fix`]'s success or failure, or `story doctor`'s exit
+/// [`IntegrityService::repair`]'s success or failure, or `story doctor`'s exit
 /// code — the caller decides separately how (never *whether*) to surface it,
 /// because dropping it silently just because it lost a seat in the health
 /// vector would be its own regression.
@@ -1064,7 +1053,7 @@ fn all_stories(
 /// `--fix` appends to these and no others: an archived story's history is
 /// closed, and appending a repair event to it would reopen a question the
 /// project already settled. Membership is the *destination* test, not the
-/// question test — see [`IntegrityService::fix`] for the difference, and
+/// question test — see [`IntegrityService::repair`] for the difference, and
 /// [`blocked_repairs_detail`] for what a repair with no open destination
 /// becomes instead.
 fn open_stories(

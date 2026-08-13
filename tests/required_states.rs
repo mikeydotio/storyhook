@@ -28,6 +28,23 @@ fn state(slug: &str, super_state: SuperState) -> StateDef {
     }
 }
 
+/// A `--fix` run's rendered report, or the error its remaining findings make.
+///
+/// The two production calls composed — [`IntegrityService::repair`] for what
+/// the run did, [`storyhook::service::FixOutcome::verdict`] for what that
+/// counts as. Nothing here re-derives the mapping: `verdict` *is* the mapping,
+/// and `story doctor --fix` reaches it the same way.
+///
+/// The `?` is load-bearing and is the reason this is not one call (SH-270). A
+/// repair that *blew up* — a story whose events will not fold, met while a
+/// repair write was in flight — and a repair that *ran and left findings* are
+/// different outcomes that used to arrive as the same `Err(AppError::
+/// Integrity)`. Here the first propagates and the second is the verdict, so a
+/// test asking for one cannot silently be handed the other.
+fn fix(ctx: &Ctx<'_, SqliteStore>) -> Result<String, storyhook::error::AppError> {
+    IntegrityService::new(ctx).repair()?.verdict()
+}
+
 /// The catalog as slugs, in board order.
 fn slugs(fixture: &ServiceFixture) -> Vec<String> {
     fixture
@@ -107,7 +124,7 @@ fn doctor_reports_a_project_below_the_floor() {
 fn doctor_fix_adds_the_missing_state_and_says_so() {
     let fixture = below_the_floor();
     let ctx = fixture.ctx();
-    let message = IntegrityService::new(&ctx).fix().expect("fixing");
+    let message = fix(&ctx).expect("fixing");
     assert!(
         message.contains("added 1 required state"),
         "the repair must be reported, not silent: {message}"
@@ -126,7 +143,7 @@ fn doctor_fix_adds_the_missing_state_and_says_so() {
 fn doctor_fix_adds_nothing_to_a_conforming_project() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
-    let message = IntegrityService::new(&ctx).fix().expect("fixing");
+    let message = fix(&ctx).expect("fixing");
     assert_eq!(message, "doctor found nothing to fix");
 }
 
@@ -138,7 +155,7 @@ fn doctor_fix_repairs_a_two_state_project_in_one_pass() {
         state("done", SuperState::Closed),
     ]);
     let ctx = fixture.ctx();
-    let message = IntegrityService::new(&ctx).fix().expect("fixing");
+    let message = fix(&ctx).expect("fixing");
     assert!(message.contains("added 2 required states"), "{message}");
     assert_eq!(slugs(&fixture), ["todo", "in-progress", "blocked", "done"]);
 }
@@ -156,7 +173,7 @@ fn doctor_will_not_reclassify_a_required_state_that_already_exists() {
         state("shipped", SuperState::Closed),
     ]);
     let ctx = fixture.ctx();
-    let error = IntegrityService::new(&ctx).fix().unwrap_err().to_string();
+    let error = fix(&ctx).unwrap_err().to_string();
     assert!(error.contains("will not reclassify"), "{error}");
     assert_eq!(
         slugs(&fixture),
@@ -176,7 +193,7 @@ fn a_repair_leaves_the_state_new_stories_open_in_alone() {
     ]);
     let ctx = fixture.ctx();
     let before = new_story(&ctx, "before the repair");
-    IntegrityService::new(&ctx).fix().expect("fixing");
+    fix(&ctx).expect("fixing");
     let after = new_story(&ctx, "after the repair");
 
     assert_eq!(state_of(&fixture, &before), "backlog");
@@ -368,7 +385,7 @@ fn doctor_fix_does_not_guess_which_state_should_be_active() {
         state("done", SuperState::Closed),
     ]);
     let ctx = fixture.ctx();
-    let message = IntegrityService::new(&ctx).fix().expect("fixing");
+    let message = fix(&ctx).expect("fixing");
     assert!(
         message.starts_with("doctor found nothing to fix"),
         "{message}"
@@ -459,7 +476,7 @@ fn doctor_fix_does_not_guess_a_blocked_reason() {
         .set_state(&id, "blocked", None, None, None)
         .expect("blocking");
 
-    let message = IntegrityService::new(&ctx).fix().expect("fixing");
+    let message = fix(&ctx).expect("fixing");
     assert!(
         message.starts_with("doctor found nothing to fix"),
         "{message}"
