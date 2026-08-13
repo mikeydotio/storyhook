@@ -4,6 +4,15 @@ on:
   push:
     tags:
       - "v*"
+  # These four targets are built exactly once per release, after the tag is
+  # pushed and can no longer be moved — which is how the Linux build went two
+  # releases without compiling (SH-259). Dispatching runs the same
+  # cross-target build on any ref without minting a tag; the `release` job
+  # below stays behind a tag guard, so a dispatched run produces artifacts and
+  # publishes nothing. This is a build of the deploy artifact rather than a
+  # test suite, so it does not contradict the project rule that Actions are
+  # for deploys and tests are local.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -14,6 +23,20 @@ env:
 jobs:
   build:
     strategy:
+      # A release matrix is not a test matrix: cancelling the siblings of a
+      # failed job saves minutes and costs every other platform its artifact.
+      # When the Linux build broke, the default took both macOS builds and the
+      # aarch64 Linux one down mid-compile, so the three targets that were
+      # perfectly healthy produced nothing at all (SH-259) — not even
+      # something a maintainer could attach by hand.
+      #
+      # Publishing stays all-or-nothing regardless (see `release`'s `needs`
+      # below): a release missing one platform's asset is a 404 for that
+      # platform's `install.sh` and `story update`, on a release that looks
+      # complete. What this buys is a full report — every target's status in
+      # one run instead of one per re-tag — and four artifacts on disk when
+      # only one target is at fault.
+      fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
@@ -67,7 +90,14 @@ jobs:
           path: ${{ matrix.artifact }}
 
   release:
+    # Strict on purpose, and the deliberate counterweight to `fail-fast:
+    # false`: one failed target still blocks the release rather than
+    # publishing a partial one.
     needs: build
+    # A dispatched run has no tag to release. Without this guard, adding the
+    # `workflow_dispatch` trigger above would turn every on-demand build into
+    # a failed publish step.
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
