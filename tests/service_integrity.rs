@@ -20,7 +20,7 @@ use std::collections::BTreeSet;
 
 use rusqlite::Connection;
 use storyhook::domain::finding::{Finding, FindingCode, FindingData};
-use storyhook::domain::{StoryEvent, TypeDef, fold_story};
+use storyhook::domain::{StateDef, StoryEvent, SuperState, TypeDef, fold_story};
 use storyhook::error::AppError;
 use storyhook::service::{Ctx, IntegrityService, NewStoryInput, RelationService, StoryService};
 use storyhook::store::{
@@ -793,6 +793,70 @@ fn a_notice_stays_visible_alongside_a_real_finding_in_the_same_run() {
     );
 }
 
+/// SH-266, and the generalisation of the test above it: **advice is the same
+/// list on both outcomes**.
+///
+/// SH-185's constraint was pinned for `notices` alone, and `notices` was the
+/// one advice source the damaged branch passed on — the other seven were
+/// assembled inside the healthy branch, so an orphaned registration, an
+/// unregistered origin, a github remote that had drifted, an abandoned
+/// command, a stale pointer or a legacy commit link was reported only while
+/// nothing else was wrong. Withheld, that is, exactly when an operator is
+/// reading.
+///
+/// Asserted as an **equality** rather than a containment, so the property is
+/// "the same advice", not "some advice survived": an advice source added to
+/// one branch and not the other fails here.
+///
+/// A stale pointer prefix (SH-190) is the provocation because it is advice no
+/// feature flag can switch off and no store-location guard can suppress — the
+/// catalog advisories are deliberately silent under a temporary store, which
+/// every fixture here has.
+#[test]
+fn the_advice_a_damaged_run_carries_is_the_advice_a_healthy_one_prints() {
+    use storyhook::service::project::{ProjectPointer, write_pointer};
+
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    new_story(&ctx, "something to be told, and then some damage");
+    drop(ctx);
+
+    // The project's ids are `SH-…`; its checkout claims `OLD-…`. Hand-edited
+    // or copy-pasted, which is exactly the case SH-190 added the advisory for.
+    write_pointer(
+        fixture.cwd(),
+        &ProjectPointer::new("fixture-uuid".to_string(), "OLD".to_string()),
+    )
+    .expect("writing a stale pointer file");
+
+    let healthy = advisories(&fixture);
+    assert!(
+        healthy.iter().any(|line| line.contains("prefix `OLD`")),
+        "the fixture must actually provoke an advisory, or this test proves \
+         nothing: {healthy:?}"
+    );
+
+    inject_torn_payload(&fixture);
+
+    let error = storyhook::invoke::dispatch(
+        &fixture.ctx(),
+        storyhook::cli::Invocation::Doctor { fix: false },
+    )
+    .expect_err("a torn payload still fails `doctor`");
+    let AppError::Integrity(detail) = &error else {
+        panic!("damage is an integrity error: {error:?}");
+    };
+    assert_eq!(
+        detail.advice, healthy,
+        "the same run's advice must not depend on whether the project is also \
+         damaged (SH-266)"
+    );
+    assert!(
+        error.to_string().contains("prefix `OLD`"),
+        "and it must reach the rendered report a person reads: {error}"
+    );
+}
+
 /// A project with no github-sync configuration has nothing to be told.
 #[test]
 fn a_project_with_no_github_sync_has_nothing_to_be_told() {
@@ -997,6 +1061,89 @@ fn git(cwd: &std::path::Path, args: &[&str]) {
         cwd.display(),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+/// SH-266 on the `--fix` path: what the run *did* is withheld because the run
+/// also failed.
+///
+/// Two independent damages, because that is the only shape in which the
+/// receipt can go missing: a required state deleted out of the catalog, which
+/// `--fix` genuinely repairs, and an unaddressable type slug, which it cannot.
+/// The states are in the catalog afterwards either way — an operator who is
+/// not told that reads the failure as "nothing happened" and repeats it.
+#[test]
+fn a_failed_fix_still_reports_the_states_it_added() {
+    let fixture = ServiceFixture::new();
+    let connection = Connection::open(fixture.store().path()).expect("opening the store");
+    connection
+        .execute("DELETE FROM project_states WHERE slug = 'blocked'", [])
+        .expect("dropping a required state");
+    connection
+        .execute(
+            "UPDATE project_types SET slug = 'in review' \
+             WHERE rowid = (SELECT MIN(rowid) FROM project_types)",
+            [],
+        )
+        .expect("making a type unaddressable");
+
+    let error = fix(&fixture).expect_err("an unaddressable type slug survives the repair");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("cannot be addressed"),
+        "the finding that failed the run: {rendered}"
+    );
+    assert!(
+        rendered.contains("added 1 required state"),
+        "the repair `--fix` DID make must be reported even though the run failed: {rendered}"
+    );
+}
+
+/// The sharper half of the same defect, and the one that is *always* withheld.
+///
+/// A story the read-model repair could not rewrite is also a `FoldFailure`
+/// finding, so `--fix` fails whenever there is one — which makes the failure
+/// path the only place "could not be repaired" can ever be read, and it was
+/// the one path that dropped it.
+#[test]
+fn a_failed_fix_still_names_the_story_it_could_not_repair() {
+    let mut states = storyhook_test_support::default_states();
+    states.push(StateDef {
+        slug: "shelved".into(),
+        super_state: SuperState::Closed,
+        role: None,
+        description: None,
+    });
+    let fixture = ServiceFixture::with_states(&states);
+    let ctx = fixture.ctx();
+    let id = new_story(&ctx, "shelved, then orphaned by its own catalog");
+    StoryService::new(&ctx)
+        .set_state(&id, "shelved", None, None, None)
+        .expect("shelving");
+    drop(ctx);
+
+    // Through the corruption back door: SH-130's composite foreign key refuses
+    // this through every ordinary path, and a database written by an older
+    // storyhook can still hold it.
+    storyhook::store::test_support::forget_state(fixture.store(), fixture.project(), "shelved")
+        .expect("retiring a state out from under its story");
+
+    let error = fix(&fixture).expect_err("a story that cannot be folded is a finding");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("cannot be folded"),
+        "the finding that failed the run: {rendered}"
+    );
+    assert!(
+        rendered.contains("could not be repaired"),
+        "the repair `--fix` declined to guess at must be named, not dropped: {rendered}"
+    );
+
+    // The catalog goes back so the fixture's drop-time drift check has
+    // something to fold against; this test's damage is not its to report.
+    fixture
+        .store()
+        .write(|tx| tx.put_states(fixture.project(), &states))
+        .expect("restoring the state this test retired");
 }
 
 /// `--fix` must not claim a repair it did not make.
