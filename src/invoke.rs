@@ -3607,9 +3607,9 @@ fn catalog_sweep<S: Store>(
     if !forgotten.is_empty() {
         advice.push(deregistered_message(&forgotten));
     }
-    let origins = catalog.register_found_origins()?;
-    if !origins.is_empty() {
-        advice.push(registered_origins_message(&origins));
+    let sweep = catalog.register_found_origins()?;
+    if !sweep.is_empty() {
+        advice.push(registered_origins_message(&sweep));
     }
     Ok(())
 }
@@ -4007,10 +4007,19 @@ fn origin_advice(found: &[crate::service::UnregisteredOrigin]) -> Vec<String> {
             ),
         })
         .collect();
+    // Distinct origins, not findings: two checkouts of one repository both
+    // classify `Registrable` for the *same* URL, but only the first `--fix`
+    // write can ever land — `register_origin` refuses the second as `HeldBy`
+    // (SH-274). Counting findings here would promise a write that cannot
+    // happen.
     let registrable = found
         .iter()
-        .filter(|item| matches!(item.finding, OriginFinding::Registrable(_)))
-        .count();
+        .filter_map(|item| match &item.finding {
+            OriginFinding::Registrable(owned) => Some(owned.url().key().to_string()),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
     lines.push(format!(
         "{} {} without a registered origin, {registrable} of which `story doctor --fix` can \
          record. The rest need a decision: `story --project <slug> project link origin <url>` \
@@ -4026,39 +4035,132 @@ fn origin_advice(found: &[crate::service::UnregisteredOrigin]) -> Vec<String> {
 }
 
 /// What `story doctor --fix` reports having registered.
-fn registered_origins_message(found: &[crate::service::UnregisteredOrigin]) -> String {
-    use crate::service::OriginFinding;
-
-    let recorded: Vec<&crate::service::UnregisteredOrigin> = found
-        .iter()
-        .filter(|item| matches!(item.finding, OriginFinding::Registrable(_)))
-        .collect();
-    let mut out = format!(
-        "registered {} {}:",
-        recorded.len(),
-        if recorded.len() == 1 {
-            "origin"
-        } else {
-            "origins"
-        }
-    );
-    if recorded.is_empty() {
-        out = "registered no origins:".to_string();
+///
+/// Reads `sweep.recorded`, never `sweep.left_alone`'s size against what was
+/// merely looked at — the whole point of [`OriginSweep`](crate::service::OriginSweep)
+/// existing is that "recorded" and "classified `Registrable`" can differ
+/// (SH-274): two checkouts of one repository both look registrable before
+/// either write runs, but only the first write can land.
+fn registered_origins_message(sweep: &crate::service::OriginSweep) -> String {
+    let recorded = &sweep.recorded;
+    let mut out = if recorded.is_empty() {
+        "registered no origins:".to_string()
+    } else {
+        format!(
+            "registered {} {}:",
+            recorded.len(),
+            if recorded.len() == 1 {
+                "origin"
+            } else {
+                "origins"
+            }
+        )
+    };
+    for item in recorded {
+        out.push_str(&format!("\n  {} -> {}", item.slug, item.origin.raw()));
     }
-    for item in &recorded {
-        if let OriginFinding::Registrable(owned) = &item.finding {
-            out.push_str(&format!("\n  {} -> {}", item.slug, owned.url().raw()));
-        }
-    }
-    let left = found.len() - recorded.len();
+    let left = sweep.left_alone.len();
     if left > 0 {
         out.push_str(&format!(
             "\n\n{left} {} left alone, because storyhook will not guess at an origin a checkout \
-             does not own. `story doctor` names each of them.",
+             does not own, nor move one another project already holds. `story doctor` names \
+             each of them.",
             if left == 1 { "project" } else { "projects" }
         ));
     }
     out
+}
+
+#[cfg(test)]
+mod registered_origins_message_tests {
+    //! `registered_origins_message` used to be handed the pre-write
+    //! classification and count `Registrable` findings as recorded (SH-274).
+    //! These pin it to the sweep's actual outcome instead — including the
+    //! `HeldBy`/"registered no origins" branches nothing else in the suite
+    //! reaches, because every CLI-level fixture keeps its collision to one
+    //! finding per origin.
+
+    use super::*;
+    use crate::domain::remote::RemoteUrl;
+    use crate::service::{OriginFinding, OriginSweep, RecordedOrigin, UnregisteredOrigin};
+    use crate::store::ProjectId;
+
+    fn url(raw: &str) -> RemoteUrl {
+        RemoteUrl::normalize(raw).expect("a valid remote url")
+    }
+
+    /// An entry a sweep looked at and refused to write, because another
+    /// project already held the origin — the shape `register_found_origins`
+    /// reclassifies a `Registrable` finding into once its write loses.
+    fn held_by(slug: &str, origin_raw: &str, holder: &str) -> UnregisteredOrigin {
+        UnregisteredOrigin {
+            project: ProjectId::new(1),
+            slug: slug.to_string(),
+            checkout: PathBuf::from("/checkouts/whatever"),
+            finding: OriginFinding::HeldBy {
+                origin: url(origin_raw),
+                holder: holder.to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn an_empty_sweep_reports_registered_no_origins() {
+        let message = registered_origins_message(&OriginSweep::default());
+        assert_eq!(message, "registered no origins:");
+    }
+
+    #[test]
+    fn a_refused_write_is_counted_left_alone_and_never_as_recorded() {
+        let sweep = OriginSweep {
+            recorded: Vec::new(),
+            left_alone: vec![held_by(
+                "collision",
+                "https://github.com/acme/one.git",
+                "owner",
+            )],
+        };
+        let message = registered_origins_message(&sweep);
+        assert!(
+            message.starts_with("registered no origins:"),
+            "nothing was written: {message}"
+        );
+        assert!(
+            message.contains("1 project left alone"),
+            "the refused write must still be counted, not silently dropped: {message}"
+        );
+        assert!(
+            !message.contains("collision"),
+            "a project this sweep never wrote to is not named here — `story doctor` names it, \
+             with its actual reason: {message}"
+        );
+    }
+
+    #[test]
+    fn a_mixed_sweep_names_only_what_landed_and_counts_the_rest() {
+        let sweep = OriginSweep {
+            recorded: vec![RecordedOrigin {
+                slug: "landed".to_string(),
+                origin: url("https://github.com/acme/two.git"),
+            }],
+            left_alone: vec![held_by(
+                "collision",
+                "https://github.com/acme/two.git",
+                "landed",
+            )],
+        };
+        let message = registered_origins_message(&sweep);
+        assert!(message.contains("registered 1 origin:"), "{message}");
+        assert!(
+            message.contains("landed -> https://github.com/acme/two.git"),
+            "{message}"
+        );
+        assert!(message.contains("1 project left alone"), "{message}");
+        assert!(
+            !message.contains("collision"),
+            "the loser of the collision is not named by this message: {message}"
+        );
+    }
 }
 
 #[cfg(test)]
