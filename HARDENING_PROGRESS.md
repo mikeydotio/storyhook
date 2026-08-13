@@ -12140,3 +12140,63 @@ polled to a terminal state rather than waited on. `target/` 54 GB, 196 GB free.
 
 **Filed two:** SH-258 (temp-rooted checkout fails one test, `medium`) and SH-259
 (no release can publish, `critical`, blocks SH-257).
+
+### SH-258 — a temp-rooted checkout, and the extent the story undercounted · no PR yet
+
+**The story's own extent section was wrong, and it explains why.** It reads "One
+test. The rest of the suite is unaffected." The first gate run that hit this
+(SH-257, above) died in **90 seconds** — `cargo test` fail-fasts at the first
+failing target, and the `--lib` target that carried the reported test happens to
+run first. Three integration files never got a chance to run in that session, and
+they share the identical premise. Reproduced empirically before writing any fix,
+with `CARGO_TARGET_DIR` pointed under `/private/tmp` (no clone needed for these
+three — they key off `CARGO_TARGET_TMPDIR`, not `CARGO_MANIFEST_DIR`):
+
+| Site | Failed | Guard silently lost |
+|---|---|---|
+| `src/api/rest.rs` (the reported test) | 1 of 1 | SH-95 path guard |
+| `tests/temp_project_refusal.rs` | 3 of 7 | SH-95 path guard |
+| `tests/project_burst_refusal.rs` | 2 of 5 | SH-122 burst guard |
+| `tests/project_path_hygiene.rs` | 8 of 13 | doctor's catalog audit |
+
+14 failing tests, not one, and the actual guard coverage lost from a temp-rooted
+checkout was three distinct guards, not the one the story named.
+
+**Fix: one harness helper, not four more local ones.** All four sites expressed
+"not throwaway" as *"under the checkout's `target/`"* — `CARGO_MANIFEST_DIR` or
+`CARGO_TARGET_TMPDIR` — which is an inference from where the checkout happens to
+sit, silently false when the checkout itself is temp-rooted. Added
+`storyhook_test_support::non_temporary_dir`: a ladder —
+`$STORYHOOK_TEST_REAL_ROOT`, then a directory beside the running test binary
+(`current_exe()`, not an `env!` macro that a `--lib` unit test binary never has),
+then `$HOME/.cache/storyhook/test-real-fixtures` — each rung checked against the
+*production* `is_under_temp` (now `pub`, so the premise cannot drift from the
+guard it exists to exercise). If every rung is temporary, it panics naming all
+three and the lever — never a silent skip, which would disable SH-95, SH-122 and
+the doctor audit in exactly the situation a disposable checkout is used for.
+
+**Verified the fallback actually fires, not just that nothing broke.** With
+`CARGO_TARGET_DIR` under `/private/tmp`, the helper's second rung reads temporary
+too, so the real proof is the third rung: after the fix, both the integration
+trio and a fresh clone under `/private/tmp` running the originally-reported test
+went green, and `ls ~/.cache/storyhook/test-real-fixtures` showed the fixtures
+had genuinely landed there — 61 directories, cleaned up afterward since they were
+a side effect of forcing the scenario, not something a normal `make test` run
+would create (rung two wins from an ordinary checkout).
+
+**Fenced, and the fence was verified end to end.** `tests/store_isolation.rs`
+gained a derived scan (`git ls-files`, the same shape
+`every_harness_that_isolates_the_data_dir_also_contains_its_daemon` uses): no
+tracked `.rs` file outside `real_store.rs` may contain `env!("CARGO_TARGET_
+TMPDIR")` or join `CARGO_MANIFEST_DIR` with a literal `"target"` segment.
+Confirmed it actually catches a reintroduction — not just that its predicate
+matches synthetic strings — by appending the offending line to a real file,
+watching the scan go red, and reverting.
+
+**Deliberately skipped: a staleness sweep on the `$HOME` fallback.** The plan
+carried one, mirroring `scratch.rs`'s sweep for `scratch_dir()`. Dropped on
+implementation: unlike `scratch_dir()`, which mints a uniquely-named directory
+per call, `non_temporary_dir` reuses a small, fixed set of caller-chosen labels
+and resets each one (`remove_dir_all` + `create_dir_all`) on every call — so
+nothing accumulates for a sweep to reclaim. Adding one would have been
+complexity with no defect behind it.
