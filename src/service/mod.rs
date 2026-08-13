@@ -2,9 +2,10 @@
 //!
 //! Between [`crate::invoke::dispatch`], which knows the shape of a CLI
 //! command, and [`crate::store`], which knows how to persist bytes, sits this:
-//! the rules about what a story *is*. A story cannot be modified once it is
-//! closed; moving into a closed state clears what the story was awaiting and
-//! archives it; a relation is asserted by both of its ends or by neither.
+//! the rules about what a story *is*. A closed story's state, scope and rollups
+//! cannot change, though an observation may still be appended to it (SH-261);
+//! moving into a closed state clears what the story was awaiting and archives
+//! it; a relation is asserted by both of its ends or by neither.
 //!
 //! Under the previous design those rules lived wherever a command happened to
 //! need them, which is why the state-transition batch was written out four
@@ -412,11 +413,27 @@ pub(crate) fn resolve_open_story(
 ) -> Result<(StoryNo, StoryRow), AppError> {
     let (story_no, row) = resolve_story(tx, project, prefix, id)?;
     if row.archived {
-        return Err(AppError::Validation(format!(
-            "story `{id}` is closed and cannot be modified"
-        )));
+        return Err(AppError::Validation(closed_story_refusal(id)));
     }
     Ok((story_no, row))
+}
+
+/// What a closed story says when an edit is refused.
+///
+/// One constructor rather than a literal per site, because there were two hand-
+/// copied copies of the previous sentence and they are the kind of thing that
+/// drifts apart the moment one of them is corrected.
+///
+/// The sentence it replaced — *"story `<id>` is closed and cannot be
+/// modified"* — was false, and had been since SH-43: `hide` and `unhide` modify
+/// closed stories, and since SH-261 so does `comment`. A refusal that overstates
+/// the rule teaches the wrong rule, and this one was quoted back as an invariant
+/// (`docs/spec/dashboard-dispatch.md`) by a later design that then built around
+/// it.
+pub(crate) fn closed_story_refusal(id: &str) -> String {
+    format!(
+        "story `{id}` is closed; reopen it with `story reopen {id}` to change it — a comment needs no reopen"
+    )
 }
 
 /// [`resolve_story`], rejecting a story that has been soft-deleted but

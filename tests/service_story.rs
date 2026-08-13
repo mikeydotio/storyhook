@@ -445,7 +445,7 @@ fn a_closed_story_still_refuses_every_write_that_is_not_a_comment() {
     service
         .set_state(&story.id, "done", None, None, None)
         .expect("closing");
-    let refusal = "story `SH-1` is closed and cannot be modified";
+    let refusal = "story `SH-1` is closed; reopen it with `story reopen SH-1` to change it — a comment needs no reopen";
 
     let attempts: Vec<(&str, AppError)> = vec![
         ("assign", service.assign(&story.id, "someone").unwrap_err()),
@@ -830,7 +830,7 @@ fn moving_a_closed_story_is_refused() {
         .unwrap_err();
     assert_eq!(
         validation_message(error),
-        "story `SH-1` is closed and cannot be modified"
+        "story `SH-1` is closed; reopen it with `story reopen SH-1` to change it — a comment needs no reopen"
     );
 }
 
