@@ -102,6 +102,13 @@ export async function projectSlug(
  * filter-bar dropdowns (`#fdd-states` and friends) are built from `meta()`
  * the same way, which is the same trap in `filter-persistence.spec.ts`.
  *
+ * SH-265 disabled `#new-story-btn` for the whole window, closing the create-
+ * modal half of this trap at the source — a real click can no longer reach
+ * `openCreateModal()` before data arrives, and it refuses even a
+ * programmatic one. This wait still matters for the filter-bar dropdowns,
+ * which remain built from `meta()` the same way and are not gated by any
+ * button; a spec that acts on them still needs to be past this line.
+ *
  * The predicate is exact rather than a proxy for "some cards showed up".
  * `renderView()` writes `visible / total` into `#filter-count` only when
  * `total` is non-zero, and unhides `#empty-msg` only when there is data and
