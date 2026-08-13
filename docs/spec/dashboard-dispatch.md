@@ -302,17 +302,45 @@ a flag that has to be known before the body exists cannot travel in one. `?auto=
 `false`) is parsed by `parse_auto`, after every guard, on the `POST` arm only.
 
 **A closed story cannot be commented on — discovered implementing self-reap, not
-during design.** The original plan for `reap`'s "durable record" was a `story comment`
-posted after the destructive cleanup, mirroring `story.sh`'s own claim-rollback notes.
-`resolve_open_story` (`src/service/mod.rs`) refuses any mutation — comment included —
-against an archived story, unconditionally: `story `TST-1` is closed and cannot be
-modified`. There is no flag or escape hatch, and none was added — a closed story being
-immutable is a real invariant this codebase relies on elsewhere, not an oversight to
-route around. `reap` was redesigned around it rather than through it: its exit JSON is
-now its only record, the tmux window (the one thing that could still have observed a
-comment) is killed *last* precisely because there is nothing left to report past that
-point, and the autonomous charter itself was told plainly — a closed story cannot be
-commented on again, so say everything worth recording *before* that move, not after.
+during design.** *(Superseded by SH-261 — see the note below. Kept as written, because
+what it got wrong is the useful part.)* The original plan for `reap`'s "durable record"
+was a `story comment` posted after the destructive cleanup, mirroring `story.sh`'s own
+claim-rollback notes. `resolve_open_story` (`src/service/mod.rs`) refuses any mutation —
+comment included — against an archived story, unconditionally: `story `TST-1` is closed
+and cannot be modified`. There is no flag or escape hatch, and none was added — a closed
+story being immutable is a real invariant this codebase relies on elsewhere, not an
+oversight to route around. `reap` was redesigned around it rather than through it: its
+exit JSON is now its only record, the tmux window (the one thing that could still have
+observed a comment) is killed *last* precisely because there is nothing left to report
+past that point, and the autonomous charter itself was told plainly — a closed story
+cannot be commented on again, so say everything worth recording *before* that move, not
+after.
+
+> **Superseded by SH-261 (2026-08-13): the ruling above was right about the code and
+> wrong about the reason.** `story comment` now takes a closed story; only a
+> *soft-deleted* one refuses. The sentence that did not survive review is "a closed
+> story being immutable is a real invariant this codebase relies on elsewhere" — it is
+> not one this codebase has. SH-43, which shipped *before* this ruling was written,
+> already appends `StoryHidden`/`StoryUnhidden` to archived stories through
+> `resolve_story`; `purge` appends relationship retractions onto closed claimants;
+> `history::restore` appends compensating events to anything; and SH-207 deliberately
+> let a closed story be a relation target. The archive was already an appendable log,
+> and the one append it refused was the one made on a person's behalf.
+>
+> The invariant that *is* real, and that SH-261 kept, is narrower: **a closed story's
+> state, scope and rollups cannot change.** That is the standard SH-207's council
+> applied. A comment reaches nothing but the comment list and `updated_at`, so it clears
+> it; `move`, `assign`, `label`, `set` and `relate`-as-`a` do not, and still refuse.
+>
+> Recorded here rather than only in SH-261 because this paragraph was, for four months,
+> the reason anyone gave for the refusal — including the autonomous charter, which
+> repeated it to every dispatched agent. A ruling reached under implementation pressure
+> and written down as an invariant is the shape of mistake worth leaving visible.
+>
+> **What did not change:** `reap` still has no record step, and the charter still says
+> to record everything before closing. Both were re-justified rather than reverted —
+> `reap` because a step reporting on its own destruction has not been designed, the
+> charter because `reap` closes the tmux window moments after the close.
 
 **Self-reap needed a deterministic verb, not prose.** The charter could have simply
 told the agent to `git worktree remove` its own worktree, delete its branch, and kill

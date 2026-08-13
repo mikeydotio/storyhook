@@ -13444,3 +13444,177 @@ the only way the log itself carries the verdict. Second, a `pgrep -f "make test"
 compilation — was benign and diagnosed the way this file's own rule says to: by confirming the
 process (load average 30, three live cargo processes) rather than by reading the log. Log growth
 is the right pulse for a test phase and the wrong one for a build.
+
+### SH-247 — done
+
+**Outcome:** merged (PR #353). The TUI throttles the change feed on the trailing edge, so a
+burst of changes costs one reload instead of one each.
+
+**The defect, restated as what it cost.** `spawn_change_thread` turned every `Change` off the
+subscription into one `Event::DataChanged`, and `main_loop` turns each of those into a full
+`ProjectSnapshot` invoke. That reload is synchronous inside the loop that also draws the board
+and reads the keyboard, so N changes arriving together did not merely refetch identical data N
+times — they stalled input N times. Not a correctness defect, exactly as filed.
+
+**The fix is the browser's shape, deliberately.** `web_dashboard.html`'s `scheduleDataFetch`
+arms a timer on the first event and refetches when it fires. `pump_changes` now does the same:
+the first change of a burst opens a window instead of reporting, everything arriving inside it
+is read off the feed and folded into the same reload, one reload follows when the window closes.
+Two properties come with that shape, both load-bearing:
+
+- **Trailing, never leading.** Every absorbed change is still followed by a reload. Dropping the
+  *later* of two changes is precisely the defect SH-216 was filed for, and this must never
+  become that.
+- **A fixed window, not a restarting one.** Measured from the first change, so a store written
+  to without pause — an import, a scripted sweep — still reloads on a cadence. A textbook
+  debounce restarts on every event and would defer the reload indefinitely, leaving the board
+  showing data from before the stream began.
+
+**The constant is derived, not inherited.** 150ms; that it is also the browser's number is a
+coincidence kept rather than the reason for it. Floor: it must exceed the gaps inside a real
+burst, and a `story` command against a warm daemon takes 10–50ms end to end (measured, three
+runs each of `show` and `list`), while the eight concurrent request-boundary publishes
+`DISPATCHERS` caps land within milliseconds of each other. Ceiling: it is added to the latency
+of every change, a lone one included, and the tick thread already quantises this interface at
+250ms — a window inside that adds no delay distinguishable from the cadence the TUI has anyway.
+
+**Four tests, and only one of them is the regression test.** The others constrain the fix, which
+matters because the wrong fixes all pass the first one:
+
+| Test | What fails it |
+|---|---|
+| `a_burst_of_changes_costs_a_single_reload` | the defect itself — five changes, five reloads (red: `left: 5, right: 1`) |
+| `a_lone_change_is_reported_once_the_window_closes` | a leading-edge throttle — SH-216's defect returning |
+| `a_change_after_the_window_gets_its_own_reload` | over-collapsing two causally separate changes |
+| `a_stream_that_never_goes_quiet_still_reloads` | a restarting window starving a busy store |
+
+**One test was weaker than it looked, and tightening it is most of the value here.** The
+lone-change test first asserted on total elapsed time — and passed against the *unfixed* loop,
+because this harness answers "quiet" by sleeping out its budget, so the clock runs past a window
+whatever the loop does. Measuring the delay from the change's own arrival instead made it a real
+red (`206µs`: the unthrottled loop reporting on arrival) and makes it a real guard against a
+leading-edge regression. A timing assertion that cannot fail is worse than none, because it
+reads as coverage.
+
+**The seam had to exist before the fix could be tested**, so it is its own commit. The loop lived
+inline in `spawn_change_thread`, where the only way to exercise it was to stand up a daemon,
+write through a second store handle and watch a channel — adequate for "a change is reported",
+useless for "how many times". `pump_changes` takes the two halves as closures
+(`wait_for_change`, `report`), so the counting tests need no daemon at all. Commit 1 is that
+extraction, behaviour identical; commit 2 is the throttle.
+
+**Why the burst is not driven through a real daemon.** It cannot be at this layer, and the
+attempt would have passed vacuously: two writes through a second store handle inside one
+`change_poll_interval` are collapsed by `ChangeWatcher`'s shared baseline before they are ever
+published (SH-202), so a test that wrote twice and asserted one reload would be measuring the
+daemon's dedup and calling it the TUI's. The four unit tests drive `pump_changes` directly for
+that reason; the existing daemon-backed tests still cover the wiring.
+
+**Sibling sweep: clean.** The TUI is the only production Rust subscriber to the feed
+(`Subscriber::new` has one non-test caller), and the other client — the browser — already
+throttles correctly. Nothing else consumes changes without coalescing.
+
+**No council.** The story already carries SH-216's council verdict on the design (trailing edge,
+client-side, not `ChangeBus`), which left one number to choose; it is derived above from
+measurement and this interface's existing cadence, and recorded in the constant's own doc
+comment rather than in a vote.
+
+**Gate:** one full `make test` on the branch tree, green — 155 Rust suites, 32 plugin tests,
+130/130 e2e, `EXIT=0`. 72 GB free. Supervised with a log-growth heartbeat, a 120s stall bound,
+and a completion watcher keyed on an `EXIT=` marker the wrapper appends (`make test; echo
+"EXIT=$?"`), which is the only way the log itself carries the verdict. No stall alarms fired in
+the test phase. The compile phase went quiet for minutes, as SH-270's entry predicted it would,
+and liveness was settled by confirming the processes (`cargo test`, `cargo build`) rather than by
+reading the log: log growth is the right pulse for a test phase and the wrong one for a build.
+
+**Supervision finding, worth more than the story.** The push completed in seconds, which means
+the global `pre-push-tests.sh` hook did not run — the suite cannot finish in seconds, and the
+hook has no skip path that would explain it. The push was issued as a backgrounded Bash call, and
+a `run_in_background` command appears not to be intercepted by the `PreToolUse` gate at all. That
+gate is the *only* CI in this project by deliberate policy, so a push shape that silently skips it
+is a hole in the policy rather than a convenience. Nothing unverified landed here — `make test`
+had been run to green on this exact tree minutes earlier, which is what the policy actually asks
+for — but the next session should assume the hook is not a backstop for a backgrounded push and
+run the gate itself, as this one did.
+### SH-274 — done
+
+**Outcome:** merged (PR #350). `story doctor --fix` now reports the git
+origins its writes actually recorded, not the ones a pre-write classification
+pass merely thought it could.
+
+**Found during SH-270's council**, reading `register_found_origins` for an
+unrelated reason, and it held up exactly as filed. `unregistered_origins`
+classifies every project's checkout in one pass, before any write; two
+checkouts of one repository — a release clone beside a working clone, say —
+both classify `Registrable` there, because the pass that decides "can this be
+written" completes before the pass that writes anything. Only the first write
+can land: `register_origin` answers `Registration::HeldBy` for the second,
+writing nothing, exactly as its own doc comment says. `register_found_origins`
+discarded that return value and walked the pre-write list again, so
+`registered_origins_message` counted both as recorded. No concurrency needed —
+a single-threaded run reproduces it every time.
+
+**The fix is a type, not a filter.** `register_found_origins` now returns
+`OriginSweep { recorded, left_alone }`, built from what each write's
+`Registration` actually said: `Recorded` goes to `recorded`; a refused
+`HeldBy` is reclassified into `left_alone` as `OriginFinding::HeldBy` rather
+than staying `Registrable`, so nothing downstream can read a write-refused
+entry as "the fix can still do this." A `matches!(.., Registrable)` filter
+over the old return value would have been the smaller diff and the wrong
+choice — it is a convention one future edit away from being silently wrong
+again, in exactly the shape that got this story filed. Two lists make the
+invariant unrepresentable rather than merely current.
+
+**The sibling promise, caught by the same read.** `origin_advice`'s "N of
+which `story doctor --fix` can record" line counted raw `Registrable`
+findings, which has the identical bug in miniature: two findings, one URL, one
+write that can ever land. Fixed by counting distinct origins via `RemoteUrl`'s
+normalized key (a `BTreeSet`, since the type's own `PartialEq`/`Hash` are
+already the key rather than the raw string) instead of findings.
+
+**Landed under a moving target — twice.** SH-270 merged (PR #349) between this
+branch's cut and its own push, restructuring the exact arm this story
+touches — `service.fix()` became `service.repair()` behind a `catalog_sweep`
+helper the doctor arm now calls instead of inlining the two catalog
+mutations. Rebasing produced one real conflict, in the `if fix` block; the
+resolution was to take SH-270's structure whole and confirm this story's
+change survived intact inside `catalog_sweep`, which it did without a second
+conflict — the sweep's body was untouched by SH-270's refactor. Re-ran the
+full local test targets plus a full `make test` gate after the rebase rather
+than trusting a clean `git rebase --continue`; both SH-270's two new tests and
+this story's three landed together, 17/17 in `project_path_hygiene.rs`. Main
+moved again while this docs commit was being written — SH-260 and SH-270's own
+progress-log entry both landed — which cost a second rebase, conflicting only
+in this file's own append point (a pure ordering conflict, no content lost)
+and a third full gate run.
+
+**Tests.** Two CLI-level tests in `tests/project_path_hygiene.rs`: two real
+checkouts of one repository, neither origin registered — `doctor --fix` must
+report exactly one origin recorded, name it exactly once (not once per
+checkout that merely looked registrable), and say "left alone" for the one
+the write refused; a companion pins `origin_advice`'s "1 of which" count
+before any write happens at all. Plus three unit tests directly on
+`registered_origins_message`, reaching the `HeldBy`/"registered no origins"
+branches nothing else in the suite reached — every existing CLI fixture kept
+its collision to one finding per origin, so `OriginFinding::HeldBy` had no
+test anywhere before this.
+
+**Explicitly not fixed here, both filed:** SH-275, the sibling in the same
+six lines — `register_found_origins` opens one `store.write` per finding, so
+a mid-loop failure commits some and reports none. Its fix is an undecided
+choice between one transaction and accumulating a partial report, and this
+story's `OriginSweep` gives it a natural accumulator without doing that work.
+SH-270's own scope (a failed story-level repair must not skip the catalog
+sweep) is untouched — this story only changes what the sweep reports once it
+runs.
+
+**Gate:** `make test` green four times — twice for this story's own commit
+(RED confirmed against unmodified source, GREEN after the fix, both before
+any rebase), then once after each of the two rebases onto a moving
+`main` — **153 suites, 3546 tests, 32/32 plugin, 130/130 e2e, no orphan
+daemons before or after any run**. Supervised background runs, 60s heartbeat
+against a 300s stall bound; no stalls across any of the four. `cargo fmt` and
+`cargo clippy --workspace --all-targets -- -D warnings` clean on every run.
+This worktree had never run `make e2e-install`; bootstrapped it (chromium was
+already cached from another worktree, so it was a fast no-op download) rather
+than letting the gate's e2e leg fail loudly as designed.

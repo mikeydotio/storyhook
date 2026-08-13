@@ -112,7 +112,16 @@ fn a_closed_story_cannot_be_phased() {
     let service = GroupingService::new(&ctx);
     let error = service.assign_phase(&id, "1").unwrap_err();
     assert!(matches!(error, AppError::Validation(_)), "{error:?}");
-    assert!(error.to_string().contains("closed and cannot be modified"));
+    // A phase is scope, so this stays on the edit side of SH-261's line — and
+    // the whole refusal is asserted rather than a fragment of it, because a
+    // fragment is what let this assertion survive the sentence changing.
+    assert!(
+        error.to_string().contains(
+            "story `SH-1` is closed; reopen it with `story reopen SH-1` to change it \
+             — a comment needs no reopen"
+        ),
+        "{error}"
+    );
     assert!(service.clear_phase(&id).is_err());
 }
 
