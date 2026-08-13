@@ -25,7 +25,7 @@ use crate::store::{
     EventSeq, ExpectedSeq, ProjectId, ReadOps, Store, StoryNo, StoryQuery, StoryRow, WriteOps,
 };
 
-use super::{Ctx, append_and_fold, project_prefix, resolve_open_story, resolve_story};
+use super::{Ctx, Intent, append_and_fold, project_prefix, resolve_open_story, resolve_story};
 
 /// Everything `story new` can set at creation time.
 ///
@@ -138,7 +138,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     /// Adds a comment to an open story.
     pub fn comment(&self, id: &str, text: &str) -> Result<StorySnapshot, AppError> {
         let now = self.ctx.now();
-        let snapshot = self.edit_open(id, |_row, _states| {
+        let snapshot = self.edit_story(id, Intent::Edit, |_row, _states| {
             Ok(vec![StoryEvent::StoryCommentAdded {
                 at: now.clone(),
                 text: text.to_string(),
@@ -195,7 +195,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
             )
         })?;
         let now = self.ctx.now();
-        let snapshot = self.edit_open(id, |_row, _states| {
+        let snapshot = self.edit_story(id, Intent::Edit, |_row, _states| {
             Ok(vec![StoryEvent::StoryPrioritySet {
                 at: now.clone(),
                 priority: level.clone(),
@@ -236,7 +236,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         // SH-145 could never be unlabeled with.
         let add = normalize_labels(add);
         let remove = normalize_labels(remove);
-        let snapshot = self.edit_open(id, |row, _states| {
+        let snapshot = self.edit_story(id, Intent::Edit, |row, _states| {
             let mut labels: BTreeSet<String> = row.snapshot.labels.iter().cloned().collect();
             for label in &add {
                 labels.insert(label.clone());
@@ -272,7 +272,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
             ));
         }
         let now = self.ctx.now();
-        self.edit_open(id, |_row, _states| {
+        self.edit_story(id, Intent::Edit, |_row, _states| {
             Ok(vec![StoryEvent::StoryAwaitingSet {
                 at: now.clone(),
                 awaiting: awaiting.clone(),
@@ -284,7 +284,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     /// waiting on nothing.
     pub fn clear_awaiting(&self, id: &str) -> Result<StorySnapshot, AppError> {
         let now = self.ctx.now();
-        self.edit_open(id, |row, _states| {
+        self.edit_story(id, Intent::Edit, |row, _states| {
             if row.awaiting.is_none() {
                 return Ok(Vec::new());
             }
@@ -841,10 +841,15 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         ))
     }
 
-    /// The read-modify-write every single-event edit of an open story shares:
-    /// resolve, refuse if closed, build the batch from the story as it reads
+    /// The read-modify-write every single-event write to one story shares:
+    /// resolve under `intent`, build the batch from the story as it reads
     /// *inside* the transaction, append, fold, and write the snapshot back.
-    fn edit_open<F>(&self, id: &str, build: F) -> Result<StorySnapshot, AppError>
+    ///
+    /// `intent` is the only thing that varies between callers, and it is
+    /// required rather than defaulted: which stories a write may reach is a
+    /// decision each caller makes deliberately, at a call site a reader can see
+    /// it at. See [`Intent`].
+    fn edit_story<F>(&self, id: &str, intent: Intent, build: F) -> Result<StorySnapshot, AppError>
     where
         F: FnOnce(&StoryRow, &BTreeMap<String, StateDef>) -> Result<Vec<StoryEvent>, AppError>,
     {
@@ -852,7 +857,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         Ok(self.ctx.store().write(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let states = tx.state_map(project)?;
-            let (story_no, row) = resolve_open_story(&*tx, project, &prefix, id)?;
+            let (story_no, row) = intent.resolve(&*tx, project, &prefix, id)?;
             let events = build(&row, &states)?;
             if events.is_empty() {
                 return Ok(row.snapshot);

@@ -358,6 +358,36 @@ pub(crate) fn resolve_story(
     Ok((story_no, row))
 }
 
+/// Which stories a single-story write is allowed to reach.
+///
+/// Every write to one story states this at its call site rather than inheriting
+/// it from whichever helper it happened to reach for. The distinction it draws
+/// is the one the resolvers below already encode — an edit changes what a story
+/// *is*, and is refused once the story is closed — so having the caller name it
+/// keeps the decision visible at the place a reader asks about it, and leaves no
+/// permissive default to reach for by accident.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Intent {
+    /// Changes the story's own fields, state or relationships. Refused once the
+    /// story is closed — see [`resolve_open_story`].
+    Edit,
+}
+
+impl Intent {
+    /// Resolves `id` under this intent, applying the guard that belongs to it.
+    pub(crate) fn resolve(
+        self,
+        tx: &impl ReadOps,
+        project: ProjectId,
+        prefix: &str,
+        id: &str,
+    ) -> Result<(StoryNo, StoryRow), AppError> {
+        match self {
+            Self::Edit => resolve_open_story(tx, project, prefix, id),
+        }
+    }
+}
+
 /// [`resolve_story`], rejecting a story that has been closed.
 ///
 /// The archived flag is the test, not the superstate: a story whose state slug
