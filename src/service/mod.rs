@@ -380,7 +380,13 @@ pub(crate) enum Intent {
     Edit,
     /// Records an observation about the story without changing what it is.
     /// Permitted on a closed story, refused on a deleted one — see
-    /// [`resolve_appendable_story`].
+    /// [`resolve_appendable_story`]. Granted to two writes so far: `story
+    /// comment` (SH-261 — a comment reaches only the comment list and
+    /// `updated_at`) and `commit-sync`'s commit link (SH-279 —
+    /// `StoryCommitLinked` reaches only `referenced_by_commits` and
+    /// `updated_at`). `tests/invoker_seam.rs::only_the_comment_path_appends_to_a_closed_story`
+    /// pins the exact set; a third write needs its own argument before it is
+    /// added there.
     Append,
 }
 
@@ -457,6 +463,13 @@ pub(crate) fn closed_story_refusal(id: &str) -> String {
 ///
 /// `hidden` is not consulted. It is a display fact layered on a closed story, so
 /// a hidden story takes a comment and stays hidden.
+///
+/// A second caller reached this in SH-279 — `GitService::record_commit`,
+/// linking a commit that names a closed story — on the identical argument: a
+/// link reaches only `referenced_by_commits` and `updated_at`. Its refusal
+/// message below still reads as `comment`-specific because that caller never
+/// surfaces it verbatim; it re-reports the decline in `commit-sync`'s own
+/// voice instead (see `NotMovedReason` and `DeclinedReason` in `git.rs`).
 pub(crate) fn resolve_appendable_story(
     tx: &impl ReadOps,
     project: ProjectId,

@@ -162,8 +162,12 @@ fn sync_git_not_a_git_repo() {
         .stderr(predicate::str::contains("not a git repository"));
 }
 
+/// SH-279: a merge commit naming a story its own PR just closed is the shape
+/// this project's own workflow produces on every merge, and it must not
+/// vanish from the record. The story links; it does not move — moving is
+/// still refused, exactly as before.
 #[test]
-fn sync_git_closed_story_ignored() {
+fn sync_git_closed_story_linked_but_not_moved() {
     let dir = tempdir().unwrap();
     init_git(dir.path());
     story(dir.path())
@@ -187,7 +191,13 @@ fn sync_git_closed_story_ignored() {
         .args(["sync-git", "--since", "1h"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("linked 0 commits to 0 stories"));
+        .stdout(predicate::str::contains("linked 1 commits to 1 stories"));
+
+    story(dir.path())
+        .args(["show", "SH-1", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"state\": \"done\""));
 }
 
 #[test]

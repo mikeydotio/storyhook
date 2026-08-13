@@ -79,6 +79,34 @@
 //! primary-key probe against the structured `story_commit_links` table, not a
 //! scan of comment text — see that function's doc comment for why a second
 //! probe (the seven-character abbreviation) still matters for a pre-#18 row.
+//!
+//! # A closed story still takes a link (SH-279)
+//!
+//! [`GitService::record_commit`] used to resolve every story through
+//! `resolve_open_story`, so a merge commit whose body named a story that had
+//! already closed — the shape this project's own workflow produces on every
+//! PR merge — recorded **nothing**: no [`StoryEvent::StoryCommitLinked`], no
+//! `referenced_by` entry, no diagnostic. A merged commit vanishing from the
+//! story it implements is a hole in the provenance record `referenced_by`
+//! exists to carry, and nothing said so.
+//!
+//! SH-261 had already drawn the line this needed: a closed story's *state,
+//! scope and rollups* cannot change, but an append that touches none of them
+//! is permitted, through [`super::Intent::Append`] and
+//! [`super::resolve_appendable_story`]. A commit link is such an append —
+//! `StoryCommitLinked` folds into `referenced_by_commits` and `updated_at`
+//! alone (`domain::fold_story`) — so `record_commit` now resolves under that
+//! intent instead. It still never *moves* a closed story: moving is exactly
+//! the edit SH-261 kept refused, and [`NotMovedReason::StoryIsClosed`] names
+//! the reason locally rather than leaving it to fall out of `default_open`
+//! never matching an archived story's resting state by accident.
+//!
+//! The intent's other refusal — a soft-deleted story — and an id naming no
+//! story at all are both still declined, and both are named in the run
+//! report rather than swallowed; see [`DeclinedReason`]. "Naming what was
+//! declined is what keeps this fix from having the same shape as the defect
+//! it removes" (SH-178, above) applies just as much to a decline as to a
+//! non-move.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -90,7 +118,7 @@ use crate::error::AppError;
 use crate::store::{ExpectedSeq, ProjectId, ReadOps, Store, StoreError, StoryNo};
 
 use super::story::state_transition_events;
-use super::{Ctx, append_and_fold, project_prefix, resolve_open_story};
+use super::{Ctx, Intent, append_and_fold, project_prefix};
 
 /// The default scanning window, when `--since` is not given.
 const DEFAULT_WINDOW: &str = "7d";
@@ -160,6 +188,14 @@ enum NotMovedReason {
     /// produces it — the same-run dedup — is a genuine fifth cause, not an
     /// alias for one of the other four.
     AlreadyClaimedThisRun,
+    /// The story is closed (SH-279). Unlike the other reasons, this one is a
+    /// fact about the story rather than about this run or this commit's
+    /// grammar — declared after them so a run-level cause still wins the
+    /// declaration-order priority [`eligible_active_state`] documents, and
+    /// before [`NotInDefaultState`] because a closed story's resting state is
+    /// never the project's default *open* one, so this is the more specific,
+    /// more actionable of the two.
+    StoryIsClosed,
     /// The story has already moved out of the project's default open state.
     NotInDefaultState,
 }
@@ -181,6 +217,9 @@ impl NotMovedReason {
             NotMovedReason::AlreadyClaimedThisRun => format!(
                 "linked without moving: {ids} (an earlier commit in this run already claimed it)"
             ),
+            NotMovedReason::StoryIsClosed => {
+                format!("linked without moving: {ids} (the story is closed)")
+            }
             NotMovedReason::NotInDefaultState => format!(
                 "linked without moving: {ids} (already out of the project's default open state)"
             ),
@@ -194,6 +233,54 @@ enum LinkOutcome {
     Moved { from: String, to: String },
     /// The commit linked the story but did not move it, and why.
     NotMoved(NotMovedReason),
+}
+
+/// Why an id could not be linked to a story **at all** (SH-279) — as opposed
+/// to [`NotMovedReason`], which explains a link that landed but did not move
+/// its story. Both exist for the same reason: a decline that is not named is
+/// indistinguishable from a defect, which is what this story was filed about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum DeclinedReason {
+    /// No story with this id exists in this project — a typo, a purged
+    /// story, or an id belonging to a different repository entirely.
+    NoSuchStory,
+    /// The story exists but has been soft-deleted. [`resolve_appendable_story`]
+    /// refuses it for the same reason `story comment` does: `story purge`
+    /// destroys every event on a soft-deleted story, so a link recorded here
+    /// is evidence with an expiry date nothing would warn its author about.
+    ///
+    /// [`resolve_appendable_story`]: super::resolve_appendable_story
+    Deleted,
+}
+
+impl DeclinedReason {
+    /// The report line naming why `story_ids` were named but never linked.
+    ///
+    /// `story reopen <id> --force` is a placeholder, not one id repeated for
+    /// every entry in `story_ids` — this line can name several deleted
+    /// stories at once, and only one of them is the one a reader is about to
+    /// restore.
+    fn report_line(self, story_ids: &[String]) -> String {
+        let ids = story_ids.join(", ");
+        match self {
+            DeclinedReason::NoSuchStory => {
+                format!("named but not linked: {ids} (no such story)")
+            }
+            DeclinedReason::Deleted => format!(
+                "named but not linked: {ids} (deleted; restore first with `story reopen <id> --force`)"
+            ),
+        }
+    }
+}
+
+/// What resolving one (commit, story id) pair did.
+enum RecordOutcome {
+    /// The commit was already linked to this story; nothing changed.
+    AlreadyLinked,
+    /// The id could not be resolved as an append target, and why.
+    Declined(DeclinedReason),
+    /// A link was added, and whether the story moved.
+    Linked(LinkOutcome),
 }
 
 /// Whether `story_id` is eligible to move on this commit, and if not, why.
@@ -270,6 +357,10 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
         let mut stories_touched: BTreeSet<String> = BTreeSet::new();
         let mut transitions: Vec<Transition> = Vec::new();
         let mut linked_only: BTreeMap<String, NotMovedReason> = BTreeMap::new();
+        // Every id `scan_story_refs` found that never became a link at all —
+        // no such story, or one that is soft-deleted (SH-279). Distinct from
+        // `linked_only`: those stories link every time and only fail to move.
+        let mut declined: BTreeMap<String, DeclinedReason> = BTreeMap::new();
 
         for commit in &commits {
             // The whole message, subject included — the comment still carries
@@ -296,23 +387,33 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
                     eligibility,
                     default_open.as_ref(),
                 )?;
-                let Some(outcome) = outcome else {
-                    continue;
-                };
-                commits_linked += 1;
-                stories_touched.insert(story_id.clone());
                 match outcome {
-                    LinkOutcome::Moved { from, to } => transitions.push(Transition {
-                        story_id,
-                        from,
-                        to,
-                        short_hash: short_sha(&commit.sha).to_string(),
-                    }),
-                    // First cause wins: once a story has a recorded reason, a
-                    // later commit's differently-caused non-move (there rarely
-                    // is one) does not overwrite it.
-                    LinkOutcome::NotMoved(reason) => {
-                        linked_only.entry(story_id).or_insert(reason);
+                    RecordOutcome::AlreadyLinked => {}
+                    // First cause wins, same as `linked_only` below: a story's
+                    // decline reason cannot change mid-run (nothing in a sync
+                    // deletes or creates stories), so this only ever guards
+                    // against re-recording the identical reason twice.
+                    RecordOutcome::Declined(reason) => {
+                        declined.entry(story_id).or_insert(reason);
+                    }
+                    RecordOutcome::Linked(link_outcome) => {
+                        commits_linked += 1;
+                        stories_touched.insert(story_id.clone());
+                        match link_outcome {
+                            LinkOutcome::Moved { from, to } => transitions.push(Transition {
+                                story_id,
+                                from,
+                                to,
+                                short_hash: short_sha(&commit.sha).to_string(),
+                            }),
+                            // First cause wins: once a story has a recorded
+                            // reason, a later commit's differently-caused
+                            // non-move (there rarely is one) does not
+                            // overwrite it.
+                            LinkOutcome::NotMoved(reason) => {
+                                linked_only.entry(story_id).or_insert(reason);
+                            }
+                        }
                     }
                 }
             }
@@ -348,16 +449,32 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
         for (reason, story_ids) in &by_reason {
             message.push_str(&format!("\n{}", reason.report_line(story_ids)));
         }
+        // Declined references, the same way and after the not-moved ones —
+        // "linked but stuck" and "never linked" are different enough causes
+        // that a reader should not have to guess which list an id is in.
+        let mut declined_by_reason: BTreeMap<DeclinedReason, Vec<String>> = BTreeMap::new();
+        for (story_id, reason) in &declined {
+            declined_by_reason
+                .entry(*reason)
+                .or_default()
+                .push(story_id.clone());
+        }
+        for (reason, story_ids) in &declined_by_reason {
+            message.push_str(&format!("\n{}", reason.report_line(story_ids)));
+        }
         Ok(message)
     }
 
     /// Records one commit against one story, in one transaction.
     ///
-    /// `Ok(None)` means there was nothing to do: the story is not open, or it
-    /// is already linked to this commit. `Ok(Some(LinkOutcome::NotMoved(_)))`
-    /// means a link was added and names why the story did not move;
-    /// `Ok(Some(LinkOutcome::Moved { .. }))` means it was added and the story
-    /// moved.
+    /// [`RecordOutcome::AlreadyLinked`] means there was nothing to do: this
+    /// commit is already linked to this story. [`RecordOutcome::Declined`]
+    /// means the id could not be resolved as an append target at all — not a
+    /// story of this project, or soft-deleted — and names which.
+    /// [`RecordOutcome::Linked`] means a link was added: `NotMoved(_)` names
+    /// why the story did not move — a closed story links every time and
+    /// never moves, same as any other reason — and `Moved { .. }` means it
+    /// did.
     fn record_commit(
         &self,
         prefix: &str,
@@ -365,19 +482,30 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
         commit: &Commit,
         active: Result<&StateDef, NotMovedReason>,
         default_open: Option<&StateDef>,
-    ) -> Result<Option<LinkOutcome>, AppError> {
+    ) -> Result<RecordOutcome, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
         Ok(self.ctx.store().write(|tx| {
-            let Ok((story_no, row)) = resolve_open_story(&*tx, project, prefix, story_id) else {
-                // Not open, or not a story of this project. The legacy path
-                // skipped it silently and so does this: a commit may name a
-                // story that has since been closed, or one belonging to another
-                // repository entirely.
-                return Ok(None);
+            // `Intent::Append`, not `resolve_open_story` (SH-279): a link
+            // reaches only `referenced_by_commits` and `updated_at`, which is
+            // the SH-261 argument for permitting an append against a closed
+            // story. `NotFound` (no such story in this project) and
+            // `Validation` (soft-deleted — `resolve_appendable_story`'s own
+            // refusal) are both declines, not failures; anything else is a
+            // real store error and must propagate rather than read as a
+            // silent skip.
+            let (story_no, row) = match Intent::Append.resolve(&*tx, project, prefix, story_id) {
+                Ok(resolved) => resolved,
+                Err(AppError::NotFound(_)) => {
+                    return Ok(RecordOutcome::Declined(DeclinedReason::NoSuchStory));
+                }
+                Err(AppError::Validation(_)) => {
+                    return Ok(RecordOutcome::Declined(DeclinedReason::Deleted));
+                }
+                Err(err) => return Err(err.into()),
             };
             if already_linked(&*tx, project, story_no, &commit.sha)? {
-                return Ok(None);
+                return Ok(RecordOutcome::AlreadyLinked);
             }
 
             let states = tx.state_map(project)?;
@@ -391,7 +519,18 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
             // moved on to review is not dragged back. `default_open` is always
             // `Some` for a conforming project (`todo` is a REQUIRED_STATES OPEN
             // state, SH-125), but the match stays total rather than assuming it.
+            //
+            // A run-level refusal (`Err(reason)` — no claim word, sync off, no
+            // active state, already claimed this run) wins over the story's own
+            // closed-ness, per `NotMovedReason`'s declaration order: those are
+            // questions about this run, asked first. `row.archived` is checked
+            // next and explicitly, rather than left to fall out of `default_open`
+            // never matching an archived story's resting state by accident — a
+            // closed story never moves, and this is why, named rather than
+            // inferred.
             let outcome = match (active, default_open) {
+                (Err(reason), _) => LinkOutcome::NotMoved(reason),
+                (Ok(_), _) if row.archived => LinkOutcome::NotMoved(NotMovedReason::StoryIsClosed),
                 (Ok(active), Some(default_open)) if row.snapshot.state == default_open.slug => {
                     events.extend(state_transition_events(
                         active,
@@ -405,7 +544,6 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
                     }
                 }
                 (Ok(_), _) => LinkOutcome::NotMoved(NotMovedReason::NotInDefaultState),
-                (Err(reason), _) => LinkOutcome::NotMoved(reason),
             };
 
             append_and_fold(
@@ -418,7 +556,7 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
                 &events,
                 self.ctx.provenance(),
             )?;
-            Ok(Some(outcome))
+            Ok(RecordOutcome::Linked(outcome))
         })?)
     }
 }
@@ -675,6 +813,10 @@ mod tests {
                 "linked without moving: SH-1, SH-2 (an earlier commit in this run already claimed it)",
             ),
             (
+                NotMovedReason::StoryIsClosed,
+                "linked without moving: SH-1, SH-2 (the story is closed)",
+            ),
+            (
                 NotMovedReason::NotInDefaultState,
                 "linked without moving: SH-1, SH-2 (already out of the project's default open state)",
             ),
@@ -687,6 +829,24 @@ mod tests {
                     "only a real grammar miss may say so: {reason:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn every_declined_reason_report_line_names_its_own_cause() {
+        let ids = vec!["SH-1".to_string(), "SH-2".to_string()];
+        let cases = [
+            (
+                DeclinedReason::NoSuchStory,
+                "named but not linked: SH-1, SH-2 (no such story)",
+            ),
+            (
+                DeclinedReason::Deleted,
+                "named but not linked: SH-1, SH-2 (deleted; restore first with `story reopen <id> --force`)",
+            ),
+        ];
+        for (reason, expected) in cases {
+            assert_eq!(reason.report_line(&ids), expected);
         }
     }
 }

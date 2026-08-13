@@ -70,8 +70,14 @@ impl<'ctx, S: Store> PrLinkService<'ctx, S> {
 
     /// Links a pull request to an open story.
     ///
-    /// Refuses a closed story, exactly like `commit-sync`'s
-    /// `resolve_open_story` refusal. Refuses a `close_on_merge: true` link
+    /// Refuses a closed story — `Intent::Edit`, not `Intent::Append`. A PR
+    /// link is not an observation of what already happened the way a commit
+    /// link or a comment is: `close_on_merge: true` is a standing instruction
+    /// to move the story in the *future*, on a webhook this call cannot see
+    /// yet, so it is refused for the same reason any other edit is (SH-279 —
+    /// `commit-sync`'s own link stopped refusing a closed story once its
+    /// observation-only argument was made explicit; nothing about that
+    /// argument reaches this write). Refuses a `close_on_merge: true` link
     /// whose repository disagrees with the project's configured `github_sync`
     /// remote — see the module doc — unless the project has none configured,
     /// in which case there is nothing to validate against and the link is
