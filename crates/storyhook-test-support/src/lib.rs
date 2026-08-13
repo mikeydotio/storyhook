@@ -24,6 +24,8 @@
 //!   (SH-51).
 //! - [`crash_the_daemon`] and friends — killing the process that owns the write
 //!   transaction, which since the transport collapsed is the daemon.
+//! - [`non_temporary_dir`] — a fixture directory the store guards classify as
+//!   **not throwaway**, for the handful of tests that need one (SH-258).
 //!
 //! # Using it
 //!
@@ -43,6 +45,7 @@ mod hooks_manifest;
 mod legacy_tree;
 mod project;
 mod pty;
+mod real_store;
 mod scratch;
 mod server;
 mod service;
@@ -56,6 +59,7 @@ pub use project::{
     Project, ProjectBuilder, SecondCheckout, assert_selection_is_not_inherited, git, slug_at,
 };
 pub use pty::{EXPECT_TIMEOUT, Pty, Watchdog, watchdog};
+pub use real_store::{REAL_ROOT_VAR, non_temporary_dir};
 pub use scratch::{scratch_dir, scratch_dir_named, scratch_root};
 pub use server::{
     ChildGuard, DaemonGuard, TestServer, http_status_line, port_of, reserve_port, run_bounded,
