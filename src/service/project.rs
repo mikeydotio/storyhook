@@ -144,7 +144,13 @@ fn refuse_temp_project(root: &Path, store_path: &Path, allowed: bool) -> Result<
 /// be created. So `/tmp/fixture` stays `/tmp/fixture` while the root `/tmp`
 /// canonicalizes to `/private/tmp`, and comparing only canonical forms lets
 /// exactly the case this guard exists for walk straight through.
-pub(crate) fn is_under_temp(path: &Path) -> bool {
+///
+/// Public rather than `pub(crate)` since SH-258: `storyhook-test-support`'s
+/// `non_temporary_dir` has to classify its candidate fixture roots with the
+/// *same* predicate this module's guards run at request time, or the two can
+/// silently drift — a helper judging "real" by one rule while the guard it
+/// exists to exercise judges by another.
+pub fn is_under_temp(path: &Path) -> bool {
     let literal = path.to_path_buf();
     let resolved = canonical(path);
     let mut roots = vec![std::env::temp_dir()];
