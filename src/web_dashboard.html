@@ -516,6 +516,16 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
   margin-left: auto; flex-shrink: 0; text-transform: uppercase;
 }
 .dot { width: 0.4375rem; height: 0.4375rem; border-radius: 50%; flex-shrink: 0; }
+/* SH-203: a story-ID reference is its status light (`.dot.story-light`,
+   background set inline per story by stateColor()) immediately before a
+   clickable `.rel-id` -- see storyRef()/storyLight(). `.unknown` is the
+   one case stateColor() never runs for: the id didn't resolve against
+   this project's loaded stories at all (another project, soft-deleted,
+   a draft), so there is no status to colour -- a hollow ring rather than
+   an omitted dot, so the gap reads as "unresolvable", not as a missing
+   feature. */
+.story-ref { display: inline-flex; align-items: center; gap: 0.25rem; }
+.story-light.unknown { background: transparent; border: 1.5px solid var(--fg-faint); }
 .card-flags { display: flex; gap: 0.3125rem; margin-top: 0.375rem; }
 .flag-blocked { color: var(--danger); }
 .flag-archived { color: var(--fg-faint); }
@@ -1688,6 +1698,22 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           // accordingly. Skipped on the first load of a repo, so opening a
           // repo never animates every card in as if it had just appeared.
           if (state.data) pendingAnimations = diffSnapshots(state.data, parsed, state.pending);
+          // SH-203: an open drawer's relation and referenced-by rows carry
+          // a status light (storyRef() -> findStory(), reading state.data)
+          // for whichever OTHER story they name -- but renderAll() below
+          // only re-renders the board/list; renderDrawer() otherwise runs
+          // only from handleMutationSuccess(), and only for the drawer's
+          // own story. Without this, a blocker (or any referenced story)
+          // closing elsewhere would leave every light in an open drawer
+          // stale until it was closed and reopened. Checked before
+          // `pendingAnimations` is consumed by renderView() (it's nulled
+          // out there) and gated on the diff actually holding a change, so
+          // the 25s safety poll's ordinary no-op tick doesn't churn the
+          // drawer -- clobbering in-progress focus/caret for nothing.
+          var hasChanges = !!(pendingAnimations && (
+            pendingAnimations.entered.length || pendingAnimations.exited.length ||
+            pendingAnimations.moved.length || Object.keys(pendingAnimations.changed).length
+          ));
           state.data = parsed;
           state.lastFetchAt = Date.now();
           state.fetchOk = true;
@@ -1698,6 +1724,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           // repo's data.
           if (isFirstLoadForRepo) pruneCarriedFilters();
           renderAll();
+          if (hasChanges && state.drawerId) renderDrawer();
           if (isFirstLoadForRepo) consumeDeepLinkStory();
         } catch (e) {
           state.fetchOk = false;
@@ -3834,6 +3861,52 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return { critical: "var(--p-critical)", high: "var(--p-high)", medium: "var(--p-medium)", low: "var(--p-low)" }[p] || "transparent";
   }
 
+  /** A small coloured dot standing in for `id`'s status -- SH-203's
+   * "status light": rendered immediately before an ID wherever the
+   * dashboard names another story, coloured via stateColor() so it
+   * always matches that story's own board column. The status word is
+   * reachable as `title`/`aria-label` rather than occupying space --
+   * colour alone would be a WCAG 1.4.1 use-of-color violation, the same
+   * reasoning buildTypeBadge's role="img" already follows for the type
+   * glyph.
+   *
+   * `id` resolves against state.data.stories (`findStory`) -- the same
+   * project-scoped set the board itself renders from, so a story from
+   * another project, a soft-deleted story, or a draft (routed to a
+   * separate array, never `stories`) all resolve to nothing. That's
+   * rendered as a hollow "unknown" ring (`.story-light.unknown`) rather
+   * than silently omitted, so the gap reads as "this dashboard cannot
+   * answer for that ID" rather than as a missing feature.
+   *
+   * Reads `display_state || story.state`, the same expression the board
+   * itself places a card by (`renderBoard`), so an epic's light never
+   * disagrees with the column its own card sits in. */
+  function storyLight(id) {
+    var v = findStory(id);
+    if (!v) {
+      return el("span", {
+        class: "dot story-light unknown", role: "img",
+        title: "unknown", "aria-label": "Status: unknown"
+      }, []);
+    }
+    var slug = v.display_state || v.story.state;
+    return el("span", {
+      class: "dot story-light", role: "img", style: "background:" + stateColor(slug),
+      title: slug, "aria-label": "Status: " + slug
+    }, []);
+  }
+
+  /** A reference to another story: its status light immediately before a
+   * `.rel-id` button that opens its drawer -- SH-203's consumer 1, the
+   * shape every inline mention of another story takes (relation rows,
+   * referenced-by mentions, comment-body links via `linkifyStoryIds`). */
+  function storyRef(id) {
+    return el("span", { class: "story-ref" }, [
+      storyLight(id),
+      el("button", { class: "rel-id", onClick: function() { openDrawer(id); } }, [id])
+    ]);
+  }
+
   // ============================================================
   // RENDER: LIST
   // ============================================================
@@ -4349,7 +4422,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       rels.forEach(function(r) {
         list.appendChild(el("div", { class: "rel-row" }, [
           el("span", { class: "rel-kind" }, [r.relation]),
-          el("button", { class: "rel-id", onClick: function() { openDrawer(r.other_id); } }, [r.other_id]),
+          storyRef(r.other_id),
           el("button", { type: "button", class: "rel-remove", onClick: function() {
             api("POST", apiBase() + "/unrelate", { a: st.id, relation: r.relation, b: r.other_id })
               .then(handleMutationSuccess).catch(toastError);
@@ -4427,12 +4500,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       ]));
     });
     // The mentioning story is a button, not text: a backlink you cannot follow
-    // is half of one. Same `rel-id` affordance the relationships list uses.
+    // is half of one. Same storyRef() affordance the relationships list uses.
     mentions.forEach(function(m) {
       list.appendChild(el("div", { class: "referenced-by-row" }, [
         el("span", { class: "referenced-by-meta" }, [(m.at || "").replace("T", " ").slice(0, 16)]),
         el("span", { class: "referenced-by-text" }, [
-          el("button", { class: "rel-id", onClick: function() { openDrawer(m.other_id); } }, [m.other_id]),
+          storyRef(m.other_id),
           " " + m.snippet
         ])
       ]));
