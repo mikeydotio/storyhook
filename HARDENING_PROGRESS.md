@@ -13536,3 +13536,85 @@ is a hole in the policy rather than a convenience. Nothing unverified landed her
 had been run to green on this exact tree minutes earlier, which is what the policy actually asks
 for — but the next session should assume the hook is not a backstop for a backgrounded push and
 run the gate itself, as this one did.
+### SH-274 — done
+
+**Outcome:** merged (PR #350). `story doctor --fix` now reports the git
+origins its writes actually recorded, not the ones a pre-write classification
+pass merely thought it could.
+
+**Found during SH-270's council**, reading `register_found_origins` for an
+unrelated reason, and it held up exactly as filed. `unregistered_origins`
+classifies every project's checkout in one pass, before any write; two
+checkouts of one repository — a release clone beside a working clone, say —
+both classify `Registrable` there, because the pass that decides "can this be
+written" completes before the pass that writes anything. Only the first write
+can land: `register_origin` answers `Registration::HeldBy` for the second,
+writing nothing, exactly as its own doc comment says. `register_found_origins`
+discarded that return value and walked the pre-write list again, so
+`registered_origins_message` counted both as recorded. No concurrency needed —
+a single-threaded run reproduces it every time.
+
+**The fix is a type, not a filter.** `register_found_origins` now returns
+`OriginSweep { recorded, left_alone }`, built from what each write's
+`Registration` actually said: `Recorded` goes to `recorded`; a refused
+`HeldBy` is reclassified into `left_alone` as `OriginFinding::HeldBy` rather
+than staying `Registrable`, so nothing downstream can read a write-refused
+entry as "the fix can still do this." A `matches!(.., Registrable)` filter
+over the old return value would have been the smaller diff and the wrong
+choice — it is a convention one future edit away from being silently wrong
+again, in exactly the shape that got this story filed. Two lists make the
+invariant unrepresentable rather than merely current.
+
+**The sibling promise, caught by the same read.** `origin_advice`'s "N of
+which `story doctor --fix` can record" line counted raw `Registrable`
+findings, which has the identical bug in miniature: two findings, one URL, one
+write that can ever land. Fixed by counting distinct origins via `RemoteUrl`'s
+normalized key (a `BTreeSet`, since the type's own `PartialEq`/`Hash` are
+already the key rather than the raw string) instead of findings.
+
+**Landed under a moving target — twice.** SH-270 merged (PR #349) between this
+branch's cut and its own push, restructuring the exact arm this story
+touches — `service.fix()` became `service.repair()` behind a `catalog_sweep`
+helper the doctor arm now calls instead of inlining the two catalog
+mutations. Rebasing produced one real conflict, in the `if fix` block; the
+resolution was to take SH-270's structure whole and confirm this story's
+change survived intact inside `catalog_sweep`, which it did without a second
+conflict — the sweep's body was untouched by SH-270's refactor. Re-ran the
+full local test targets plus a full `make test` gate after the rebase rather
+than trusting a clean `git rebase --continue`; both SH-270's two new tests and
+this story's three landed together, 17/17 in `project_path_hygiene.rs`. Main
+moved again while this docs commit was being written — SH-260 and SH-270's own
+progress-log entry both landed — which cost a second rebase, conflicting only
+in this file's own append point (a pure ordering conflict, no content lost)
+and a third full gate run.
+
+**Tests.** Two CLI-level tests in `tests/project_path_hygiene.rs`: two real
+checkouts of one repository, neither origin registered — `doctor --fix` must
+report exactly one origin recorded, name it exactly once (not once per
+checkout that merely looked registrable), and say "left alone" for the one
+the write refused; a companion pins `origin_advice`'s "1 of which" count
+before any write happens at all. Plus three unit tests directly on
+`registered_origins_message`, reaching the `HeldBy`/"registered no origins"
+branches nothing else in the suite reached — every existing CLI fixture kept
+its collision to one finding per origin, so `OriginFinding::HeldBy` had no
+test anywhere before this.
+
+**Explicitly not fixed here, both filed:** SH-275, the sibling in the same
+six lines — `register_found_origins` opens one `store.write` per finding, so
+a mid-loop failure commits some and reports none. Its fix is an undecided
+choice between one transaction and accumulating a partial report, and this
+story's `OriginSweep` gives it a natural accumulator without doing that work.
+SH-270's own scope (a failed story-level repair must not skip the catalog
+sweep) is untouched — this story only changes what the sweep reports once it
+runs.
+
+**Gate:** `make test` green three times — twice for this story's own commit
+(RED confirmed against unmodified source, GREEN after the fix, both before
+the rebase), and a third full run after rebasing onto SH-270's merged
+change — **153 suites, 3546 tests, 32/32 plugin, 130/130 e2e, no orphan
+daemons before or after any run**. Supervised background runs, 60s heartbeat
+against a 300s stall bound; no stalls. `cargo fmt` and `cargo clippy
+--workspace --all-targets -- -D warnings` clean on every run. This worktree
+had never run `make e2e-install`; bootstrapped it (chromium was already
+cached from another worktree, so it was a fast no-op download) rather than
+letting the gate's e2e leg fail loudly as designed.
