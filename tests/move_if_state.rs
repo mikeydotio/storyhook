@@ -238,8 +238,9 @@ fn move_if_state_against_deleted_story_reports_conflict_not_generic_error() {
     // story before the delete and retries its now-stale --if-state whose
     // value still equals the *unchanged* state slug. A CAS guard that only
     // compares the slug would let this fall through to `ensure_open_story`,
-    // which raises a generic "closed and cannot be modified" validation
-    // error instead of a conflict -- exactly the failure mode this test
+    // which raises the generic closed-story validation error (see
+    // `service::closed_story_refusal`) instead of a conflict -- exactly the
+    // failure mode this test
     // pins shut, mirroring move_if_state_against_closed_story_reports_
     // conflict_not_generic_error for the delete path specifically.
     let (dir, id) = init_and_create();
@@ -279,7 +280,7 @@ fn move_if_state_against_deleted_story_reports_conflict_not_generic_error() {
     assert_eq!(
         json["result"], "conflict",
         "a deleted story must still surface as a CAS conflict, not the generic \
-         'closed and cannot be modified' validation error, even though the \
+         closed-story validation error, even though the \
          state slug itself never changed: {json}"
     );
     assert_eq!(json["expected"], original_state);

@@ -327,7 +327,9 @@ fn relating_from_a_closed_story_is_refused() {
         .unwrap_err();
     assert_eq!(
         validation_message(error),
-        format!("story `{b}` is closed and cannot be modified")
+        format!(
+            "story `{b}` is closed; reopen it with `story reopen {b}` to change it — a comment needs no reopen"
+        )
     );
 }
 
@@ -432,7 +434,9 @@ fn attaching_a_new_open_child_to_a_closed_epic_is_refused_from_either_phrasing()
         .unwrap_err();
     assert_eq!(
         validation_message(via_child_of),
-        format!("story `{epic}` is closed and cannot be modified")
+        format!(
+            "story `{epic}` is closed; reopen it with `story reopen {epic}` to change it — a comment needs no reopen"
+        )
     );
 
     let via_parent_of = RelationService::new(&ctx)
@@ -440,7 +444,9 @@ fn attaching_a_new_open_child_to_a_closed_epic_is_refused_from_either_phrasing()
         .unwrap_err();
     assert_eq!(
         validation_message(via_parent_of),
-        format!("story `{epic}` is closed and cannot be modified")
+        format!(
+            "story `{epic}` is closed; reopen it with `story reopen {epic}` to change it — a comment needs no reopen"
+        )
     );
 
     assert!(relations(&fixture, &child).is_empty());
