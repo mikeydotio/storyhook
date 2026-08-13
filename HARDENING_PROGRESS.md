@@ -13323,3 +13323,124 @@ post-run. No stalls under a 180s log-growth watch. 91 GB free after.
 never runs either. SH-276 filed rather than resolved, deliberately: the
 delete-vs-pin decision it poses is real and belongs to whoever picks it up
 next, not defaulted inside this fix.
+
+### SH-270 — done
+
+**Outcome:** merged (PR #349). `story doctor --fix` sweeps the catalog whatever the
+project's own health, and the council's answer to the story's own question changed the fix.
+
+**The defect was a skip, not a silence.** `let mut message = service.fix()?;` returned on the
+integrity verdict, so `deregister_orphaned` and `register_found_origins` never ran at all.
+Both sweep every project in the store while the repair above them is one project's — so a
+single damaged project held every other project's stale registration hostage, and the remedy
+`orphan_advice` prints, *run `story doctor --fix`*, was the one command that would not
+perform it. `CatalogService` is deliberately not `Ctx`-shaped because "the catalog spans
+every project"; the `?` re-coupled at the composition root what the types separate.
+
+**The council rejected the fix the story proposed, and that is the entry.** SH-266 filed this
+with a shape: match `Err(AppError::Integrity)`, run the catalog half on it, attach the
+messages to `advice`. Three unrelated things reach that variant from `fix()` — the verdict;
+`fold_story` failing from *inside* `append_and_fold` while a repair write is in flight, which
+rolls that write back (`src/domain.rs:1530-1535`); and whatever the store raises beneath
+either. Matching on it would have made two durable store-wide mutations on the strength of a
+repair that never happened. Verified by the chair before deliberation rather than taken on
+the seat's word, and then verified *empirically*: the naive version was implemented and the
+second test below failed against it.
+
+So the outcome became a value. `IntegrityService::repair` returns `FixOutcome { findings,
+advice, headline }`; `FixOutcome::verdict` mints the verdict once, delegating the emptiness
+question to `IntegrityDetail::report` so it is still asked in exactly one place (SH-244). The
+`?` in the doctor arm can now only carry a genuine failure.
+
+| Run | Before | After |
+|---|---|---|
+| healthy project, stale registration | swept, reported | unchanged |
+| project keeps a finding, stale registration | **not swept, not reported** | swept, reported in `advice`, still exit 5 |
+| repair write aborts, stale registration | not swept | not swept — now *because* it aborted, not by accident |
+| non-integrity failure (`Storage`) | propagated | propagated |
+
+**Two cheaper discriminators were killed on the record**, which is most of why the council was
+worth running. Value inspection — treat findings that are all `Unstructured` as a propagation
+— is unsound, and `src/error.rs:477-479` already asserts a legitimate verdict may hold exactly
+that shape; CLAUDE.md's own SH-239 rule forbids recovering a raise site from what a value
+spells. A new `AppError` variant drags `exit_code()`, `with_context`, `WireError`
+round-tripping and the exhaustive-match test along for a doctor-local concept.
+
+**Two tests, and only one of them is a regression test.** Both run against a non-temporary
+store (SH-258): `audit_catalog` is false under a temp one and every other doctor fixture is
+temp-rooted, so without that they would pass vacuously — which is precisely why SH-266 could
+not pin this and filed it instead. The first is the regression: an unaddressable type slug,
+which `--fix` is *documented* as unable to clear, plus another project's orphaned
+registration. It asserts on the **store**, not the output, so a version that reported the
+sweep and skipped it would still fail.
+
+The second is the one the skeptic seat contributed and it is the reason the council paid for
+itself: the regression test above **passes under every option considered**, including the two
+wrong ones, so it discriminates nothing. Its negative does — a repair write that aborts must
+leave the catalog alone — and it was confirmed red against the naive `Err(Integrity)` match
+before being kept. A test that cannot fail against the alternatives is not evidence for the
+choice.
+
+**Rider: a sweep failure never discards a verdict and never returns exit 0.** With findings it
+rides `advice` and the verdict wins; with none it propagates through `with_context`, so a
+failed store-wide write cannot hide behind a successful repair's exit code. The sentence is
+deliberately vague about what landed, because `register_found_origins` commits one
+registration per transaction and returns none of them on a mid-loop failure — which is SH-275,
+below.
+
+**Two hats.** Commit 1 is the behaviour change with both tests, and keeps `fix()` as a wrapper
+so not one existing assertion moves — the exit-5 mapping stays pinned by tests that predate
+the change while the new path lands. Commit 2 deletes the wrapper and composes the two
+production calls at the eight call sites. That split was the winning proposal's, and it paid
+off in the tests: `fix()` collapsed "the repair blew up" and "the repair ran and left
+findings" into one `unwrap_err`, which is the exact distinction the fix exists to draw.
+
+**Sibling sweep: none of this shape.** The other verdict-shaped errors are `SyncConflict`/
+`SyncErrors`, which are the last expression of their arm, and migrate's refusals, which
+genuinely gate the plan application below them. Neither has an independent second phase behind
+the `?`.
+
+**Two defects filed, not folded in** — both pre-existing, both in the six lines of
+`register_found_origins`, both found by seats reading it for an unrelated reason, and both
+*widened in exposure* by this fix, since the sweep now runs on materially more invocations:
+
+- **SH-274** (`medium`): `register_found_origins` discards `register_origin`'s
+  `Registration::HeldBy`, so `registered_origins_message` claims registrations the write
+  refused. Deterministic, not a race — `unregistered_origins` classifies every candidate
+  before any write, so two clones of one repository both come back `Registrable`, the second
+  write is refused, and the operator is told "registered 2 origins" when the store holds one.
+- **SH-275** (`low`): the same function opens one `store.write` per finding, so a mid-loop
+  failure commits some registrations and reports none. The inverse of SH-274 in the same six
+  lines.
+
+**Council:** yes — 3 seats (software-architect, ux-designer-cli, skeptic), 2 rounds, IRV
+majority 2-of-3 in the runoff, no chair tiebreak. Verdict recorded as a comment on SH-270;
+audit trail in `.council/sh270-doctor-fix-catalog-half-gating/`. Every seat revised at
+deliberation; none stood. The ballots carry a cross-endorsement worth recording — each
+structural proposal's author ranked the *other* first, so the implemented shape is the
+winner's staging with the runner-up's payload, and the winner's own author is the one who
+asked for that payload.
+
+**Deferred, with a reason:** `IntegrityDetail::sections()` joins findings and advice with a
+single `\n`, so a store-wide mutation report is typographically indistinguishable from a
+finding. Plain text only — `--json` already carries `findings` and `advice` as separate arrays,
+confirmed by reading `render_error`. It reflows goldens beyond this ticket, so it is not this
+commit's to make.
+
+**Gate:** three full `make test` runs, all green, all supervised with a log-growth
+heartbeat and a 180s stall bound. The branch mid-way (154 suites, 130/130 e2e, 32/0 plugin),
+the final branch tree with an explicit `GATE_EXIT=0`, and then merged `main` — 155 suites,
+130/130, 32/0, `GATE_EXIT=0`. The third is not ceremony: PR #348 (SH-255) landed between this
+branch's gate and its merge and brought the 155th suite, so the tree that is now `main` is one
+no gate had seen. 92 GB free.
+
+Two supervision notes worth keeping. The first run's exit code was **lost** — `nohup make test &`
+reports the wrapper's status, not `make`'s — so it was reconstructed from `make`'s fail-fast
+semantics plus a direct re-run of the one silent step (`check-no-orphan-servers.sh postlude`,
+exit 0). The later runs wrap the command as `sh -c 'make test; echo "GATE_EXIT=$?"'`, which is
+the only way the log itself carries the verdict. Second, a `pgrep -f "make test"` liveness check
+**matches the shell running the check**, so it reported RUNNING forever; keying the monitor on a
+`GATE_EXIT=` marker instead is both correct and simpler. A third alarm — a 60s stall during
+compilation — was benign and diagnosed the way this file's own rule says to: by confirming the
+process (load average 30, three live cargo processes) rather than by reading the log. Log growth
+is the right pulse for a test phase and the wrong one for a build.
