@@ -84,3 +84,55 @@ test("openProject waits for the data, so the create modal is fully built", async
   await page.locator("#create-discard").click();
   await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
 });
+
+test("the + New button is inert until the project's data arrives", async ({
+  page,
+}) => {
+  await seedToken(page);
+  await slowData(page);
+  // Deep-linked, same as the first test above, so this can observe the
+  // pre-data window directly rather than going through `openProject()`.
+  const slug = await projectSlug(page.request, "Alpha Project");
+  await page.goto(`/?project=${encodeURIComponent(slug)}`);
+
+  await expect(page.locator("#board-view")).toBeVisible();
+  const btn = page.locator("#new-story-btn");
+  await expect(btn).toBeVisible();
+  // SH-265: the button used to stay clickable through this whole window,
+  // opening a modal built from an empty `meta()` that never repopulates.
+  await expect(btn).toBeDisabled();
+
+  // A disabled button fires no click event at all -- this is a stronger
+  // claim than "Playwright's `.click()` would wait", and it is what proves
+  // the button is actually inert rather than merely slow to become
+  // clickable.
+  await page.evaluate(() => {
+    (document.getElementById("new-story-btn") as HTMLButtonElement).click();
+  });
+  await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
+
+  // `openCreateModal()`'s own `if (!state.data) return;` guard is the second
+  // line of defense -- exercised here by forcing the one path around the
+  // button's `disabled` attribute a real user cannot take.
+  await page.evaluate(() => {
+    const el = document.getElementById("new-story-btn") as HTMLButtonElement;
+    el.disabled = false;
+    el.click();
+  });
+  await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
+
+  // And once the data lands, the button is live and the modal it opens
+  // holds this project's real vocabulary -- not just placeholders.
+  await expect(page.locator("#filter-count")).not.toHaveText("", {
+    timeout: DATA_DELAY_MS * 3,
+  });
+  await expect(btn).toBeEnabled();
+  await btn.click();
+  await expect(page.locator("#create-modal")).toHaveClass(/open/);
+  await page.locator("#create-priority").selectOption("critical");
+  await expect(page.locator("#create-priority")).toHaveValue("critical");
+  await expect(page.locator("#create-state")).toContainText("review");
+
+  await page.locator("#create-discard").click();
+  await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
+});
