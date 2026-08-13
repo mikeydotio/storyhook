@@ -13,18 +13,51 @@
 # what matters is what got *written*, not what story.sh believed it sent.
 source "$(dirname "$0")/lib.sh"
 
+# SH-264: this used to prepend the fake's FILE ($TESTS_DIR/fakes/tmux) rather
+# than its directory. A PATH entry that is not a directory is silently
+# skipped, so `tmux` resolved to the REAL binary, which failed to reach a
+# socket literally named `fake` — an accident that happened to roll the claim
+# back for a reason unrelated to the one this test names. Use the suite's
+# normal spelling (the directory), and prove the fake actually ran.
+FAKE_TMUX_DIR="$TESTS_DIR/fakes"
+
 repo=$(mk_story_repo)
 id=$(new_story "$repo" "A story to claim")
 
 # A dispatch that claims and then fails after the claim, so both halves run in
-# one go. The readiness gate cannot pass against the fake tmux, so dispatch
-# rolls its own claim back — which is the pair this test is about.
-(
+# one go. FAKE_TMUX_LAUNCH_MANGLE=1 models the launch never becoming claude
+# (SH-226's field failure): the pane's occupant stays a shell and no dispatch
+# sentinel is ever published, so wait_ready_sentinel refuses and dispatch
+# rolls its own claim back — the claim/rollback pair this test is about.
+# STORY_READY_* bounds the poll so the refusal is immediate rather than the
+# default ~15s (60 attempts x 0.25s).
+out=$(
   cd "$repo" \
-    && PATH="$TESTS_DIR/fakes/tmux:$PATH" \
+    && PATH="$FAKE_TMUX_DIR:$PATH" \
       TMUX="fake,0,0" TMUX_PANE="%0" \
-      bash "$SCRIPT" dispatch "$id" >/dev/null 2>&1
+      FAKE_TMUX_LAUNCH_MANGLE=1 \
+      STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=3 \
+      bash "$SCRIPT" dispatch "$id" 2>&1
 ) || true
+
+# Prove the ROUTE, not just the actor labels: a future accident that puts the
+# real tmux back on PATH must fail here, loudly, rather than pass by
+# coincidence the way this test used to.
+assert_eq "$(jqf "$out" .ok)" "false" "the mangled launch is refused"
+assert_eq "$(jqf "$out" .readiness_confirmed)" "false" "readiness never confirms"
+assert_eq "$(jqf "$out" .wait_ready_reason)" "no-sentinel" \
+  "refused for the stated reason -- no sentinel ever published, not a window-open failure"
+assert_eq "$(jqf "$out" .pane_command)" "zsh" \
+  "the occupant is the mangled fallback shell, not claude"
+
+# The assertion whose absence is what let the old PATH bug go undetected: the
+# fake was actually invoked for this dispatch's new-window call.
+if [ ! -s "$FAKE_TMUX_STATE/new_window_args.log" ]; then
+  fail_test "the fake tmux never recorded a new-window call -- PATH did not reach it"
+fi
+if ! grep -q -- "-n $id" "$FAKE_TMUX_STATE/new_window_args.log"; then
+  fail_test "the fake's new-window call does not name this dispatch's window"
+fi
 
 log=$(cd "$repo" && story log "$id" --json)
 
