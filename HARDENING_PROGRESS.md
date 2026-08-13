@@ -13748,3 +13748,49 @@ is the leading hypothesis. Filed as **SH-281** (high — it blocks every push in
 the repo, not just this one) with the full matrix. This entry was then pushed
 with `SKIP_PREPUSH_TESTS=1` under CLAUDE.md's docs-only carve-out, after
 confirming the commit touches one markdown file and nothing else.
+
+### SH-229 — the upstream port · agentics PR #172
+
+**Outcome:** decided and executed, not just decided. SH-229 was filed by
+SH-226's RCA as a decision story — "decide whether to port, and if so ask
+Mikey first" — and the story's own comment thread already contained the
+answer's shape (what would port, what wouldn't). What it did not yet have was
+the caller-side half, found only by reading `plugins/issue/bin/issue.sh`
+itself rather than trusting the earlier survey: `cmd_dispatch`'s Step 10, on a
+`wait_ready` miss, slept `READY_FALLBACK_DELAY` and typed the prompt into the
+pane anyway. Porting `lib/session.sh` alone — the scope the filed comment
+described — would have shipped a gate that computed the right answer and a
+caller that ignored it.
+
+**Three stories crossed, not one.** SH-226 was the story that found the gap;
+SH-239 (launch-binary identity) and SH-263 (the fake tmux's state-directory
+hygiene) had each also landed on this side since, unbeknownst to the original
+survey comment, and porting SH-226 alone into a suite with neither would have
+shipped a gate that refuses this machine's own version-named `claude` install
+and tests corruptible by the exact collision SH-263 was filed to fix. Asked,
+Mikey confirmed: full port, all three.
+
+**The port is a fork crossing, not a merge.** `plugins/issue/lib/session.sh`
+in agentics had exactly one commit in its history — the original extraction —
+so nothing there had moved since 2026-07-24; every line this touched was still
+byte-identical to what SH-226's own RCA had already read. Six commits landed
+on `agentics/.claude/worktrees/AGE-83` (fake-tmux state-dir hygiene → occupant
+model → the SH-226 gate + refuse-and-roll-back caller change → SH-239 identity
+rules → Enter-only-after-receipt → docs), each green against
+`plugins/issue/tests/run-tests.sh` on its own. PR:
+[mikeydotio/agentics#172](https://github.com/mikeydotio/agentics/pull/172).
+
+**The drift guard caught exactly the thing it exists to catch.**
+`tests/plugin-content-drift.sh` reds on that branch — shipped `plugins/issue/**`
+content changed since `v3.7.4` was tagged, and the PR carries no version bump,
+because it was built in a linked worktree and this project's standing rule is
+that worktree PRs don't bump. That is the guard doing its job, not a defect;
+the PR body says so and a bump is Mikey's to run from a main checkout before
+merge. `make test-issue` (20/20) and the rest of `make test` are otherwise
+green.
+
+**This side gets a docs-only close.** `lib/session.sh`'s header now names
+AGE-83 as the point the two forks last aligned, and this entry is the record
+that the story's own "ask Mikey first" was honored before a single commit
+landed — the plan itself was posted as a comment on SH-229 before
+implementation began, per the story's explicit instruction.
