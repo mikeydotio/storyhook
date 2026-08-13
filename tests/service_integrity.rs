@@ -138,8 +138,15 @@ fn findings(fixture: &ServiceFixture) -> Vec<Finding> {
         .expect("reporting")
 }
 
+/// A `--fix` run's rendered report, or the error its remaining findings make.
+///
+/// The two production calls composed — `repair()` for what the run did,
+/// `verdict()` for what that counts as — rather than one call that conflated
+/// them. The `?` is the distinction SH-270 drew: a repair that *blew up* now
+/// propagates, where it used to be indistinguishable from a repair that ran and
+/// left findings.
 fn fix(fixture: &ServiceFixture) -> Result<String, AppError> {
-    IntegrityService::new(&fixture.ctx()).fix()
+    IntegrityService::new(&fixture.ctx()).repair()?.verdict()
 }
 
 /// The advisories `story doctor` prints when it finds no integrity fault.
