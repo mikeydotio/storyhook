@@ -865,10 +865,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
 <div class="backdrop" id="token-modal-backdrop" hidden></div>
 <div class="modal" id="token-modal" aria-hidden="true">
-  <div class="modal-header">Daemon token required</div>
+  <div class="modal-header">Dashboard token required</div>
   <div class="modal-body">
-    <p>The dashboard requires the storyhook daemon's bearer token. Run
-      <code>story daemon token</code> on the machine running the daemon and paste it below.</p>
+    <p>The dashboard requires a named token. Run
+      <code>story token new &lt;name&gt;</code> on the machine running the daemon and paste the token it prints below.</p>
     <div class="field"><label for="token-input">Token</label>
       <input type="text" id="token-input" autocomplete="off" spellcheck="false"></div>
     <div class="modal-error" id="token-error"></div>
@@ -969,7 +969,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * boundary is `api::routes::authority`, not a `disabled` attribute. */
   function OUT_OF_SCOPE_NOTE(command) {
     return "This dashboard session can edit stories and states, but not this. Run `"
-      + command + "` instead, or paste the daemon's token from `story daemon token`.";
+      + command + "` instead, or paste a token from `story token new <name>`.";
   }
 
   // ============================================================
@@ -1456,7 +1456,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           if (xhr.status >= 200 && xhr.status < 300) {
             resolve(parsed || {});
           } else if (credentialVerdict(xhr.status, parsed) === "prompt") {
-            clearDaemonToken();
             openTokenModal(attempt, function() {
               reject({ status: 401, message: "authentication cancelled" });
             });
@@ -1531,7 +1530,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         try { body = JSON.parse(xhr.responseText); } catch (e) { /* plain-text refusal */ }
         var verdict = credentialVerdict(xhr.status, body);
         if (verdict === "prompt") {
-          clearDaemonToken();
           openTokenModal(fetchData);
         } else if (verdict === "session") {
           sessionEnded(body && body.error);
@@ -1631,7 +1629,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         try { reposBody = JSON.parse(xhr.responseText); } catch (e) { /* plain-text refusal */ }
         var reposVerdict = credentialVerdict(xhr.status, reposBody);
         if (reposVerdict === "prompt") {
-          clearDaemonToken();
           openTokenModal(function() { fetchReposOnce(onDone); });
           return;
         }
@@ -1679,36 +1676,38 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   // ============================================================
-  // AUTHENTICATION (SH-187)
+  // AUTHENTICATION (SH-187, and SH-255's named-token cookie)
   // ============================================================
   //
-  // Every `/api/**` request carries the daemon's bearer token, on every
-  // listener including loopback -- the ordinary X-Storyhook/Host guard
-  // alone is not authentication (see docs/spec/dashboard-authorization.md).
-  // `api()`, `fetchData()` and `fetchReposOnce()` are the three request
-  // paths in this file, and all three attach it below; `connectEvents()`'s
-  // `EventSource` can't set headers, so it carries the token as `?token=`
-  // instead -- the one route that accepts it that way. Originally
-  // dispatch-only (SH-50); generalized here to the whole surface.
+  // Every `/api/**` request needs a credential, on every listener including
+  // loopback -- the ordinary X-Storyhook/Host guard alone is not
+  // authentication (see docs/spec/dashboard-authorization.md). Since
+  // SH-255 that credential is a named token the daemon holds as an
+  // `HttpOnly` cookie: this page never reads it, never stores it, and never
+  // attaches it to a request by hand -- the browser sends it automatically
+  // on every same-origin call, `EventSource` included, which is why
+  // `connectEvents()` needs no `?token=` any more either.
+  //
+  // Getting the credential into that cookie in the first place is
+  // `submitTokenModal()`'s job: it POSTs whatever was pasted to `/token`
+  // (`crate::api::tokens::EXCHANGE_PATH`), which answers with `Set-Cookie`
+  // on success and never echoes the value back. The page's only lasting
+  // memory of the exchange is `HAS_TOKEN_KEY`, a non-secret marker used
+  // solely for the `sessionOnly()` affordance below -- the server enforces
+  // the real boundary regardless of what this flag believes.
 
-  var TOKEN_KEY = "storyhookDaemonToken";
+  var HAS_TOKEN_KEY = "storyhookHasToken";
   var SESSION_KEY = "storyhookDashboardSession";
 
-  /** The daemon's bearer token, from this tab's sessionStorage -- gone when
-   * the tab closes. Held there rather than in `localStorage` on purpose: no
-   * new stored-token disclosure surface beyond what already existed for any
-   * other data this dashboard renders (SH-50's F5). */
-  function getDaemonToken() {
-    try { return sessionStorage.getItem(TOKEN_KEY) || ""; }
-    catch (e) { return ""; } // storage disabled (private mode, locked-down policy)
+  /** Whether this tab has successfully exchanged a token for a cookie this
+   * session. Advisory only -- see the block comment above. */
+  function hasExchangedToken() {
+    try { return sessionStorage.getItem(HAS_TOKEN_KEY) === "1"; }
+    catch (e) { return false; }
   }
-  function setDaemonToken(token) {
-    try { sessionStorage.setItem(TOKEN_KEY, token); }
-    catch (e) { /* nothing to do -- the token modal will just reappear next time */ }
-  }
-  function clearDaemonToken() {
-    try { sessionStorage.removeItem(TOKEN_KEY); }
-    catch (e) { /* ignore */ }
+  function markTokenExchanged() {
+    try { sessionStorage.setItem(HAS_TOKEN_KEY, "1"); }
+    catch (e) { /* the affordance below just stays conservative; nothing breaks */ }
   }
 
   // --- The scoped session capability (SH-254) ---
@@ -1744,16 +1743,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * is an affordance, so a user meets an explanation instead of a button that
    * does nothing. */
   function sessionOnly() {
-    return !getDaemonToken() && !!getSessionCapability();
+    return !hasExchangedToken() && !!getSessionCapability();
   }
 
   /** Attaches whichever credentials this tab holds to an open `XMLHttpRequest`.
    *
-   * Both, when it has both: the daemon checks the token first and never
-   * scope-refuses a caller who passed on it, so a tab that has been given a
-   * token is never held back by also holding a capability. */
+   * The named token itself is never attached here: it lives in an `HttpOnly`
+   * cookie the browser sends on its own, and this page has no way to read it
+   * even if it wanted to. Only the SH-254 session capability -- still a
+   * plain header, until the model it belongs to is retired -- is this
+   * function's job now. */
   function attachCredentials(xhr) {
-    xhr.setRequestHeader("X-Storyhook-Token", getDaemonToken());
     var capability = getSessionCapability();
     if (capability) xhr.setRequestHeader("X-Storyhook-Session", capability);
   }
@@ -1828,14 +1828,38 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (onCancelled) onCancelled();
   }
 
+  /** Exchanges the pasted value for a cookie at `/token`
+   * (`crate::api::tokens::EXCHANGE_PATH`) rather than storing it directly --
+   * see AUTHENTICATION, above. Not routed through `api()`: that helper's own
+   * 401 handling opens this same modal, which would be circular for the
+   * call that is *answering* the modal. `X-Storyhook` is set by hand for the
+   * same reason `api()` sets it on every request -- the CSRF guard is what
+   * keeps a cross-origin page from pinning an attacker-chosen value into
+   * this cookie. */
   function submitTokenModal() {
     var value = $("token-input").value.trim();
-    if (!value) { $("token-error").textContent = "The daemon token is required."; return; }
-    setDaemonToken(value);
-    var callback = tokenModalCallback;
-    tokenModalCancelCallback = null;
-    closeTokenModal();
-    if (callback) callback();
+    if (!value) { $("token-error").textContent = "The token is required."; return; }
+    $("token-error").textContent = "";
+    var xhr = new XMLHttpRequest();
+    xhr.open("POST", "/token", true);
+    xhr.setRequestHeader("X-Storyhook", "1");
+    xhr.setRequestHeader("X-Storyhook-Token", value);
+    xhr.timeout = 10000;
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== 4) return;
+      if (xhr.status === 204) {
+        markTokenExchanged();
+        var callback = tokenModalCallback;
+        tokenModalCancelCallback = null;
+        closeTokenModal();
+        if (callback) callback();
+      } else {
+        $("token-error").textContent = "That token was not accepted. Check it and try again.";
+      }
+    };
+    xhr.onerror = function() { $("token-error").textContent = "Could not reach the daemon."; };
+    xhr.ontimeout = function() { $("token-error").textContent = "The request timed out."; };
+    xhr.send();
   }
 
   // ============================================================
@@ -5741,12 +5765,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * would otherwise go unnoticed until the next safety poll. */
   function connectEvents() {
     if (!window.EventSource) return; // no push support — the safety poll alone drives updates
-    // EventSource can't set headers, so the token travels as a query
-    // parameter here -- the one route that accepts it that way. If it's
-    // stale, `onerror` below just sees a connection failure (the browser
-    // never surfaces the status code); the safety poll's own `fetchData`/
-    // `fetchReposOnce` calls are what actually detect a 401 and reprompt.
-    var es = new EventSource("/api/events?token=" + encodeURIComponent(getDaemonToken()));
+    // The named-token cookie rides along automatically -- same-origin,
+    // same as every other request -- so there is no header or query
+    // parameter to attach here any more. If it's stale, `onerror` below
+    // just sees a connection failure (the browser never surfaces the status
+    // code); the safety poll's own `fetchData`/`fetchReposOnce` calls are
+    // what actually detect a 401 and reprompt.
+    var es = new EventSource("/api/events");
     sse.source = es;
     es.onopen = function() {
       sse.connected = true;
@@ -5919,13 +5944,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // either.
   //
   // The prompt is now purely reactive, through machinery that already
-  // existed: `fetchData()`'s 401 branch clears the stored token and opens the
-  // modal, and `api()`'s clears it, opens the modal, and transparently
-  // retries the exact request. So the tailnet listener still prompts -- it
-  // just pays one failed round-trip first, which is the cost of loopback
-  // never paying anything. A hand-typed loopback URL prompts on its first
-  // write the same way: it carries no coupon, and the read exemption covers
-  // reads only.
+  // existed: `fetchData()`'s 401 branch opens the modal, and `api()`'s opens
+  // it and transparently retries the exact request once the exchange
+  // succeeds. So the tailnet listener still prompts -- it just pays one
+  // failed round-trip first, which is the cost of loopback never paying
+  // anything. A hand-typed loopback URL prompts on its first write the same
+  // way: it carries no coupon, and the read exemption covers reads only.
   redeemHandoff(startApp);
 })();
 </script>

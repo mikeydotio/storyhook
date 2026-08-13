@@ -304,7 +304,13 @@ fn query_token_ok(query: Option<&str>, token: &str) -> bool {
 ///   browser request including `EventSource`. A **mutation** needs no extra
 ///   check here: it has already passed [`mutation_guard_ok`] above, in
 ///   [`admission`], which is what makes the cookie sufficient on its own.
-fn named_token_ok(
+///
+/// `pub(crate)`: [`crate::api::dispatch::intercept`] is a second, narrower
+/// gate on the exact same route family (its own module doc calls it a
+/// "harmless, deliberate redundancy" with this one), and it must recognize
+/// every credential this gate does — a request `admission` already admitted
+/// must never be refused a second time by dispatch's own copy of the check.
+pub(crate) fn named_token_ok(
     headers: &[Header],
     method: &Method,
     cookie_name: &str,

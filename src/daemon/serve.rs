@@ -887,6 +887,24 @@ fn worker(
         return;
     }
 
+    // The pasted-token exchange (SH-255): also outside `/api`, for
+    // `handoff::intercept`'s reason immediately above — the caller has no
+    // credential yet, so this cannot sit behind `admission::admission`'s
+    // gate.
+    if let Some(reply) = crate::api::tokens::intercept_exchange(
+        &segments,
+        &method,
+        &headers,
+        trusted_hosts,
+        cookie_name,
+        tokens,
+        chrono::Utc::now(),
+        std::time::Instant::now(),
+    ) {
+        finish(request, reply);
+        return;
+    }
+
     // Listing and revoking dashboard capabilities (SH-254), answered here for
     // `handoff::intercept`'s reason and one of its own: `story web revoke` is
     // most likely to be run *because* this daemon is busy with something the
@@ -944,6 +962,9 @@ fn worker(
         env,
         &bus,
         dispatch_registry,
+        tokens,
+        cookie_name,
+        chrono::Utc::now(),
     ) {
         finish(request, reply);
         return;
