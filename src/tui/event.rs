@@ -160,11 +160,11 @@ impl EventSource {
         let _ = subscriber.connect();
 
         thread::spawn(move || {
-            while !stop.load(Ordering::Relaxed) {
-                if subscriber.poll(POLL_BUDGET).is_some() && tx.send(Event::DataChanged).is_err() {
-                    break;
-                }
-            }
+            pump_changes(
+                &stop,
+                |budget| subscriber.poll(budget).is_some(),
+                || tx.send(Event::DataChanged).is_ok(),
+            )
         })
     }
 
@@ -183,6 +183,26 @@ impl EventSource {
 impl Drop for EventSource {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+/// The change thread's whole loop, over a source of changes and a sink for the
+/// events they produce.
+///
+/// Split out of [`EventSource::spawn_change_thread`] rather than left inline so
+/// it can be driven by something other than a live daemon: `wait_for_change`
+/// answers "did a change arrive within this budget?", `report` answers "is the
+/// receiver still there?", and neither has to be real for the loop's own rules
+/// to be exercised.
+fn pump_changes(
+    stop: &AtomicBool,
+    mut wait_for_change: impl FnMut(Duration) -> bool,
+    mut report: impl FnMut() -> bool,
+) {
+    while !stop.load(Ordering::Relaxed) {
+        if wait_for_change(POLL_BUDGET) && !report() {
+            break;
+        }
     }
 }
 
