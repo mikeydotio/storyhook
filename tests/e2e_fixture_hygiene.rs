@@ -169,6 +169,12 @@ fn clicks_a_project_card_reads_the_shapes_the_suite_actually_writes() {
 /// starts to would need the same wait, and this fence would not catch it.
 /// `board-readiness.spec.ts` documents the window from the deep-link side for
 /// exactly that reason.
+///
+/// SH-265 closed the create-modal half of this at the source: `#new-story-btn`
+/// is now disabled for the whole window, so no click — real or test-driven —
+/// reaches `openCreateModal()` before data arrives. The filter-bar dropdowns
+/// are still built from `meta()` the same way and are not gated by any
+/// button, so this fence and `openProject()`'s wait still matter for them.
 #[test]
 fn every_spec_opens_a_board_through_the_helper_that_waits_for_its_data() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
