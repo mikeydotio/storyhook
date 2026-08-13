@@ -914,6 +914,130 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains("\"Delete\", danger: true"));
 }
 
+/// The dashboard's `<style>` block, so a selector assertion below cannot
+/// accidentally match the same text in the markup that follows it --
+/// `.search-input` names both a CSS rule and a `class="search-input"`
+/// attribute.
+fn stylesheet(body: &str) -> &str {
+    let start = body.find("<style>").expect("dashboard has a <style> block") + "<style>".len();
+    let end = body[start..]
+        .find("</style>")
+        .expect("the <style> block closes");
+    &body[start..start + end]
+}
+
+/// The declaration text of `selector`'s rule -- what's between its opening
+/// brace and the next `}`. Panics naming the selector when the rule is
+/// absent, so a rule that was renamed rather than deleted fails by name
+/// instead of as a silent `false`.
+fn declarations<'a>(css: &'a str, selector: &str) -> &'a str {
+    let needle = format!("\n{selector} {{");
+    let start = css
+        .find(&needle)
+        .unwrap_or_else(|| panic!("no `{selector}` rule in the dashboard's stylesheet"))
+        + needle.len();
+    let end = css[start..].find('}').expect("every CSS rule closes");
+    &css[start..start + end]
+}
+
+/// SH-256: on a coarse pointer, no text-entry control may compute under 16
+/// CSS pixels -- the size below which iOS Safari zooms the viewport to the
+/// field being focused, and does not zoom back out when it blurs.
+///
+/// The behavior itself is measured in a real coarse-pointer browser by
+/// `e2e/specs/zoom.mobile.spec.ts`, across every surface. This is the cheap
+/// layer: it fails in seconds, without a browser, if the mechanism is
+/// deleted or unpicked -- a rule reverted to a literal, or the
+/// coarse-pointer override dropped or detuned.
+#[test]
+fn web_serve_root_html_keeps_text_controls_above_the_ios_zoom_threshold() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    // The viewport stays scalable: this is an exact match on the whole tag,
+    // so it already rules out `user-scalable=no` / `maximum-scale` sneaking
+    // in as an easier-looking fix. iOS has ignored both since iOS 10, and
+    // they take pinch-zoom from the readers who need it most -- the fix
+    // belongs in the font sizes, not the viewport.
+    assert!(
+        body.contains(r#"<meta name="viewport" content="width=device-width, initial-scale=1">"#)
+    );
+
+    // Every text-entry rule reads a token; none carries its own literal
+    // size, which is what makes the coarse-pointer override below total.
+    for selector in [
+        ".search-input",
+        ".settings-form input",
+        ".status-row select, .status-row input[type=text]",
+        ".status-add input[type=text], .status-add select",
+        ".drawer-title",
+        ".field select, .field input[type=text], .field textarea",
+        ".inline-add input, .inline-add select",
+        ".comment-add textarea",
+        ".description-field",
+        ".confirm-delete input",
+        ".modal-body input[type=text], .modal-body select",
+        ".modal-body textarea",
+    ] {
+        assert!(
+            declarations(css, selector).contains("font-size: var(--control-font-"),
+            "`{selector}` must size itself from a --control-font-* token, so \
+             the coarse-pointer override reaches it"
+        );
+    }
+
+    // The override itself, and its exact values. Literal pixels: WebKit's
+    // threshold is an absolute CSS pixel count, nothing in this sheet sets
+    // `html { font-size }`, so `1rem` here would follow the reader's
+    // browser default and could still land under 16.
+    let block_start = css
+        .find("@media (pointer: coarse) {")
+        .expect("the coarse-pointer block is what raises the tokens");
+    let block = &css[block_start..];
+    let block = &block[..block.find("\n}").expect("the coarse-pointer block closes")];
+    for decl in [
+        "--control-font-xs: 16px;",
+        "--control-font-sm: 16px;",
+        "--control-font-md: 16px;",
+        "--control-font-lg: 18px;",
+    ] {
+        assert!(
+            block.contains(decl),
+            "the coarse-pointer block must set {decl}"
+        );
+    }
+    // No fifth token can sneak in here at a `rem` value and slip past the
+    // four literal checks above.
+    assert_eq!(
+        block.matches("--control-font").count(),
+        4,
+        "the coarse-pointer block should raise exactly the four control-font tokens"
+    );
+
+    // Double-tap-to-zoom, on the tap targets only -- never on `body`, where
+    // double-tapping to zoom the board's own text is a gesture the reader
+    // is entitled to.
+    let touch_action_selector = "button, select, .card, .repo-card, tbody tr, .ctxmenu-item, \
+         .projsel-item, .fdd-option, .filter-toggle";
+    assert!(
+        declarations(css, touch_action_selector).contains("touch-action: manipulation"),
+        "the dashboard's tap targets should carry touch-action: manipulation"
+    );
+    assert_eq!(
+        css.matches("touch-action").count(),
+        1,
+        "exactly one touch-action rule, on the tap targets -- never on the page as a whole"
+    );
+}
+
 #[test]
 fn web_serve_api_data_empty_project() {
     let fixture = served();
