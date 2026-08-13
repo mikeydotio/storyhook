@@ -40,6 +40,28 @@ export default defineConfig({
   retries: 0,
   workers: 1,
   reporter: [["list"]],
+  // Half Playwright's own 30s default, and measured rather than inherited
+  // (SH-222). Three full runs of the suite, the machine loaded by spinners
+  // to the range the reported failures were seen in:
+  //
+  //   load avg      suite    slowest test on this budget
+  //   idle (~3)     2.9m     7.7s   reopen-soft-deleted-confirm.spec.ts:210
+  //   ~44           4.4m     8.6s   reopen-soft-deleted-confirm.spec.ts:167
+  //   ~100          6.4m    10.0s   board-sort.spec.ts:54
+  //
+  // 111/111 green in all three, so the worst case observed leaves a third of
+  // the budget unspent at a load average of 100 — above the 32-88 SH-222
+  // recorded. The three specs that drive a real dispatch are not on this
+  // budget: they call `test.setTimeout()` with a multiple of their own
+  // measured `DISPATCH_COMPLETION_TIMEOUT` (SH-245), because they wait on a
+  // subprocess and nothing else here does.
+  //
+  // SH-222 was filed suspecting this number, on failures that all timed out
+  // against it. None of them was this number being wrong: two were a spec
+  // acting before the board had data (an action that could not succeed at
+  // any budget, `openProject()` in specs/support.ts) and one was a closed
+  // story stranded in a shared fixture. Raising it would have hidden both
+  // for exactly as long as the next machine was slower.
   timeout: 15_000,
   expect: { timeout: 5_000 },
   use: {
