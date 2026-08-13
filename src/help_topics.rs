@@ -698,13 +698,21 @@ Two things cancel a claim: the words not, no, never, without, unless,
 or an n't word, immediately before the claim word; and a Revert "..."
 subject, which claims nothing on its first line.
 
+A closed story still links — the shape of a merge commit whose body
+closes the very story its PR just closed — but it never moves; moving
+a closed story is the one edit reopening exists for.
+
 Every run reports why a story that linked did not also move — no claim
-word, sync.auto_transition off, no active state configured, or the
-story already out of its default state — so a project can tell each
-of those apart from 'broken'. To stop even a claim from moving a
-story:
+word, sync.auto_transition off, no active state configured, the story
+is closed, or it is already out of its default state — so a project
+can tell each of those apart from 'broken'. To stop even a claim from
+moving a story:
 
   story project settings set sync.auto_transition false
+
+An id that names no story in this project, or a story that has been
+deleted, links nothing at all — also reported, as 'named but not
+linked', rather than dropped without a trace.
 
 When to use:
   After git operations (commit, merge, pull) to link code changes to

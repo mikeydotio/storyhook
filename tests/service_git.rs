@@ -448,26 +448,139 @@ fn one_commit_naming_several_stories_touches_each_of_them_once() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// SH-279: a closed story still takes a link
+// ---------------------------------------------------------------------------
+
+/// The defect this fixes: before SH-279, `record_commit` resolved every
+/// story through `resolve_open_story`, so a merge commit naming a story its
+/// own PR had just closed recorded nothing — no event, no `referenced_by`
+/// entry, no diagnostic. `Intent::Append` now permits exactly the same
+/// append SH-261 already granted `story comment`.
 #[test]
-fn a_commit_naming_a_closed_story_is_skipped() {
+fn a_commit_naming_a_closed_story_is_linked_but_not_moved() {
     let fixture = ServiceFixture::new();
     git_init(&fixture);
     let id = create(&fixture, "Already finished");
     StoryService::new(&fixture.ctx())
         .set_state(&id, "done", None, None, None)
         .expect("closing it");
-    commit(&fixture, &format!("chore: mention the closed {id}"));
+    // A claim, not a bare mention: this proves the story does not move even
+    // when the commit asks it to, not merely that a mention never would have.
+    commit(&fixture, &format!("chore: closes {id}"));
 
     let message = sync(&fixture).expect("syncing");
     assert!(
-        message.contains("linked 0 commits to 0 stories"),
+        message.starts_with("scanned 1 commits, linked 1 commits to 1 stories"),
         "{message}"
     );
+    assert!(
+        !message.contains('\u{2192}'),
+        "a closed story must never move: {message}"
+    );
+    assert!(
+        message.contains(&format!(
+            "linked without moving: {id} (the story is closed)"
+        )),
+        "the report must name the real cause: {message}"
+    );
     assert_eq!(snapshot_of(&fixture, StoryNo::new(1)).state, "done");
+    assert_eq!(referenced_by_commits_of(&fixture, StoryNo::new(1)).len(), 1);
 }
 
+/// Field-by-field, modelled on `service_story.rs`'s
+/// `a_comment_on_a_closed_story_moves_only_updated_at_and_the_comment_list` —
+/// the same SH-261 argument, made for the sibling write SH-279 grants it to.
 #[test]
-fn a_commit_naming_a_story_that_does_not_exist_is_skipped() {
+fn a_commit_link_on_a_closed_story_moves_only_updated_at_and_the_commit_list() {
+    let fixture = ServiceFixture::new();
+    git_init(&fixture);
+    let id = create(&fixture, "untouched by a link");
+    StoryService::new(&fixture.ctx())
+        .set_state(&id, "done", None, None, None)
+        .expect("closing it");
+    let before = snapshot_of(&fixture, StoryNo::new(1));
+    commit(&fixture, &format!("chore: closes {id}"));
+
+    sync(&fixture).expect("syncing");
+    let after = snapshot_of(&fixture, StoryNo::new(1));
+
+    assert_eq!(after.state, before.state);
+    assert_eq!(after.superstate, before.superstate);
+    assert_eq!(after.closed_at, before.closed_at);
+    assert_eq!(after.hidden_at, before.hidden_at);
+    assert_eq!(after.deleted, before.deleted);
+    assert_eq!(after.draft, before.draft);
+    assert_eq!(after.labels, before.labels);
+    assert_eq!(after.assignee, before.assignee);
+    assert_eq!(after.priority, before.priority);
+    assert_eq!(after.awaiting, before.awaiting);
+    assert_eq!(after.relationships, before.relationships);
+    assert_eq!(after.title, before.title);
+    assert_eq!(after.comments, before.comments);
+    // The two that do move, and the reason the story stays findable.
+    assert_eq!(
+        after.referenced_by_commits.len(),
+        before.referenced_by_commits.len() + 1
+    );
+    assert!(after.updated_at >= before.updated_at);
+    // `archived` is a store-level derivation of `closed_at`; a link must not
+    // disturb it either, or the story would leave the archive.
+    let row = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
+        .expect("reading the row")
+        .expect("the story exists");
+    assert!(row.archived, "a linked closed story stays archived");
+}
+
+/// `hidden` is a display fact, not a permission one — the same rule SH-261
+/// pinned for `comment`.
+#[test]
+fn a_hidden_closed_story_accepts_a_link_and_stays_hidden() {
+    let fixture = ServiceFixture::new();
+    git_init(&fixture);
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let id = create(&fixture, "out of sight");
+    service
+        .set_state(&id, "done", None, None, None)
+        .expect("closing it");
+    service.hide(&id).expect("hiding");
+    commit(&fixture, &format!("chore: mentions {id}"));
+
+    sync(&fixture).expect("syncing");
+
+    let after = snapshot_of(&fixture, StoryNo::new(1));
+    assert!(after.hidden_at.is_some(), "the story stays hidden");
+    assert_eq!(after.referenced_by_commits.len(), 1);
+}
+
+/// A commit already linked to a closed story adds nothing on a second run —
+/// the idempotency check does not care whether the story is open.
+#[test]
+fn a_second_run_over_a_closed_story_adds_nothing() {
+    let fixture = ServiceFixture::new();
+    git_init(&fixture);
+    let id = create(&fixture, "linked once");
+    StoryService::new(&fixture.ctx())
+        .set_state(&id, "done", None, None, None)
+        .expect("closing it");
+    commit(&fixture, &format!("chore: mentions {id}"));
+    sync(&fixture).expect("first sync");
+
+    let message = sync(&fixture).expect("second sync");
+    assert!(
+        message.contains("linked 0 commits to 0 stories"),
+        "a re-run over an already-linked closed story must add nothing: {message}"
+    );
+    assert_eq!(referenced_by_commits_of(&fixture, StoryNo::new(1)).len(), 1);
+}
+
+/// SH-279: a decline is named, not swallowed — the same doctrine SH-178
+/// already applies to a link that landed but did not move its story.
+#[test]
+fn a_commit_naming_a_story_that_does_not_exist_is_declined_and_named() {
     let fixture = ServiceFixture::new();
     git_init(&fixture);
     commit(&fixture, "feat: implements SH-404, which nobody filed");
@@ -475,6 +588,68 @@ fn a_commit_naming_a_story_that_does_not_exist_is_skipped() {
     let message = sync(&fixture).expect("a phantom reference is not an error");
     assert!(
         message.contains("linked 0 commits to 0 stories"),
+        "{message}"
+    );
+    assert!(
+        message.contains("named but not linked: SH-404 (no such story)"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_commit_naming_a_deleted_story_is_declined_and_named() {
+    let fixture = ServiceFixture::new();
+    git_init(&fixture);
+    let id = create(&fixture, "will be deleted");
+    StoryService::new(&fixture.ctx())
+        .delete(&id, "duplicate")
+        .expect("deleting it");
+    commit(&fixture, &format!("chore: mentions {id}"));
+
+    let message = sync(&fixture).expect("syncing");
+    assert!(
+        message.contains("linked 0 commits to 0 stories"),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!(
+            "named but not linked: {id} (deleted; restore first with `story reopen <id> --force`)"
+        )),
+        "{message}"
+    );
+    assert!(
+        referenced_by_commits_of(&fixture, StoryNo::new(1)).is_empty(),
+        "a deleted story must not receive a link"
+    );
+}
+
+/// Two declines of the same cause share one report line, batched like every
+/// other reason (`NotMovedReason`'s `by_reason` grouping) — but the restore
+/// hint stays a placeholder rather than naming one of the two ids as if it
+/// were the only one.
+#[test]
+fn two_deleted_stories_share_one_report_line() {
+    let fixture = ServiceFixture::new();
+    git_init(&fixture);
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let first = create(&fixture, "first to go");
+    let second = create(&fixture, "second to go");
+    service.delete(&first, "duplicate").expect("deleting");
+    service.delete(&second, "duplicate").expect("deleting");
+    commit(&fixture, &format!("chore: mentions {first} and {second}"));
+
+    let message = sync(&fixture).expect("syncing");
+    assert!(
+        message.contains(&format!(
+            "named but not linked: {first}, {second} (deleted; restore first with `story reopen <id> --force`)"
+        )),
+        "{message}"
+    );
+    // One line, not two — the point of grouping by reason at all.
+    assert_eq!(
+        message.matches("named but not linked").count(),
+        1,
         "{message}"
     );
 }
