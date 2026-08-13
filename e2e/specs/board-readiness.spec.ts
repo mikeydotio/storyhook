@@ -74,6 +74,11 @@ test("openProject waits for the data, so the create modal is fully built", async
   // opens: opened in the window above it holds nothing but its placeholder
   // options and never repopulates, so this line spins out the full test
   // timeout with "did not find some options" rather than failing fast.
+  //
+  // SH-265 also disabled `#new-story-btn` for that same window, so by the
+  // time `openProject()` returns the click below is acting on a button that
+  // was already live -- this is what proves it, alongside the third test in
+  // this file, which asserts the disabled state directly.
   await page.locator("#new-story-btn").click();
   await expect(page.locator("#create-modal")).toHaveClass(/open/);
   await page.locator("#create-priority").selectOption("critical");
