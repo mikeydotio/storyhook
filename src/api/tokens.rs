@@ -132,7 +132,11 @@ struct TokenRecord {
 
 /// What `story token list` (and its wire equivalent) shows for one record —
 /// enough to recognize and manage a token, never enough to spend it.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+///
+/// `Deserialize` too, alongside `Serialize`: [`crate::daemon::lifecycle::list_named_tokens`]
+/// is a client of this same shape over the wire, and a second, hand-copied
+/// struct there would be one more place for the two to drift apart.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TokenSummary {
     pub name: String,
     pub prefix: String,

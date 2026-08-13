@@ -346,6 +346,9 @@ story web status
 story web open
 story web address
 story web revoke
+story token new <name>
+story token list
+story token revoke <name>
 story daemon start [--port <PORT>]
 story daemon stop [--force]
 story daemon status

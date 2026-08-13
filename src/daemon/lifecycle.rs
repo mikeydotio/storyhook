@@ -1781,6 +1781,130 @@ pub struct Hello {
     pub started_at: String,
 }
 
+/// Asks a daemon to mint a fresh named token (SH-255): `story token new`.
+///
+/// Loopback and the portfile's token, like [`arm_handoff`] and
+/// [`revoke_sessions`] — `/api/v1/*` is [`crate::api::rpc::admission`]'s, and
+/// minting the credential that will itself authenticate the dashboard is an
+/// administrative act, not something a browser tab may ask for on its own.
+pub fn mint_named_token(info: &DaemonInfo, name: &str) -> Result<MintedNamedToken, AppError> {
+    let url = format!(
+        "http://127.0.0.1:{}{}?name={name}",
+        info.port,
+        crate::api::tokens::TOKENS_PATH,
+    );
+    let response = control_agent()
+        .post(&url)
+        .header(crate::api::rpc::TOKEN_HEADER, &info.token)
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .send_empty()
+        .map_err(|e| AppError::Storage(format!("the daemon did not answer: {e}")))?;
+    read_token_route_reply(response)
+}
+
+/// Asks a daemon for every live named token: `story token list`. Never a
+/// secret — [`crate::api::tokens::TokenRegistry::list`] cannot produce one
+/// after mint time, so there is nothing this route could leak beyond what
+/// the registry itself already lacks.
+pub fn list_named_tokens(
+    info: &DaemonInfo,
+) -> Result<Vec<crate::api::tokens::TokenSummary>, AppError> {
+    let url = format!(
+        "http://127.0.0.1:{}{}",
+        info.port,
+        crate::api::tokens::TOKENS_PATH
+    );
+    let response = control_agent()
+        .get(&url)
+        .header(crate::api::rpc::TOKEN_HEADER, &info.token)
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .call()
+        .map_err(|e| AppError::Storage(format!("the daemon did not answer: {e}")))?;
+    let listed: ListedNamedTokens = read_token_route_reply(response)?;
+    Ok(listed.tokens)
+}
+
+/// Asks a daemon to end one named token immediately, whether or not it has
+/// expired: `story token revoke`.
+pub fn revoke_named_token(info: &DaemonInfo, name: &str) -> Result<(), AppError> {
+    let url = format!(
+        "http://127.0.0.1:{}{}/{name}",
+        info.port,
+        crate::api::tokens::TOKENS_PATH,
+    );
+    let response = control_agent()
+        .delete(&url)
+        .header(crate::api::rpc::TOKEN_HEADER, &info.token)
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .call()
+        .map_err(|e| AppError::Storage(format!("the daemon did not answer: {e}")))?;
+    read_token_route_reply::<serde_json::Value>(response).map(|_| ())
+}
+
+/// Reads a `/api/v1/tokens` response: a 200 deserializes as `T`; anything
+/// else becomes an [`AppError`] carrying the daemon's own text explanation —
+/// a duplicate name, the registry at capacity, or an unknown name to revoke.
+///
+/// Every caller above asks for `http_status_as_error(false)` for exactly
+/// this reason: the default would collapse a 409 and a 404 alike into one
+/// opaque transport error and discard the body that says which happened,
+/// where the daemon has already written the human-readable answer.
+///
+/// The status maps to the [`AppError`] variant a caller of a `story token`
+/// command actually wants: 404 is [`AppError::NotFound`] (exit 3), 409 is
+/// [`AppError::Validation`] (exit 2, a duplicate name or the registry at
+/// capacity — the caller's input, not a broken daemon), 400 is
+/// [`AppError::Usage`] (exit 2, a malformed request this CLI should not have
+/// sent). Anything else is [`AppError::Storage`] (exit 5): genuinely
+/// unexpected, since nothing about a well-formed `story token` invocation
+/// should produce it.
+fn read_token_route_reply<T: serde::de::DeserializeOwned>(
+    mut response: ureq::http::Response<ureq::Body>,
+) -> Result<T, AppError> {
+    let status = response.status().as_u16();
+    if status != 200 {
+        let body = response.body_mut().read_to_string().unwrap_or_default();
+        let message = if body.is_empty() {
+            format!("the daemon answered with status {status}")
+        } else {
+            body
+        };
+        return Err(match status {
+            404 => AppError::NotFound(message),
+            409 => AppError::Validation(message),
+            400 => AppError::Usage(message),
+            _ => AppError::Storage(message),
+        });
+    }
+    response
+        .into_body()
+        .read_json()
+        .map_err(|e| AppError::Storage(format!("the daemon's answer was unreadable: {e}")))
+}
+
+/// [`mint_named_token`]'s answer — the raw secret, returned exactly once.
+/// Nothing the daemon holds afterward can reproduce it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MintedNamedToken {
+    pub token: String,
+    pub name: String,
+    pub prefix: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// [`list_named_tokens`]'s answer.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ListedNamedTokens {
+    tokens: Vec<crate::api::tokens::TokenSummary>,
+}
+
 /// Asks a daemon to shut down, and waits for it to let go of its pidfile.
 pub fn request_shutdown(info: &DaemonInfo) -> Result<(), AppError> {
     let url = format!("http://127.0.0.1:{}/api/v1/shutdown", info.port);

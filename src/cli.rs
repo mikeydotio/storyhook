@@ -144,6 +144,9 @@ Usage:
   story web stop                                   (stop web dashboard)
   story web open                                   (open the dashboard in your browser)
   story web address                                (copy the dashboard URL to the clipboard)
+  story token new <name>                           (mint a named dashboard token)
+  story token list                                 (show every live token)
+  story token revoke <name>                        (end one token immediately)
   story member add "<name <email>>"
   story member add -g <github-handle>
   story state list
@@ -581,6 +584,14 @@ pub enum Invocation {
     Web {
         action: WebAction,
     },
+    /// `story token new|list|revoke` (SH-255) — the named, persistent,
+    /// revocable credential that authenticates the dashboard. Process
+    /// management, like [`Self::Daemon`] and [`Self::Web`]: a token record
+    /// lives in the daemon's own state directory, not in the store, so this
+    /// needs a running daemon rather than a project.
+    Token {
+        action: TokenAction,
+    },
     /// The storyhook daemon: the one process that owns the store and serves
     /// everything that talks to it.
     Daemon {
@@ -1014,6 +1025,29 @@ pub enum WebAction {
     /// [`crate::web`], against the control route, exactly as `web open` arms a
     /// coupon.
     Revoke,
+}
+
+/// `story token …` (SH-255) — the named, persistent, revocable credential
+/// that authenticates the dashboard.
+///
+/// Dispatched client-side against the control route, exactly like
+/// [`WebAction::Revoke`] and for the same reason: a token record is daemon
+/// process/filesystem state (`tokens.json` in the daemon's own state
+/// directory), not store data, so `/api/v1/invoke`'s `StoreInvoker` has no
+/// handle to it. See [`crate::api::tokens`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TokenAction {
+    /// Mints a fresh token named `name`, good for
+    /// [`crate::api::tokens::DEFAULT_TTL`]. The raw secret is printed exactly
+    /// once, on this response — nothing the daemon holds afterward can
+    /// reconstruct it.
+    New { name: String },
+    /// Every live token: name, prefix, and both timestamps. Never a secret —
+    /// the registry cannot produce one after mint time, so there is nothing
+    /// to withhold by omission here, only by construction.
+    List,
+    /// Ends the named token immediately, whether or not it has expired.
+    Revoke { name: String },
 }
 
 /// The global flags, and everything that is not one.
@@ -1834,6 +1868,7 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "github-auth" => parse_github_auth(args),
         "plugin" => parse_plugin(args),
         "web" => parse_web(args),
+        "token" => parse_token(args),
         "daemon" => parse_daemon(args),
         "store" => parse_store(args),
         "show" => parse_show(args),
@@ -3504,6 +3539,95 @@ fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
             },
         }),
         _ => Err(AppError::Usage(usage.to_string())),
+    }
+}
+
+/// The longest a token name may be, and its alphabet: letters, digits, `-`
+/// and `_`. The same restriction [`crate::daemon::backup::validate_label`]
+/// applies to a backup label, for the reason [`crate::api::tokens::intercept`]'s
+/// own `query_param` doc names: a name in this shape never needs
+/// percent-decoding on the wire, and it appears verbatim in a URL path
+/// segment (`DELETE /api/v1/tokens/{name}`) and a query parameter
+/// (`POST /api/v1/tokens?name=...`) alike.
+const MAX_TOKEN_NAME_LEN: usize = 64;
+
+/// Checks a user-supplied token name and returns it unchanged.
+///
+/// # Errors
+///
+/// [`AppError::Validation`] naming the offending value and the rule.
+fn validate_token_name(raw: &str) -> Result<&str, AppError> {
+    let refuse = |because: &str| {
+        Err(AppError::Validation(format!(
+            "invalid token name `{raw}`: {because}. A token name is 1-{MAX_TOKEN_NAME_LEN} \
+             characters of letters, digits, `-` and `_`."
+        )))
+    };
+    if raw.is_empty() {
+        return refuse("it is empty");
+    }
+    if raw.chars().count() > MAX_TOKEN_NAME_LEN {
+        return refuse("it is too long");
+    }
+    if let Some(bad) = raw
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || *c == '-' || *c == '_'))
+    {
+        return refuse(&format!(
+            "`{bad}` is neither a letter, a digit, `-` nor `_`"
+        ));
+    }
+    Ok(raw)
+}
+
+/// `story token new <name> | list | revoke <name>` (SH-255).
+fn parse_token(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = "usage: story token new <name> | story token list | story token revoke <name>";
+    if args.len() < 2 {
+        return Err(AppError::Usage(usage.to_string()));
+    }
+    match args[1].as_str() {
+        "new" => {
+            let Some(name) = args.get(2) else {
+                return Err(AppError::Usage(format!(
+                    "{usage}\n\n`token new` names the token to mint."
+                )));
+            };
+            if args.len() > 3 {
+                return Err(AppError::Usage(usage.to_string()));
+            }
+            Ok(Invocation::Token {
+                action: TokenAction::New {
+                    name: validate_token_name(name)?.to_string(),
+                },
+            })
+        }
+        "list" => {
+            if args.len() > 2 {
+                return Err(AppError::Usage(usage.to_string()));
+            }
+            Ok(Invocation::Token {
+                action: TokenAction::List,
+            })
+        }
+        "revoke" => {
+            let Some(name) = args.get(2) else {
+                return Err(AppError::Usage(format!(
+                    "{usage}\n\n`token revoke` names the token to end."
+                )));
+            };
+            if args.len() > 3 {
+                return Err(AppError::Usage(usage.to_string()));
+            }
+            Ok(Invocation::Token {
+                action: TokenAction::Revoke {
+                    name: validate_token_name(name)?.to_string(),
+                },
+            })
+        }
+        other => Err(AppError::Usage(format!(
+            "unknown token action: {other}. {usage}"
+        ))),
     }
 }
 

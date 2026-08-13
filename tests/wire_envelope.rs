@@ -21,7 +21,7 @@ use storyhook::cli::{
     AbandonedAction, Attach, ConflictSide, DaemonAction, EpicAction, GithubAuthAction, GraphMode,
     HistoryAction, HooksAction, Invocation, MemberInput, NewProjectRequest, NewProjectSpec,
     PhaseAction, PluginAction, ProjectAction, SettingsAction, SetupMode, SetupStrategy,
-    StateAction, StoreAction, TypeAction, WebAction,
+    StateAction, StoreAction, TokenAction, TypeAction, WebAction,
 };
 use storyhook::domain::{
     CommentMention, CommitReference, Member, Priority, ProgressRollup, StateDef, StoryComment,
@@ -1389,6 +1389,19 @@ fn invocation_corpus() -> Vec<Invocation> {
         Invocation::Web {
             action: WebAction::Address,
         },
+        Invocation::Token {
+            action: TokenAction::New {
+                name: "laptop".to_string(),
+            },
+        },
+        Invocation::Token {
+            action: TokenAction::List,
+        },
+        Invocation::Token {
+            action: TokenAction::Revoke {
+                name: "laptop".to_string(),
+            },
+        },
         Invocation::SessionStart,
         Invocation::Update {
             check: true,
@@ -1523,6 +1536,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Plugin { .. } => "Plugin",
         Invocation::Web { .. } => "Web",
         Invocation::Daemon { .. } => "Daemon",
+        Invocation::Token { .. } => "Token",
         Invocation::Store { .. } => "Store",
         Invocation::SessionStart => "SessionStart",
         Invocation::Update { .. } => "Update",
@@ -1543,7 +1557,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        61,
+        62,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

@@ -180,6 +180,12 @@ struct Serving<'a, S: Store> {
     /// deliberately outlives no daemon: a capability is process state, never
     /// written to disk, so a restart ends every one of them.
     sessions: Arc<crate::api::session::SessionRegistry>,
+    /// Every named, persistent, revocable dashboard token (SH-255). An `Arc`
+    /// for `handoff`'s reason: `story token new|list|revoke` need nothing
+    /// from the store, so they are answered on the `worker` thread and must
+    /// never queue behind the dispatcher pool — `story token revoke` most of
+    /// all, per this registry's own module doc.
+    tokens: Arc<crate::api::tokens::TokenRegistry>,
     /// Everything this daemon is serving right now (SH-173, SH-144). An `Arc`
     /// so the detached thread [`worker`] spawns on the shutdown path — which
     /// has no `'scope` of its own — can still poll it while draining.
@@ -269,6 +275,7 @@ where
         dispatch_registry: Arc::new(crate::api::dispatch::DispatchRegistry::load(env)),
         handoff: Arc::new(crate::api::handoff::HandoffRegistry::new()),
         sessions: Arc::new(crate::api::session::SessionRegistry::new()),
+        tokens: Arc::new(crate::api::tokens::TokenRegistry::load(env)),
         inflight: Arc::new(crate::daemon::lifecycle::InFlight::new(env.clone())),
         draining: AtomicBool::new(false),
     };
@@ -716,6 +723,7 @@ fn accept_loop<S: Store>(
     let dispatch_registry = Arc::clone(&serving.dispatch_registry);
     let handoff = Arc::clone(&serving.handoff);
     let sessions = Arc::clone(&serving.sessions);
+    let tokens = Arc::clone(&serving.tokens);
 
     // One closure per listener, cloned by `http1::serve_connections` once per
     // accepted connection (and, within a kept-alive connection, called again
@@ -738,6 +746,7 @@ fn accept_loop<S: Store>(
             &dispatch_registry,
             &handoff,
             &sessions,
+            &tokens,
         )
     };
 
@@ -798,6 +807,7 @@ fn worker(
     dispatch_registry: &Arc<crate::api::dispatch::DispatchRegistry>,
     handoff: &Arc<crate::api::handoff::HandoffRegistry>,
     sessions: &Arc<crate::api::session::SessionRegistry>,
+    tokens: &Arc<crate::api::tokens::TokenRegistry>,
 ) {
     let mut request = request;
     let method = request.method().clone();
@@ -875,6 +885,25 @@ fn worker(
         token,
         std::time::Instant::now(),
         sessions,
+    ) {
+        finish(request, reply);
+        return;
+    }
+
+    // Minting, listing and revoking named tokens (SH-255), answered here for
+    // `handoff::intercept`'s reason: none of the three needs the store, so
+    // none may queue behind the dispatcher pool. `rpc::admission` above has
+    // already required loopback and the master token for anything under
+    // `/api/v1/*`, which is where this route lives.
+    if let Some(reply) = crate::api::tokens::intercept(
+        &segments,
+        &method,
+        query.as_deref(),
+        &headers,
+        token,
+        chrono::Utc::now(),
+        std::time::Instant::now(),
+        tokens,
     ) {
         finish(request, reply);
         return;
