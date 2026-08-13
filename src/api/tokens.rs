@@ -62,7 +62,9 @@ use chrono::{DateTime, Utc};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
-use crate::api::http::{Reply, json_reply, text_reply};
+use crate::api::http::{
+    Reply, TrustedHosts, header_value, json_reply, mutation_guard_ok, text_reply,
+};
 use crate::api::rpc::token_ok;
 use crate::daemon::http1::{Header, Method};
 use crate::env::Environment;
@@ -73,6 +75,17 @@ use crate::env::Environment;
 /// same umbrella [`crate::api::handoff::ARM_PATH`] and
 /// [`crate::api::session`]'s listing route sit under.
 pub const TOKENS_PATH: &str = "/api/v1/tokens";
+
+/// Where the SPA exchanges a pasted named token for a cookie (SH-255).
+///
+/// Outside `/api`, on its own gate, for [`crate::api::handoff::REDEEM_PATH`]'s
+/// own reason: the caller has no credential yet, so this cannot sit behind
+/// [`crate::api::admission::admission`]'s "every `/api/**` route needs one."
+/// Unlike redemption, **not loopback-only**: pasting a token from a phone
+/// into that phone's own tab, over the tailnet, is exactly the tailnet-peer
+/// use case this model exists for — a coupon is armed only from this
+/// machine's own CLI, but a named token is meant to travel.
+pub const EXCHANGE_PATH: &str = "/token";
 
 /// How many bytes of OS CSPRNG material back a minted token.
 ///
@@ -196,6 +209,16 @@ pub struct TokenSummary {
 pub struct MintedToken {
     pub secret: String,
     pub summary: TokenSummary,
+}
+
+/// [`TokenRegistry::validate`]'s answer for a live token: enough to name it
+/// and to compute how much longer it has — [`EXCHANGE_PATH`]'s handler needs
+/// the expiry to give the cookie it sets the same remaining life as the
+/// record behind it, never longer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValidatedToken {
+    pub name: String,
+    pub expires_at: DateTime<Utc>,
 }
 
 /// Why a mint or revoke was refused.
@@ -457,7 +480,7 @@ impl TokenRegistry {
             .collect()
     }
 
-    /// Whether `offered` names a live token, and its name if so.
+    /// Whether `offered` names a live token, and its name and expiry if so.
     ///
     /// A prune runs first so an expired record can never answer `true` merely
     /// because nothing has swept it out yet — expiry is checked **at use**,
@@ -467,13 +490,16 @@ impl TokenRegistry {
         offered: &str,
         wall_now: DateTime<Utc>,
         mono_now: Instant,
-    ) -> Option<String> {
+    ) -> Option<ValidatedToken> {
         let inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         let now = self.effective_now(&inner, wall_now, mono_now);
         let hash = hash_hex(offered);
         let index = *inner.by_hash.get(&hash)?;
         let record = inner.persisted.records.get(index)?;
-        (record.expires_at > now).then(|| record.name.clone())
+        (record.expires_at > now).then(|| ValidatedToken {
+            name: record.name.clone(),
+            expires_at: record.expires_at,
+        })
     }
 
     fn persist(&self, persisted: &Persisted) {
@@ -688,6 +714,83 @@ fn handle_named(
 
 fn unauthorized() -> Reply {
     text_reply(401, "storyhook daemon: missing or invalid token")
+}
+
+/// Intercepts [`EXCHANGE_PATH`] before a `Job` is ever built — off the store
+/// thread, for [`intercept`]'s own reason: this needs nothing from the
+/// store, and every browser tab authenticating itself must never queue
+/// behind the dispatcher pool.
+#[allow(clippy::too_many_arguments)]
+pub fn intercept_exchange(
+    segments: &[&str],
+    method: &Method,
+    headers: &[Header],
+    trusted_hosts: &TrustedHosts,
+    cookie_name: &str,
+    registry: &TokenRegistry,
+    wall_now: DateTime<Utc>,
+    mono_now: Instant,
+) -> Option<Reply> {
+    match segments {
+        ["token"] => Some(handle_exchange(
+            method,
+            headers,
+            trusted_hosts,
+            cookie_name,
+            registry,
+            wall_now,
+            mono_now,
+        )),
+        _ => None,
+    }
+}
+
+/// `POST /token` — exchange a pasted named token for an `HttpOnly` cookie.
+///
+/// The offered value travels in [`crate::api::rpc::TOKEN_HEADER`], the same
+/// header a non-browser caller already presents a token in directly — there
+/// is no second header for "a token, being exchanged" versus "a token,
+/// presented."
+///
+/// Guarded by [`mutation_guard_ok`] rather than locality: a cross-origin
+/// page cannot set `X-Storyhook`, so it cannot pin an attacker-chosen value
+/// into this cookie, and that is the only property this route needs from
+/// its caller. [`EXCHANGE_PATH`]'s own doc says why locality would be the
+/// wrong gate here.
+///
+/// The cookie's `Max-Age` is the token's own **remaining** life, never a
+/// fresh full TTL — the jar copy must die no later than the record behind
+/// it, or a browser that cached the cookie past a revoke would keep
+/// presenting a name the registry has already forgotten (harmlessly: it
+/// would simply fail to validate — but a `Max-Age` longer than the truth is
+/// a promise this route should not make).
+///
+/// No wire-level distinction between "wrong," "expired" and "revoked" —
+/// [`unauthorized`]'s ordinary text — for [`crate::api::admission`]'s own
+/// reason: a 256-bit namespace gives an enumeration oracle nothing to
+/// search.
+fn handle_exchange(
+    method: &Method,
+    headers: &[Header],
+    trusted_hosts: &TrustedHosts,
+    cookie_name: &str,
+    registry: &TokenRegistry,
+    wall_now: DateTime<Utc>,
+    mono_now: Instant,
+) -> Reply {
+    if !matches!(method, Method::Post) || !mutation_guard_ok(headers, trusted_hosts) {
+        return text_reply(403, "Forbidden");
+    }
+    let Some(offered) = header_value(headers, crate::api::rpc::TOKEN_HEADER) else {
+        return unauthorized();
+    };
+    let Some(validated) = registry.validate(offered, wall_now, mono_now) else {
+        return unauthorized();
+    };
+    let max_age = (validated.expires_at - wall_now).num_seconds().max(0);
+    text_reply(204, String::new())
+        .no_store()
+        .with_cookie(set_cookie_header(cookie_name, offered, max_age))
 }
 
 fn mint_reply_body(minted: &MintedToken) -> String {
@@ -1255,6 +1358,159 @@ mod tests {
         let value = clear_cookie_header("storyhook_abc123");
         assert!(value.starts_with("storyhook_abc123=;"), "{value}");
         assert!(value.contains("Max-Age=0"), "{value}");
+    }
+
+    // --- The exchange route ---
+
+    fn guard_headers(pairs: &[(&str, &str)]) -> Vec<Header> {
+        let mut all = vec![("X-Storyhook", "1"), ("Host", "127.0.0.1")];
+        all.extend_from_slice(pairs);
+        headers(&all)
+    }
+
+    fn trusted_hosts() -> crate::api::http::TrustedHosts {
+        crate::api::http::TrustedHosts::default()
+    }
+
+    #[test]
+    fn a_valid_token_is_exchanged_for_a_cookie() {
+        let registry = registry_at(epoch());
+        let minted = registry
+            .mint("laptop".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap();
+        let request_headers = guard_headers(&[("X-Storyhook-Token", &minted.secret)]);
+        let reply = intercept_exchange(
+            &["token"],
+            &Method::Post,
+            &request_headers,
+            &trusted_hosts(),
+            "storyhook_test",
+            &registry,
+            epoch(),
+            Instant::now(),
+        )
+        .expect("the exchange path is this module's");
+        assert_eq!(reply.status, 204);
+        assert!(reply.body().is_empty(), "{}", reply.body());
+        let cookie = reply.cookie().expect("a successful exchange sets a cookie");
+        assert!(cookie.starts_with("storyhook_test="), "{cookie}");
+        assert!(cookie.contains(&minted.secret), "{cookie}");
+        assert!(cookie.contains("HttpOnly"), "{cookie}");
+        assert!(cookie.contains("SameSite=Strict"), "{cookie}");
+        // The token was minted with the full DEFAULT_TTL and validated at
+        // the same instant, so the cookie's Max-Age must equal it exactly.
+        assert!(
+            cookie.contains(&format!("Max-Age={}", DEFAULT_TTL.num_seconds())),
+            "{cookie}"
+        );
+    }
+
+    #[test]
+    fn an_invalid_token_is_refused_and_sets_no_cookie() {
+        let registry = registry_at(epoch());
+        let request_headers = guard_headers(&[("X-Storyhook-Token", "not-a-real-token")]);
+        let reply = intercept_exchange(
+            &["token"],
+            &Method::Post,
+            &request_headers,
+            &trusted_hosts(),
+            "storyhook_test",
+            &registry,
+            epoch(),
+            Instant::now(),
+        )
+        .expect("the exchange path is this module's");
+        assert_eq!(reply.status, 401);
+        assert!(reply.cookie().is_none());
+    }
+
+    #[test]
+    fn a_missing_token_header_is_refused() {
+        let registry = registry_at(epoch());
+        let reply = intercept_exchange(
+            &["token"],
+            &Method::Post,
+            &guard_headers(&[]),
+            &trusted_hosts(),
+            "storyhook_test",
+            &registry,
+            epoch(),
+            Instant::now(),
+        )
+        .expect("the exchange path is this module's");
+        assert_eq!(reply.status, 401);
+    }
+
+    #[test]
+    fn exchange_without_the_csrf_header_is_refused() {
+        let registry = registry_at(epoch());
+        let minted = registry
+            .mint("laptop".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap();
+        // No `X-Storyhook`, so a cross-origin page's plain form POST -- which
+        // cannot set that header -- cannot pin a value into this cookie.
+        let request_headers =
+            headers(&[("Host", "127.0.0.1"), ("X-Storyhook-Token", &minted.secret)]);
+        let reply = intercept_exchange(
+            &["token"],
+            &Method::Post,
+            &request_headers,
+            &trusted_hosts(),
+            "storyhook_test",
+            &registry,
+            epoch(),
+            Instant::now(),
+        )
+        .expect("the exchange path is this module's");
+        assert_eq!(reply.status, 403);
+        assert!(reply.cookie().is_none());
+    }
+
+    #[test]
+    fn exchange_needs_a_post() {
+        let registry = registry_at(epoch());
+        let minted = registry
+            .mint("laptop".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap();
+        let request_headers = guard_headers(&[("X-Storyhook-Token", &minted.secret)]);
+        let reply = intercept_exchange(
+            &["token"],
+            &Method::Get,
+            &request_headers,
+            &trusted_hosts(),
+            "storyhook_test",
+            &registry,
+            epoch(),
+            Instant::now(),
+        )
+        .expect("the exchange path is this module's");
+        assert_eq!(reply.status, 403);
+    }
+
+    #[test]
+    fn nothing_else_is_the_exchange_route() {
+        let registry = registry_at(epoch());
+        for segments in [vec!["api", "v1", "tokens"], vec!["tokens"], vec!["handoff"]] {
+            assert!(
+                intercept_exchange(
+                    &segments,
+                    &Method::Post,
+                    &guard_headers(&[]),
+                    &trusted_hosts(),
+                    "storyhook_test",
+                    &registry,
+                    epoch(),
+                    Instant::now(),
+                )
+                .is_none(),
+                "{segments:?} must fall through to ordinary routing"
+            );
+        }
+    }
+
+    #[test]
+    fn the_exchange_path_constant_is_what_the_router_matches() {
+        assert_eq!(crate::api::http::path_segments(EXCHANGE_PATH), ["token"]);
     }
 
     // --- Test fixtures ---

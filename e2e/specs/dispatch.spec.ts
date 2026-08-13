@@ -29,11 +29,14 @@ import { openProject, requiredEnv, seedToken } from "./support";
  *     machine, one story ("Archived idea") added purely so this file can
  *     open its drawer and confirm Dispatch is absent (AC1)
  *
- * `DASHBOARD_TOKEN` (`./support.ts`) is the daemon's real bearer token, read
- * via `story daemon token`, exactly as an operator would -- required on
- * every request since SH-187, not just dispatch's own. Every test but the
- * one that exercises the modal itself seeds it before navigating, the same
- * way an already-authenticated browser tab would carry it.
+ * `DASHBOARD_NAMED_TOKEN` (`./support.ts`) is a named token minted for the
+ * suite via `story token new` (SH-255) -- what a real user pastes into the
+ * modal now, and what `seedToken` seeds as a cookie for every test but the
+ * one that exercises the modal itself, the same way an already-authenticated
+ * browser tab would carry it. `DASHBOARD_TOKEN`, the daemon's own rotating
+ * bearer token, remains what non-browser callers use; it does not validate
+ * against the named-token exchange the modal now performs, so it must never
+ * be the thing pasted into `#token-input`.
  *
  * Dispatch Auto's own test does not (and cannot, without a real `claude`
  * binary standing behind the fixture's fake tmux) prove the autonomous
@@ -45,7 +48,7 @@ import { openProject, requiredEnv, seedToken } from "./support";
  * worktree lands on disk.
  */
 
-const DASHBOARD_TOKEN = requiredEnv("DASHBOARD_TOKEN");
+const DASHBOARD_NAMED_TOKEN = requiredEnv("DASHBOARD_NAMED_TOKEN");
 const ALPHA_STORY_ID = requiredEnv("DASHBOARD_ALPHA_STORY_ID");
 const ALPHA_CHECKOUT = requiredEnv("DASHBOARD_ALPHA_CHECKOUT");
 const DELTA_STORY_ID = requiredEnv("DASHBOARD_DELTA_STORY_ID");
@@ -147,7 +150,7 @@ test("a dispatch from a tokenless tab prompts once, then runs with no second pro
   // Dispatch is not a read, so it still needs the token: the POST is refused
   // 401 and `api()`'s own handler opens the modal and holds the request.
   await expect(page.locator("#token-modal")).toHaveClass(/open/);
-  await page.locator("#token-input").fill(DASHBOARD_TOKEN);
+  await page.locator("#token-input").fill(DASHBOARD_NAMED_TOKEN);
   await page.locator("#token-submit").click();
   await expect(page.locator("#token-modal")).not.toHaveClass(/open/);
 
@@ -268,7 +271,7 @@ test("a saved token is not asked for again on a second dispatch", async ({
   test.setTimeout(DISPATCH_COMPLETION_TIMEOUT + 30_000);
 
   // Dispatching Alpha's other story reuses a token already in this tab's
-  // sessionStorage -- Playwright starts each test with a fresh context, so
+  // cookie jar -- Playwright starts each test with a fresh context, so
   // this seeds it directly rather than depending on the previous test
   // having run first.
   await seedToken(page);
