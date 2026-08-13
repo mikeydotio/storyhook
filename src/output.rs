@@ -696,6 +696,15 @@ struct JsonEnvelope<'a> {
     graph: Option<&'a GraphView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     issues: Option<&'a [String]>,
+    /// `story doctor`'s findings, as data. Always present (if empty) on
+    /// doctor's own healthy envelope, so a `jq '.findings[]'` consumer never
+    /// meets `null`; absent everywhere else.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    findings: Option<&'a [crate::domain::finding::Finding]>,
+    /// What `story doctor` has to say that is not damage — the correctly
+    /// named successor to `issues`, which carries advice despite its name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    advice: Option<&'a [String]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     phases: Option<&'a [PhaseView]>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -739,6 +748,23 @@ pub fn render_error(error: &AppError, json: bool) -> String {
                 })
             );
         }
+        // An integrity report carries its findings as data beside the prose
+        // (SH-244). `error` is unchanged — it is these findings' own messages
+        // joined — so a caller reading it is unaffected, and a caller wanting
+        // `field`/`persisted`/`rebuilt` reads them instead of regexing a
+        // 1.68MB string for them.
+        if let AppError::Integrity(detail) = error {
+            return format!(
+                "{}\n",
+                serde_json::json!({
+                    "result": "error",
+                    "error": error.to_string(),
+                    "exit_code": error.exit_code(),
+                    "findings": detail.findings,
+                    "advice": detail.advice,
+                })
+            );
+        }
         return format!(
             "{}\n",
             serde_json::json!({
@@ -762,6 +788,8 @@ fn render_json(response: &Response) -> String {
             summary: None,
             graph: None,
             issues: None,
+            findings: None,
+            advice: None,
             phases: None,
             settings: None,
             project: None,
@@ -777,6 +805,8 @@ fn render_json(response: &Response) -> String {
                 summary: None,
                 graph: None,
                 issues: None,
+                findings: None,
+                advice: None,
                 phases: None,
                 settings: None,
                 project: None,
@@ -792,6 +822,8 @@ fn render_json(response: &Response) -> String {
             summary: None,
             graph: None,
             issues: None,
+            findings: None,
+            advice: None,
             phases: None,
             settings: None,
             project: None,
@@ -806,6 +838,8 @@ fn render_json(response: &Response) -> String {
             summary: None,
             graph: None,
             issues: None,
+            findings: None,
+            advice: None,
             phases: None,
             settings: None,
             project: None,
@@ -820,6 +854,8 @@ fn render_json(response: &Response) -> String {
             summary: Some(summary.as_ref()),
             graph: None,
             issues: None,
+            findings: None,
+            advice: None,
             phases: None,
             settings: None,
             project: None,
@@ -834,6 +870,8 @@ fn render_json(response: &Response) -> String {
             summary: None,
             graph: Some(graph.as_ref()),
             issues: None,
+            findings: None,
+            advice: None,
             phases: None,
             settings: None,
             project: None,
@@ -847,7 +885,18 @@ fn render_json(response: &Response) -> String {
             stories: None,
             summary: None,
             graph: None,
+            // `issues` is DEPRECATED and emitted unchanged for one release
+            // (SH-244). It has always carried *advice* rather than issues —
+            // a healthy `story doctor` is the only thing that produces this
+            // variant — so `advice` is the same list under its right name,
+            // and nothing in the tree reads `issues` today: the plugin's
+            // `_project_integrity` reads `.result` and `.error` only.
             issues: Some(issues),
+            // Always present, always empty: this variant *is* the healthy
+            // answer, so a consumer can read `.findings` on both outcomes
+            // without branching on which one it got.
+            findings: Some(&[]),
+            advice: Some(issues),
             phases: None,
             settings: None,
             project: None,
@@ -862,6 +911,8 @@ fn render_json(response: &Response) -> String {
             summary: None,
             graph: None,
             issues: None,
+            findings: None,
+            advice: None,
             phases: Some(phase_views),
             settings: None,
             project: None,
@@ -876,6 +927,8 @@ fn render_json(response: &Response) -> String {
             summary: None,
             graph: None,
             issues: None,
+            findings: None,
+            advice: None,
             phases: None,
             settings: Some(settings),
             project: None,
@@ -890,6 +943,8 @@ fn render_json(response: &Response) -> String {
             summary: None,
             graph: None,
             issues: None,
+            findings: None,
+            advice: None,
             phases: None,
             settings: None,
             project: Some(view.as_ref()),

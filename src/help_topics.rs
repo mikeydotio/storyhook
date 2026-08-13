@@ -1172,7 +1172,9 @@ Commands returning a graph ("graph" field):
   --critical-path only populates "critical_path"; other fields are null.
 
 Commands returning issues ("issues" field):
-  story doctor                -> "issues": ["issue description", ...]
+  story doctor (healthy)      -> "findings": [], "advice": [...]
+                                 "issues" is the deprecated spelling of
+                                 "advice" and holds the same list.
 
 Commands returning a message ("message" field):
   story project new           -> "message": "created story project..."
@@ -1197,6 +1199,37 @@ Errors produce:
     "error": "story `SH-99` not found",
     "exit_code": 3
   }
+
+`story doctor` on a damaged project fails like any other command -- exit 5,
+"result": "error" -- and carries its report as data beside the prose:
+
+  {
+    "result": "error",
+    "error": "SH-1: missing inverse relation `blocked-by` on story `SH-2`",
+    "exit_code": 5,
+    "findings": [
+      {
+        "code": "missing_inverse_relation",
+        "subject": "SH-1",
+        "remedy": "SH-2",
+        "message": "SH-1: missing inverse relation `blocked-by` on story `SH-2`"
+      }
+    ],
+    "advice": []
+  }
+
+  "code"     which check found it, as a stable snake_case slug
+  "subject"  the story it concerns; absent for a project-wide finding
+  "remedy"   the story a repair has to be written to, when that differs
+             from "subject" -- `story reopen` it first if it is closed
+  "message"  the exact line the plain-text report prints
+  "data"     what the check held beyond the sentence, keyed by shape. A
+             read-model divergence carries
+             .data.divergence.{field,persisted,rebuilt}
+
+"error" is exactly the findings' own messages joined, then "advice" -- so a
+caller reading it sees what it always saw, and one wanting the parts reads
+them instead of parsing that string.
 
 == Exit Codes ==
 

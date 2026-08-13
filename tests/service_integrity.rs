@@ -16,7 +16,10 @@
 //! also notices a relation only one end claims, but the story-level pass
 //! already reports that in the legacy wording, so the doctor prints it once.
 
+use std::collections::BTreeSet;
+
 use rusqlite::Connection;
+use storyhook::domain::finding::{Finding, FindingCode, FindingData};
 use storyhook::domain::{StoryEvent, TypeDef, fold_story};
 use storyhook::error::AppError;
 use storyhook::service::{Ctx, IntegrityService, NewStoryInput, RelationService, StoryService};
@@ -99,7 +102,20 @@ fn try_append_to_one_end(
     })
 }
 
+/// The findings' sentences, which is what most of this file asserts on.
+///
+/// `report()` answers typed findings since SH-244; the assertions below are
+/// about the *report a person reads*, so they keep reading sentences and the
+/// structured half is pinned separately, at the bottom of this file.
 fn report(fixture: &ServiceFixture) -> Vec<String> {
+    findings(fixture)
+        .into_iter()
+        .map(|finding| finding.message)
+        .collect()
+}
+
+/// The findings themselves.
+fn findings(fixture: &ServiceFixture) -> Vec<Finding> {
     IntegrityService::new(&fixture.ctx())
         .report()
         .expect("reporting")
@@ -1057,4 +1073,403 @@ fn fix_does_not_append_to_archived_stories() {
         .read(|tx| tx.head_seq(project, story))
         .expect("reading the head");
     assert_eq!(before, after, "an archived story's history was appended to");
+}
+
+// ---------------------------------------------------------------------------
+// The structured half (SH-244)
+// ---------------------------------------------------------------------------
+//
+// Everything above asserts on the report a person reads. These assert that the
+// same report is readable by a machine without a regex — which is the whole of
+// SH-244, and which SH-243 paid for in a hand-rolled parser over 1.68MB.
+
+/// **The story's acceptance criterion.** SH-243 needed four values out of a
+/// divergence line and had to regex them out of one flattened string; they
+/// were structured in `ReadModelDiff` the whole time and thrown away a line
+/// later. This reads all four off the finding.
+#[test]
+fn a_divergence_carries_the_four_values_sh243_had_to_regex_out() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    new_story(&ctx, "drifted");
+    drop(ctx);
+
+    let connection = Connection::open(fixture.store().path()).expect("opening the store");
+    connection
+        .execute("UPDATE stories SET title = 'wrong'", [])
+        .expect("damaging the read model");
+
+    let divergence = findings(&fixture)
+        .into_iter()
+        .find(|finding| finding.code == FindingCode::ReadModelDivergence)
+        .expect("a damaged read-model row is a divergence");
+
+    assert_eq!(
+        divergence.subject.as_deref(),
+        Some("SH-1"),
+        "`subject` carries the rendered id every other surface speaks, even though \
+         the sentence itself still says `story 1:`"
+    );
+    match divergence.data {
+        Some(FindingData::Divergence {
+            field,
+            persisted,
+            rebuilt,
+        }) => {
+            assert_eq!(field, "title");
+            assert_eq!(persisted, "wrong");
+            assert_eq!(rebuilt, "drifted");
+        }
+        other => panic!("a divergence must carry its three values: {other:?}"),
+    }
+
+    // `ServiceFixture` asserts the read model matches its events when it
+    // drops, and this test damaged it on purpose.
+    fix(&fixture).expect("repairing the damage this test did");
+}
+
+/// SH-225, as data rather than as prose an operator has to read carefully: a
+/// missing inverse is reported against the end that *has* its half, while the
+/// repair belongs on the end that *lacks* it. Eight closed stories sat behind
+/// that distinction for a week because nothing said which was which.
+#[test]
+fn a_missing_inverse_names_a_remedy_its_subject_does_not() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let a = new_story(&ctx, "one");
+    let b = new_story(&ctx, "two");
+    drop(ctx);
+
+    // One end claims the edge and the other's history never hears of it.
+    // Appended rather than deleted from a relate(): events are append-only,
+    // and a trigger refuses the DELETE.
+    append_to_one_end(
+        &fixture,
+        &a,
+        &[StoryEvent::StoryRelationshipAdded {
+            at: FIXTURE_NOW.to_string(),
+            other_id: b.clone(),
+            relation: "blocks".to_string(),
+        }],
+    );
+
+    let finding = findings(&fixture)
+        .into_iter()
+        .find(|finding| finding.code == FindingCode::MissingInverseRelation)
+        .expect("a one-sided edge is a missing inverse");
+
+    assert_eq!(
+        finding.subject.as_deref(),
+        Some(a.as_str()),
+        "reported against the end that already has its half"
+    );
+    assert_eq!(
+        finding.remedy.as_deref(),
+        Some(b.as_str()),
+        "but the repair is written to the end that lacks it — SH-225"
+    );
+    assert_ne!(
+        finding.subject, finding.remedy,
+        "if these were ever equal this test would be proving nothing"
+    );
+
+    // `ServiceFixture` asserts both halves of every edge when it drops.
+    fix(&fixture).expect("repairing the one-sided edge this test made");
+}
+
+/// The rendered report is exactly the findings' own sentences, joined — an
+/// equality, not a containment. This is what makes the structured and prose
+/// forms one value rather than two that can drift apart.
+#[test]
+fn the_rendered_report_is_exactly_its_findings_joined() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let a = new_story(&ctx, "one");
+    let b = new_story(&ctx, "two");
+    drop(ctx);
+    append_to_one_end(
+        &fixture,
+        &a,
+        &[StoryEvent::StoryRelationshipAdded {
+            at: FIXTURE_NOW.to_string(),
+            other_id: b.clone(),
+            relation: "blocks".to_string(),
+        }],
+    );
+
+    let found = findings(&fixture);
+    assert!(!found.is_empty(), "the fixture must actually be damaged");
+
+    let detail = storyhook::error::IntegrityDetail::report(found.clone(), Vec::new())
+        .expect("a finding is a report");
+    assert_eq!(
+        detail.to_string(),
+        found
+            .iter()
+            .map(|finding| finding.message.clone())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+
+    fix(&fixture).expect("repairing the one-sided edge this test made");
+}
+
+/// Every code this build can emit is reachable from a fixture.
+///
+/// Derived over the enum rather than a hand-maintained list, so a check added
+/// later without a provocation fails here instead of shipping unexercised —
+/// the same shape as the scans in `tests/store_isolation.rs`.
+#[test]
+fn every_finding_code_is_provoked_by_some_fixture() {
+    let mut seen: BTreeSet<FindingCode> = BTreeSet::new();
+    for provoke in code_provocations() {
+        for finding in provoke() {
+            seen.insert(finding.code);
+        }
+    }
+
+    let excused: BTreeSet<FindingCode> = excused().into_iter().map(|(code, _)| code).collect();
+    let unexercised: Vec<FindingCode> = every_finding_code()
+        .into_iter()
+        .filter(|code| !seen.contains(code) && !excused.contains(code))
+        .collect();
+    assert!(
+        unexercised.is_empty(),
+        "a finding code no fixture provokes is a check nothing tests — provoke it above, \
+         or excuse it with a reason: {unexercised:?}"
+    );
+
+    // And the excuses stay honest: one that a fixture now happens to provoke
+    // is a stale excuse, which is how an exclusion list rots into a lie.
+    let stale: Vec<FindingCode> = excused
+        .iter()
+        .copied()
+        .filter(|code| seen.contains(code))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "these are provoked after all — delete their excuses: {stale:?}"
+    );
+}
+
+/// Every [`FindingCode`] this build defines.
+///
+/// An exhaustive `match` rather than a list, so a code added later stops this
+/// file compiling until somebody decides how it is exercised. The same guard
+/// `tests/error_contract.rs` uses over `AppError`.
+fn every_finding_code() -> Vec<FindingCode> {
+    let named = |code: FindingCode| -> FindingCode {
+        match code {
+            FindingCode::RequiredStates
+            | FindingCode::UnaddressableType
+            | FindingCode::MultipleParents
+            | FindingCode::DanglingRelation
+            | FindingCode::MissingInverseRelation
+            | FindingCode::MissingReciprocalRelation
+            | FindingCode::ParentChildCycle
+            | FindingCode::UnknownType
+            | FindingCode::MalformedLabels
+            | FindingCode::MissingRow
+            | FindingCode::ExtraRow
+            | FindingCode::FoldFailure
+            | FindingCode::ReadModelDivergence
+            | FindingCode::UndecodableEvent
+            | FindingCode::Unstructured => code,
+        }
+    };
+    [
+        FindingCode::RequiredStates,
+        FindingCode::UnaddressableType,
+        FindingCode::MultipleParents,
+        FindingCode::DanglingRelation,
+        FindingCode::MissingInverseRelation,
+        FindingCode::MissingReciprocalRelation,
+        FindingCode::ParentChildCycle,
+        FindingCode::UnknownType,
+        FindingCode::MalformedLabels,
+        FindingCode::MissingRow,
+        FindingCode::ExtraRow,
+        FindingCode::FoldFailure,
+        FindingCode::ReadModelDivergence,
+        FindingCode::UndecodableEvent,
+        FindingCode::Unstructured,
+    ]
+    .into_iter()
+    .map(named)
+    .collect()
+}
+
+/// How each finding code is reached.
+///
+/// The graph-shaped checks are provoked directly against
+/// `compute_integrity_issues`, which is a pure function of the story map — a
+/// store fixture would add minutes and prove nothing extra. The rest go
+/// through a real damaged store.
+fn code_provocations() -> Vec<Box<dyn Fn() -> Vec<Finding>>> {
+    /// A project with one story, then whatever damage the caller does to the
+    /// database behind storyhook's back.
+    fn damaged(sql: &'static str) -> Vec<Finding> {
+        let fixture = ServiceFixture::new();
+        let ctx = fixture.ctx();
+        new_story(&ctx, "a story");
+        drop(ctx);
+        Connection::open(fixture.store().path())
+            .expect("opening the store")
+            .execute(sql, [])
+            .expect("damaging the store");
+        let found = findings(&fixture);
+        // Repaired where possible, because the fixture checks the read model
+        // and every edge when it drops. A fault `--fix` cannot repair — an
+        // unaddressable type slug — is neither of those and drops clean.
+        let _ = fix(&fixture);
+        found
+    }
+
+    vec![
+        Box::new(|| {
+            let fixture = ServiceFixture::new();
+            let ctx = fixture.ctx();
+            new_story(&ctx, "a story");
+            drop(ctx);
+            Connection::open(fixture.store().path())
+                .expect("opening the store")
+                .execute("UPDATE stories SET title = 'wrong'", [])
+                .expect("damaging the read model");
+            let found = findings(&fixture);
+            // Repaired before the fixture's own drop-time drift check.
+            fix(&fixture).expect("repairing");
+            found
+        }),
+        Box::new(|| {
+            let fixture = ServiceFixture::new();
+            let ctx = fixture.ctx();
+            let id = new_story(&ctx, "typed");
+            StoryService::new(&ctx)
+                .set_fields(
+                    &id,
+                    &storyhook::service::FieldEdits {
+                        story_type: Some("bug".into()),
+                        ..storyhook::service::FieldEdits::default()
+                    },
+                )
+                .expect("typing");
+            drop(ctx);
+            let project = fixture.project();
+            fixture
+                .store()
+                .write(|tx| {
+                    tx.put_types(
+                        project,
+                        &[TypeDef {
+                            slug: "feature".into(),
+                            description: None,
+                            emoji: None,
+                        }],
+                    )
+                })
+                .expect("shrinking the catalog under the story");
+            findings(&fixture)
+        }),
+        Box::new(|| damaged("DELETE FROM project_states WHERE slug = 'blocked'")),
+        Box::new(|| {
+            damaged(
+                "UPDATE project_types SET slug = 'in review' \
+             WHERE rowid = (SELECT MIN(rowid) FROM project_types)",
+            )
+        }),
+        Box::new(|| {
+            let fixture = ServiceFixture::new();
+            let ctx = fixture.ctx();
+            let id = new_story(&ctx, "labelled");
+            drop(ctx);
+            append_to_one_end(
+                &fixture,
+                &id,
+                &[StoryEvent::StoryLabelsSet {
+                    at: FIXTURE_NOW.to_string(),
+                    labels: vec!["web,sse".to_string()],
+                }],
+            );
+            let found = findings(&fixture);
+            let _ = fix(&fixture);
+            found
+        }),
+        Box::new(|| {
+            let fixture = ServiceFixture::new();
+            let ctx = fixture.ctx();
+            let a = new_story(&ctx, "one");
+            let b = new_story(&ctx, "two");
+            drop(ctx);
+            append_to_one_end(
+                &fixture,
+                &a,
+                &[StoryEvent::StoryRelationshipAdded {
+                    at: FIXTURE_NOW.to_string(),
+                    other_id: b,
+                    relation: "blocks".to_string(),
+                }],
+            );
+            let found = findings(&fixture);
+            let _ = fix(&fixture);
+            found
+        }),
+    ]
+}
+
+/// Codes no fixture in this file provokes, each with the reason.
+///
+/// Deliberately small and deliberately explicit: an entry here is a decision,
+/// not a gap that went unnoticed. The compiler forces a new code into
+/// [`every_finding_code`]; this list forces somebody to say why it is not
+/// exercised, exactly as `tests/error_contract.rs`'s `UNPROVOKABLE` does.
+fn excused() -> Vec<(FindingCode, &'static str)> {
+    vec![
+        (
+            FindingCode::MultipleParents,
+            "the store refuses it: `append_events` raises `a story may have at most one \
+             parent` at the fold, so no supported path can build one. The check survives \
+             for data written before that invariant existed — see \
+             `the_shapes_doctor_used_to_find_are_now_refused_by_the_schema`",
+        ),
+        (
+            FindingCode::DanglingRelation,
+            "a relation pointing at a story that never existed. `relate` refuses to \
+             create one, so provoking it needs a hand-injected event — the shape \
+             tests/doctor.rs owns, where `--fix` retracting it is the point",
+        ),
+        (
+            FindingCode::MissingReciprocalRelation,
+            "the mutual spelling of MissingInverseRelation, which IS provoked above; \
+             both come from the same branch of `compute_integrity_issues` and differ \
+             only in wording",
+        ),
+        (
+            FindingCode::ParentChildCycle,
+            "the write path refuses to create a cycle, so this needs injected events; \
+             tests/relations.rs owns cycle construction",
+        ),
+        (
+            FindingCode::MissingRow,
+            "a story with events and no read-model row — store damage, owned by \
+             tests/corruption_recovery.rs",
+        ),
+        (
+            FindingCode::ExtraRow,
+            "a row with no events behind it, same owner as MissingRow",
+        ),
+        (
+            FindingCode::FoldFailure,
+            "an unfoldable history, same owner as MissingRow",
+        ),
+        (
+            FindingCode::UndecodableEvent,
+            "a torn payload of a kind this build knows — the encoder cannot produce one, \
+             so it needs a hand-written row",
+        ),
+        (
+            FindingCode::Unstructured,
+            "not a doctor finding at all: it is what `IntegrityDetail: From<String>` mints \
+             so every raise site carries one. Pinned in src/error.rs's own unit tests",
+        ),
+    ]
 }

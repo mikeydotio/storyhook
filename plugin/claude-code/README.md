@@ -105,9 +105,13 @@ Worth knowing before changing anything here:
 - **`complete` never forces anything.** `git worktree remove` runs without
   `--force`, and a branch is deleted only if merged into `origin/<default>` or
   local `<default>`; an un-comparable branch counts as *not* merged.
-- **`story doctor` exits 5 when it finds anything** and emits `.issues[]` only
-  when that array is empty, so `/story doctor` treats a non-zero exit as a
-  finding, never as a failed probe.
+- **`story doctor` exits 5 when it finds anything**, so `/story doctor` treats a
+  non-zero exit as a finding, never as a failed probe. A healthy run answers
+  `.findings[]` (empty) and `.advice[]`; a damaged one fails with the same
+  `.findings[]` populated, each carrying a `code`, the story it concerns, and —
+  for a read-model divergence — the `field`/`persisted`/`rebuilt` values that
+  used to be readable only by regexing `.error` (SH-244). `.issues[]` is the
+  deprecated spelling of `.advice[]`.
 - **An `--auto` session closes with a plain `story move`, never `/story
   complete`.** `complete` asks a confirming question — fatal to an unattended
   run — and would try to remove the very worktree the auto session is

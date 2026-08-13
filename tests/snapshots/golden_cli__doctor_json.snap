@@ -5,6 +5,8 @@ source: tests/golden_cli.rs
   {
     "argv": "story doctor --json",
     "stdout": {
+      "advice": [],
+      "findings": [],
       "issues": [],
       "result": "ok"
     }

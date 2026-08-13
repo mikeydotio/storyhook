@@ -41,6 +41,12 @@ pub mod pr_url;
 /// write rather than about the story, so it lives in its own columns on
 /// `events` and leaves the payload's shape — which every replay path decodes —
 /// exactly as it was.
+/// What `story doctor` found, as data rather than as a sentence — the
+/// structured half of an integrity report (SH-244).
+pub mod finding;
+
+use finding::{Finding, FindingCode, FindingData};
+
 pub mod provenance;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1521,10 +1527,12 @@ pub fn fold_story(
         }
     }
 
-    let state = state.ok_or_else(|| AppError::Integrity(format!("story {id} is missing state")))?;
-    let title = title.ok_or_else(|| AppError::Integrity(format!("story {id} is missing title")))?;
+    let state =
+        state.ok_or_else(|| AppError::Integrity(format!("story {id} is missing state").into()))?;
+    let title =
+        title.ok_or_else(|| AppError::Integrity(format!("story {id} is missing title").into()))?;
     let created_at = created_at
-        .ok_or_else(|| AppError::Integrity(format!("story {id} is missing created_at")))?;
+        .ok_or_else(|| AppError::Integrity(format!("story {id} is missing created_at").into()))?;
     let updated_at = updated_at.unwrap_or_else(|| created_at.clone());
     // A deleted story comes to rest in a CLOSED state rather than keeping the
     // slug it happened to be in — SH-130.
@@ -1638,26 +1646,39 @@ pub fn is_mutual_relation(relation: &str) -> bool {
 
 pub fn compute_integrity_issues(
     stories: &BTreeMap<String, StorySnapshot>,
-) -> BTreeMap<String, Vec<String>> {
-    let mut issues: BTreeMap<String, Vec<String>> = BTreeMap::new();
+) -> BTreeMap<String, Vec<Finding>> {
+    let mut issues: BTreeMap<String, Vec<Finding>> = BTreeMap::new();
     let graph = HierarchyGraph::from_stories(stories);
 
     for story in stories.values() {
         let parent_count = graph.parents_of(&story.id).len();
 
         if parent_count > 1 {
-            issues
-                .entry(story.id.clone())
-                .or_default()
-                .push("story has multiple parents".to_string());
+            issues.entry(story.id.clone()).or_default().push(
+                Finding::new(FindingCode::MultipleParents, "story has multiple parents")
+                    .about(&story.id),
+            );
         }
 
         for relation in &story.relationships {
             let Some(other_story) = stories.get(&relation.other_id) else {
-                issues.entry(story.id.clone()).or_default().push(format!(
-                    "dangling relation `{}` to missing story `{}`",
-                    relation.relation, relation.other_id
-                ));
+                issues.entry(story.id.clone()).or_default().push(
+                    Finding::new(
+                        FindingCode::DanglingRelation,
+                        format!(
+                            "dangling relation `{}` to missing story `{}`",
+                            relation.relation, relation.other_id
+                        ),
+                    )
+                    .about(&story.id)
+                    // The retraction is written to the story that *claims* the
+                    // edge — the missing end has no history to append to.
+                    .repaired_on(&story.id)
+                    .carrying(FindingData::Relation {
+                        relation: relation.relation.clone(),
+                        other: relation.other_id.clone(),
+                    }),
+                );
                 continue;
             };
 
@@ -1667,28 +1688,45 @@ pub fn compute_integrity_issues(
                 });
 
                 if !has_inverse {
-                    let issue = if is_mutual_relation(&relation.relation) {
-                        format!(
-                            "missing reciprocal relation `{}` on story `{}`",
-                            relation.relation, relation.other_id
+                    let (code, message) = if is_mutual_relation(&relation.relation) {
+                        (
+                            FindingCode::MissingReciprocalRelation,
+                            format!(
+                                "missing reciprocal relation `{}` on story `{}`",
+                                relation.relation, relation.other_id
+                            ),
                         )
                     } else {
-                        format!(
-                            "missing inverse relation `{}` on story `{}`",
-                            expected_inverse, relation.other_id
+                        (
+                            FindingCode::MissingInverseRelation,
+                            format!(
+                                "missing inverse relation `{}` on story `{}`",
+                                expected_inverse, relation.other_id
+                            ),
                         )
                     };
-                    issues.entry(story.id.clone()).or_default().push(issue);
+                    issues.entry(story.id.clone()).or_default().push(
+                        Finding::new(code, message)
+                            .about(&story.id)
+                            // SH-225, as data: this is reported against the end
+                            // that *has* its half, and the repair belongs on
+                            // the end that lacks it. An operator working from
+                            // the sentence alone reopens the wrong story.
+                            .repaired_on(&relation.other_id)
+                            .carrying(FindingData::Relation {
+                                relation: relation.relation.clone(),
+                                other: relation.other_id.clone(),
+                            }),
+                    );
                 }
             }
         }
     }
 
     for node in graph.cycle_nodes() {
-        issues
-            .entry(node)
-            .or_default()
-            .push("parent/child cycle detected".to_string());
+        issues.entry(node.clone()).or_default().push(
+            Finding::new(FindingCode::ParentChildCycle, "parent/child cycle detected").about(node),
+        );
     }
 
     issues

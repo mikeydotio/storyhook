@@ -1393,9 +1393,14 @@ cmd_capture() {
 
 # _project_integrity — run the CLI's own `story doctor` tolerantly.
 #
-# It exits 5 with an AppError::Integrity whenever it finds ANYTHING, and emits
-# its `.issues[]` array only when that array is empty. So a non-zero exit here
-# is an ordinary finding, not a failure of this probe, and must never abort it.
+# It exits 5 with an AppError::Integrity whenever it finds ANYTHING. So a
+# non-zero exit here is an ordinary finding, not a failure of this probe, and
+# must never abort it.
+#
+# Reads `.result` and `.error` only, and deliberately keeps doing so: since
+# SH-244 the error envelope also carries `.findings[]` as structured data, but
+# this probe wants one summary line for a human, which is exactly what `.error`
+# already is — the findings' own sentences joined.
 #
 # Sets _INTEGRITY_OK and _INTEGRITY_SUMMARY rather than echoing: a caller
 # capturing the summary with $(...) would run this in a subshell and silently
