@@ -76,7 +76,7 @@ pub use git_links::{CheckoutLink, GitLinkService, OriginLink, PointerOutcome};
 #[cfg(feature = "github-sync")]
 pub use github::{GithubSyncService, RealGithubApiFactory, StoreSyncStorage};
 pub use grouping::{GroupingService, PhaseCleared};
-pub use integrity::IntegrityService;
+pub use integrity::{FixOutcome, IntegrityService};
 pub use migrate::{MigrationPlan, MigrationReport};
 pub use pr_link::PrLinkService;
 pub use project::{
