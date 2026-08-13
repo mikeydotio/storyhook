@@ -59,7 +59,10 @@ pub fn non_temporary_dir(label: &str) -> PathBuf {
     let dir = base.join(label);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap_or_else(|e| {
-        panic!("creating a non-temporary fixture directory at {}: {e}", dir.display())
+        panic!(
+            "creating a non-temporary fixture directory at {}: {e}",
+            dir.display()
+        )
     });
     dir
 }
@@ -67,10 +70,8 @@ pub fn non_temporary_dir(label: &str) -> PathBuf {
 /// [`non_temporary_dir`]'s base, resolved once per process.
 fn real_store_root() -> PathBuf {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
-    ROOT.get_or_init(|| {
-        choose_base(&candidates()).unwrap_or_else(|message| panic!("{message}"))
-    })
-    .clone()
+    ROOT.get_or_init(|| choose_base(&candidates()).unwrap_or_else(|message| panic!("{message}")))
+        .clone()
 }
 
 /// The candidate bases, most to least preferred, each paired with the name
@@ -191,8 +192,14 @@ mod tests {
     fn every_candidate_temporary_or_absent_is_a_named_error_not_a_silent_skip() {
         let err = choose_base(&[("a", temp("a")), ("b", None), ("c", temp("c"))])
             .expect_err("no candidate qualified");
-        assert!(err.contains('a') && err.contains('c'), "must name every candidate tried: {err}");
-        assert!(err.contains("unavailable"), "must say why 'b' was skipped: {err}");
+        assert!(
+            err.contains('a') && err.contains('c'),
+            "must name every candidate tried: {err}"
+        );
+        assert!(
+            err.contains("unavailable"),
+            "must say why 'b' was skipped: {err}"
+        );
         assert!(
             err.contains(REAL_ROOT_VAR),
             "must name the lever that unblocks the failure: {err}"

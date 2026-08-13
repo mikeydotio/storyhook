@@ -18,7 +18,9 @@
 
 use std::path::{Path, PathBuf};
 
-use storyhook_test_support::{TestEnv, daemon_containment, non_temporary_dir, scratch_dir, story_binary};
+use storyhook_test_support::{
+    TestEnv, daemon_containment, non_temporary_dir, scratch_dir, story_binary,
+};
 
 /// A data home that is **not** under any temporary directory.
 ///
