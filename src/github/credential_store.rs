@@ -73,18 +73,6 @@ pub fn default_credential_store() -> Result<Arc<CredentialStore>, AppError> {
         .map_err(|e| AppError::GithubAuth(format!("could not open the macOS keychain: {e}")))
 }
 
-/// See [the macOS version](default_credential_store) above.
-#[cfg(target_os = "windows")]
-pub fn default_credential_store() -> Result<Arc<CredentialStore>, AppError> {
-    windows_native_keyring_store::Store::new()
-        .map(|store| store as Arc<CredentialStore>)
-        .map_err(|e| {
-            AppError::GithubAuth(format!(
-                "could not open the Windows Credential Manager: {e}"
-            ))
-        })
-}
-
 /// See [the macOS version](default_credential_store) above. Secret Service
 /// over D-Bus (`zbus`, pure Rust — no system `libdbus` needed), which is what
 /// GNOME Keyring and KWallet both implement.
@@ -104,9 +92,10 @@ pub fn default_credential_store() -> Result<Arc<CredentialStore>, AppError> {
 }
 
 /// See [the macOS version](default_credential_store) above. No backend is
-/// bundled for a platform outside the three storyhook ships prebuilt
-/// binaries for.
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+/// bundled for a platform outside the two storyhook ships prebuilt binaries
+/// for — Windows included, since nothing here has ever compiled for it
+/// (SH-260).
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn default_credential_store() -> Result<Arc<CredentialStore>, AppError> {
     Err(AppError::GithubAuth(
         "story github-auth has no keychain backend on this platform".to_string(),
