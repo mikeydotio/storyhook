@@ -45,17 +45,22 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::domain::finding::{Finding, FindingCode, FindingData};
 use crate::domain::{
     STATE_ROLE_ACTIVE, StateDef, StoryEvent, StorySnapshot, TypeDef, active_state,
-    inverse_relation, normalize_labels, validate_required_states, validate_type_slug,
+    compute_integrity_issues, inverse_relation, normalize_labels, validate_required_states,
+    validate_type_slug,
 };
-use crate::error::AppError;
+use crate::error::{AppError, IntegrityDetail};
 use crate::store::{
     ExpectedSeq, ProjectId, ReadOps, Store, StoryNo, StoryQuery, diff_read_model, repair_read_model,
 };
 
 use super::state_set::write_states_repairing;
-use super::{Ctx, append_and_fold, project_prefix, query::story_views};
+use super::{
+    Ctx, append_and_fold, project_prefix,
+    query::{story_map, story_views},
+};
 
 /// Reports and repairs a project's integrity.
 pub struct IntegrityService<'a, S: Store> {
@@ -76,12 +81,16 @@ impl<'a, S: Store> IntegrityService<'a, S> {
     /// at all until this is cleared — so it is the finding that explains the
     /// others' refusals.
     ///
-    /// An empty vector means the project is healthy; the caller turns a
-    /// non-empty one into [`AppError::Integrity`]. Deliberately excludes
+    /// An empty vector means the project is healthy; the caller hands a
+    /// non-empty one to [`IntegrityDetail::report`]. Deliberately excludes
     /// [`notices`](Self::notices): a project whose only anomaly is an event
     /// kind this build has never heard of is healthy by this definition,
     /// because that anomaly is a newer storyhook's data, not damage (SH-185).
-    pub fn report(&self) -> Result<Vec<String>, AppError> {
+    ///
+    /// Every element carries the sentence it used to *be* (SH-244), so the
+    /// rendered report is these findings' own messages joined and nothing
+    /// re-renders them.
+    pub fn report(&self) -> Result<Vec<Finding>, AppError> {
         // One transaction for both: a report whose catalog half and story half
         // came from different instants could name a state the other did not see.
         let mut issues = self.ctx.store().read(|tx| {
@@ -94,10 +103,14 @@ impl<'a, S: Store> IntegrityService<'a, S> {
         // The oracle the legacy read model never had. On a healthy project it
         // contributes nothing, which is why adding it does not move a single
         // byte of `doctor`'s existing output.
-        issues.extend(drift_issues(&diff_read_model(
-            self.ctx.store(),
-            self.project(),
-        )?));
+        let prefix = self
+            .ctx
+            .store()
+            .read(|tx| project_prefix(tx, self.project()))?;
+        issues.extend(drift_issues(
+            &diff_read_model(self.ctx.store(), self.project())?,
+            &prefix,
+        ));
         Ok(issues)
     }
 
@@ -318,12 +331,16 @@ impl<'a, S: Store> IntegrityService<'a, S> {
         let remaining = self.report()?;
         let notices = self.notices()?;
         let blocked_detail = blocked_repairs_detail(&blocked);
-        if !remaining.is_empty() {
-            return Err(AppError::Integrity(join_sections(&[
-                &remaining.join("\n"),
-                &blocked_detail,
-                &notices.join("\n"),
-            ])));
+        // The advice this run owes, in the order it printed before findings
+        // became data: what could not be repaired, then the notices. Each
+        // entry is one rendered block, so a multi-line one keeps its shape.
+        let mut advice: Vec<String> = Vec::new();
+        if !blocked_detail.is_empty() {
+            advice.push(blocked_detail.clone());
+        }
+        advice.extend(notices.iter().cloned());
+        if let Some(detail) = IntegrityDetail::report(remaining, advice) {
+            return Err(AppError::Integrity(detail));
         }
 
         let mut message = if !touched.is_empty() || states_added > 0 {
@@ -390,10 +407,12 @@ impl<'a, S: Store> IntegrityService<'a, S> {
 /// One finding, not one per missing state: the remedy is the same command
 /// however many are missing, and [`validate_required_states`] already names
 /// them all in its own sentence.
-fn catalog_issues(states: &[StateDef], types: &[TypeDef]) -> Vec<String> {
-    let mut issues: Vec<String> = validate_required_states(states)
+fn catalog_issues(states: &[StateDef], types: &[TypeDef]) -> Vec<Finding> {
+    let mut issues: Vec<Finding> = validate_required_states(states)
         .err()
-        .map(|error| error.to_string())
+        // No `subject`: this is a property of the *project*, and a story id
+        // here would be an invention.
+        .map(|error| Finding::new(FindingCode::RequiredStates, error.to_string()))
         .into_iter()
         .collect();
 
@@ -406,11 +425,17 @@ fn catalog_issues(states: &[StateDef], types: &[TypeDef]) -> Vec<String> {
     // rather than claiming a repair it did not make.
     issues.extend(types.iter().filter_map(|story_type| {
         validate_type_slug(&story_type.slug).err().map(|error| {
-            format!(
-                "type `{}` cannot be addressed: {error}. Retype its stories (`story set <id> \
-                 --type none`) and remove it with `story type remove -- '{}'`",
-                story_type.slug, story_type.slug
+            Finding::new(
+                FindingCode::UnaddressableType,
+                format!(
+                    "type `{}` cannot be addressed: {error}. Retype its stories (`story set <id> \
+                     --type none`) and remove it with `story type remove -- '{}'`",
+                    story_type.slug, story_type.slug
+                ),
             )
+            .carrying(FindingData::Type {
+                slug: story_type.slug.clone(),
+            })
         })
     }));
     issues
@@ -418,30 +443,63 @@ fn catalog_issues(states: &[StateDef], types: &[TypeDef]) -> Vec<String> {
 
 /// The legacy story-level checks, reproduced exactly.
 ///
-/// Two flag kinds are deliberately suppressed, as they always have been:
-/// `obviated` (a deliberate authoring decision, not damage) and `conflicts`
-/// (advisory). The unknown-type check is separate because it is a property of
-/// the story *and the catalog*, which the cross-story integrity pass does not
-/// see.
-fn story_issues(tx: &impl ReadOps, project: ProjectId) -> Result<Vec<String>, AppError> {
+/// # Where the checks are read from, and why it changed
+///
+/// This used to read `StoryView::flagged_reasons`, which is prose. It now
+/// reads [`compute_integrity_issues`] directly, because that is where the
+/// codes and the `remedy` live and rendering them to sentences only to parse
+/// them back would be the defect SH-244 exists to remove.
+///
+/// One consequence is deliberate: `service::query` appends "story is obviated
+/// by another story" to `flagged_reasons` *after* the checks run, for
+/// `StoryView`'s benefit. Reading the checks directly means that sentence
+/// never reaches here at all, which is the same outcome the filter below used
+/// to produce for it — by construction now rather than by coincidence.
+///
+/// `flagged_reasons` keeps its published `Vec<String>` shape; only this
+/// consumer stopped going through it.
+///
+/// The unknown-type check is separate because it is a property of the story
+/// *and the catalog*, which the cross-story integrity pass does not see.
+fn story_issues(tx: &impl ReadOps, project: ProjectId) -> Result<Vec<Finding>, AppError> {
     let types: BTreeSet<String> = tx
         .types(project)?
         .into_iter()
         .map(|story_type| story_type.slug)
         .collect();
 
+    let stories = story_map(tx, project)?;
+    let mut by_story = compute_integrity_issues(&stories);
+
     let mut issues = Vec::new();
-    for view in story_views(tx, project, false)? {
-        for issue in view.flagged_reasons {
-            if issue.contains("obviated") || issue.contains("conflicts") {
-                continue;
-            }
-            issues.push(format!("{}: {}", view.story.id, issue));
-        }
-        if let Some(slug) = &view.story.story_type
+    for story in stories.values() {
+        // Sorted and deduplicated by sentence, which is what `story_views`
+        // did to `flagged_reasons` before this read the checks directly — the
+        // report's byte order is part of its golden snapshot.
+        let mut found = by_story.remove(&story.id).unwrap_or_default();
+        found.sort_by(|a, b| a.message.cmp(&b.message));
+        found.dedup_by(|a, b| a.message == b.message);
+        issues.extend(
+            found
+                .into_iter()
+                .filter(|finding| !is_suppressed(&finding.message))
+                .map(|finding| {
+                    let message = format!("{}: {}", story.id, finding.message);
+                    Finding { message, ..finding }
+                }),
+        );
+
+        if let Some(slug) = &story.story_type
             && !types.contains(slug)
         {
-            issues.push(format!("{}: unknown type `{slug}`", view.story.id));
+            issues.push(
+                Finding::new(
+                    FindingCode::UnknownType,
+                    format!("{}: unknown type `{slug}`", story.id),
+                )
+                .about(&story.id)
+                .carrying(FindingData::Type { slug: slug.clone() }),
+            );
         }
         // A label written before SH-164's write-path guard existed — a
         // comma-bearing one (unsplittable and unaddressable by
@@ -450,14 +508,50 @@ fn story_issues(tx: &impl ReadOps, project: ProjectId) -> Result<Vec<String>, Ap
         // finding, the same as any other issue a closed story's history
         // cannot be appended to fix — and `--fix` names the story to reopen
         // rather than leaving the finding unexplained (SH-225).
-        if view.story.labels != normalize_labels(&view.story.labels) {
-            issues.push(format!(
-                "{}: malformed labels {:?} — a label cannot contain a comma or be blank",
-                view.story.id, view.story.labels
-            ));
+        if story.labels != normalize_labels(&story.labels) {
+            issues.push(
+                Finding::new(
+                    FindingCode::MalformedLabels,
+                    format!(
+                        "{}: malformed labels {:?} — a label cannot contain a comma or be blank",
+                        story.id, story.labels
+                    ),
+                )
+                .about(&story.id)
+                // Repaired in place: the normalized set is re-emitted as an
+                // event on this story itself.
+                .repaired_on(&story.id)
+                .carrying(FindingData::Labels {
+                    labels: story.labels.clone(),
+                }),
+            );
         }
     }
     Ok(issues)
+}
+
+/// Whether a story-level finding is one `doctor` has always declined to
+/// report.
+///
+/// **Kept as a substring test on purpose, and it is not a good one.** The rule
+/// was `issue.contains("obviated") || issue.contains("conflicts")`, and what it
+/// actually suppresses is subtler than its authors' summary of it: not only
+/// `service::query`'s obviation sentence, but any finding whose *relation* is
+/// spelled `obviated-by` — a missing inverse, a dangling edge — because that
+/// spelling contains the word. It is therefore asymmetric, and knowably so:
+/// the mirrored finding, whose relation is spelled `obviates`, does **not**
+/// contain "obviated" and is reported. `tests/service_integrity.rs`'s
+/// `a_blocked_repair_is_named_even_when_the_report_is_clean` pins the
+/// suppressed direction.
+///
+/// Now that a finding carries a [`FindingData::Relation`], this could be asked
+/// precisely — and asking it precisely would change which findings `doctor`
+/// reports, which is a behaviour change and does not belong in the commit that
+/// restructured the payload. So the imprecise rule is preserved exactly,
+/// named, and filed. `"conflicts"` has no producer anywhere in the tree; that
+/// half was already dead when it was written.
+fn is_suppressed(reason: &str) -> bool {
+    reason.contains("obviated") || reason.contains("conflicts")
 }
 
 /// The read-model drift a doctor report adds to the story-level findings.
@@ -484,30 +578,83 @@ fn story_issues(tx: &impl ReadOps, project: ProjectId) -> Result<Vec<String>, Ap
 /// has never heard of is a newer storyhook's data sitting patiently in a store
 /// an older one is reading. SH-185's council put that second half somewhere it
 /// cannot move `report()`'s health verdict at all: [`notice_issues`].
-fn drift_issues(drift: &crate::store::ReadModelDiff) -> Vec<String> {
+/// # `subject` is the rendered id; the sentence keeps the bare number
+///
+/// These sentences say `story 41:` while every story-level one says `SH-41:` —
+/// one command with two names for one story. The prose is left exactly as it
+/// was, because it is pinned by golden snapshots and changing it here would be
+/// two hats in one commit; `subject` carries the id every other surface
+/// speaks, so a consumer never has to know the difference. The inconsistency
+/// itself is filed separately.
+fn drift_issues(drift: &crate::store::ReadModelDiff, prefix: &str) -> Vec<Finding> {
+    let id = |story: &StoryNo| story.to_id(prefix);
     let mut lines = Vec::new();
     for story in &drift.missing_rows {
-        lines.push(format!("story {story}: has events but no read-model row"));
+        lines.push(
+            Finding::new(
+                FindingCode::MissingRow,
+                format!("story {story}: has events but no read-model row"),
+            )
+            .about(id(story)),
+        );
     }
     for story in &drift.extra_rows {
-        lines.push(format!("story {story}: read-model row with no events"));
+        lines.push(
+            Finding::new(
+                FindingCode::ExtraRow,
+                format!("story {story}: read-model row with no events"),
+            )
+            .about(id(story)),
+        );
     }
     for (story, reason) in &drift.fold_failures {
-        lines.push(format!("story {story}: cannot be folded: {reason}"));
+        lines.push(
+            Finding::new(
+                FindingCode::FoldFailure,
+                format!("story {story}: cannot be folded: {reason}"),
+            )
+            .about(id(story))
+            .carrying(FindingData::Reason {
+                reason: reason.clone(),
+            }),
+        );
     }
     for divergence in &drift.divergences {
-        lines.push(format!(
-            "story {}: {} is `{}` but the events say `{}`",
-            divergence.story_no, divergence.field, divergence.persisted, divergence.rebuilt
-        ));
+        lines.push(
+            Finding::new(
+                FindingCode::ReadModelDivergence,
+                format!(
+                    "story {}: {} is `{}` but the events say `{}`",
+                    divergence.story_no, divergence.field, divergence.persisted, divergence.rebuilt
+                ),
+            )
+            .about(id(&divergence.story_no))
+            // The four values SH-243 hand-parsed out of 1.68MB of prose. They
+            // were structured here all along and thrown away one line later.
+            .carrying(FindingData::Divergence {
+                field: divergence.field.clone(),
+                persisted: divergence.persisted.clone(),
+                rebuilt: divergence.rebuilt.clone(),
+            }),
+        );
     }
     for unknown in &drift.unknown_events {
         if crate::domain::is_known_event_kind(&unknown.kind) {
-            lines.push(format!(
-                "story {}: event {} is a `{}` this build cannot decode — retained verbatim, but \
-                 not folded",
-                unknown.story_no, unknown.seq, unknown.kind
-            ));
+            lines.push(
+                Finding::new(
+                    FindingCode::UndecodableEvent,
+                    format!(
+                        "story {}: event {} is a `{}` this build cannot decode — retained \
+                         verbatim, but not folded",
+                        unknown.story_no, unknown.seq, unknown.kind
+                    ),
+                )
+                .about(id(&unknown.story_no))
+                .carrying(FindingData::Event {
+                    seq: unknown.seq.get(),
+                    event_kind: unknown.kind.clone(),
+                }),
+            );
         }
     }
     lines
@@ -583,32 +730,6 @@ fn blocked_without_reason_notices(
             )
         })
         .collect())
-}
-
-/// Renders `report()`'s findings for display when the run is unhealthy,
-/// appending [`notices`](IntegrityService::notices) after them.
-///
-/// The reason this exists at all: a notice plays no part in deciding whether
-/// the run is healthy, but a project can carry a notice **and** a real finding
-/// in the same run, and the notice still owes the caller visibility — SH-185's
-/// council was explicit that excluding it from the health vector must not
-/// mean excluding it from the output entirely. `story doctor`'s plain report
-/// path and `--fix`'s failure path both need exactly this rendering, so it is
-/// shared rather than duplicated.
-pub fn detail_with_notices(issues: &[String], notices: &[String]) -> String {
-    join_sections(&[&issues.join("\n"), &notices.join("\n")])
-}
-
-/// Joins a doctor detail's sections with single newlines, skipping the empty
-/// ones — so a caller can hand over a section it has no occupants for without
-/// leaving a blank line in the output.
-fn join_sections(sections: &[&str]) -> String {
-    sections
-        .iter()
-        .filter(|section| !section.is_empty())
-        .copied()
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 /// What `--fix` identified and did not do, because the only story it could

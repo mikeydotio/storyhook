@@ -297,3 +297,102 @@ fn doctor_does_not_flag_known_story_type() {
 
     project.run(&["doctor"]).success();
 }
+
+/// **SH-244's acceptance criterion, end to end.** SH-243 audited 109 read-model
+/// divergences by regexing them out of `story doctor --json`'s `.error` — one
+/// unstructured ~1.68MB string. Every value that parser recovered is now a
+/// field, so this reads all four with plain JSON access and no pattern matching
+/// at all. If this test ever needs a regex again, the story has regressed.
+#[test]
+fn doctor_json_hands_a_divergence_over_as_data_not_prose() {
+    let env = TestEnv::shared();
+    let project = env.project().seed_story("A").build();
+    let store = project.open_store();
+    let id = project.project_id(&store);
+
+    // Damage the read model behind storyhook's back: the row now disagrees
+    // with the events it was folded from, which is the exact shape SH-243 met
+    // 109 of.
+    let story = project.story_no(&store, "SH-1");
+    store
+        .write(|tx| {
+            let mut snapshot = tx.story(id, story)?.expect("the story exists").snapshot;
+            let head = tx.head_seq(id, story)?;
+            snapshot.title = "wrong".to_string();
+            tx.put_story(id, &snapshot, head)?;
+            Ok(())
+        })
+        .expect("damaging the read model");
+
+    let output = project
+        .run(&["doctor", "--json"])
+        .code(5)
+        .get_output()
+        .clone();
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("`--json` must answer one JSON document");
+
+    assert_eq!(
+        envelope["result"], "error",
+        "a damaged project is still a failure — a scripted caller must not read `ok`"
+    );
+    assert_eq!(envelope["exit_code"], 5);
+
+    let divergence = envelope["findings"]
+        .as_array()
+        .expect("findings is an array")
+        .iter()
+        .find(|finding| finding["code"] == "read_model_divergence")
+        .expect("a row that disagrees with its events is a divergence");
+
+    assert_eq!(divergence["subject"], "SH-1");
+    assert_eq!(divergence["data"]["divergence"]["field"], "title");
+    assert_eq!(divergence["data"]["divergence"]["persisted"], "wrong");
+    assert_eq!(divergence["data"]["divergence"]["rebuilt"], "A");
+
+    // And the prose a human reads is unchanged — it is these findings' own
+    // messages, so nothing was traded away to gain the structure.
+    let joined: Vec<&str> = envelope["findings"]
+        .as_array()
+        .expect("an array")
+        .iter()
+        .map(|finding| finding["message"].as_str().expect("a message"))
+        .collect();
+    assert!(
+        envelope["error"]
+            .as_str()
+            .expect("an error string")
+            .starts_with(&joined.join("\n")),
+        "`error` must be the findings' own sentences: {}",
+        envelope["error"]
+    );
+}
+
+/// A healthy project answers the same shape, so a consumer reads `.findings`
+/// on both outcomes without branching on which one it got.
+#[test]
+fn doctor_json_answers_an_empty_findings_array_when_healthy() {
+    let env = TestEnv::shared();
+    let project = env.project().seed_story("A").build();
+
+    let output = project
+        .run(&["doctor", "--json"])
+        .code(0)
+        .get_output()
+        .clone();
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("`--json` must answer one JSON document");
+
+    assert_eq!(envelope["result"], "ok");
+    assert_eq!(
+        envelope["findings"],
+        serde_json::json!([]),
+        "always present, never null, so `jq '.findings[]'` needs no guard"
+    );
+    // `issues` is the deprecated spelling of `advice`, emitted unchanged for
+    // one release; while both ship they must be the same list.
+    assert_eq!(
+        envelope["advice"], envelope["issues"],
+        "the deprecated key and its successor must not drift apart"
+    );
+}

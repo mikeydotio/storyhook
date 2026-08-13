@@ -1166,6 +1166,6 @@ impl Refusals {
             "\nEach one is a decision storyhook will not make on your behalf. Fix them in the \
              legacy project, then run `story migrate` again — nothing has changed on either side.",
         );
-        Err(AppError::Integrity(message))
+        Err(AppError::Integrity(message.into()))
     }
 }

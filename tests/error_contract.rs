@@ -415,6 +415,56 @@ fn every_error_variant_holds_its_contract() {
             );
             assert_eq!(object.get("actual").and_then(|v| v.as_str()), Some("todo"));
             vec!["actual", "error", "exit_code", "expected", "result"]
+        } else if case.variant == "Integrity" {
+            // An integrity report carries its findings as data (SH-244), so a
+            // caller reads `field`/`persisted`/`rebuilt` off a divergence
+            // instead of regexing them out of `error` — which SH-243 had to do,
+            // over 1.68MB. `error` itself is unchanged: it is these findings'
+            // own messages joined, so the existing consumers
+            // (`plugin/claude-code/bin/story.sh::_project_integrity` reads
+            // `.result` and `.error`) are untouched, and the two keys are a
+            // strict addition.
+            assert_eq!(
+                object.get("result").and_then(|v| v.as_str()),
+                Some("error"),
+                "an integrity report is still a failure"
+            );
+            let findings = object
+                .get("findings")
+                .and_then(|v| v.as_array())
+                .expect("findings must be an array");
+            assert!(
+                !findings.is_empty(),
+                "an integrity error carrying no findings is unrepresentable — \
+                 `IntegrityDetail::report` returns None for one"
+            );
+            assert!(
+                findings
+                    .iter()
+                    .all(|finding| finding.get("code").is_some_and(|c| c.is_string())
+                        && finding.get("message").is_some_and(|m| m.is_string())),
+                "every finding names its check and carries its sentence: {findings:?}"
+            );
+            // The prose is exactly the findings' messages, then the advice —
+            // an equality, so neither form can drift from the other.
+            let rendered: Vec<&str> = findings
+                .iter()
+                .filter_map(|finding| finding.get("message").and_then(|m| m.as_str()))
+                .chain(
+                    object
+                        .get("advice")
+                        .and_then(|v| v.as_array())
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|entry| entry.as_str()),
+                )
+                .collect();
+            assert_eq!(
+                object.get("error").and_then(|v| v.as_str()),
+                Some(rendered.join("\n").as_str()),
+                "`error` must be its findings and advice joined, not a second rendering"
+            );
+            vec!["advice", "error", "exit_code", "findings", "result"]
         } else {
             assert_eq!(
                 object.get("result").and_then(|v| v.as_str()),
@@ -448,7 +498,7 @@ fn unreachable_variants_still_hold_their_exit_codes() {
         (AppError::Validation(String::new()), 2),
         (AppError::NotFound(String::new()), 3),
         (AppError::LockTimeout(String::new()), 4),
-        (AppError::Integrity(String::new()), 5),
+        (AppError::Integrity("a finding".into()), 5),
         (AppError::Storage(String::new()), 5),
         (AppError::GithubAuth(String::new()), 6),
         (AppError::GithubApi(String::new()), 7),
@@ -487,7 +537,7 @@ fn the_table_covers_every_variant() {
         AppError::Validation(String::new()),
         AppError::NotFound(String::new()),
         AppError::LockTimeout(String::new()),
-        AppError::Integrity(String::new()),
+        AppError::Integrity("a finding".into()),
         AppError::Storage(String::new()),
         AppError::GithubAuth(String::new()),
         AppError::GithubApi(String::new()),

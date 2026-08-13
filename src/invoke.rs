@@ -678,8 +678,11 @@ pub fn dispatch<S: Store>(
                 Ok(Response::Message(message))
             } else {
                 let notices = service.notices()?;
-                match service.report()? {
-                    issues if issues.is_empty() => {
+                // The emptiness question is asked once, by the constructor
+                // that owns the invariant (SH-244): `Some` *is* the unhealthy
+                // verdict, and neither branch re-decides it.
+                match crate::error::IntegrityDetail::report(service.report()?, notices.clone()) {
+                    None => {
                         let (orphans, origins) = if audit_catalog {
                             (catalog.orphaned()?, catalog.unregistered_origins()?)
                         } else {
@@ -700,10 +703,9 @@ pub fn dispatch<S: Store>(
                     }
                     // A real finding still fails the command, but a notice
                     // present in the same run must not vanish just because it
-                    // played no part in that verdict.
-                    issues => Err(AppError::Integrity(
-                        crate::service::integrity::detail_with_notices(&issues, &notices),
-                    )),
+                    // played no part in that verdict — it rides `advice`,
+                    // where nothing can mistake it for damage.
+                    Some(detail) => Err(AppError::Integrity(detail)),
                 }
             }
         }

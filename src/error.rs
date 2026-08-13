@@ -1,6 +1,123 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::domain::finding::Finding;
+
+/// An integrity fault, with everything its producer knew about it.
+///
+/// # Why this is not a `String`
+///
+/// It was one, and every check that filled it already held its answer
+/// structured — see [`crate::domain::finding`] for the loss that caused and
+/// SH-243 for the 1.68MB regex that paid for it.
+///
+/// # The rendered report is *derived*, never stored
+///
+/// [`Display`](std::fmt::Display) joins the findings' own sentences and then
+/// the advice, which is exactly what `service::integrity::detail_with_notices`
+/// used to build by hand. Nothing holds a second copy of that string, so the
+/// structured and prose forms cannot disagree — the same reason
+/// [`WireError`] declines to transport a message it can recompute.
+///
+/// # Three fields, because they answer three different questions
+///
+/// * `context` is what [`AppError::with_context`] prepends. It is its own
+///   field rather than being folded into the body, because folding it in would
+///   make the derivation above a lie the first time a layer annotated an
+///   integrity error — and that is reachable: `daemon::lifecycle` wraps any
+///   `AppError` it decodes from a failed startup.
+/// * `findings` is damage. Non-empty for every value this type can hold; see
+///   [`IntegrityDetail::report`] and [`From<String>`].
+/// * `advice` never decides anything. SH-185's council put an event kind this
+///   build has never heard of here specifically so it could not affect a
+///   health verdict or an exit code, and the separation is by *type* rather
+///   than by a flag on a shared list: something that is not a [`Finding`]
+///   cannot be counted as one by a producer that sets a field wrong.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntegrityDetail {
+    /// What a layer that met this error added on the way past.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    /// What is wrong. Never empty.
+    pub findings: Vec<Finding>,
+    /// What is worth saying and is not damage.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub advice: Vec<String>,
+}
+
+impl IntegrityDetail {
+    /// A doctor report, or `None` when there is nothing wrong.
+    ///
+    /// **The emptiness question is asked here and nowhere else.** It used to be
+    /// asked at each raise site, which is two hand-maintained copies of one
+    /// invariant and a third owed by anything added later; a caller now
+    /// branches on this constructor's answer instead of deciding for itself
+    /// whether it has an error to raise.
+    ///
+    /// `advice` is carried whether or not it is empty, because advice alone is
+    /// not a fault — a project whose only anomaly is a notice is healthy, and
+    /// this returns `None` for it.
+    #[must_use]
+    pub fn report(findings: Vec<Finding>, advice: Vec<String>) -> Option<Self> {
+        (!findings.is_empty()).then_some(Self {
+            context: None,
+            findings,
+            advice,
+        })
+    }
+
+    /// The sections of the rendered report, in the order they print.
+    fn sections(&self) -> Vec<String> {
+        let findings = self
+            .findings
+            .iter()
+            .map(|finding| finding.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        [findings, self.advice.join("\n")]
+            .into_iter()
+            .filter(|section| !section.is_empty())
+            .collect()
+    }
+}
+
+/// Prose from a caller with no structure to offer, as a whole detail.
+///
+/// **Total on purpose.** Minting a [`FindingCode::Unstructured`](crate::domain::finding::FindingCode::Unstructured) finding rather
+/// than an empty list is what makes "an integrity error carrying no findings"
+/// unrepresentable at *every* raise site — a story missing a field mid-fold, a
+/// refused migration, a store invariant — and not merely at the two that
+/// happen to check. The rendered message is unchanged at all of them.
+impl From<String> for IntegrityDetail {
+    fn from(message: String) -> Self {
+        Self {
+            context: None,
+            findings: vec![Finding::unstructured(message)],
+            advice: Vec::new(),
+        }
+    }
+}
+
+impl From<&str> for IntegrityDetail {
+    fn from(message: &str) -> Self {
+        Self::from(message.to_string())
+    }
+}
+
+impl std::fmt::Display for IntegrityDetail {
+    /// The report a human reads, and byte-for-byte what this error rendered
+    /// before it carried structure.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let body = self.sections().join("\n");
+        match &self.context {
+            // The same shape `with_context` gives every other variant: the
+            // context, a blank line, then the original message verbatim.
+            Some(context) => write!(f, "{context}\n\n{body}"),
+            None => write!(f, "{body}"),
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum AppError {
     #[error("{0}")]
@@ -12,7 +129,7 @@ pub enum AppError {
     #[error("{0}")]
     LockTimeout(String),
     #[error("{0}")]
-    Integrity(String),
+    Integrity(IntegrityDetail),
     #[error("{0}")]
     Storage(String),
     #[error("github auth: {0}")]
@@ -53,6 +170,13 @@ impl AppError {
     /// compares programmatically, not prose, and prepending to either would
     /// corrupt a value rather than annotate a message.
     ///
+    /// `Integrity` is annotated on its own `context` field, for the same
+    /// reason at a larger scale: its findings are values a caller reads, and
+    /// prepending to the first one's `message` would corrupt a finding while
+    /// appearing to annotate a report. The *rendered* result is identical
+    /// either way — [`IntegrityDetail`]'s `Display` puts the context in
+    /// exactly the position this method's `joined` would have.
+    ///
     /// The context joins the variant's *detail*, so for a variant whose
     /// `Display` carries a prefix — `github auth: {0}` — the prefix stays
     /// outermost. That is the right order: it names the subsystem, and the
@@ -65,7 +189,18 @@ impl AppError {
             Self::Validation(detail) => Self::Validation(joined(detail)),
             Self::NotFound(detail) => Self::NotFound(joined(detail)),
             Self::LockTimeout(detail) => Self::LockTimeout(joined(detail)),
-            Self::Integrity(detail) => Self::Integrity(joined(detail)),
+            Self::Integrity(mut detail) => {
+                // Annotated, never rewritten: an outer layer's sentence is
+                // prepended to the report, and every finding inside it is
+                // returned exactly as its producer wrote it. A second context
+                // replaces the first the way a second `joined` would nest —
+                // both are one annotation ahead of the body.
+                detail.context = Some(match detail.context {
+                    Some(inner) => format!("{context}\n\n{inner}"),
+                    None => context.to_string(),
+                });
+                Self::Integrity(detail)
+            }
             Self::Storage(detail) => Self::Storage(joined(detail)),
             Self::GithubAuth(detail) => Self::GithubAuth(joined(detail)),
             Self::GithubApi(detail) => Self::GithubApi(joined(detail)),
@@ -107,17 +242,51 @@ impl AppError {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WireError {
-    Usage { detail: String },
-    Validation { detail: String },
-    NotFound { detail: String },
-    LockTimeout { detail: String },
-    Integrity { detail: String },
-    Storage { detail: String },
-    GithubAuth { detail: String },
-    GithubApi { detail: String },
-    SyncConflict { detail: String },
-    SyncErrors { detail: String },
-    StateConflict { expected: String, actual: String },
+    Usage {
+        detail: String,
+    },
+    Validation {
+        detail: String,
+    },
+    NotFound {
+        detail: String,
+    },
+    LockTimeout {
+        detail: String,
+    },
+    /// The one variant whose payload is a document rather than a sentence.
+    ///
+    /// Carried field-by-field like every other, which is the whole point of the
+    /// mirror: a receiver reads `findings` as data instead of parsing the
+    /// rendered report back apart. The rendered report is not transported at
+    /// all — [`IntegrityDetail`] recomputes it — so a transported copy cannot
+    /// come to disagree with the findings it was rendered from.
+    Integrity {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<String>,
+        findings: Vec<Finding>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        advice: Vec<String>,
+    },
+    Storage {
+        detail: String,
+    },
+    GithubAuth {
+        detail: String,
+    },
+    GithubApi {
+        detail: String,
+    },
+    SyncConflict {
+        detail: String,
+    },
+    SyncErrors {
+        detail: String,
+    },
+    StateConflict {
+        expected: String,
+        actual: String,
+    },
 }
 
 impl From<&AppError> for WireError {
@@ -136,7 +305,9 @@ impl From<&AppError> for WireError {
                 detail: detail.clone(),
             },
             AppError::Integrity(detail) => Self::Integrity {
-                detail: detail.clone(),
+                context: detail.context.clone(),
+                findings: detail.findings.clone(),
+                advice: detail.advice.clone(),
             },
             AppError::Storage(detail) => Self::Storage {
                 detail: detail.clone(),
@@ -174,7 +345,15 @@ impl From<WireError> for AppError {
             WireError::Validation { detail } => Self::Validation(detail),
             WireError::NotFound { detail } => Self::NotFound(detail),
             WireError::LockTimeout { detail } => Self::LockTimeout(detail),
-            WireError::Integrity { detail } => Self::Integrity(detail),
+            WireError::Integrity {
+                context,
+                findings,
+                advice,
+            } => Self::Integrity(IntegrityDetail {
+                context,
+                findings,
+                advice,
+            }),
             WireError::Storage { detail } => Self::Storage(detail),
             WireError::GithubAuth { detail } => Self::GithubAuth(detail),
             WireError::GithubApi { detail } => Self::GithubApi(detail),
@@ -278,6 +457,93 @@ mod tests {
             AppError::StateConflict(expected, actual) => {
                 assert_eq!(expected, "todo");
                 assert_eq!(actual, "done");
+            }
+            other => panic!("the variant must survive: {other}"),
+        }
+    }
+
+    /// An integrity error that carries no findings is unrepresentable.
+    ///
+    /// The emptiness question is asked by this constructor and nowhere else,
+    /// so "healthy" is its `None` rather than a check each raise site repeats
+    /// (SH-244).
+    #[test]
+    fn an_integrity_report_with_nothing_wrong_is_not_an_error() {
+        assert!(IntegrityDetail::report(Vec::new(), Vec::new()).is_none());
+        assert!(
+            IntegrityDetail::report(Vec::new(), vec!["a notice".to_string()]).is_none(),
+            "advice alone is not damage — SH-185's whole ruling"
+        );
+        assert!(
+            IntegrityDetail::report(vec![Finding::unstructured("wrong")], Vec::new()).is_some()
+        );
+    }
+
+    /// Prose from a caller with nothing structured to say still arrives as a
+    /// finding, so *every* raise site upholds the invariant above — not only
+    /// the two that construct a report.
+    #[test]
+    fn a_plain_string_still_becomes_a_finding() {
+        let detail = IntegrityDetail::from("story SH-1 is missing state".to_string());
+        assert_eq!(detail.findings.len(), 1);
+        assert_eq!(
+            detail.findings[0].code,
+            crate::domain::finding::FindingCode::Unstructured
+        );
+        assert_eq!(
+            detail.to_string(),
+            "story SH-1 is missing state",
+            "the rendered message must be exactly what the caller passed"
+        );
+    }
+
+    /// The rendered report is the findings' own sentences, joined — not a
+    /// second rendering that could disagree with them.
+    #[test]
+    fn the_rendered_report_is_its_findings_joined() {
+        let detail = IntegrityDetail::report(
+            vec![
+                Finding::unstructured("first"),
+                Finding::unstructured("second"),
+            ],
+            vec!["an advisory".to_string()],
+        )
+        .expect("two findings is a report");
+        assert_eq!(detail.to_string(), "first\nsecond\nan advisory");
+    }
+
+    /// A section with no occupants leaves no blank line — the behaviour
+    /// `service::integrity::join_sections` used to provide by hand.
+    #[test]
+    fn an_empty_advice_section_is_skipped_rather_than_printed() {
+        let detail = IntegrityDetail::report(vec![Finding::unstructured("only")], Vec::new())
+            .expect("a finding is a report");
+        assert_eq!(detail.to_string(), "only");
+    }
+
+    /// Context is annotated onto its own field, and every finding survives
+    /// untouched — the same exemption `StateConflict`'s two slugs get, for the
+    /// same reason: these are values a caller reads, not prose.
+    #[test]
+    fn an_integrity_context_annotates_without_touching_the_findings() {
+        let error = AppError::Integrity(
+            IntegrityDetail::report(vec![Finding::unstructured("the row disagrees")], Vec::new())
+                .expect("a report"),
+        )
+        .with_context("while checking the project");
+
+        match error {
+            AppError::Integrity(detail) => {
+                assert_eq!(
+                    detail.findings,
+                    vec![Finding::unstructured("the row disagrees")],
+                    "a finding is data; annotating a report must not rewrite one"
+                );
+                assert_eq!(
+                    detail.to_string(),
+                    "while checking the project\n\nthe row disagrees",
+                    "the rendering must match what `joined` produces for every other variant"
+                );
             }
             other => panic!("the variant must survive: {other}"),
         }

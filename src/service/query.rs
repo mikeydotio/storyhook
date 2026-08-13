@@ -861,7 +861,14 @@ pub fn story_views(
     let mut views = Vec::with_capacity(stories.len());
     for story in stories.into_values() {
         let id = story.id.clone();
-        let mut flagged_reasons = issues.remove(&id).unwrap_or_default();
+        // Rendered back to sentences here, and only here: `flagged_reasons`
+        // is a published JSON field (SH-244 typed the *checks*, not this).
+        let mut flagged_reasons: Vec<String> = issues
+            .remove(&id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|finding| finding.message)
+            .collect();
         if story
             .relationships
             .iter()
