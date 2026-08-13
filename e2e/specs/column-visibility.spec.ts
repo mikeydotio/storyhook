@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { openProject, seedToken } from "./support";
+import { openFilters, openProject, seedToken } from "./support";
 
 /**
  * Exercises SH-162: a "Columns" filter-bar dropdown picks which board
@@ -44,6 +44,9 @@ test("hiding a column via the Columns dropdown removes its cards without changin
 }) => {
   await openProject(page, "Alpha Project");
   await expect(page.locator("#filter-count")).toHaveText("2 / 2");
+  // SH-235: the Columns dropdown lives in the filter panel, which now
+  // defaults collapsed.
+  await openFilters(page);
 
   await page.locator("#fdd-columns .fdd-btn").click();
   await page
@@ -75,6 +78,9 @@ test("Hide empty columns collapses columns with no visible cards", async ({
   page,
 }) => {
   await openProject(page, "Alpha Project");
+  // SH-235: "Hide empty columns" lives in the filter panel, which now
+  // defaults collapsed.
+  await openFilters(page);
 
   await expect(page.locator('.column[data-state="in-progress"]')).toHaveCount(1);
   await page.locator("#toggle-hide-empty-columns").check();
@@ -99,6 +105,10 @@ test("a hidden column persists across a reload on the same project", async ({
   page,
 }) => {
   await openProject(page, "Alpha Project");
+  // SH-235: the filter panel's own open state is a durable preference too
+  // (state.filtersOpen), so opening it once here is expected to survive
+  // the reload below same as the hidden column itself.
+  await openFilters(page);
   await page.locator("#fdd-columns .fdd-btn").click();
   await page
     .locator("#fdd-columns .fdd-option", { hasText: "todo" })
@@ -117,6 +127,7 @@ test("a hidden column absent from the next project is pruned, with a toast", asy
   page,
 }) => {
   await openProject(page, "Alpha Project");
+  await openFilters(page);
   await page.locator("#fdd-columns .fdd-btn").click();
   await page
     .locator("#fdd-columns .fdd-option", { hasText: "review" })
@@ -140,6 +151,7 @@ test("Hide empty columns is a durable preference that carries across a project s
   page,
 }) => {
   await openProject(page, "Alpha Project");
+  await openFilters(page);
   await page.locator("#toggle-hide-empty-columns").check();
 
   await switchToProject(page, "Beta Project");

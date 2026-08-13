@@ -46,6 +46,14 @@
   --control-font-sm: 0.8125rem;
   --control-font-md: 0.875rem;
   --control-font-lg: 1.125rem;
+  /* Minimum tap-target size (SH-235). WCAG 2.2 SC 2.5.8's 24 CSS-pixel
+     floor applies on every pointer, not only touch; the coarse-pointer
+     override below raises it further, to the 44px Apple's and Android's
+     own platform guidelines call the comfortable size for a fingertip.
+     Every selector that reads this token is listed together in this
+     file's "Tap targets" section, the same one-token-many-readers shape
+     as --control-font-* above. */
+  --tap-min: 24px;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -116,18 +124,37 @@
 
    `user-scalable=no` / `maximum-scale=1` would also stop the zoom. They
    are the wrong fix twice over: iOS has ignored both since iOS 10, and
-   they take pinch-zoom away from the readers who need it most. */
+   they take pinch-zoom away from the readers who need it most.
+
+   `--tap-min` (SH-235) rides in the same block for the same reason it
+   rides on the same *kind* of gate: a finger is both a coarse pointer and
+   a wider one, so both problems share one detector. 44px is Apple's HIG
+   and Android's Material guidance for a comfortable fingertip target,
+   above WCAG 2.2's own 24px floor -- which stays the value everywhere
+   this media query doesn't match, since SC 2.5.8 applies to mouse input
+   too. */
 @media (pointer: coarse) {
   :root {
     --control-font-xs: 16px;
     --control-font-sm: 16px;
     --control-font-md: 16px;
     --control-font-lg: 18px;
+    --tap-min: 44px;
   }
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body { height: 100%; }
+/* Mobile Safari and Chrome both run a heuristic that inflates body text
+   after an orientation change if they judge the layout "too narrow to
+   read" -- a boost this dashboard's own responsive rules already handle,
+   so the heuristic only fights them. `-webkit-` because Safari never
+   dropped the prefix for this property; the unprefixed form is what
+   Firefox and recent Chromium read. Disables only that automatic
+   heuristic -- pinch-zoom and the OS's own accessibility text size are
+   both untouched, the same distinction SH-256 already drew for
+   `user-scalable=no`. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 /* An author rule setting `display` on an element (e.g. `.board { display:
    flex }`) otherwise ties the UA's `[hidden] { display: none }` rule in
    specificity and can win the cascade by source order, silently defeating
@@ -156,7 +183,17 @@ button { cursor: pointer; }
 button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-option, .filter-toggle { touch-action: manipulation; }
 ::selection { background: var(--accent); color: var(--accent-fg); }
 
-.app { display: flex; flex-direction: column; height: 100vh; }
+/* `100vh` is the *largest* possible viewport on iOS Safari -- with the URL
+   bar showing, the visual viewport is shorter than that, so a `100vh` app
+   shell overflows the screen and its bottom (the footer, the last inch of
+   the board) sits behind the browser chrome, unreachable without a scroll
+   `body { overflow: hidden }` also blocks. `100dvh` tracks the *current*
+   visual viewport as the chrome shows and hides; the `100vh` line stays
+   first as the fallback for a browser old enough to reject `dvh` outright
+   -- CSS ignores a declaration with an unsupported unit, so without a
+   `vh` line first that browser gets no height at all, not just the old
+   (imperfect but working) behavior. */
+.app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 
 /* ---- Topbar ---- */
 .topbar {
@@ -184,12 +221,14 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
 .view-toggle button {
   border: none; background: transparent; padding: 0.3125rem 0.75rem; border-radius: 0.3125rem;
   font-size: 0.8125rem; font-weight: 600; color: var(--fg-muted); transition: all 0.15s;
+  display: inline-flex; align-items: center; justify-content: center; min-height: var(--tap-min);
 }
 .view-toggle button.active { background: var(--bg-raised); color: var(--fg); box-shadow: var(--shadow-sm); }
 .btn {
   display: inline-flex; align-items: center; gap: 0.375rem; border: 1px solid var(--border-strong);
   background: var(--bg-raised); padding: 0.4375rem 0.75rem; border-radius: var(--radius-sm);
   font-size: 0.8125rem; font-weight: 600; color: var(--fg); transition: all 0.15s; white-space: nowrap;
+  min-height: var(--tap-min);
 }
 .btn:hover { border-color: var(--fg-faint); }
 .btn-primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
@@ -208,6 +247,13 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
 .btn-ghost:hover { background: var(--bg-sunken); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .topbar-right { display: flex; align-items: center; gap: 0.625rem; flex-shrink: 0; margin-left: auto; }
+/* SH-235: Home/Settings/Drafts go icon-only under the same <=768px block
+   that already wraps the topbar -- see that block's own comment for why.
+   `.btn-icon` carries no text a screen reader would read twice over
+   (aria-hidden); `.btn-text` is the real accessible name and stays in the
+   layout normally above the breakpoint, visually hidden (not display:none,
+   which would also remove it from the accessibility tree) below it. */
+.btn-icon { line-height: 1; }
 .connection { display: flex; align-items: center; gap: 0.375rem; font-size: 0.75rem; color: var(--fg-muted); }
 .conn-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--fg-faint); transition: background 0.2s; }
 .conn-dot.live { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
@@ -219,6 +265,7 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
   display: inline-flex; align-items: center; gap: 0.375rem; max-width: 14rem;
   padding: 0.3125rem 0.625rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
   background: var(--bg-raised); font-size: 0.8125rem; font-weight: 700; color: var(--fg); transition: all 0.12s;
+  min-height: var(--tap-min);
 }
 .projsel-btn:hover { border-color: var(--fg-faint); }
 .projsel-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
@@ -228,7 +275,7 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
 .projsel-panel { min-width: 17rem; max-height: 20rem; padding: 0.25rem; }
 .projsel-item {
   display: flex; align-items: center; gap: 0.5rem; padding: 0.4375rem 0.5rem; border-radius: 0.25rem;
-  font-size: 0.8125rem; cursor: pointer; user-select: none;
+  font-size: 0.8125rem; cursor: pointer; user-select: none; min-height: var(--tap-min);
 }
 .projsel-item:hover, .projsel-item.focused { background: var(--bg-sunken); }
 .projsel-item[aria-disabled="true"] { cursor: not-allowed; opacity: 0.55; }
@@ -291,7 +338,7 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
 .settings-head .settings-hint { font-size: 0.75rem; color: var(--fg-muted); }
 .back-link {
   border: none; background: none; color: var(--accent); font-size: 0.8125rem; font-weight: 600;
-  padding: 0; display: inline-flex; align-items: center; gap: 0.25rem;
+  padding: 0; display: inline-flex; align-items: center; gap: 0.25rem; min-height: var(--tap-min);
 }
 .back-link:hover { text-decoration: underline; }
 .status-list { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1rem; }
@@ -302,12 +349,12 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
 }
 .status-row.pending { opacity: 0.55; pointer-events: none; }
 .status-reorder { display: flex; flex-direction: column; gap: 0.125rem; }
-/* 1.5rem square: WCAG 2.2's 24x24 CSS-pixel minimum target size. Stacked
-   arrows this small would otherwise fail it outright, and they're the only
-   way to reorder without a pointer. */
+/* Stacked arrows, the only way to reorder without a pointer -- sized from
+   --tap-min (SH-235) like every other tap target now, rather than the
+   literal 1.5rem this rule used before that token existed. */
 .status-reorder button {
   border: 1px solid transparent; background: none; color: var(--fg-faint); border-radius: 0.1875rem;
-  font-size: 0.5625rem; line-height: 1; min-width: 1.5rem; min-height: 1.5rem;
+  font-size: 0.5625rem; line-height: 1; min-width: var(--tap-min); min-height: var(--tap-min);
   display: flex; align-items: center; justify-content: center;
 }
 .status-reorder button:hover:not(:disabled) { color: var(--fg); background: var(--bg-sunken); }
@@ -315,7 +362,7 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
 .status-slug { font-family: var(--mono); font-size: 0.8125rem; font-weight: 700; overflow-wrap: anywhere; }
 .status-row select, .status-row input[type=text] {
   padding: 0.3125rem 0.5rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
-  background: var(--bg); font-size: var(--control-font-xs); width: 100%;
+  background: var(--bg); font-size: var(--control-font-xs); width: 100%; min-height: var(--tap-min);
 }
 .status-counts { font-size: 0.75rem; color: var(--fg-muted); white-space: nowrap; }
 .status-counts .zero { color: var(--fg-faint); }
@@ -333,23 +380,46 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
 }
 .status-add input[type=text], .status-add select {
   padding: 0.375rem 0.5rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
-  background: var(--bg-raised); font-size: var(--control-font-sm);
+  background: var(--bg-raised); font-size: var(--control-font-sm); min-height: var(--tap-min);
 }
 .status-add .status-add-slug { flex: 0 0 9rem; }
 .status-add .status-add-desc { flex: 1; min-width: 10rem; }
 .status-empty { font-size: 0.8125rem; color: var(--fg-muted); padding: 1rem 0; }
 
 /* ---- Filter bar ---- */
-.filter-bar {
+/* SH-235: collapsed behind a disclosure at every viewport size, not just a
+   `max-width` breakpoint -- the filter bar alone measured 145px tall at a
+   390px width (on top of the topbar's own 108px), roughly a third of an
+   iPhone 14's screen before a single card renders, and a narrow desktop
+   window has the exact same wrapping problem a phone does. One code path
+   for both, rather than a second, viewport-gated one to keep in sync with
+   this one. `.filter-summary` stays visible always -- the toggle, the
+   N-of-M count and Clear filters are how a reader knows a filter is
+   active without opening the panel; `.filter-panel` is what collapses. */
+.filter-bar { flex-shrink: 0; background: var(--bg); border-bottom: 1px solid var(--border); }
+.filter-summary { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1.25rem; }
+.filter-toggle-btn {
+  display: inline-flex; align-items: center; gap: 0.375rem; padding: 0.3125rem 0.625rem;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-raised);
+  font-size: 0.75rem; font-weight: 600; color: var(--fg-muted); min-height: var(--tap-min);
+}
+.filter-toggle-btn:hover { border-color: var(--fg-faint); color: var(--fg); }
+/* Active means "the board isn't showing everything" (state.js's own
+   updateFilterToggleActive) -- distinct from aria-expanded, which the
+   chevron glyph already communicates on its own. A reader who has never
+   opened the panel this session still sees that a filter is narrowing the
+   board. */
+.filter-toggle-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.filter-toggle-btn .chevron { display: inline-block; width: 0.625rem; font-size: 0.625rem; }
+.filter-panel {
   display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
-  padding: 0.5rem 1.25rem; background: var(--bg); border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
+  padding: 0 1.25rem 0.75rem;
 }
 .fdd { position: relative; }
 .fdd-btn {
   padding: 0.3125rem 0.625rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
   background: var(--bg-raised); font-size: 0.75rem; font-weight: 600; color: var(--fg-muted);
-  display: inline-flex; align-items: center; gap: 0.375rem; transition: all 0.12s;
+  display: inline-flex; align-items: center; gap: 0.375rem; transition: all 0.12s; min-height: var(--tap-min);
 }
 .fdd-btn:hover { border-color: var(--fg-faint); color: var(--fg); }
 .fdd-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
@@ -359,21 +429,21 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
   background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius-sm);
   box-shadow: var(--shadow-md); padding: 0.375rem; z-index: 30;
 }
-.fdd-option { display: flex; align-items: center; gap: 0.5rem; padding: 0.3125rem 0.5rem; border-radius: 0.25rem; font-size: 0.8125rem; cursor: pointer; user-select: none; }
+.fdd-option { display: flex; align-items: center; gap: 0.5rem; padding: 0.3125rem 0.5rem; border-radius: 0.25rem; font-size: 0.8125rem; cursor: pointer; user-select: none; min-height: var(--tap-min); }
 .fdd-option:hover { background: var(--bg-sunken); }
 .fdd-option input { accent-color: var(--accent); }
-.filter-toggle { display: flex; align-items: center; gap: 0.375rem; font-size: 0.75rem; color: var(--fg-muted); user-select: none; }
+.filter-toggle { display: flex; align-items: center; gap: 0.375rem; font-size: 0.75rem; color: var(--fg-muted); user-select: none; min-height: var(--tap-min); }
 .board-sort { display: flex; align-items: center; gap: 0.3125rem; }
 .board-sort-label { font-size: 0.75rem; color: var(--fg-faint); }
 .board-sort-btn {
   display: inline-flex; align-items: center; gap: 0.25rem; border: 1px solid var(--border);
   background: var(--bg-raised); color: var(--fg-muted); font-size: 0.75rem; border-radius: 9999px;
-  padding: 0.1875rem 0.5625rem; cursor: pointer;
+  padding: 0.1875rem 0.5625rem; cursor: pointer; min-height: var(--tap-min);
 }
 .board-sort-btn:hover { color: var(--accent); }
 .board-sort-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .filter-count { font-size: 0.75rem; color: var(--fg-faint); margin-left: auto; }
-.filter-clear { font-size: 0.75rem; color: var(--accent); background: none; border: none; text-decoration: none; }
+.filter-clear { font-size: 0.75rem; color: var(--accent); background: none; border: none; text-decoration: none; display: inline-flex; align-items: center; min-height: var(--tap-min); }
 .filter-clear:hover { text-decoration: underline; }
 
 /* ---- Board ---- */
@@ -397,6 +467,7 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
 .column-archive-btn {
   border: none; background: none; color: var(--fg-faint); font-size: 0.6875rem; font-weight: 600;
   text-transform: none; letter-spacing: normal; padding: 0.0625rem 0.25rem; cursor: pointer;
+  display: inline-flex; align-items: center; min-height: var(--tap-min);
 }
 .column-archive-btn:hover { color: var(--accent); }
 .column-cards { flex: 1; overflow-y: auto; padding: 0.125rem 0.625rem 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; min-height: 3rem; }
@@ -415,6 +486,23 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
 .card-id-row { display: flex; align-items: center; gap: 0.3125rem; }
 .card-id { font-family: var(--mono); font-size: 0.6875rem; color: var(--fg-faint); font-weight: 600; }
 .type-badge { font-size: 0.8125rem; line-height: 1; }
+/* SH-235: hidden on a fine pointer -- right-click already reaches this
+   exact menu there, and a mouse-only affordance on every card would be
+   pure visual noise. `pointer: coarse`, not the `max-width: 768px` layout
+   breakpoint further down this sheet, for the same reason the SH-256
+   control-font tokens use it: a wide tablet needs this as much as a
+   phone, and a narrow desktop window needs neither. */
+.card-actions-btn {
+  display: none; margin-left: auto; border: none; background: none; color: var(--fg-faint);
+  font-size: 1rem; line-height: 1; border-radius: var(--radius-sm);
+}
+.card-actions-btn:hover { color: var(--fg); background: var(--bg-sunken); }
+@media (pointer: coarse) {
+  .card-actions-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: var(--tap-min); min-height: var(--tap-min);
+  }
+}
 .card-title { font-size: 0.8125rem; font-weight: 600; margin: 0.25rem 0 0.4375rem; line-height: 1.35; overflow-wrap: anywhere; }
 .card-meta { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; }
 .card-labels { display: flex; gap: 0.25rem; flex-wrap: wrap; }
@@ -435,7 +523,14 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
 
 /* ---- List ---- */
 .list { flex: 1; overflow: auto; padding: 0 1.25rem 1.25rem; }
-.list-table-wrap { background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; margin-top: 0.75rem; }
+/* SH-235: seven columns don't fit a phone-width wrap -- `overflow: hidden`
+   didn't shrink the table, it silently dropped Labels/Assignee/Updated
+   past the wrap's own right edge. `overflow-y` stays `hidden` (the wrap
+   never scrolls vertically -- it's sized to its content, and this is what
+   keeps the table's square cell corners from poking out past the wrap's
+   own `border-radius`); `overflow-x: auto` is what makes the far columns
+   reachable by a horizontal scroll instead of gone. */
+.list-table-wrap { background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius); overflow-x: auto; overflow-y: hidden; margin-top: 0.75rem; contain: layout; }
 table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
 thead th {
   text-align: left; padding: 0.5625rem 0.75rem; background: var(--bg-sunken); border-bottom: 1px solid var(--border);
@@ -451,6 +546,23 @@ tbody tr:hover { background: var(--bg-sunken); }
 tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .col-id { font-family: var(--mono); white-space: nowrap; font-size: 0.75rem; }
 .col-date { white-space: nowrap; color: var(--fg-muted); font-size: 0.75rem; }
+/* SH-235: same coarse-pointer-only gating as .card-actions-btn -- hidden
+   entirely on a fine pointer (`display: none` on a <td>/<th> removes it
+   from the row's layout, not just its paint, so desktop's column count
+   and widths stay exactly what they were). */
+.col-actions { display: none; width: 1%; white-space: nowrap; text-align: right; cursor: default; }
+.row-actions-btn {
+  display: none; border: none; background: none; color: var(--fg-faint);
+  font-size: 1rem; line-height: 1; border-radius: var(--radius-sm);
+}
+.row-actions-btn:hover { color: var(--fg); background: var(--bg-sunken); }
+@media (pointer: coarse) {
+  .col-actions { display: table-cell; }
+  .row-actions-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: var(--tap-min); min-height: var(--tap-min);
+  }
+}
 .state-pill { font-size: 0.6875rem; font-weight: 600; padding: 0.09375rem 0.5rem; border-radius: 9999px; background: var(--bg-sunken); border: 1px solid var(--border); }
 .empty { text-align: center; padding: 3rem 1rem; color: var(--fg-faint); font-size: 0.875rem; }
 
@@ -485,10 +597,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .field label { font-size: 0.6875rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: var(--fg-faint); }
 .field select, .field input[type=text], .field textarea {
   padding: 0.375rem 0.5rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
-  background: var(--bg); font-size: var(--control-font-sm);
+  background: var(--bg); font-size: var(--control-font-sm); min-height: var(--tap-min);
 }
+/* SH-235: `max(2.25rem, var(--tap-min))`, not a bare token -- this
+   textarea's original 36px rest height is taller than the token's own
+   24px desktop floor, and a bare `var(--tap-min)` here would have shrunk
+   it on every pointer instead of only raising it where it was too short
+   (44px on coarse). `max()` keeps whichever floor is taller. */
 .field textarea {
-  width: 100%; font-family: inherit; resize: none; overflow: hidden; min-height: 2.25rem;
+  width: 100%; font-family: inherit; resize: none; overflow: hidden; min-height: max(2.25rem, var(--tap-min));
 }
 .label-combobox { position: relative; display: flex; flex-direction: column; gap: 0.375rem; }
 .section-label { font-size: 0.6875rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: var(--fg-faint); margin-bottom: 0.5rem; }
@@ -496,7 +613,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   display: flex; align-items: center; gap: 0.3125rem; width: 100%; margin-bottom: 0.5rem;
   padding: 0; border: none; background: none; cursor: pointer; text-align: left;
   font-size: 0.6875rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
-  color: var(--fg-faint);
+  color: var(--fg-faint); min-height: var(--tap-min);
 }
 .section-toggle:hover { color: var(--fg-muted); }
 .section-toggle .chevron { display: inline-block; width: 0.625rem; font-size: 0.625rem; text-transform: none; }
@@ -506,9 +623,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .referenced-by-meta { font-size: 0.6875rem; color: var(--fg-faint); white-space: nowrap; }
 .referenced-by-text { overflow-wrap: anywhere; }
 .referenced-by-text a { color: inherit; }
-.label-chips { display: flex; flex-wrap: wrap; gap: 0.375rem; align-items: center; }
+/* Gap widened from 0.375rem (SH-235): each chip's delete button now grows
+   to --tap-min, and adjacent 44px-tall coarse-pointer targets need more
+   breathing room between them than the original glyph-sized buttons did. */
+.label-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
 .label-chip { display: inline-flex; align-items: center; gap: 0.25rem; }
-.label-chip button { border: none; background: none; color: var(--fg-faint); font-size: 0.75rem; line-height: 1; padding: 0; }
+.label-chip button {
+  border: none; background: none; color: var(--fg-faint); font-size: 0.75rem; line-height: 1; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: var(--tap-min); min-height: var(--tap-min);
+}
 .label-chip button:hover { color: var(--danger); }
 .inline-add { display: flex; gap: 0.375rem; margin-top: 0.5rem; }
 .inline-add input, .inline-add select { flex: 1; padding: 0.3125rem 0.5rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg); font-size: var(--control-font-xs); }
@@ -526,7 +650,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   background: var(--bg); font-size: var(--control-font-sm); resize: vertical; font-family: inherit;
 }
 .description-field {
-  width: 100%; min-height: 2.5rem; padding: 0.5rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  /* max(), not a bare token -- see .field textarea's own comment above:
+     this keeps the taller of the field's original 40px rest height and
+     --tap-min's own floor, rather than shrinking it on a fine pointer. */
+  width: 100%; min-height: max(2.5rem, var(--tap-min)); padding: 0.5rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
   background: var(--bg); font-size: var(--control-font-sm); font-family: inherit; resize: none; overflow: hidden;
 }
 .description-field:hover { background: var(--bg-sunken); }
@@ -535,7 +662,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .rel-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8125rem; }
 .rel-row .rel-kind { color: var(--fg-muted); font-size: 0.75rem; }
 .rel-row .rel-id { font-family: var(--mono); color: var(--accent); background: none; border: none; padding: 0; font-size: 0.8125rem; }
-.rel-row button { margin-left: auto; border: none; background: none; color: var(--fg-faint); }
+/* Matches both `.rel-id` (the relation's own button, e.g. "SH-241" -- its
+   own more specific rule just above wins on color/font/padding, not on
+   the sizing added here) and the unclassed delete "x" button after it --
+   SH-235 measured both under 24px tall. `min-width` only matters for the
+   glyph-only delete button; `.rel-id`'s text content already exceeds
+   --tap-min's width in every case that's shipped today. */
+.rel-row button {
+  margin-left: auto; border: none; background: none; color: var(--fg-faint);
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: var(--tap-min); min-height: var(--tap-min);
+}
 .rel-row button:hover { color: var(--danger); }
 .drawer-footer { display: flex; gap: 0.5rem; padding: 1rem 1.25rem; border-top: 1px solid var(--border); flex-shrink: 0; }
 .confirm-delete { display: flex; flex-direction: column; gap: 0.5rem; width: 100%; }
@@ -549,14 +686,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   position: fixed; top: 50%; left: 50%; transform: translate(-50%, -46%); width: min(30rem, 92vw);
   background: var(--bg-raised); border-radius: var(--radius); box-shadow: var(--shadow-lg); z-index: 51;
   opacity: 0; pointer-events: none; transition: opacity 0.15s, transform 0.15s;
-  max-height: 90vh; overflow-y: auto;
+  /* Same `vh`-then-`dvh` fallback pair as `.app` -- `90vh` against the
+     browser-chrome-hidden viewport can size the modal taller than what's
+     actually visible, pushing its own footer buttons behind the chrome. */
+  max-height: 90vh; max-height: 90dvh; overflow-y: auto;
 }
 .modal.open { opacity: 1; pointer-events: auto; transform: translate(-50%, -50%); }
 .modal-header { padding: 1rem 1.25rem 0.5rem; font-size: 1rem; font-weight: 700; }
 .modal-body { padding: 0.75rem 1.25rem; display: flex; flex-direction: column; gap: 0.75rem; }
 .modal-body input[type=text], .modal-body select {
   width: 100%; padding: 0.5rem 0.625rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
-  background: var(--bg); font-size: var(--control-font-md);
+  background: var(--bg); font-size: var(--control-font-md); min-height: var(--tap-min);
 }
 .modal-body textarea {
   width: 100%; padding: 0.5rem 0.625rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
@@ -570,7 +710,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .modal-body code { font-family: var(--mono); font-size: 0.75rem; background: var(--bg-sunken); padding: 0.0625rem 0.25rem; border-radius: var(--radius-sm); }
 
 /* ---- Drafts popover ---- */
-.drafts-list { list-style: none; display: flex; flex-direction: column; gap: 0.25rem; max-height: 60vh; overflow-y: auto; }
+/* Same `vh`-then-`dvh` fallback pair as `.app` and `.modal`. */
+.drafts-list { list-style: none; display: flex; flex-direction: column; gap: 0.25rem; max-height: 60vh; max-height: 60dvh; overflow-y: auto; }
 .drafts-list-empty { font-size: 0.8125rem; color: var(--fg-muted); padding: 0.5rem 0; }
 .drafts-row {
   display: flex; align-items: baseline; gap: 0.5rem; width: 100%; text-align: left;
@@ -594,7 +735,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 }
 .ctxmenu-item {
   display: flex; align-items: center; gap: 0.5rem; padding: 0.4375rem 0.625rem; border-radius: 0.25rem;
-  font-size: 0.8125rem; cursor: pointer; user-select: none; white-space: nowrap;
+  font-size: 0.8125rem; cursor: pointer; user-select: none; white-space: nowrap; min-height: var(--tap-min);
 }
 .ctxmenu-item:hover, .ctxmenu-item.focused { background: var(--bg-sunken); }
 .ctxmenu-item[aria-disabled="true"] { cursor: not-allowed; opacity: 0.55; }
@@ -607,7 +748,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .ctxmenu-sub .ctxmenu-item .dot { flex-shrink: 0; }
 
 /* ---- Toasts ---- */
-.toast-stack { position: fixed; top: 1rem; right: 1rem; display: flex; flex-direction: column; gap: 0.5rem; z-index: 60; max-width: 22rem; }
+/* SH-235: `right: 1rem` needs 1rem of matching clearance on the left too
+   for the stack to actually fit -- `max-width: 22rem` alone runs a toast
+   off the left edge on any viewport narrower than 22rem + the two 1rem
+   margins (352px). `calc(100vw - 2rem)` is that same pair of margins,
+   subtracted from the viewport itself; `min()` keeps 22rem as the ceiling
+   everywhere wider. */
+.toast-stack { position: fixed; top: 1rem; right: 1rem; display: flex; flex-direction: column; gap: 0.5rem; z-index: 60; max-width: min(22rem, calc(100vw - 2rem)); }
 .toast {
   background: var(--bg-raised); border: 1px solid var(--border); border-left: 3px solid var(--accent);
   box-shadow: var(--shadow-md); border-radius: var(--radius-sm); padding: 0.625rem 0.875rem;
@@ -624,7 +771,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    toast that vanishes on its own -- nobody is necessarily watching the tab
    when an autonomous dispatch finishes. Bottom-right so it never collides
    with the toast stack (top-right), which attended dispatches still use. */
-.dispatch-history { position: fixed; bottom: 1rem; right: 1rem; display: flex; flex-direction: column-reverse; gap: 0.5rem; z-index: 60; max-width: 26rem; }
+/* Same reasoning as `.toast-stack` just above -- `right: 1rem` needs a
+   matching 1rem on the left, so the ceiling is the viewport minus both
+   margins, not a bare `26rem`. */
+.dispatch-history { position: fixed; bottom: 1rem; right: 1rem; display: flex; flex-direction: column-reverse; gap: 0.5rem; z-index: 60; max-width: min(26rem, calc(100vw - 2rem)); }
 .dispatch-history-row {
   display: flex; align-items: flex-start; gap: 0.5rem;
   background: var(--bg-raised); border: 1px solid var(--border); border-left: 3px solid var(--accent);
@@ -638,6 +788,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .dispatch-history-dismiss {
   flex-shrink: 0; background: transparent; border: none; color: var(--fg-muted); cursor: pointer;
   font-size: 1rem; line-height: 1; padding: 0.125rem 0.25rem; border-radius: var(--radius-sm);
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: var(--tap-min); min-height: var(--tap-min);
 }
 .dispatch-history-dismiss:hover { background: var(--bg-sunken); color: var(--fg); }
 
@@ -705,10 +857,39 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
 /* ---- Mobile ---- */
 @media (max-width: 768px) {
-  .topbar { flex-wrap: wrap; }
+  .topbar { flex-wrap: wrap; gap: 0.375rem; }
   .search-wrap { order: 3; max-width: none; flex-basis: 100%; }
   .projsel-btn { max-width: none; }
+  /* SH-235: the topbar's chrome budget (responsive.mobile.spec.ts's own
+     "topbar and collapsed filter bar" test) is what forced this -- at a
+     375px width every one of Home/Settings/+ New/Drafts/the connection
+     indicator, each already at a natural, un-compacted width, cannot share
+     a row with anything else; four buttons' worth of prose text was most
+     of the measured overage. The `.sr-only` recipe (see that class's own
+     rule above) hides each label from sighted readers without removing it
+     from the accessibility tree -- an icon-only button still announces
+     "Home", it just doesn't spend layout width saying so. */
+  .icon-compact-btn .btn-text, .conn-text, .brand h1 {
+    position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap;
+  }
+  /* WCAG 2.2 SC 2.5.8 needs both axes -- the icon alone, once its label
+     stops taking up width, is narrower than --tap-min on its own. */
+  .icon-compact-btn { gap: 0; justify-content: center; min-width: var(--tap-min); }
+  /* The "STORYHOOK" wordmark (`.brand h1`) is what's redundant, not the
+     project selector next to it -- the wordmark orients a reader arriving
+     fresh; once a project is open, its name is what matters and the
+     document's own <title> already says "Storyhook" for a screen reader's
+     landmark navigation, so hiding this visually loses nothing a phone
+     reader needs. 252px for the pair was the single largest reason brand
+     and .view-toggle couldn't share a row (see topbar's own comment). */
   .drawer { width: 100vw; }
+  /* SH-235: 18rem (288px) is nearly the entire screen on the narrowest
+     supported phones (320-350px) -- 320px leaves only a 32px (10%) sliver
+     of the next column, not enough to read as "more content this way"
+     rather than "the last column". `min(18rem, 85vw)` keeps 18rem as the
+     ceiling everywhere it already reads fine (375px+, a 23%+ peek) and
+     only shrinks the column where it wouldn't otherwise peek at all. */
+  .column { flex-basis: min(18rem, 85vw); max-width: min(18rem, 85vw); }
   .field-grid { grid-template-columns: 1fr; }
   .home-grid { grid-template-columns: 1fr; }
   .settings-form { flex-direction: column; align-items: stretch; }
@@ -746,33 +927,40 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       <button type="button" data-view="list">List</button>
     </div>
     <div class="topbar-right">
-      <button type="button" class="btn btn-ghost" id="home-btn">Home</button>
-      <button type="button" class="btn btn-ghost" id="settings-btn">Settings</button>
+      <button type="button" class="btn btn-ghost icon-compact-btn" id="home-btn"><span class="btn-icon" aria-hidden="true">⌂</span><span class="btn-text">Home</span></button>
+      <button type="button" class="btn btn-ghost icon-compact-btn" id="settings-btn"><span class="btn-icon" aria-hidden="true">⚙</span><span class="btn-text">Settings</span></button>
       <button type="button" class="btn btn-primary" id="new-story-btn">+ New</button>
-      <button type="button" class="btn btn-ghost" id="drafts-btn">No Drafts</button>
+      <button type="button" class="btn btn-ghost icon-compact-btn" id="drafts-btn"><span class="btn-icon" aria-hidden="true">✎</span><span class="btn-text" id="drafts-btn-text">No Drafts</span></button>
       <div class="connection">
         <span class="conn-dot" id="conn-dot"></span>
-        <span id="conn-text">Connecting…</span>
+        <span id="conn-text" class="conn-text">Connecting…</span>
       </div>
     </div>
   </header>
 
   <div class="filter-bar" id="filter-bar">
-    <div class="fdd" id="fdd-priorities"></div>
-    <div class="fdd" id="fdd-assignees"></div>
-    <div class="fdd" id="fdd-types"></div>
-    <div class="fdd" id="fdd-states"></div>
-    <div class="fdd" id="fdd-columns"></div>
-    <label class="filter-toggle"><input type="checkbox" id="toggle-closed" checked> Show closed</label>
-    <label class="filter-toggle"><input type="checkbox" id="toggle-archived"> Show archived</label>
-    <label class="filter-toggle"><input type="checkbox" id="toggle-hide-empty-columns"> Hide empty columns</label>
-    <div class="board-sort" id="board-sort" role="group" aria-label="Board sort order">
-      <span class="board-sort-label">Sort</span>
-      <button type="button" class="board-sort-btn" data-key="priority" id="boardsort-priority">Priority<span class="sort-arrow" id="boardsort-arrow-priority"></span></button>
-      <button type="button" class="board-sort-btn" data-key="order" id="boardsort-order">Order<span class="sort-arrow" id="boardsort-arrow-order"></span></button>
+    <div class="filter-summary" id="filter-summary">
+      <button type="button" class="filter-toggle-btn" id="filter-toggle-btn" aria-expanded="false" aria-controls="filter-panel">
+        <span class="chevron" id="filter-toggle-chevron">▸</span> Filters
+      </button>
+      <span class="filter-count" id="filter-count"></span>
+      <button type="button" class="filter-clear" id="filter-clear">Clear filters</button>
     </div>
-    <span class="filter-count" id="filter-count"></span>
-    <button type="button" class="filter-clear" id="filter-clear">Clear filters</button>
+    <div class="filter-panel" id="filter-panel" hidden>
+      <div class="fdd" id="fdd-priorities"></div>
+      <div class="fdd" id="fdd-assignees"></div>
+      <div class="fdd" id="fdd-types"></div>
+      <div class="fdd" id="fdd-states"></div>
+      <div class="fdd" id="fdd-columns"></div>
+      <label class="filter-toggle"><input type="checkbox" id="toggle-closed" checked> Show closed</label>
+      <label class="filter-toggle"><input type="checkbox" id="toggle-archived"> Show archived</label>
+      <label class="filter-toggle"><input type="checkbox" id="toggle-hide-empty-columns"> Hide empty columns</label>
+      <div class="board-sort" id="board-sort" role="group" aria-label="Board sort order">
+        <span class="board-sort-label">Sort</span>
+        <button type="button" class="board-sort-btn" data-key="priority" id="boardsort-priority">Priority<span class="sort-arrow" id="boardsort-arrow-priority"></span></button>
+        <button type="button" class="board-sort-btn" data-key="order" id="boardsort-order">Order<span class="sort-arrow" id="boardsort-arrow-order"></span></button>
+      </div>
+    </div>
   </div>
 
   <span class="sr-only" id="board-kbd-hint">Arrow keys move between stories, Enter opens the selected one, and Shift+F10 or the Menu key opens its actions.</span>
@@ -791,6 +979,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
             <th data-col="labels">Labels</th>
             <th data-col="assignee">Assignee <span class="sort-arrow" id="sort-assignee"></span></th>
             <th data-col="updated">Updated <span class="sort-arrow" id="sort-updated"></span></th>
+            <th class="col-actions"><span class="sr-only">Actions</span></th>
           </tr>
         </thead>
         <tbody id="list-body"></tbody>
@@ -1256,6 +1445,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // the same thing in any project — so it's a durable cross-project
     // preference like `showArchived` above, not a session/prune value.
     hideEmptyColumns: localStorage.getItem("storyhook.hideEmptyColumns") === "true",
+    // SH-235: the filter panel's own open/closed state, at every viewport
+    // size -- not `hideEmptyColumns`'s sessionStorage-adjacent category,
+    // but the exact same durable, cross-project, `sectionOpenDefault`
+    // shape the drawer's own sections use below. Defaults closed: the
+    // filter bar's dropdowns, sort buttons and checkboxes cost real
+    // vertical space (145px measured at a 390px width) that most sessions
+    // never touch after the first filter is set, and `.filter-summary`
+    // stays visible regardless, so a reader always sees whether a filter
+    // is active without opening this.
+    filtersOpen: sectionOpenDefault("filters", false),
     // Drawer section open/closed state (SH-169). A durable cross-project
     // preference like `showArchived`/`hideEmptyColumns` above, not a
     // per-story or per-repo value — a reader who collapses "Referenced By"
@@ -2634,7 +2833,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * behind the next poll tick already updated the button for. */
   function updateDraftsButton() {
     var drafts = (state.data && state.data.drafts) || [];
-    $("drafts-btn").textContent = (drafts.length || "No") + " Drafts";
+    $("drafts-btn-text").textContent = (drafts.length || "No") + " Drafts";
     if (!$("drafts-modal").classList.contains("open")) return;
     renderDraftsList();
   }
@@ -2703,6 +2902,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var visible = filteredStories();
     var total = state.data ? state.data.stories.length : 0;
     $("filter-count").textContent = total ? (visible.length + " / " + total) : "";
+    syncFilterToggle(visible.length, total);
     $("empty-msg").hidden = visible.length !== 0 || !state.data;
 
     // Consumed here, once, regardless of which view actually renders below
@@ -2775,12 +2975,22 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * click/Escape wiring below is what should dismiss it too.
    *
    * The `aria-expanded` reset is generic on purpose: only the project
-   * selector's button sets it today, but a future popover-with-a-button
-   * gets this for free rather than needing its own copy. */
+   * selector's button sets it today, but a future *transient* popover
+   * button gets this for free rather than needing its own copy.
+   * `:not(.section-toggle):not(.filter-toggle-btn)` excludes the two
+   * *persistent* disclosures that also happen to carry `aria-expanded` --
+   * the drawer's own section toggles (SH-169) and the filter panel's
+   * (SH-235). Both are driven by `state`, not by "is a popover open right
+   * now", and this handler runs on every click anywhere in the document
+   * (`dismissPopoversOnOutsideClick`, bound below): an unscoped reset would
+   * flip either one to `aria-expanded="false"` on any outside click that
+   * doesn't happen to trigger that disclosure's own re-render (e.g.
+   * opening a card's drawer while the filter panel is still open) -- wrong
+   * and, unlike the visible panel it no longer matches, silent. */
   function closeAllPopovers() {
     document.querySelectorAll(".fdd-panel").forEach(function(p) { p.hidden = true; });
     document.querySelectorAll(".fdd-btn, .projsel-btn").forEach(function(b) { b.classList.remove("active"); });
-    document.querySelectorAll('[aria-expanded="true"]').forEach(function(b) { b.setAttribute("aria-expanded", "false"); });
+    document.querySelectorAll('[aria-expanded="true"]:not(.section-toggle):not(.filter-toggle-btn)').forEach(function(b) { b.setAttribute("aria-expanded", "false"); });
     openFilterDropdown = null;
     projselFocusIndex = -1;
     closeStoryMenu(false);
@@ -2940,7 +3150,26 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     btn.classList.toggle("active", count > 0 || openFilterDropdown === "columns");
   }
 
+  /** Reflects `state.filtersOpen` onto the filter panel's visibility, the
+   * toggle button's `aria-expanded`/chevron, and (given `visible`/`total`,
+   * the same pair `renderView()` already computes for `#filter-count`)
+   * whether the toggle button reads as "active" -- so a reader who never
+   * opens the panel this session still sees that a filter is narrowing
+   * the board, per the same "collapsed but not hidden" shape
+   * `buildSectionToggle` (SH-169) uses for the drawer's own sections. */
+  function syncFilterToggle(visible, total) {
+    $("filter-panel").hidden = !state.filtersOpen;
+    $("filter-toggle-btn").setAttribute("aria-expanded", String(state.filtersOpen));
+    $("filter-toggle-chevron").textContent = state.filtersOpen ? "▾" : "▸";
+    $("filter-toggle-btn").classList.toggle("active", !!total && visible !== total);
+  }
+
   function bindFilterBar() {
+    $("filter-toggle-btn").addEventListener("click", function() {
+      state.filtersOpen = !state.filtersOpen;
+      localStorage.setItem("storyhook.section.filters.open", String(state.filtersOpen));
+      syncFilterToggle(filteredStories().length, state.data ? state.data.stories.length : 0);
+    });
     $("search-input").addEventListener("input", function() {
       state.filter.text = this.value;
       savePersistedFilters();
@@ -3488,7 +3717,27 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
     clear(card);
     var badge = buildTypeBadge(st.story_type);
-    card.appendChild(el("div", { class: "card-id-row" }, [badge, el("span", { class: "card-id" }, [st.id])]));
+    // SH-235: a visible actions affordance, coarse pointers only (see
+    // .card-actions-btn's own CSS) -- HTML5 drag-and-drop (this card's own
+    // `dragstart` in buildCard) never fires on touch, so before this the
+    // only way to act on a card without a mouse was an undocumented
+    // long-press. Opens the exact same menu right-click does
+    // (openStoryMenu, storyMenuModel) -- not a second menu to keep in
+    // step with the first. `tabIndex: -1`: `card` is `role="button"`, and
+    // a nested interactive element inside an ARIA button role is
+    // presentational to assistive tech regardless of markup -- Shift+F10 /
+    // the Menu key (already implemented, already announced by
+    // #board-kbd-hint) stays the keyboard/AT path to this same menu.
+    // Rebuilding the card node to give this button a real place in the
+    // accessibility tree would touch dnd, roving tabindex, FLIP and
+    // reconcileColumnCards; recorded as a deliberate trade-off in
+    // docs/spec/responsive-dashboard.md rather than done here.
+    var cardActionsBtn = el("button", {
+      type: "button", class: "card-actions-btn", tabIndex: -1,
+      "aria-label": "Actions for " + st.id,
+      onClick: function(e) { e.stopPropagation(); openStoryMenu(e, v, cardActionsBtn); }
+    }, ["⋯"]);
+    card.appendChild(el("div", { class: "card-id-row" }, [badge, el("span", { class: "card-id" }, [st.id]), cardActionsBtn]));
     card.appendChild(el("div", { class: "card-title" }, [st.title]));
 
     var metaRow = el("div", { class: "card-meta" }, []);
@@ -3758,6 +4007,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     row.appendChild(el("td", {}, [labelChips(st.labels)]));
     row.appendChild(el("td", {}, [st.assignee ? memberName(st.assignee) : el("span", { style: "color:var(--fg-faint)" }, ["–"])]));
     row.appendChild(el("td", { class: "col-date" }, [updated]));
+    // SH-235: same reasoning as buildCard's own .card-actions-btn -- a
+    // visible, coarse-pointer-only path to the exact menu right-click
+    // already opens. Unlike a card, a <tr> is not `role="button"`
+    // (buildListRow's own comment on why), so a nested button here is a
+    // normal part of the accessibility tree and needs no tabIndex override.
+    var rowActionsBtn = el("button", {
+      type: "button", class: "row-actions-btn", "aria-label": "Actions for " + st.id,
+      onClick: function(e) { e.stopPropagation(); openStoryMenu(e, v, rowActionsBtn); }
+    }, ["⋯"]);
+    row.appendChild(el("td", { class: "col-actions" }, [rowActionsBtn]));
     row.style.borderLeft = blocked[st.id] ? "3px solid var(--danger)" : "";
   }
 
