@@ -352,3 +352,71 @@ test("toast and dispatch-history overlays never exceed a narrow viewport", async
     ).toBeLessThan(remCeiling * remPx);
   }
 });
+
+/**
+ * SH-235 (D3, WCAG 2.2 SC 2.5.8): every `button`, link and `select` across
+ * the dashboard's surfaces measures at least 44 CSS px on both axes under
+ * a coarse pointer -- the fingertip-comfortable size this suite holds tap
+ * targets to (`--tap-min`'s coarse value; 24px is the floor everywhere
+ * else, asserted for the fine-pointer default in `web_test.rs`).
+ *
+ * Scoped to `button, a[href], select` -- native `input[type=checkbox]`
+ * boxes are excluded on purpose: each one here is wrapped by a `<label>`
+ * that is itself the real target (clicking anywhere on the label toggles
+ * it), and that label is what's measured and fixed, not the 13px checkbox
+ * square nested inside it. Measuring the checkbox too would be a false
+ * positive against a target SC 2.5.8 already exempts (a smaller control
+ * inside an equivalent, larger one).
+ */
+test("every button, link and select meets the coarse-pointer tap-target minimum", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+
+  await expectNoSmallTargets(page.locator("body"), "the home screen");
+
+  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await expect(page.locator("#board-view")).toBeVisible();
+  await expectNoSmallTargets(page.locator("body"), "the board screen");
+
+  await page.locator('#view-toggle button[data-view="list"]').click();
+  await expect(page.locator("#list-body tr").first()).toBeVisible();
+  await expectNoSmallTargets(page.locator("body"), "the list screen");
+
+  await page.locator("#list-body tr").first().click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await expectNoSmallTargets(page.locator("#drawer"), "the story drawer");
+  await page.locator("#drawer-close").click();
+  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
+
+  await page.locator("#new-story-btn").click();
+  await expect(page.locator("#create-modal")).toHaveClass(/open/);
+  await expectNoSmallTargets(page.locator("#create-modal"), "the create-story modal");
+  await page.locator("#create-discard").click();
+  await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
+
+  await page.locator("#settings-btn").click();
+  await expect(page.locator("#settings-view")).toBeVisible();
+  await expectNoSmallTargets(page.locator("body"), "the settings screen");
+
+  await page
+    .locator(".settings-table tr", { hasText: "Alpha Project" })
+    .locator("button", { hasText: "Statuses" })
+    .click();
+  await expect(page.locator(".status-list")).toBeVisible();
+  await expectNoSmallTargets(page.locator(".settings"), "the statuses editor");
+});
+
+/** Asserts `findSmallTargets` reports nothing under `root` for the
+ * `button, a[href], select` sweep, at the coarse-pointer 44px minimum. */
+async function expectNoSmallTargets(
+  root: Locator,
+  surface: string,
+): Promise<void> {
+  const small = await findSmallTargets(root, "button, a[href], select", 44);
+  expect(
+    small,
+    `${surface}: these tap targets measure under the 44px coarse-pointer minimum`,
+  ).toEqual([]);
+}

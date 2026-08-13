@@ -1140,6 +1140,111 @@ fn web_serve_root_html_clamps_overlay_widths_to_the_viewport() {
     }
 }
 
+/// SH-235, WCAG 2.2 SC 2.5.8 (Target Size, Minimum): every tap target in
+/// the stylesheet reads `--tap-min` -- 24px everywhere (the floor SC 2.5.8
+/// sets for mouse input too), 44px under a coarse pointer (Apple's and
+/// Android's own guidance for a comfortable fingertip target). One token,
+/// many readers -- the same shape as `--control-font-*` (SH-256) and for
+/// the same reason: a literal value on any one of these selectors would be
+/// a silent, undetectable regression the moment `--tap-min` itself changed.
+///
+/// `responsive.mobile.spec.ts`'s own sweep is the layer that proves the
+/// browser actually *resolves* every one of these to 44px or more under a
+/// real coarse pointer, across every surface that renders them -- this
+/// test only pins the source text.
+#[test]
+fn web_serve_root_html_meets_wcag_tap_target_size() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    assert!(
+        css.contains("--tap-min: 24px;"),
+        ":root must set --tap-min: 24px, WCAG 2.2 SC 2.5.8's own floor"
+    );
+    let block_start = css
+        .find("@media (pointer: coarse) {")
+        .expect("the coarse-pointer block is what raises --tap-min");
+    let coarse_block = &css[block_start..];
+    let coarse_block = &coarse_block[..coarse_block
+        .find("\n}")
+        .expect("the coarse-pointer block closes")];
+    assert!(
+        coarse_block.contains("--tap-min: 44px;"),
+        "the coarse-pointer block must raise --tap-min to 44px"
+    );
+
+    // Selectors whose only fix was a min-height floor -- their width was
+    // already compliant (a full-width row, or a text label wide enough on
+    // its own).
+    for selector in [
+        ".btn",
+        ".projsel-btn",
+        ".projsel-item",
+        ".back-link",
+        ".fdd-option",
+        ".filter-toggle",
+        ".board-sort-btn",
+        ".filter-clear",
+        ".column-archive-btn",
+        ".section-toggle",
+        ".field select, .field input[type=text], .field textarea",
+        ".modal-body input[type=text], .modal-body select",
+        ".ctxmenu-item",
+        ".view-toggle button",
+        ".fdd-btn",
+        ".status-row select, .status-row input[type=text]",
+        ".status-add input[type=text], .status-add select",
+    ] {
+        assert!(
+            declarations(css, selector).contains("min-height: var(--tap-min)"),
+            "`{selector}` must read min-height from --tap-min"
+        );
+    }
+
+    // Selectors whose fix needed both axes -- each is a glyph-only icon
+    // button (a chip's "x", a relation's delete button, a dismiss "x")
+    // narrower than --tap-min on its own.
+    for selector in [
+        ".status-reorder button",
+        ".label-chip button",
+        ".rel-row button",
+        ".dispatch-history-dismiss",
+    ] {
+        let decl = declarations(css, selector);
+        assert!(
+            decl.contains("min-width: var(--tap-min)"),
+            "`{selector}` must read min-width from --tap-min"
+        );
+        assert!(
+            decl.contains("min-height: var(--tap-min)"),
+            "`{selector}` must read min-height from --tap-min"
+        );
+    }
+
+    // .field textarea and .description-field each had a taller rest height
+    // than --tap-min's own 24px desktop floor before this token existed
+    // (36px, 40px) -- max() keeps whichever floor is taller, rather than a
+    // bare var(--tap-min) silently shrinking either on a fine pointer.
+    for (selector, original) in [
+        (".field textarea", "2.25rem"),
+        (".description-field", "2.5rem"),
+    ] {
+        let expected = format!("min-height: max({original}, var(--tap-min))");
+        assert!(
+            declarations(css, selector).contains(&expected),
+            "`{selector}` must set `{expected}`"
+        );
+    }
+}
+
 #[test]
 fn web_serve_api_data_empty_project() {
     let fixture = served();
