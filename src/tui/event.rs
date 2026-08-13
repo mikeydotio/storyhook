@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyEvent, MouseEvent};
 
@@ -26,11 +26,42 @@ pub enum Event {
 /// bounded a `PRAGMA data_version` poll interval instead.
 const POLL_BUDGET: Duration = Duration::from_millis(250);
 
+/// How long the first change of a burst holds the window open for the others
+/// before the interface is told to reload once, for all of them (SH-247).
+///
+/// The shape is the browser's, deliberately: `web_dashboard.html`'s
+/// `scheduleDataFetch` arms a timer on the first event and refetches when it
+/// fires, absorbing everything that lands inside it. Two properties come with
+/// that shape and both are load-bearing. It throttles on the **trailing** edge,
+/// so every absorbed change is still followed by a reload — dropping the
+/// *later* of two changes is precisely the defect SH-216 was filed for, and
+/// this must never become that. And the window is measured from the first
+/// change rather than restarted by each one, so a store somebody writes to
+/// without pause still reloads on a fixed cadence instead of starving.
+///
+/// The number is this interface's own, not the browser's 150ms by inheritance:
+///
+/// * **Floor** — it has to be wider than the gaps inside a real burst, or it
+///   collapses nothing. A `story` command against a warm daemon takes 10–50ms
+///   end to end (measured), so a shell loop of them publishes about that far
+///   apart, and the eight concurrent request-boundary publishes `DISPATCHERS`
+///   caps land within a few milliseconds of each other.
+/// * **Ceiling** — it is added to the latency of every change, a lone one
+///   included. The TUI is already quantised at 250ms by its own tick thread, so
+///   a window inside that adds no delay distinguishable from the cadence the
+///   interface has anyway.
+///
+/// That it lands on the same number the browser picked is a coincidence worth
+/// keeping rather than the reason for it: one absorption window across both
+/// clients of one feed is one number to reason about.
+const COALESCE_WINDOW: Duration = Duration::from_millis(150);
+
 /// Manages background threads that produce events for the main loop.
 ///
 /// Three threads:
 /// 1. Input: `crossterm::event::poll(100ms)` + `read()`
-/// 2. Change: the daemon's change feed, subscribed to
+/// 2. Change: the daemon's change feed, subscribed to, coalesced over
+///    [`COALESCE_WINDOW`]
 /// 3. Tick: a 250ms heartbeat, which drives notification expiry
 pub struct EventSource {
     stop: Arc<AtomicBool>,
@@ -127,7 +158,8 @@ impl EventSource {
 
     /// Watches the daemon's change feed for writes made by anything else —
     /// another checkout, a `story` command in a second terminal, the
-    /// dashboard.
+    /// dashboard — and reports at most one [`Event::DataChanged`] per
+    /// [`COALESCE_WINDOW`]; [`pump_changes`] holds the rule.
     ///
     /// # The one property that must survive every rewrite of this function
     ///
@@ -162,6 +194,7 @@ impl EventSource {
         thread::spawn(move || {
             pump_changes(
                 &stop,
+                COALESCE_WINDOW,
                 |budget| subscriber.poll(budget).is_some(),
                 || tx.send(Event::DataChanged).is_ok(),
             )
@@ -194,13 +227,43 @@ impl Drop for EventSource {
 /// answers "did a change arrive within this budget?", `report` answers "is the
 /// receiver still there?", and neither has to be real for the loop's own rules
 /// to be exercised.
+///
+/// One change is reported per `window`, not one per change (SH-247): the first
+/// change of a burst opens a window instead of reporting, everything arriving
+/// inside it is read off the feed and folded into the same reload, and the
+/// reload follows when the window closes. See [`COALESCE_WINDOW`] for why the
+/// window is trailing-edge and why it is measured from the first change rather
+/// than restarted by each one.
+///
+/// **Absorbing is not dropping.** Every path out of the window reports, the
+/// shutdown path included — a change read off the feed and then not reported
+/// is a write nothing will ever redraw for.
 fn pump_changes(
     stop: &AtomicBool,
+    window: Duration,
     mut wait_for_change: impl FnMut(Duration) -> bool,
     mut report: impl FnMut() -> bool,
 ) {
     while !stop.load(Ordering::Relaxed) {
-        if wait_for_change(POLL_BUDGET) && !report() {
+        if !wait_for_change(POLL_BUDGET) {
+            continue;
+        }
+
+        let deadline = Instant::now() + window;
+        // `stop` is checked here as well as at the top so a shutdown waits out
+        // at most one poll, not a poll and a whole window on top of it.
+        while !stop.load(Ordering::Relaxed) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            // The change is what the window is for; its identity is not. Every
+            // change means the same thing to the main loop — reload — so one
+            // reload answers all of them.
+            wait_for_change(remaining);
+        }
+
+        if !report() {
             break;
         }
     }
@@ -401,6 +464,181 @@ mod tests {
             "nothing wrote to the store, so nothing should have been reported"
         );
         stop.store(true, Ordering::Relaxed);
+    }
+
+    /// The window the `pump_changes` tests below drive the loop with. Short
+    /// enough to keep them quick; wide enough that the changes they script —
+    /// a counter decrement each — land inside it with orders of magnitude to
+    /// spare, so none of them races the window it is meant to sit inside.
+    const TEST_WINDOW: Duration = Duration::from_millis(120);
+
+    /// "Nothing arrived", answered the way [`Subscriber::poll`] answers it:
+    /// by waiting out the budget it was given. Returning instantly instead
+    /// would let the absorption loop spin through the window rather than wait
+    /// in it, which is a different loop from the one production runs.
+    fn quiet(budget: Duration) -> bool {
+        thread::sleep(budget);
+        false
+    }
+
+    /// SH-247: N changes arriving together cost one reload, not N.
+    ///
+    /// The feed is still drained of all five — absorbing is not dropping, and
+    /// a change left unread would come back as the *next* burst.
+    #[test]
+    fn a_burst_of_changes_costs_a_single_reload() {
+        let stop = AtomicBool::new(false);
+        let mut pending = 5;
+        let mut reports = 0;
+
+        pump_changes(
+            &stop,
+            TEST_WINDOW,
+            |budget| {
+                if pending > 0 {
+                    pending -= 1;
+                    return true;
+                }
+                // The burst is spent: let the loop finish this window, report
+                // once, and find `stop` set when it comes back round.
+                stop.store(true, Ordering::Relaxed);
+                quiet(budget)
+            },
+            || {
+                reports += 1;
+                true
+            },
+        );
+
+        assert_eq!(pending, 0, "every change must be taken off the feed");
+        assert_eq!(
+            reports, 1,
+            "five changes inside one window are one reload, not five"
+        );
+    }
+
+    /// The trailing edge, stated as the two things it promises: a lone change
+    /// is still reported, and it is reported *after* the window rather than on
+    /// arrival.
+    ///
+    /// The delay is measured from the change's own arrival rather than from
+    /// the top of the test, because only the former can tell the two edges
+    /// apart: this harness answers "quiet" by sleeping, so a total elapsed
+    /// time longer than a window says nothing about when the reload fired. A
+    /// leading-edge throttle reports on arrival and suppresses what follows —
+    /// SH-216's defect exactly — and would report at ~0 here.
+    #[test]
+    fn a_lone_change_is_reported_once_the_window_closes() {
+        use std::cell::Cell;
+
+        let stop = AtomicBool::new(false);
+        let arrived_at: Cell<Option<Instant>> = Cell::new(None);
+        let delay: Cell<Option<Duration>> = Cell::new(None);
+        let mut pending = 1;
+        let mut reports = 0;
+
+        pump_changes(
+            &stop,
+            TEST_WINDOW,
+            |budget| {
+                if pending > 0 {
+                    pending -= 1;
+                    arrived_at.set(Some(Instant::now()));
+                    return true;
+                }
+                stop.store(true, Ordering::Relaxed);
+                quiet(budget)
+            },
+            || {
+                delay.set(arrived_at.get().map(|at| at.elapsed()));
+                reports += 1;
+                true
+            },
+        );
+
+        assert_eq!(reports, 1, "a change nothing joined is still a reload");
+        assert!(
+            delay.get().is_some_and(|d| d >= TEST_WINDOW),
+            "the reload must follow the window, not the change's arrival: {:?}",
+            delay.get()
+        );
+    }
+
+    /// A change that arrives after the window closed is a second burst, and
+    /// gets its own reload.
+    ///
+    /// This constrains the fix rather than reproducing the defect: collapsing
+    /// two causally separate changes into one reload would leave the second
+    /// one's write unshown until something else happened to trigger a reload.
+    #[test]
+    fn a_change_after_the_window_gets_its_own_reload() {
+        let stop = AtomicBool::new(false);
+        let mut step = 0;
+        let mut reports = 0;
+
+        pump_changes(
+            &stop,
+            TEST_WINDOW,
+            |budget| {
+                step += 1;
+                // Steps 2 and 4 wait out a whole window quietly, so the change
+                // at step 3 cannot be inside the one step 1 opened.
+                match step {
+                    1 | 3 => true,
+                    _ => quiet(budget),
+                }
+            },
+            || {
+                reports += 1;
+                if reports == 2 {
+                    stop.store(true, Ordering::Relaxed);
+                }
+                true
+            },
+        );
+
+        assert_eq!(
+            reports, 2,
+            "two changes a window apart are two reloads; collapsing them hides the second write"
+        );
+    }
+
+    /// A store being written to without pause must still reload on a cadence.
+    ///
+    /// This is why the window is measured from the first change rather than
+    /// restarted by each one. A restarting window is the textbook debounce and
+    /// is wrong here: under a stream that never goes quiet — an import, a
+    /// scripted sweep — it would defer the reload indefinitely and leave the
+    /// board showing data from before the stream began. Written to fail on a
+    /// timeout rather than hang, so that regression reports itself.
+    #[test]
+    fn a_stream_that_never_goes_quiet_still_reloads() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        let pumping = Arc::clone(&stop);
+
+        let handle = thread::spawn(move || {
+            pump_changes(
+                &pumping,
+                TEST_WINDOW,
+                |_| {
+                    // Always another change waiting, paced so the absorption
+                    // loop waits rather than spins.
+                    thread::sleep(Duration::from_millis(1));
+                    true
+                },
+                || tx.send(()).is_ok(),
+            );
+        });
+
+        for nth in 1..=3 {
+            rx.recv_timeout(TEST_WINDOW * 20).unwrap_or_else(|_| {
+                panic!("reload {nth} never came: the window must not restart on every change")
+            });
+        }
+
+        stop.store(true, Ordering::Relaxed);
+        handle.join().expect("the thread must end rather than hang");
     }
 
     /// A daemon this cannot reach at all is not a reason to take the
