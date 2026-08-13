@@ -12238,3 +12238,52 @@ that produced SH-259 in the first place.
 **Not done here, on purpose:** no version bump and no deploy. SH-259 unblocks
 SH-257, which owns the re-release. Tags are not force-moved, so the fix ships as
 a new version rather than a re-cut of v2.1.0.
+
+### SH-259 addendum — the fix proven by a real build, and SH-261 filed
+
+The entry above was written when the evidence was the resolver agreeing. It is
+now a build. Run **31657323566** — the first use of the `workflow_dispatch`
+trigger SH-259 added, dispatched on `main` after the fix merged:
+
+| target | result |
+|---|---|
+| `x86_64-unknown-linux-gnu` | success — *had never compiled* |
+| `aarch64-unknown-linux-gnu` | success — cross-built, *never compiled* |
+| `x86_64-apple-darwin` | success |
+| `aarch64-apple-darwin` | success |
+| `release` | **skipped** — the tag guard, as designed |
+
+4m38s, four artifacts at 5.2–7.1 MB. `gh release list` still shows v2.0.0 as
+Latest, so a dispatched run publishes nothing.
+
+**Why this was not a formality.** The Linux build previously died *inside*
+`secret-service`, which means nothing downstream of it had ever been compiled
+for Linux — including this crate's own `src/domain/credential_store.rs` Linux
+arm. Selecting the runtime feature removes the first error; it says nothing
+about a second one waiting behind it. "The resolver now agrees" and "the target
+compiles" are different claims, and only one of them was worth closing the story
+on. Three things are proven rather than one: the feature fixes the build, the
+dispatch trigger works, and the tag guard refuses to publish from a dispatched
+run.
+
+**Generalisable:** when a fix removes a *first* error, the fix is unproven until
+something compiles past it. That is the whole argument for the dispatch trigger,
+and this run is its first repayment.
+
+**SH-261 filed** (`low`, bug) from trying to record the above. `story comment` on
+a closed story is refused — *"story `SH-259` is closed and cannot be
+modified"* — because the comment path resolves through `resolve_open_story`
+(`src/service/mod.rs:367`). That guard is named and reasoned about
+**modification**, but a comment is an *append* to the event log the story folds
+over, not an edit of it. The asymmetry is visible on SH-259 itself: a merged
+commit may still attach itself to the closed story via `referenced_by`, while a
+person or agent may not attach a sentence. The `reopen` -> comment -> `done`
+workaround is worse than the gap, writing two spurious transitions into history
+so a story reads as if it regressed. Verification went to SH-257 and to this
+file instead — which is exactly the separation of *fix* from *why we believe it
+worked* that SH-261 is about.
+
+**Supervision:** four background tasks this cycle, all under the log-growth or
+per-job heartbeat with a 120s stall bound — three `make test` runs and one polled
+Actions run. No stalls, no wedges, no orphans, no restarts. The dispatched build
+was polled to a terminal state rather than waited on.
