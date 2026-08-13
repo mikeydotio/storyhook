@@ -40,11 +40,15 @@
 //! [`crate::api::admission::admission`] matches `["api", ..]` and falls
 //! through on everything else. Putting redemption at `POST /handoff`, outside
 //! `/api`, means the route stands on **its own gate**
-//! ([`redemption_admitted`]) rather than inheriting SH-250's tokenless read
-//! exemption — and the verb becomes a free choice rather than a consequence of
-//! that exemption's `Get | Head` conjunct. The first draft of this design was
-//! a side-effecting `GET`, chosen only because the exemption admitted nothing
-//! else; the topology deletes that compromise.
+//! ([`redemption_admitted`]) rather than inheriting whatever `/api` requires —
+//! at the time this topology was chosen, that was SH-250's tokenless read
+//! exemption, and the verb was a free choice rather than a consequence of
+//! that exemption's `Get | Head` conjunct. The exemption is gone (SH-255), but
+//! the reasoning still holds for the same underlying fact: a caller redeeming
+//! a coupon has no credential yet, so this route cannot sit behind a gate
+//! that requires one. The first draft of this design was a side-effecting
+//! `GET`, chosen only because the exemption admitted nothing else; the
+//! topology deletes that compromise.
 //!
 //! **Do not move this route under `/api` "for consistency".**
 //! `tests/handoff_endpoint.rs` fails if anyone does.
@@ -53,15 +57,14 @@
 //!
 //! Until SH-254 a redeemed coupon bought the **master token**, and this module
 //! said so plainly: *"this is transport, done correctly — it is not least
-//! privilege."* It buys a [`crate::api::session`] capability now — the board's
-//! own write surface, honoured only on this machine, revocable without
-//! restarting the daemon.
+//! privilege."* SH-254 then substituted a scoped session capability. Neither
+//! survives: a coupon buys a named token now, same as `story token new` or a
+//! pasted-and-exchanged one, delivered as a cookie the page never reads
+//! (`handle_redeem`) — one credential concept, full stop, not a third tier.
 //!
-//! The gate did not move for that change. The same five conjuncts in the same
-//! order decide a redemption, and the only difference visible here is that
-//! [`redemption_admitted`] hands back the [`LocalRequest`] it built instead of
-//! a `bool`, so the capability is issued against the locality this request
-//! already proved rather than against a second derivation of it.
+//! The redemption *gate* did not move an inch across any of this. The same
+//! five conjuncts in the same order decide it; only the value on the other
+//! side changed, twice.
 
 use std::collections::VecDeque;
 use std::sync::{Mutex, PoisonError};
@@ -70,10 +73,10 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
 
 use crate::api::http::{
-    LocalRequest, Reply, TrustedHosts, header_value, json_reply, local_request, text_reply,
+    LocalRequest, Reply, TrustedHosts, header_value, json_reply, local_request, mutation_guard_ok,
+    text_reply,
 };
 use crate::api::rpc::{constant_time_eq, token_ok};
-use crate::api::session::SessionRegistry;
 use crate::api::tokens::TokenRegistry;
 use crate::daemon::http1::{Header, Method};
 
@@ -233,10 +236,10 @@ fn refusal() -> Reply {
 /// included, not just the registry — is clock-testable: a test can arm at one
 /// instant and attempt to redeem two hundred seconds later without sleeping.
 ///
-/// `tokens`/`cookie_name`/`wall_now` are SH-255's addition: a successful
-/// redemption also mints a short-TTL named token and sets it as a cookie,
-/// alongside the [`SessionRegistry`] capability this route already issued —
-/// see [`handle_redeem`]'s own doc for why both are issued for now.
+/// `POST /handoff` redeems; `DELETE /handoff` is the symmetric clear
+/// ([`handle_clear`]) — dispatched here, ahead of [`handle_redeem`]'s own
+/// method check, so this module owns the browser credential's whole
+/// lifecycle at one route.
 #[allow(clippy::too_many_arguments)]
 pub fn intercept(
     segments: &[&str],
@@ -247,25 +250,26 @@ pub fn intercept(
     loopback: bool,
     now: Instant,
     registry: &HandoffRegistry,
-    sessions: &SessionRegistry,
     tokens: &TokenRegistry,
     cookie_name: &str,
     wall_now: DateTime<Utc>,
 ) -> Option<Reply> {
     match segments {
         ["api", "v1", "handoff"] => Some(handle_arm(method, headers, token, now, registry)),
-        ["handoff"] => Some(handle_redeem(
-            method,
-            headers,
-            trusted_hosts,
-            loopback,
-            now,
-            registry,
-            sessions,
-            tokens,
-            cookie_name,
-            wall_now,
-        )),
+        ["handoff"] => Some(match method {
+            Method::Delete => handle_clear(headers, trusted_hosts, cookie_name),
+            _ => handle_redeem(
+                method,
+                headers,
+                trusted_hosts,
+                loopback,
+                now,
+                registry,
+                tokens,
+                cookie_name,
+                wall_now,
+            ),
+        }),
         _ => None,
     }
 }
@@ -298,43 +302,37 @@ fn handle_arm(
     .no_store()
 }
 
-/// `POST /handoff` — spend a coupon for a scoped dashboard capability.
+/// `POST /handoff` — spend a coupon for a named token, delivered as a cookie.
 ///
-/// **Not the master token** (SH-254). What the browser gets is a
-/// [`crate::api::session`] capability: the board's own write surface, honoured
-/// only on this machine, revocable without restarting anything. Until SH-254
-/// this handed over the daemon's token itself, which made a dashboard tab able
-/// to delete every project on the machine and to reach `POST /api/v1/invoke` —
-/// every verb the CLI has. That was transport done correctly, and it was not
-/// least privilege.
+/// **Never a body carrying the secret.** Until SH-254 this handed over the
+/// daemon's master token in a JSON body; SH-254 then substituted a scoped
+/// session capability, still in a JSON body the page read and stored itself.
+/// SH-255 removes the body entirely: `204`, no content, `Set-Cookie` on the
+/// response — so the raw secret exists in exactly one place a page script
+/// could ever have reached it (nowhere), rather than relying on the page to
+/// read it once and never retain it.
 ///
-/// The redemption *gate* did not move an inch for this: the same five conjuncts
-/// in the same order decide it. All that changed is the value on the other side
-/// — and that [`redemption_admitted`] now hands back the [`LocalRequest`] it
-/// built rather than a `bool`, so the capability is issued against the witness
-/// this request already earned instead of deriving locality a second time.
+/// The redemption *gate* did not move an inch for this: the same five
+/// conjuncts in the same order decide it, [`redemption_admitted`] still hands
+/// back the [`LocalRequest`] witness it built (kept for the same reason
+/// SH-254 introduced it: a redemption that is admitted is admitted against
+/// locality it proved itself, not a second derivation of it, even though this
+/// route no longer has anything of its own to issue against that witness).
 ///
 /// `no_store` rather than `no_cache`: `no-cache` permits a browser to *store*
 /// a response and revalidate it, which is the wrong instruction for the one
 /// reply in this daemon that carries a credential.
 ///
-/// # Also sets a cookie now (SH-255), transitionally alongside the capability
+/// # A minting failure fails the redemption
 ///
-/// A successful redemption additionally mints a short-TTL
-/// [`crate::api::tokens::HANDOFF_TTL`] named token and sets it as a cookie —
-/// the mechanism the whole named-token model is replacing the capability
-/// above with. Both are issued for now: `admission.rs` does not yet accept
-/// the cookie as a credential for anything (that lands next), so a redemption
-/// that stopped returning the capability today would leave a freshly opened
-/// tab unable to do a single write until the remaining steps land. The
-/// capability, `token_exempt`, and this dual-issuance all go away together
-/// once the model is fully switched over.
-///
-/// Minting is non-fatal, the same resilience idiom [`crate::web::armed_handoff`]'s
-/// own doc describes for arming: if the registry is at capacity or the coupon
-/// header is unreadable, the capability redemption still succeeds and no
-/// cookie is set — a degraded outcome identical to what redemption already
-/// was before this, never a failure this route did not have before.
+/// Unlike the transitional dual-issuance this replaced, there is no second
+/// credential to fall back on: if [`mint_handoff_token`] cannot produce a
+/// token (the registry is at [`crate::api::tokens::TokenRegistry`]'s
+/// capacity — the one realistic cause, since the coupon header is guaranteed
+/// present by [`redemption_admitted`]), the coupon is still spent (it was
+/// consumed before minting was attempted, and redemption must not be
+/// retried on a live one) but the browser gets a `500` and no cookie. The
+/// fix is the same either way: `story token list` and revoke something.
 #[allow(clippy::too_many_arguments)]
 fn handle_redeem(
     method: &Method,
@@ -343,29 +341,46 @@ fn handle_redeem(
     loopback: bool,
     now: Instant,
     registry: &HandoffRegistry,
-    sessions: &SessionRegistry,
     tokens: &TokenRegistry,
     cookie_name: &str,
     wall_now: DateTime<Utc>,
 ) -> Reply {
-    let Some(witness) =
+    let Some(_witness) =
         redemption_admitted(method, headers, trusted_hosts, loopback, now, registry)
     else {
         return refusal();
     };
-    let reply = json_reply(
-        200,
-        serde_json::json!({ "session": sessions.issue(&witness, now) }).to_string(),
-    )
-    .no_store();
     match mint_handoff_token(headers, tokens, wall_now, now) {
-        Some(minted) => reply.with_cookie(crate::api::tokens::set_cookie_header(
-            cookie_name,
-            &minted.secret,
-            crate::api::tokens::HANDOFF_TTL.num_seconds(),
-        )),
-        None => reply,
+        Some(minted) => text_reply(204, String::new()).no_store().with_cookie(
+            crate::api::tokens::set_cookie_header(
+                cookie_name,
+                &minted.secret,
+                crate::api::tokens::HANDOFF_TTL.num_seconds(),
+            ),
+        ),
+        None => text_reply(
+            500,
+            "storyhook daemon: could not mint a token for this handoff",
+        ),
     }
+}
+
+/// `DELETE /handoff` — clears whatever cookie this browser holds, the
+/// symmetric counterpart to redemption, so this module owns the browser
+/// credential's whole lifecycle at one route.
+///
+/// Guarded by [`mutation_guard_ok`] — `X-Storyhook` plus a trusted `Host` —
+/// like every other mutation this daemon answers, rather than
+/// [`redemption_admitted`]'s five conjuncts: there is no coupon to spend and
+/// no locality to prove here, only the ordinary CSRF/DNS-rebinding guard
+/// against a page that would clear a victim's session for its own reasons.
+fn handle_clear(headers: &[Header], trusted_hosts: &TrustedHosts, cookie_name: &str) -> Reply {
+    if !mutation_guard_ok(headers, trusted_hosts) {
+        return refusal();
+    }
+    text_reply(204, String::new())
+        .no_store()
+        .with_cookie(crate::api::tokens::clear_cookie_header(cookie_name))
 }
 
 /// Mints a token for a just-redeemed coupon, named from a slice of the
@@ -377,8 +392,8 @@ fn handle_redeem(
 ///
 /// `None` on any failure — an unreadable coupon header (should not happen;
 /// [`redemption_admitted`] already required one), the registry at capacity,
-/// or a name collision. See [`handle_redeem`]'s doc for why a failure here
-/// must not fail the redemption itself.
+/// or a name collision. See [`handle_redeem`]'s doc for what a failure here
+/// now means for the redemption as a whole.
 fn mint_handoff_token(
     headers: &[Header],
     tokens: &TokenRegistry,
@@ -461,14 +476,14 @@ mod tests {
         TrustedHosts::default()
     }
 
-    /// This module's routes, with a fresh capability registry behind them.
+    /// This module's routes, with a fresh, empty token registry behind them.
     ///
-    /// **Shadows [`super::intercept`] on purpose.** SH-254 gave it one more
-    /// parameter — where a redeemed coupon's capability is issued — and every
-    /// test below is about the *gate*, which that change did not touch. Routing
-    /// them through a helper keeps SH-251's whole truth table byte-identical
-    /// across the change, which is what makes "the gate did not move" checkable
-    /// by reading the diff rather than by taking somebody's word for it.
+    /// **Shadows [`super::intercept`] on purpose.** Every test below is about
+    /// the redemption *gate*, which SH-255's cookie/token plumbing did not
+    /// touch. Routing them through a helper keeps SH-251's whole truth table
+    /// byte-identical across that change, which is what makes "the gate did
+    /// not move" checkable by reading the diff rather than by taking
+    /// somebody's word for it.
     #[allow(clippy::too_many_arguments)]
     fn intercept(
         segments: &[&str],
@@ -489,7 +504,6 @@ mod tests {
             loopback,
             now,
             registry,
-            &SessionRegistry::new(),
             &TokenRegistry::new(Utc::now(), now),
             "storyhook_test",
             Utc::now(),
@@ -637,16 +651,13 @@ mod tests {
     }
 
     #[test]
-    fn a_local_post_with_a_live_coupon_gets_a_capability_and_never_the_token() {
-        // SH-254's headline: this used to answer with the daemon's master
-        // token. What comes back now is a scoped capability, and the assertion
-        // is written in both directions on purpose — that the reply *is* a
-        // capability, and that the token appears nowhere in it. The second half
-        // is the one that would notice a well-meaning "include the token too,
-        // for compatibility".
+    fn a_local_post_with_a_live_coupon_gets_a_named_token_cookie_and_no_body() {
+        // SH-254's headline was that this used to answer with the daemon's
+        // master token, then a scoped capability. SH-255 removes the body
+        // entirely: 204, no content, a named token delivered as a cookie --
+        // the raw secret never travels anywhere a page script could read it.
         let now = Instant::now();
         let (registry, coupon) = armed(now);
-        let sessions = SessionRegistry::new();
         let tokens = TokenRegistry::new(Utc::now(), now);
         let reply = super::intercept(
             &path_segments(REDEEM_PATH),
@@ -657,40 +668,25 @@ mod tests {
             true,
             now,
             &registry,
-            &sessions,
             &tokens,
             "storyhook_test",
             Utc::now(),
         )
         .expect("the redemption path is this module's");
 
-        assert_eq!(reply.status, 200);
-        assert!(
-            !reply.body().contains(TOKEN),
-            "the redemption reply carried the master token: {}",
-            reply.body()
-        );
+        assert_eq!(reply.status, 204);
+        assert!(reply.body().is_empty(), "{}", reply.body());
 
-        // And what it did carry is a capability this daemon will honour.
-        let issued: String = serde_json::from_str::<serde_json::Value>(reply.body())
-            .expect("the reply is JSON")
-            .get("session")
-            .and_then(|v| v.as_str())
-            .expect("the reply names a session")
-            .to_string();
-        assert!(
-            sessions.present(&witness(), &issued, now),
-            "the capability handed to the browser must be one this daemon knows"
-        );
-
-        // SH-255: a named token is also minted and set as a cookie, alongside
-        // the capability above -- the mechanism replacing it.
         let cookie = reply.cookie().expect("a redemption must set a cookie");
         assert!(cookie.starts_with("storyhook_test="), "{cookie}");
         assert!(cookie.contains("HttpOnly"), "{cookie}");
         assert!(cookie.contains("SameSite=Strict"), "{cookie}");
         assert!(cookie.contains("Path=/"), "{cookie}");
         assert!(!cookie.contains("Domain="), "{cookie}");
+        assert!(
+            !cookie.contains(TOKEN),
+            "the redemption cookie must never carry the master token: {cookie}"
+        );
         let secret = cookie
             .split(';')
             .next()
@@ -700,10 +696,6 @@ mod tests {
         assert!(
             tokens.validate(secret, Utc::now(), now).is_some(),
             "the cookie's value must be a token this daemon's registry recognizes"
-        );
-        assert!(
-            !reply.body().contains(secret),
-            "the minted secret must never also appear in the JSON body"
         );
     }
 
@@ -808,7 +800,7 @@ mod tests {
     fn conjunct_5_a_spent_coupon_is_refused() {
         let now = Instant::now();
         let (registry, coupon) = armed(now);
-        assert_eq!(redeem(&redeem_headers(&coupon), &registry, now).status, 200);
+        assert_eq!(redeem(&redeem_headers(&coupon), &registry, now).status, 204);
         assert_eq!(redeem(&redeem_headers(&coupon), &registry, now), refusal());
     }
 
@@ -872,7 +864,7 @@ mod tests {
 
         // Already-spent, which needs the coupon actually spent first — and
         // proves every refusal above left it unspent.
-        assert_eq!(redeem(&redeem_headers(&coupon), &registry, now).status, 200);
+        assert_eq!(redeem(&redeem_headers(&coupon), &registry, now).status, 204);
         assert_eq!(redeem(&redeem_headers(&coupon), &registry, now), refusal());
     }
 

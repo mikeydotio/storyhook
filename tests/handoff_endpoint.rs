@@ -22,7 +22,6 @@ use std::time::Duration;
 
 use storyhook::api::handoff::{ARM_PATH, COUPON_HEADER, REDEEM_PATH};
 use storyhook::api::rpc::TOKEN_HEADER;
-use storyhook::api::session::SESSION_HEADER;
 use storyhook::cli::parse_invocation;
 use storyhook::invoke::dispatch_unscoped;
 use storyhook::store::SqliteStore;
@@ -172,41 +171,55 @@ fn redeem(port: u16, headers: &[(&str, String)]) -> RawResponse {
 }
 
 #[test]
-fn a_coupon_armed_over_the_control_surface_redeems_for_a_capability() {
+fn a_coupon_armed_over_the_control_surface_redeems_for_a_named_token_cookie() {
     // The whole feature in one test: `story web open` arms, the browser
     // spends, and what comes back is a credential that works -- with nobody
     // having typed anything.
     //
-    // What comes back changed in SH-254. It was this daemon's master token,
+    // What comes back changed twice. It was this daemon's master token,
     // which made the browser tab able to delete every project on the machine
-    // and to reach `POST /api/v1/invoke`. It is a scoped capability now, and
-    // the two assertions below are the two halves of that: the token is not in
-    // the reply, and what *is* in the reply authorizes a write.
-    let (_env, _store, server) = served();
+    // and to reach `POST /api/v1/invoke`; SH-254 then scoped it down to a
+    // capability limited to the board's own write surface. SH-255 removes
+    // that tier entirely: a named token now, delivered as a cookie, that can
+    // do everything the dashboard does -- reads, project/story CRUD,
+    // dispatch. The assertions below are the ones that matter: the master
+    // token is nowhere in the exchange (there is no body at all now), and
+    // the cookie's value actually authenticates.
+    let (env, _store, server) = served();
     let coupon = arm(server.port(), &server.token);
 
     let redeemed = redeem(server.port(), &redeem_headers(server.port(), &coupon));
-    assert_eq!(redeemed.status, 200, "redemption failed: {}", redeemed.body);
+    assert_eq!(redeemed.status, 204, "redemption failed: {}", redeemed.body);
+    assert!(redeemed.body.is_empty(), "{}", redeemed.body);
+
+    let cookie_name = storyhook::api::tokens::cookie_name(&env.environment());
+    let cookie = redeemed
+        .header("set-cookie")
+        .unwrap_or_else(|| panic!("no Set-Cookie on: {:?}", redeemed.headers));
+    assert!(cookie.starts_with(&format!("{cookie_name}=")), "{cookie}");
     assert!(
-        !redeemed.body.contains(&server.token),
-        "redemption handed the browser the master token: {}",
-        redeemed.body
+        !cookie.contains(&server.token),
+        "the redemption cookie must never carry the master token: {cookie}"
     );
+    let secret = cookie
+        .split(';')
+        .next()
+        .and_then(|kv| kv.split_once('='))
+        .map(|(_, v)| v)
+        .expect("a name=value pair");
 
-    let parsed: serde_json::Value =
-        serde_json::from_str(&redeemed.body).expect("the redemption reply is JSON");
-    let capability = parsed["session"]
-        .as_str()
-        .expect("redemption must answer with a session capability");
-
-    // And the capability actually works, which is the only thing that makes
-    // the exchange worth anything. A read, because this fixture has no project
-    // to write to -- `tests/session_capability.rs` carries the write half.
+    // And the cookie actually works. A read, since this fixture has no
+    // project to write to -- the write half is covered by admission.rs's own
+    // unit tests and tests/token_endpoint.rs's exchange-route coverage.
     let read = request(
         server.port(),
         "GET",
         "/api/repos",
-        &[("Host", "127.0.0.1"), (SESSION_HEADER, capability)],
+        &[
+            ("Host", "127.0.0.1"),
+            ("Cookie", &format!("{cookie_name}={secret}")),
+            ("Sec-Fetch-Site", "same-origin"),
+        ],
     );
     assert_eq!(read.status, 200);
 }
@@ -258,7 +271,7 @@ fn a_second_redemption_of_the_same_coupon_is_refused() {
 
     assert_eq!(
         redeem(server.port(), &redeem_headers(server.port(), &coupon)).status,
-        200
+        204
     );
     let second = redeem(server.port(), &redeem_headers(server.port(), &coupon));
     assert_eq!(second.status, 403);
@@ -287,22 +300,24 @@ fn a_redemption_from_a_rebound_host_is_refused() {
     // deny the real browser its handoff.
     assert_eq!(
         redeem(server.port(), &redeem_headers(server.port(), &coupon)).status,
-        200
+        204
     );
 }
 
 #[test]
 fn redemption_sets_a_named_token_cookie_over_the_wire() {
-    // SH-255: alongside the capability `a_coupon_armed_over_the_control_
-    // surface_redeems_for_a_capability` already covers, a successful
-    // redemption now also sets a cookie -- this is the assertion that goes
-    // through `finish()` and a real socket, where the earlier unit test in
-    // `src/api/handoff.rs` only exercises `intercept` directly.
+    // Focused on the cookie's own attributes -- HttpOnly, SameSite, Path, no
+    // Domain -- where `a_coupon_armed_over_the_control_surface_redeems_for_a_
+    // named_token_cookie` focuses on the credential actually working. This
+    // is the assertion that goes through `finish()` and a real socket, where
+    // the unit test in `src/api/handoff.rs` only exercises `intercept`
+    // directly.
     let (env, _store, server) = served();
     let coupon = arm(server.port(), &server.token);
 
     let redeemed = redeem(server.port(), &redeem_headers(server.port(), &coupon));
-    assert_eq!(redeemed.status, 200, "redemption failed: {}", redeemed.body);
+    assert_eq!(redeemed.status, 204, "redemption failed: {}", redeemed.body);
+    assert!(redeemed.body.is_empty(), "{}", redeemed.body);
 
     let expected_name = storyhook::api::tokens::cookie_name(&env.environment());
     let cookie = redeemed
@@ -383,7 +398,7 @@ fn the_redemption_route_lives_outside_api_and_stays_there() {
     // happen at exactly one place.
     assert_eq!(
         redeem(server.port(), &redeem_headers(server.port(), &coupon)).status,
-        200
+        204
     );
 }
 
@@ -452,23 +467,19 @@ fn locality_is_derived_only_where_it_was_decided_it_should_be() {
         files.len()
     );
 
-    // `http.rs` defines the type and its one constructor. `admission.rs` is
-    // SH-250's tokenless read exemption; `handoff.rs` is SH-251's redemption
-    // gate; `session.rs` is SH-254's scoped dashboard capability, which is
-    // honoured only for a caller on this machine -- the single largest thing
-    // that story takes away, since the master token it replaced was spendable
-    // from any tailnet peer.
+    // `http.rs` defines the type and its one constructor. `handoff.rs` is
+    // SH-251's redemption gate, the one remaining caller: SH-255 deleted the
+    // other two. `admission.rs`'s `token_exempt` was SH-250's tokenless read
+    // exemption; `session.rs` was SH-254's scoped dashboard capability,
+    // honoured only for a caller on this machine. Both are gone along with
+    // the credential tiers they existed to gate.
     //
-    // Adding a fifth means a new route has been given the authority to conclude
-    // "this caller is local" -- which may well be right, and must be a decision
-    // somebody took on purpose rather than a line that slipped in. Widening
-    // this list is that decision, and this comment is where the reason goes.
-    const ALLOWED: [&str; 4] = [
-        "src/api/http.rs",
-        "src/api/admission.rs",
-        "src/api/handoff.rs",
-        "src/api/session.rs",
-    ];
+    // Adding a third means a new route has been given the authority to
+    // conclude "this caller is local" -- which may well be right, and must
+    // be a decision somebody took on purpose rather than a line that slipped
+    // in. Widening this list is that decision, and this comment is where the
+    // reason goes.
+    const ALLOWED: [&str; 2] = ["src/api/http.rs", "src/api/handoff.rs"];
 
     let mut breaches = Vec::new();
     for (path, text) in &files {

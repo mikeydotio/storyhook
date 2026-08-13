@@ -1016,25 +1016,16 @@ pub enum WebAction {
     },
     Open,
     Address,
-    /// End every scoped dashboard capability this daemon has issued (SH-254).
-    ///
-    /// The kill switch the capability's design requires. Not an
-    /// [`Invocation`] the daemon executes against the store — capabilities are
-    /// daemon *process* state, and `/api/v1/invoke` builds a `StoreInvoker`
-    /// with no handle to it — so this is dispatched client-side in
-    /// [`crate::web`], against the control route, exactly as `web open` arms a
-    /// coupon.
-    Revoke,
 }
 
 /// `story token …` (SH-255) — the named, persistent, revocable credential
 /// that authenticates the dashboard.
 ///
 /// Dispatched client-side against the control route, exactly like
-/// [`WebAction::Revoke`] and for the same reason: a token record is daemon
-/// process/filesystem state (`tokens.json` in the daemon's own state
-/// directory), not store data, so `/api/v1/invoke`'s `StoreInvoker` has no
-/// handle to it. See [`crate::api::tokens`].
+/// [`WebAction::Open`] arming a coupon, and for the same reason: a token
+/// record is daemon process/filesystem state (`tokens.json` in the daemon's
+/// own state directory), not store data, so `/api/v1/invoke`'s
+/// `StoreInvoker` has no handle to it. See [`crate::api::tokens`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TokenAction {
     /// Mints a fresh token named `name`, good for
@@ -3497,7 +3488,7 @@ fn parse_port_flag(rest: &[String], usage: &str) -> Result<Option<u16>, AppError
 }
 
 fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story web start [--port <PORT>] | stop | status | open | address | revoke";
+    let usage = "usage: story web start [--port <PORT>] | stop | status | open | address";
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -3529,9 +3520,17 @@ fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
         "address" => Ok(Invocation::Web {
             action: WebAction::Address,
         }),
-        "revoke" => Ok(Invocation::Web {
-            action: WebAction::Revoke,
-        }),
+        // Retired (SH-255): a scoped dashboard capability no longer exists to
+        // revoke. `story token revoke <name>` ends one named token; there is
+        // no single command for "every token this daemon has issued" — naming
+        // one deliberately, so revoking a token you did not mean to takes a
+        // name, not a blast radius.
+        "revoke" => Err(AppError::Usage(
+            "`story web revoke` is retired: named tokens replaced the scoped dashboard \
+             capability it used to end. Run `story token list` to see what is live, then \
+             `story token revoke <name>` to end one."
+                .to_string(),
+        )),
         // Internal: `story web --serve [--port N]`, what the spawner execs.
         "--serve" => Ok(Invocation::Web {
             action: WebAction::Serve {
