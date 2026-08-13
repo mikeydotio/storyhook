@@ -124,10 +124,11 @@ pub(crate) fn mutating(method: &Method) -> bool {
 ///
 /// The path is turned into a [`Route`] by [`classify`] and answered by the
 /// `match` below, which has **no wildcard arm**: a route added to
-/// [`crate::api::routes`] does not compile until it is answered here *and*
-/// classified in [`crate::api::routes::authority`] (SH-254). That is the whole
-/// mechanism by which the dashboard's scoped capability cannot be inherited by
-/// a route somebody adds later.
+/// [`crate::api::routes`] does not compile until it is answered here.
+/// Authentication is decided earlier and uniformly, in
+/// [`crate::api::admission::admission`] — this module never reasons about
+/// credentials at all (SH-255; before it, a route added here also had to be
+/// classified in a since-deleted `crate::api::routes::authority`, SH-254).
 ///
 /// **Classification does not resolve the project.** `{id}` is split off here
 /// and looked up below, which is what keeps `PUT /api/repos/<unknown>/data` a

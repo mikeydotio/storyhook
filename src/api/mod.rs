@@ -12,12 +12,14 @@
 //! * [`http`] — the plumbing both share: response shaping, the security
 //!   headers, the CSRF and DNS-rebinding guard, body reading, SSE framing.
 //! * [`rest`] — the dashboard's resource API, over the service layer.
-//! * [`routes`] — every route named once, and what authority each requires.
-//!   Imports nothing but a `Method`, so the gate that classifies a request
-//!   before reading its body structurally cannot reach a store (SH-254).
+//! * [`routes`] — every route this daemon serves, named once, for
+//!   [`rest`] to answer. Imports nothing but a `Method`, so a request can be
+//!   classified before its body is read.
 //! * [`rpc`] — the daemon's control surface: loopback only, token-authenticated.
-//! * [`session`] — the dashboard's scoped, revocable capability (SH-254): what
-//!   a redeemed coupon buys, instead of the daemon's master token.
+//! * [`tokens`] — named, persistent, revocable bearer tokens (SH-255): the
+//!   one credential concept that replaced the loopback read exemption, the
+//!   `Authority::Public`/`Session` split, and the scoped session capability
+//!   (SH-254) that used to live in this module as `session`.
 //! * [`wire`] — the `/api/v1/invoke` envelope, shared by the daemon and its
 //!   client.
 //!
@@ -33,5 +35,5 @@ pub mod http;
 pub mod rest;
 pub mod routes;
 pub mod rpc;
-pub mod session;
+pub mod tokens;
 pub mod wire;

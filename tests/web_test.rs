@@ -825,10 +825,12 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"id="settings-btn""#));
     // Mutation API call sites carry the CSRF guard header
     assert!(body.contains("X-Storyhook"));
-    // SH-187: every request carries the daemon token too, and the SSE
-    // stream (which can't set headers) carries it as a query parameter.
+    // SH-255: the token modal exchanges a pasted value for a cookie rather
+    // than attaching it by hand, and the SSE stream rides that cookie
+    // automatically -- no header and no ?token= query parameter to find.
     assert!(body.contains("X-Storyhook-Token"));
-    assert!(body.contains(r#""/api/events?token=""#));
+    assert!(body.contains(r#""/api/events""#));
+    assert!(!body.contains(r#""/api/events?token=""#));
     // Statuses editor (SH-41): its own styles, the settings-table entry
     // point, and the four calls that reach the states API.
     assert!(body.contains(".status-row"));
@@ -3311,7 +3313,8 @@ fn web_put_on_story_path_is_405() {
     assert_eq!(status_of(err), 405);
 }
 
-// --- Mutation guard: bearer token (SH-187, split by listener in SH-250) ---
+// --- Mutation guard: bearer token (SH-187; loopback reads exempted by
+// SH-250, and that exemption retired by SH-255) ---
 //
 // Every request in the rest of this file already carries the token, via
 // `Served::agent`'s middleware -- these are the ones that deliberately
@@ -3321,40 +3324,48 @@ fn web_put_on_story_path_is_405() {
 // `assert_the_listener_accepts_a_trusted_host`: a 401 proves nothing on its
 // own if nothing here has proven a real request can still succeed.
 //
-// SH-250 exempted loopback *reads* from the token, and nothing else. So the
-// read tests here changed and the mutation tests deliberately did not: a
-// mutation still needs the token on every listener, loopback included,
-// because the write surface registers projects at caller-named filesystem
-// paths, deletes projects, and reaches `sh -c` through configured event
-// hooks. `web_mutation_without_a_token_is_401` and its event-hook sibling
-// below are unchanged by SH-250 on purpose -- if either ever starts passing
-// for the wrong reason, the exemption has grown past reads.
+// SH-250 exempted loopback *reads* from the token; SH-255 deleted that
+// exemption, so every read needs a token on every listener now, same as
+// every mutation always has. `web_mutation_without_a_token_is_401` and its
+// event-hook sibling below were already asserting that for mutations and are
+// unchanged; the read tests above them are what actually moved.
 
-/// SH-250: a read on the loopback listener needs no token. `ureq` sends
-/// `Host: 127.0.0.1:<port>` for this URL, which is conjunct 3 satisfied the
-/// way a browser on this machine satisfies it.
+/// SH-255: a read needs a token on every listener now, loopback included --
+/// SH-250's exemption for exactly this case is gone.
 #[test]
-fn web_loopback_read_needs_no_token() {
+fn web_loopback_read_needs_a_token() {
     let fixture = served();
     fixture.seed(&["new", "Story"]);
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
-    let served_response = ureq::get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+    let err = ureq::get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
-        .expect("a tokenless loopback read must be served");
-    assert_eq!(served_response.status(), 200);
+        .unwrap_err();
+    assert_eq!(
+        status_of(err),
+        401,
+        "a tokenless loopback read must be refused"
+    );
 
-    // And it really is the project's data, not an empty shell that happens to
-    // return 200 -- otherwise this would pass just as well if the exemption
-    // admitted the request and the route then refused to answer it.
+    // Positive control: the same read, credentialed, is served -- and it
+    // really is the project's data, not an empty shell that happens to
+    // return 200.
+    let served_response = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .expect("the positive control failed: a credentialed read must succeed");
+    assert_eq!(served_response.status(), 200);
     let body: serde_json::Value =
         serde_json::from_str(&served_response.into_body().read_to_string().unwrap()).unwrap();
     assert_eq!(body["stories"][0]["story"]["title"], "Story");
 }
 
-/// The `Host` conjunct, at the wire. Before SH-250 no read carried a `Host`
-/// check at all -- `mutation_guard_ok` runs only for a mutating method -- so
-/// this assertion is new coverage, not a restatement of an old rule.
+/// A rebound `Host` needs no separate rule now that every read needs a
+/// token regardless of `Host` -- but the request must still be *served* once
+/// credentialed, which is what the positive control below actually proves;
+/// before SH-255 this was the assertion that a rebound origin could not
+/// forge its way past the exemption's `Host` conjunct specifically.
 #[test]
 fn web_loopback_read_from_a_rebound_host_is_401() {
     let fixture = served();
@@ -3367,9 +3378,9 @@ fn web_loopback_read_from_a_rebound_host_is_401() {
         .unwrap_err();
     assert_eq!(status_of(err), 401);
 
-    // Positive control: credentialed, the same rebound read still works, so
-    // the refusal above is the exemption being withheld rather than a new
-    // rule against a `Host` this daemon used to serve.
+    // Positive control: credentialed, the same rebound read still works --
+    // `Host` was never part of a read's own gate beyond the exemption that no
+    // longer exists.
     let ok = fixture
         .agent()
         .get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
@@ -3379,35 +3390,10 @@ fn web_loopback_read_from_a_rebound_host_is_401() {
     assert_eq!(ok.status(), 200);
 }
 
-/// The forwarding-header conjunct, at the wire: the request looks local, but
-/// says a proxy forwarded it, so the exemption is withheld. This is what
-/// catches nginx's own recommended snippet, caddy, traefik and
-/// `tailscale serve`, none of which the daemon can otherwise distinguish from
-/// a local caller.
-#[test]
-fn web_loopback_read_claiming_to_be_forwarded_is_401() {
-    let fixture = served();
-    fixture.seed(&["new", "Story"]);
-    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
-
-    for (name, value) in [
-        ("X-Forwarded-For", "203.0.113.1"),
-        ("X-Forwarded-Host", "dash.example"),
-        ("X-Forwarded-Proto", "https"),
-        ("Forwarded", "for=203.0.113.1"),
-        ("X-Real-IP", "203.0.113.1"),
-    ] {
-        let err = ureq::get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
-            .header(name, value)
-            .call()
-            .unwrap_err();
-        assert_eq!(status_of(err), 401, "{name} must withdraw the exemption");
-    }
-}
-
-/// The exemption covers reads. `GET .../dispatch/{handle}` is a read, so
-/// every other conjunct holds -- and it is still refused, because that route
-/// spawns processes.
+/// `GET .../dispatch/{handle}` is a read, and it still needs a token like
+/// every other one -- named separately from the rest because that route
+/// spawns processes, so `dispatch::intercept`'s own gate has to agree with
+/// `admission`'s.
 #[test]
 fn web_loopback_dispatch_poll_still_needs_a_token() {
     let fixture = served();
@@ -5042,33 +5028,48 @@ fn sse_status_line(port: u16, request_line: &str) -> String {
     line
 }
 
-/// `/api/events` is a read on the loopback listener, so since SH-250 it is
-/// served with no token at all -- which is what lets a fresh tab at
-/// `127.0.0.1` connect its live-update channel without anyone fetching a
-/// credential. `EventSource` cannot set headers, so this is also the route
-/// that most needed the exemption: its only other way in is the `?token=`
-/// query parameter below.
+/// `/api/events` is a read, and SH-255 retired the exemption that used to
+/// admit a loopback read with no token at all -- so a tokenless connection
+/// is refused now, the same as any other read. `EventSource` cannot set
+/// headers, which is exactly why a same-origin `EventSource` authenticates
+/// through the named-token cookie instead (`web_dashboard.html`'s
+/// `connectEvents`, and `tests/token_endpoint.rs`/`handoff_endpoint.rs` for
+/// the cookie's own wire coverage); this file's positive control below uses
+/// a header instead, since a raw socket has no cookie jar to carry one.
 #[test]
-fn sse_on_loopback_needs_no_token() {
+fn sse_needs_a_token() {
     let _sse_guard = sse_test_lock();
     let fixture = served();
 
-    let served_line = sse_status_line(
+    let refused = sse_status_line(
         fixture.port,
         "GET /api/events HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(
+        refused.contains("401"),
+        "a tokenless SSE read must be refused, got: {refused:?}"
+    );
+
+    let served_line = sse_status_line(
+        fixture.port,
+        &format!(
+            "GET /api/events HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Storyhook-Token: {}\r\n\
+             Connection: close\r\n\r\n",
+            fixture.token
+        ),
+    );
+    assert!(
         served_line.contains("200"),
-        "a tokenless loopback SSE read must be served, got: {served_line:?}"
+        "a credentialed SSE read must be served, got: {served_line:?}"
     );
 }
 
-/// The conjunct that stops the exemption above from reaching a DNS-rebound
-/// origin. `mutation_guard_ok` never runs on a read, so before SH-250 the
-/// token was the only thing checking `Host` here -- and a rebound page is
-/// same-origin with `http://127.0.0.1:PORT`, so it can read the stream it
-/// opens. Paired with a positive control, since a 401 proves nothing on its
-/// own.
+/// A rebound `Host` needs no separate rule now that every SSE connection
+/// needs a token regardless of `Host` -- kept to prove a credentialed
+/// request is still served rather than refused for an unrelated reason. A
+/// rebound page is same-origin with `http://127.0.0.1:PORT` and so *could*
+/// read the stream it opens, which is why this daemon has never trusted
+/// `Host` alone to decide anything here.
 #[test]
 fn sse_from_a_rebound_host_is_still_401() {
     let _sse_guard = sse_test_lock();
@@ -5080,12 +5081,11 @@ fn sse_from_a_rebound_host_is_still_401() {
     );
     assert!(
         refused.contains("401"),
-        "a rebound Host must not inherit the loopback exemption, got: {refused:?}"
+        "a tokenless SSE read must be refused regardless of Host, got: {refused:?}"
     );
 
-    // The same rebound request, credentialed, is admitted exactly as it was
-    // before SH-250 -- so the 401 above is the exemption being withheld, not
-    // a new refusal of a request that used to work.
+    // The same rebound request, credentialed, is admitted -- so the 401
+    // above is the missing credential, not a rejection of this `Host`.
     let ok = sse_status_line(
         fixture.port,
         &format!(
@@ -5097,24 +5097,6 @@ fn sse_from_a_rebound_host_is_still_401() {
     assert!(
         ok.contains("200"),
         "the positive control must return 200, got: {ok:?}"
-    );
-}
-
-#[test]
-fn sse_accepts_the_token_as_a_query_parameter() {
-    let _sse_guard = sse_test_lock();
-    let fixture = served();
-
-    let line = sse_status_line(
-        fixture.port,
-        &format!(
-            "GET /api/events?token={} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-            fixture.token
-        ),
-    );
-    assert!(
-        line.contains("200"),
-        "expected a 200 status line, got: {line:?}"
     );
 }
 

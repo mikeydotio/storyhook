@@ -5,19 +5,18 @@
 //!
 //! The variable shipped with the mutation guard and was never asserted on by
 //! anything, before SH-187 or after it; that spec recorded the gap as a
-//! standing residual. SH-250 made it load-bearing: its emptiness is now the
-//! fifth conjunct of the loopback token exemption
+//! standing residual. SH-250 then made it load-bearing for a second reason:
+//! its emptiness was the fifth conjunct of the loopback token exemption
 //! (`crate::api::admission::token_exempt`), so "nobody has ever tested this"
 //! stopped being merely untidy.
 //!
-//! Two independent things are pinned here, and both matter:
-//!
-//! 1. **What the variable has always been for** — widening the `Host`
-//!    allowlist so a proxied mutation is not refused as a rebinding attempt.
-//!    Never tested. Tested now, independently of the exemption.
-//! 2. **What SH-250 added** — declaring a proxy re-arms the token on loopback,
-//!    because a reverse proxy connects to this daemon *over loopback*, so
-//!    "arrived on loopback" stops meaning "came from this machine".
+//! SH-255 deleted that exemption, and with it the whole reason a read's
+//! outcome ever depended on this variable — a read needs a token on every
+//! listener now, proxy declared or not. What survives, and is still tested
+//! here, is the property the variable has always actually been *for*:
+//! widening the `Host` allowlist so a proxied mutation is not refused as a
+//! rebinding attempt. That was never about the exemption and is unaffected
+//! by its removal.
 //!
 //! # Why these spawn a real daemon
 //!
@@ -131,24 +130,23 @@ fn status_of(err: ureq::Error) -> u16 {
     }
 }
 
-/// SH-250's conjunct 5. A declared reverse proxy means a loopback connection
-/// may be a remote caller the proxy forwarded, so the exemption is withdrawn
-/// and loopback requires the token exactly like the tailnet listener.
+/// Formerly SH-250's conjunct 5: a declared reverse proxy meant a loopback
+/// connection might be a remote caller the proxy forwarded, so the exemption
+/// was withdrawn and loopback required the token exactly like the tailnet
+/// listener. SH-255 deleted the exemption itself, so a tokenless read is
+/// refused on loopback regardless — this pins that the proxy declaration
+/// still changes nothing about that outcome, positive or negative.
 #[test]
-fn a_declared_reverse_proxy_re_arms_the_token_on_loopback() {
+fn a_declared_reverse_proxy_does_not_change_whether_a_read_needs_a_token() {
     let env = TestEnv::isolated();
     let fixture = daemon_with_proxy_allowlist(&env, Some(PROXY_HOST));
     let (port, slug) = (fixture.port, fixture.slug.as_str());
 
     let err = ureq::get(data_url(port, slug)).call().unwrap_err();
-    assert_eq!(
-        status_of(err),
-        401,
-        "a daemon told it may be proxied must not exempt loopback"
-    );
+    assert_eq!(status_of(err), 401, "a tokenless read must be refused");
 
     // Positive control: the same read, credentialed, still works — so the 401
-    // is the exemption being withheld, not a daemon that cannot serve at all.
+    // is the missing credential, not a daemon that cannot serve at all.
     let ok = ureq::get(data_url(port, slug))
         .header("X-Storyhook-Token", &token(&env))
         .call()
@@ -156,20 +154,24 @@ fn a_declared_reverse_proxy_re_arms_the_token_on_loopback() {
     assert_eq!(ok.status(), 200);
 }
 
-/// The paired control for the test above, differing in exactly one variable.
-///
-/// Without it, that test would pass just as well against a daemon that refused
-/// every tokenless read for some unrelated reason — which is precisely the
-/// state of the world this whole file exists to stop being possible.
+/// The paired control for the test above, differing in exactly one variable:
+/// no proxy declared. Without it, that test would pass just as well against
+/// a daemon that refused every tokenless read for some unrelated reason —
+/// this is what proves the *variable itself* is not what is producing the
+/// 401, now that there is no exemption left for it to withdraw.
 #[test]
-fn the_same_daemon_without_the_variable_exempts_loopback() {
+fn the_same_daemon_without_the_variable_also_needs_a_token_for_a_read() {
     let env = TestEnv::isolated();
     let fixture = daemon_with_proxy_allowlist(&env, None);
 
-    let served = ureq::get(data_url(fixture.port, &fixture.slug))
+    let err = ureq::get(data_url(fixture.port, &fixture.slug))
         .call()
-        .expect("with no proxy declared, a tokenless loopback read must be served");
-    assert_eq!(served.status(), 200);
+        .unwrap_err();
+    assert_eq!(
+        status_of(err),
+        401,
+        "a tokenless read must be refused whether or not a proxy is declared"
+    );
 }
 
 /// What the variable has always been for, asserted for the first time: a

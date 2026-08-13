@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use crate::cli::{
     AbandonedAction, Attach, DaemonAction, EpicAction, HELP_TEXT, HistoryAction, HooksAction,
     Invocation, NewProjectRequest, PhaseAction, PluginAction, ProjectAction, SettingsAction,
-    StateAction, StoreAction, TypeAction, WebAction,
+    StateAction, StoreAction, TokenAction, TypeAction, WebAction,
 };
 use crate::domain::provenance::{ActorLabel, Provenance};
 use crate::domain::{FieldEdit, ImportStory, StateChanges, SuperState, TypeChanges, TypeDef};
@@ -825,6 +825,7 @@ pub fn dispatch<S: Store>(
         } => dispatch_project_show(ctx),
         Invocation::Web { .. }
         | Invocation::Daemon { .. }
+        | Invocation::Token { .. }
         | Invocation::DoctorAbandoned { .. }
         | Invocation::Store { .. }
         | Invocation::Update { .. }
@@ -1307,12 +1308,24 @@ fn dispatch_web(action: WebAction) -> Result<Response, AppError> {
         WebAction::Status => crate::web::handle_status().map(Response::Message),
         WebAction::Open => crate::web::handle_open().map(Response::Message),
         WebAction::Address => crate::web::handle_address().map(Response::Message),
-        WebAction::Revoke => crate::web::handle_revoke().map(Response::Message),
         // `main` intercepts this before any dispatcher sees it: the foreground
         // server is a process that never returns, not a command with an answer.
         WebAction::Serve { .. } => Err(AppError::Usage(
             "`story web --serve` is handled before dispatch".to_string(),
         )),
+    }
+}
+
+/// The `story token …` family (SH-255).
+///
+/// Process management, like [`dispatch_web`]: a token record is the daemon's
+/// own state, not project data, so every verb speaks to a running daemon's
+/// control route rather than through `/api/v1/invoke`. See [`crate::token`].
+fn dispatch_token(action: TokenAction) -> Result<Response, AppError> {
+    match action {
+        TokenAction::New { name } => crate::token::handle_new(&name).map(Response::Message),
+        TokenAction::List => crate::token::handle_list().map(Response::Message),
+        TokenAction::Revoke { name } => crate::token::handle_revoke(&name).map(Response::Message),
     }
 }
 
@@ -1744,6 +1757,7 @@ pub fn needs_no_store(invocation: &Invocation) -> bool {
         invocation,
         Invocation::Daemon { .. }
             | Invocation::Web { .. }
+            | Invocation::Token { .. }
             | Invocation::DoctorAbandoned { .. }
             | Invocation::Store {
                 action: StoreAction::New { .. }
@@ -1804,6 +1818,10 @@ pub fn dispatch_without_store(invocation: Invocation) -> Result<Response, AppErr
         // one command a user reaches for when nothing is working.
         Invocation::Web { action } => dispatch_web(action),
         Invocation::Daemon { action } => dispatch_daemon(action),
+        // Named tokens (SH-255): daemon process/filesystem state, not store
+        // data, for the reason `TokenAction`'s own doc gives — dispatched
+        // client-side against the control route, exactly like `web revoke`.
+        Invocation::Token { action } => dispatch_token(action),
         // Reads and writes one file under the daemon's own state directory
         // — no project, no store, exactly like the daemon commands above.
         Invocation::DoctorAbandoned { action } => dispatch_doctor_abandoned(action),
@@ -2171,6 +2189,7 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::Plugin { .. }
         | Invocation::Web { .. }
         | Invocation::Daemon { .. }
+        | Invocation::Token { .. }
         | Invocation::Store { .. }
         | Invocation::SessionStart
         | Invocation::Update { .. }
@@ -2374,6 +2393,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Plugin { .. } => "plugin",
         Invocation::Web { .. } => "web",
         Invocation::Daemon { .. } => "daemon",
+        Invocation::Token { .. } => "token",
         Invocation::DoctorAbandoned { .. } => "doctor-abandoned",
         Invocation::Store { .. } => "store",
         Invocation::SessionStart => "session-start",
@@ -3247,6 +3267,7 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Plugin { .. }
         | Invocation::Web { .. }
         | Invocation::Daemon { .. }
+        | Invocation::Token { .. }
         | Invocation::Store { .. }
         | Invocation::SessionStart
         | Invocation::Update { .. }
@@ -3467,6 +3488,7 @@ fn describe_unscoped(invocation: &Invocation) -> String {
         Invocation::Decompose { .. } => "decompose",
         Invocation::Daemon { .. } => "daemon",
         Invocation::Web { .. } => "web",
+        Invocation::Token { .. } => "token",
         Invocation::Store { .. } => "store",
         Invocation::Update { .. } => "update",
         Invocation::Version => "version",

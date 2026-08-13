@@ -4,13 +4,23 @@ import { cleanUpCreatedStories, openProject, requiredEnv } from "./support";
 
 /**
  * SH-251's one-click dashboard, in a real browser: a tab opened at
- * `#h=<coupon>` spends it for the daemon's token before it issues a single
+ * `#h=<coupon>` spends it for a named token before it issues a single
  * request, and never prompts for anything.
  *
+ * What a coupon buys changed twice since these specs were first written.
+ * Until SH-254 it bought the daemon's master token; SH-254 then substituted
+ * a scoped session capability, readable from `sessionStorage` and refused
+ * dispatch and project CRUD outright. SH-255 deletes that tier along with
+ * every other credential concept but one: a coupon now buys a full named
+ * token, delivered as an `HttpOnly` cookie this page can never read back --
+ * same as one minted by `story token new` or pasted into the modal, just
+ * issued by a click instead. There is nothing left for a handed-off tab to
+ * be scoped away from.
+ *
  * **These specs deliberately do NOT call `seedToken`.** Like
- * `loopback-no-token.spec.ts`, the whole claim is about a browser that starts
- * with nothing — a seeded credential would make every assertion here pass for
- * the wrong reason.
+ * `loopback-requires-a-token.spec.ts`, the whole claim is about a browser
+ * that starts with nothing — a seeded credential would make every assertion
+ * here pass for the wrong reason.
  *
  * # What this file cannot prove, and must not pretend to
  *
@@ -102,7 +112,7 @@ async function hashesAtRequest(page: Page): Promise<string[]> {
   );
 }
 
-test("a tab opened with a coupon holds a scoped session, and never the token", async ({
+test("a tab opened with a coupon holds a named token as an invisible cookie", async ({
   page,
   request,
 }) => {
@@ -111,30 +121,24 @@ test("a tab opened with a coupon holds a scoped session, and never the token", a
 
   await page.goto(`/#h=${coupon}`);
 
-  // The dashboard renders, with nothing typed and nothing seeded.
+  // The dashboard renders, with nothing typed and nothing seeded -- proving
+  // the redeemed credential really does authenticate GET /api/repos and
+  // GET .../data, the two reads SH-255 stopped exempting.
   await expect(
     page.locator(".repo-card-name", { hasText: "Alpha Project" }),
   ).toBeVisible();
   await expect(page.locator("#token-modal")).not.toHaveClass(/open/);
 
-  // The coupon really was spent: this tab now holds a credential it had no
-  // other way of learning. What it holds changed in SH-254 — it was the
-  // daemon's master token, and it is a scoped session capability now, so the
-  // assertion is written in both directions. A tab holding the token could
-  // delete every project on the machine and reach `POST /api/v1/invoke`; this
-  // one can edit stories and states, on this machine only, revocably.
-  await expect
-    .poll(() =>
-      page.evaluate(() =>
-        window.sessionStorage.getItem("storyhookDashboardSession"),
-      ),
-    )
-    .toMatch(/^[0-9a-f]{32}$/);
-  expect(
-    await page.evaluate(() =>
-      window.sessionStorage.getItem("storyhookDaemonToken"),
-    ),
-  ).not.toBe(requiredEnv("DASHBOARD_TOKEN"));
+  // The coupon really was spent, for a credential this page can never read
+  // back. `Set-Cookie ... HttpOnly` means `document.cookie` never contains
+  // it -- unlike SH-254's session (readable, held in `sessionStorage`) or
+  // SH-251's original master-token handoff, nothing this page's own
+  // JavaScript can inspect ever holds the secret. `that same tab writes
+  // without ever being asked for a token`, below, is the positive proof that
+  // something real is there regardless.
+  const cookieName = requiredEnv("DASHBOARD_COOKIE_NAME");
+  const visibleCookie = await page.evaluate(() => document.cookie);
+  expect(visibleCookie).not.toContain(cookieName);
 
   // And every request this page has made so far was constructed with the
   // fragment already gone. The length check is the harness guard: a shim that
@@ -148,10 +152,11 @@ test("that same tab writes without ever being asked for a token", async ({
   page,
   request,
 }) => {
-  // The half `loopback-no-token.spec.ts` cannot have: there, the first write
-  // prompts, because a hand-typed URL carries no credential. Here it must
-  // not — which is the whole point of the story, and the thing a read-only
-  // assertion above could never distinguish from SH-250 alone.
+  // The half `loopback-requires-a-token.spec.ts` cannot have: there, the
+  // first write prompts, because a hand-typed URL carries no credential.
+  // Here it must not -- which is the whole point of the story, and the thing
+  // a read-only assertion above could never distinguish from a stray
+  // exemption.
   const coupon = await armCoupon(request);
   await page.goto(`/#h=${coupon}`);
 
@@ -170,30 +175,28 @@ test("that same tab writes without ever being asked for a token", async ({
   await expect(page.locator("#token-modal")).not.toHaveClass(/open/);
 });
 
-test("that same tab is shown the boundary rather than a button that 403s", async ({
+test("that same tab's Dispatch button is fully enabled, not held to a narrower scope", async ({
   page,
   request,
 }) => {
-  // SH-254's affordance half. The server refuses dispatch to a session
-  // capability whatever this page renders — `tests/session_capability.rs` is
-  // where that is proved — but a user who clicks and gets nothing has learned
-  // nothing. So the control is disabled and carries the command that works.
+  // SH-254's affordance is gone along with the scoped session it existed
+  // for. A coupon now buys a full named token (SH-255) -- there is no
+  // narrower tier left for a control to be held to, so the button that used
+  // to render disabled here renders exactly as it does for any other
+  // authenticated tab. Checked without clicking it: Alpha's own stories are
+  // each claimed by `dispatch.spec.ts`'s real-dispatch tests, and this file
+  // only needs to know the button is live, not run a second real dispatch.
   const coupon = await armCoupon(request);
   await page.goto(`/#h=${coupon}`);
 
   await openProject(page, "Alpha Project");
   await page.locator(".card").first().click();
 
-  const dispatch = page.locator("#dispatch-btn");
-  await expect(dispatch).toBeDisabled();
-  await expect(dispatch).toHaveAttribute("title", /story dispatch/);
-
-  // And the modal stays shut: meeting the edge of a scope is not a reason to
-  // ask anybody for the strongest credential on the machine.
+  await expect(page.locator("#dispatch-btn")).toBeEnabled();
   await expect(page.locator("#token-modal")).not.toHaveClass(/open/);
 });
 
-test("a coupon somebody already spent renders the dashboard and says so once", async ({
+test("a coupon somebody already spent shows the refusal, then prompts like any other tab", async ({
   page,
   request,
 }) => {
@@ -207,24 +210,17 @@ test("a coupon somebody already spent renders the dashboard and says so once", a
 
   await page.goto(`/#h=${coupon}`);
 
-  // Render anyway, on SH-250's tokenless read: a refused handoff must not
-  // leave a blank page.
-  await expect(
-    page.locator(".repo-card-name", { hasText: "Alpha Project" }),
-  ).toBeVisible();
-
-  // Said once, informationally. Never the modal: opening it pre-emptively is
-  // exactly the behaviour SH-250's client change removed, and a refused
-  // coupon is not a reason to reintroduce it.
+  // Said once, informationally -- `redeemHandoff`'s own refusal path, which
+  // never retries a coupon that might have just been stolen.
   await expect(page.locator(".toast")).toHaveCount(1);
   await expect(page.locator(".toast")).toContainText("not accepted");
-  await expect(page.locator("#token-modal")).not.toHaveClass(/open/);
 
-  // Nothing was stored, so the tab is exactly a hand-typed one: it reads, and
-  // it will prompt when it writes.
-  expect(
-    await page.evaluate(() =>
-      window.sessionStorage.getItem("storyhookDaemonToken"),
-    ),
-  ).toBeNull();
+  // And then the token modal, same as any tab with no credential at all:
+  // SH-255 deleted the tokenless read exemption a refused coupon used to
+  // fall back on, so `fetchReposOnce`'s own 401 handler is what takes over
+  // from here, exactly as it would for a hand-typed URL.
+  await expect(page.locator("#token-modal")).toHaveClass(/open/);
+  await expect(
+    page.locator(".repo-card-name", { hasText: "Alpha Project" }),
+  ).toHaveCount(0);
 });

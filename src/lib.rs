@@ -20,6 +20,7 @@ pub mod plugin;
 pub mod service;
 pub mod storage;
 pub mod store;
+pub mod token;
 pub mod tui;
 #[cfg(feature = "github-sync")]
 pub mod update;

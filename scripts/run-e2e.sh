@@ -295,6 +295,32 @@ echo "run-e2e.sh: dashboard live at $base_url" >&2
 # token alone.
 export DASHBOARD_TOKEN
 DASHBOARD_TOKEN="$("$story_bin" daemon token | head -n1)"
+
+# --- A named token minted for the suite, and the cookie name the daemon
+# publishes for it (SH-255) -- the credential `support.ts::seedToken` now
+# seeds, in place of the master token above. `story token new`'s own
+# contract is "stdout is the secret and only the secret," so no `head -n1`
+# is needed the way the master token's rotation-note second line needs one.
+export DASHBOARD_NAMED_TOKEN
+DASHBOARD_NAMED_TOKEN="$("$story_bin" token new e2e)"
+
+# The cookie name is per-store (`storyhook_<StoreLocation::key()>`), so the
+# suite reads it from the portfile the daemon just wrote rather than
+# recomputing the digest -- the same reasoning the portfile field's own doc
+# comment gives. Exactly one daemon.json exists under this run's isolated
+# state dir.
+portfile="$(find "$XDG_STATE_HOME/storyhook/daemons" -name daemon.json)"
+if [ -z "$portfile" ]; then
+  echo "run-e2e.sh: no daemon.json found under $XDG_STATE_HOME/storyhook/daemons" >&2
+  exit 1
+fi
+export DASHBOARD_COOKIE_NAME
+DASHBOARD_COOKIE_NAME="$(jq -r '.cookie_name' "$portfile")"
+if [ -z "$DASHBOARD_COOKIE_NAME" ] || [ "$DASHBOARD_COOKIE_NAME" = "null" ]; then
+  echo "run-e2e.sh: $portfile named no cookie_name" >&2
+  exit 1
+fi
+
 export DASHBOARD_ALPHA_STORY_ID="$alpha_story_id"
 export DASHBOARD_ALPHA_CHECKOUT="$seed_dir/alpha"
 export DASHBOARD_DELTA_STORY_ID="$delta_story_id"

@@ -27,22 +27,37 @@ export function requiredEnv(name: string): string {
 }
 
 /**
- * Seeds the daemon's bearer token into `sessionStorage` under the same key
- * `web_dashboard.html` reads (`storyhookDaemonToken`), before any of the
- * page's own scripts run.
+ * Seeds a named token into this page's browser context as the `HttpOnly`
+ * cookie `web_dashboard.html` now rides rather than reads (SH-255) --
+ * `run-e2e.sh` mints `DASHBOARD_NAMED_TOKEN` for the suite and exports the
+ * cookie name the daemon actually published for it, `DASHBOARD_COOKIE_NAME`,
+ * rather than this file recomputing the store-keyed digest itself.
  *
- * `addInitScript` runs on every subsequent navigation in this page's
- * context, not just the next one -- deliberately, since `dispatch.spec.ts`
- * reloads mid-test and still needs the token there. It has to be
- * registered before `page.goto()`: setting it afterward (e.g. via
- * `page.evaluate`) would race the page's own bootstrap sequence, which
- * reads the token on its very first tick.
+ * `context.addCookies`, not `page.addInitScript` (the pre-SH-255 shape,
+ * which wrote to `sessionStorage`): an `HttpOnly` cookie cannot be set from
+ * page JavaScript at all -- that is the entire point of the attribute -- so
+ * this has to go in through Playwright's own browser-context API, which
+ * talks to the browser directly rather than running a script in the page.
+ * Set once, before the first navigation, same as the old shape required:
+ * a cookie in the context's jar is sent on every subsequent request in this
+ * context automatically, reload or fresh navigation alike, so unlike
+ * `addInitScript` this needs no re-registration for `dispatch.spec.ts`'s
+ * mid-test reload to keep seeing it.
  */
 export async function seedToken(page: Page): Promise<void> {
-  const token = requiredEnv("DASHBOARD_TOKEN");
-  await page.addInitScript((value) => {
-    window.sessionStorage.setItem("storyhookDaemonToken", value);
-  }, token);
+  const token = requiredEnv("DASHBOARD_NAMED_TOKEN");
+  const cookieName = requiredEnv("DASHBOARD_COOKIE_NAME");
+  await page.context().addCookies([
+    {
+      name: cookieName,
+      value: token,
+      domain: "127.0.0.1",
+      path: "/",
+      httpOnly: true,
+      sameSite: "Strict",
+      secure: false,
+    },
+  ]);
 }
 
 /**

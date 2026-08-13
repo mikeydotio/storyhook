@@ -175,11 +175,17 @@ struct Serving<'a, S: Store> {
     /// needs nothing from the store, so it is answered on the `worker` thread
     /// and must never queue behind the dispatcher pool.
     handoff: Arc<crate::api::handoff::HandoffRegistry>,
-    /// Every scoped dashboard capability a redeemed coupon has bought and
-    /// nobody has revoked (SH-254). An `Arc` for `handoff`'s reason, and it
-    /// deliberately outlives no daemon: a capability is process state, never
-    /// written to disk, so a restart ends every one of them.
-    sessions: Arc<crate::api::session::SessionRegistry>,
+    /// Every named, persistent, revocable dashboard token (SH-255). An `Arc`
+    /// for `handoff`'s reason: `story token new|list|revoke` need nothing
+    /// from the store, so they are answered on the `worker` thread and must
+    /// never queue behind the dispatcher pool — `story token revoke` most of
+    /// all, per this registry's own module doc.
+    tokens: Arc<crate::api::tokens::TokenRegistry>,
+    /// The `Set-Cookie` name a browser holds a named token in for this store
+    /// (SH-255) — computed once here rather than per request, since it never
+    /// changes for the life of this daemon. See
+    /// [`crate::api::tokens::cookie_name`].
+    cookie_name: String,
     /// Everything this daemon is serving right now (SH-173, SH-144). An `Arc`
     /// so the detached thread [`worker`] spawns on the shutdown path — which
     /// has no `'scope` of its own — can still poll it while draining.
@@ -208,9 +214,8 @@ struct Serving<'a, S: Store> {
 ///
 /// `bound_hosts` are the `Host` values the *bind* earned — nothing else. The
 /// reverse-proxy half of the allowlist is read from the environment here,
-/// exactly once, rather than by each caller: since SH-250 its emptiness is a
-/// security signal ([`TrustedHosts::behind_a_proxy`]), and a caller who forgot
-/// to merge it in would silently grant the loopback token exemption. Both
+/// exactly once, rather than by each caller: a caller who forgot to merge it
+/// in would silently narrow which proxied `Host` a mutation trusts. Both
 /// callers used to write that merge by hand.
 #[allow(clippy::too_many_arguments)]
 pub fn serve<S: Store, F, L>(
@@ -268,7 +273,8 @@ where
         },
         dispatch_registry: Arc::new(crate::api::dispatch::DispatchRegistry::load(env)),
         handoff: Arc::new(crate::api::handoff::HandoffRegistry::new()),
-        sessions: Arc::new(crate::api::session::SessionRegistry::new()),
+        tokens: Arc::new(crate::api::tokens::TokenRegistry::load(env)),
+        cookie_name: crate::api::tokens::cookie_name(env),
         inflight: Arc::new(crate::daemon::lifecycle::InFlight::new(env.clone())),
         draining: AtomicBool::new(false),
     };
@@ -366,12 +372,12 @@ where
             let jobs_tx = jobs_tx.clone();
             let nested_tx = nested_tx.clone();
             let slots = Arc::clone(&connection_slots);
-            let loopback = listener.is_loopback();
+            let bind_addr = listener.addr();
             scope.spawn(move || {
                 accept_loop(
                     serving,
                     listener.listener,
-                    loopback,
+                    bind_addr,
                     http_limits,
                     slots,
                     jobs_tx,
@@ -379,11 +385,11 @@ where
                 )
             });
         }
-        let primary_is_loopback = primary.is_loopback();
+        let primary_addr = primary.addr();
         accept_loop(
             &serving,
             primary.listener,
-            primary_is_loopback,
+            primary_addr,
             http_limits,
             connection_slots,
             jobs_tx,
@@ -503,13 +509,38 @@ impl BoundAddress {
     }
 }
 
+/// What [`Listener::adopt`] requires the socket it is given to have bound.
+///
+/// Named rather than a bare `IpAddr`, so a loopback expectation can never be
+/// satisfied by coincidentally matching `127.0.0.1` as a literal — it is
+/// checked with [`std::net::IpAddr::is_loopback`], the same broad test
+/// [`Listener::is_loopback`] uses, so `::1` is an equally valid loopback bind.
+#[derive(Debug, Clone, Copy)]
+pub enum Expected {
+    /// The socket must have bound a loopback address.
+    Loopback,
+    /// The socket must have bound exactly this address — the tailnet IPv4
+    /// [`tailnet_identity`] just reported, passed back in rather than
+    /// re-derived, so this checks agreement with a specific probe result
+    /// rather than "is this address tailnet-shaped" in the abstract.
+    Tailnet(std::net::IpAddr),
+}
+
+impl std::fmt::Display for Expected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Expected::Loopback => write!(f, "a loopback address"),
+            Expected::Tailnet(ip) => write!(f, "the tailnet address {ip}"),
+        }
+    }
+}
+
 /// A bound listener, and the address it actually bound.
 ///
 /// The loopback distinction is security-relevant rather than cosmetic:
-/// `/api/v1/*` is a full-privilege surface answered on loopback only, and since
-/// SH-250 a tokenless read is admitted on the strength of the same answer
-/// ([`crate::api::admission`]'s first conjunct). So the accept loop has to know
-/// which interface a request came in on.
+/// `/api/v1/*` is a full-privilege surface answered on loopback only, and
+/// [`crate::api::rpc::admission`]'s first conjunct is exactly that answer. So
+/// the accept loop has to know which interface a request came in on.
 ///
 /// **There is no `loopback` field, and that is the point (SH-253).** There used
 /// to be one, stamped `true` beside a hardcoded `127.0.0.1` literal — a *claim*
@@ -530,16 +561,35 @@ pub struct Listener {
 }
 
 impl Listener {
-    /// Adopts an already-bound socket, reading its address back off it.
+    /// Adopts an already-bound socket, reading its address back off it and
+    /// refusing to serve it unless it matches `expected`.
     ///
-    /// The only constructor, so every `Listener` in existence knows the address
-    /// it is answering on. Fails only if the socket cannot report one, which
-    /// would mean it is not bound — the same failure [`bind_listeners`] used to
-    /// raise inline.
-    pub fn adopt(listener: TcpListener) -> Result<Self, AppError> {
+    /// The only constructor, so every `Listener` in existence is one this
+    /// module itself decided to serve. Fails if the socket cannot report an
+    /// address (not bound — the same failure this used to raise inline) or if
+    /// it *is* bound, but to something other than what the caller expected:
+    /// a wildcard address, a LAN address, or a tailnet address that does not
+    /// match the identity that was just probed. Both of today's callers
+    /// ([`bind_listeners`], [`probe_and_bind_tailnet`]) only ever pass an
+    /// address that already matches — this check has nothing to catch in
+    /// production as written — but SH-255 makes the module's own doc comment
+    /// ("nothing is ever bound to `0.0.0.0`... or a plain LAN address") a
+    /// property of this function rather than a fact about its two current
+    /// callers' good behavior. A third caller that got its address wrong
+    /// fails here instead of silently serving it.
+    pub fn adopt(listener: TcpListener, expected: Expected) -> Result<Self, AppError> {
         let addr = listener
             .local_addr()
             .map_err(|e| AppError::Storage(format!("bound listener has no address: {e}")))?;
+        let matches = match expected {
+            Expected::Loopback => addr.ip().is_loopback(),
+            Expected::Tailnet(ip) => addr.ip() == ip,
+        };
+        if !matches {
+            return Err(AppError::Storage(format!(
+                "refusing to serve {addr}: expected {expected}"
+            )));
+        }
         Ok(Listener { listener, addr })
     }
 
@@ -581,7 +631,7 @@ pub fn bind_listeners(port: u16) -> Result<(Vec<Listener>, BoundAddress), AppErr
             AppError::Storage(format!("Failed to start web server: {e}"))
         }
     })?;
-    let loopback = Listener::adopt(socket)?;
+    let loopback = Listener::adopt(socket, Expected::Loopback)?;
     let bound = loopback.addr();
 
     let mut listeners = vec![loopback];
@@ -624,12 +674,15 @@ fn probe_and_bind_tailnet(port: u16) -> Option<(Listener, TailnetBind)> {
             // rule is enforced: it is reachable only from here, on the
             // success arm.
             let bind = identity.into_bound();
-            // `adopt` can only fail on a socket that cannot report its own
-            // address, and this one has just bound successfully. A tailnet
-            // bind is best-effort throughout this function, so the failure
+            // `adopt` can fail if the socket cannot report its own address,
+            // or if what it reports disagrees with the identity that was
+            // just probed (SH-255) -- neither should happen for a bind that
+            // just succeeded against that exact address, but a tailnet bind
+            // is best-effort throughout this function, so either failure
             // joins the other three cases `None` covers rather than becoming
             // the one that is fatal.
-            Some((Listener::adopt(listener).ok()?, bind))
+            let expected = Expected::Tailnet(std::net::IpAddr::V4(bind.ip()));
+            Some((Listener::adopt(listener, expected).ok()?, bind))
         }
         Err(e) => {
             eprintln!(
@@ -638,6 +691,144 @@ fn probe_and_bind_tailnet(port: u16) -> Option<(Listener, TailnetBind)> {
             );
             None
         }
+    }
+}
+
+/// Tailscale's CGNAT range: every tailnet IPv4 address is drawn from here.
+/// Documented at <https://tailscale.com/kb/1015/100.x-addresses> — a `/10`,
+/// so the second octet's top two bits are fixed and the low six vary
+/// (`100.64.0.0` through `100.127.255.255`).
+const TAILSCALE_CGNAT_OCTET0: u8 = 100;
+const TAILSCALE_CGNAT_OCTET1_RANGE: std::ops::RangeInclusive<u8> = 64..=127;
+
+/// Whether `ip` falls in [`TAILSCALE_CGNAT_OCTET0`]/[`TAILSCALE_CGNAT_OCTET1_RANGE`].
+fn in_tailscale_cgnat(ip: std::net::Ipv4Addr) -> bool {
+    let [a, b, ..] = ip.octets();
+    a == TAILSCALE_CGNAT_OCTET0 && TAILSCALE_CGNAT_OCTET1_RANGE.contains(&b)
+}
+
+/// Tailscale's IPv6 ULA range: every tailnet IPv6 address is drawn from
+/// here. Documented at the same URL as the CGNAT range above — a `/48`, so
+/// the first six bytes are fixed and the remaining ten vary.
+const TAILSCALE_ULA_PREFIX: [u8; 6] = [0xfd, 0x7a, 0x11, 0x5c, 0xa1, 0xe0];
+
+/// Whether `ip` falls in [`TAILSCALE_ULA_PREFIX`]'s `/48`.
+fn in_tailscale_ula(ip: std::net::Ipv6Addr) -> bool {
+    ip.octets()[..6] == TAILSCALE_ULA_PREFIX
+}
+
+/// Proof that a peer was admitted to connect to the interface it reached.
+///
+/// Zero-sized, with a private field, so [`peer_admitted`] is the only thing
+/// that can produce one — the same idiom [`crate::api::http::LocalRequest`]
+/// uses, for the same reason: a caller cannot construct one to skip the
+/// check, only to prove they already ran it.
+#[derive(Debug)]
+pub struct PeerAdmitted(());
+
+/// Why [`peer_admitted`] refused a connection, named rather than a bare
+/// `bool` — the design this implements requires the refusal to say which
+/// range it failed, for [`accept_loop`]'s own log line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerRefused {
+    /// The loopback listener admits only `127.0.0.0/8` and `::1`.
+    NotLoopback,
+    /// The tailnet listener admits loopback, [`TAILSCALE_CGNAT_OCTET0`]'s
+    /// `/10`, and [`TAILSCALE_ULA_PREFIX`]'s `/48` — this peer was in none
+    /// of the three.
+    OutsideTailnetRanges,
+}
+
+impl std::fmt::Display for PeerRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PeerRefused::NotLoopback => {
+                write!(f, "the loopback listener only admits 127.0.0.0/8 and ::1")
+            }
+            PeerRefused::OutsideTailnetRanges => write!(
+                f,
+                "the tailnet listener only admits loopback, Tailscale's CGNAT \
+                 range (100.64.0.0/10) and its IPv6 ULA range (fd7a:115c:a1e0::/48)"
+            ),
+        }
+    }
+}
+
+/// Whether `peer_addr` may connect to a listener bound at `bind_addr` — the
+/// off-tailnet refusal SH-255's council decided, composed with bind-time
+/// refusal ([`Listener::adopt`]) rather than replacing it: bind-time keeps
+/// this daemon from ever *listening* somewhere it should not, and this
+/// closes the gap that leaves open — a tailnet is not a firewall, so binding
+/// only the tailnet interface does not by itself stop an off-tailnet peer
+/// that can still route packets to it (a misconfigured subnet router, a
+/// bridged VM, `iptables` forwarding) from connecting anyway.
+///
+/// # Pure, on purpose
+///
+/// Zero syscalls, zero locks, zero shelling out to `tailscale` — the two
+/// `SocketAddr`s already carry everything this needs. That last property is
+/// not a style preference: [`tailnet_reprobe`]'s own doc comment forbids
+/// tying a `tailscale` probe to request arrival at all, because doing so
+/// would let any peer that can reach a listener force repeated subprocess
+/// spawns — a self-inflicted local DoS (SH-186). A function that cannot
+/// shell out cannot reopen that hole no matter where it is called from.
+///
+/// # The two rules
+///
+/// * **The loopback listener** (`bind_addr.ip().is_loopback()`) admits only
+///   a loopback peer. Belt-and-braces: the kernel will not route a
+///   non-loopback peer to a socket bound to `127.0.0.1` in the first place,
+///   but the check costs nothing and this function's contract should not
+///   quietly depend on that being true on every platform forever.
+/// * **The tailnet listener** admits a loopback peer, this machine's own
+///   `bind_addr` itself as a peer address (the OS does not always route a
+///   locally-owned destination through `lo` — connecting to your own
+///   interface's address can arrive with that same address as the source,
+///   and it is the identical "this machine's own process" case as the
+///   loopback one just named), plus anything in Tailscale's own CGNAT or
+///   ULA range. It does **not** check the peer against the *specific*
+///   tailnet this daemon joined — any tailnet-shaped address is admitted,
+///   the same way [`Listener::adopt`] only ever bound the address this
+///   daemon's own probe reported, not a claim about who else might be on it.
+///
+/// # What this does not, and cannot, enforce
+///
+/// A subnet router or an exit node can put a genuinely off-tailnet peer's
+/// traffic inside these ranges; Tailscale ACLs, not this daemon, are the
+/// real membership authority. Recorded here rather than implied away —
+/// see the README's Network exposure section.
+pub fn peer_admitted(
+    bind_addr: SocketAddr,
+    peer_addr: SocketAddr,
+) -> Result<PeerAdmitted, PeerRefused> {
+    let peer_is_loopback = peer_addr.ip().is_loopback();
+    if bind_addr.ip().is_loopback() {
+        return if peer_is_loopback {
+            Ok(PeerAdmitted(()))
+        } else {
+            Err(PeerRefused::NotLoopback)
+        };
+    }
+    let admitted = peer_is_loopback
+        // A process on this machine reaching the tailnet-bound socket by its
+        // own interface address, rather than through loopback, sees itself
+        // as the peer -- the OS picks the outbound interface's own address
+        // as the source when the destination is a locally-owned one, and
+        // does not always route that through `lo`. Ordinary, not an attack,
+        // for the identical reason a loopback peer is admitted just above:
+        // it is this daemon's own machine. `bind_addr` is not a claim being
+        // trusted here either -- `Listener::adopt` already refused any bind
+        // that was not either loopback or the exact identity this daemon's
+        // own probe reported.
+        || peer_addr.ip() == bind_addr.ip()
+        || match peer_addr.ip() {
+            std::net::IpAddr::V4(ip) => in_tailscale_cgnat(ip),
+            std::net::IpAddr::V6(ip) => in_tailscale_ula(ip),
+        };
+    if admitted {
+        Ok(PeerAdmitted(()))
+    } else {
+        Err(PeerRefused::OutsideTailnetRanges)
     }
 }
 
@@ -703,19 +894,24 @@ enum Verdict {
 fn accept_loop<S: Store>(
     serving: &Serving<'_, S>,
     listener: TcpListener,
-    loopback: bool,
+    bind_addr: SocketAddr,
     limits: http1::Limits,
     slots: Arc<http1::ConnectionSlots>,
     jobs_tx: mpsc::SyncSender<Job>,
     nested_tx: mpsc::Sender<Job>,
 ) {
+    // Derived here rather than passed in, same reasoning as
+    // `Listener::is_loopback` (SH-253): a caller with `bind_addr` in hand
+    // cannot separately assert a `loopback` that disagrees with it.
+    let loopback = bind_addr.ip().is_loopback();
     let token: Arc<str> = Arc::from(serving.token.as_str());
+    let cookie_name: Arc<str> = Arc::from(serving.cookie_name.as_str());
     let bus = serving.bus.clone();
     let trusted_hosts = Arc::clone(&serving.trusted_hosts);
     let env = serving.env.clone();
     let dispatch_registry = Arc::clone(&serving.dispatch_registry);
     let handoff = Arc::clone(&serving.handoff);
-    let sessions = Arc::clone(&serving.sessions);
+    let tokens = Arc::clone(&serving.tokens);
 
     // One closure per listener, cloned by `http1::serve_connections` once per
     // accepted connection (and, within a kept-alive connection, called again
@@ -737,11 +933,28 @@ fn accept_loop<S: Store>(
             &env,
             &dispatch_registry,
             &handoff,
-            &sessions,
+            &tokens,
+            &cookie_name,
         )
     };
 
-    http1::serve_connections(listener, limits, slots, handler);
+    // Off-tailnet refusal (SH-255): a peer this daemon should never talk to
+    // is refused on the accept thread itself, before a `Request` — before
+    // even a thread — exists for it. See `peer_admitted`'s own doc comment
+    // for why this composes with, rather than replaces, `Listener::adopt`'s
+    // bind-time refusal.
+    let admit = move |peer_addr: SocketAddr| match peer_admitted(bind_addr, peer_addr) {
+        Ok(_witness) => true,
+        Err(reason) => {
+            eprintln!(
+                "storyhook daemon: refused a connection from {peer_addr} on \
+                 {bind_addr}: {reason}"
+            );
+            false
+        }
+    };
+
+    http1::serve_connections(listener, limits, slots, admit, handler);
 }
 
 /// The one field `worker` peeks from an as-yet-unparsed `/api/v1/invoke`
@@ -797,7 +1010,8 @@ fn worker(
     env: &Environment,
     dispatch_registry: &Arc<crate::api::dispatch::DispatchRegistry>,
     handoff: &Arc<crate::api::handoff::HandoffRegistry>,
-    sessions: &Arc<crate::api::session::SessionRegistry>,
+    tokens: &Arc<crate::api::tokens::TokenRegistry>,
+    cookie_name: &str,
 ) {
     let mut request = request;
     let method = request.method().clone();
@@ -825,13 +1039,13 @@ fn worker(
     if let Some(reply) = crate::api::admission::admission(
         &segments,
         &method,
-        query.as_deref(),
         &headers,
         trusted_hosts,
         token,
-        loopback,
         std::time::Instant::now(),
-        sessions,
+        tokens,
+        cookie_name,
+        chrono::Utc::now(),
     ) {
         finish(request, reply);
         return;
@@ -856,25 +1070,46 @@ fn worker(
         loopback,
         std::time::Instant::now(),
         handoff,
-        sessions,
+        tokens,
+        cookie_name,
+        chrono::Utc::now(),
     ) {
         finish(request, reply);
         return;
     }
 
-    // Listing and revoking dashboard capabilities (SH-254), answered here for
-    // `handoff::intercept`'s reason and one of its own: `story web revoke` is
-    // most likely to be run *because* this daemon is busy with something the
-    // operator wants stopped, so it must never queue behind the dispatcher
-    // pool. `rpc::admission` above has already required loopback and the
-    // master token; the duplicate inside is labelled as such.
-    if let Some(reply) = crate::api::session::intercept(
+    // The pasted-token exchange (SH-255): also outside `/api`, for
+    // `handoff::intercept`'s reason immediately above — the caller has no
+    // credential yet, so this cannot sit behind `admission::admission`'s
+    // gate.
+    if let Some(reply) = crate::api::tokens::intercept_exchange(
         &segments,
         &method,
         &headers,
-        token,
+        trusted_hosts,
+        cookie_name,
+        tokens,
+        chrono::Utc::now(),
         std::time::Instant::now(),
-        sessions,
+    ) {
+        finish(request, reply);
+        return;
+    }
+
+    // Minting, listing and revoking named tokens (SH-255), answered here for
+    // `handoff::intercept`'s reason: none of the three needs the store, so
+    // none may queue behind the dispatcher pool. `rpc::admission` above has
+    // already required loopback and the master token for anything under
+    // `/api/v1/*`, which is where this route lives.
+    if let Some(reply) = crate::api::tokens::intercept(
+        &segments,
+        &method,
+        query.as_deref(),
+        &headers,
+        token,
+        chrono::Utc::now(),
+        std::time::Instant::now(),
+        tokens,
     ) {
         finish(request, reply);
         return;
@@ -900,6 +1135,9 @@ fn worker(
         env,
         &bus,
         dispatch_registry,
+        tokens,
+        cookie_name,
+        chrono::Utc::now(),
     ) {
         finish(request, reply);
         return;
@@ -1453,17 +1691,17 @@ fn tailnet_reprobe<'scope, S: Store, L>(
         };
         on_late_tailnet_bind(&bound);
 
-        // `is_loopback()` rather than the `false` that used to be written here.
-        // A tailnet bind is never loopback, so the literal was right — but it
-        // was right by assertion, which is the whole of what SH-253 removes:
-        // this listener now answers the question from the address it bound,
-        // exactly as the two in `serve` do.
-        let loopback = listener.is_loopback();
+        // `addr()` rather than the `false` `loopback` literal that used to be
+        // written here. A tailnet bind is never loopback, so the literal was
+        // right — but it was right by assertion, which is the whole of what
+        // SH-253 removes: this listener now answers from the address it
+        // bound, exactly as the two in `serve` do.
+        let bind_addr = listener.addr();
         scope.spawn(move || {
             accept_loop(
                 serving,
                 listener.listener,
-                loopback,
+                bind_addr,
                 limits,
                 slots,
                 jobs_tx,
@@ -1480,98 +1718,206 @@ mod tests {
 
     // --- The loopback label follows the bind (SH-253) ---
 
-    /// A read on `/api/repos` with no credential anywhere, as a browser on this
-    /// machine sends it. `Host` names loopback, which is conjunct 3 of the
-    /// SH-250 exemption — so the *only* conjunct left in question below is the
-    /// one the listener supplies.
-    fn tokenless_read() -> Vec<Header> {
-        vec![Header::from_bytes("Host", "127.0.0.1:3456").expect("a valid header")]
-    }
-
-    /// Whether the real admission gate admits [`tokenless_read`] on a listener
-    /// with this `loopback` standing.
-    ///
-    /// `TrustedHosts::default()` rather than `for_daemon`: the latter reads
-    /// `$STORYHOOK_WEB_TRUSTED_HOSTS`, and a unit test whose verdict depends on
-    /// the developer's environment is not a test. Default is the empty
-    /// allowlist, which is what a machine with no proxy configured has.
-    fn admits_a_tokenless_read(loopback: bool) -> bool {
-        crate::api::admission::admission(
-            &["api", "repos"],
-            &Method::Get,
-            None,
-            &tokenless_read(),
-            &crate::api::http::TrustedHosts::default(),
-            "the-real-token",
-            loopback,
-            std::time::Instant::now(),
-            &crate::api::session::SessionRegistry::new(),
-        )
-        .is_none()
-    }
-
     /// The flag is a consequence of the bind, not a claim made beside it.
     ///
     /// Binds for real rather than fabricating a `SocketAddr`: the property
     /// under test is that the label follows *the socket*, and a hand-built
     /// address would test only that `is_loopback()` calls `is_loopback()`.
     #[test]
-    fn a_listener_that_bound_a_non_loopback_address_is_not_marked_loopback() {
-        // `0.0.0.0` — the wildcard — is reachable from every interface this
-        // machine has, so it is emphatically not loopback. It is also the one
-        // non-loopback address any machine can bind without a network to be
-        // on, which is what keeps this test hermetic.
-        let wildcard = Listener::adopt(
-            TcpListener::bind(("0.0.0.0", 0)).expect("binding the wildcard address"),
+    fn a_listener_that_bound_loopback_is_marked_loopback() {
+        let local = Listener::adopt(
+            TcpListener::bind(("127.0.0.1", 0)).expect("binding loopback"),
+            Expected::Loopback,
         )
         .expect("a freshly bound socket reports its address");
-
-        assert!(
-            !wildcard.is_loopback(),
-            "a listener bound to {} answers the whole machine, and must not be \
-             labelled loopback",
-            wildcard.addr()
-        );
-    }
-
-    /// The other half of the same property: the address the daemon really
-    /// binds still reads as loopback, so deriving the flag did not withdraw the
-    /// exemption from the one listener that has always had it.
-    #[test]
-    fn a_listener_that_bound_loopback_is_marked_loopback() {
-        let local = Listener::adopt(TcpListener::bind(("127.0.0.1", 0)).expect("binding loopback"))
-            .expect("a freshly bound socket reports its address");
 
         assert!(local.is_loopback(), "127.0.0.1 is the loopback interface");
     }
 
-    /// SH-250's tokenless read exemption follows the derived flag — the fourth
-    /// acceptance criterion of SH-253, and the reason the other three matter.
-    ///
-    /// Composes the two real pieces with nothing mocked between them: a socket
-    /// bound for real, the flag derived from it, and
-    /// [`crate::api::admission::admission`] itself deciding. Before SH-253 a
-    /// wildcard-bound listener would have carried `loopback: true` — the value
-    /// stamped beside the bind — and this daemon would have handed every story
-    /// in the store to any peer on the network with no credential at all.
-    #[test]
-    fn the_tokenless_read_exemption_follows_the_bind_rather_than_a_constant() {
-        let wildcard = Listener::adopt(
-            TcpListener::bind(("0.0.0.0", 0)).expect("binding the wildcard address"),
-        )
-        .expect("a freshly bound socket reports its address");
-        let local = Listener::adopt(TcpListener::bind(("127.0.0.1", 0)).expect("binding loopback"))
-            .expect("a freshly bound socket reports its address");
+    // --- A wildcard or mismatched bind is unserveable, not merely
+    // --- never-written (SH-255) ---
 
+    /// `0.0.0.0` — the wildcard — is reachable from every interface this
+    /// machine has, so it is emphatically not loopback. It is also the one
+    /// non-loopback address any machine can bind without a network to be on,
+    /// which is what keeps this test hermetic.
+    ///
+    /// Before SH-255 this constructed a `Listener` and asserted
+    /// `!is_loopback()` on it — proving the label followed the bind, but
+    /// also proving a wildcard-bound `Listener` could exist at all.
+    /// `adopt` refusing it outright is the stronger property: the module's
+    /// own doc comment ("nothing is ever bound to `0.0.0.0`") is now
+    /// something this function enforces, not just a fact about who calls it.
+    #[test]
+    fn adopt_refuses_a_wildcard_bind_expected_to_be_loopback() {
+        let wildcard = TcpListener::bind(("0.0.0.0", 0)).expect("binding the wildcard address");
         assert!(
-            !admits_a_tokenless_read(wildcard.is_loopback()),
-            "a read arriving on a listener bound to {} must be made to prove who \
-             it is, however loopback its Host header claims to be",
-            wildcard.addr()
+            Listener::adopt(wildcard, Expected::Loopback).is_err(),
+            "a wildcard bind must never become a servable Listener"
         );
+    }
+
+    /// The tailnet arm of the same property: a real, non-loopback socket
+    /// this machine can genuinely bind (no live Tailscale required — this is
+    /// any bindable local address), refused because it does not match the
+    /// specific IP `Expected::Tailnet` names. Mirrors `tailnet_rebind.rs`'s
+    /// routing-lookup trick for finding one hermetically.
+    #[test]
+    fn adopt_refuses_a_tailnet_bind_that_does_not_match_the_probed_identity() {
+        let Some(real_ip) = a_bindable_non_loopback_ip() else {
+            return; // no non-loopback interface on this machine/CI runner
+        };
+        let bound = TcpListener::bind((real_ip, 0)).expect("binding a real local address");
+        let wrong_identity = std::net::IpAddr::V4(std::net::Ipv4Addr::new(100, 64, 0, 1));
         assert!(
-            admits_a_tokenless_read(local.is_loopback()),
-            "and the exemption still reaches the listener it was written for"
+            Listener::adopt(bound, Expected::Tailnet(wrong_identity)).is_err(),
+            "a bind that disagrees with the probed tailnet identity must be refused"
+        );
+    }
+
+    /// The positive control: the same kind of bind, this time matching
+    /// exactly what was expected, succeeds — so the refusal above is the
+    /// mismatch being caught, not `adopt` refusing every non-loopback bind
+    /// unconditionally.
+    #[test]
+    fn adopt_admits_a_tailnet_bind_that_matches_the_probed_identity() {
+        let Some(real_ip) = a_bindable_non_loopback_ip() else {
+            return;
+        };
+        let bound = TcpListener::bind((real_ip, 0)).expect("binding a real local address");
+        assert!(
+            Listener::adopt(bound, Expected::Tailnet(real_ip)).is_ok(),
+            "a bind that matches the expected identity must be admitted"
+        );
+    }
+
+    /// A real bindable, non-loopback IPv4 address on this machine, found by a
+    /// routing lookup rather than an actual connection — no packet leaves the
+    /// machine, so this needs no network access and no live Tailscale.
+    /// `None` on a machine with no such interface at all (a bare CI runner),
+    /// which the two tests above treat as "nothing to test here" rather than
+    /// a failure.
+    fn a_bindable_non_loopback_ip() -> Option<std::net::IpAddr> {
+        let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+        socket.connect("8.8.8.8:80").ok()?;
+        let ip = socket.local_addr().ok()?.ip();
+        (!ip.is_loopback()).then_some(ip)
+    }
+
+    // --- Off-tailnet refusal at accept time (SH-255) ---
+
+    fn addr(ip: &str) -> SocketAddr {
+        SocketAddr::new(ip.parse().expect("a literal IP parses"), 0)
+    }
+
+    const LOOPBACK_BIND: &str = "127.0.0.1";
+    const TAILNET_BIND: &str = "100.71.206.33"; // any address inside the CGNAT range
+
+    #[test]
+    fn the_loopback_listener_admits_only_a_loopback_peer() {
+        assert!(peer_admitted(addr(LOOPBACK_BIND), addr("127.0.0.1")).is_ok());
+        assert!(peer_admitted(addr(LOOPBACK_BIND), addr("::1")).is_ok());
+        assert_eq!(
+            peer_admitted(addr(LOOPBACK_BIND), addr("100.71.206.1")).unwrap_err(),
+            PeerRefused::NotLoopback,
+            "even a Tailscale-shaped peer must not reach the loopback listener"
+        );
+        assert_eq!(
+            peer_admitted(addr(LOOPBACK_BIND), addr("192.168.1.5")).unwrap_err(),
+            PeerRefused::NotLoopback
+        );
+    }
+
+    #[test]
+    fn the_tailnet_listener_admits_loopback_too() {
+        // This machine's own processes reaching the tailnet-bound socket
+        // directly (e.g. `curl` against the tailnet IP from the box that
+        // owns it) is ordinary, not an attack.
+        assert!(peer_admitted(addr(TAILNET_BIND), addr("127.0.0.1")).is_ok());
+        assert!(peer_admitted(addr(TAILNET_BIND), addr("::1")).is_ok());
+    }
+
+    /// The same self-connection case, arriving the other way: the OS does
+    /// not always route a locally-owned destination through `lo`, so a
+    /// same-machine caller can show up *as the bind address itself* rather
+    /// than as loopback -- `tests/tailnet_rebind.rs`'s own SH-146 self-heal
+    /// test connects exactly this way, to a real local IP it found by
+    /// routing lookup rather than a genuine Tailscale identity. The bind
+    /// address here is deliberately a plain LAN-shaped one, outside
+    /// 100.64.0.0/10, so this only passes if the bind-address check is
+    /// doing the admitting, not the CGNAT range it happens to also satisfy
+    /// for [`TAILNET_BIND`]'s own value.
+    #[test]
+    fn the_tailnet_listener_admits_a_peer_that_is_the_bind_address_itself() {
+        let non_tailnet_shaped_bind = addr("192.168.1.50");
+        assert!(peer_admitted(non_tailnet_shaped_bind, non_tailnet_shaped_bind).is_ok());
+    }
+
+    #[test]
+    fn the_tailnet_listener_admits_the_whole_cgnat_range_at_its_exact_edges() {
+        for ip in ["100.64.0.0", "100.64.0.1", "100.127.255.255"] {
+            assert!(
+                peer_admitted(addr(TAILNET_BIND), addr(ip)).is_ok(),
+                "{ip} is inside 100.64.0.0/10"
+            );
+        }
+    }
+
+    #[test]
+    fn the_tailnet_listener_refuses_one_address_on_each_side_of_the_cgnat_range() {
+        for ip in ["100.63.255.255", "100.128.0.0"] {
+            assert_eq!(
+                peer_admitted(addr(TAILNET_BIND), addr(ip)).unwrap_err(),
+                PeerRefused::OutsideTailnetRanges,
+                "{ip} is outside 100.64.0.0/10"
+            );
+        }
+    }
+
+    #[test]
+    fn the_tailnet_listener_admits_the_whole_ula_range_at_its_exact_edges() {
+        for ip in [
+            "fd7a:115c:a1e0::",
+            "fd7a:115c:a1e0::1",
+            "fd7a:115c:a1e0:ffff:ffff:ffff:ffff:ffff",
+        ] {
+            assert!(
+                peer_admitted(addr(TAILNET_BIND), addr(ip)).is_ok(),
+                "{ip} is inside fd7a:115c:a1e0::/48"
+            );
+        }
+    }
+
+    #[test]
+    fn the_tailnet_listener_refuses_the_adjacent_48_on_each_side() {
+        for ip in ["fd7a:115c:a1df:ffff::", "fd7a:115c:a1e1::"] {
+            assert_eq!(
+                peer_admitted(addr(TAILNET_BIND), addr(ip)).unwrap_err(),
+                PeerRefused::OutsideTailnetRanges,
+                "{ip} is outside fd7a:115c:a1e0::/48"
+            );
+        }
+    }
+
+    #[test]
+    fn the_tailnet_listener_refuses_a_foreign_address() {
+        for ip in ["8.8.8.8", "192.168.1.5", "10.0.0.1", "2001:4860:4860::8888"] {
+            assert_eq!(
+                peer_admitted(addr(TAILNET_BIND), addr(ip)).unwrap_err(),
+                PeerRefused::OutsideTailnetRanges,
+                "{ip} is not this machine, not CGNAT, not Tailscale's ULA"
+            );
+        }
+    }
+
+    /// The refusal names which check failed, for the accept loop's own log
+    /// line -- pinned so a future edit cannot silently collapse the two
+    /// reasons into one generic refusal.
+    #[test]
+    fn the_two_refusal_reasons_are_distinguishable() {
+        assert_ne!(
+            PeerRefused::NotLoopback.to_string(),
+            PeerRefused::OutsideTailnetRanges.to_string()
         );
     }
 
