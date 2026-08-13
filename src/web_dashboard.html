@@ -1897,20 +1897,71 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     savePersistedFilters();
   }
 
+  /** Tickets for `fetchReposOnce()`'s replies, and the floor below which one
+   * is ignored, so the project list can never be moved *backwards* (SH-282).
+   *
+   * The same defect `boardFetchTicket` above describes, on a path that asks
+   * more often and has nothing between it and the network: every SSE
+   * `repo-changed` and `repos-changed` calls `fetchReposOnce()` directly,
+   * where the board's equivalent is debounced (`scheduleDataFetch`). So a
+   * burst of mutations puts several `/api/repos` requests in flight at once,
+   * the daemon answers each on whichever of its eight dispatcher threads is
+   * free (`src/daemon/serve.rs`), and an older list could land last and win.
+   *
+   * Only the *ordering* half of the board's guard is needed here, and both
+   * omissions are deliberate:
+   *
+   *   * No project dimension. The list is global, so there is no equivalent
+   *     of `askedFor` — every reply answers the same question.
+   *   * No floor raised on a write. The board is moved by a write *without*
+   *     a fetch (`applyStory`), so it can be ahead of every reply applied;
+   *     nothing anywhere assigns `state.repos` but the success path below, so
+   *     "the newest reply applied" is the whole of what this screen knows.
+   *     Creating or deleting a project from this tab moves the list the same
+   *     way any other client's would: by fetching it again.
+   *
+   * What this protects is not only stale counts. The deleted-elsewhere branch
+   * below acts on `!state.repos.some(...)`, and a list that predates the open
+   * project's creation satisfies that exactly — so an unguarded older reply
+   * does not merely show yesterday's numbers, it announces that a project the
+   * user is looking at has been deleted and throws them back to Home.
+   * Discarding such a reply whole, rather than choosing what may be read from
+   * it, is what keeps that branch acting only on the newest world anyone has
+   * seen. */
+  var reposFetchTicket = 0;
+  var reposFetchFloor = 0;
+
   /** GET /api/repos — the registry list backing the repo-select, home
    * cards, and settings table. Independent of the per-repo `fetchData()`
    * above; `onDone` (optional) runs once the request settles with a real
    * answer -- used by `bootstrap()` to decide the initial screen, which a
    * stale `state.repos` from a 401 must not be allowed to drive. */
   function fetchReposOnce(onDone) {
+    var ticket = ++reposFetchTicket;
     var xhr = new XMLHttpRequest();
     xhr.open("GET", "/api/repos", true);
     xhr.timeout = 8000;
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
+      // Below the floor — a newer reply has already been applied. Nothing is
+      // read from it, not even its freshness: whatever raised the floor knows
+      // a strictly newer world. `onDone` still runs, and must: what it decides
+      // (`bootstrap()`'s initial screen) is answered at least as well by the
+      // newer list already applied, and a callback that never fired would
+      // leave the dashboard on no screen at all.
+      if (xhr.status === 200 && ticket <= reposFetchFloor) {
+        updateConnection();
+        if (onDone) onDone();
+        return;
+      }
       if (xhr.status === 200) {
         try {
-          state.repos = JSON.parse(xhr.responseText);
+          var parsed = JSON.parse(xhr.responseText);
+          // Raised only once the body has parsed: a reply that turns out to
+          // be malformed has applied nothing, so it must not stop a later
+          // (higher-ticket) reply from applying either.
+          reposFetchFloor = ticket;
+          state.repos = parsed;
           state.reposFetchOk = true;
           state.reposFetchAt = Date.now();
         } catch (e) {
