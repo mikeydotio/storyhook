@@ -1,5 +1,11 @@
 import { expect, test } from "@playwright/test";
-import type { APIRequestContext, Page, Request } from "@playwright/test";
+import type {
+  APIRequestContext,
+  APIResponse,
+  Page,
+  Request,
+  Route,
+} from "@playwright/test";
 
 /**
  * Shared across every spec since SH-187: every `/api/**` route requires the
@@ -296,20 +302,20 @@ export async function holdFetch<T>(
   page.on("requestfinished", settled);
   page.on("requestfailed", settled);
 
-  await page.route(matches, async (route) => {
-    if (!isHeldFetch(route.request())) {
-      await route.continue();
-      return;
-    }
-    if (heldRequest) {
-      // Refused, not held, once sealed: an aborted fetch leaves the applied
-      // state untouched (the page's own `onerror` sets the connection flag
-      // and nothing else), which is precisely a view with no repair on the
-      // way.
-      if (sealed) await route.abort();
-      else await route.continue();
-      return;
-    }
+  /** What one candidate turned out to be: not the one (`pass`), an earlier
+   * reply to answer immediately (`answer`), or the one to hold (`hold`). */
+  type Decision =
+    | { kind: "pass" }
+    | { kind: "answer" | "hold"; response: APIResponse };
+
+  /**
+   * Decides a single candidate, and claims the hold if it is the one.
+   *
+   * Kept apart from the handler because this half must run for one request at
+   * a time (see `decisions` below) while the *waiting* half must not.
+   */
+  const decide = async (route: Route): Promise<Decision> => {
+    if (heldRequest) return { kind: "pass" };
     // The bearer token by header, because the page's own credential is the
     // `HttpOnly` cookie (SH-255) and `route.fetch()` does not carry the
     // browser context's jar -- it answers 401, whose body the page then
@@ -329,10 +335,8 @@ export async function holdFetch<T>(
           "this spec depends on — it would prove nothing",
       );
     }
-    if (!until((await response.json()) as T)) {
-      await route.fulfill({ response });
-      return;
-    }
+    if (!until((await response.json()) as T))
+      return { kind: "answer", response };
     heldRequest = route.request();
     // Sealing here rather than from the test body closes a window the test
     // body cannot: a reply that lands between the hold and a later `seal()`
@@ -341,8 +345,61 @@ export async function holdFetch<T>(
     // the other half would pass without ever reaching it.
     if (options && options.sealOnHold) sealed = true;
     taken.release();
-    await gate.held;
-    await route.fulfill({ response });
+    return { kind: "hold", response };
+  };
+
+  /**
+   * Serializes `decide`, so exactly one request is ever held.
+   *
+   * `until` needs the reply's body, which needs an await, and two candidates
+   * inside that window both pass the check and both become "the held one":
+   * the second overwrites `heldRequest`, and the first then waits on `gate`
+   * forever, because `deliver()` releases one request and only one. Never
+   * fulfilled and never failed, it never leaves `outstanding` either, so
+   * `seal()` waits out its whole budget on a request nothing will ever
+   * settle -- a red spec whose message names this harness and not the
+   * behaviour under test.
+   *
+   * Two replies satisfying one predicate at the same moment is the ordinary
+   * case rather than a rare one: a mutation is followed by its own fetch and,
+   * `FETCH_DEBOUNCE_MS` later, the SSE-driven one, and both carry the write
+   * the predicate is looking for. It stays invisible until the machine is
+   * loaded enough for the first `route.fetch()` to still be in flight when
+   * the second request arrives, which is the same condition the specs using
+   * this exist to reproduce.
+   */
+  let decisions: Promise<unknown> = Promise.resolve();
+
+  await page.route(matches, async (route) => {
+    if (!isHeldFetch(route.request())) {
+      await route.continue();
+      return;
+    }
+    if (heldRequest) {
+      // Refused, not held, once sealed: an aborted fetch leaves the applied
+      // state untouched (the page's own `onerror` sets the connection flag
+      // and nothing else), which is precisely a view with no repair on the
+      // way. Answered before the queue, so a slow decision in front of it
+      // cannot keep a request whose outcome is already known in flight.
+      if (sealed) await route.abort();
+      else await route.continue();
+      return;
+    }
+    const decided = decisions.then(() => decide(route));
+    // The chain must survive a rejected decision, or every candidate behind
+    // it inherits that failure; this handler still sees its own.
+    decisions = decided.catch(() => undefined);
+    const outcome = await decided;
+    if (outcome.kind === "pass") {
+      if (sealed) await route.abort();
+      else await route.continue();
+      return;
+    }
+    // Held outside the queue: a request waiting for `deliver()` would
+    // otherwise block every candidate behind it from being answered at all,
+    // and `seal()` would wait for exactly the requests it just sealed off.
+    if (outcome.kind === "hold") await gate.held;
+    await route.fulfill({ response: outcome.response });
   });
 
   return {
