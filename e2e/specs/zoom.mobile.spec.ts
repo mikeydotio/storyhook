@@ -257,6 +257,13 @@ test("the story drawer's controls are at least 16px", async ({ page }) => {
   // measure a body about to be replaced.
   await detailLoaded;
 
+  // SH-217: .description-field is display:none outside edit mode, and
+  // measureControls() skips anything with no client rects -- entering
+  // edit mode first keeps it in the sweep rather than silently dropping
+  // it, the same floor this measurement pinned before the read/edit
+  // split existed.
+  await page.locator(".description-view").click();
+
   // .drawer-title, 4 .field selects (State/Type/Priority/Assignee),
   // .description-field, the block-reason input, the label-add input, the
   // relation select + id input, and the comment textarea. Relationships

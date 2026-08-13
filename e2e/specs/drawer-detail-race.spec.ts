@@ -137,7 +137,11 @@ test("editing the title during the detail fetch survives the re-render without a
   await detailLoaded;
   await expect(titleInput).toHaveValue(newTitle);
 
-  await page.locator(".description-field").click();
+  // Blurs the title; the click target is the rendered view, not the raw
+  // textarea (SH-217: the description field is display:none outside
+  // edit mode, so Playwright's actionability check would time out on
+  // `.description-field` here).
+  await page.locator(".description-view").click();
   await expect.poll(() => patches.length).toBeGreaterThan(0);
   expect(patches).toEqual([newTitle]);
 
