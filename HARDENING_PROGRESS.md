@@ -12804,3 +12804,79 @@ self-destruct timer; zero survivors confirmed after each run. 133 GB free.
 before the findings comment could land, and `story comment` on a closed story
 refuses — correctly. Reopen, comment, re-close. Worth knowing for any cycle
 whose commit bodies say `Closes` and whose write-up comes after the merge.
+
+### SH-240 — one readiness rule, and the second copy nobody had found · PR #337 · **done**
+
+The TUI dashboard's "Ready Stories" panel decided readiness for itself, with a
+filter that knew about `awaiting` and the superstate and nothing else. Every
+check `domain::is_ready` has gained since that filter was written was invisible
+to it, so the panel offered work parked in the required `blocked` state
+(SH-126), work waiting on an open `blocked-by` dependency, work an
+`obviated-by` edge had superseded, and work somebody had already claimed
+(SH-236, whose sibling sweep filed this).
+
+**The sweep found a third copy, one file over.** `src/tui/data.rs`'s filter
+grammar takes `ready` and `blocked` chips on the board, and both answered from
+`awaiting` alone: `ready` was "no reason", `blocked` was "has one". So the two
+halves of the same board disagreed about the same stories — `ready` offered all
+four kinds above, `blocked` hid all four, and counted a *closed* story as
+blocked if it had been awaiting something when it closed. Fixed here rather
+than filed: same subsystem, same predicate, same defect.
+
+| Surface | Answered with | Now |
+|---|---|---|
+| dashboard "Ready Stories" | `awaiting.is_none() && superstate == Open` | `domain::is_claimable` |
+| board `ready` chip | `awaiting.is_none()` | `domain::is_claimable` |
+| board `blocked` chip | `awaiting.is_some()` | open and `!is_ready` |
+| web board | server-supplied `ready_ids` | unchanged — already correct |
+
+**What made the third copy exist: the map.** `is_ready` took the project as
+`&BTreeMap<String, StorySnapshot>`, which a service builds once per invocation
+and a TUI holding a `Vec` cannot afford per keystroke — building it means
+cloning every story in the project, and the dashboard asks seven times a frame.
+So the predicates now take `&impl StoryIndex`, one method wide; the owned map
+still implements it (no call site changed) and so does
+`BTreeMap<&str, &StorySnapshot>`, which costs pointers. The convenience that
+was missing is what the second implementation was written instead of.
+
+**A partial index is safe, and one case is not.** A client's snapshot omits
+closed, deleted and archived stories, so a blocker it cannot answer for reads
+as "not blocking" — correct, because all three of those are exactly the states
+that do not block. Drafts are the exception: a draft *is* open work, so it
+blocks, and the snapshot carries drafts beside `stories` where `DataStore` was
+dropping them on the floor. It keeps them now — never displayed, only indexed,
+because without them the board would call a story ready that the CLI calls
+blocked.
+
+**Two signatures changed to make the mismatch unrepresentable.**
+`ready_stories` takes the whole `DataStore` rather than a story list, and
+`apply_filters` became `DataStore::filter`: both questions need the
+`blocked-by` graph and the state catalog alongside the stories, and three
+arguments that must come from the same project is an invalid state one argument
+cannot express.
+
+**Thirteen tests, each watched fail first** — one per missing check on each of
+the two surfaces, plus three that are not regressions but guards: that a
+blocker the snapshot does not carry does not block, that a draft blocker does,
+and that both index shapes answer identically. Two fences against the drift
+itself: a unit test asserting the panel agrees with `is_claimable` over a
+project holding one story of every excluded kind, and an integration test in
+`tests/tui_integration.rs` driving a real store through the seam, where the
+panel, the board's chip and `story next` are asked the same question and give
+the same answer. The unit tests build a `DataStore` by hand and so cannot see
+whether the *snapshot* carries the catalog and the drafts the answer needs;
+that one can.
+
+**Supervision:** two full `make test` runs, both green and
+both under a log-growth heartbeat with a 120s stall bound and a monitor covering
+stall and completion — **9m17s** before the integration test landed and **9m27s**
+after it, 153 targets and 111/111 e2e each time. No stalls, no wedges, no
+restarts. One `error:` line the second monitor surfaced was a daemon-lifecycle
+test printing its own expected error contract to stderr, not a failure; the log's
+own `EXIT=0` and the absence of any `test result: FAILED` is what settled it,
+which is the SH-222 lesson applied rather than re-learned. 132 GB free.
+
+**Sibling sweep:** clean beyond what is fixed here. `grep` over `blocked-by` /
+`obviated-by` across `src/` finds no other hand-rolled readiness; the web board
+reads `ready_ids` from the server, and `graph.rs` walks the same edges for a
+dependency chain, which is a different question.
