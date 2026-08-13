@@ -638,7 +638,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .ctxmenu-sub .ctxmenu-item .dot { flex-shrink: 0; }
 
 /* ---- Toasts ---- */
-.toast-stack { position: fixed; top: 1rem; right: 1rem; display: flex; flex-direction: column; gap: 0.5rem; z-index: 60; max-width: 22rem; }
+/* SH-235: `right: 1rem` needs 1rem of matching clearance on the left too
+   for the stack to actually fit -- `max-width: 22rem` alone runs a toast
+   off the left edge on any viewport narrower than 22rem + the two 1rem
+   margins (352px). `calc(100vw - 2rem)` is that same pair of margins,
+   subtracted from the viewport itself; `min()` keeps 22rem as the ceiling
+   everywhere wider. */
+.toast-stack { position: fixed; top: 1rem; right: 1rem; display: flex; flex-direction: column; gap: 0.5rem; z-index: 60; max-width: min(22rem, calc(100vw - 2rem)); }
 .toast {
   background: var(--bg-raised); border: 1px solid var(--border); border-left: 3px solid var(--accent);
   box-shadow: var(--shadow-md); border-radius: var(--radius-sm); padding: 0.625rem 0.875rem;
@@ -655,7 +661,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    toast that vanishes on its own -- nobody is necessarily watching the tab
    when an autonomous dispatch finishes. Bottom-right so it never collides
    with the toast stack (top-right), which attended dispatches still use. */
-.dispatch-history { position: fixed; bottom: 1rem; right: 1rem; display: flex; flex-direction: column-reverse; gap: 0.5rem; z-index: 60; max-width: 26rem; }
+/* Same reasoning as `.toast-stack` just above -- `right: 1rem` needs a
+   matching 1rem on the left, so the ceiling is the viewport minus both
+   margins, not a bare `26rem`. */
+.dispatch-history { position: fixed; bottom: 1rem; right: 1rem; display: flex; flex-direction: column-reverse; gap: 0.5rem; z-index: 60; max-width: min(26rem, calc(100vw - 2rem)); }
 .dispatch-history-row {
   display: flex; align-items: flex-start; gap: 0.5rem;
   background: var(--bg-raised); border: 1px solid var(--border); border-left: 3px solid var(--accent);

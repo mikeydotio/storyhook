@@ -303,3 +303,52 @@ test("the list table scrolls sideways to its far columns instead of clipping the
 
   await expectNoClippedElements(page.locator("#list-view"), "the list view @ 390px");
 });
+
+/**
+ * SH-235 (D5): `.toast-stack` and `.dispatch-history` are both
+ * `position: fixed; right: 1rem` with a bare `max-width` -- 22rem (352px)
+ * and 26rem (416px). Neither box leaves room for its own matching 1rem on
+ * the *left*, so on any viewport narrower than max-width + 2rem, the box
+ * itself (whether or not it holds any content yet) runs off the left edge.
+ * `min(<rem>, calc(100vw - 2rem))` is meant to cap it at the viewport
+ * minus both margins instead -- this test proves the browser actually
+ * resolves that `calc()`/`min()` pair to the expected pixel value, which a
+ * text-level check of the CSS source (`web_test.rs`) cannot: a nesting or
+ * rounding mistake in the expression would still read as correct source
+ * text while resolving wrong.
+ */
+test("toast and dispatch-history overlays never exceed a narrow viewport", async ({
+  page,
+}) => {
+  const width = 320;
+  await page.setViewportSize({ width, height: 844 });
+  await page.goto("/");
+
+  const remPx = await page.evaluate(
+    () => parseFloat(getComputedStyle(document.documentElement).fontSize),
+  );
+  const expectedMaxWidth = width - 2 * remPx; // the two 1rem margins
+
+  for (const [selector, remCeiling] of [
+    [".toast-stack", 22],
+    [".dispatch-history", 26],
+  ] as const) {
+    const computed = await page
+      .locator(selector)
+      .evaluate((el) => parseFloat(getComputedStyle(el).maxWidth));
+    expect(
+      computed,
+      `${selector}'s computed max-width (${computed}px) must not exceed ` +
+        `the viewport minus its own left+right margins (${expectedMaxWidth}px)`,
+    ).toBeLessThanOrEqual(expectedMaxWidth + 0.5);
+    // At 320px the `calc(100vw - 2rem)` branch of `min()` must be the one
+    // that actually wins -- otherwise this test would pass trivially by
+    // measuring the untouched `<rem>` ceiling instead of the fix.
+    expect(
+      computed,
+      `${selector}'s computed max-width (${computed}px) should be capped ` +
+        `well under its ${remCeiling}rem ceiling at a 320px viewport -- ` +
+        "if it isn't, the viewport-relative branch of min() never won",
+    ).toBeLessThan(remCeiling * remPx);
+  }
+});
