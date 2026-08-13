@@ -1068,6 +1068,108 @@ fn every_harness_that_isolates_the_data_dir_also_contains_its_daemon() {
 }
 
 // ---------------------------------------------------------------------------
+// SH-258: "a real store" is resolved in one place, not re-inferred per test
+// ---------------------------------------------------------------------------
+
+/// The one file allowed to infer "not temporary" from the checkout's own
+/// layout — everyone else asks it instead.
+const REAL_STORE_OWNER: &str = "crates/storyhook-test-support/src/real_store.rs";
+
+/// Whether `text` re-derives "not temporary" from the checkout the way the
+/// four sites [`REAL_STORE_OWNER`] replaced did: `CARGO_TARGET_TMPDIR`
+/// directly, or `CARGO_MANIFEST_DIR` joined with a literal `"target"`
+/// segment. Both were silently wrong whenever the checkout itself was
+/// temp-rooted — the failure `creating_a_project_at_a_throwaway_path_in_a_
+/// real_store_is_refused` reported as `left: 201, right: 201`, naming neither
+/// the store nor the cause.
+fn re_infers_a_real_store_from_the_checkout(text: &str) -> bool {
+    text.contains("env!(\"CARGO_TARGET_TMPDIR\")")
+        || (text.contains("CARGO_MANIFEST_DIR") && text.contains(".join(\"target\")"))
+}
+
+/// The pattern above matches the two shapes SH-258 actually found, and does
+/// not fire on the ordinary, legitimate use of `CARGO_MANIFEST_DIR` to read a
+/// file out of the checkout's own `src/` — which roughly a dozen other test
+/// files do for unrelated reasons. A scan that matched everything would pass
+/// this test's sibling for the wrong reason.
+#[test]
+fn the_real_store_regression_pattern_matches_what_it_claims_to() {
+    assert!(re_infers_a_real_store_from_the_checkout(
+        "let dir = Path::new(env!(\"CARGO_TARGET_TMPDIR\")).join(label);"
+    ));
+    assert!(re_infers_a_real_store_from_the_checkout(
+        "PathBuf::from(env!(\"CARGO_MANIFEST_DIR\")).join(\"target\").join(label)"
+    ));
+    assert!(!re_infers_a_real_store_from_the_checkout(
+        "storyhook_test_support::non_temporary_dir(label)"
+    ));
+    assert!(!re_infers_a_real_store_from_the_checkout(
+        "Path::new(env!(\"CARGO_MANIFEST_DIR\")).join(\"src\")"
+    ));
+}
+
+/// Every tracked Rust file except [`REAL_STORE_OWNER`] itself must ask
+/// `storyhook_test_support::non_temporary_dir` for a fixture root the store
+/// guards will classify as real, rather than re-deriving one from the
+/// checkout's own layout.
+///
+/// Derived over `git ls-files`, the same style `data_dir_harnesses` scans
+/// with. A hand-maintained list of "the sites that do this" is exactly what
+/// let three of the reported test's four siblings go unnoticed: the story
+/// that found the first one only reproduced it because `cargo test` fail-
+/// fasts at the first failing target, and the lib target that carried it
+/// happened to run first. A copy re-added here — in a fifth site, or a
+/// reintroduced sixth — fails this test instead of waiting for the next
+/// release cut from a scratch clone to rediscover it.
+#[test]
+fn nothing_outside_real_store_rs_re_infers_a_real_store_from_the_checkout() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    assert!(
+        root.join(REAL_STORE_OWNER).is_file(),
+        "REAL_STORE_OWNER is stale — {REAL_STORE_OWNER} no longer exists, so this \
+         scan's one exclusion excludes nothing"
+    );
+
+    let listed = std::process::Command::new("git")
+        .current_dir(root)
+        .args(["ls-files", "-z", "--", "*.rs"])
+        .output()
+        .expect("listing this repository's tracked Rust files");
+    assert!(
+        listed.status.success(),
+        "`git ls-files` failed, so this scan proved nothing: {}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+
+    let offenders: Vec<String> = listed
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .filter_map(|path| {
+            let relative = std::str::from_utf8(path).expect("a UTF-8 path").to_string();
+            if relative == REAL_STORE_OWNER {
+                return None;
+            }
+            let text = std::fs::read_to_string(root.join(&relative))
+                .unwrap_or_else(|e| panic!("reading {relative}: {e}"));
+            re_infers_a_real_store_from_the_checkout(&text).then_some(relative)
+        })
+        .collect();
+
+    // A scan over a tracked-file list this small (>1000 files) that matches
+    // nothing at all could equally mean the pattern is broken; the sibling
+    // test above is what makes that distinguishable from a genuinely clean
+    // tree.
+    assert!(
+        offenders.is_empty(),
+        "{offenders:?} re-derive \"not temporary\" from CARGO_MANIFEST_DIR or \
+         CARGO_TARGET_TMPDIR directly — the premise SH-258 fixed, and silently \
+         wrong again from a temp-rooted checkout. Call \
+         storyhook_test_support::non_temporary_dir instead."
+    );
+}
+
+// ---------------------------------------------------------------------------
 // SH-249: the command that starts a daemon does not get to pick its port
 // ---------------------------------------------------------------------------
 
