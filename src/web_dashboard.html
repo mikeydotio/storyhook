@@ -445,15 +445,6 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
 .fdd-option:hover { background: var(--bg-sunken); }
 .fdd-option input { accent-color: var(--accent); }
 .filter-toggle { display: flex; align-items: center; gap: 0.375rem; font-size: 0.75rem; color: var(--fg-muted); user-select: none; min-height: var(--tap-min); }
-.board-sort { display: flex; align-items: center; gap: 0.3125rem; }
-.board-sort-label { font-size: 0.75rem; color: var(--fg-faint); }
-.board-sort-btn {
-  display: inline-flex; align-items: center; gap: 0.25rem; border: 1px solid var(--border);
-  background: var(--bg-raised); color: var(--fg-muted); font-size: 0.75rem; border-radius: 9999px;
-  padding: 0.1875rem 0.5625rem; cursor: pointer; min-height: var(--tap-min);
-}
-.board-sort-btn:hover { color: var(--accent); }
-.board-sort-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .filter-count { font-size: 0.75rem; color: var(--fg-faint); margin-left: auto; }
 .filter-clear { font-size: 0.75rem; color: var(--accent); background: none; border: none; text-decoration: none; display: inline-flex; align-items: center; min-height: var(--tap-min); }
 .filter-clear:hover { text-decoration: underline; }
@@ -480,8 +471,21 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
   border: none; background: none; color: var(--fg-faint); font-size: 0.6875rem; font-weight: 600;
   text-transform: none; letter-spacing: normal; padding: 0.0625rem 0.25rem; cursor: pointer;
   display: inline-flex; align-items: center; min-height: var(--tap-min);
+  /* SH-305: a second auto margin, splitting the header's free space with
+     `.column-count`'s own -- this is what centers Archive between the
+     title and the count/sort-button group rather than leaving it packed
+     against the title. Only a CLOSED column ever has this button, so an
+     OPEN column's count/sort group is unaffected either way. */
+  margin-left: auto;
 }
 .column-archive-btn:hover { color: var(--accent); }
+.column-sort-btn {
+  border: none; background: none; color: var(--fg-faint); font-size: 0.8125rem;
+  padding: 0.0625rem 0.25rem; cursor: pointer; border-radius: var(--radius-sm);
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: var(--tap-min); min-height: var(--tap-min);
+}
+.column-sort-btn:hover { color: var(--accent); background: var(--bg-raised); }
 .column-cards { flex: 1; overflow-y: auto; padding: 0.125rem 0.625rem 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; min-height: 3rem; }
 .column-empty { font-size: 0.75rem; color: var(--fg-faint); text-align: center; padding: 1rem 0; border: 1.5px dashed var(--border); border-radius: var(--radius-sm); }
 
@@ -870,6 +874,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .ctxmenu-item.danger { color: var(--danger); }
 .ctxmenu-sep { height: 1px; background: var(--border); margin: 0.25rem 0.25rem; }
 .ctxmenu-arrow { margin-left: auto; opacity: 0.6; font-size: 0.6875rem; }
+/* SH-305: the per-column sort menu's `role="menuitemradio"` items -- same
+   always-reserve-the-width, toggle-visibility idiom as `.projsel-item-check`
+   so the label doesn't shift left/right as the checked item changes. */
+.ctxmenu-check { width: 0.875rem; flex-shrink: 0; color: var(--accent); visibility: hidden; }
+.ctxmenu-item[aria-checked="true"] .ctxmenu-check { visibility: visible; }
 /* Set Status's own popover (SH-197): same look as .ctxmenu, positioned to
    the parent item's own right (or left, flipped, if that would overflow —
    see openStorySubmenu()) rather than below a button like .fdd-panel. */
@@ -1138,11 +1147,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       <label class="filter-toggle"><input type="checkbox" id="toggle-closed" checked> Show closed</label>
       <label class="filter-toggle"><input type="checkbox" id="toggle-archived"> Show archived</label>
       <label class="filter-toggle"><input type="checkbox" id="toggle-hide-empty-columns"> Hide empty columns</label>
-      <div class="board-sort" id="board-sort" role="group" aria-label="Board sort order">
-        <span class="board-sort-label">Sort</span>
-        <button type="button" class="board-sort-btn" data-key="priority" id="boardsort-priority">Priority<span class="sort-arrow" id="boardsort-arrow-priority"></span></button>
-        <button type="button" class="board-sort-btn" data-key="order" id="boardsort-order">Order<span class="sort-arrow" id="boardsort-arrow-order"></span></button>
-      </div>
     </div>
   </div>
 
@@ -1592,18 +1596,18 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       return raw ? JSON.parse(raw) : null;
     } catch (e) { return null; } // storage disabled, or a shape from an older build
   }
-  /** Mirrors the live `state.filter`/`state.sort`/`state.boardSort`/
+  /** Mirrors the live `state.filter`/`state.sort`/`state.columnSort`/
    * `state.hiddenColumns` to sessionStorage. Also how "Clear filters"
    * un-persists filters: it resets `state.filter` to `defaultFilter()` first
    * and then calls this, rather than removing the storage entry outright —
-   * a removal would also drop the persisted `state.sort`/`state.boardSort`/
+   * a removal would also drop the persisted `state.sort`/`state.columnSort`/
    * `state.hiddenColumns`, none of which Clear Filters has ever touched
    * (SH-162: hidden columns are a board layout preference, the same
    * category as sort order, not a story filter). */
   function savePersistedFilters() {
     try {
       sessionStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify({
-        filter: state.filter, sort: state.sort, boardSort: state.boardSort, hiddenColumns: state.hiddenColumns
+        filter: state.filter, sort: state.sort, columnSort: state.columnSort, hiddenColumns: state.hiddenColumns
       }));
     } catch (e) { /* nothing to do -- filters just won't carry over this time */ }
   }
@@ -1673,14 +1677,23 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // `pruneCarriedFilters()`.
     filter: (persistedFilters && persistedFilters.filter) || defaultFilter(),
     sort: (persistedFilters && persistedFilters.sort) || { col: "updated", dir: -1 },
-    // Board-only (SH-128): which of "priority"/"order" cards within a
-    // column are sorted by, and its direction. Same persistence category as
-    // `sort` above (a sort-order preference, not a story filter) per this
-    // block's own SH-155 comment, so it lives in the same sessionStorage
-    // bundle rather than `hideEmptyColumns`'s durable-cross-project
-    // localStorage. Default matches the story's own spec: priority
-    // descending (most urgent first).
-    boardSort: (persistedFilters && persistedFilters.boardSort) || { key: "priority", dir: -1 },
+    // Board-only (SH-305, replacing SH-128's single board-wide `boardSort`):
+    // a sparse map of state slug -> `{key, dir}`, so every column carries
+    // its own choice of "added"/"modified"/"priority" and direction. Sparse
+    // on purpose -- an absent slug means `DEFAULT_COLUMN_SORT`, read through
+    // `columnSortFor()`, rather than every column's default being
+    // pre-populated here; a project's states can then change without
+    // leaving stale entries behind. Renamed from `boardSort` rather than
+    // reshaped in place: an older build's persisted blob holds a flat
+    // `{key, dir}` there, and reading that shape as a slug map would treat
+    // the literal strings "key"/"dir" as state slugs. Same persistence
+    // category as `sort` above (a sort-order preference, not a story
+    // filter) per this block's own SH-155 comment, so it lives in the same
+    // sessionStorage bundle rather than `hideEmptyColumns`'s durable
+    // cross-project localStorage -- and per-repo vocabulary like
+    // `hiddenColumns` below, so it's pruned alongside it in
+    // `pruneCarriedFilters()`.
+    columnSort: (persistedFilters && persistedFilters.columnSort) || {},
     // Board-only (SH-162): state slugs whose column is hidden regardless of
     // card count. Per-repo vocabulary, like `filter.states` — sessionStorage
     // and pruned in `pruneCarriedFilters()`, not localStorage, for the same
@@ -2368,6 +2381,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var keptColumns = state.hiddenColumns.filter(function(v) { return validStates[v]; });
     if (keptColumns.length !== state.hiddenColumns.length) dropped = true;
     state.hiddenColumns = keptColumns;
+
+    // `columnSort` (SH-305) is keyed by state slug too, for the same reason:
+    // a switch to a repo that happens to share a slug must not silently
+    // inherit an unrelated column's sort choice from the previous one.
+    var keptColumnSort = {};
+    Object.keys(state.columnSort).forEach(function(slug) {
+      if (validStates[slug]) keptColumnSort[slug] = state.columnSort[slug];
+      else dropped = true;
+    });
+    state.columnSort = keptColumnSort;
 
     Object.keys(FILTER_DROPDOWNS).forEach(function(key) {
       var container = $(FILTER_DROPDOWNS[key].container);
@@ -3211,12 +3234,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   /** Builds a `.ctxmenu`-shaped popup's DOM from a flat `model` array of
-   * `{label, onSelect, disabled, danger, title, submenu}` entries
+   * `{label, onSelect, disabled, danger, title, checked, submenu}` entries
    * (`separator: true` for a divider) -- shared by every `.ctxmenu`-shaped
-   * popup in the app. `openSubmenu` fires for a `submenu` entry's click
-   * (only the story menu's "Set Status" row has one); `closeMenu` is the
-   * owning menu's own close function, run before an ordinary item's
-   * `onSelect`. */
+   * popup in the app. `checked` (SH-305) renders as `role="menuitemradio"`
+   * with an `aria-checked` state and a leading `✓` instead of a plain
+   * `role="menuitem"` -- the per-column sort menu's shape, one radio item
+   * per Added/Modified/Priority x ascending/descending choice; the story
+   * menu never sets it, so its own items are unaffected. `openSubmenu`
+   * fires for a `submenu` entry's click (only the story menu's "Set Status"
+   * row has one); `closeMenu` is the owning menu's own close function, run
+   * before an ordinary item's `onSelect`. */
   function renderMenuNode(model, ariaLabel, closeMenu, openSubmenu) {
     var node = el("div", { class: "ctxmenu", role: "menu", "aria-label": ariaLabel }, []);
     model.forEach(function(entry) {
@@ -3241,9 +3268,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         }, [entry.label, el("span", { class: "ctxmenu-arrow" }, ["▸"])]));
         return;
       }
+      var checked = entry.checked;
+      var children = checked === undefined
+        ? [entry.label]
+        : [el("span", { class: "ctxmenu-check" }, ["✓"]), entry.label];
       node.appendChild(el("div", {
         class: "ctxmenu-item" + (entry.danger ? " danger" : ""),
-        role: "menuitem",
+        role: checked === undefined ? "menuitem" : "menuitemradio",
+        "aria-checked": checked === undefined ? null : String(!!checked),
         tabIndex: -1,
         "aria-disabled": disabled ? "true" : null,
         title: entry.title || null,
@@ -3252,7 +3284,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           closeMenu(false);
           entry.onSelect();
         }
-      }, [entry.label]));
+      }, children));
     });
     return node;
   }
@@ -3400,6 +3432,113 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     } else if (e.key === "Tab") {
       closeStoryMenu(false);
     }
+  }
+
+  // ------------------------------------------------------------
+  // Per-column board sort menu (SH-305)
+  //
+  // A `.ctxmenu`-shaped popup opened from a column header's sort button --
+  // built on the same `renderMenuNode`/`focusMenuItem`/`handleMenuKeydown`
+  // machinery the story context menu above uses, with its own module-level
+  // node/invoker/focus-index state (the same pattern as
+  // `storyMenuNode`/`storyMenuInvoker`/`storyMenuFocusIndex`), since
+  // `closeAllPopovers()`'s door-to-door sweep expects every popover's state
+  // to live with its own close function. Always flat -- unlike the story
+  // menu it has no submenu, so it needs none of that nesting.
+  // ------------------------------------------------------------
+
+  /** The six reachable sorts, in menu order, each paired with the label its
+   * menu item (and a column header's `title`/`aria-label`) shows. "Added"
+   * is `created_at`, "Modified" is `updated_at` -- both dropped by SH-128's
+   * council in favor of `storyNumber`'s "story order," which SH-305 in turn
+   * drops as a user-facing option (see `storyNumber`'s own comment on why
+   * it stays as the tiebreak regardless). */
+  var COLUMN_SORT_OPTIONS = [
+    { key: "added", dir: 1, label: "Added ↑" },
+    { key: "added", dir: -1, label: "Added ↓" },
+    { key: "modified", dir: 1, label: "Modified ↑" },
+    { key: "modified", dir: -1, label: "Modified ↓" },
+    { key: "priority", dir: 1, label: "Priority ↑" },
+    { key: "priority", dir: -1, label: "Priority ↓" }
+  ];
+
+  /** The menu label for whichever sort `slug` currently has (its own choice,
+   * or `DEFAULT_COLUMN_SORT`) -- what a column header's sort button names
+   * itself after, so the active sort is legible without opening the menu. */
+  function columnSortLabel(slug) {
+    var sort = columnSortFor(slug);
+    var match = COLUMN_SORT_OPTIONS.filter(function(opt) {
+      return opt.key === sort.key && opt.dir === sort.dir;
+    })[0];
+    return match ? match.label : COLUMN_SORT_OPTIONS[0].label;
+  }
+
+  /** The column sort menu's model: one `role="menuitemradio"` entry per
+   * `COLUMN_SORT_OPTIONS` choice, checked against `slug`'s current sort.
+   * Selecting an entry writes `state.columnSort[slug]` directly, rather
+   * than the flip-in-place toggle SH-128's two board-wide buttons used --
+   * a popup can name every reachable choice at once, so it does. */
+  function columnSortMenuModel(slug) {
+    var active = columnSortFor(slug);
+    return COLUMN_SORT_OPTIONS.map(function(opt) {
+      return {
+        label: opt.label,
+        checked: active.key === opt.key && active.dir === opt.dir,
+        onSelect: function() {
+          state.columnSort[slug] = { key: opt.key, dir: opt.dir };
+          savePersistedFilters();
+          renderView();
+        }
+      };
+    });
+  }
+
+  var columnSortMenuNode = null;
+  var columnSortMenuInvoker = null;
+  var columnSortMenuFocusIndex = -1;
+
+  /** Opens `slug`'s sort menu at `e`'s position (or the invoking button's
+   * own position for a keyboard activation -- see `menuAnchor`). Mirrors
+   * `openStoryMenu`'s shape exactly, one node per open appended to
+   * `document.body`. Unlike that menu, no `preventDefault()`/right-click
+   * handling: this opens from an ordinary button's `click`, which its own
+   * `onClick` in `ensureColumnShells` already calls `stopPropagation()` on
+   * before reaching here, so `dismissPopoversOnOutsideClick`'s document
+   * listener never fires for the click that opens it. */
+  function openColumnSortMenu(e, slug, invoker) {
+    closeAllPopovers();
+    var model = columnSortMenuModel(slug);
+    columnSortMenuInvoker = invoker;
+    columnSortMenuNode = renderMenuNode(model, "Sort " + slug, closeColumnSortMenu, null);
+    columnSortMenuNode.tabIndex = -1;
+    columnSortMenuNode.addEventListener("click", function(evt) { evt.stopPropagation(); });
+    columnSortMenuNode.addEventListener("keydown", bindColumnSortMenuKeys);
+    document.body.appendChild(columnSortMenuNode);
+    var anchor = menuAnchor(e, invoker);
+    placeMenu(columnSortMenuNode, anchor.x, anchor.y);
+    columnSortMenuFocusIndex = -1;
+    columnSortMenuNode.focus();
+  }
+
+  function removeColumnSortMenuNode() {
+    if (columnSortMenuNode && columnSortMenuNode.parentNode) columnSortMenuNode.parentNode.removeChild(columnSortMenuNode);
+    columnSortMenuNode = null;
+    columnSortMenuFocusIndex = -1;
+  }
+
+  /** Closes the menu -- called from `closeAllPopovers()`, an item's own
+   * click, or this menu's own Escape/Tab handling. `restoreFocus` mirrors
+   * `closeStoryMenu`'s: Escape returns focus to the sort button that opened
+   * it. */
+  function closeColumnSortMenu(restoreFocus) {
+    var invoker = columnSortMenuInvoker;
+    columnSortMenuInvoker = null;
+    removeColumnSortMenuNode();
+    if (restoreFocus && invoker && document.body.contains(invoker)) invoker.focus();
+  }
+
+  function bindColumnSortMenuKeys(e) {
+    handleMenuKeydown(e, columnSortMenuNode, columnSortMenuFocusIndex, function(v) { columnSortMenuFocusIndex = v; }, closeColumnSortMenu);
   }
 
   // ============================================================
@@ -3962,6 +4101,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     openFilterDropdown = null;
     projselFocusIndex = -1;
     closeStoryMenu(false);
+    closeColumnSortMenu(false);
   }
 
   /** The document-wide click listener that dismisses every popover (below)
@@ -4168,15 +4308,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       savePersistedFilters();
       renderView();
     });
-    document.querySelectorAll(".board-sort-btn").forEach(function(btn) {
-      btn.addEventListener("click", function() {
-        var key = btn.dataset.key;
-        if (state.boardSort.key === key) state.boardSort.dir *= -1;
-        else { state.boardSort.key = key; state.boardSort.dir = 1; }
-        savePersistedFilters();
-        renderView();
-      });
-    });
     document.addEventListener("click", dismissPopoversOnOutsideClick);
     document.addEventListener("keydown", function(e) { if (e.key === "Escape") closeAllPopovers(); });
   }
@@ -4322,13 +4453,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return null;
   }
 
-  // SH-128: card ordering within a column. `PRIORITY_URGENCY` is
-  // deliberately its own table rather than a reuse of `PRIORITY_ORDER`
-  // above — that one is an ascending-severity index (critical=0) tuned for
-  // the List view's generic `dir` multiplier, and reusing it here would
-  // make `dir: -1` ("descending") put `none` first, backwards from what
-  // "priority descending" means to a user. Higher number here means more
-  // urgent, so `dir: -1` sorts critical first as SH-128's default expects.
+  // SH-305 (replacing SH-128's board-wide version): card ordering within a
+  // column, per column. `PRIORITY_URGENCY` is deliberately its own table
+  // rather than a reuse of `PRIORITY_ORDER` above — that one is an
+  // ascending-severity index (critical=0) tuned for the List view's generic
+  // `dir` multiplier, and reusing it here would make `dir: -1`
+  // ("descending") put `none` first, backwards from what "priority
+  // descending" means to a user. Higher number here means more urgent, so
+  // `dir: -1` sorts critical first, matching this option's default.
   var PRIORITY_URGENCY = { none: 0, low: 1, medium: 2, high: 3, critical: 4 };
   function priorityUrgency(p) {
     return PRIORITY_URGENCY[p] !== undefined ? PRIORITY_URGENCY[p] : 0;
@@ -4339,41 +4471,50 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * *entirely* digits, or the id sorts last, same as an id with no such
    * segment at all. `parseInt` alone would accept a partial match like
    * "9x" that Rust's `str::parse::<u64>` rejects, which would silently
-   * diverge board sort from the CLI's already-established convention this
-   * mirrors (council decision, SH-128). */
+   * diverge from the CLI's already-established convention this mirrors
+   * (council decision, SH-128). No longer a user-facing sort option itself
+   * (SH-305 dropped "story order" from the menu), but it stays as the
+   * tiebreak below — without it, a tie falls back to a raw id-string
+   * compare, the lexicographic-ordering defect SH-64 was filed to fix
+   * elsewhere and this file has always been careful not to reintroduce. */
   function storyNumber(id) {
     var raw = String(id).split("-")[1];
     return raw !== undefined && /^\d+$/.test(raw) ? parseInt(raw, 10) : Number.MAX_SAFE_INTEGER;
   }
 
-  /** Board card comparator (SH-128). Mirrors `domain::ready_order`'s shape
-   * — primary key, then story number, then the id string as a final
-   * tiebreak — but keyed by whichever of "priority"/"order" the user has
-   * selected via `state.boardSort`, with the other one demoted to a fixed
-   * ascending secondary sort (spec'd by the story itself, not affected by
-   * the primary key's own direction toggle). */
-  function boardCardCompare(a, b) {
-    var sa = a.story, sb = b.story;
-    var dir = state.boardSort.dir;
-    var idFallback = sa.id < sb.id ? -1 : sa.id > sb.id ? 1 : 0;
-    if (state.boardSort.key === "priority") {
-      var byPriority = (priorityUrgency(sa.priority) - priorityUrgency(sb.priority)) * dir;
-      if (byPriority !== 0) return byPriority;
-      return (storyNumber(sa.id) - storyNumber(sb.id)) || idFallback;
-    }
-    var byOrder = (storyNumber(sa.id) - storyNumber(sb.id)) * dir;
-    return byOrder !== 0 ? byOrder : idFallback;
+  /** A column's sort with no `state.columnSort[slug]` entry of its own —
+   * priority descending, most urgent first, the same default SH-128
+   * established board-wide. */
+  var DEFAULT_COLUMN_SORT = { key: "priority", dir: -1 };
+  function columnSortFor(slug) {
+    return state.columnSort[slug] || DEFAULT_COLUMN_SORT;
   }
 
-  /** Reflects `state.boardSort` onto the two board-sort buttons: which one
-   * is active, and its direction glyph — mirrors `renderList`'s handling of
-   * `.sort-arrow` for the List view's `<th>` sort. */
-  function syncBoardSortButtons() {
-    ["priority", "order"].forEach(function(key) {
-      var active = state.boardSort.key === key;
-      $("boardsort-" + key).classList.toggle("active", active);
-      $("boardsort-arrow-" + key).textContent = active ? (state.boardSort.dir === 1 ? "▲" : "▼") : "";
-    });
+  /** Board card comparator (SH-305, replacing SH-128's single board-wide
+   * version): builds a comparator for `slug`'s own `columnSortFor()` entry.
+   * Three keys — "priority" (unchanged from SH-128), "added" (`created_at`),
+   * "modified" (`updated_at`) — each `* dir`, then the same
+   * story-number-then-id tiebreak chain SH-128 established, mirroring
+   * `domain::ready_order`'s shape. `created_at`/`updated_at` are RFC3339
+   * UTC strings of fixed, `Z`-suffixed width (`StorySnapshot`'s own
+   * writer), so a plain lexicographic `<`/`>` on them already agrees with
+   * chronological order — no `Date` parsing needed, and none of this file's
+   * other date handling (e.g. `renderList`'s `updated`) does any either. */
+  function columnCardCompare(slug) {
+    var sort = columnSortFor(slug);
+    var dir = sort.dir;
+    return function(a, b) {
+      var sa = a.story, sb = b.story;
+      var idFallback = sa.id < sb.id ? -1 : sa.id > sb.id ? 1 : 0;
+      var byNumber = (storyNumber(sa.id) - storyNumber(sb.id)) || idFallback;
+      if (sort.key === "priority") {
+        var byPriority = (priorityUrgency(sa.priority) - priorityUrgency(sb.priority)) * dir;
+        return byPriority !== 0 ? byPriority : byNumber;
+      }
+      var field = sort.key === "added" ? "created_at" : "updated_at";
+      var byTimestamp = (sa[field] < sb[field] ? -1 : sa[field] > sb[field] ? 1 : 0) * dir;
+      return byTimestamp !== 0 ? byTimestamp : byNumber;
+    };
   }
 
   /** Renders the board via a *keyed reconcile* rather than tearing down and
@@ -4414,7 +4555,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       return true;
     });
     ensureColumnShells(container, states);
-    syncBoardSortButtons();
 
     var reduceMotion = prefersReducedMotion();
     // FLIP "First": capture every card's rect before anything moves.
@@ -4433,8 +4573,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       var column = findColumnBySlug(container, stateDef.slug);
       if (!column) return;
       var isClosed = stateDef.super_state === "CLOSED";
-      var cards = (byState[stateDef.slug] || []).slice().sort(boardCardCompare);
+      var cards = (byState[stateDef.slug] || []).slice().sort(columnCardCompare(stateDef.slug));
       column.querySelector(".column-count").textContent = String(cards.length);
+      // SH-305: the sort button's name is set here rather than baked into
+      // `ensureColumnShells`'s one-time shell -- that only rebuilds when the
+      // *set* of states changes, not on every render, so a stale label
+      // would otherwise survive any sort change made after the first paint.
+      var sortLabel = "Sort: " + columnSortLabel(stateDef.slug);
+      var sortBtn = column.querySelector(".column-sort-btn");
+      sortBtn.title = sortLabel;
+      sortBtn.setAttribute("aria-label", sortLabel);
       reconcileColumnCards(column.querySelector(".column-cards"), cards, ready, blocked, isClosed, anims, reduceMotion, claimed, existingById);
     });
 
@@ -4460,16 +4608,35 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         el("div", { class: "column-header" }, [
           el("span", { class: "column-dot", style: "background:" + stateColor(stateDef.slug) }, []),
           stateDef.slug,
-          el("span", { class: "column-count" }, ["0"]),
           // Only a CLOSED-superstate column gets one: hiding is layered on
           // top of a story that is already closed, never on an open one, and
           // the column shell keeps its literal 1:1 state mapping either way
           // (SH-126) — this button never changes what the column means, only
-          // which of its cards remain visible.
+          // which of its cards remain visible. Placed between the title and
+          // the count/sort group (SH-305): its own `margin-left: auto`
+          // splits the header's free space with `.column-count`'s, landing
+          // it between the two rather than packed against either.
           isClosed ? el("button", {
             class: "column-archive-btn", type: "button", title: "Archive every story in this column",
             onClick: function() { openArchiveColumn(stateDef.slug); }
-          }, ["Archive"]) : null
+          }, ["Archive"]) : null,
+          el("span", { class: "column-count" }, ["0"]),
+          // SH-305: opens a popup of Added/Modified/Priority x asc/desc for
+          // this column alone. `stopPropagation` keeps the click from
+          // reaching `dismissPopoversOnOutsideClick`'s document-level
+          // listener before `openColumnSortMenu` has finished opening it --
+          // the same guard every other popover's own trigger button uses
+          // (e.g. `buildColumnsDropdown`'s `.fdd-btn`). Title/aria-label
+          // naming the active sort are set per render in `renderBoard`,
+          // since `ensureColumnShells` only rebuilds a shell when the set
+          // of states itself changes, not on every card update.
+          el("button", {
+            class: "column-sort-btn", type: "button",
+            onClick: function(e) {
+              e.stopPropagation();
+              openColumnSortMenu(e, stateDef.slug, e.currentTarget);
+            }
+          }, ["⇅"])
         ]),
         el("div", { class: "column-cards" }, [])
       ]);
