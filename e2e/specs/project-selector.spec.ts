@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { openProject, seedToken } from "./support";
+import { activateBehindOverlay, openProject, seedToken } from "./support";
 
 /**
  * Exercises the dashboard's header project selector against a real daemon
@@ -100,15 +100,18 @@ test("choosing another project from the selector switches the board", async ({
  * The selector-label assertion is load-bearing, not decoration: without it the
  * test passes just as happily on a switch that never happened.
  *
- * Driven by keyboard, and not as a stylistic choice — `openMenu()`'s click
- * cannot reach `#projsel-btn` at all here. `.backdrop` is `position: fixed;
- * inset: 0`, so with the drawer open Playwright reports
+ * Driven by synthetic activation, and not as a stylistic choice — `openMenu()`'s
+ * click cannot reach `#projsel-btn` at all here. `.backdrop` is `position:
+ * fixed; inset: 0`, so with the drawer open Playwright reports
  * `<div id="drawer-backdrop"> intercepts pointer events` and times out; a real
  * mouse fares no better, and the click it does land closes the drawer, so the
- * transition under test never happens. This dismissal is therefore reachable
- * only from the keyboard, exactly like the one SH-290 was filed for — the
- * backdrop hides both from the mouse while nothing marks the background
- * `inert`. `drawer-screen-scope.spec.ts` documents that pairing at length.
+ * transition under test never happens. This test used to reach the selector
+ * from the keyboard instead — exactly the asymmetry SH-290 was filed for, and
+ * exactly the one SH-299 then closed by marking the background `inert`. Both
+ * devices are covered now, so `activateBehindOverlay()` runs the selector's own
+ * listeners with no gesture; `drawer-screen-scope.spec.ts` and that helper
+ * document the pairing at length. `selectRepo()`'s own `closeDrawer()` is what
+ * is under test, and it does not care how it was called.
  */
 test("switching project closes a drawer belonging to the project being left", async ({
   page,
@@ -119,14 +122,11 @@ test("switching project closes a drawer belonging to the project being left", as
     .click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
 
-  // The same route "the selector is fully operable by keyboard" drives below:
-  // opening focuses the current project (Alpha, first in the seeded list), so
-  // one ArrowDown reaches Beta.
-  await page.locator("#projsel-btn").focus();
-  await page.keyboard.press("Enter");
+  await activateBehindOverlay(page.locator("#projsel-btn"));
   await expect(page.locator("#projsel-menu")).toBeVisible();
-  await page.keyboard.press("ArrowDown");
-  await page.keyboard.press("Enter");
+  await activateBehindOverlay(
+    page.locator("#projsel-menu .projsel-item", { hasText: "Beta Project" }),
+  );
 
   await expect(page.locator("#projsel-btn")).toContainText("BB · Beta Project");
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);

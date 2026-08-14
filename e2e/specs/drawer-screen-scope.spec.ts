@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import {
+  activateBehindOverlay,
   holdFetch,
   openProject,
   projectSlug,
@@ -23,13 +24,24 @@ import {
  *     and is gated on `state.repoId`, which `goSettings()` does not change —
  *     so a `?project=&story=` link whose `/data` is still in flight when the
  *     user reaches Settings opens its drawer over Settings.
- *  2. **The Statuses button is unreachable by mouse in that state, and
- *     perfectly reachable by keyboard.** `.backdrop` is `position: fixed;
- *     inset: 0`, so a pointer click lands on it and closes the drawer — but
- *     nothing marks the background `inert`, so the button keeps its place in
- *     the tab order and Enter activates it. `press()` models that user, and
- *     is not a workaround for an actionability check: a hit-tested click
- *     would exercise the backdrop's own dismissal instead of `goStatuses()`.
+ *  2. **The Statuses button is unreachable by hand in that state, and was
+ *     not always.** `.backdrop` is `position: fixed; inset: 0`, so a pointer
+ *     click lands on it and closes the drawer. Until SH-299 nothing marked
+ *     the background `inert`, so the same button kept its place in the tab
+ *     order and Enter activated it — the dashboard was modal for one input
+ *     device and not the other, and this spec was built on the gap. SH-299
+ *     closed it, and closing it was correct: that asymmetry is how a drawer
+ *     could reach the statuses editor at all.
+ *
+ * So every activation below goes through `activateBehindOverlay()`, which
+ * dispatches a synthetic click to the button's own listener — see that
+ * helper's own comment for why a test may do that here and nowhere else. It
+ * models no user. What it still pins is what `goHome()`, `goSettings()` and
+ * `goStatuses()` do to an open drawer *however* they are entered, and they
+ * are still entered without a gesture: `fetchReposOnce()` calls `goHome()` on
+ * its own when the open project is deleted by another client, and the drawer
+ * this file arranges arrives asynchronously, on a screen the user reached
+ * before it.
  */
 
 const ALPHA_STORY_ID = requiredEnv("DASHBOARD_ALPHA_STORY_ID");
@@ -96,10 +108,11 @@ async function openBoardDrawer(
  * `renderScreen()`'s derived rule — so the removal was covered rather than
  * merely believed to be.
  *
- * `press()` again, and again not stylistic: with the drawer open, `.backdrop`
- * intercepts a click on either button, and the click that does land is the
- * backdrop's own dismissal, which closes the drawer without ever running the
- * navigation under test. See this file's header.
+ * Synthetic activation again, and again not stylistic: with the drawer open,
+ * `.backdrop` intercepts a click on either button, and the click that does
+ * land is the backdrop's own dismissal, which closes the drawer without ever
+ * running the navigation under test. Since SH-299 the keyboard fares no
+ * better, by design. See this file's header.
  */
 for (const route of [
   { name: "Home", button: "#home-btn", view: "#home-view" },
@@ -110,7 +123,7 @@ for (const route of [
   }) => {
     await openBoardDrawer(page);
 
-    await page.locator(route.button).press("Enter");
+    await activateBehindOverlay(page.locator(route.button));
 
     await expect(page.locator(route.view)).toBeVisible();
     await expect(page.locator("#drawer")).not.toHaveClass(/open/);
@@ -124,10 +137,11 @@ test("a drawer open over Settings does not survive into the statuses sub-view", 
   const alpha = await projectSlug(request, "Alpha Project");
   await openDrawerOverSettings(page, alpha);
 
-  await page
-    .locator(".settings-table tbody tr", { hasText: "Alpha Project" })
-    .getByRole("button", { name: "Statuses" })
-    .press("Enter");
+  await activateBehindOverlay(
+    page
+      .locator(".settings-table tbody tr", { hasText: "Alpha Project" })
+      .getByRole("button", { name: "Statuses" }),
+  );
 
   await expect(page.locator(".settings-head h2")).toHaveText(
     "Statuses · Alpha Project",
