@@ -149,26 +149,6 @@ impl FakeGithubApiFactory {
         }
     }
 
-    /// Seeds a comment on `issue_number`, as if it were already on GitHub.
-    pub fn seed_comment(&self, issue_number: u64, body: &str) {
-        let mut state = self.state.borrow_mut();
-        let id = state.next_comment_id;
-        state.next_comment_id += 1;
-        state
-            .comments
-            .entry(issue_number)
-            .or_default()
-            .push(GithubComment {
-                id,
-                body: body.to_string(),
-                user: GithubUser {
-                    login: "octocat".to_string(),
-                },
-                created_at: "2026-01-01T00:00:00Z".to_string(),
-                updated_at: "2026-01-01T00:00:00Z".to_string(),
-            });
-    }
-
     /// Every call the engine made, across every client this factory built, in
     /// order.
     #[must_use]
@@ -183,18 +163,6 @@ impl FakeGithubApiFactory {
             .into_iter()
             .filter_map(|call| match call {
                 RecordedCall::CreateIssue(req) => Some(req),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// Comments created via `create_comment`, in the order they were posted.
-    #[must_use]
-    pub fn created_comments(&self) -> Vec<(u64, String)> {
-        self.recorded_calls()
-            .into_iter()
-            .filter_map(|call| match call {
-                RecordedCall::CreateComment { issue_number, body } => Some((issue_number, body)),
                 _ => None,
             })
             .collect()

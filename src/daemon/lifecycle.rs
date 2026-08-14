@@ -1987,11 +1987,6 @@ pub fn describe_paths(env: &Environment) -> String {
     )
 }
 
-/// Whether `path` is a file this process could execute.
-pub fn is_executable(path: &Path) -> bool {
-    std::fs::metadata(path).is_ok_and(|meta| meta.is_file())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -73,31 +73,6 @@ pub struct GithubComment {
     pub updated_at: String,
 }
 
-// Timeline event types
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct TimelineEvent {
-    pub event: Option<String>,
-    pub created_at: Option<String>,
-    // labeled/unlabeled
-    pub label: Option<GithubLabel>,
-    // renamed
-    pub rename: Option<RenameEvent>,
-    // assigned/unassigned
-    pub assignee: Option<GithubUser>,
-    // milestoned/demilestoned
-    pub milestone: Option<GithubMilestone>,
-    // commented (inline comment data)
-    pub body: Option<String>,
-    pub user: Option<GithubUser>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct RenameEvent {
-    pub from: String,
-    pub to: String,
-}
-
 // Request types
 
 #[derive(Debug, Clone, Serialize, Default)]

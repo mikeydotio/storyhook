@@ -14263,3 +14263,99 @@ green.
 
 **Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push,
 no version bump.
+### SH-198 — done · PR #372
+
+**Outcome:** `GithubClient::get_timeline` deleted, along with 8 sibling `pub`
+items nothing called, and a standing test that fences the class.
+
+`get_timeline` had zero call sites in `src/` or `tests/`, flagged by SH-158's
+council when `GithubApi` was cut down to the 7 calls the sync engine actually
+makes (this file's own SH-158 entry, above). `.planning/IDEA.md` — the
+pre-implementation idea doc — specified the GitHub timeline API for remote
+change detection; what shipped instead is `list_issues`'s `since` filter plus
+`three_way_merge`/`base_after_sync`, and no timeline event is consulted
+anywhere. The method was already rotting (a retired GitHub preview header).
+Reviving it would mean writing a caller for a design this project examined
+and replaced; deleted instead.
+
+**Swept the sibling class rather than stopping at one.** Nothing in this
+codebase warns on a `pub` item with zero callers: `dead_code` only fires for
+something unreachable from a crate root, `pub` makes everything reachable,
+and that rule is wrong for a crate published nowhere (binaries on version
+tags, `cargo publish` never runs — `.github/workflows/release.yml` says so
+itself). A hand-rolled scan (`git ls-files -- '*.rs'`, whole-identifier
+matching, comment lines excluded) found eight more: `ArchiveRepairReport`
+(`src/storage.rs`) documented `repair_archived_snapshots`, a function the
+same file's own module doc already records as deleted — the identical shape
+as `get_timeline` itself, a leftover from a prior deletion. `is_executable`
+(`src/daemon/lifecycle.rs`) was worse than idle: its doc promised an
+execute-bit check the body never performed. The other six —
+`CliOptions`, `all_help_keys`, `build_payload`, `seed_comment`,
+`created_comments`, `is_legacy` — were plain unused.
+
+**The fence: `tests/dead_public_surface.rs`.** Derived over `git ls-files`,
+the same style `tests/store_isolation.rs`'s `data_dir_harnesses` and
+`nothing_outside_real_store_rs_re_infers_a_real_store_from_the_checkout`
+scan with, rather than a hand-maintained allowlist — exactly what let ten
+items accumulate before anyone counted. Collects every bare-`pub`
+`fn`/`struct`/`enum`/`trait`/`type`/`const`/`static` (`pub(crate)` and
+`pub(super)` stay out on purpose — `dead_code` already reaches those), counts
+whole-identifier references on every non-comment line outside each item's own
+declaration, and fails naming every orphan. Self-checked the way
+`data_dir_harnesses` is (`>500` definitions found, guarding against a broken
+parser reading as a clean tree), and proved by hand before landing:
+temporarily reintroduced a deleted function, confirmed the test failed naming
+it, removed it again.
+
+**One scope decision, resolved before autonomy started.** The story's own
+comment thread asked "delete, or find and restore the caller" without
+picking one. Investigated both: the caller was designed away (above), so
+delete needed no further input. This session ran under a plan-then-approve
+harness rather than the checklist's bare autonomy: the sibling sweep's
+*breadth* (fence-and-delete all nine vs. `get_timeline` alone, filing the
+rest) was surfaced as a plan-approval choice before a single commit landed,
+per this file's own standing rule (defect handling tenets: "after fixing a
+pattern-shaped defect, sweep for siblings before closing"). Approved once;
+every decision after that point ran without further input, as the session's
+own instructions required.
+
+**Landed as one PR, not two** — a deviation from this run's usual
+docs-on-a-separate-PR-after pattern (SH-174/SH-180/SH-181), because this
+session's own instructions define a single-PR flow ending in an automatic
+worktree reap that closes the window a second PR would need. This entry and
+`CLAUDE.md`'s new standing rule ride the same branch as the three code
+commits, added once the PR (#372) existed to name.
+
+**Gate:** `make test` green, three full runs. The first `make test` failed at
+the e2e leg because this worktree had never run `make e2e-install` —
+bootstrapped it (chromium already cached from another worktree, so download
+was fast) and re-ran clean (137/137 e2e). Main moved twice more while this
+docs commit was in flight (PR #373 SH-285, then PR #374 its own progress-log
+entry), both appending to this same file's tail — the append-only shape this
+file shares with every concurrent session on it. `git rebase origin/main`
+replayed the three code commits clean; only this docs commit conflicted, on
+the append point itself, resolved by keeping both sides in landing order
+(`git merge-tree` first, to see the full conflict shape before touching
+anything) rather than dropping either. Re-ran the full gate after — fmt,
+clippy `-D warnings` (workspace, all targets), full Rust suite, 32/32 plugin
+harness, 158/158 e2e (up from 137: SH-285/SH-267/SH-269 landed new specs
+during the rebase window) — no failures, no warnings, no orphan daemons
+before or after. `cargo check --no-default-features` also compiles
+(`src/github/` is feature-gated).
+
+**One false alarm, resolved before it became one.** Investigating the
+rebase's conflict, `git log --all --grep=SH-198` initially appeared to show a
+*second* branch independently doing this same deletion — `--all` includes a
+detached `HEAD`, and mid-rebase `HEAD` sits on this session's own
+already-replayed commits under new SHAs (same content, new parent). No
+duplicate work existed; confirmed by `gh pr list` (one PR names SH-198: this
+one) and by `git show origin/main:src/github/client.rs` still naming
+`get_timeline`. A second, genuine coincidence surfaced in the same
+investigation: SH-285's own progress-log entry (PR #374) names
+`/private/tmp/sh198-make-test-2.log` — this session's own scratch log path —
+as the "other session" its `pgrep -f 'make test'` matched on this shared
+machine. Confirms concurrent execution, not conflicting work.
+
+**Semver: none suggested** — dead-code deletion and a new test, no
+behavior to version. Not bumped or deployed from this worktree per standing
+policy.

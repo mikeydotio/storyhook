@@ -480,11 +480,6 @@ impl<'a> Project<'a> {
         })
     }
 
-    /// Whether this fixture is a legacy `.storyhook/` tree.
-    pub fn is_legacy(&self) -> bool {
-        self.legacy
-    }
-
     /// A **second checkout** of this project's repository: a `git clone` of its
     /// origin, carrying no pointer file.
     ///
