@@ -368,6 +368,15 @@ where
 
         ready();
 
+        // One-shot, not a loop like the threads above — files whatever
+        // crashes the startup harvest found, then ends. After `ready()` so a
+        // store write, however unlikely to matter, never delays this daemon
+        // answering its first request (SH-287).
+        {
+            let env = env.clone();
+            scope.spawn(move || crate::daemon::crash::file_pending(store, &env));
+        }
+
         let mut listeners = listeners;
         // The last listener is served on this thread, so `serve`'s caller
         // blocks for as long as the daemon is up; every other listener (the

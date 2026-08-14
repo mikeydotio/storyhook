@@ -632,7 +632,12 @@ pub fn run_sync_with(
             continue;
         }
 
-        if find_mapping(&config, &story.id).is_some() {
+        let mapped = find_mapping(&config, &story.id).is_some();
+        if refuses_to_create_a_mapping_for(&story.labels, mapped) {
+            continue;
+        }
+
+        if mapped {
             // Mapped but not in pull results -- check for local-only changes to push
             match sync_single_story(
                 sync,
@@ -707,6 +712,24 @@ fn already_has_a_local_story(remote_snap: &RemoteSnapshot, open_stories: &[Story
         .story_id
         .as_deref()
         .is_some_and(|sid| open_stories.iter().any(|s| s.id == sid))
+}
+
+/// Whether the push phase must refuse to be the one that maps `labels`' story
+/// to a GitHub issue.
+///
+/// A crash's own bug report is never proactively pushed as a *new* issue: it
+/// can carry a redacted excerpt of the daemon's log, and "redacted" is a
+/// promise this codebase already knows how to break (SH-153) — the same
+/// reason [`diff::is_git_link_comment`] withholds a whole class of
+/// local comment from a push. Only unmapped stories are refused: a human who
+/// deliberately maps one by hand is still respected, because `already_mapped`
+/// is what a hand-made mapping looks like from here — this only refuses to be
+/// the one that *creates* the mapping (SH-287).
+fn refuses_to_create_a_mapping_for(labels: &[String], already_mapped: bool) -> bool {
+    !already_mapped
+        && labels
+            .iter()
+            .any(|label| label == crate::daemon::crash::CRASH_LABEL)
 }
 
 // ---------------------------------------------------------------------------
@@ -1466,6 +1489,37 @@ mod mode_word_tests {
         assert_eq!(mode_word(&SyncMode::Off), "off");
         assert_eq!(mode_word(&SyncMode::Manual), "manual");
         assert_eq!(mode_word(&SyncMode::Auto), "auto");
+    }
+}
+
+/// SH-287: a crash's own bug report must never be the story that *creates* a
+/// GitHub mapping, but a human's own hand-made mapping is respected.
+#[cfg(test)]
+mod crash_push_refusal_tests {
+    use super::*;
+
+    #[test]
+    fn an_unmapped_crash_story_refuses_to_create_a_mapping() {
+        let labels = vec!["crash".to_string(), "auto-filed".to_string()];
+        assert!(refuses_to_create_a_mapping_for(&labels, false));
+    }
+
+    #[test]
+    fn a_hand_mapped_crash_story_is_pushed_like_any_other() {
+        let labels = vec!["crash".to_string()];
+        assert!(!refuses_to_create_a_mapping_for(&labels, true));
+    }
+
+    #[test]
+    fn an_ordinary_unmapped_story_is_never_refused() {
+        let labels = vec!["bug".to_string()];
+        assert!(!refuses_to_create_a_mapping_for(&labels, false));
+    }
+
+    #[test]
+    fn a_label_that_merely_contains_crash_does_not_match() {
+        let labels = vec!["crash-course".to_string()];
+        assert!(!refuses_to_create_a_mapping_for(&labels, false));
     }
 }
 
