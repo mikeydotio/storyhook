@@ -858,7 +858,12 @@ pub fn story_views(
     include_derived: bool,
 ) -> Result<Vec<StoryView>, AppError> {
     let stories = story_map(tx, project)?;
-    let mut issues = compute_integrity_issues(&stories);
+    // SH-286's rule reaches here too, and for the same reason it reaches the
+    // doctor: absence from this map is not absence from the project, and a
+    // `StoryView` that says otherwise is `story show` printing a dangling
+    // relation to a story that is right there in the events.
+    let unattested = super::integrity::unattested_endpoints(tx, project, &stories)?;
+    let mut issues = compute_integrity_issues(&stories, &unattested);
     let derived_relationships = if include_derived {
         derive_family_relationships(&stories)
     } else {

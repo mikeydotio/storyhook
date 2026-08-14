@@ -24,9 +24,12 @@
 //! repair that precedes them is one project's — so gating the sweep on that one
 //! project's health held every other project's stale registration hostage, and
 //! `--fix` was the one command that would not perform the remedy `doctor`
-//! prints (SH-270). The pair of tests below fixes both edges of that: a finding
+//! prints (SH-270). The pair of tests below fixed both edges of that: a finding
 //! `--fix` cannot clear must not stop the sweep, and a repair write that
-//! *aborted* must not start it.
+//! *aborted* must not start it. SH-286 then made the second edge unreachable —
+//! `--fix` can no longer be handed a destination it cannot fold — so that test
+//! now pins the invariant that replaced its fixture, and SH-298 carries the
+//! coverage that went with it.
 //!
 //! Everything runs against a data home [`non_temporary_dir`] resolves as
 //! non-temporary, independently of the checkout (SH-258). That is deliberate
@@ -307,31 +310,45 @@ fn doctor_fix_sweeps_the_catalog_even_when_the_project_keeps_a_finding() {
     );
 }
 
-/// ...but a repair that *aborted* must leave the catalog alone (SH-270).
+/// ...and the shape that used to *abort* the repair write no longer can
+/// (SH-270, retired by SH-286).
 ///
-/// The discriminating test, and the reason `IntegrityService::repair` returns a
-/// value instead of the caller matching on `Err(AppError::Integrity)`. That
-/// variant carries three unrelated things, and one of them is
+/// This was the discriminating test for SH-270 — the reason
+/// `IntegrityService::repair` returns a value instead of the caller matching on
+/// `Err(AppError::Integrity)`, since that variant also carries
 /// [`storyhook::domain::fold_story`] failing from inside `append_and_fold`
-/// while a repair is being written — which rolls the write back. A caller
-/// reading the variant as "repairs ran, findings remain" would go on to make
-/// two durable store-wide mutations on the strength of a repair that did not
-/// happen.
+/// while a repair is being written, which rolls the write back. Its fixture was
+/// that abort: `forget_events` left a read-model row with no history behind it,
+/// so the story was present in `all_stories` and open, was chosen as the
+/// destination for the other story's missing inverse, and folded to nothing
+/// when the repair re-folded it.
 ///
-/// The fixture is that abort. `forget_events` leaves a read-model row with no
-/// history behind it, so the story is present in `all_stories` and open, is
-/// chosen as the destination for the other story's missing inverse, and folds
-/// to nothing when `append_and_fold` re-folds it.
+/// **SH-286 removed the fixture, and removed it as a class.** A row the events
+/// do not corroborate — one with no history behind it among them — is
+/// *unattested* now: no finding is derived from it and none names it as a
+/// remedy. So every destination `--fix` appends to is a story the report could
+/// examine, which is a story that folds, and the repair pass can no longer be
+/// handed one that folds to nothing.
 ///
-/// **What this is really pinning** is that the arm distinguishes an aborted
-/// repair from a completed one — not the particular way this fixture aborts.
-/// It is coupled to `fold_story`'s required-field set (`state`, `title`,
-/// `created_at`); if those change so that an empty history folds cleanly, this
-/// goes green for the wrong reason and wants rebuilding around whatever else
-/// makes a repair write fail.
+/// Nor can anything else provoke it, which was searched rather than assumed.
+/// The only other constraint a repair event can reach is the single-parent
+/// unique index, and its precondition is unrepresentable: the mirror trigger
+/// materializes the inverse on insert, so no story can hold two `child-of`
+/// rows even for the length of a statement. `STORYHOOK_FAULT` is the wrong
+/// instrument — it delivers `SIGKILL`, so the process dies and the arm's
+/// control flow is never reached at all.
+///
+/// So this asserts what the old fixture does *now*, which is the invariant that
+/// replaced it: the run completes, appends nothing to the story it could not
+/// read, sweeps, and still fails on the finding it cannot clear. The SH-270
+/// distinction itself is held by `let mut outcome = service.repair()?;` in
+/// `src/invoke.rs`, where an `Err` skips the sweep by control flow rather than
+/// by a check, and by the sibling test above, which pins the other edge.
+/// **SH-298 records the coverage that went with the fixture** rather than
+/// letting it lapse in silence.
 #[test]
-fn doctor_fix_leaves_the_catalog_alone_when_the_repair_write_aborts() {
-    let f = fixture("orphan-plus-aborted-repair");
+fn the_shape_that_used_to_abort_a_repair_write_now_completes_and_sweeps() {
+    let f = fixture("orphan-plus-unattested-endpoint");
     story(&f.workdir, &f.data_home, &["new", "A"]);
     story(&f.workdir, &f.data_home, &["new", "B"]);
 
@@ -339,7 +356,7 @@ fn doctor_fix_leaves_the_catalog_alone_when_the_repair_write_aborts() {
     let (project, prefix) = f.project_at(&store, &f.workdir);
     let id = |n: u32| StoryNo::parse_id(&prefix, &format!("{prefix}-{n}")).expect("parsing an id");
 
-    // A claims an edge to B that B does not record, so `fix` resolves to
+    // A claims an edge to B that B does not record, so `fix` used to resolve to
     // "append the inverse to B"...
     inject_events(
         &store,
@@ -352,8 +369,9 @@ fn doctor_fix_leaves_the_catalog_alone_when_the_repair_write_aborts() {
         }],
     )
     .expect("injecting a one-sided relation");
-    // ...and B's history is gone, so that append re-folds a story with no
-    // state, no title and no created_at, and the whole write rolls back.
+    // ...and B's history is gone, which used to make that append re-fold a
+    // story with no state, no title and no created_at. Since SH-286 it makes B
+    // unattested instead, so no finding names it and no repair is planned.
     forget_events(&store, project, id(2)).expect("truncating the second story's history");
 
     let stale = f.checkout.display().to_string();
@@ -364,14 +382,23 @@ fn doctor_fix_leaves_the_catalog_alone_when_the_repair_write_aborts() {
     assert_ne!(
         fixed.status.code(),
         Some(0),
-        "an aborted repair is a failure: stdout={}",
+        "a row with no events behind it is a finding `--fix` cannot clear: stdout={}",
         stdout(&fixed)
+    );
+    assert!(
+        store
+            .read(|tx| tx.events_for(project, id(2)))
+            .expect("reading B's log")
+            .is_empty(),
+        "`--fix` invented a history for a story the events do not describe — the append SH-286 \
+         exists to refuse"
     );
     let listed = stdout(&story(&f.workdir, &f.data_home, &["project", "list"]));
     assert!(
-        listed.contains(&stale),
-        "the sweep must not have run — the repair write rolled back, and a command that acted \
-         on it anyway would be treating an aborted transaction as a completed one: {listed}"
+        !listed.contains(&stale),
+        "the repair completed, so the sweep must have run — a finding it cannot clear is the \
+         sibling test's case, not a reason to hold every other project's stale registration \
+         hostage (SH-270): {listed}"
     );
 }
 
