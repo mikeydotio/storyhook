@@ -15558,3 +15558,100 @@ harness, **182** e2e specs, zero failures.
 
 **Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push,
 no version bump, no deploy.
+
+### SH-302 — done
+
+**Outcome:** merged (PR #401). A backdrop's pending hide is cancelled when its
+overlay reopens, at all seven overlays, instead of the timer trying to work out
+whether it should still fire.
+
+**The state the story is named for.** A close drops `.open` so the backdrop can
+fade, then hides it on a timer once the fade has run. That timer belongs to the
+close that scheduled it, and a reopen inside its window *undoes* that close — so
+the write it is still going to perform lands on a surface that is now open,
+leaving `<div class="backdrop open" hidden>`. This file already has
+`[hidden] { display: none !important; }`, so what that costs is precise: the
+overlay is up, undimmed, and the click meant to dismiss it passes through to a
+card behind. Not a blocker — a hole.
+
+**Why SH-284's repair did not cover it, restated.** That fix made the drafts
+timer re-read `.open` when it fires. The question is right; the signal arrives
+late. `openDraftsModal()` sets `hidden = false` synchronously and adds `.open` a
+frame later, so a timer inside that frame reads an open popover as closed.
+Cancelling asks nothing.
+
+**Reproduced before anything was changed**, exactly as the story prescribed:
+defer `requestAnimationFrame` past the 150ms timer, then close-and-reopen in one
+JavaScript tick. Red on the first run with the DOM the story quotes verbatim —
+`14 × locator resolved to <div hidden="" id="drafts-backdrop" class="backdrop
+open" …>`.
+
+**The sweep found a second, larger shape, and the story's own fix sketch would
+have missed it.** "Keep the timer's id and `clearTimeout` it in
+`openDraftsModal()`" cancels on the way *in* only. But `updateDraftsButton()`
+calls `closeDraftsModal()` on every navigation to a non-repo screen and the
+shared Escape handler calls every `close*` on every press, so two closes in a row
+happen on an ordinary page load — and the second overwrites the first's handle,
+leaving a timer nothing can cancel. `hideBackdrop()` therefore cancels too.
+
+Measured by removing that half alone and re-running:
+
+| variant | result |
+|---|---|
+| cancel on open only (the story's sketch) | **three of the four new specs red** — including the drafts one at its *opening* assertion, backdrop already `hidden` the first ordinary time the popover is clicked |
+| one call site reverted to a hand-rolled write | the new static scan red, naming the site |
+| both halves, as merged | 4/4 green |
+
+The first row is the interesting one: the naive fix is not merely incomplete, it
+leaves the primary symptom reachable without any race construction at all.
+
+**Two guards deleted, deliberately.** The drafts re-check is superseded. The
+drawer's `if (!state.drawerId)` was the one sound guard in the file — that
+variable is set synchronously, so no late frame could fool it — and went anyway,
+because a second way of saying the same thing is a second thing to keep true. The
+drawer keeps a test of its own for exactly that reason.
+
+**Five overlays never guarded at all**, which is the part with no blocked renderer
+in it: Discard then New Story inside a fifth of a second loses the create modal's
+backdrop on an idle machine. That spec needs no `requestAnimationFrame` trickery
+and is the cheapest red in the file.
+
+**Tests.** `e2e/specs/overlay-reopen-race.spec.ts` drives three of the seven, one
+per *mechanism* rather than as a sample — a late-signal guard, no guard, and a
+guard that was already correct — plus the two-closes case.
+`tests/web_test.rs::every_backdrop_is_shown_and_hidden_through_the_helpers`
+fences the class over the same derived `.backdrop[data-overlay]` registry the
+SH-299 focus-trap scan reads: no site may write a backdrop's `hidden` or touch
+its `classList` itself. Reaching the other four overlays means archiving a column
+or dragging into Blocked; the scan is what makes covering three honest.
+
+**Sibling sweep beyond the overlays: clean, nothing filed.** Every other
+`setTimeout` in the file that mutates something is per-node (toasts, the `.moving`
+and flash animations), guarded (`if (node.parentNode)`), or already keeps a
+cancellable handle (`current.timer`, `fetchDataDebounceTimer`). The one that looked
+closest — the Statuses "Delete?" button's 6s disarm — cannot hold two timers
+against one node, because a second click on an armed button deletes rather than
+re-arms.
+
+**Fade lengths preserved as found** (150ms, and the drawer's 180ms, which is the
+full 0.18s transition the other six clip). Re-timing six overlays would be a
+second hat in a fix commit.
+
+**Supervision.** Four background runs, all watched with a log-growth pulse and a
+120s stall bound. No wedge, no kill, no restart. One self-inflicted error worth
+naming so the next session skips it: several "progress checks" ran a `grep`
+*immediately* after launching a backgrounded `sleep N; grep`, so they reported the
+log seconds later rather than N seconds later — which read as the e2e leg
+crawling at four specs per eight minutes when it was running at normal speed.
+Block on a condition (`until ! pgrep …; do sleep 15; done`) rather than sleeping
+beside the thing you mean to observe.
+
+**Council:** not convened. The story specified the shape of the fix and the sweep;
+the one call it did not cover — cancelling on close as well as open — was settled
+by measurement rather than by preference.
+
+**Gate:** `make test` green — fmt, clippy, **157** `test result: ok`, the plugin
+harness, **186** e2e specs (182 + 4), zero failures.
+
+**Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push, no
+version bump, no deploy.
