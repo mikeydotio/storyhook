@@ -411,9 +411,16 @@ fn the_pre_migration_backup_holds_the_old_schema_and_opens() {
     assert_openable(backup_path);
 }
 
-/// Every snapshot must be a database SQLite is happy with. `VACUUM INTO` plus a
-/// reopen and an `integrity_check` is what `snapshot` promises; this is the
-/// promise checked from outside.
+/// Every snapshot must be a database SQLite is happy with **and must hold
+/// something**. `VACUUM INTO` plus a reopen, an `integrity_check` and a page
+/// count is what `snapshot` promises; this is the promise checked from outside.
+///
+/// The page count is not decoration. `PRAGMA integrity_check` answers `ok` for
+/// an empty database, so an assertion that stops there passes a file that never
+/// received a backup — the hole SH-296 closed in `verify` itself, and the same
+/// one SH-295 had already closed in the two unit tests beside it by reading a
+/// copied row back. This helper is the third site, and checking the promise
+/// from outside is worth nothing if it can be satisfied by zero bytes.
 fn assert_openable(path: &Path) {
     let conn = rusqlite::Connection::open(path)
         .unwrap_or_else(|e| panic!("{} must reopen: {e}", path.display()));
@@ -421,6 +428,14 @@ fn assert_openable(path: &Path) {
         .query_row("PRAGMA integrity_check", [], |row| row.get(0))
         .unwrap_or_else(|e| panic!("{} must be checkable: {e}", path.display()));
     assert_eq!(verdict, "ok", "{} must be sound", path.display());
+    let pages: i64 = conn
+        .query_row("PRAGMA page_count", [], |row| row.get(0))
+        .unwrap_or_else(|e| panic!("{} must be sizeable: {e}", path.display()));
+    assert!(
+        pages > 0,
+        "{} must hold pages — a sound but empty file is not a backup",
+        path.display()
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -14,8 +14,12 @@
 //! write-ahead log is hot produces a file that looks fine and restores
 //! corrupt — a backup that fails exactly when it is needed. `VACUUM INTO`
 //! takes a consistent snapshot through SQLite itself, and the copy is then
-//! opened and `PRAGMA integrity_check`ed before anything is allowed to change.
-//! If either step fails, no migration is attempted at all.
+//! opened, `PRAGMA integrity_check`ed, and asked whether it holds any pages at
+//! all before anything is allowed to change. That last question is not
+//! redundant: an empty file passes the integrity check, so without it the
+//! backup guarantee rested entirely on `VACUUM INTO` having done its job, and
+//! verification added no independent evidence that the copy held anything.
+//! If any step fails, no migration is attempted at all.
 
 use std::path::{Path, PathBuf};
 
@@ -501,7 +505,37 @@ fn back_up(conn: &Connection, backup_dir: &Path, from_version: u32) -> Result<Pa
     snapshot(conn, backup_dir, &format!("v{from_version}"))
 }
 
-/// Opens a backup and asserts SQLite considers it sound.
+/// How many pages a database holds.
+///
+/// Zero means the file was created but never written to — the one state
+/// [`verify`] cannot learn about from `PRAGMA integrity_check`.
+fn page_count(conn: &Connection) -> Result<i64, rusqlite::Error> {
+    conn.query_row("PRAGMA page_count", [], |row| row.get(0))
+}
+
+/// Opens a backup and asserts SQLite considers it sound **and that it holds
+/// something**.
+///
+/// Soundness alone is not evidence of a backup: `PRAGMA integrity_check`
+/// answers `ok` for a pageless database, because a fresh, empty file genuinely
+/// is one. So a file that never received a copy passed this function, and
+/// [`snapshot_at`] renamed it over the real one and returned `Ok` (SH-296).
+/// `PRAGMA page_count` closes that, and it is the check to make here for a
+/// reason worth writing down, because the obvious stronger one is unsound:
+///
+/// - **It cannot produce a false failure.** `VACUUM INTO` writes a one-page
+///   database even from a source with no pages, so every genuine copy holds at
+///   least one page. `a_backup_of_a_pageless_database_still_verifies` pins that.
+/// - **Comparing the copy against the source cannot be made race-free.**
+///   Matching the copy's `user_version` to the source connection's would also
+///   catch a copy of the *wrong* database — but `VACUUM INTO` refuses to run
+///   inside a transaction, so no read snapshot can span the copy and the
+///   source read. A second process committing a migration in that window (the
+///   race [`apply`] exists to survive, and `two_backups_in_one_millisecond_
+///   collapse_to_one_verified_file` provokes) would fail a backup that is
+///   perfectly good, aborting a migration that was safe.
+/// - Comparing page **counts** is wrong outright: `VACUUM INTO` compacts, so a
+///   sound copy legitimately holds fewer pages than its source.
 ///
 /// The message names `path` — which, when [`snapshot`] calls it, is the staging
 /// name rather than the final one. That is deliberate: the file the operator
@@ -524,6 +558,16 @@ fn verify(path: &Path) -> Result<(), StoreError> {
     if verdict != "ok" {
         return Err(StoreError::Backup(format!(
             "{} failed its integrity check: {verdict}",
+            path.display()
+        )));
+    }
+    // Asked only of a file SQLite has already called sound, so the answer is a
+    // statement about a database rather than about arbitrary bytes.
+    let pages = page_count(&copy)
+        .map_err(|e| StoreError::Backup(format!("{} could not be sized: {e}", path.display())))?;
+    if pages == 0 {
+        return Err(StoreError::Backup(format!(
+            "{} holds no pages: it is a database, but not a copy of one",
             path.display()
         )));
     }
@@ -714,5 +758,55 @@ mod tests {
         );
         holds_the_copied_row(&migration);
         holds_the_copied_row(&daily);
+    }
+
+    /// A file that never received a backup must not verify as one.
+    ///
+    /// `PRAGMA integrity_check` answers `ok` for a pageless database — SQLite
+    /// considers a fresh, empty file perfectly sound — so soundness alone
+    /// cannot tell a copy from a file nothing ever wrote to. This is the
+    /// sequence that produced the finding (SH-296), under an experiment that
+    /// pointed `VACUUM INTO` at the final name while [`snapshot_at`]'s staging
+    /// machinery stayed: `Connection::open` **created** the staging file,
+    /// empty; `verify` passed it; the rename put those zero bytes over the real
+    /// copy; and `snapshot` returned `Ok` for a backup of nothing.
+    #[test]
+    fn a_pageless_database_does_not_verify_as_a_backup() {
+        let dir = storyhook_test_support::scratch_dir();
+        let empty = dir.path().join("never-written.db");
+        std::fs::write(&empty, b"").expect("a zero-byte file");
+
+        let error = verify(&empty).expect_err("a file of no pages is not a backup");
+        assert!(
+            error.to_string().contains("no pages"),
+            "the message must say what is wrong with it: {error}"
+        );
+    }
+
+    /// The emptiness check is a property of the **copy**, so it can never
+    /// refuse a genuine one — not even a copy of a database that is itself
+    /// pageless.
+    ///
+    /// This is the false-positive half of the test above, and the reason
+    /// `page_count > 0` was chosen over comparing the copy against the source.
+    /// `VACUUM INTO` writes a one-page database even when the source has no
+    /// pages at all, so "the copy holds pages" separates a real backup from an
+    /// unwritten file exactly, with no case in between. Measured on the bundled
+    /// SQLite 3.51.0; if a future version ever wrote a pageless copy instead,
+    /// this fails here rather than turning every backup in the field into a
+    /// refused migration.
+    #[test]
+    fn a_backup_of_a_pageless_database_still_verifies() {
+        let dir = storyhook_test_support::scratch_dir();
+        let conn = Connection::open(dir.path().join("store.db")).expect("opening a database");
+        assert_eq!(
+            page_count(&conn).expect("reading the source's page count"),
+            0,
+            "the premise: a database with nothing in it has no pages"
+        );
+
+        let backup = snapshot(&conn, &dir.path().join("backups"), "v1")
+            .expect("a copy of an empty database is still a copy");
+        verify(&backup).expect("and must verify");
     }
 }

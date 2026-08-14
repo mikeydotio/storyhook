@@ -10,10 +10,11 @@
 //! a week has nothing to back up anyway. Seven are kept, which is a week of
 //! daily use and about 70MB for a store the size of this project's.
 //!
-//! Every snapshot is `VACUUM INTO` plus a reopen and an `integrity_check`,
-//! never `fs::copy`: copying a database whose write-ahead log is hot produces a
-//! file that looks fine and is not, which is a backup that fails exactly when it
-//! is needed.
+//! Every snapshot is `VACUUM INTO` plus a reopen, an `integrity_check` and a
+//! page count, never `fs::copy`: copying a database whose write-ahead log is
+//! hot produces a file that looks fine and is not, which is a backup that fails
+//! exactly when it is needed. The page count is there because an empty database
+//! passes the integrity check on its own.
 
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
@@ -190,8 +191,8 @@ pub fn validate_label(raw: &str) -> Result<&str, AppError> {
 /// [`Environment::maintenance_backups_dir`], so the result survives the daily
 /// prune by construction rather than by naming convention, which is the
 /// failure SH-135 filed. Goes through [`Store::snapshot`] like every other
-/// backup in this module — `VACUUM INTO` plus a reopen and an
-/// `integrity_check`, never a raw file copy — so a hand-taken backup carries
+/// backup in this module — `VACUUM INTO` plus a reopen, an `integrity_check`
+/// and a page count, never a raw file copy — so a hand-taken backup carries
 /// the same guarantee a scheduled one does. Unconfirmed by design: this only
 /// ever creates a file, so it carries none of the risk that gates `story
 /// project delete`/`set-prefix` behind `--force`.
