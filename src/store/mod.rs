@@ -164,7 +164,65 @@ pub trait Store: Send + Sync + 'static {
     /// method trusts its caller rather than re-checking, the same division of
     /// responsibility [`crate::domain::prefix::validate`] documents for a
     /// project's prefix.
+    ///
+    /// This promises only that the copy is *a* recent committed state. A
+    /// caller that needs the copy to be the state a particular write begins
+    /// from wants [`Self::write_with_snapshot`] instead.
     fn snapshot(&self, dir: &Path, label: &str) -> Result<PathBuf, StoreError>;
+
+    /// Runs `f` inside a write transaction, having first taken a verified copy
+    /// of the state that transaction begins from — one critical section, not
+    /// two.
+    ///
+    /// The contract is two clauses, and an implementation must honour them
+    /// together:
+    ///
+    /// 1. The copy is the **committed state this transaction begins from**,
+    ///    not merely a recent one.
+    /// 2. **No writer commits between that copy and this transaction's
+    ///    commit** — not another thread, and not another process.
+    ///
+    /// An implementation must therefore **not** satisfy this by calling
+    /// [`Self::snapshot`] and then [`Self::write`]. Those are two critical
+    /// sections; any writer fits between them; and restoring the copy would
+    /// then discard work that was never part of this operation and whose
+    /// author never asked for it to be undone (SH-297). Exclusion has to span
+    /// both, which means holding whatever lock excludes *every* writer across
+    /// the copy as well as the write — a deliberate price, paid only by the
+    /// rare, confirmed maintenance operations that need a way back.
+    ///
+    /// The clauses name no mechanism on purpose. SQLite honours them by
+    /// holding its write lock across both; an engine with no such lock would
+    /// honour them with an exclusive advisory lock every writer takes, plus a
+    /// dump taken from this transaction's own exported snapshot. That the
+    /// honest implementation is expensive is information this contract should
+    /// convey rather than hide.
+    ///
+    /// There is deliberately **no default implementation**: the only one that
+    /// could be written here is `snapshot()` then `write()`, which is the
+    /// defect, and a defaulted method would ship it silently to the next
+    /// engine.
+    fn write_with_snapshot<T>(
+        &self,
+        dir: &Path,
+        label: &str,
+        f: impl FnOnce(&mut Self::WriteTx<'_>) -> Result<T, StoreError>,
+    ) -> Result<WriteWithSnapshot<T>, StoreError>;
+}
+
+/// A write, and the verified copy of the state it began from.
+///
+/// Named rather than a bare `(PathBuf, T)` so that neither half can be read as
+/// the other at a call site.
+#[derive(Debug)]
+pub struct WriteWithSnapshot<T> {
+    /// The copy, in the directory the caller named.
+    ///
+    /// Restoring it undoes this write **and nothing else** — see
+    /// [`Store::write_with_snapshot`] for the two clauses that guarantee it.
+    pub snapshot: PathBuf,
+    /// Whatever the closure returned.
+    pub value: T,
 }
 
 /// Everything that can be read inside a transaction.

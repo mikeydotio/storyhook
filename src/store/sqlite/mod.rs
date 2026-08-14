@@ -46,7 +46,7 @@ use crate::store::types::{
     ProjectRemoteRecord, ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent,
     StoryQuery, StoryRow,
 };
-use crate::store::{ReadOps, Store, WriteOps};
+use crate::store::{ReadOps, Store, WriteOps, WriteWithSnapshot};
 
 /// Puts a database into write-ahead logging mode, and reports the mode it ended
 /// up in.
@@ -524,6 +524,57 @@ impl Store for SqliteStore {
         self.explain_corruption((|| {
             let conn = self.checkout()?;
             migrate::snapshot(&conn, dir, label)
+        })())
+    }
+
+    /// The ordering here is the whole method, and every step is where it is
+    /// for a reason that is not obvious from reading it forwards.
+    ///
+    /// `write_guard` excludes this process's own writers. It is the only lock
+    /// [`Store::write`] takes, and on its own it would leave the copy exposed
+    /// to every writer outside this process — which is precisely who a
+    /// maintenance backup exists to protect against.
+    ///
+    /// `BEGIN IMMEDIATE` is therefore taken **before** the copy rather than
+    /// after it: it acquires SQLite's write lock, and that is the only thing
+    /// in this design that excludes *another process*. Once it is held, no
+    /// writer anywhere can commit until this transaction does.
+    ///
+    /// The copy then runs on a **second connection**, because `VACUUM INTO`
+    /// refuses to run inside a transaction and so cannot use the one that is
+    /// holding the lock. It reads the last committed state — a write-ahead-log
+    /// reader does not block on a writer and does not see its uncommitted
+    /// pages — and since nothing may commit while `tx` is open, that state is
+    /// exactly what `tx` begins from. Checking out a second connection cannot
+    /// deadlock: an empty pool opens a new connection rather than waiting.
+    ///
+    /// Hoisting the copy above `SqliteWriteTx::begin` is SH-297 reinstated,
+    /// and it fails silently. Collapsing it onto `tx`'s own connection fails
+    /// loudly instead, with SQLite's own "cannot VACUUM from within a
+    /// transaction". Only the first of those is dangerous, and
+    /// `tests/service_project_set_prefix.rs`'s two racing-writer cases are
+    /// what catch it.
+    fn write_with_snapshot<T>(
+        &self,
+        dir: &Path,
+        label: &str,
+        f: impl FnOnce(&mut Self::WriteTx<'_>) -> Result<T, StoreError>,
+    ) -> Result<WriteWithSnapshot<T>, StoreError> {
+        let _guard = self.write_guard();
+        self.explain_corruption((|| {
+            let mut tx = SqliteWriteTx::begin(self.checkout()?)?;
+            let snapshot = {
+                let conn = self.checkout()?;
+                migrate::snapshot(&conn, dir, label)?
+            };
+            // A failure below drops `tx`, which rolls back. The copy stays:
+            // it is a verified copy of a state that really existed, and
+            // deleting it would be deleting the one artefact a caller who has
+            // just seen an error might want.
+            let value = f(&mut tx)?;
+            tx.commit()?;
+            fire(FaultPoint::AfterCommitBeforeAck)?;
+            Ok(WriteWithSnapshot { snapshot, value })
         })())
     }
 
