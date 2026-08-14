@@ -14639,3 +14639,135 @@ defensible answers.
 
 **Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push,
 no version bump.
+
+### SH-289 — done
+
+**Outcome:** merged (PR #381). The churn fixture that stands in for "a daemon
+finishing one command after another" no longer blames the daemon when the
+machine starves the fixture instead.
+
+**The defect, in one sentence:** the test's margin was five publications — a
+churn thread republishing every 50ms against a 250ms driven deadline — so a
+200ms deschedule, ordinary at a load average of 28, left the record looking
+stale, the client gave up *correctly*, and the assertion that read that as "a
+client must not give up while the daemon is visibly finishing things" named the
+one participant that had done nothing wrong.
+
+**Widening the margin is not the fix, and that is the whole finding.** A larger
+number moves the threshold; it does not change what the test is doing, which is
+*assuming* an interval it never measured. No in-process fixture can promise a
+cadence on an oversubscribed machine — the promise is exactly what load
+suspends. What can be promised is a measurement.
+
+So the churn moved onto the waiting thread. The loop that publishes is now the
+loop that reads the outcome, which means the interval the record actually sat
+unchanged is a number in hand at the moment the client answers, and that number
+decides whose fault the answer was:
+
+| measured stale window | verdict | what happens |
+|---|---|---|
+| `>= DRIVEN - POLL` | `Starved` | the run says nothing; discard it and take another |
+| `< DRIVEN - POLL` | `GaveUp` | the record was moving; the client is at fault, fail |
+| never, stretch held | `HeldOut` | the property observed over a clean stretch |
+
+`DRIVEN - POLL` rather than `DRIVEN`: a client's staleness clock starts when it
+*observes* a change, up to one poll interval after the change was written, so a
+225ms silence can already look like a whole deadline from over there. The
+cadence tightened to 10ms as well — twenty-five publications inside a deadline
+rather than five — which makes a disturbance rarer, not impossible. Rarity is
+not the mechanism; the measurement is.
+
+A disturbed stretch is **discarded and taken again** with a fresh client, up to
+20 seconds, after which the failure names the machine rather than the daemon.
+An undisturbed run never spends that budget: it settles in one stretch and costs
+what it always cost.
+
+**Both regression tests fail without their half of the fix.** The first injects
+a 500ms silence and pins that it is reported as the fixture: RED on a
+classifier-free loop with exactly the reported signature (the client gave up,
+blamed as the product), GREEN with the classifier. The second pins that a
+stretch containing a silence is *remeasured from scratch* rather than counted
+through — without the reset it settles in 700ms flat against a 500ms silence
+plus a 500ms stretch, which is a "clean stretch" the record stood still inside.
+That test drives the loop with no client at all, so its assertion is one-sided:
+load can lengthen the run, never shorten it below what it must have discarded.
+
+**The repair had a hole, and it was the same hole.** Remeasuring is only safe
+if "disturbed" cannot recur forever — and it can: every silence restarts the
+stretch, so a machine producing one every few hundred milliseconds, while the
+client (watching a record that *does* keep moving) correctly never answers,
+leaves the loop with nothing to end it. The retry budget was checked only
+*between* attempts, so it never applied. That is an unbounded wait, written into
+the file whose whole subject is unbounded waits, by the person who had just
+finished reading about them. Found by re-reading the loop before pushing; fixed
+in its own commit with its own regression test, which drives a silence on every
+iteration so only the deadline can end the call, and runs on a worker thread
+because **a test that hangs to report a hang is no report at all**. RED at
+45.02s — the harness's patience, not the fixture's — GREEN at well under its
+one-second budget.
+
+**The retry path was verified end to end**, out of band, by starving the first
+attempt on purpose: attempt 1 discarded with a 598ms stale window, attempt 2
+clean, test green in 2.98s — the identical starvation that hard-failed the old
+test. It is not a permanent test because the permanent tests own its two halves
+separately, and a third that spends real seconds to re-prove them would be
+paying wall clock for nothing.
+
+**The class, and its relation to SH-288.** SH-288's fix separated two questions
+one bound was answering. This one separates two *participants* one assertion was
+judging. Both are the same underlying error: a test that cannot tell its own
+failure from the product's will report the product's, because that is the only
+sentence it has. When the fixture and the subject can both break, the fixture
+has to be measured too — otherwise the test is a coin with the product's name
+on both faces.
+
+**Sibling sweep, per the defect tenets.** The class is *a fixture that promises
+a cadence a product deadline is measured against*, and this was the only member.
+Everything else that spawns a helper in the suite is event-driven and therefore
+load-proof: `error_contract`'s lock holder holds until signalled (its own
+comment says why — "so the timeout is the child's own deadline and not a race
+with ours"), `daemon_fd_hygiene`'s reader blocks in `read(2)`,
+`daemon_concurrency::wait_for` and `hook_bounds`' marker loop poll until ready
+against generous deadlines, where load costs iterations rather than verdicts.
+The one remaining `recv_timeout(...).is_err()` in the suite —
+`a_frozen_github_sync_is_waited_on_longer_than_anything_else` — publishes once
+and asserts no give-up within 3s against an hour-long deadline, which no
+scheduler can cross.
+
+**Supervision — two gate runs, both killed by me, neither wedged.** The first was
+killed at ~5 minutes, not because it stalled, but because I edited
+`tests/daemon_timeouts.rs` underneath it to make the refactor commit. The
+binaries under test were built before that edit, so the run could no longer
+gate the tree it would push — and `cargo fmt`/`clippy` beside it contend for the
+same `target/` lock. Killing and restarting once on the final tree costs one run
+instead of two. The kill's own collateral is worth recognising so it is not
+misread next time: two tests reported `FAILED` in the dying log because their
+daemon was killed mid-request. **A gate runs against a frozen tree; if the tree
+needs to change, the gate restarts.**
+
+The second was killed at ~4 minutes for the same reason and by the same person,
+this time because re-reading the loop found the unbounded wait above. The kill
+left an orphan daemon, which `scripts/check-no-orphan-servers.sh` caught and
+named — the reason that check brackets a run rather than following it.
+
+The third ran to completion under a watchdog on log growth with a 120s stall
+bound, and it is the one that gates this branch: **156 `test result: ok`, zero
+failures, plugin leg clean, e2e 158/158, no orphans**. It ran at a load average
+that peaked at **42** — higher than the 28 that filed this story — which makes
+it the adversarial run the fix was written for rather than a quiet one that
+proves nothing. All six exchange tests passed, including the churn test that
+failed twice in three runs at load 28 a day earlier. The single `error:` line in
+the log is a daemon-stop test printing its own expected output.
+
+**Two hats, three commits:** `fix:` moved the churn onto the waiting thread and
+classified the outcome; `refactor:` named the poll interval the classification
+derives from, which three tests had been spelling as a literal; `fix:` bounded
+the measurement. The middle one is behaviour-neutral and the outer two each
+ship the test that fails without them.
+
+**Council:** no. The story named two candidate fix shapes and a third
+consideration; the third subsumes the first two, and nothing was left with two
+defensible answers.
+
+**Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push,
+no version bump.
