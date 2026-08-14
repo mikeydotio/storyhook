@@ -14771,3 +14771,133 @@ defensible answers.
 
 **Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push,
 no version bump.
+
+### SH-284 — done · PR #386
+
+**Outcome:** merged. The Drafts button stops claiming a count it does not have,
+plus an older defect in `closeDraftsModal()` that implementing this one made
+reachable on every page load.
+
+**The council refused the story's own fix direction, and that is the finding.**
+SH-284 proposed mirroring SH-265 — disable the button through the pre-data
+window, as its neighbour `#new-story-btn` already is. Three seats, blind,
+independently declined. SH-265's disabling is load-bearing *there* because the
+create modal is built once from `meta()` and never repopulates, so disabling is
+the only thing making a permanently-wrong destination unreachable; the Drafts
+popover re-renders on every arrival, so disabling would remedy nothing and cost
+the tab order. What transfers is SH-265's **structural** half — sync the control
+from the data-*loss* edge, not only the arrival edge — without which nothing
+repaints on the `state.data = null` edge at all, because `renderAll()`
+early-returns there. Two adjacent topbar buttons now behave differently in the
+same window on purpose, which is exactly the kind of asymmetry a later reader
+tidies away; the doc comment exists to stop that.
+
+**The council corrected the story's premises three times, and my own once.** Its
+"read-only, no wrong write reachable" was incomplete: `fetchReposOnce()` nulls
+`state.repoId` and calls `goHome()` *without* clearing `state.data`, stranding an
+open popover whose rows still pass `openCreateModal()`'s guard. Checking that
+myself narrowed it further than either seat had — `apiBase()` derives from the
+already-nulled `repoId`, so a publish from there fails on a malformed URL rather
+than writing into the deleted project. A broken modal, not a bad write. Its
+"self-corrects on the next `/data`" holds only if a `/data` ever succeeds
+(SH-291). And the pre-data window was never the only path to a false count: the
+markup hardcoded `No Drafts` before any project existed.
+
+**I introduced a false premise into the deliberation and it moved two votes.** I
+claimed one candidate placement left project A's rows on screen inside project B.
+The `skeptic` seat disproved it — `renderDraftsList()` opens with `clear(list)`,
+and `selectRepo()` nulls `state.data` before `renderScreen()`, so an open popover
+repaints synchronously in the same call. Verified, withdrawn in writing to all
+three seats, and both revisions made on it were taken back before the runoff,
+which then went 2–1 the other way. The seat that argued hardest for closing the
+popover ended up the only one still arguing for it, on a narrower ground it found
+by applying its own standard against itself (the popover's header names no
+project, so a repaint changes its subject silently — filed as SH-292 rather than
+absorbed, since the remedy is a design change nobody voted on).
+
+**The regression I shipped into the first gate, and why it was mine to own.**
+`closeDraftsModal()` hides the backdrop on a 150ms timer so the fade has
+something to fade, and that write was unconditional — it trusted the state at
+*schedule* time. This story's new caller runs on every navigation to a non-repo
+screen, including the `renderScreen()` at module init, so an ordinary page load
+now armed one before the user did anything; open the popover inside that window
+and the timer lands on it, leaving `<div id="drafts-backdrop" class="backdrop
+open" hidden>` — an open popover above a backdrop that is invisible and
+unclickable. `draft-stories.spec.ts` caught it as a 15s timeout on an element it
+could see and could not click. The defect predates this story (the Escape handler
+has always called `closeDraftsModal()` open or not), so it landed **first, in its
+own commit**, with a test that goes red against untouched `main`. Fixed at the
+origin — the timer re-reads the popover's state when it fires — so both callers
+are covered rather than just mine.
+
+**Two of my three attempts at that regression test passed against known-broken
+code.** Attempt 1 (load the page, then reach for the button) missed the 150ms
+window outright. Attempt 2 (Home, back into the project, open the popover, as
+three Playwright actions) was ~150–300ms of round trips against a 150ms timer —
+it would have passed or failed on machine speed, and it passed. Both would have
+been committed as "regression test added" and neither would ever have failed
+again. Attempt 3 dispatches the close and the reopen in **one JavaScript tick**,
+so the timer is guaranteed to fire while the popover is open; red before the fix,
+green after. Both backdrop tests are built that way now. A race reproduced by
+luck is not reproduced, and from the inside that looks exactly like a green test.
+The same reasoning shows up in the label assertions: the "count never carries
+into the next project" check reads `textContent` **once, without retrying**,
+because a polling assertion sails straight past the stale value and passes on the
+corrected one that lands two seconds later — the defect itself.
+
+**Six gate runs, three of them red, for three unrelated reasons — and only one
+was mine.** (1) `draft-stories`, the real regression above. (2) Three
+`board-sort` tests at load average 39–46, with three sibling sessions running
+their own gates: that file passes 4/4 alone and 18/18 beside both files this PR
+touches in suite order, and the suite runs 5.4m at load 14 versus 10.8m at load
+39–46. It is the file SH-222/223 already named as the first to fail under load,
+so load is the stated cause but **not a proven one — I destroyed the Playwright
+artifacts by re-running before reading them**, which is the mistake to not repeat.
+(3) `store_backup_naming::eight_connections_migrating_one_store_all_succeed`, a
+pre-existing flake now filed as **SH-293**: `with_extra_migration()` appends
+version 14 while the binary supports 13, and each thread calls `open_with`
+*inside* the thread, so once the winner commits, every straggler correctly gets
+`SchemaTooNew { found: 14, supported: 13 }` — the store refusing a newer schema,
+which is the protection you want — and the test panics on it. Cargo fail-fasts,
+so one such flake kills ~50 later targets and reads as "you broke the store
+layer" to whoever is holding an unrelated branch. Not fixed here: it is unrelated
+to this story, and the tempting fix deletes a real safety property.
+
+**The supervision rule's own heartbeat produced a false wedge.** `make test` was
+declared stalled at 120s of log silence while `rustc` and four `dsymutil`
+processes were saturating cores: `cargo test` compiles every test binary before
+printing a line, and this branch changed an `include_str!` asset, forcing a full
+rebuild. Nothing was killed — the process table was checked first, which is the
+point. The bound was not wrong; the **pulse** was. Log growth is the right pulse
+for the test phase and the wrong one for the compile phase, where process
+activity is the true signal. Subsequent runs watched both.
+
+**`make test` does not run on push.** The global pre-push hook exists at
+`~/.claude/hooks/pre-push-tests.sh` but did not fire for
+`git -c url."https://github.com/".insteadOf=… push` — the branch went up in seven
+lines with no suite output. I had said in-session that pushing would re-gate the
+exact bytes; it does not, and the tree pushed had drifted from the last green run
+by a new test and several comments. Gated explicitly afterwards instead. **Assume
+the hook is not a gate.**
+
+**PR #383 (SH-287, daemon crash reporting — 17 files, ~2,900 lines) landed
+between this branch's gate and its merge**, so `make test` was re-run on merged
+`main` rather than trusting the branch's own green — the SH-282 precedent. Green:
+**157 `test result: ok`** (one target more than the branch, SH-287's
+`crash_reports.rs`), 32 plugin tests, 163 e2e specs, zero failures.
+
+**Council:** yes — three seats, blind round one, one deliberation round, a
+ranked-choice runoff decided 2–1 with a recorded dissent. Verdict and dissent are
+on the story (`story show SH-284`); the audit trail in
+`.council/sh284-drafts-button-pre-data-window/` is untracked, so the story
+comment is the copy that survives a clone.
+
+**Follow-ups filed:** SH-290 (`closeDrawer()` is hand-placed at three of four
+navigation functions — `goStatuses()` omits it), SH-291 (a `/data` that never
+succeeds leaves the loading line up forever, and `state.fetchOk` initialises
+`false` so it cannot tell "never fetched" from "failed"), SH-292 (the popover
+names no project, so the repaint changes its subject silently — the council
+dissent), SH-293 (the flake above).
+
+**Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push,
+no version bump, no deploy.
