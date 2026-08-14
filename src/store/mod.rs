@@ -149,9 +149,13 @@ pub trait Store: Send + Sync + 'static {
 
     /// Writes a verified copy of this store into `dir` and returns its path.
     ///
-    /// Verified means the copy is reopened and `integrity_check`ed before this
-    /// returns: a backup that is only discovered to be corrupt when it is needed
-    /// is worse than no backup, because it was believed in.
+    /// Verified means the copy is reopened, `integrity_check`ed, and shown to
+    /// hold at least one page before this returns: a backup that is only
+    /// discovered to be corrupt when it is needed is worse than no backup,
+    /// because it was believed in. Soundness alone does not carry that weight,
+    /// and an engine implementing this trait has to know it — an empty database
+    /// passes an integrity check, so a check that asks nothing else cannot tell
+    /// a copy from a file that never received one (SH-296).
     ///
     /// `label` distinguishes what the copy is *for* — a directory holding both
     /// a daily schedule's output and a maintenance operation's own safety net

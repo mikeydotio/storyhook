@@ -2119,7 +2119,7 @@ fn dispatch_store_backup<S: Store>(
     let label = label.unwrap_or("manual");
     let path = crate::daemon::backup::take_manual(store, &env.maintenance_backups_dir(), label)?;
     Ok(Response::Message(format!(
-        "backup written to {} (label: {label}, verified: VACUUM INTO + integrity_check)\n\
+        "backup written to {} (label: {label}, verified: VACUUM INTO + integrity_check + page count)\n\
          `story daemon status` / `story web status` report it alongside every other backup.",
         path.display()
     )))
