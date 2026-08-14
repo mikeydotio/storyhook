@@ -32,6 +32,14 @@ impl ConformanceFixture for SqliteFixture {
         &self.store
     }
 
+    fn snapshot_dir(&self) -> std::path::PathBuf {
+        self.dir.path().join("backups")
+    }
+
+    fn open_snapshot(&self, path: &std::path::Path) -> Self::Store {
+        SqliteStore::open(path).expect("opening a copy")
+    }
+
     fn reopen(self) -> Self {
         // The old store drops first, releasing its pooled connections, so the
         // reopened one genuinely re-reads the file rather than inheriting a
