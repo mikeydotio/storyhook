@@ -269,17 +269,29 @@ test("a switch to another project carries neither the count nor the rows", async
   await page.locator("#drafts-btn").click();
   await expect(page.locator("#drafts-list .drafts-row")).toHaveCount(1);
 
+  await expect(page.locator("#drafts-subject")).toHaveText("AA · Alpha Project");
+
   // The switch cannot be driven by hand from here, and that is now true of
   // both input devices. `.backdrop` is `position: fixed; inset: 0` over an
   // unpositioned topbar, so a *mouse* click on `#projsel-btn` hits the
   // backdrop and closes the popover instead; this test used to reach it with
   // Enter on the focused selector, which SH-299 closed on purpose by marking
-  // the background `inert`. The state itself is still reachable with no
-  // gesture at all -- `fetchReposOnce()` calls `goHome()` when the open
-  // project is deleted elsewhere, and every one of these navigations runs
-  // `renderScreen()` the same way -- so the two steps below go through
+  // the background `inert`. So the two steps below go through
   // `activateBehindOverlay()`, which runs the selector's own listeners
-  // without one. See that helper's comment.
+  // without a gesture. See that helper's comment.
+  //
+  // What that makes this test, since SH-292 re-checked it: a *structural*
+  // invariant rather than a reachable scenario. The comment here used to
+  // claim the state was still reachable with no gesture at all, citing
+  // `fetchReposOnce()`'s `goHome()` on a project deleted elsewhere -- but
+  // that path dismisses the popover rather than re-pointing it (the next
+  // test asserts exactly that), so no production route reaches a
+  // board-to-board switch with this popover open. The assertions below are
+  // kept anyway, and are worth keeping: they pin `renderDraftsList()`'s
+  // clear-before-branch ordering, which nothing else ties to this decision,
+  // and they would be the first thing to fail if a future change reopened
+  // the switch. The state SH-292's naming actually exists for is the parked
+  // failure below, which is why that test asserts the subject line too.
   await slowData(page);
   await activateBehindOverlay(page.locator("#projsel-btn"));
   await expect(page.locator("#projsel-menu")).toBeVisible();
@@ -296,6 +308,18 @@ test("a switch to another project carries neither the count nor the rows", async
   // claim at all: it would poll happily through the stale value and pass on
   // the corrected one that lands 2s later, which is exactly the defect.
   expect(await page.locator("#drafts-btn-text").textContent()).toBe("Drafts");
+  // Read the same way, and for the same reason: SH-292 puts the subject line
+  // inside `renderDraftsList()` above its `clear(list)`, so it repaints in the
+  // same synchronous call. A retrying assertion would poll through Alpha's
+  // name and pass on Beta's, which is the whole failure mode.
+  expect(await page.locator("#drafts-subject").textContent()).toBe(
+    "BB · Beta Project",
+  );
+  // The header is the control's own name and never the data's -- exact text,
+  // so a future change that folds the project into it (the shape SH-292's
+  // council rejected, on a `1rem/700` box shared by six modals with no
+  // truncation) fails here.
+  await expect(page.locator("#drafts-modal .modal-header")).toHaveText("Drafts");
   // The council dissent's guard. `renderDraftsList()` clears the list before
   // it branches, which is the only reason an open popover cannot show Alpha's
   // rows inside Beta -- an ordering nothing else ties to this decision. Pinned
@@ -543,6 +567,17 @@ test("a project whose data never arrives names the failure, once there is one to
   await expect(newBtn).toBeDisabled();
   await expect(page.locator("#drafts-btn")).toBeEnabled();
   await expect(page.locator("#drafts-btn-text")).toHaveText("Drafts");
+
+  // SH-292, and this is the state its council found the case for. The two
+  // sentences above are deictics -- "this project's drafts" -- and until now
+  // nothing inside the overlay resolved them: `.backdrop` blurs the topbar
+  // and SH-299's `inert` takes it out of the accessibility tree entirely, so
+  // the only thing naming the project was behind both. That is survivable
+  // for the 2s loading window; it is not survivable here, because this state
+  // has no end. "Retrying…" is a claim the 25s poll keeps, so a user can sit
+  // in front of this sentence indefinitely, and an assistive-technology user
+  // has no route to the name at all.
+  await expect(page.locator("#drafts-subject")).toHaveText("AA · Alpha Project");
 });
 
 test("a project that answers after a failure drops the error where it stands", async ({
@@ -611,5 +646,96 @@ test("one project's failure is not carried into the next project's loading windo
   await expect(page.locator("#new-story-btn")).toHaveAttribute(
     "title",
     "Loading this project's states, types and labels…",
+  );
+});
+
+/**
+ * SH-292's third gap, the one its council would not let the fix leave open.
+ *
+ * The subject line is derived from `state.repos`, and `state.repos` is
+ * refreshed by `fetchReposOnce()` — whose success path repainted the project
+ * selector, the home cards and the settings table, and nothing belonging to
+ * the Drafts popover. So a project renamed by another client repainted the
+ * topbar and left the popover naming the old one, and *indefinitely*: the
+ * board's own `/data` is a separate request, `renderAll()` runs only on a
+ * parsed 200, and `markDataSettled()` fires at most once per project. A stale
+ * name is worse than no name, and this is exactly the dwell state the naming
+ * was added for.
+ *
+ * Both mocks below are data and transport, never behaviour. `/api/repos`
+ * answers with the daemon's own reply, one field rewritten; `/api/events` is
+ * a stream that opens and closes, so the page's real `EventSource` reconnects
+ * on its own `retry:` hint and runs the page's real `es.onopen`. Every
+ * repaint asserted here is the production path: `fetchReposOnce()` →
+ * `state.repos` → `currentProjectLabel()` → `renderDraftsList()`.
+ *
+ * The dashboard has no rename endpoint of its own (`POST /api/repos`
+ * registers, `DELETE` removes), so rewriting the catalog reply is what a
+ * `story project set --name` on another machine looks like from here.
+ */
+test("a project renamed elsewhere renames the open popover, not just the topbar", async ({
+  page,
+  request,
+}) => {
+  await seedDraft(request, "Alpha Project", DRAFT_TITLE);
+  await seedToken(page);
+  // Resolved through the standalone `request` fixture, before any route is
+  // registered, so the slug this test keys on cannot come from its own mock.
+  const slug = await projectSlug(request, "Alpha Project");
+
+  let name = "Alpha Project";
+  await page.route("**/api/repos", async (route) => {
+    // The token explicitly: `route.fetch()` replays the request without the
+    // cookie the page authenticates with, and the daemon answers a 401 whose
+    // body is not JSON at all.
+    const response = await route.fetch({
+      headers: {
+        ...route.request().headers(),
+        "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
+      },
+    });
+    const repos = (await response.json()) as Array<{ id: string; name: string }>;
+    repos.forEach((repo) => {
+      if (repo.id === slug) repo.name = name;
+    });
+    await route.fulfill({ response, json: repos });
+  });
+  // A stream that ends immediately. `EventSource` treats EOF as a
+  // disconnection and reconnects after the `retry:` it was given, so the page
+  // re-runs its own `es.onopen` — `fetchReposOnce()` — every ~150ms, which is
+  // how this test gets a catalog refresh without a real catalog change.
+  await page.route("**/api/events", (route) =>
+    route.fulfill({
+      status: 200,
+      headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+      body: "retry: 150\n\n",
+    }),
+  );
+
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await page.locator("#drafts-btn").click();
+  await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
+  await expect(page.locator("#drafts-subject")).toHaveText("AA · Alpha Project");
+
+  // From here the board's own data can repaint nothing: `renderAll()` runs
+  // only on a parsed 200, and `markDataSettled()` already fired for this
+  // project on the load above, so it early-returns. Without this the reconnect
+  // loop's own `fetchData()` would repaint the popover for reasons that have
+  // nothing to do with the catalog, and this test would pass against the
+  // defect.
+  await page.route(
+    (url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`,
+    (route) => route.abort(),
+  );
+  name = "Alpha Project Renamed Elsewhere";
+
+  // The selector proves the refetch happened at all, so a failure on the line
+  // below is the popover not repainting rather than nothing having arrived.
+  await expect(page.locator("#projsel-label")).toHaveText(
+    "AA · Alpha Project Renamed Elsewhere",
+  );
+  await expect(page.locator("#drafts-subject")).toHaveText(
+    "AA · Alpha Project Renamed Elsewhere",
   );
 });
