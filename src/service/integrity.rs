@@ -108,13 +108,20 @@ impl<'a, S: Store> IntegrityService<'a, S> {
         Ok(self.ctx.store().read(|tx| {
             let states = tx.states(project)?;
             let mut findings = catalog_issues(&states, &tx.types(project)?);
-            findings.extend(story_issues(tx, project)?);
 
             // The oracle the legacy read model never had, asked once. On a
             // healthy project it contributes nothing, which is why adding it
             // did not move a single byte of `doctor`'s existing output.
+            //
+            // Asked **before** the story checks since SH-286, though still
+            // exactly once: it is the thing that says which rows those checks
+            // may believe. The order is the whole of the plumbing — no second
+            // fold, no second transaction, no new store query.
             let drift = diff(tx, project)?;
             let prefix = project_prefix(tx, project)?;
+            let unattested = rendered_ids(&drift.unattested(), &prefix);
+
+            findings.extend(story_issues(tx, project, &unattested)?);
             findings.extend(drift_issues(&drift, &prefix));
 
             let mut notices = notice_issues(&drift, &prefix);
@@ -318,6 +325,15 @@ impl<'a, S: Store> IntegrityService<'a, S> {
         // is where the project already answered for it.
         let (touched, blocked, prefix) = self.ctx.store().write(|tx| {
             let prefix = project_prefix(&*tx, project)?;
+            // What the repair above could *not* put right, which is what the
+            // pass below may not believe (SH-286). Read from the report the
+            // repair just returned rather than from a fresh diff — that would
+            // be the third fold SH-267 removed — and from `unattested()` rather
+            // than from `repaired` whole, because `repaired` is the damage as
+            // it stood *before* the repair. Skipping a story on the strength of
+            // that would skip the label repair on the very row this run had
+            // just restored.
+            let unattested = rendered_ids(&repair.unattested(), &prefix);
             let states = tx.state_map(project)?;
             let open = open_story_ids(&*tx, project)?;
             let mut blocked: BTreeSet<BlockedRepair> = BTreeSet::new();
@@ -328,7 +344,7 @@ impl<'a, S: Store> IntegrityService<'a, S> {
             // than the run has decisions.
             let mut pending: BTreeMap<String, Vec<StoryEvent>> = BTreeMap::new();
 
-            for finding in story_issues(&*tx, project)? {
+            for finding in story_issues(&*tx, project, &unattested)? {
                 let Some(planned) = plan_repair(&*tx, project, &prefix, &now, &finding)? else {
                     continue;
                 };
@@ -659,14 +675,29 @@ fn plan_repair(
             // (SH-285). The row was restored before this pass ran unless the
             // story's events will not fold, and an unfoldable story is still a
             // story: its inbound edges are valid and retracting them would
-            // destroy correct data. So the report's answer is overruled here
-            // and the finding is left standing, for the operator to act on
-            // alongside the fold failure that explains it. Report and `--fix`
-            // therefore still disagree about this one code — that residual is
-            // SH-286, deferred deliberately, and it is the only place the two
-            // halves are allowed to differ.
+            // destroy correct data.
+            //
+            // **This used to overrule the report, and now it contradicts it**
+            // (SH-286). Between SH-285 and SH-286 the probe answered the
+            // existence question a second time and silently declined a repair
+            // the report had promised — two authorities for one question, which
+            // is the SH-273 shape every defect in this family had. The report
+            // resolves it now, from the same events, and never raises this
+            // finding for a story it can see is there. So reaching here with an
+            // endpoint that has events is not damage in the store, it is this
+            // build's report and its repair table disagreeing.
+            //
+            // The probe stays anyway, and stays here, because what is on the
+            // other side of it is an irreversible append that destroys correct
+            // data. It is no longer a second authority: it decides nothing
+            // except whether to fail loudly, in the style of [`incomplete`].
             if endpoint_exists(tx, project, prefix, other)? {
-                return Ok(None);
+                return Err(AppError::Storage(format!(
+                    "internal: `story doctor --fix` was asked to retract `{relation}` to \
+                     `{other}`, but that story has events — its report should have withheld the \
+                     finding rather than promising a repair that would destroy a valid edge: {}",
+                    finding.message
+                )));
             }
             Ok(Some(PlannedRepair {
                 destination: remedy(finding)?,
@@ -749,6 +780,11 @@ fn plan_repair(
         | FindingCode::ExtraRow
         | FindingCode::FoldFailure
         | FindingCode::UndecodableEvent
+        // And the one finding that exists *because* nothing was repairable:
+        // `UnexaminedStory` is the disclosure attached to a story whose row the
+        // events do not vouch for (SH-286), so a repair derived from that row
+        // is the fabrication the disclosure exists to refuse.
+        | FindingCode::UnexaminedStory
         | FindingCode::Unstructured => Ok(None),
     }
 }
@@ -881,7 +917,11 @@ fn catalog_issues(states: &[StateDef], types: &[TypeDef]) -> Vec<Finding> {
 /// two halves computing the predicate separately and disagreeing. A filter
 /// added here now applies to both by construction, which is precisely what
 /// SH-268 found was not true of the one deleted above.
-fn story_issues(tx: &impl ReadOps, project: ProjectId) -> Result<Vec<Finding>, AppError> {
+fn story_issues(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    unattested: &BTreeSet<String>,
+) -> Result<Vec<Finding>, AppError> {
     let types: BTreeSet<String> = tx
         .types(project)?
         .into_iter()
@@ -889,10 +929,18 @@ fn story_issues(tx: &impl ReadOps, project: ProjectId) -> Result<Vec<Finding>, A
         .collect();
 
     let stories = story_map(tx, project)?;
-    let mut by_story = compute_integrity_issues(&stories);
+    let mut by_story = compute_integrity_issues(&stories, unattested);
 
     let mut issues = Vec::new();
     for story in stories.values() {
+        // Rule 3 of [`compute_integrity_issues`], applied to the two checks
+        // that live here rather than there: a row the events do not vouch for
+        // answers no question about its own labels or its own type either.
+        // Nothing is dropped by skipping ahead of the `remove` below — that
+        // function never keys a finding on an unattested id.
+        if unattested.contains(&story.id) {
+            continue;
+        }
         // Sorted and deduplicated by sentence, which is what `story_views`
         // did to `flagged_reasons` before this read the checks directly — the
         // report's byte order is part of its golden snapshot.
@@ -942,7 +990,29 @@ fn story_issues(tx: &impl ReadOps, project: ProjectId) -> Result<Vec<Finding>, A
             );
         }
     }
+
+    // The disclosure the three suppression rules are conditional on (SH-286).
+    // Appended after the per-story pass rather than woven into it because most
+    // of this set has no row to be reached at, and one order for all of them
+    // beats two.
+    issues.extend(unattested.iter().map(|id| {
+        Finding::new(
+            FindingCode::UnexaminedStory,
+            format!(
+                "{id}: not examined — the events do not vouch for its read-model row, so its own \
+                 label, type, parent and cycle checks were skipped, and no edge naming it was \
+                 called dangling or one-sided. The finding naming the damage itself is elsewhere \
+                 in this report"
+            ),
+        )
+        .about(id)
+    }));
     Ok(issues)
+}
+
+/// A set of story numbers as the ids a report prints (SH-269).
+fn rendered_ids(stories: &BTreeSet<StoryNo>, prefix: &str) -> BTreeSet<String> {
+    stories.iter().map(|story| story.to_id(prefix)).collect()
 }
 
 /// The read-model drift a doctor report adds to the story-level findings.
@@ -1175,16 +1245,16 @@ fn blocked_repairs_detail(blocked: &BTreeSet<BlockedRepair>) -> String {
 /// Whether this project holds any events for the story `id` names.
 ///
 /// "Does this story exist?" asked of the authority rather than of the cache
-/// (SH-285). [`all_stories`] answers from the `stories` table, which is a fold
+/// (SH-285). The story map answers from the `stories` table, which is a fold
 /// of the events and can be missing a row the events fully support — so a
 /// **valid** edge naming that story read as dangling, and
 /// [`IntegrityService::repair`] retracted it. The events cannot be missing in
 /// that way: they are the thing a row is derived from.
 ///
-/// This is asked only of an endpoint [`all_stories`] could not find, and it is
+/// This is asked only of an endpoint the story map could not find, and it is
 /// an indexed `MAX(seq)` probe against the events table's primary key rather
 /// than a fold, so it costs a lookup on a path that was already the unusual
-/// one.
+/// one. On a healthy project it is never asked at all.
 ///
 /// An id no [`StoryNo`] can be parsed out of answers **false**: it names no
 /// story in this project, so there is nothing to look up and nothing to
@@ -1193,7 +1263,7 @@ fn blocked_repairs_detail(blocked: &BTreeSet<BlockedRepair>) -> String {
 /// and refuses the row outright, so no snapshot reaching this function can
 /// carry one. Raising instead would turn a malformed id into a failure of the
 /// whole repair run, which is the wrong answer to bad data.
-fn endpoint_exists(
+pub(super) fn endpoint_exists(
     tx: &impl ReadOps,
     project: ProjectId,
     prefix: &str,
@@ -1203,6 +1273,51 @@ fn endpoint_exists(
         return Ok(false);
     };
     Ok(tx.head_seq(project, story)?.get() > 0)
+}
+
+/// The ids `stories` names by a relation, does not contain, and this project
+/// nonetheless holds events for — `story_views`' share of SH-286's rule.
+///
+/// A **strict subset** of the set `story doctor` uses, and deliberately so.
+/// `story doctor` derives its set from a whole-project diff it already pays for
+/// ([`crate::store::ReadModelDiff::unattested`]); `story_views` runs on every
+/// `story list`, `show`, `next` and `summary`, and charging each of those a
+/// project-wide fold — or even an index scan of every story that has events —
+/// to catch a fault the doctor exists to report would be paying on the healthy
+/// path for the damaged one.
+///
+/// So this asks the narrower question that costs nothing when nothing is wrong:
+/// only an endpoint some story's relation *names* and the map cannot show is a
+/// candidate, and on a healthy project there are none, so not a single probe
+/// runs and not even the project's prefix is read. What it can miss relative to
+/// the doctor — an unattested story with a row, or one nothing points at — is
+/// only ever a `flagged_reasons` entry the doctor would also have suppressed, so
+/// `story show` may over-report against `story doctor` and can never
+/// under-report. `tests/service_integrity.rs::story_views_never_flags_an_edge_
+/// the_doctor_would_withhold` pins the direction.
+pub(super) fn unattested_endpoints(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    stories: &BTreeMap<String, crate::domain::StorySnapshot>,
+) -> Result<BTreeSet<String>, AppError> {
+    let candidates: BTreeSet<&str> = stories
+        .values()
+        .flat_map(|story| story.relationships.iter())
+        .map(|relation| relation.other_id.as_str())
+        .filter(|other| !stories.contains_key(*other))
+        .collect();
+    if candidates.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+
+    let prefix = project_prefix(tx, project)?;
+    let mut unattested = BTreeSet::new();
+    for candidate in candidates {
+        if endpoint_exists(tx, project, &prefix, candidate)? {
+            unattested.insert(candidate.to_string());
+        }
+    }
+    Ok(unattested)
 }
 
 /// The ids of the project's unarchived stories.
