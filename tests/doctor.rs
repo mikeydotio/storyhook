@@ -156,6 +156,43 @@ fn doctor_fix_names_the_closed_story_whose_repair_it_declined() {
     );
 }
 
+/// SH-285, at the CLI: `--fix` must not retract a **valid** relation because
+/// the far end's read-model row is missing.
+///
+/// The service-level tests pin the mechanisms; this pins the thing an operator
+/// actually experiences — that a `story doctor --fix` over a store holding
+/// nothing worse than a rebuildable cache miss exits zero and leaves the
+/// project whole, rather than exiting zero having destroyed an edge and then
+/// reporting the asymmetry it had just created. `story doctor --fix` is
+/// precisely what is run against an already-damaged store, so the trigger and
+/// the audience coincide.
+#[test]
+fn doctor_fix_keeps_a_valid_relation_whose_far_end_lost_its_row() {
+    let env = TestEnv::shared();
+    let project = env.project().seed_story("A").seed_story("B").build();
+    let store = project.open_store();
+    let id = project.project_id(&store);
+
+    project.run(&["relate", "SH-1", "blocks", "SH-2"]).success();
+
+    storyhook::store::test_support::forget_read_model_row(
+        &store,
+        id,
+        project.story_no(&store, "SH-2"),
+    )
+    .expect("forgetting a read-model row");
+
+    project
+        .run(&["doctor", "--fix"])
+        .success()
+        .stdout(contains("doctor repaired supported integrity issues"));
+    project.run(&["doctor"]).success();
+    project
+        .run(&["show", "SH-1"])
+        .success()
+        .stdout(contains("blocks SH-2"));
+}
+
 #[test]
 fn doctor_flags_a_story_type_the_catalog_does_not_define() {
     let env = TestEnv::shared();
