@@ -677,16 +677,12 @@ pub fn dispatch<S: Store>(
                     // computed about *this* project — nor, on the healthy path,
                     // hide a failed store-wide write behind exit 0.
                     if outcome.findings.is_empty() {
-                        return Err(error.with_context(&outcome.message()));
+                        return Err(error.with_context(&format!(
+                            "{}\n\n{SWEEP_INCOMPLETE}.\n\n{SWEEP_ATOMICITY}",
+                            outcome.message()
+                        )));
                     }
-                    // Deliberately vague about what did land: `register_found_
-                    // origins` commits one registration per transaction, so a
-                    // mid-loop failure leaves some written and returns none of
-                    // them (SH-275). Claiming a count here would be inventing
-                    // one.
-                    outcome
-                        .advice
-                        .push(format!("the catalog sweep did not complete: {error}"));
+                    outcome.advice.push(catalog_sweep_failure(&error));
                 }
                 outcome.verdict().map(Response::Message)
             } else {
@@ -3592,6 +3588,12 @@ fn is_project_less(invocation: &Invocation) -> bool {
 /// cannot discard the first half's account of a write that already landed.
 /// That is also why `advice` is `&mut` rather than a return value.
 ///
+/// **Each half is one transaction** (SH-275), which is what makes that account
+/// complete rather than merely prompt: a half either landed everything it
+/// reports or nothing at all, so the entry above a failure is true of the store
+/// and the failure needs no count of its own. What it cannot say is *which* of
+/// the two the failing half left — see [`SWEEP_ATOMICITY`].
+///
 /// Store-wide, unlike the per-project repair that runs before it
 /// ([`crate::service::CatalogService`] is deliberately not `Ctx`-shaped), which
 /// is why its outcome must not be gated on one project's health — SH-270.
@@ -3602,6 +3604,34 @@ fn is_project_less(invocation: &Invocation) -> bool {
 /// would quote a pre-repair count.
 ///
 /// [`orphaned`]: crate::service::CatalogService::orphaned
+/// What `story doctor --fix` says when a half of the sweep failed.
+const SWEEP_INCOMPLETE: &str = "the catalog sweep did not complete";
+
+/// What it is entitled to say about the store afterwards — **and no more**.
+///
+/// It claims atomicity and a safe retry. It does **not** claim absence, and the
+/// wording is load-bearing rather than stylistic (SH-275): a failure between
+/// `COMMIT` and the acknowledgement is reachable in production — that is what
+/// [`FaultPoint::AfterCommitBeforeAck`](crate::store::FaultPoint::AfterCommitBeforeAck)
+/// models — so from here the caller **cannot know which side of the commit the
+/// failure fell on**. "Nothing was registered" would therefore be a claim this
+/// code cannot back, and would be false at exactly the moment it mattered.
+///
+/// The operator does not need the answer they cannot have, because
+/// `register_origin` and `forget_checkout` are both re-runnable: what a retry
+/// costs is one `git` probe per project.
+const SWEEP_ATOMICITY: &str = "Each half of the sweep is one transaction, so the store holds a \
+                               half's changes in full or not at all — never part of them. Which \
+                               of the two this failure left is not knowable from here and does \
+                               not need to be: re-run `story doctor --fix` to settle it, since \
+                               re-forgetting a path or re-recording an origin the store already \
+                               holds changes nothing.";
+
+/// The whole account of a failed sweep, for the advice channel.
+fn catalog_sweep_failure(error: &AppError) -> String {
+    format!("{SWEEP_INCOMPLETE}: {error}\n\n{SWEEP_ATOMICITY}")
+}
+
 fn catalog_sweep<S: Store>(
     catalog: &crate::service::CatalogService<'_, S>,
     advice: &mut Vec<String>,
@@ -4104,6 +4134,42 @@ mod registered_origins_message_tests {
                 origin: url(origin_raw),
                 holder: holder.to_string(),
             },
+        }
+    }
+
+    /// **The sentence a failed sweep is entitled to** — pinned by what it must
+    /// *not* say as much as by what it must (SH-275).
+    ///
+    /// Every wording this replaced claimed absence. All of them are false on the
+    /// path where the write committed and the acknowledgement was lost, which
+    /// `tests/service_catalog.rs::a_failure_after_a_commit_never_leaves_an_
+    /// observable_half_sweep` produces on purpose — so shipping one would be a
+    /// message a test in this repo proves wrong.
+    #[test]
+    fn a_failed_sweep_claims_atomicity_and_a_safe_retry_but_never_absence() {
+        let message = catalog_sweep_failure(&AppError::LockTimeout("database is locked".into()));
+
+        assert!(
+            message.contains("database is locked"),
+            "the underlying failure must travel with the sentence: {message}"
+        );
+        assert!(
+            message.contains("in full or not at all"),
+            "the claim it *is* entitled to make is atomicity: {message}"
+        );
+        assert!(
+            message.contains("re-run `story doctor --fix`"),
+            "and the action that settles it: {message}"
+        );
+        for absolute in [
+            "no origins were registered",
+            "nothing was registered",
+            "did not happen",
+        ] {
+            assert!(
+                !message.contains(absolute),
+                "`{absolute}` claims absence, which a lost acknowledgement makes false: {message}"
+            );
         }
     }
 
