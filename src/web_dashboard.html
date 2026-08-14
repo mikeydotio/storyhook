@@ -1596,6 +1596,20 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     pending: {},
     lastFetchAt: 0,
     fetchOk: false,
+    // The project whose `/data` has *completed* — with data, with an error
+    // status, or with no answer at all — as opposed to one still waiting on
+    // its first reply (SH-291). `fetchOk` cannot answer that question and is
+    // not a candidate: it initialises `false` and takes `false` again on
+    // every failure, so it reads identically before the first fetch and after
+    // a failed one, and a control keyed on it names an error during boot,
+    // before anything has gone wrong.
+    //
+    // A project id rather than a flag, so a reply about a project the user has
+    // left cannot answer for the one now on screen. Nulled by `selectRepo()`
+    // (a project re-opened is unanswered again, whatever its last visit
+    // ended in), written only by `markDataSettled()`, read only through
+    // `readinessNote()`.
+    fetchSettledFor: null,
     // Story id -> {handle, timer, auto} for a dispatch this tab is polling
     // (SH-50). Keyed per-story rather than one global slot, matching the
     // daemon's own support for several concurrent dispatches; a dispatch
@@ -1991,6 +2005,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       // freshness: whatever raised the floor knows a strictly newer world.
       if (xhr.status === 200 && (ticket <= boardFetchFloor || askedFor !== state.repoId)) {
         updateConnection();
+        markDataSettled(askedFor);
         return;
       }
       if (xhr.status === 200) {
@@ -2064,10 +2079,45 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         state.fetchOk = false;
       }
       updateConnection();
+      // After the branches, not before: on the success path `state.data` is
+      // already assigned by the time this runs, which is what keeps a
+      // readiness surface from repainting its "not loaded" state a beat
+      // before the loaded one lands over it.
+      markDataSettled(askedFor);
     };
-    xhr.ontimeout = function() { state.fetchOk = false; updateConnection(); };
-    xhr.onerror = function() { state.fetchOk = false; updateConnection(); };
+    xhr.ontimeout = function() { state.fetchOk = false; updateConnection(); markDataSettled(askedFor); };
+    xhr.onerror = function() { state.fetchOk = false; updateConnection(); markDataSettled(askedFor); };
     xhr.send();
+  }
+
+  /** Records that a `/data` round trip for `askedFor` has completed, which is
+   * the question `state.fetchSettledFor` exists to answer — see its own
+   * comment for why `state.fetchOk` cannot.
+   *
+   * Called from every terminal outcome in `fetchData()`, the discarded
+   * below-the-floor 200 included: that reply completed too, and whatever
+   * raised the floor has already set `state.data`, so recording it can never
+   * turn a loaded project back into an unloaded one.
+   *
+   * Ignores a reply about a project the user has left, for the reason
+   * `fetchData()`'s own success path does — it describes a board nobody is
+   * looking at, and a failure over there says nothing about the project on
+   * screen.
+   *
+   * Repaints on the transition, and only on it. The failure edge has no other
+   * repaint at all: `renderAll()` early-returns while `state.data` is null, so
+   * without this nothing takes the loading line off screen and the surfaces
+   * keyed on this flag would keep saying "Loading" until some later render ran
+   * for an unrelated reason. Repainting on *every* completed fetch instead
+   * would rebuild an open popover's rows every 25s for nothing. The one
+   * redundant pass is the arrival edge, where `renderAll()` has just run: both
+   * calls are idempotent, and paying for it here is cheaper than a second rule
+   * about which edge this is. */
+  function markDataSettled(askedFor) {
+    if (askedFor !== state.repoId || state.fetchSettledFor === askedFor) return;
+    state.fetchSettledFor = askedFor;
+    updateDraftsButton();
+    syncCreateAvailability();
   }
 
   /** Drops any carried-over `state.filter` value (SH-155) that doesn't
@@ -3217,7 +3267,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * is a council verdict, not an oversight: `story show SH-284` carries it in
    * full, including the dissent (audit trail in `.council/sh284-drafts-button-
    * pre-data-window/`, which is untracked — the story comment is the copy that
-   * survives a clone). */
+   * survives a clone).
+   *
+   * The label stays the neutral "Drafts" when that window turns out to be
+   * permanent (SH-291) — the failure is named where the user asked for these
+   * drafts, in the popover, and in `#new-story-btn`'s tooltip beside it, not
+   * in a topbar that has to hold it forever. Two reasons, both already decided
+   * elsewhere in this file: "Drafts" claims nothing, which is the exact truth
+   * about a count that is now unknown rather than merely late, and naming the
+   * failure here would put it a second time next to a connection indicator
+   * whose whole job is to say the store is not answering (SH-265's tooltip
+   * takes the same division of labour). */
   function updateDraftsButton() {
     if (state.screen !== "repo") { closeDraftsModal(); return; }
     $("drafts-btn-text").textContent = state.data
@@ -3256,6 +3316,30 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     node.hidden = text === "";
   }
 
+  /** What a control says about a project whose `/data` has not arrived: that
+   * it is still loading, or that a fetch for it has completed without data
+   * (SH-291). One sentence generator for both controls that make this claim —
+   * the Drafts popover's list and `#new-story-btn`'s tooltip — so the two
+   * cannot drift into explaining the same failure differently, which is the
+   * risk SH-284's council named when it gave those two neighbours
+   * deliberately different *behaviour* in this same window.
+   *
+   * `subject` is the control's own half of the sentence ("drafts"; "states,
+   * types and labels"), never a project name: the popover names no project at
+   * all (SH-292) and this is not the place to start doing so.
+   *
+   * "Retrying…" is a claim `pollTick()` keeps rather than a softener — the
+   * 25s safety poll re-fetches for as long as the board is on screen, and a
+   * 401 additionally opens the token modal. So the failed state is never
+   * terminal, and it is left the instant any reply parses: both call sites
+   * are keyed on `!state.data`, which no failure path assigns. */
+  function readinessNote(subject) {
+    var settled = state.repoId !== null && state.fetchSettledFor === state.repoId;
+    return settled
+      ? "Couldn't load this project's " + subject + ". Retrying…"
+      : "Loading this project's " + subject + "…";
+  }
+
   /** The "+ New" button is live only once this project's own vocabulary is
    * in hand (SH-265). `openCreateModal()` builds its State/Type/Priority
    * selects and its label suggestions once, synchronously, from `meta()` —
@@ -3263,16 +3347,21 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * fetches afterwards, so for one `/data` round trip that button would open
    * a modal holding nothing but placeholders, which never repopulate.
    * Disabling it is what makes that modal unreachable rather than merely
-   * unlikely; a failed or unauthorized load leaves it disabled on purpose —
-   * the connection indicator is what explains a store that never answered.
-   * Called from `renderScreen()` (the `state.data = null` edge) and
-   * `renderAll()` (the arrival edge); `openCreateModal()` itself re-checks
-   * `state.data` as a second line of defense, the same belt-and-braces
-   * `openProjectMenu()` already applies to `#projsel-btn`. */
+   * unlikely; a failed or unauthorized load leaves it disabled on purpose, and
+   * that is not a window but a state a project can stay in forever — so since
+   * SH-291 the tooltip says which of the two this is rather than claiming a
+   * load is still in progress indefinitely. What it never does is change the
+   * `disabled` half: a modal built from a `meta()` that never arrived is
+   * exactly as wrong after the failure is named as before.
+   * Called from `renderScreen()` (the `state.data = null` edge), `renderAll()`
+   * (the arrival edge) and `markDataSettled()` (the failure edge);
+   * `openCreateModal()` itself re-checks `state.data` as a second line of
+   * defense, the same belt-and-braces `openProjectMenu()` already applies to
+   * `#projsel-btn`. */
   function syncCreateAvailability() {
     var btn = $("new-story-btn");
     btn.disabled = !state.data;
-    btn.title = state.data ? "" : "Loading this project's states, types and labels…";
+    btn.title = state.data ? "" : readinessNote("states, types and labels");
   }
 
   /** Switches between the three top-level screens, showing/hiding the
@@ -6336,6 +6425,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     state.repoId = id;
     state.screen = "repo";
     state.data = null;
+    // Beside `state.data`, and for the same reason: this project has not
+    // answered *this* opening of it. Without the reset, a project whose last
+    // visit ended in a failed fetch would open into a named error rather than
+    // into its loading window (SH-291).
+    state.fetchSettledFor = null;
     $("search-input").value = state.filter.text;
     $("toggle-closed").checked = state.filter.showClosed;
     localStorage.setItem("storyhook.repoId", id);
@@ -7268,12 +7362,18 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * the project has actually answered. Before that there is no count to
    * report and the two cases are not the same: the old single branch said
    * "none" whenever `state.data.drafts` was empty *or* `state.data` was null,
-   * which asserted an emptiness it did not have. */
+   * which asserted an emptiness it did not have.
+   *
+   * The un-answered branch is two states rather than one, which is what
+   * `readinessNote()` is for (SH-291): a project still inside its first `/data`
+   * round trip, and a project whose `/data` has completed without data and
+   * will keep doing so until whatever is wrong is fixed. Both are `!state.data`
+   * and only one of them is loading. */
   function renderDraftsList() {
     var list = $("drafts-list");
     clear(list);
     if (!state.data) {
-      list.appendChild(el("li", { class: "drafts-list-empty" }, ["Loading drafts…"]));
+      list.appendChild(el("li", { class: "drafts-list-empty" }, [readinessNote("drafts")]));
       return;
     }
     var drafts = state.data.drafts || [];
