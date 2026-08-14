@@ -1891,6 +1891,88 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     node.focus();
   }
 
+  /** How long a backdrop stays in the document after `.open` comes off, so
+   * its `transition: opacity 0.18s` has something to fade. Thirty
+   * milliseconds short of the full fade, which clips it at roughly a sixth
+   * of one — imperceptible, and preserved as found: SH-302 is about a write
+   * nobody cancelled, not about how long a fade runs. */
+  var BACKDROP_FADE_MS = 150;
+
+  /** The drawer's, which is the full 0.18s. Also preserved as found. */
+  var DRAWER_BACKDROP_FADE_MS = 180;
+
+  /** The one hide scheduled against each backdrop and not yet fired, keyed by
+   * backdrop element id. At most one, because both functions below drop the
+   * previous timer before doing anything else — an untracked timer is one
+   * nothing can cancel, which is the whole defect. */
+  var backdropHideTimers = {};
+
+  /** Drops any hide pending against `backdropId`, so the caller is the only
+   * thing that decides what happens to it next.
+   *
+   * Called by the close path as well as the open one, and that is not
+   * symmetry for its own sake: the shared Escape handler calls every
+   * `close*` function on every press, and `updateDraftsButton()` calls
+   * `closeDraftsModal()` on every navigation. Two of either in a row would
+   * otherwise leave two timers running against one backdrop, only the later
+   * of which is in the table — and a reopen that cancels only that one still
+   * gets hidden by the first. */
+  function cancelBackdropHide(backdropId) {
+    var pending = backdropHideTimers[backdropId];
+    if (pending === undefined) return;
+    clearTimeout(pending);
+    delete backdropHideTimers[backdropId];
+  }
+
+  /** Shows `backdropId` and fades it in on the next frame, cancelling any
+   * hide still pending against it.
+   *
+   * The cancellation is the load-bearing half (SH-302). A close hides the
+   * backdrop on a timer, and that timer belongs to the close that scheduled
+   * it: reopening inside its window *undoes* that close, so the write it is
+   * still going to perform lands on a surface that is now open and leaves
+   * `<div class="backdrop open" hidden>` — invisible, unclickable, and still
+   * the thing every click on the page hits.
+   *
+   * A timer that re-reads the surface's state when it fires does not close
+   * this. That was SH-284's repair for the drafts popover, and it asks the
+   * right question of a signal that arrives late: `.open` goes on a frame
+   * after `hidden` comes off, so a timer landing inside that frame sees an
+   * open popover and reads it as closed. Ordinarily that gap is one frame
+   * against a 150ms timer, which needs the renderer blocked for most of the
+   * timer — a board's full first render on a loaded machine, which is
+   * exactly what runs in this window. Cancelling asks nothing: a pending
+   * hide belongs to a close that has been undone, and this is the function
+   * that undoes it. */
+  function showBackdrop(backdropId) {
+    cancelBackdropHide(backdropId);
+    $(backdropId).hidden = false;
+    requestAnimationFrame(function() { $(backdropId).classList.add("open"); });
+  }
+
+  /** Fades `backdropId` out and hides it once the fade has run — the inverse
+   * of {@link showBackdrop}, and the only place a backdrop is hidden.
+   *
+   * Deliberately does not cancel a fade-in frame {@link showBackdrop} may
+   * have left queued. That frame only adds `.open`, and `[hidden]` is
+   * `display: none !important` in this file, so the class lands on an
+   * element nobody can see or click; all it costs is the *next* open's
+   * fade-in, which starts at full opacity instead. The two states are not
+   * each other's mirror — a hidden backdrop under an *open* overlay kills
+   * the click-outside gesture and undims the surface, which is the defect
+   * this pair exists for, and a stale class under a closed one is inert.
+   *
+   * `fadeMs` defaults to {@link BACKDROP_FADE_MS}. Callers pass their own
+   * only where the surface has always used a different one. */
+  function hideBackdrop(backdropId, fadeMs) {
+    cancelBackdropHide(backdropId);
+    $(backdropId).classList.remove("open");
+    backdropHideTimers[backdropId] = setTimeout(function() {
+      delete backdropHideTimers[backdropId];
+      $(backdropId).hidden = true;
+    }, fadeMs === undefined ? BACKDROP_FADE_MS : fadeMs);
+  }
+
   // ============================================================
   // API
   // ============================================================
@@ -2328,21 +2410,19 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     tokenModalCancelCallback = onCancelled || null;
     $("token-input").value = "";
     $("token-error").textContent = "";
-    $("token-modal-backdrop").hidden = false;
+    showBackdrop("token-modal-backdrop");
     activateOverlay("token-modal", "token-input");
     requestAnimationFrame(function() {
-      $("token-modal-backdrop").classList.add("open");
       $("token-modal").classList.add("open");
       $("token-modal").setAttribute("aria-hidden", "false");
     });
   }
 
   function closeTokenModal() {
-    $("token-modal-backdrop").classList.remove("open");
+    hideBackdrop("token-modal-backdrop");
     $("token-modal").classList.remove("open");
     $("token-modal").setAttribute("aria-hidden", "true");
     releaseOverlay("token-modal");
-    setTimeout(function() { $("token-modal-backdrop").hidden = true; }, 150);
     tokenModalCallback = null;
   }
 
@@ -4389,21 +4469,19 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function openDropBlockedReasonModal(id) {
     dropBlockedReasonMoveId = id;
     $("drop-blocked-reason-input").value = "";
-    $("drop-blocked-reason-backdrop").hidden = false;
+    showBackdrop("drop-blocked-reason-backdrop");
     activateOverlay("drop-blocked-reason-modal", "drop-blocked-reason-input");
     requestAnimationFrame(function() {
-      $("drop-blocked-reason-backdrop").classList.add("open");
       $("drop-blocked-reason-modal").classList.add("open");
       $("drop-blocked-reason-modal").setAttribute("aria-hidden", "false");
     });
   }
 
   function closeDropBlockedReasonModal() {
-    $("drop-blocked-reason-backdrop").classList.remove("open");
+    hideBackdrop("drop-blocked-reason-backdrop");
     $("drop-blocked-reason-modal").classList.remove("open");
     $("drop-blocked-reason-modal").setAttribute("aria-hidden", "true");
     releaseOverlay("drop-blocked-reason-modal");
-    setTimeout(function() { $("drop-blocked-reason-backdrop").hidden = true; }, 150);
   }
 
   /** Completes the drag into Blocked either way. `reason` is optional —
@@ -5544,8 +5622,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     clearPendingRelation();
     $("drawer").classList.add("open");
     $("drawer").setAttribute("aria-hidden", "false");
-    $("drawer-backdrop").hidden = false;
-    requestAnimationFrame(function() { $("drawer-backdrop").classList.add("open"); });
+    showBackdrop("drawer-backdrop");
     activateOverlay("drawer");
     renderDrawer();
     syncUrl();
@@ -5564,9 +5641,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     clearPendingRelation();
     $("drawer").classList.remove("open");
     $("drawer").setAttribute("aria-hidden", "true");
-    $("drawer-backdrop").classList.remove("open");
+    // This used to re-check `state.drawerId` when the timer fired — the one
+    // such guard in the file that was sound, since `openDrawer()` sets that
+    // variable synchronously. Dropped rather than kept: `showBackdrop()`
+    // cancels the timer outright, so a second way of saying the same thing
+    // is only a second thing to keep true (SH-302).
+    hideBackdrop("drawer-backdrop", DRAWER_BACKDROP_FADE_MS);
     releaseOverlay("drawer");
-    setTimeout(function() { if (!state.drawerId) $("drawer-backdrop").hidden = true; }, 180);
     syncUrl();
   }
 
@@ -7177,10 +7258,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     createLabelCombobox = buildLabelCombobox((story && story.labels) || [], m.labels || []);
     labelsField.appendChild(createLabelCombobox.element);
 
-    $("modal-backdrop").hidden = false;
+    showBackdrop("modal-backdrop");
     activateOverlay("create-modal", "create-title");
     requestAnimationFrame(function() {
-      $("modal-backdrop").classList.add("open");
       $("create-modal").classList.add("open");
       $("create-modal").setAttribute("aria-hidden", "false");
     });
@@ -7188,11 +7268,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   function closeCreateModal() {
     editingDraft = null;
-    $("modal-backdrop").classList.remove("open");
+    hideBackdrop("modal-backdrop");
     $("create-modal").classList.remove("open");
     $("create-modal").setAttribute("aria-hidden", "true");
     releaseOverlay("create-modal");
-    setTimeout(function() { $("modal-backdrop").hidden = true; }, 150);
   }
 
   /** The form's current field values as a `story new`/PATCH-shaped body.
@@ -7306,43 +7385,31 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   function openDraftsModal() {
     renderDraftsList();
-    $("drafts-backdrop").hidden = false;
+    showBackdrop("drafts-backdrop");
     activateOverlay("drafts-modal");
     requestAnimationFrame(function() {
-      $("drafts-backdrop").classList.add("open");
       $("drafts-modal").classList.add("open");
       $("drafts-modal").setAttribute("aria-hidden", "false");
     });
   }
 
-  /** Closes the Drafts popover. The backdrop is hidden on a delay so the
-   * fade-out (`.backdrop` transitions `opacity` over 0.18s) has something to
-   * fade; `hidden` immediately would cut it off.
+  /** Closes the Drafts popover.
    *
-   * That delayed write re-reads the popover's state when it fires rather than
-   * trusting what was true when it was scheduled. 150ms is long
-   * enough for the popover to have been *reopened* in the meantime, and
-   * hiding the backdrop then leaves an open popover with an invisible,
-   * unclickable one behind it — visible in the DOM as
-   * `<div id="drafts-backdrop" class="backdrop open" hidden>`, which is
-   * exactly as contradictory as it looks.
-   *
-   * Two callers make that reachable, and neither checks whether anything is
-   * open first: the Escape handler, which has always called this on every
+   * This is the surface the stale-hide defect was found on, twice (SH-284,
+   * SH-302), because it is the one with callers that close it when it was
+   * never open: the Escape handler, which has always called this on every
    * press, and `updateDraftsButton()`, which since SH-284 calls it on every
    * navigation to a non-repo screen — including the `renderScreen()` at
-   * module init. So an ordinary page load now schedules one of these before
-   * the user has done anything, and the window is only 150ms wide but sits
-   * exactly where a user reaching for the button lands. */
+   * module init. So an ordinary page load schedules one of these before the
+   * user has done anything, and the window it opens sits exactly where a
+   * user reaching for the Drafts button lands. Both halves of the repair are
+   * in {@link showBackdrop} and {@link hideBackdrop} now, so nothing here
+   * has to know that. */
   function closeDraftsModal() {
-    $("drafts-backdrop").classList.remove("open");
+    hideBackdrop("drafts-backdrop");
     $("drafts-modal").classList.remove("open");
     $("drafts-modal").setAttribute("aria-hidden", "true");
     releaseOverlay("drafts-modal");
-    setTimeout(function() {
-      if ($("drafts-modal").classList.contains("open")) return;
-      $("drafts-backdrop").hidden = true;
-    }, 150);
   }
 
   /** Populates the Drafts popover's row list from `state.data.drafts` —
@@ -7430,21 +7497,19 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("archive-modal-error").textContent = "";
     $("archive-modal-submit").onclick = function() { submitArchiveColumn(plan.state); };
 
-    $("archive-modal-backdrop").hidden = false;
+    showBackdrop("archive-modal-backdrop");
     activateOverlay("archive-modal");
     requestAnimationFrame(function() {
-      $("archive-modal-backdrop").classList.add("open");
       $("archive-modal").classList.add("open");
       $("archive-modal").setAttribute("aria-hidden", "false");
     });
   }
 
   function closeArchiveModal() {
-    $("archive-modal-backdrop").classList.remove("open");
+    hideBackdrop("archive-modal-backdrop");
     $("archive-modal").classList.remove("open");
     $("archive-modal").setAttribute("aria-hidden", "true");
     releaseOverlay("archive-modal");
-    setTimeout(function() { $("archive-modal-backdrop").hidden = true; }, 150);
   }
 
   function submitArchiveColumn(slug) {
@@ -7476,10 +7541,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       "Delete " + id + (title ? " — " + title : "") + "? This cannot be undone.";
     $("delete-reason").value = "";
     $("delete-modal-error").textContent = "";
-    $("delete-modal-backdrop").hidden = false;
+    showBackdrop("delete-modal-backdrop");
     activateOverlay("delete-modal", "delete-reason");
     requestAnimationFrame(function() {
-      $("delete-modal-backdrop").classList.add("open");
       $("delete-modal").classList.add("open");
       $("delete-modal").setAttribute("aria-hidden", "false");
     });
@@ -7487,11 +7551,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   function closeDeleteModal() {
     deleteModalStoryId = null;
-    $("delete-modal-backdrop").classList.remove("open");
+    hideBackdrop("delete-modal-backdrop");
     $("delete-modal").classList.remove("open");
     $("delete-modal").setAttribute("aria-hidden", "true");
     releaseOverlay("delete-modal");
-    setTimeout(function() { $("delete-modal-backdrop").hidden = true; }, 150);
   }
 
   /** Submits the reason typed into the open delete modal. The reason is
