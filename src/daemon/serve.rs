@@ -283,6 +283,12 @@ where
     // *previous* daemon left behind (SH-173).
     serving.inflight.harvest_stale();
 
+    // Only in a build carrying live crash points, and only when a test asked
+    // for it — see `crash::maybe_trigger_test_panic`'s own doc for why this is
+    // the right moment (SH-287).
+    #[cfg(feature = "fault-injection")]
+    crate::daemon::crash::maybe_trigger_test_panic();
+
     // One job channel for the whole daemon, no matter how many listeners are
     // bound — a rendezvous channel, so a worker's `send` blocks until a
     // dispatcher is ready for the next job, which is what keeps at most
