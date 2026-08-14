@@ -19,7 +19,7 @@
 
 use std::path::{Path, PathBuf};
 
-use chrono::{SecondsFormat, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::Connection;
 
 use crate::store::error::StoreError;
@@ -419,6 +419,27 @@ pub(crate) fn snapshot(
     backup_dir: &Path,
     label: &str,
 ) -> Result<PathBuf, StoreError> {
+    snapshot_at(conn, backup_dir, label, Utc::now())
+}
+
+/// [`snapshot`] with the clock as a parameter.
+///
+/// The name a backup gets is a millisecond timestamp, so *the moment* is the
+/// only input that decides whether two calls collide — and a test that cannot
+/// choose it cannot state this module's central property. Two calls a
+/// millisecond apart prove nothing: they are two names, and they were two names
+/// before the collision was fixed too. `taken_at` is what lets a test put two
+/// backups in one millisecond deliberately rather than hope for it, which is
+/// the whole of SH-295: the test that claimed to guard the collision never
+/// produced one, and stayed green with the defect reinstated.
+///
+/// Production has exactly one caller — [`snapshot`], passing [`Utc::now`].
+pub(crate) fn snapshot_at(
+    conn: &Connection,
+    backup_dir: &Path,
+    label: &str,
+    taken_at: DateTime<Utc>,
+) -> Result<PathBuf, StoreError> {
     std::fs::create_dir_all(backup_dir).map_err(|e| {
         StoreError::Backup(format!(
             "could not create the backup directory {}: {e}",
@@ -426,7 +447,7 @@ pub(crate) fn snapshot(
         ))
     })?;
 
-    let stamp = Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
+    let stamp = taken_at.format("%Y%m%dT%H%M%S%.3fZ");
     let path = backup_dir.join(format!("storyhook-{stamp}-{label}.db"));
     // Written to a private name and renamed into place, never straight to
     // `path`. `VACUUM INTO` **refuses an output file that already exists**, and
@@ -567,5 +588,131 @@ mod tests {
         conn.execute_batch("PRAGMA user_version = -1").unwrap();
         let error = schema_version(&conn).unwrap_err();
         assert!(error.to_string().contains("negative"), "{error}");
+    }
+
+    /// A database with a schema, for the backup tests below.
+    fn a_database(dir: &Path) -> Connection {
+        let conn = Connection::open(dir.join("store.db")).expect("opening a database");
+        conn.execute_batch("CREATE TABLE t (x INTEGER); INSERT INTO t VALUES (1);")
+            .expect("giving it something to copy");
+        conn
+    }
+
+    /// The instant from the original bug report's error message, reused so the
+    /// two backups below are computed at one moment by construction rather than
+    /// by luck.
+    fn one_moment() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-07-29T09:22:28.049Z")
+            .expect("a valid instant")
+            .with_timezone(&Utc)
+    }
+
+    /// Asserts `path` is a copy of [`a_database`] rather than merely a file
+    /// SQLite tolerates.
+    ///
+    /// [`verify`] is not enough on its own, and that is worth stating in code:
+    /// `PRAGMA integrity_check` answers `ok` for an **empty** database, so a
+    /// backup of zero bytes passes it. A test that asks only whether the file
+    /// verifies cannot tell a backup from a file that never received one — a
+    /// failure this module produced under experiment, when a copy written to
+    /// the wrong name left the empty staging database standing in for it.
+    fn holds_the_copied_row(path: &Path) {
+        let copy = Connection::open(path).expect("reopening the backup");
+        let x: i64 = copy
+            .query_row("SELECT x FROM t", [], |row| row.get(0))
+            .expect("the backup must contain the source database's contents");
+        assert_eq!(x, 1, "the backup's contents must be the source's");
+    }
+
+    /// Names that leave no `.tmp` or dotfile behind.
+    fn leftovers(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .expect("reading the backup directory")
+            .map(|entry| {
+                entry
+                    .expect("an entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .filter(|name| name.ends_with(".tmp") || name.starts_with('.'))
+            .collect()
+    }
+
+    /// Two backups computed in one millisecond are one verified file — not one
+    /// failure, and not two files.
+    ///
+    /// This is the deterministic statement of the defect
+    /// `tests/store_backup_naming.rs` documents: a backup's name is a
+    /// millisecond timestamp handed to `VACUUM INTO`, which **refuses an output
+    /// file that already exists**, so two callers naming one file at one moment
+    /// produced one backup and one failed migration — reported through a stale
+    /// `sqlite3_errmsg` that named the wrong problem.
+    ///
+    /// **Both calls must succeed, and both must return the same path.** The
+    /// collision condition *is* a shared name: the stamp and the label are the
+    /// whole of it, so two calls that share both cannot produce two files. That
+    /// is deliberate, and it is what [`snapshot_at`]'s rename buys — the losers
+    /// are byte-equivalent copies of one database, and `daemon::backup::prune`
+    /// keeps the newest few *by name*, so distinct names for identical content
+    /// would evict real history to store duplicates.
+    ///
+    /// The test this replaces asserted the opposite — that the two paths
+    /// *differ* — and could only pass by never producing the collision it named
+    /// (SH-295). It migrated a second store between the two backups, which costs
+    /// more than a millisecond, so the names differed for a reason unrelated to
+    /// the property; with the defect reinstated it stayed green. Had it ever met
+    /// its own premise it would have failed, because both of its backups carried
+    /// the same label too.
+    #[test]
+    fn two_backups_in_one_millisecond_collapse_to_one_verified_file() {
+        let dir = storyhook_test_support::scratch_dir();
+        let conn = a_database(dir.path());
+        let backups = dir.path().join("backups");
+
+        let first = snapshot_at(&conn, &backups, "v1", one_moment()).expect("the first backup");
+        let second = snapshot_at(&conn, &backups, "v1", one_moment())
+            .expect("the second backup, whose name the first already holds");
+
+        assert_eq!(
+            first, second,
+            "one stamp and one label are one name, so the second backup renames \
+             over the first rather than becoming a second file"
+        );
+        assert!(first.exists(), "the surviving backup must be on disk");
+        verify(&first).expect("and must still be a sound database");
+        holds_the_copied_row(&first);
+        assert!(
+            leftovers(&backups).is_empty(),
+            "no staging file may survive either call: {:?}",
+            leftovers(&backups)
+        );
+    }
+
+    /// The label is part of the name, so two *different* backups taken at one
+    /// instant are two files.
+    ///
+    /// The other half of the naming contract [`snapshot`] documents: one
+    /// directory holds both pre-migration backups and the daemon's daily
+    /// snapshots, and an operator must be able to tell which is which. Without
+    /// this, a collapse into one file — the property above — could be satisfied
+    /// by ignoring the label entirely.
+    #[test]
+    fn two_labels_at_one_instant_are_two_files() {
+        let dir = storyhook_test_support::scratch_dir();
+        let conn = a_database(dir.path());
+        let backups = dir.path().join("backups");
+
+        let migration =
+            snapshot_at(&conn, &backups, "v1", one_moment()).expect("the pre-migration backup");
+        let daily =
+            snapshot_at(&conn, &backups, "snapshot", one_moment()).expect("the daily snapshot");
+
+        assert_ne!(
+            migration, daily,
+            "backups taken for different reasons must not overwrite each other"
+        );
+        holds_the_copied_row(&migration);
+        holds_the_copied_row(&daily);
     }
 }
