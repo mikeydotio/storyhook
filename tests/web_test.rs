@@ -1304,6 +1304,78 @@ fn a_catalog_refresh_repaints_the_drafts_popover_not_only_the_topbar() {
     );
 }
 
+/// The dashboard's `<script>` block, so a text-literal assertion below
+/// cannot accidentally match the same words inside the markup that precedes
+/// it -- the topbar's own bootstrap placeholders (`#projsel-label`,
+/// `#subtitle`) read "Loading…" in the HTML itself, replaced the instant the
+/// script runs, and are not part of the readiness logic this scopes to.
+fn script(body: &str) -> &str {
+    let start = body
+        .find("<script>")
+        .expect("dashboard has a <script> block")
+        + "<script>".len();
+    let end = body[start..]
+        .find("</script>")
+        .expect("the <script> block closes");
+    &body[start..start + end]
+}
+
+/// Every "Loading…" and "Couldn't load…" sentence in the dashboard's script
+/// comes from `readinessNote()`, never a hand-written literal (SH-301,
+/// SH-291).
+///
+/// A readiness sentence written by hand cannot tell "not yet" from "not at
+/// all" -- that distinction is the entire point of `readinessNote()`'s
+/// `failed` parameter, and it is only kept honest for every fetch at once by
+/// there being exactly one place that spells the words. `renderHome()`'s own
+/// permanent "No projects yet." (SH-301's defect) and `renderStatuses()`'s
+/// own permanent "Loading…" (SH-291's, one fetch over) were both a literal
+/// string sitting where a settled check belonged; this fails the same way
+/// either one would return.
+///
+/// Comment lines (trimmed to start with `*` or `//`) are exempt -- several
+/// doc comments *name* "Loading…" while explaining the function that used to
+/// hard-code it, and are not a second source of the sentence.
+#[test]
+fn every_loading_line_comes_from_the_one_generator() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let script = script(&body);
+
+    let fn_start = script
+        .find("function readinessNote(subject, failed) {")
+        .expect("readinessNote(subject, failed) must exist with this exact signature");
+    let close = "\n  }\n";
+    let fn_end = fn_start
+        + script[fn_start..]
+            .find(close)
+            .expect("readinessNote's closing brace")
+        + close.len();
+
+    for needle in ["Loading", "Couldn't load"] {
+        for (at, _) in script.match_indices(needle) {
+            let line_start = script[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let line = script[line_start..].lines().next().unwrap_or("");
+            if line.trim_start().starts_with('*') || line.trim_start().starts_with("//") {
+                continue;
+            }
+            assert!(
+                at >= fn_start && at < fn_end,
+                "a bare {needle:?} literal outside readinessNote() at script byte {at}: {line:?} \
+                 -- every readiness sentence must be generated, not hand-written, so \"not yet\" \
+                 and \"not at all\" cannot drift apart on one fetch while staying fixed on another"
+            );
+        }
+    }
+}
+
 /// The dashboard's `<style>` block, so a selector assertion below cannot
 /// accidentally match the same text in the markup that follows it --
 /// `.search-input` names both a CSS rule and a `class="search-input"`
