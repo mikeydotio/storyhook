@@ -413,17 +413,62 @@ fn apply(conn: &Connection, migration: &Migration) -> Result<bool, StoreError> {
     }
 }
 
+/// Whether two copies taken in the same millisecond under the same label are
+/// one file or two.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Naming {
+    /// One file: the second copy renames over the first.
+    ///
+    /// Correct precisely when the losers are byte-equivalent — two copies of
+    /// one database at one version, which is every backup no write is waiting
+    /// on. [`crate::daemon::backup::prune`] keeps the newest few *by name*, so
+    /// giving identical content distinct names would evict real history in
+    /// order to store duplicates (SH-295).
+    Collapsing,
+    /// Two files.
+    ///
+    /// Correct when the copies are of *different* states — which is what a
+    /// coupled copy is. [`crate::store::Store::write_with_snapshot`] takes one
+    /// per write, so two runs in one millisecond hold the state before the
+    /// first rewrite and the state after it. Collapsing those keeps the wrong
+    /// one: the survivor already contains the rewrite an operator is trying to
+    /// get back from, and the true "before" is gone (SH-297).
+    ///
+    /// The retention argument above does not apply here. Coupled copies are
+    /// written to [`crate::env::Environment::maintenance_backups_dir`], which
+    /// the daily prune never scans.
+    PerRun,
+}
+
 /// Takes a consistent copy of the database and verifies it opens and passes
 /// `PRAGMA integrity_check`.
 ///
 /// `label` distinguishes what the copy is *for*, so a directory holding both
 /// pre-migration backups and daily snapshots still says which is which.
+///
+/// Two of these taken in one millisecond under one label are deliberately one
+/// file — see [`Naming::Collapsing`]. A copy some write depends on wants
+/// [`snapshot_coupled`] instead.
 pub(crate) fn snapshot(
     conn: &Connection,
     backup_dir: &Path,
     label: &str,
 ) -> Result<PathBuf, StoreError> {
-    snapshot_at(conn, backup_dir, label, Utc::now())
+    snapshot_at(conn, backup_dir, label, Utc::now(), Naming::Collapsing)
+}
+
+/// [`snapshot`], for a copy that a particular write begins from.
+///
+/// Named per run rather than per millisecond, because two of these are two
+/// different states of the database and both have to survive — see
+/// [`Naming::PerRun`]. Called only by an implementation of
+/// [`crate::store::Store::write_with_snapshot`].
+pub(crate) fn snapshot_coupled(
+    conn: &Connection,
+    backup_dir: &Path,
+    label: &str,
+) -> Result<PathBuf, StoreError> {
+    snapshot_at(conn, backup_dir, label, Utc::now(), Naming::PerRun)
 }
 
 /// [`snapshot`] with the clock as a parameter.
@@ -437,12 +482,14 @@ pub(crate) fn snapshot(
 /// the whole of SH-295: the test that claimed to guard the collision never
 /// produced one, and stayed green with the defect reinstated.
 ///
-/// Production has exactly one caller — [`snapshot`], passing [`Utc::now`].
+/// Production has two callers — [`snapshot`] and [`snapshot_coupled`], each
+/// passing [`Utc::now`] and its own [`Naming`].
 pub(crate) fn snapshot_at(
     conn: &Connection,
     backup_dir: &Path,
     label: &str,
     taken_at: DateTime<Utc>,
+    naming: Naming,
 ) -> Result<PathBuf, StoreError> {
     std::fs::create_dir_all(backup_dir).map_err(|e| {
         StoreError::Backup(format!(
@@ -452,24 +499,33 @@ pub(crate) fn snapshot_at(
     })?;
 
     let stamp = taken_at.format("%Y%m%dT%H%M%S%.3fZ");
-    let path = backup_dir.join(format!("storyhook-{stamp}-{label}.db"));
-    // Written to a private name and renamed into place, never straight to
-    // `path`. `VACUUM INTO` **refuses an output file that already exists**, and
-    // the name is a millisecond timestamp, so every process upgrading one store
-    // at one moment computes the same one — eight of them racing produce one
-    // backup and seven failed migrations. Worse, SQLite reports the collision
-    // through a stale `sqlite3_errmsg` ("table schema_migrations already
-    // exists"), which names the wrong problem entirely.
-    //
-    // The staging name carries the process id and a per-process counter, so it
-    // is unique across processes *and* threads. The rename is atomic and
-    // last-writer-wins: the losers are byte-equivalent snapshots of the same
-    // database at the same version, so which one survives does not matter.
-    let staging = backup_dir.join(format!(
-        ".storyhook-{stamp}-{label}-{}-{}.tmp",
+    // Unique across processes *and* threads: a process id, and a counter for
+    // the two threads of one process that can reach here in the same
+    // millisecond.
+    let run = format!(
+        "{}-{}",
         std::process::id(),
         STAGING_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
+    );
+    let path = match naming {
+        Naming::Collapsing => backup_dir.join(format!("storyhook-{stamp}-{label}.db")),
+        Naming::PerRun => backup_dir.join(format!("storyhook-{stamp}-{label}-{run}.db")),
+    };
+    // Written to a private name and renamed into place, never straight to
+    // `path`. `VACUUM INTO` **refuses an output file that already exists**, and
+    // a `Collapsing` name is a millisecond timestamp, so every process upgrading
+    // one store at one moment computes the same one — eight of them racing
+    // produce one backup and seven failed migrations. Worse, SQLite reports the
+    // collision through a stale `sqlite3_errmsg` ("table schema_migrations
+    // already exists"), which names the wrong problem entirely.
+    //
+    // The staging name always carries `run`, so it is private to this call
+    // whichever naming the final file uses. Under `Collapsing` the rename is
+    // atomic and last-writer-wins, and the losers are byte-equivalent snapshots
+    // of the same database at the same version, so which one survives does not
+    // matter; under `PerRun` there is no loser, because no two calls compute
+    // the same final name.
+    let staging = backup_dir.join(format!(".storyhook-{stamp}-{label}-{run}.tmp"));
 
     // `VACUUM INTO` goes through SQLite, so it sees a consistent snapshot
     // including anything still in the write-ahead log. `fs::copy` does not.
@@ -714,8 +770,9 @@ mod tests {
         let conn = a_database(dir.path());
         let backups = dir.path().join("backups");
 
-        let first = snapshot_at(&conn, &backups, "v1", one_moment()).expect("the first backup");
-        let second = snapshot_at(&conn, &backups, "v1", one_moment())
+        let first = snapshot_at(&conn, &backups, "v1", one_moment(), Naming::Collapsing)
+            .expect("the first backup");
+        let second = snapshot_at(&conn, &backups, "v1", one_moment(), Naming::Collapsing)
             .expect("the second backup, whose name the first already holds");
 
         assert_eq!(
@@ -726,6 +783,50 @@ mod tests {
         assert!(first.exists(), "the surviving backup must be on disk");
         verify(&first).expect("and must still be a sound database");
         holds_the_copied_row(&first);
+        assert!(
+            leftovers(&backups).is_empty(),
+            "no staging file may survive either call: {:?}",
+            leftovers(&backups)
+        );
+    }
+
+    /// Two *coupled* copies in one millisecond are two files, because they are
+    /// copies of two different states.
+    ///
+    /// The exception the property above is built on. Collapsing is justified
+    /// entirely by the losers being byte-equivalent, and that premise is false
+    /// the moment a copy is tied to a write: `write_with_snapshot` takes one
+    /// per write, so if two `set-prefix` runs land in one millisecond the
+    /// second copy already contains the first's rewrite. Under one name the
+    /// survivor is that second copy, and the state an operator would be trying
+    /// to get back to — before either rewrite — is gone (SH-297).
+    ///
+    /// Stated here rather than in an integration test for the reason
+    /// [`snapshot_at`]'s own doc gives: the moment decides, and only a caller
+    /// that chooses the moment can produce the collision rather than hope for
+    /// it.
+    #[test]
+    fn two_coupled_copies_in_one_millisecond_are_two_files() {
+        let dir = storyhook_test_support::scratch_dir();
+        let conn = a_database(dir.path());
+        let backups = dir.path().join("backups");
+
+        let first = snapshot_at(&conn, &backups, "set-prefix", one_moment(), Naming::PerRun)
+            .expect("the first coupled copy");
+        let second = snapshot_at(&conn, &backups, "set-prefix", one_moment(), Naming::PerRun)
+            .expect("the second coupled copy, taken in the same millisecond");
+
+        assert_ne!(
+            first, second,
+            "two copies of two different states must not share a name: the second \
+             would rename over the first, and the true 'before' state would be gone"
+        );
+        assert!(first.exists(), "the first coupled copy must survive");
+        assert!(second.exists(), "and so must the second");
+        verify(&first).expect("the first must be a sound database");
+        verify(&second).expect("and so must the second");
+        holds_the_copied_row(&first);
+        holds_the_copied_row(&second);
         assert!(
             leftovers(&backups).is_empty(),
             "no staging file may survive either call: {:?}",
@@ -747,10 +848,16 @@ mod tests {
         let conn = a_database(dir.path());
         let backups = dir.path().join("backups");
 
-        let migration =
-            snapshot_at(&conn, &backups, "v1", one_moment()).expect("the pre-migration backup");
-        let daily =
-            snapshot_at(&conn, &backups, "snapshot", one_moment()).expect("the daily snapshot");
+        let migration = snapshot_at(&conn, &backups, "v1", one_moment(), Naming::Collapsing)
+            .expect("the pre-migration backup");
+        let daily = snapshot_at(
+            &conn,
+            &backups,
+            "snapshot",
+            one_moment(),
+            Naming::Collapsing,
+        )
+        .expect("the daily snapshot");
 
         assert_ne!(
             migration, daily,

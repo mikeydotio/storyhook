@@ -565,7 +565,7 @@ impl Store for SqliteStore {
             let mut tx = SqliteWriteTx::begin(self.checkout()?)?;
             let snapshot = {
                 let conn = self.checkout()?;
-                migrate::snapshot(&conn, dir, label)?
+                migrate::snapshot_coupled(&conn, dir, label)?
             };
             // A failure below drops `tx`, which rolls back. The copy stays:
             // it is a verified copy of a state that really existed, and
