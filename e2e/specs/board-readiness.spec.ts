@@ -1,5 +1,11 @@
-import { test, expect } from "@playwright/test";
-import { openProject, projectSlug, seedToken } from "./support";
+import { test, expect, type APIRequestContext } from "@playwright/test";
+import {
+  cleanUpCreatedStories,
+  openProject,
+  projectSlug,
+  requiredEnv,
+  seedToken,
+} from "./support";
 
 /**
  * Pins SH-222's readiness rule: reaching a board means its data has arrived,
@@ -25,6 +31,46 @@ async function slowData(page: import("@playwright/test").Page): Promise<void> {
     await route.continue();
   });
 }
+
+/** The title of the draft the SH-284 tests below seed. Distinctive on
+ * purpose: `cleanUpCreatedStories` sweeps by id, but a failure message
+ * naming this string says immediately which spec left it behind. */
+const DRAFT_TITLE = "A draft the pre-data window must not miscount";
+
+/** Seeds one draft into `projectName` through the API, the way SH-284's
+ * original reproduction did — the Drafts button's whole subject is a count
+ * this project actually has, so every test below needs a real one, and
+ * driving the create modal to make it would mean acting inside the very
+ * window under test. Swept afterwards by `cleanUpCreatedStories`, whose
+ * `/data`-derived baseline already covers drafts as well as board stories.
+ *
+ * `X-Storyhook` as well as the token: a mutation has to clear
+ * `mutation_guard_ok`'s CSRF check, which a read does not.
+ */
+async function seedDraft(
+  request: APIRequestContext,
+  projectName: string,
+  title: string,
+): Promise<void> {
+  const slug = await projectSlug(request, projectName);
+  const resp = await request.post(
+    `/api/repos/${encodeURIComponent(slug)}/story`,
+    {
+      headers: {
+        "X-Storyhook": "1",
+        "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
+      },
+      data: { title, draft: true },
+    },
+  );
+  if (!resp.ok()) {
+    throw new Error(
+      `seeding a draft in "${projectName}" answered ${resp.status()}: ${await resp.text()}`,
+    );
+  }
+}
+
+cleanUpCreatedStories("Alpha Project");
 
 test("the board is visible, and empty, before its data arrives", async ({
   page,
@@ -140,4 +186,228 @@ test("the + New button is inert until the project's data arrives", async ({
 
   await page.locator("#create-discard").click();
   await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
+});
+
+/**
+ * SH-284: the Drafts button in the same window, which the council settled
+ * differently from its neighbour on purpose (`.council/sh284-drafts-button-
+ * pre-data-window/DECISION.md`).
+ *
+ * `#new-story-btn` above is *disabled* through this window because the create
+ * modal is built once, synchronously, from `meta()` and never repopulates —
+ * disabling is the only thing that makes a permanently-wrong destination
+ * unreachable. The Drafts popover has no such destination: it renders on open
+ * and re-renders on every arrival. So this button stays live, and what is fixed
+ * instead is what it *claims* — a count it does not have.
+ *
+ * Every label assertion here is exact rather than a regex, and that is
+ * load-bearing: `"Drafts"` is a suffix of `"1 Drafts"`, so `/Drafts$/` passes
+ * in both the neutral and the counted state and would go green against the
+ * unfixed code.
+ *
+ * Not asserted here, deliberately: the label at the narrow breakpoint. Under
+ * `.icon-compact-btn` the text span is hidden visually by the `.sr-only`
+ * recipe, which preserves `textContent` — that is the whole point of the recipe
+ * — so these exact-text assertions already cover the string a screen reader
+ * announces at every width. The one mobile spec that measures the topbar
+ * measures it on a board, where this button's visibility is unchanged.
+ */
+test("the Drafts button claims no count until this project's data arrives", async ({
+  page,
+  request,
+}) => {
+  await seedDraft(request, "Alpha Project", DRAFT_TITLE);
+  await seedToken(page);
+  await slowData(page);
+  // Deep-linked, like the tests above, so the window can be observed rather
+  // than waited out by `openProject()`.
+  const slug = await projectSlug(page.request, "Alpha Project");
+  await page.goto(`/?project=${encodeURIComponent(slug)}`);
+
+  await expect(page.locator("#board-view")).toBeVisible();
+  const btn = page.locator("#drafts-btn");
+  const label = page.locator("#drafts-btn-text");
+  await expect(btn).toBeVisible();
+  // The deliberate divergence from `#new-story-btn`, pinned directly: this
+  // control stays operable, because it has an honest thing to show.
+  await expect(btn).toBeEnabled();
+  // "No Drafts" here would be the specific wrong answer -- indistinguishable
+  // from an earned zero for a project that has one.
+  await expect(label).toHaveText("Drafts");
+
+  await btn.click();
+  await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
+  await expect(page.locator("#drafts-list")).toHaveText("Loading drafts…");
+  await expect(page.locator("#drafts-list")).not.toContainText(
+    "No drafts in this project.",
+  );
+
+  // The property that justifies leaving the button live: a popover opened
+  // inside the window fills itself in when the data lands, with no reopen.
+  await expect(page.locator("#drafts-list .drafts-row")).toHaveCount(1, {
+    timeout: DATA_DELAY_MS * 3,
+  });
+  await expect(page.locator("#drafts-list .drafts-row")).toContainText(
+    DRAFT_TITLE,
+  );
+  await expect(label).toHaveText("1 Drafts");
+  await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
+});
+
+test("a switch to another project carries neither the count nor the rows", async ({
+  page,
+  request,
+}) => {
+  await seedDraft(request, "Alpha Project", DRAFT_TITLE);
+  await seedToken(page);
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await expect(page.locator("#drafts-btn-text")).toHaveText("1 Drafts");
+
+  await page.locator("#drafts-btn").click();
+  await expect(page.locator("#drafts-list .drafts-row")).toHaveCount(1);
+
+  // The switch is driven by keyboard because that is the only way a real user
+  // reaches the project selector from here: `.backdrop` is `position: fixed;
+  // inset: 0` over an unpositioned topbar, so a *mouse* click on
+  // `#projsel-btn` hits the backdrop and closes the popover instead. Nothing
+  // traps focus, so Enter on the focused selector is a genuine user path --
+  // the same one `project-selector.spec.ts` drives.
+  await slowData(page);
+  await page.locator("#projsel-btn").focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#projsel-menu")).toBeVisible();
+  // Opening focuses the current project (Alpha, first in the seeded list),
+  // so one ArrowDown reaches Beta.
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+
+  // The regression this story is named for: Alpha's count must never describe
+  // Beta, not even for the one `/data` round trip Beta takes to answer.
+  //
+  // Read once, without retrying, and that is the whole point. `selectRepo()`
+  // runs synchronously on the Enter above, so this reads the very first paint
+  // of the new project's topbar. A retrying `toHaveText` cannot make this
+  // claim at all: it would poll happily through the stale value and pass on
+  // the corrected one that lands 2s later, which is exactly the defect.
+  expect(await page.locator("#drafts-btn-text").textContent()).toBe("Drafts");
+  // The council dissent's guard. `renderDraftsList()` clears the list before
+  // it branches, which is the only reason an open popover cannot show Alpha's
+  // rows inside Beta -- an ordering nothing else ties to this decision. Pinned
+  // here so a refactor that breaks it fails a test rather than a user.
+  await expect(page.locator("#drafts-list .drafts-row")).toHaveCount(0);
+  await expect(page.locator("#drafts-list")).toHaveText("Loading drafts…");
+  // Repaint, not dismissal: the popover keeps its place across a board-to-board
+  // switch, because Beta has an honest answer to repaint into. It is dismissed
+  // only where its owning button goes away -- the next test.
+  await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
+
+  // And Beta's own answer, once it arrives, is an *earned* negative -- the
+  // claim the loading line exists to stop being made prematurely.
+  await expect(page.locator("#drafts-btn-text")).toHaveText("No Drafts", {
+    timeout: DATA_DELAY_MS * 3,
+  });
+  await expect(page.locator("#drafts-list")).toHaveText(
+    "No drafts in this project.",
+  );
+});
+
+test("the Drafts button belongs to the board, and its popover does not outlive it", async ({
+  page,
+  request,
+}) => {
+  await seedDraft(request, "Alpha Project", DRAFT_TITLE);
+  await seedToken(page);
+  await page.goto("/");
+
+  // Home has no project, so there is no draft count to state. Before SH-284
+  // this button was the one topbar control `renderScreen()` never gated, so it
+  // sat here showing whatever count it last held -- or a hardcoded "No Drafts"
+  // on a fresh load, a claim about nothing at all.
+  await expect(page.locator("#drafts-btn")).toBeHidden();
+
+  await openProject(page, "Alpha Project");
+  await expect(page.locator("#drafts-btn")).toBeVisible();
+  await expect(page.locator("#drafts-btn-text")).toHaveText("1 Drafts");
+
+  await page.locator("#drafts-btn").click();
+  await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
+  await expect(page.locator("#drafts-list .drafts-row")).toHaveCount(1);
+
+  // Keyboard again, and for the same reason: the open popover's backdrop
+  // covers the topbar, so this is the path by which a user genuinely can
+  // leave the board with the popover still up. The asynchronous route --
+  // `fetchReposOnce()` calling `goHome()` when the open project is deleted by
+  // another client -- reaches the same state with no gesture at all.
+  await page.locator("#home-btn").focus();
+  await page.keyboard.press("Enter");
+
+  await expect(page.locator("#drafts-btn")).toBeHidden();
+  // The popover must not be left orphaned on a screen with no owning control
+  // and no project: its rows lead to `openCreateModal()`, whose `state.data`
+  // guard passes on data the user has navigated away from.
+  await expect(page.locator("#drafts-modal")).not.toHaveClass(/open/);
+
+  await page.locator("#settings-btn").click();
+  await expect(page.locator("#drafts-btn")).toBeHidden();
+});
+
+/**
+ * A popover opened just after a navigation must be fully operable — pinning
+ * the delayed write in `closeDraftsModal()` against the state it lands in.
+ *
+ * That function hides the backdrop on a 150ms timer, so the fade-out has
+ * something to fade. SH-284 gave it a second caller that runs on *every*
+ * navigation to a non-repo screen — including the `renderScreen()` at module
+ * init and `bootstrap()`'s own `goHome()` — so on an ordinary page load two
+ * such timers are in flight before the user has done anything. Open the
+ * popover inside that window and the timer lands on it: the backdrop takes
+ * `hidden` while the modal keeps `open`, which is invisible, unclickable, and
+ * self-inflicted. `draft-stories.spec.ts`'s outside-click test caught it as a
+ * 15s timeout on a backdrop it could see in the DOM and not click.
+ *
+ * The defect predates this story and is fixed in its own commit at the origin
+ * — `closeDraftsModal()`'s timer re-reads the popover's state when it fires,
+ * covering the Escape caller that could always reach it, which is what
+ * `draft-stories.spec.ts` pins. This test pins the other half: that the caller
+ * *this* story adds, on a path every page load takes, does not walk back into
+ * it. The origin fix and the new caller arrived together and can drift apart.
+ */
+test("a popover opened moments after a navigation is not hidden by the previous close", async ({
+  page,
+  request,
+}) => {
+  await seedDraft(request, "Alpha Project", DRAFT_TITLE);
+  await seedToken(page);
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+
+  // Home, back into the project, then open the popover -- three real clicks
+  // on three real controls, compressed into one JavaScript tick so the race
+  // is constructed rather than hoped for. Driven one Playwright action at a
+  // time this is ~150-300ms of round trips, which straddles the timer's own
+  // 150ms and makes the test pass or fail on machine speed; in one tick the
+  // timer is guaranteed to fire after the popover is open, which is the
+  // state under test. Every handler invoked here is the one a user's click
+  // invokes.
+  await page.evaluate(() => {
+    (document.getElementById("home-btn") as HTMLElement).click();
+    (document.querySelector(".repo-card-name") as HTMLElement).click();
+    (document.getElementById("drafts-btn") as HTMLElement).click();
+  });
+
+  await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
+  // Past the 150ms deliberately. Asserting immediately would pass even
+  // against the bug -- the backdrop is genuinely visible until the stale
+  // timer fires -- so the assertion has to outlive the timer to mean
+  // anything.
+  await page.waitForTimeout(250);
+  // The invariant, stated where it broke: an open popover's backdrop is
+  // never `hidden`. Asserted before the click below because `toBeVisible()`
+  // names the actual defect, where a failing click only reports a timeout.
+  await expect(page.locator("#drafts-backdrop")).toBeVisible();
+
+  // And it still dismisses the way `draft-stories.spec.ts` says it does.
+  await page.locator("#drafts-backdrop").click({ position: { x: 4, y: 4 } });
+  await expect(page.locator("#drafts-modal")).not.toHaveClass(/open/);
 });
