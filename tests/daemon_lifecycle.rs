@@ -9,8 +9,10 @@
 //! `STORYHOOK_DAEMON_ADDR=127.0.0.1:0` means none of them can bind the port a
 //! developer's own dashboard is on.
 
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
+use storyhook::daemon::crash::{self, CrashClassification};
 use storyhook::daemon::lifecycle::{self, DaemonInfo};
 use storyhook_test_support::{TestEnv, scratch_dir, story_binary};
 
@@ -585,6 +587,125 @@ fn a_daemon_does_not_outlive_the_process_that_named_itself_its_parent() {
     wait_for("the orphaned daemon to exit", || {
         !lifecycle::is_live(&env.environment())
     });
+}
+
+/// A parent-death exit is an orderly exit, not a crash, and must not look like
+/// one to the next daemon's startup crash detector (SH-287): it clears the
+/// portfile the same way the shutdown route does, rather than leaving it
+/// behind for `watch_parent`'s `std::process::exit(0)` to strand.
+#[test]
+fn a_daemon_orphaned_by_its_parent_leaves_no_portfile_behind() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let dir = scratch_dir();
+
+    let mut parent = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .expect("spawning a stand-in parent");
+    let parent_pid = parent.id();
+
+    env.story(dir.path())
+        .env("STORYHOOK_PARENT_PID", parent_pid.to_string())
+        .args(["daemon", "start"])
+        .assert()
+        .success();
+    assert!(lifecycle::is_live(&env.environment()));
+
+    parent.kill().expect("killing the stand-in parent");
+    parent.wait().expect("reaping the stand-in parent");
+
+    wait_for("the orphaned daemon to exit", || {
+        !lifecycle::is_live(&env.environment())
+    });
+    assert!(
+        !env.environment().daemon_file().exists(),
+        "an orphaned daemon's portfile must be cleared on exit, the same as an \
+         orderly shutdown's — left behind, it is indistinguishable from a crash"
+    );
+}
+
+/// **A real crash, not a simulated one.** `STORYHOOK_TEST_PANIC` makes a real
+/// `story daemon --serve` process panic on its own, after publishing its
+/// portfile — the out-of-process lever `crash::maybe_trigger_test_panic`'s own
+/// doc describes. The *next* daemon this test starts, against the same store,
+/// must classify what it finds as [`CrashClassification::Panicked`] (SH-287).
+#[test]
+fn a_daemon_that_panics_is_classified_as_panicked_on_the_next_start() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let dir = scratch_dir();
+
+    let mut panicking = env
+        .raw_story(dir.path())
+        .env("STORYHOOK_TEST_PANIC", "1")
+        .args(["daemon", "--serve", "--port", "0"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawning a daemon armed to panic");
+    let status = panicking.wait().expect("reaping the panicking daemon");
+    assert!(
+        !status.success(),
+        "a daemon that panics on its own thread must not exit successfully: {status:?}"
+    );
+    assert!(
+        env.environment().daemon_file().exists(),
+        "the portfile is published before the panic fires, so it must survive the crash"
+    );
+
+    // A fresh, ordinary daemon start — no `STORYHOOK_TEST_PANIC` on this
+    // command — is the moment SH-287's detector runs.
+    start(&env);
+
+    let ledger = crash::read_crashes(&env.environment());
+    assert_eq!(
+        ledger.len(),
+        1,
+        "exactly one crash must be ledgered: {ledger:?}"
+    );
+    assert_eq!(ledger[0].classification, CrashClassification::Panicked);
+    assert_eq!(ledger[0].panics.len(), 1);
+    assert!(
+        ledger[0].panics[0].message.contains("STORYHOOK_TEST_PANIC"),
+        "the ledgered panic must carry the real message: {:?}",
+        ledger[0].panics[0]
+    );
+}
+
+/// A daemon's log used to be truncated on every spawn, which destroyed a dead
+/// daemon's whole stderr — its panic message included — the moment the very
+/// next `story` command ran. A spawn must rotate it one deep instead, so the
+/// previous daemon's output survives long enough for `crash::harvest` to read
+/// it (SH-287).
+#[test]
+fn a_daemon_spawn_rotates_the_previous_log_instead_of_destroying_it() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+
+    let first = start(&env);
+    lifecycle::stop(&env.environment(), lifecycle::StopMode::Force).expect("stopping the first");
+
+    let second = start(&env);
+    assert_ne!(
+        first.pid, second.pid,
+        "the two starts must be different processes"
+    );
+
+    let rotated = std::fs::read_to_string(env.environment().daemon_log_rotated())
+        .expect("the previous log must have been rotated, not destroyed");
+    assert!(
+        rotated.contains(&first.pid.to_string()),
+        "the rotated log must be the *first* daemon's own output, not the \
+         second's: {rotated:?}"
+    );
+
+    let current = std::fs::read_to_string(env.environment().daemon_log())
+        .expect("the current daemon must still have a fresh log");
+    assert!(
+        current.contains(&second.pid.to_string()),
+        "the current log must be the second daemon's own startup banner: {current:?}"
+    );
 }
 
 /// **Version skew.** A daemon serving a different build must not be used, and

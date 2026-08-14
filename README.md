@@ -325,6 +325,8 @@ story migrate [<path>] [--dry-run]
 story doctor [--fix]
 story doctor abandoned
 story doctor abandoned clear (--all | <request-id>)
+story doctor crashes
+story doctor crashes clear (--all | <crash-id>)
 story hooks install
 story hooks uninstall
 story hooks list

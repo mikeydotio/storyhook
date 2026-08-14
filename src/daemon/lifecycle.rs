@@ -559,7 +559,11 @@ pub fn read_info_at(path: &Path) -> Option<DaemonInfo> {
 /// would either fail to parse it (harmless) or read a stale port beside a fresh
 /// token (not). Mode 0600 because the file carries a bearer token for a
 /// full-privilege API.
-fn write_info(env: &Environment, info: &DaemonInfo) -> Result<(), AppError> {
+///
+/// `pub(crate)` rather than private: [`crate::daemon::crash`]'s own tests use
+/// it to fabricate a residue portfile, the same fixture `stopping_clears_a_
+/// portfile_left_by_a_crashed_daemon` below builds for itself.
+pub(crate) fn write_info(env: &Environment, info: &DaemonInfo) -> Result<(), AppError> {
     std::fs::create_dir_all(env.daemon_state_dir())?;
     let final_path = env.daemon_file();
     let temp_path = final_path.with_extension("json.tmp");
@@ -694,11 +698,16 @@ pub fn bind_preferred(
 
 /// Runs the daemon in this process, until it is asked to stop.
 ///
-/// The order is the contract: take the lifetime lock (so a second daemon cannot
-/// start), bind (so the port is real), publish the portfile (so a client can
-/// find it), then serve.
+/// The order is the contract: install the panic hook (so nothing this process
+/// does from here on can panic unrecorded), take the lifetime lock (so a
+/// second daemon cannot start), harvest whatever residue that lock's previous
+/// holder left (SH-287 — the portfile still names *them*, and `write_info`
+/// below is about to overwrite it), bind (so the port is real), publish the
+/// portfile (so a client can find it), then serve.
 pub fn run<S: crate::store::Store>(store: &S, env: &Environment) -> Result<(), AppError> {
+    crate::daemon::crash::install_panic_hook(env);
     let _pidfile = claim_pidfile(env)?;
+    crate::daemon::crash::harvest(env);
     let (listeners, bound) = bind_preferred(env)?;
     let info = info_for(&bound, mint_token(), &env.now(), env.store_path())?;
     write_info(env, &info)?;
@@ -1096,6 +1105,14 @@ fn disinherit_descriptors() {
 fn spawn_child(env: &Environment) -> Result<std::process::Child, AppError> {
     let (exe, _) = current_binary()?;
     std::fs::create_dir_all(env.daemon_state_dir())?;
+    // A crash's whole stderr — the default panic output the hook in
+    // `crate::daemon::crash` chains to, and everything printed before it —
+    // lives only in this file, and this line about to `truncate(true)` it
+    // used to destroy that evidence on the very next spawn, which is usually
+    // the very next `story` command (SH-287). Rotating one deep is enough:
+    // `crash::harvest`, called from `run` a few lines below this function's
+    // caller, reads `daemon.log.1` before anything else can touch it.
+    let _ = std::fs::rename(env.daemon_log(), env.daemon_log_rotated());
     // Mode 0600, not `File::create`'s 0644: this log carries the daemon's whole
     // stderr for its whole life, and since SH-153 that can include a GitHub
     // token surfaced in a diagnostic — every other daemon file that matters is
@@ -1863,8 +1880,11 @@ pub const FORCE_GRACE: Duration = Duration::from_secs(2);
 /// and a surprise for a restart.
 pub fn stop(env: &Environment, mode: StopMode) -> Result<Option<DaemonInfo>, AppError> {
     if !is_live(env) {
-        // Nothing holds the lock. Clear a portfile left by a daemon that
-        // crashed, so `daemon status` stops describing a process that is gone.
+        // Nothing holds the lock. Harvest whatever evidence the crash left
+        // (SH-287) before clearing the portfile that names it — reading it
+        // after the file is gone reads nothing. Then clear it, so `daemon
+        // status` stops describing a process that is gone.
+        crate::daemon::crash::harvest(env);
         let _ = std::fs::remove_file(env.daemon_file());
         return Ok(None);
     }
@@ -2898,6 +2918,33 @@ mod tests {
         write_info(&env, &info).expect("writing the portfile");
         assert_eq!(stop(&env, StopMode::Force).expect("stopping"), None);
         assert!(!env.daemon_file().exists());
+    }
+
+    /// The evidence a crash left is harvested before `stop` clears the
+    /// portfile that names it, so a human running `story daemon stop` after a
+    /// crash still gets a ledger entry rather than erasing the only sign
+    /// anything happened (SH-287).
+    #[test]
+    fn stopping_a_crashed_daemon_ledgers_it_before_clearing_the_portfile() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let info = info_for(
+            &loopback_only(4321),
+            "t".to_string(),
+            "2026-01-01T00:00:00Z",
+            env.store_path(),
+        )
+        .expect("building the info");
+        write_info(&env, &info).expect("writing the portfile");
+
+        assert_eq!(stop(&env, StopMode::Force).expect("stopping"), None);
+
+        let ledgered = crate::daemon::crash::read_crashes(&env);
+        assert_eq!(ledgered.len(), 1, "stop must harvest the crash it clears");
+        assert_eq!(
+            ledgered[0].classification,
+            crate::daemon::crash::CrashClassification::UncleanExit
+        );
     }
 
     /// A record naming `command`, for the ledger tests below — otherwise

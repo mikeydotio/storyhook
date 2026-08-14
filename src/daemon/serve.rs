@@ -283,6 +283,12 @@ where
     // *previous* daemon left behind (SH-173).
     serving.inflight.harvest_stale();
 
+    // Only in a build carrying live crash points, and only when a test asked
+    // for it — see `crash::maybe_trigger_test_panic`'s own doc for why this is
+    // the right moment (SH-287).
+    #[cfg(feature = "fault-injection")]
+    crate::daemon::crash::maybe_trigger_test_panic();
+
     // One job channel for the whole daemon, no matter how many listeners are
     // bound — a rendezvous channel, so a worker's `send` blocks until a
     // dispatcher is ready for the next job, which is what keeps at most
@@ -315,7 +321,8 @@ where
         }
         {
             let stop = Arc::clone(&stop);
-            scope.spawn(move || watch_parent(&stop));
+            let env = env.clone();
+            scope.spawn(move || watch_parent(&env, &stop));
         }
         // The unattended GitHub poll (SH-212) — absent entirely without the
         // `github-sync` feature, the same way `pr_check::run_check`, the
@@ -360,6 +367,15 @@ where
         }
 
         ready();
+
+        // One-shot, not a loop like the threads above — files whatever
+        // crashes the startup harvest found, then ends. After `ready()` so a
+        // store write, however unlikely to matter, never delays this daemon
+        // answering its first request (SH-287).
+        {
+            let env = env.clone();
+            scope.spawn(move || crate::daemon::crash::file_pending(store, &env));
+        }
 
         let mut listeners = listeners;
         // The last listener is served on this thread, so `serve`'s caller
@@ -1528,7 +1544,13 @@ fn poll_change_token<S: Store>(
 /// tests and an afternoon.
 ///
 /// Production sets nothing, so nothing watches.
-fn watch_parent(stop: &AtomicBool) {
+///
+/// Clears the portfile before exiting, the same as the shutdown route
+/// (`route_job_inner`'s `Verdict::Shutdown` arm) — this is an orderly exit,
+/// not a crash, and a portfile left behind here would be indistinguishable
+/// from one a real crash left, misleading the crash detector the next daemon
+/// runs at startup (SH-287).
+fn watch_parent(env: &Environment, stop: &AtomicBool) {
     let Some(parent) = crate::daemon::lifecycle::parent_pid() else {
         return;
     };
@@ -1536,6 +1558,7 @@ fn watch_parent(stop: &AtomicBool) {
         thread::sleep(SHUTDOWN_CHECK);
         if !crate::daemon::lifecycle::pid_is_live(parent) {
             eprintln!("storyhook daemon: parent process {parent} is gone; exiting");
+            crate::daemon::lifecycle::clear_info(env);
             std::process::exit(0);
         }
     }

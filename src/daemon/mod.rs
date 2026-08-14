@@ -9,6 +9,9 @@
 //! * [`bus`] — the change feed every `/api/events` client subscribes to, fed by
 //!   the request boundary and by a `PRAGMA data_version` poller.
 //! * [`commands`] — `story daemon start|stop|status|install|uninstall|token`.
+//! * [`crash`] — the panic hook and the crash ledger: what the daemon leaves
+//!   behind when it does not exit cleanly, and what the next one does about
+//!   it (SH-287).
 //! * [`github_poll`] — the unattended background poll for merged pull
 //!   requests (SH-212), spending the credential `story github-auth login`
 //!   stored in the OS keychain. `github-sync`-gated: absent entirely from a
@@ -29,6 +32,7 @@
 pub mod backup;
 pub mod bus;
 pub mod commands;
+pub mod crash;
 #[cfg(feature = "github-sync")]
 pub mod github_poll;
 pub mod http1;
