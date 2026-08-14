@@ -12,17 +12,21 @@ import {
  * array as an *answer* rather than as "nothing has been asked yet" --
  * `renderHome()`'s "No projects yet." (with an "Add a project" call to
  * action), `projselLabelText()`'s identical claim in the header selector,
- * and `updateSubtitle()`'s "0 projects". This is the *stronger* form of
- * SH-291's bug: an unearned negative rather than an unearned "loading", the
- * exact shape SH-284 fixed one screen down. A store holding 500 projects
- * reads as an empty one, with a button offering to create a
- * fifth-hundred-and-first.
+ * and `updateSubtitle()`'s "0 projects". A fourth, `renderStatuses()`, paints
+ * an unqualified "Loading…" that never leaves if the statuses fetch never
+ * succeeds -- SH-291's own defect, one fetch over.
+ *
+ * These are the *stronger* form of SH-291's bug: an unearned negative rather
+ * than an unearned "loading", the exact shape SH-284 fixed one screen down.
+ * A store holding 500 projects reads as an empty one, with a button offering
+ * to create a fifth-hundred-and-first.
  *
  * The fix mirrors SH-291's `state.fetchSettledFor`/`markDataSettled()`/
- * `readinessNote()` machine: `state.reposReadiness` (three-valued --
- * "unasked" | "loaded" | "failed", since `repos.length === 0` is genuinely
- * ambiguous three ways), written by `markReposSettled()` at every terminal
- * outcome of `fetchReposOnce()`, read through the widened `readinessNote()`.
+ * `readinessNote()` machine: `state.reposReadiness` and
+ * `state.statusesReadiness` (three-valued -- "unasked" | "loaded" | "failed",
+ * since `repos.length === 0` is genuinely ambiguous three ways), written by
+ * `markReposSettled()`/`markStatusesSettled()` at every terminal outcome of
+ * their own fetch, read through the same widened `readinessNote()`.
  */
 
 cleanUpCreatedStories("Alpha Project");
@@ -153,4 +157,35 @@ test("an empty store still offers to add a project", async ({ page }) => {
   await expect(page.locator("#projsel-label")).toHaveText("No projects yet");
   await expect(page.locator("#projsel-btn")).toBeDisabled();
   await expect(page.locator("#projsel-btn")).toHaveAttribute("title", "");
+});
+
+test("a statuses editor whose fetch never answers names the failure", async ({
+  page,
+  request,
+}) => {
+  await seedToken(page);
+  const slug = await projectSlug(request, "Alpha Project");
+  const states = await holdUntilRefused(
+    page,
+    (url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/states`,
+  );
+  await page.goto("/");
+  await page.locator("#settings-btn").click();
+  await expect(page.locator("#settings-view")).toBeVisible();
+  await page
+    .locator(".settings-table tbody tr", { hasText: "Alpha Project" })
+    .getByRole("button", { name: "Statuses" })
+    .click();
+
+  const empty = page.locator(".status-empty");
+  await expect(page.locator(".settings-head h2")).toHaveText(
+    "Statuses · Alpha Project",
+  );
+  await expect(empty).toHaveText("Loading this project's statuses…");
+
+  states.refuse();
+
+  await expect(empty).toHaveText(
+    "Couldn't load this project's statuses. Retrying…",
+  );
 });

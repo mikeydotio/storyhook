@@ -1568,6 +1568,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     settingsRepoId: null,
     // GET /api/repos/<settingsRepoId>/states, or null before it arrives.
     statuses: null,
+    // "unasked" | "loaded" | "failed", the same three-value shape as
+    // `reposReadiness` above and for the same reason (SH-301): `statuses ===
+    // null` cannot tell "never asked" from "asked and failed". Reset to
+    // "unasked" everywhere `statuses` itself is nulled (`goSettings()`,
+    // `goStatuses()`), since both are keyed to `settingsRepoId`.
+    statusesReadiness: "unasked",
     data: null,
     view: localStorage.getItem("storyhook.view") === "list" ? "list" : "board",
     // A display preference, not a per-repo filter: like `view` above, it
@@ -3523,9 +3529,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * duplicate in the other -- on `#new-story-btn`'s tooltip, which renders on
    * an un-overlaid topbar inches from `#projsel-btn` itself. `failed` is the
    * caller's own settled predicate (`dataFetchFailed()` for the per-project
-   * surfaces, `state.reposReadiness` for the catalog), passed in rather than
-   * read from one fixed field, since which field answers "has this settled?"
-   * differs per fetch.
+   * surfaces, `state.reposReadiness`/`state.statusesReadiness` for the
+   * others), passed in rather than read from one fixed field, since which
+   * field answers "has this settled?" differs per fetch.
    *
    * "Retrying…" is a claim every caller's own safety poll keeps rather than
    * a softener — see each poll's own comment for its interval. So the failed
@@ -6677,6 +6683,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     state.screen = "settings";
     state.settingsRepoId = null;
     state.statuses = null;
+    state.statusesReadiness = "unasked";
     // Force renderSettings() to rebuild the register form fresh on this
     // explicit (re-)entry — see the flag's own comment for why routine
     // polls must NOT do this.
@@ -6692,6 +6699,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     state.screen = "settings";
     state.settingsRepoId = repoId;
     state.statuses = null;
+    // Beside `state.statuses`, and for the same reason `selectRepo()` resets
+    // `state.fetchSettledFor`: this repo's statuses editor has not answered
+    // *this* opening of it, whatever its last visit ended in (SH-301).
+    state.statusesReadiness = "unasked";
     delete $("settings-view").dataset.built;
     renderScreen();
     fetchStatuses();
@@ -6914,11 +6925,36 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         if (state.settingsRepoId !== repoId || statusEditorIsBusy()) return;
         state.statuses = payload.states || [];
         renderStatuses();
+        markStatusesSettled(repoId, true);
       })
       .catch(function(err) {
         if (state.settingsRepoId !== repoId) return;
         toastError(err);
+        markStatusesSettled(repoId, false);
       });
+  }
+
+  /** Records that a `/api/repos/<repoId>/states` round trip for `repoId` has
+   * completed — the same "has this fetch settled" question `markDataSettled()`
+   * and `markReposSettled()` each answer for their own fetch (SH-301), so
+   * `renderStatuses()`'s permanent, unqualified "Loading…" (SH-291's own
+   * defect, on a third fetch) can become a claim that leaves once there is
+   * something to leave for.
+   *
+   * Guarded exactly as `fetchStatuses()`'s own callbacks are: a reply about
+   * an editor the user has left names nothing on screen, and one landing
+   * mid-edit (`statusEditorIsBusy()`) must not repaint out from under a
+   * half-typed description — the same reason its success path already skips
+   * `renderStatuses()` while busy. A busy failure is still toasted by the
+   * caller; only the readiness repaint is held back, and the next idle fetch
+   * (`refreshStatusesIfIdle()`'s own poll, or the next explicit entry)
+   * settles it. */
+  function markStatusesSettled(repoId, ok) {
+    if (state.settingsRepoId !== repoId || statusEditorIsBusy()) return;
+    var next = ok ? "loaded" : "failed";
+    if (state.statusesReadiness === next) return;
+    state.statusesReadiness = next;
+    renderStatuses();
   }
 
   /** Whether the user is mid-edit inside the editor: typing a description,
@@ -6960,7 +6996,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     ]));
 
     if (!state.statuses) {
-      container.appendChild(el("div", { class: "status-empty" }, ["Loading…"]));
+      container.appendChild(el("div", { class: "status-empty" }, [
+        readinessNote("this project's statuses", state.statusesReadiness === "failed")
+      ]));
       return;
     }
 
