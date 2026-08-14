@@ -24,12 +24,14 @@
 //! repair that precedes them is one project's — so gating the sweep on that one
 //! project's health held every other project's stale registration hostage, and
 //! `--fix` was the one command that would not perform the remedy `doctor`
-//! prints (SH-270). The pair of tests below fixed both edges of that: a finding
-//! `--fix` cannot clear must not stop the sweep, and a repair write that
-//! *aborted* must not start it. SH-286 then made the second edge unreachable —
-//! `--fix` can no longer be handed a destination it cannot fold — so that test
-//! now pins the invariant that replaced its fixture, and SH-298 carries the
-//! coverage that went with it.
+//! prints (SH-270). Three tests below hold both edges of that: a finding
+//! `--fix` cannot clear must not stop the sweep, a repair that folds cleanly
+//! must start it, and a repair write that rolls back must not. SH-286 made the
+//! data-layer fixture for the third edge unreachable — `--fix` can no longer be
+//! handed a destination it cannot fold — so the test built on it now pins the
+//! invariant that replaced that fixture, and a store-layer fault (SH-298)
+//! restores the edge it used to hold, through
+//! [`storyhook::store::fault::arm`] rather than through damaged events.
 //!
 //! Everything runs against a data home [`non_temporary_dir`] resolves as
 //! non-temporary, independently of the checkout (SH-258). That is deliberate
@@ -40,9 +42,13 @@
 
 use std::path::{Path, PathBuf};
 
+use storyhook::cli::Invocation;
 use storyhook::domain::{StoryEvent, TypeDef};
+use storyhook::env::{Environment, StoreLocation, StoreVars};
+use storyhook::invoke::{InvokeRequest, Invoker, StoreInvoker};
+use storyhook::store::fault::{FaultAction, arm};
 use storyhook::store::test_support::{forget_events, inject_events};
-use storyhook::store::{ProjectId, ReadOps, SqliteStore, Store, StoryNo, WriteOps};
+use storyhook::store::{FaultPoint, ProjectId, ReadOps, SqliteStore, Store, StoryNo, WriteOps};
 use storyhook_test_support::{assert_selection_is_not_inherited, non_temporary_dir};
 
 /// A directory the store guards classify as **not** temporary.
@@ -144,6 +150,27 @@ impl Fixture {
             .read(|tx| Ok(tx.project(id)?.expect("the project exists").prefix))
             .expect("reading the project");
         (id, prefix)
+    }
+
+    /// The [`Environment`] a [`StoreInvoker`] needs to act on this fixture
+    /// in-process, resolving the store the one way its subprocesses do:
+    /// `$STORYHOOK_DATA_DIR` naming `data_home`, which [`story`] sets.
+    ///
+    /// [`Environment::at`] alone would resolve the *default* location under
+    /// `data_home` — the same file here, since [`story`]'s only override is
+    /// `STORYHOOK_DATA_DIR`, but resolved rather than named, which is a
+    /// distinction `StoreOrigin` exists to preserve. Naming it through
+    /// [`StoreVars`] instead keeps this fixture asking the store the same
+    /// question its child processes ask, rather than merely landing on the
+    /// same answer today.
+    fn environment(&self) -> Environment {
+        let vars = StoreVars {
+            data_dir: Some(self.data_home.clone()),
+            ..StoreVars::default()
+        };
+        let store = StoreLocation::resolve(None, &vars, &self.data_home)
+            .expect("resolving the fixture's store the way its subprocesses do");
+        Environment::at(&self.data_home).with_store(store)
     }
 }
 
@@ -330,22 +357,25 @@ fn doctor_fix_sweeps_the_catalog_even_when_the_project_keeps_a_finding() {
 /// examine, which is a story that folds, and the repair pass can no longer be
 /// handed one that folds to nothing.
 ///
-/// Nor can anything else provoke it, which was searched rather than assumed.
-/// The only other constraint a repair event can reach is the single-parent
-/// unique index, and its precondition is unrepresentable: the mirror trigger
-/// materializes the inverse on insert, so no story can hold two `child-of`
-/// rows even for the length of a statement. `STORYHOOK_FAULT` is the wrong
-/// instrument — it delivers `SIGKILL`, so the process dies and the arm's
-/// control flow is never reached at all.
+/// Nor can *this same shape* be provoked any other way through the data
+/// layer, which was searched rather than assumed. The only other constraint a
+/// repair event can reach is the single-parent unique index, and its
+/// precondition is unrepresentable: the mirror trigger materializes the
+/// inverse on insert, so no story can hold two `child-of` rows even for the
+/// length of a statement. `STORYHOOK_FAULT` cannot stand in for it either — it
+/// delivers `SIGKILL`, so the process dies and the arm's control flow is never
+/// reached at all.
 ///
 /// So this asserts what the old fixture does *now*, which is the invariant that
 /// replaced it: the run completes, appends nothing to the story it could not
 /// read, sweeps, and still fails on the finding it cannot clear. The SH-270
 /// distinction itself is held by `let mut outcome = service.repair()?;` in
 /// `src/invoke.rs`, where an `Err` skips the sweep by control flow rather than
-/// by a check, and by the sibling test above, which pins the other edge.
-/// **SH-298 records the coverage that went with the fixture** rather than
-/// letting it lapse in silence.
+/// by a check, and by the sibling test above, which pins the other edge. **The
+/// third edge — an aborted repair leaving the sweep unstarted — is restored
+/// below**, through the store layer rather than the data layer:
+/// `doctor_fix_leaves_the_catalog_alone_when_the_repair_write_rolls_back`
+/// (SH-298).
 #[test]
 fn the_shape_that_used_to_abort_a_repair_write_now_completes_and_sweeps() {
     let f = fixture("orphan-plus-unattested-endpoint");
@@ -399,6 +429,127 @@ fn the_shape_that_used_to_abort_a_repair_write_now_completes_and_sweeps() {
         "the repair completed, so the sweep must have run — a finding it cannot clear is the \
          sibling test's case, not a reason to hold every other project's stale registration \
          hostage (SH-270): {listed}"
+    );
+}
+
+/// A repair write that rolls back must leave the catalog exactly as it found
+/// it (SH-270's third edge, restored by SH-298).
+///
+/// SH-298 itself named this instrument and left it unverified: "the abort is
+/// reachable from the *store* layer rather than the data layer — a `WriteOps`
+/// failure mid-repair. A seam that makes one injectable in-process (not by
+/// SIGKILL) would restore the pin." That seam already existed.
+/// [`storyhook::store::fault`]'s thread-local arming — used by eight other
+/// test files, e.g. `tests/service_catalog.rs` — makes a real write fail with
+/// an ordinary [`storyhook::error::AppError`], from inside the transaction
+/// that then rolls back by [`storyhook::store::SqliteStore`]'s own drop guard.
+/// No SIGKILL, no dead process, no control flow the arm never reaches.
+///
+/// [`FaultPoint::MidReadModelUpdate`] is what discriminates. It fires inside
+/// `put_story`, which `repair_read_model` calls for *every* story it rebuilds
+/// — including one whose fold did not change, since the rewrite is
+/// unconditional (`src/store/rebuild.rs`'s doc: "the rebuild and rewrite
+/// happen in one transaction, so a repair cannot itself be interrupted into a
+/// half-repaired state"). So a single healthy story in the resolved project is
+/// enough to reach it. Neither catalog half ever calls `put_story` —
+/// `deregister_orphaned` writes through `forget_checkout` and
+/// `register_found_origins` through `register_origin`, neither of which
+/// touches a story row — so arming this point fails the repair while leaving
+/// the sweep able to succeed, which is exactly the asymmetry
+/// `let mut outcome = service.repair()?;` exists to hold.
+///
+/// Run through [`StoreInvoker`] rather than the [`story`] subprocess helper:
+/// the fault is armed thread-local, and a subprocess talking to a daemon
+/// cannot see an arm made in *this* process. The sibling test below is the
+/// control — same fixture, nothing armed — because without it this test would
+/// pass just as well against a version that never swept at all.
+#[test]
+fn doctor_fix_leaves_the_catalog_alone_when_the_repair_write_rolls_back() {
+    let f = fixture("aborted-repair-write");
+    story(&f.checkout, &f.data_home, &["new", "Orphaned by the abort"]);
+    story(
+        &f.workdir,
+        &f.data_home,
+        &["new", "Rewritten by the repair"],
+    );
+
+    let store = f.open_store();
+    let (orphan, _) = f.project_at(&store, &f.checkout);
+    std::fs::remove_dir_all(&f.checkout).expect("removing the checkout");
+
+    let outcome = {
+        let _fault = arm(
+            FaultPoint::MidReadModelUpdate,
+            FaultAction::Fail("the repair write is rolled back".to_string()),
+        );
+        StoreInvoker::new(&store, &f.workdir, f.environment())
+            .invoke(InvokeRequest::new(Invocation::Doctor { fix: true }).no_hooks(true))
+    };
+
+    let error =
+        outcome.expect_err("the armed fault must fail the repair, or this test asserts nothing");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("the repair write is rolled back"),
+        "the failure must be the injected one, or this test is reporting a broken fixture as \
+         the defect: {rendered}"
+    );
+    assert!(
+        !rendered.contains("the catalog sweep did not complete"),
+        "the repair must abort before the sweep starts at all — a message naming the sweep \
+         would mean it ran and failed too, which is a different failure than the one under \
+         test: {rendered}"
+    );
+    assert!(
+        store
+            .read(|tx| tx.checkout_path(orphan))
+            .expect("reading the orphan's registration")
+            .is_some(),
+        "the sweep must not have run — the repair write rolled back, and a command that acted \
+         on the catalog anyway would be treating an aborted transaction as a completed one, \
+         the same property `doctor_fix_leaves_the_catalog_alone_when_the_repair_write_aborts` \
+         used to pin through the data layer"
+    );
+}
+
+/// The control for the test above: with nothing armed, the same fixture's
+/// repair completes and the sweep runs.
+///
+/// Not decoration. `doctor --fix`'s catalog half is silent under a *temporary*
+/// store (`audit_catalog` in `src/invoke.rs`), and `fixture` deliberately
+/// avoids one (SH-258) — but a reader can't tell that from the test above
+/// alone, and a regression in that gate would make it pass regardless of
+/// whether the sweep ran. This is what proves the fault above is the only
+/// thing standing between this exact fixture and a swept catalog.
+#[test]
+fn the_same_repair_write_sweeps_the_catalog_when_nothing_is_armed() {
+    let f = fixture("unaborted-repair-write");
+    story(
+        &f.checkout,
+        &f.data_home,
+        &["new", "Orphaned, and then forgotten"],
+    );
+    story(
+        &f.workdir,
+        &f.data_home,
+        &["new", "Rewritten by the repair"],
+    );
+
+    let store = f.open_store();
+    let (orphan, _) = f.project_at(&store, &f.checkout);
+    std::fs::remove_dir_all(&f.checkout).expect("removing the checkout");
+
+    let outcome = StoreInvoker::new(&store, &f.workdir, f.environment())
+        .invoke(InvokeRequest::new(Invocation::Doctor { fix: true }).no_hooks(true));
+
+    outcome.expect("an unarmed repair over a healthy project must succeed");
+    assert!(
+        store
+            .read(|tx| tx.checkout_path(orphan))
+            .expect("reading the orphan's registration")
+            .is_none(),
+        "the sweep must have run and forgotten the orphan, or this fixture cannot discriminate \
+         the test above from a version that never sweeps at all"
     );
 }
 
