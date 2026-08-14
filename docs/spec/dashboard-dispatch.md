@@ -469,6 +469,75 @@ side. The context menu HIDES the two items rather than disabling them when the g
 fails — nothing a menu click can do lifts "closed" or "no checkout" — the same choice
 the drawer footer already made by omitting the buttons outright.
 
+## As built — SH-304 (the notification contract: routing by outcome)
+
+**SH-232's rule was right about the danger and wrong about the axis.** It sent every
+`--auto` result to a durable bottom-right row and every attended one to a self-deleting
+toast, reasoning that nobody necessarily watches the tab when an autonomous dispatch
+finishes — which is true, and which SH-227's incident review is the reason anyone knew.
+But "who started it" does not predict "can this be recovered if the notice is missed."
+**Outcome does.** A *successful* dispatch is corroborated twice whether or not anyone saw
+the notice: the story moves to in-progress on the board, and the tmux window exists. A
+*refused* or *failed* one is corroborated nowhere — it leaves the story exactly as it
+was, so a notice that clears itself takes the only report with it. That was as true of an
+attended failure, which had a 9s toast until this story, as of an unattended one.
+
+So routing is now by `DispatchState`, and SH-232's durability survives narrowed to the
+outcomes it was actually protecting:
+
+| Outcome | Attended | `--auto` |
+|---|---|---|
+| `ok` | toast, clears itself | toast, clears itself, headline says `(auto)` |
+| `refused` / `failed` | toast, **durable**, dismiss button | `#dispatch-history` row, **durable** |
+
+Geography is unchanged for failures — an attended one stays in the top-right stack where
+the action that caused it was taken, an unattended one stays bottom-right where SH-232 put
+it. Only success moved, and only because it stopped being durable.
+
+**The paragraph in the screenshot was `story.sh` talking to an agent.** `display` is
+authored for `story.sh`'s Claude *skill* consumer and relayed verbatim; a ~90-word
+paragraph in a browser was the visible half of that. The headline is now composed
+client-side from typed fields — `<id> <verb>` plus `(auto)`, where the verb is the
+`DispatchState` itself — so it cannot regress when the script next changes what it says.
+`display` is not discarded: on a durable notice it is the `.notice-detail` line beneath
+the headline, with the typed `reason` on its own `.notice-reason` line. SH-196's
+diagnosis-and-remedy requirement is met by keeping the text on screen indefinitely rather
+than by timing how long a sentence takes to read.
+
+**`TOAST_ERROR_LIFETIME_MS` is deleted rather than raised.** SH-196 doubled it to 9s so a
+remedy could be read. The honest version of that fix is no deadline: every error notice is
+durable now, on every call site, with a dismiss button sharing one CSS rule with the
+history row's. `TOAST_LIFETIME_MS` is 3000ms, and the 1s fade is `--toast-fade`, a token
+the script *reads* (`readMsToken`) rather than restating — two hand-kept copies would let a
+node be removed mid-fade the first time one moved.
+
+**The surviving timer had to satisfy SC 2.2.1 (Timing Adjustable) to ship at all.** A time
+limit is conformant when the user can pause it, so `scheduleAutoDismiss` holds its clock
+on pointer hover, on focus within the notice, and — the perverse case a bare `setTimeout`
+gets wrong — while `document.hidden`, since a notice exists precisely because nobody may be
+watching and a background tab is the one state where "three seconds of being visible"
+definitively did not happen. Pausing preserves what is left rather than restarting it.
+
+**A real pre-existing gap closed on the way past.** `.toast` and `.toast.leaving` sat
+*outside* the `prefers-reduced-motion: no-preference` guard that `.card`'s equivalents have
+always sat inside, so a reader who had asked for reduced motion got the slide-in and
+slide-out anyway — from the one class of element that appears unbidden. The animations
+moved inside the guard; the *dismissal* deliberately did not, because a reader who asked
+for less movement did not ask for notices that never leave. Same split `.card` has drawn
+since SH-203: information stays under reduced motion, decoration drops.
+
+**Not done, deliberately:** SH-304's first example names an `<id> created` toast, which
+SH-127's council unanimously *deleted* — the new card's own `entering` animation already
+confirms creation in place. The example is read as format guidance for the headlines above,
+not as a request to reverse that verdict.
+
+Council: `.council/sh-304-dashboard-notification-contract/` (three seats, two rounds, IRV
+after a 1-1-1 split). Its `DECISION.md` records six binding constraints, including the
+chair's correction of a seat's supporting claim: the daemon *does* persist finished
+`DispatchRecord`s, but **no route exposes them, the dashboard never reads them, and they
+evict after 30 minutes or 32 records** (`RETAIN_FOR`/`RETAIN_FINISHED`) — so "unattended
+discoverability is solved server-side" is false, and the durable row is the record.
+
 ## Verification
 
 `make test` is the gate. Coverage, by layer:
@@ -519,5 +588,18 @@ the drawer footer already made by omitting the buttons outright.
   agent ever runs to call `reap` — that is `test-reap.sh` and `test-dispatch-auto.sh`'s
   job, at the layer where it is actually observable. SH-196 adds: AC2's own test
   re-clicks Dispatch on the story it just claimed, hitting `story.sh`'s real
-  already-in-progress guard, and asserts the toast reads `Dispatch refused` with the
-  reason — the one place this suite observes a genuine business refusal end to end.
+  already-in-progress guard, and asserts the notice names the refusal with its reason —
+  the one place this suite observes a genuine business refusal end to end. SH-304 turns
+  that same click into the durability assertion too: the refusal outlives a 5s probe and
+  is dismissed only by its own button.
+- **The notification contract** (`e2e/specs/notification-contract.spec.ts`, SH-304): both
+  halves of the outcome rule, over stubbed dispatches — attended and `--auto` success
+  fading with a composed headline and no relayed paragraph; attended `refused` and
+  `failed` durable past a 5.5s probe with their detail and typed reason on screen;
+  `--auto` `refused` durable in the history panel. Stubbed rather than real because
+  `refused`/`failed` under `--auto` are the outcomes a real `story.sh` run cannot be asked
+  for on demand — `dispatch.spec.ts` owns the real end-to-end path. The three timer guards
+  get their own tests: a hovered notice held past its full lifetime and released,
+  `prefers-reduced-motion` proving the animation is gone *and* the dismissal is not, and a
+  backgrounded tab (a second page brought to front) proving the clock does not burn down
+  unseen. The reduced-motion and hidden-tab cases are the suite's first of either.

@@ -156,18 +156,19 @@ test("Dispatch Auto issues POST .../dispatch?auto=1", async ({ page }) => {
 
   await card.click({ button: "right" });
   await page.locator(".ctxmenu-item", { hasText: "Dispatch Auto" }).click();
-  // An --auto completion doesn't toast (SH-232) -- nobody is necessarily
-  // watching, so it becomes a durable #dispatch-history row instead.
-  await expect(page.locator("#dispatch-history .dispatch-history-row")).toBeVisible();
+  // A SUCCEEDING --auto completion toasts and clears itself (SH-304): the
+  // durable bottom-right row is now reserved for outcomes with no other
+  // trace, which a success is not. Routing is by outcome, not by mode --
+  // `notification-contract.spec.ts` owns both halves of that rule.
+  await expect(page.locator("#toast-stack .toast.success")).toContainText(
+    `${id} dispatched (auto)`,
+  );
+  await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(0);
 
   const postReq = requests.find((r) => r.method === "POST");
   expect(postReq).toBeTruthy();
   expect(new URL(postReq!.url).search).toBe("?auto=1");
 
-  // Durable until dismissed, and fixed bottom-right -- left alone it
-  // overlaps the drawer footer's own buttons, which is what deleteStory()
-  // needs to click next.
-  await page.locator(".dispatch-history-dismiss").click();
   await deleteStory(page, title);
 });
 

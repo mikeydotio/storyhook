@@ -60,6 +60,12 @@
      file's "Tap targets" section, the same one-token-many-readers shape
      as --control-font-* above. */
   --tap-min: 24px;
+  /* How long a self-clearing notice takes to fade out (SH-304), and the
+     single source of truth for it: the CSS animation below is driven by
+     this token, and `TOAST_FADE_MS` in the script *reads* it rather than
+     restating the number. Two hand-kept copies would let the node be
+     removed mid-fade (or linger invisible) the first time one moved. */
+  --toast-fade: 1s;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -878,21 +884,33 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    everywhere wider. */
 .toast-stack { position: fixed; top: 1rem; right: 1rem; display: flex; flex-direction: column; gap: 0.5rem; z-index: 60; max-width: min(22rem, calc(100vw - 2rem)); }
 .toast {
+  display: flex; align-items: flex-start; gap: 0.5rem;
   background: var(--bg-raised); border: 1px solid var(--border); border-left: 3px solid var(--accent);
   box-shadow: var(--shadow-md); border-radius: var(--radius-sm); padding: 0.625rem 0.875rem;
-  font-size: 0.8125rem; animation: toast-in 0.18s ease-out;
+  font-size: 0.8125rem;
 }
 .toast.error { border-left-color: var(--danger); }
 .toast.success { border-left-color: var(--success); }
-@keyframes toast-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
-.toast.leaving { animation: toast-out 0.15s ease-in forwards; }
-@keyframes toast-out { to { opacity: 0; transform: translateX(12px); } }
 
-/* ---- Dispatch history (SH-232) ----
-   A --auto dispatch's result as a row that stays until dismissed, not a
-   toast that vanishes on its own -- nobody is necessarily watching the tab
-   when an autonomous dispatch finishes. Bottom-right so it never collides
-   with the toast stack (top-right), which attended dispatches still use. */
+/* ---- Notice bodies (SH-304) ----
+   Shared by both notification surfaces, so a headline reads the same
+   whether its outcome sent it to the toast stack or the dispatch history.
+   The headline is the whole notice for a success; `.notice-detail` and
+   `.notice-reason` appear only on a durable one, which is the only kind
+   that carries a diagnosis worth reading (SH-196). */
+.notice-body { flex: 1; min-width: 0; }
+.notice-detail { color: var(--fg-muted); margin-top: 0.25rem; }
+.notice-reason { color: var(--fg-muted); font-family: var(--mono); font-size: 0.75rem; margin-top: 0.25rem; }
+
+/* ---- Dispatch history (SH-232, re-scoped by SH-304) ----
+   A dispatch outcome that must NOT clear itself, as a row that stays until
+   dismissed. SH-232 sent every `--auto` result here on the reasoning that
+   nobody is necessarily watching the tab when an autonomous dispatch
+   finishes; SH-304's council narrowed that to the outcomes it is actually
+   true of -- refused and failed -- since a SUCCESS is corroborated by the
+   card moving on the board and by the tmux window that now exists, while a
+   failure leaves no trace anywhere once its notice is gone. Bottom-right so
+   it never collides with the toast stack (top-right). */
 /* Same reasoning as `.toast-stack` just above -- `right: 1rem` needs a
    matching 1rem on the left, so the ceiling is the viewport minus both
    margins, not a bare `26rem`. */
@@ -901,19 +919,20 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   display: flex; align-items: flex-start; gap: 0.5rem;
   background: var(--bg-raised); border: 1px solid var(--border); border-left: 3px solid var(--accent);
   box-shadow: var(--shadow-md); border-radius: var(--radius-sm); padding: 0.625rem 0.875rem;
-  font-size: 0.8125rem; animation: toast-in 0.18s ease-out;
+  font-size: 0.8125rem;
 }
 .dispatch-history-row.error { border-left-color: var(--danger); }
 .dispatch-history-row.success { border-left-color: var(--success); }
-.dispatch-history-body { flex: 1; min-width: 0; }
-.dispatch-history-reason { color: var(--fg-muted); font-family: var(--mono); font-size: 0.75rem; }
-.dispatch-history-dismiss {
+/* One dismiss control for both surfaces: a durable toast and a history row
+   are the same affordance in two places, and giving them one rule is what
+   keeps them from drifting into two sizes of the same button. */
+.dispatch-history-dismiss, .toast-dismiss {
   flex-shrink: 0; background: transparent; border: none; color: var(--fg-muted); cursor: pointer;
   font-size: 1rem; line-height: 1; padding: 0.125rem 0.25rem; border-radius: var(--radius-sm);
   display: inline-flex; align-items: center; justify-content: center;
   min-width: var(--tap-min); min-height: var(--tap-min);
 }
-.dispatch-history-dismiss:hover { background: var(--bg-sunken); color: var(--fg); }
+.dispatch-history-dismiss:hover, .toast-dismiss:hover { background: var(--bg-sunken); color: var(--fg); }
 
 /* ---- Live updates: card/row enter, exit, cross-column move, field flash ----
    All gated behind `prefers-reduced-motion: no-preference` (the JS side
@@ -922,6 +941,20 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    second, CSS-level guarantee, not the only one). See `diffSnapshots` /
    `reconcileColumnCards` / `playFlip` in the script for what triggers each. */
 @media (prefers-reduced-motion: no-preference) {
+  /* SH-304 moved these three notification rules inside this guard, where
+     `.card`'s equivalents have always lived. They sat outside it -- so a
+     reader who had asked for reduced motion got the slide-in and slide-out
+     anyway, from the one class of element that appears unbidden. The
+     dismissal itself is NOT gated: `scheduleAutoDismiss` removes the node on
+     the same schedule either way, because a user who asked for less motion
+     did not ask for notices that never leave. Same split `.card` has drawn
+     since SH-203 -- information stays under reduced motion, decoration
+     drops. */
+  .toast, .dispatch-history-row { animation: toast-in 0.18s ease-out; }
+  @keyframes toast-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+  .toast.leaving { animation: toast-out var(--toast-fade) ease-in forwards; }
+  @keyframes toast-out { to { opacity: 0; transform: translateX(12px); } }
+
   .card.entering { animation: card-enter 0.22s ease-out; }
   @keyframes card-enter { from { opacity: 0; transform: scale(0.97) translateY(-4px); } to { opacity: 1; transform: none; } }
 
@@ -1270,11 +1303,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // periodic resync in case a `/api/events` push is ever missed.
   var SAFETY_POLL_INTERVAL_MS = 25000;
   var FOOTER_TICK_MS = 1000;
-  var TOAST_LIFETIME_MS = 4500;
-  // Error/warning toasts often carry a real diagnosis and remedy (SH-196's
-  // whole point) rather than a short confirmation -- the shared lifetime
-  // above is not enough time to read one before it dismisses itself.
-  var TOAST_ERROR_LIFETIME_MS = 9000;
+  // How long a self-clearing notice is held before its fade begins (SH-304).
+  // Only a success/info notice ever gets one: an error has no timer at all
+  // now, rather than the doubled 9s one SH-196 gave it, because "long enough
+  // to read a remedy" is a guess about a reader and "until you dismiss it"
+  // is not.
+  var TOAST_LIFETIME_MS = 3000;
+  // Read from `--toast-fade` rather than restated, so the removal below can
+  // never disagree with the CSS animation that is still playing.
+  var TOAST_FADE_MS = readMsToken("--toast-fade", 1000);
   // How long after a `repo-changed` SSE event to wait before re-fetching,
   // coalescing a burst of individually-debounced server events (e.g. several
   // rapid mutations) into a single re-fetch instead of one per event.
@@ -1283,6 +1320,23 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // to read the button and decide; short enough that a stray armed button
   // doesn't sit there waiting to catch a later, unrelated click.
   var DELETE_CONFIRM_TIMEOUT_MS = 6000;
+
+  /** A CSS custom property's duration, in milliseconds, or `fallback` if the
+   * token is missing or unparseable (SH-304).
+   *
+   * The point is single-sourcing, not configurability: `--toast-fade` drives
+   * the fade animation, and the script has to remove the node when that
+   * animation ends. Reading the token means the two cannot disagree —
+   * editing the CSS moves both. Accepts `s` and `ms` because a token written
+   * either way is correct CSS and the difference is not one a future editor
+   * should have to remember. */
+  function readMsToken(name, fallback) {
+    var raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    var match = /^([0-9]*\.?[0-9]+)(ms|s)$/.exec(raw);
+    if (!match) return fallback;
+    var value = parseFloat(match[1]) * (match[2] === "s" ? 1000 : 1);
+    return value > 0 ? value : fallback;
+  }
 
   /** A positive-integer override from the URL's query string, or `fallback`
    * if `name` is absent, non-numeric, or not positive. Mirrors the daemon's
@@ -1634,14 +1688,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // Story id -> {handle, timer, auto} for a dispatch this tab is polling
     // (SH-50). Keyed per-story rather than one global slot, matching the
     // daemon's own support for several concurrent dispatches; a dispatch
-    // keeps polling even after its drawer closes. An attended completion
-    // still toasts; a --auto completion becomes a `dispatchHistory` row
-    // instead (SH-232) -- see `finishDispatch`.
+    // keeps polling even after its drawer closes. A completion is reported
+    // by OUTCOME, not by mode: a success toasts and clears itself, a failure
+    // stays until dismissed (SH-304) -- see `finishDispatch`.
     dispatches: {},
-    // Durable rows for --auto dispatch completions this tab has seen, newest
-    // first -- see `addDispatchHistoryRow`/`renderDispatchHistory`. Not
-    // persisted across a reload: it exists to survive a toast's own
-    // 4.5s/9s auto-dismiss, not a page close.
+    // Durable rows for --auto dispatches that did NOT succeed, newest first
+    // -- see `addDispatchHistoryRow`/`renderDispatchHistory`. Not persisted
+    // across a reload: it exists to survive a self-clearing notice's own
+    // timer, not a page close.
     dispatchHistory: []
   };
 
@@ -2392,18 +2446,119 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   // ============================================================
-  // TOASTS
+  // NOTICES: TOASTS, AND THE DURABLE HALF (SH-304)
   // ============================================================
+  //
+  // One contract, two surfaces, keyed on OUTCOME rather than on which
+  // control started the work (`.council/sh-304-dashboard-notification-
+  // contract/DECISION.md`):
+  //
+  //   - a success or a passing remark CLEARS ITSELF, because the thing it
+  //     reports is visible elsewhere -- the card moved, the row vanished,
+  //     the project list redrew;
+  //   - an error STAYS until dismissed, because the thing it reports is
+  //     visible nowhere else. Once its notice is gone there is no record in
+  //     this page at all, and the daemon is not a fallback: it keeps
+  //     finished `DispatchRecord`s (`src/api/dispatch.rs`) but exposes them
+  //     on no route, this page never reads them, and they evict after 30
+  //     minutes or 32 records.
+  //
+  // That is why the old `TOAST_ERROR_LIFETIME_MS` is gone rather than
+  // larger. SH-196 doubled it to 9s so a remedy sentence could be read; the
+  // honest version of that fix is no deadline at all.
 
-  function toast(message, variant) {
-    var stack = $("toast-stack");
-    var node = el("div", { class: "toast " + (variant || "") }, [message]);
-    stack.appendChild(node);
-    var lifetime = (variant === "error") ? TOAST_ERROR_LIFETIME_MS : TOAST_LIFETIME_MS;
-    setTimeout(function() {
+  /** Builds a notice's inner nodes -- shared by both surfaces so a headline,
+   * its detail and its typed reason read identically wherever an outcome
+   * sends them. `detail` and `reason` are optional and belong only to a
+   * durable notice; a self-clearing one is its headline and nothing else,
+   * which is the whole of SH-304's first ask. */
+  function noticeBody(headline, detail, reason) {
+    return el("div", { class: "notice-body" }, [
+      el("div", { class: "notice-headline" }, [headline]),
+      detail ? el("div", { class: "notice-detail" }, [detail]) : null,
+      reason ? el("div", { class: "notice-reason" }, [reason]) : null
+    ]);
+  }
+
+  /** Removes `node` after holding it `TOAST_LIFETIME_MS`, then fading it.
+   *
+   * The clock is not a bare `setTimeout`, because three states must stop it
+   * (WCAG 2.2 SC 2.2.1, Timing Adjustable — a time limit is conformant when
+   * the user can pause it):
+   *
+   *   - the pointer resting on the notice, which IS a request to keep
+   *     reading, made in the only vocabulary a toast offers;
+   *   - focus inside it, the keyboard's equivalent of the same request;
+   *   - the tab being hidden, the one state in which "three seconds of
+   *     being visible" definitively did not happen. A notice exists because
+   *     nobody may be watching; letting its clock run down in a background
+   *     tab defeats the notice at exactly the moment it was needed.
+   *
+   * Pausing preserves what is left rather than restarting it, so a reader
+   * who hovers twice does not get a fresh three seconds each time. */
+  function scheduleAutoDismiss(node) {
+    var remaining = TOAST_LIFETIME_MS;
+    var startedAt = 0;
+    var timer = null;
+    var leaving = false;
+
+    function pause() {
+      if (leaving || timer === null) return;
+      window.clearTimeout(timer);
+      timer = null;
+      remaining = Math.max(0, remaining - (Date.now() - startedAt));
+    }
+
+    function resume() {
+      if (leaving || timer !== null) return;
+      if (document.hidden) return;
+      if (node.matches(":hover") || node.contains(document.activeElement)) return;
+      startedAt = Date.now();
+      timer = window.setTimeout(depart, remaining);
+    }
+
+    function depart() {
+      leaving = true;
+      timer = null;
+      document.removeEventListener("visibilitychange", onVisibility);
       node.classList.add("leaving");
-      setTimeout(function() { node.remove(); }, 200);
-    }, lifetime);
+      // Removal is NOT gated on reduced motion, unlike the fade itself: a
+      // reader who asked for less movement did not ask for notices that
+      // never leave. Under `prefers-reduced-motion` the class simply
+      // animates nothing and the node is removed on the same schedule.
+      window.setTimeout(function() { node.remove(); }, TOAST_FADE_MS);
+    }
+
+    function onVisibility() { if (document.hidden) pause(); else resume(); }
+
+    node.addEventListener("mouseenter", pause);
+    node.addEventListener("mouseleave", resume);
+    node.addEventListener("focusin", pause);
+    node.addEventListener("focusout", resume);
+    document.addEventListener("visibilitychange", onVisibility);
+    resume();
+  }
+
+  /** Shows a notice. `variant` decides its fate: `error` is durable and
+   * carries a dismiss button, anything else clears itself. `detail` and
+   * `reason` (both optional) are the diagnosis lines a durable notice keeps
+   * beneath its headline -- in the DOM, inside `#toast-stack`'s existing
+   * `aria-live` region, never in a `title` attribute, which is unreachable
+   * by keyboard and by many screen readers. */
+  function toast(message, variant, detail, reason) {
+    var stack = $("toast-stack");
+    var durable = variant === "error";
+    var node = el("div", { class: "toast " + (variant || "") }, [
+      noticeBody(message, detail, reason),
+      durable ? el("button", {
+        class: "toast-dismiss",
+        type: "button",
+        "aria-label": "Dismiss this message",
+        onClick: function() { node.remove(); }
+      }, ["×"]) : null
+    ]);
+    stack.appendChild(node);
+    if (!durable) scheduleAutoDismiss(node);
   }
 
   function toastError(err) {
@@ -2607,28 +2762,25 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         var record = resp.dispatch || {};
         if (record.state === "running") {
           if (attempt + 1 >= DISPATCH_MAX_POLLS) {
-            finishDispatch(storyId, "error",
-              "Dispatching " + storyId + " is taking longer than expected -- check the dashboard " +
-              "or `story show " + storyId + "` shortly.");
+            finishDispatch(storyId, "failed", current.auto,
+              "Still running after " + storyId + "'s poll budget ran out -- check the tmux window, " +
+              "or `story show " + storyId + "`.");
             return;
           }
           current.timer = setTimeout(function() { pollDispatch(storyId, handle, attempt + 1); }, DISPATCH_POLL_MS);
           return;
         }
-        var display = (record.payload && record.payload.display) || record.error || "Dispatch finished.";
         // `refused` (a well-formed business refusal -- not ready, already
         // claimed, a version-skewed plugin) and `failed` (the script itself
-        // never produced a result) used to render as the identical red
-        // toast, distinguishable only by a 3px border color -- named here
-        // instead, since one of them is "try again later" and the other is
-        // "something is actually broken".
-        if (record.state === "ok") {
-          finishDispatch(storyId, "success", display, current.auto, record.reason);
-        } else if (record.state === "refused") {
-          finishDispatch(storyId, "error", "Dispatch refused — " + display, current.auto, record.reason);
-        } else {
-          finishDispatch(storyId, "error", "Dispatch failed — " + display, current.auto, record.reason);
-        }
+        // never produced a result) are relayed as the states they are: one
+        // of them is "try again later" and the other is "something is
+        // actually broken", and `finishDispatch` words each accordingly.
+        // Before SH-196 they shared one red toast distinguishable only by a
+        // 3px border color; before SH-304 they shared a hand-built sentence
+        // assembled here, which is where `story.sh`'s own paragraph leaked
+        // into the UI. The state and the detail travel separately now.
+        var display = (record.payload && record.payload.display) || record.error || null;
+        finishDispatch(storyId, record.state, current.auto, display, record.reason);
       })
       .catch(function(err) {
         var current = state.dispatches[storyId];
@@ -2637,31 +2789,64 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         // a mid-poll token re-prompt) retries rather than giving up on a
         // dispatch that is very possibly still running.
         if (attempt + 1 >= DISPATCH_MAX_POLLS) {
-          finishDispatch(storyId, "error", "Dispatch failed — lost track of the dispatch: " + err.message, current.auto);
+          finishDispatch(storyId, "failed", current.auto, "Lost track of the dispatch: " + err.message);
           return;
         }
         current.timer = setTimeout(function() { pollDispatch(storyId, handle, attempt + 1); }, DISPATCH_POLL_MS);
       });
   }
 
+  /** The whole text a finished dispatch puts on screen: `<id> <verb>`, plus
+   * `(auto)` when it ran the autonomous charter (SH-304).
+   *
+   * Composed here from typed fields -- the story id, `DispatchState`, and
+   * the `auto` flag the daemon reports -- rather than relayed from
+   * `story.sh`'s `display`. That string is written for `story.sh`'s Claude
+   * skill consumer and runs to a paragraph; forwarding it verbatim into a
+   * human UI is the defect SH-304 was filed about, and no fix that keeps
+   * relaying it can hold, because the next thing the script chooses to say
+   * lands here too. A verb per state, and nothing else, cannot regress that
+   * way. */
+  function dispatchHeadline(storyId, state, auto) {
+    var verb = state === "ok" ? "dispatched" : state; // "refused" | "failed"
+    return storyId + " " + verb + (auto ? " (auto)" : "");
+  }
+
   /** Clears `storyId`'s entry and resyncs -- a dispatch that succeeded moved
    * the story to in-progress, and one worth knowing about even if its
    * drawer is no longer open.
    *
-   * An ATTENDED completion toasts, same as always -- someone is watching
-   * the tmux window directly, so the toast is a courtesy, not the only
-   * record. A `--auto` completion becomes a durable `dispatchHistory` row
-   * instead (SH-232): nobody is necessarily watching an unattended run, and
-   * a 4.5s/9s self-deleting toast is how SH-227's own incident review found
-   * this endpoint's ONLY result was reported. `reason` (SH-232's typed
-   * taxonomy) is optional -- absent for a client-side timeout/network
-   * failure, which never reached a `story.sh` result to read one from. */
-  function finishDispatch(storyId, variant, message, auto, reason) {
+   * **Routing is by OUTCOME, not by `auto`** (SH-304's council). SH-232 sent
+   * every `--auto` result to a durable row and every attended one to a
+   * self-deleting toast, reasoning that nobody necessarily watches an
+   * unattended run -- true, and SH-227's incident review is why it was
+   * written, but it is the wrong axis:
+   *
+   *   - a SUCCESS is corroborated twice over whether or not anyone saw the
+   *     notice -- the story moves to in-progress on the board, and the tmux
+   *     window exists -- so it may clear itself, which is what SH-304 asked
+   *     for and what its screenshot showed;
+   *   - a REFUSED or FAILED outcome is corroborated nowhere. It leaves the
+   *     story exactly as it was, so a notice that clears itself takes the
+   *     only report with it -- as true of an attended failure, which had a
+   *     9s toast until this story, as of an unattended one.
+   *
+   * Do not re-derive the old rule from SH-232: its durability survives here,
+   * narrowed to the outcomes it was actually protecting.
+   *
+   * `detail` (`story.sh`'s own prose, or a client-side error) and `reason`
+   * (SH-232's typed taxonomy) are both optional and both ride only on a
+   * durable notice -- a client-side timeout never reached a `story.sh`
+   * result to read a reason from, and a success has nothing to diagnose. */
+  function finishDispatch(storyId, dispatchState, auto, detail, reason) {
     delete state.dispatches[storyId];
-    if (auto) {
-      addDispatchHistoryRow(storyId, variant, message, reason);
+    var headline = dispatchHeadline(storyId, dispatchState, auto);
+    if (dispatchState === "ok") {
+      toast(headline, "success");
+    } else if (auto) {
+      addDispatchHistoryRow(storyId, headline, detail, reason);
     } else {
-      toast(message, variant);
+      toast(headline, "error", detail, reason);
     }
     if (state.drawerId === storyId) renderDrawer();
     fetchData();
@@ -2669,18 +2854,21 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   var dispatchHistorySeq = 0;
 
-  /** Adds a durable row for a finished `--auto` dispatch and re-renders the
-   * panel. Newest first, unbounded within this tab's own session -- a user
-   * who lets many autonomous dispatches pile up unread can dismiss them
-   * individually or in a batch; there is no server-side cap to mirror here
-   * since this list is not the daemon's own persisted history (SH-232), just
-   * this tab's memory of what it has already seen. */
-  function addDispatchHistoryRow(storyId, variant, message, reason) {
+  /** Adds a durable row for a `--auto` dispatch that did NOT succeed, and
+   * re-renders the panel. Newest first, unbounded within this tab's own
+   * session -- a user who lets several failed autonomous dispatches pile up
+   * unread can dismiss them individually. There is no server-side cap to
+   * mirror: this list is not the daemon's persisted history, just this tab's
+   * memory of what it has seen. Nor is that history a fallback for a row
+   * dismissed too early -- no route exposes it, this page never reads it,
+   * and it evicts after 30 minutes or 32 records (`RETAIN_FOR`,
+   * `RETAIN_FINISHED`, `src/api/dispatch.rs`). This row is the record. */
+  function addDispatchHistoryRow(storyId, headline, detail, reason) {
     state.dispatchHistory.unshift({
       key: "dh-" + (++dispatchHistorySeq),
       storyId: storyId,
-      variant: variant,
-      message: message,
+      headline: headline,
+      detail: detail || null,
       reason: reason || null
     });
     renderDispatchHistory();
@@ -2691,16 +2879,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     renderDispatchHistory();
   }
 
+  /** Every row here is a failure now (see `finishDispatch`), so the variant
+   * is `error` by construction rather than carried per-row -- a success no
+   * longer reaches this panel at all. */
   function renderDispatchHistory() {
     var panel = $("dispatch-history");
     clear(panel);
     state.dispatchHistory.forEach(function(row) {
-      panel.appendChild(el("div", { class: "dispatch-history-row " + row.variant }, [
-        el("div", { class: "dispatch-history-body" }, [
-          el("strong", {}, [row.storyId + ": "]),
-          row.message,
-          row.reason ? el("div", { class: "dispatch-history-reason" }, [row.reason]) : null
-        ]),
+      panel.appendChild(el("div", { class: "dispatch-history-row error" }, [
+        noticeBody(row.headline, row.detail, row.reason),
         el("button", {
           class: "dispatch-history-dismiss",
           type: "button",
