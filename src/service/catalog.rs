@@ -310,40 +310,75 @@ impl<'a, S: Store> CatalogService<'a, S> {
     /// [`Registration`](super::project::Registration) actually said, so the
     /// caller cannot repeat the mistake this exists to fix (SH-274): counting
     /// the pre-write classification as the outcome.
+    ///
+    /// # One transaction, and the report is its value (SH-275)
+    ///
+    /// Every registration lands in **one** write, and the [`OriginSweep`] is
+    /// built inside that write's closure and returned as its value — so the
+    /// report and the rows it describes share one fate, and a report of writes
+    /// that did not commit is unrepresentable rather than merely discouraged.
+    ///
+    /// This used to be a `store.write` per registration, which left a failure
+    /// part-way along with the earlier ones committed while the `?` propagated
+    /// and the function returned nothing at all: partial mutation, reported as
+    /// total failure. Nothing ever wanted per-write independence — the loop
+    /// `?`-propagates either way, so it never bought *continuing*, only
+    /// *keeping what landed*, which the next `story doctor --fix` re-derives for
+    /// free because the sweep is recomputed from scratch and `register_origin`
+    /// is re-runnable. What it cost was a state no operator could be told about,
+    /// and N `BEGIN IMMEDIATE`/`COMMIT` cycles where one does.
+    /// [`deregister_orphaned`](Self::deregister_orphaned), the sweep's other
+    /// half and five lines from its call site, has been one transaction all
+    /// along; the difference between them was accidental.
+    ///
+    /// SH-274's guard survives the change untouched, because `register_origin`
+    /// reads `project_by_remote` on the same connection and so sees this very
+    /// sweep's uncommitted rows: a second finding on an origin an earlier one
+    /// took still answers `HeldBy`.
+    ///
+    /// **The closure must stay free of subprocesses and filesystem calls.** The
+    /// `git` probe is [`unregistered_origins`](Self::unregistered_origins)'s and
+    /// runs before this, for the reason stated there — a subprocess inside a
+    /// transaction holds the store's write lock for however long that process
+    /// takes, and here it would hold it for the whole sweep.
     pub fn register_found_origins(&self) -> Result<OriginSweep, AppError> {
         let found = self.unregistered_origins()?;
-        let mut sweep = OriginSweep {
-            recorded: Vec::new(),
-            left_alone: Vec::with_capacity(found.len()),
-        };
-        for finding in found {
-            let OriginFinding::Registrable(owned) = &finding.finding else {
-                sweep.left_alone.push(finding);
-                continue;
+        // One instant for one logical repair, rather than a per-row clock
+        // reading of the same event.
+        let now = crate::service::Clock::System.now();
+        Ok(self.store.write(|tx| {
+            let mut sweep = OriginSweep {
+                recorded: Vec::new(),
+                left_alone: Vec::with_capacity(found.len()),
             };
-            let now = crate::service::Clock::System.now();
-            let registration = self
-                .store
-                .write(|tx| super::project::register_origin(tx, finding.project, owned, &now))?;
-            match registration {
-                super::project::Registration::Recorded => sweep.recorded.push(RecordedOrigin {
-                    slug: finding.slug,
-                    origin: owned.url().clone(),
-                }),
-                // A URL already claimed while this sweep was running. The
-                // finding read `Registrable` a moment ago; it is not any more —
-                // rewritten so a caller reading `left_alone` never sees a
-                // `Registrable` entry the write refused.
-                super::project::Registration::HeldBy(holder) => {
-                    let origin = owned.url().clone();
-                    sweep.left_alone.push(UnregisteredOrigin {
-                        finding: OriginFinding::HeldBy { origin, holder },
-                        ..finding
-                    });
+            for finding in found {
+                let OriginFinding::Registrable(owned) = &finding.finding else {
+                    sweep.left_alone.push(finding);
+                    continue;
+                };
+                match super::project::register_origin(tx, finding.project, owned, &now)? {
+                    super::project::Registration::Recorded => {
+                        sweep.recorded.push(RecordedOrigin {
+                            slug: finding.slug,
+                            origin: owned.url().clone(),
+                        });
+                    }
+                    // A URL already claimed — by another project, or by an
+                    // earlier finding in this same sweep. The finding read
+                    // `Registrable` a moment ago; it is not any more — rewritten
+                    // so a caller reading `left_alone` never sees a
+                    // `Registrable` entry the write refused.
+                    super::project::Registration::HeldBy(holder) => {
+                        let origin = owned.url().clone();
+                        sweep.left_alone.push(UnregisteredOrigin {
+                            finding: OriginFinding::HeldBy { origin, holder },
+                            ..finding
+                        });
+                    }
                 }
             }
-        }
-        Ok(sweep)
+            Ok(sweep)
+        })?)
     }
 }
 
@@ -351,7 +386,9 @@ impl<'a, S: Store> CatalogService<'a, S> {
 /// [`register_found_origins`](CatalogService::register_found_origins) did.
 ///
 /// A value rather than the pre-write list it used to return, so the count a
-/// caller reports is the count of writes that actually landed (SH-274).
+/// caller reports is the count of writes that actually landed (SH-274) — and
+/// one built inside the sweep's own transaction, so a caller holding this value
+/// is holding a description of rows that committed (SH-275).
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct OriginSweep {
     /// Every origin this sweep recorded, in the order it recorded them.
