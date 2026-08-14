@@ -370,12 +370,20 @@ test("the Drafts button belongs to the board, and its popover does not outlive i
  * self-inflicted. `draft-stories.spec.ts`'s outside-click test caught it as a
  * 15s timeout on a backdrop it could see in the DOM and not click.
  *
- * The defect predates this story and is fixed in its own commit at the origin
- * — `closeDraftsModal()`'s timer re-reads the popover's state when it fires,
- * covering the Escape caller that could always reach it, which is what
- * `draft-stories.spec.ts` pins. This test pins the other half: that the caller
- * *this* story adds, on a path every page load takes, does not walk back into
- * it. The origin fix and the new caller arrived together and can drift apart.
+ * The defect predates this story and was fixed in its own commit at the
+ * origin, covering the Escape caller that could always reach it — which is
+ * what `draft-stories.spec.ts` pins. This test pins the other half: that the
+ * caller *this* story adds, on a path every page load takes, does not walk
+ * back into it. The origin fix and the new caller arrived together and can
+ * drift apart.
+ *
+ * That origin fix was a timer that re-read the popover's state when it fired,
+ * and SH-302 replaced it: `.open` lands a frame after `hidden` comes off, so
+ * a timer inside that frame read an open popover as closed and hid the
+ * backdrop anyway. Cancelling the timer on reopen asks no such question, and
+ * `overlay-reopen-race.spec.ts` is where that is pinned across the overlays
+ * that share the shape. This test is unchanged by it: what it asserts is the
+ * navigation caller's consequence, whatever the repair underneath.
  */
 test("a popover opened moments after a navigation is not hidden by the previous close", async ({
   page,

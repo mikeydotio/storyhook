@@ -1090,6 +1090,88 @@ fn every_backdrop_overlay_is_wired_into_the_focus_trap() {
     );
 }
 
+/// Every backdrop is shown and hidden through the shared pair, never by hand
+/// (SH-302).
+///
+/// A close fades its backdrop out and hides it on a timer, so the fade has
+/// something to fade. That timer belongs to the close that scheduled it, and
+/// a reopen inside its window undoes that close -- so the write it is still
+/// going to perform lands on a surface that is now open, leaving
+/// `<div class="backdrop open" hidden>`: invisible, unclickable, and still
+/// the thing every click on the page hits.
+///
+/// Seven overlays stated that lifecycle by hand and five of them never
+/// cancelled anything. The two that tried were the interesting ones: the
+/// drafts popover re-read `.open` when the timer fired, which is the right
+/// question asked of a signal that arrives a frame late (SH-284, and SH-302
+/// is the window that survived it), and the drawer read a variable set
+/// synchronously, which worked and was still a second way of saying what
+/// `showBackdrop()` now says once.
+///
+/// So this asserts the *routing* rather than the repair: no site may write a
+/// backdrop's `hidden` or touch its `classList` itself. Behaviour is proved
+/// in a real browser by `e2e/specs/overlay-reopen-race.spec.ts`, which can
+/// reach three of the seven; an eighth overlay added later, or a sixth
+/// hand-rolled hide, fails here instead of intermittently in someone else's
+/// spec on a loaded machine.
+#[test]
+fn every_backdrop_is_shown_and_hidden_through_the_helpers() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+
+    let ids: Vec<&str> = body
+        .match_indices(r#"class="backdrop""#)
+        .map(|(at, _)| enclosing_tag(&body, at))
+        .map(|tag| {
+            attribute(tag, "id").unwrap_or_else(|| {
+                panic!(
+                    "this backdrop carries no id, so nothing can name it to \
+                     `showBackdrop`/`hideBackdrop`: {tag}"
+                )
+            })
+        })
+        .collect();
+    assert!(
+        ids.len() >= 7,
+        "expected the dashboard's backdrop overlays, found {}: {ids:?}",
+        ids.len()
+    );
+
+    for id in &ids {
+        for half in ["showBackdrop", "hideBackdrop"] {
+            assert!(
+                body.contains(&format!("{half}(\"{id}\"")),
+                "nothing calls {half}(\"{id}\"). A backdrop opened or closed outside the shared \
+                 pair keeps no cancellable timer, so reopening its overlay inside the fade leaves \
+                 `class=\"backdrop open\" hidden` -- covering the page with something the user \
+                 cannot see or click (SH-302)"
+            );
+        }
+
+        // The pair reaches the element through its own parameter, so these
+        // literals can only come from a site doing it by hand. Registering a
+        // listener on `$("<id>")` is untouched: this forbids the two writes
+        // that make up the lifecycle, not every mention of the element.
+        for forbidden in [
+            format!("$(\"{id}\").hidden"),
+            format!("$(\"{id}\").classList"),
+        ] {
+            assert!(
+                !body.contains(&forbidden),
+                "`{forbidden}` writes a backdrop's own visibility outside `showBackdrop`/\
+                 `hideBackdrop`, which is where the cancellation lives (SH-302)"
+            );
+        }
+    }
+}
+
 /// The dashboard's `<style>` block, so a selector assertion below cannot
 /// accidentally match the same text in the markup that follows it --
 /// `.search-input` names both a CSS rule and a `class="search-input"`
