@@ -523,6 +523,34 @@ fn handoff_reports_a_reclosure_in_the_window_as_closed() {
     assert_eq!(section(&body, "## Closed"), [id.as_str()], "{body}");
 }
 
+/// A closure inside the window is reported even when the story's *last*
+/// event is stamped before it.
+///
+/// `fold_story` sets `updated_at` to the last *replayed* event's `at`, not
+/// the greatest one, and nothing orders an event's `at` against its
+/// predecessor's — no schema CHECK, no guard in `append_and_fold`. A
+/// restored import or a system clock that stepped back can leave
+/// `updated_at` behind `closed_at`; the `updated_at` pre-filter this loop
+/// used to open with then dropped the closure entirely — a handoff that
+/// omits the one thing the session finished (SH-280).
+#[test]
+fn handoff_reports_a_closure_whose_last_event_is_stamped_earlier() {
+    let fixture = ServiceFixture::new();
+    let june = fixture.ctx().clock(Clock::Fixed(JUNE.into()));
+    let id = new_story(&june, "closed in June");
+    StoryService::new(&june)
+        .set_state(&id, "done", None, None, None)
+        .expect("closing");
+
+    // Appended after the closure, stamped five months before it.
+    StoryService::new(&fixture.ctx())
+        .comment(&id, "from a clock that stepped back")
+        .expect("commenting");
+
+    let body = query_at(&fixture, JUNE_LATER, |service| service.handoff(None));
+    assert_eq!(section(&body, "## Closed"), [id.as_str()], "{body}");
+}
+
 // --- what the surfaces include ---------------------------------------------
 
 #[test]
