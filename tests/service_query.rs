@@ -19,6 +19,17 @@
 //! lexicographic answer those two used to give was never a promise anyone
 //! could rely on: it was whichever order a `BTreeMap` happened to iterate two
 //! same-second, same-priority stories in.
+//!
+//! # The Closed section means closed (SH-280)
+//!
+//! `handoff` used to bucket "Closed" on `updated_at` inside the window and
+//! `superstate == CLOSED`, which answers "was this touched, and is it
+//! currently closed" rather than "was it closed in this window". Any append
+//! to an already-closed story — `story hide`/`unhide` (SH-43), `story
+//! comment` (SH-261), `commit-sync`'s commit link (SH-279) — bumps
+//! `updated_at` without closing anything, so a story closed months ago was
+//! reported as this session's work. Fixed by bucketing on `closed_at`
+//! instead, the field the heading actually claims.
 
 use storyhook::cli::GraphMode;
 use storyhook::domain::{Priority, StorySnapshot, SuperState};
@@ -414,6 +425,164 @@ fn handoff_rejects_a_duration_it_cannot_parse() {
     assert!(
         error.to_string().contains("invalid duration `whenever`"),
         "{error}"
+    );
+}
+
+// --- SH-280: "Closed" means closed, not touched -----------------------------
+
+/// Five months past `FIXTURE_NOW` (`2026-01-01T00:00:00Z`) — where the SH-280
+/// tests below do their work, so anything written at the fixture's own
+/// instant is unambiguously outside the default 24-hour handoff window.
+const JUNE: &str = "2026-06-01T00:00:00Z";
+const JUNE_LATER: &str = "2026-06-01T01:00:00Z";
+
+/// A story created and closed at `FIXTURE_NOW` — long closed by the time the
+/// SH-280 tests query in `JUNE`.
+fn closed_long_ago(fixture: &ServiceFixture, title: &str) -> String {
+    let ctx = fixture.ctx();
+    let id = new_story(&ctx, title);
+    StoryService::new(&ctx)
+        .set_state(&id, "done", None, None, None)
+        .expect("closing");
+    id
+}
+
+/// A story closed in January is not something this session closed, however
+/// it was touched today.
+///
+/// `story comment` is one of the writes SH-261 let reach a closed story, and
+/// every append bumps `updated_at`. Bucketing "Closed" on `superstate` and
+/// `updated_at` reported a five-month-old closure as this session's work —
+/// the false statement SH-280 is about.
+#[test]
+fn handoff_does_not_reclose_an_old_story_that_was_only_commented_on() {
+    let fixture = ServiceFixture::new();
+    let id = closed_long_ago(&fixture, "closed in January");
+
+    let june = fixture.ctx().clock(Clock::Fixed(JUNE.into()));
+    StoryService::new(&june)
+        .comment(&id, "still the right call")
+        .expect("commenting on a closed story");
+
+    let body = query_at(&fixture, JUNE_LATER, |service| service.handoff(None));
+    assert_eq!(
+        section(&body, "## Updated"),
+        [id.as_str()],
+        "touched, not closed, in this window:\n{body}"
+    );
+    assert!(
+        !body.contains("## Closed"),
+        "nothing was closed in this window:\n{body}"
+    );
+}
+
+/// The same false claim, reached through `story hide` (SH-43) instead of a
+/// comment — the other write that appends to an already-closed story.
+#[test]
+fn handoff_does_not_reclose_an_old_story_that_was_only_hidden() {
+    let fixture = ServiceFixture::new();
+    let id = closed_long_ago(&fixture, "closed in January");
+
+    let june = fixture.ctx().clock(Clock::Fixed(JUNE.into()));
+    StoryService::new(&june)
+        .hide(&id)
+        .expect("hiding a closed story");
+
+    let body = query_at(&fixture, JUNE_LATER, |service| service.handoff(None));
+    assert_eq!(
+        section(&body, "## Updated"),
+        [id.as_str()],
+        "archived, not closed, in this window:\n{body}"
+    );
+    assert!(
+        !body.contains("## Closed"),
+        "nothing was closed in this window:\n{body}"
+    );
+}
+
+/// The other half of the promise: a story really closed in the window is
+/// still reported — including one closed for the *second* time, so the fix
+/// above cannot overshoot into "never reports Closed".
+///
+/// `fold_story` clears `closed_at` when a story reopens into an OPEN state
+/// and restamps it on the next close, so the field always names the closure
+/// that is current — which is what lets the bucket be one comparison.
+#[test]
+fn handoff_reports_a_reclosure_in_the_window_as_closed() {
+    let fixture = ServiceFixture::new();
+    let id = closed_long_ago(&fixture, "closed in January, finished in June");
+
+    let june = fixture.ctx().clock(Clock::Fixed(JUNE.into()));
+    let stories = StoryService::new(&june);
+    stories.reopen(&id).expect("reopening");
+    stories
+        .set_state(&id, "done", None, None, None)
+        .expect("re-closing");
+
+    let body = query_at(&fixture, JUNE_LATER, |service| service.handoff(None));
+    assert_eq!(section(&body, "## Closed"), [id.as_str()], "{body}");
+}
+
+/// A closure inside the window is reported even when the story's *last*
+/// event is stamped before it.
+///
+/// `fold_story` sets `updated_at` to the last *replayed* event's `at`, not
+/// the greatest one, and nothing orders an event's `at` against its
+/// predecessor's — no schema CHECK, no guard in `append_and_fold`. A
+/// restored import or a system clock that stepped back can leave
+/// `updated_at` behind `closed_at`; the `updated_at` pre-filter this loop
+/// used to open with then dropped the closure entirely — a handoff that
+/// omits the one thing the session finished (SH-280).
+#[test]
+fn handoff_reports_a_closure_whose_last_event_is_stamped_earlier() {
+    let fixture = ServiceFixture::new();
+    let june = fixture.ctx().clock(Clock::Fixed(JUNE.into()));
+    let id = new_story(&june, "closed in June");
+    StoryService::new(&june)
+        .set_state(&id, "done", None, None, None)
+        .expect("closing");
+
+    // Appended after the closure, stamped five months before it.
+    StoryService::new(&fixture.ctx())
+        .comment(&id, "from a clock that stepped back")
+        .expect("commenting");
+
+    let body = query_at(&fixture, JUNE_LATER, |service| service.handoff(None));
+    assert_eq!(section(&body, "## Closed"), [id.as_str()], "{body}");
+}
+
+/// `--stale` never asks about a closed story, and that is why SH-280 left
+/// `annotate_staleness` alone.
+///
+/// `annotate_staleness` reads `updated_at` and would happily call a story
+/// finished in January "five months stale" the moment someone commented on
+/// it (SH-261) — the same false sentence SH-280 fixed one surface over. It
+/// never gets the chance: `list` retains `superstate == Open` *before* it
+/// annotates, so a closed story is filtered out first. That exemption is one
+/// `retain` away from being lost, and losing it would be silent — the
+/// annotation is advisory, so nothing else would fail. Pinned here rather
+/// than assumed.
+#[test]
+fn stale_never_reports_a_closed_story_however_long_ago_it_closed() {
+    let fixture = ServiceFixture::new();
+    let closed = closed_long_ago(&fixture, "finished in January");
+    let open = new_story(&fixture.ctx(), "still open");
+
+    // Both last moved at `FIXTURE_NOW`, five months past the threshold at
+    // `JUNE_LATER`; only the closed one is exempt from being reported.
+    let filters = ListFilters {
+        stale: Some("1d".into()),
+        ..ListFilters::default()
+    };
+    let views = query_at(&fixture, JUNE_LATER, |service| service.list(&filters));
+    assert_eq!(
+        ids(&views),
+        [open.as_str()],
+        "a closed story is finished, not stale; {closed} must not appear"
+    );
+    assert!(
+        views[0].stale_info.is_some(),
+        "and the open one is still annotated"
     );
 }
 
