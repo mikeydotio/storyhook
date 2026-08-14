@@ -673,6 +673,41 @@ fn a_daemon_that_panics_is_classified_as_panicked_on_the_next_start() {
     );
 }
 
+/// A daemon's log used to be truncated on every spawn, which destroyed a dead
+/// daemon's whole stderr — its panic message included — the moment the very
+/// next `story` command ran. A spawn must rotate it one deep instead, so the
+/// previous daemon's output survives long enough for `crash::harvest` to read
+/// it (SH-287).
+#[test]
+fn a_daemon_spawn_rotates_the_previous_log_instead_of_destroying_it() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+
+    let first = start(&env);
+    lifecycle::stop(&env.environment(), lifecycle::StopMode::Force).expect("stopping the first");
+
+    let second = start(&env);
+    assert_ne!(
+        first.pid, second.pid,
+        "the two starts must be different processes"
+    );
+
+    let rotated = std::fs::read_to_string(env.environment().daemon_log_rotated())
+        .expect("the previous log must have been rotated, not destroyed");
+    assert!(
+        rotated.contains(&first.pid.to_string()),
+        "the rotated log must be the *first* daemon's own output, not the \
+         second's: {rotated:?}"
+    );
+
+    let current = std::fs::read_to_string(env.environment().daemon_log())
+        .expect("the current daemon must still have a fresh log");
+    assert!(
+        current.contains(&second.pid.to_string()),
+        "the current log must be the second daemon's own startup banner: {current:?}"
+    );
+}
+
 /// **Version skew.** A daemon serving a different build must not be used, and
 /// the check is on the executable's mtime as well as the version — a developer
 /// rebuilding the same version is the common case, and the one that produced a

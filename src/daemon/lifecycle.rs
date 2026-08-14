@@ -1105,6 +1105,14 @@ fn disinherit_descriptors() {
 fn spawn_child(env: &Environment) -> Result<std::process::Child, AppError> {
     let (exe, _) = current_binary()?;
     std::fs::create_dir_all(env.daemon_state_dir())?;
+    // A crash's whole stderr — the default panic output the hook in
+    // `crate::daemon::crash` chains to, and everything printed before it —
+    // lives only in this file, and this line about to `truncate(true)` it
+    // used to destroy that evidence on the very next spawn, which is usually
+    // the very next `story` command (SH-287). Rotating one deep is enough:
+    // `crash::harvest`, called from `run` a few lines below this function's
+    // caller, reads `daemon.log.1` before anything else can touch it.
+    let _ = std::fs::rename(env.daemon_log(), env.daemon_log_rotated());
     // Mode 0600, not `File::create`'s 0644: this log carries the daemon's whole
     // stderr for its whole life, and since SH-153 that can include a GitHub
     // token surfaced in a diagnostic — every other daemon file that matters is
