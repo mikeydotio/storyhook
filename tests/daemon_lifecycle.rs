@@ -9,8 +9,10 @@
 //! `STORYHOOK_DAEMON_ADDR=127.0.0.1:0` means none of them can bind the port a
 //! developer's own dashboard is on.
 
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
+use storyhook::daemon::crash::{self, CrashClassification};
 use storyhook::daemon::lifecycle::{self, DaemonInfo};
 use storyhook_test_support::{TestEnv, scratch_dir, story_binary};
 
@@ -620,6 +622,54 @@ fn a_daemon_orphaned_by_its_parent_leaves_no_portfile_behind() {
         !env.environment().daemon_file().exists(),
         "an orphaned daemon's portfile must be cleared on exit, the same as an \
          orderly shutdown's — left behind, it is indistinguishable from a crash"
+    );
+}
+
+/// **A real crash, not a simulated one.** `STORYHOOK_TEST_PANIC` makes a real
+/// `story daemon --serve` process panic on its own, after publishing its
+/// portfile — the out-of-process lever `crash::maybe_trigger_test_panic`'s own
+/// doc describes. The *next* daemon this test starts, against the same store,
+/// must classify what it finds as [`CrashClassification::Panicked`] (SH-287).
+#[test]
+fn a_daemon_that_panics_is_classified_as_panicked_on_the_next_start() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let dir = scratch_dir();
+
+    let mut panicking = env
+        .raw_story(dir.path())
+        .env("STORYHOOK_TEST_PANIC", "1")
+        .args(["daemon", "--serve", "--port", "0"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawning a daemon armed to panic");
+    let status = panicking.wait().expect("reaping the panicking daemon");
+    assert!(
+        !status.success(),
+        "a daemon that panics on its own thread must not exit successfully: {status:?}"
+    );
+    assert!(
+        env.environment().daemon_file().exists(),
+        "the portfile is published before the panic fires, so it must survive the crash"
+    );
+
+    // A fresh, ordinary daemon start — no `STORYHOOK_TEST_PANIC` on this
+    // command — is the moment SH-287's detector runs.
+    start(&env);
+
+    let ledger = crash::read_crashes(&env.environment());
+    assert_eq!(
+        ledger.len(),
+        1,
+        "exactly one crash must be ledgered: {ledger:?}"
+    );
+    assert_eq!(ledger[0].classification, CrashClassification::Panicked);
+    assert_eq!(ledger[0].panics.len(), 1);
+    assert!(
+        ledger[0].panics[0].message.contains("STORYHOOK_TEST_PANIC"),
+        "the ledgered panic must carry the real message: {:?}",
+        ledger[0].panics[0]
     );
 }
 
