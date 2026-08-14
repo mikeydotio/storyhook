@@ -432,7 +432,7 @@ mod exchange {
                 &info,
                 &envelope(),
                 Some(ExchangeBound::After(DRIVEN)),
-                Duration::from_millis(25),
+                POLL,
                 PATIENCE,
                 true,
             )
@@ -656,7 +656,7 @@ mod exchange {
                 &info,
                 &envelope(),
                 None,
-                Duration::from_millis(25),
+                POLL,
                 PATIENCE,
                 true,
             ));
