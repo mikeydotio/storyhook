@@ -14772,6 +14772,110 @@ defensible answers.
 **Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push,
 no version bump.
 
+## SH-276 — the two Windows `cfg` arms the manifest scan couldn't see
+
+**The finding.** `src/clipboard.rs:50` and `src/web.rs:217` each carried a
+`#[cfg(target_os = "windows")]` arm returning a hardcoded argv (`vec!["clip"]`;
+a `cmd /C start` invocation), paired with a `not(any(macos, linux, windows))`
+fallback. Unlike SH-260's dependency table, neither declared a Cargo
+dependency, so `tests/release_targets.rs`'s manifest scan could not see them
+and no compile-time signal, on any platform, could confirm or refute whether
+the argv was even correct. SH-260's own unanimous 3-0 `/council-vote` scoped
+these out on purpose rather than folding them in, since — unlike the
+`credential_store.rs` arm SH-260 deleted, which named a crate the dependency
+removal had just deleted, a *forced* edit — deleting these was purely
+discretionary, and the story explicitly asked for a deliberate choice between
+deleting them outright or pinning the invariant with a source scan.
+
+**The decision.** Both: delete the arms, *and* close the class with a scan —
+worded as the rule SH-260 already shipped for manifests, extended to the
+artifact type that hid these two, not as a Windows-specific block. It answers
+the concern that scoped this out of SH-260 in the first place: the scan is
+matrix-derived, so it goes green for Windows automatically the day a Windows
+target joins `release.yml`'s matrix, with no edit to this test. Confirmed by
+plan review before implementation (posted as a comment on SH-276).
+
+**The fix.** `src/clipboard.rs` and `src/web.rs` lose their Windows arm each;
+both `not(any(...))` fallbacks narrow to `not(any(target_os = "macos",
+target_os = "linux"))`, matching what SH-260 did to `credential_store.rs`.
+`$STORYHOOK_CLIPBOARD_CMD` and `$BROWSER` already override on every platform,
+so nothing load-bearing is lost — the caller's existing actionable errors
+("copying to the clipboard isn't supported on this platform…" / "opening a
+browser isn't supported on this platform…") now fire on any platform outside
+macOS/Linux, same as they already did for every platform this crate never
+recognized. `tests/spawn_inventory.rs`'s inventory comment drops its
+now-stale `cmd /C start` clause.
+
+**The generalized invariant.**
+`tests/release_targets.rs::every_platform_gated_source_arm_targets_a_built_platform`
+is `every_platform_gated_dependency_table_targets_a_built_platform`'s sibling:
+every `target_os` literal inside a `cfg`-shaped line of a tracked `.rs` file
+must correspond to a target `release.yml`'s matrix actually builds, reusing
+the same `release_matrix_targets`/`matrix_substring_for` (still closed and
+explicit — an untaught OS panics rather than passing) this file already had.
+`git ls-files -z -- '*.rs'`, this repo's derived-not-enumerated idiom. No
+allowlist, following `dead_public_surface.rs`'s stated policy of extending
+the scan rather than special-casing a name.
+
+One wrinkle the manifest scan never had to face: this scan reads `.rs` files,
+and its own control test necessarily writes example `cfg(target_os =
+"windows")` fixtures as string literals to prove the extractor matches what it
+claims to — byte for byte indistinguishable from a real attribute once quote
+*characters* are all a crude line-scanner looks at. Scanning this file for its
+own examples would have flagged the tests proving the scanner works, not a
+real defect. `SOURCE_SCAN_OWNER` excludes this one file from the scan's own
+target list, the same shape `tests/store_isolation.rs`'s `REAL_STORE_OWNER`
+already uses, with the same staleness check pinning that the exclusion still
+excludes something.
+
+**Red proof.** Wrote the scan and its control test against the *unfixed*
+tree first (temporarily restored the pre-SH-276 `clipboard.rs`/`web.rs` from
+`HEAD` without touching the new test file — no `git stash`, worktrees share
+one). It failed exactly as expected:
+
+```
+thread 'every_platform_gated_source_arm_targets_a_built_platform' panicked at tests/release_targets.rs:755:13:
+src/clipboard.rs:50 names target_os "windows" in a `cfg` arm, but no target in release.yml's build
+matrix matches (matrix targets: ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu",
+"x86_64-apple-darwin", "aarch64-apple-darwin"]). Either add windows to the matrix and prove the
+arm by building it, or delete the arm for a platform this project does not ship (SH-276).
+```
+
+Restored the fixed source, reran: 15/15 green in `tests/release_targets.rs`
+(13 → 15; the two new tests are the control test and the scan). Manually
+probed the scan's actual hit count against the fixed tree (16 — the two
+positive arms each of `clipboard.rs`/`web.rs`/`credential_store.rs` contribute
+4 apiece, plus four `cfg!(target_os = "macos")` runtime checks in
+`daemon/commands.rs` and `storyhook-test-support/src/scratch.rs`) before
+setting the floor assertion to `>= 10`, so the floor has real margin rather
+than being tuned to exactly what exists today.
+
+**Sibling sweep, considered and not swept.** Both platforms this project
+builds are unix, so the tree's ~5 `#[cfg(not(unix))]` arms
+(`daemon/lifecycle.rs`, `daemon/commands.rs`, `update.rs`) are exactly as
+never-compiled as the Windows arms were. Left alone on purpose: a `not(...)`
+arm is graceful degradation — the "everything else" case that keeps a
+function defined on any target — where the Windows arms were positive support
+claims nothing backed. Deleting a `not(unix)` arm would leave its function
+undefined rather than refusing cleanly; that is a different defect shape, not
+a smaller instance of this one.
+
+**Gate.** Worktree was fresh — first `make test` run failed loudly on the
+e2e leg naming its own remedy (`e2e/node_modules or the Playwright CLI is
+missing — run 'make e2e-install' first`), exactly the deliberate-failure
+behavior the Makefile documents for an unbootstrapped Node toolchain, not a
+regression. Ran `make e2e-install`, reran clean: `cargo fmt`/`cargo clippy
+--workspace --all-targets -- -D warnings` clean, 156 `test result: ok` blocks
+(0 failed across all of them), the plugin bash harness 32/32, `make
+e2e-install`'s Playwright suite 158/158 in 5.5m. The one `error:` line in the
+log (`the storyhook daemon stopped answering: io: Peer disconnected…`) is a
+daemon-stop test printing its own expected output, the same shape SH-260's
+gate note already recorded. Total: 14m27s, no stalls, no restarts.
+
+**Not done here, on purpose:** no version bump, no deploy, no merge — this is
+a linked worktree. PR opened against SH-276, link commented back on the
+story, worktree left for the user to land.
+
 ### SH-284 — done · PR #386
 
 **Outcome:** merged. The Drafts button stops claiming a count it does not have,

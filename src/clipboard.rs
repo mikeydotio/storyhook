@@ -26,8 +26,15 @@ use std::process::Command;
 
 use crate::error::AppError;
 
-/// Clipboard-writer command candidates for the host OS, tried in order. Empty on
-/// unsupported platforms (the caller turns that into a clear error).
+/// Clipboard-writer command candidates for the host OS, tried in order. Empty
+/// on a platform outside the two storyhook ships prebuilt binaries for — a
+/// `#[cfg(target_os = "windows")]` arm used to sit here, hardcoding `clip`
+/// for a platform nothing has ever compiled this crate against. Removed by
+/// SH-276, the same call SH-260 made for `src/github/credential_store.rs`'s
+/// Windows arm: no build, no test, no way to know if the argv was even
+/// right. `$STORYHOOK_CLIPBOARD_CMD` still overrides on every platform, so
+/// the caller turns an empty candidate list into a clear, actionable error
+/// rather than a silent no-op.
 #[cfg(target_os = "macos")]
 fn default_clipboard_argv() -> Vec<Vec<String>> {
     vec![vec!["pbcopy".to_string()]]
@@ -47,11 +54,7 @@ fn default_clipboard_argv() -> Vec<Vec<String>> {
         ],
     ]
 }
-#[cfg(target_os = "windows")]
-fn default_clipboard_argv() -> Vec<Vec<String>> {
-    vec![vec!["clip".to_string()]]
-}
-#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn default_clipboard_argv() -> Vec<Vec<String>> {
     Vec::new()
 }

@@ -122,7 +122,7 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // only pipe at all is *stdin*, which this end closes. Lived at
     // `src/web.rs` until SH-250 moved it beside its second caller.
     ("src/clipboard.rs", "&argv[0]", Kind::Waited),
-    // `web::open_in_browser` — `open`/`xdg-open`/`cmd /C start`, or `$BROWSER`.
+    // `web::open_in_browser` — `open`/`xdg-open`, or `$BROWSER`.
     // `Waited`: `.status()` with both output streams `Stdio::null()`, so no
     // pipe exists for a descendant to hold. A browser it launches routinely
     // outlives the command, which is why the null streams matter rather than
