@@ -587,6 +587,42 @@ fn a_daemon_does_not_outlive_the_process_that_named_itself_its_parent() {
     });
 }
 
+/// A parent-death exit is an orderly exit, not a crash, and must not look like
+/// one to the next daemon's startup crash detector (SH-287): it clears the
+/// portfile the same way the shutdown route does, rather than leaving it
+/// behind for `watch_parent`'s `std::process::exit(0)` to strand.
+#[test]
+fn a_daemon_orphaned_by_its_parent_leaves_no_portfile_behind() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let dir = scratch_dir();
+
+    let mut parent = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .expect("spawning a stand-in parent");
+    let parent_pid = parent.id();
+
+    env.story(dir.path())
+        .env("STORYHOOK_PARENT_PID", parent_pid.to_string())
+        .args(["daemon", "start"])
+        .assert()
+        .success();
+    assert!(lifecycle::is_live(&env.environment()));
+
+    parent.kill().expect("killing the stand-in parent");
+    parent.wait().expect("reaping the stand-in parent");
+
+    wait_for("the orphaned daemon to exit", || {
+        !lifecycle::is_live(&env.environment())
+    });
+    assert!(
+        !env.environment().daemon_file().exists(),
+        "an orphaned daemon's portfile must be cleared on exit, the same as an \
+         orderly shutdown's — left behind, it is indistinguishable from a crash"
+    );
+}
+
 /// **Version skew.** A daemon serving a different build must not be used, and
 /// the check is on the executable's mtime as well as the version — a developer
 /// rebuilding the same version is the common case, and the one that produced a

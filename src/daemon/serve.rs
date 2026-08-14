@@ -315,7 +315,8 @@ where
         }
         {
             let stop = Arc::clone(&stop);
-            scope.spawn(move || watch_parent(&stop));
+            let env = env.clone();
+            scope.spawn(move || watch_parent(&env, &stop));
         }
         // The unattended GitHub poll (SH-212) — absent entirely without the
         // `github-sync` feature, the same way `pr_check::run_check`, the
@@ -1528,7 +1529,13 @@ fn poll_change_token<S: Store>(
 /// tests and an afternoon.
 ///
 /// Production sets nothing, so nothing watches.
-fn watch_parent(stop: &AtomicBool) {
+///
+/// Clears the portfile before exiting, the same as the shutdown route
+/// (`route_job_inner`'s `Verdict::Shutdown` arm) — this is an orderly exit,
+/// not a crash, and a portfile left behind here would be indistinguishable
+/// from one a real crash left, misleading the crash detector the next daemon
+/// runs at startup (SH-287).
+fn watch_parent(env: &Environment, stop: &AtomicBool) {
     let Some(parent) = crate::daemon::lifecycle::parent_pid() else {
         return;
     };
@@ -1536,6 +1543,7 @@ fn watch_parent(stop: &AtomicBool) {
         thread::sleep(SHUTDOWN_CHECK);
         if !crate::daemon::lifecycle::pid_is_live(parent) {
             eprintln!("storyhook daemon: parent process {parent} is gone; exiting");
+            crate::daemon::lifecycle::clear_info(env);
             std::process::exit(0);
         }
     }
