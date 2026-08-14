@@ -248,6 +248,7 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
         | Invocation::DoctorAbandoned { .. }
+        | Invocation::DoctorCrashes { .. }
         | Invocation::Import { .. }
         | Invocation::Decompose { .. }
         | Invocation::Export

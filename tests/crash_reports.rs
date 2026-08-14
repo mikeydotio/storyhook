@@ -493,3 +493,76 @@ fn a_crashloop_is_capped_at_three_new_stories_per_start() {
         .count();
     assert_eq!(crash_story_count, 3);
 }
+
+/// `story doctor crashes` — the CLI surface a human reviews the ledger
+/// through, and `story doctor`'s own advisory pointer to it (SH-287).
+#[test]
+fn story_doctor_crashes_lists_clears_and_is_advised_from_plain_doctor() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let dir = scratch_dir();
+    register_self_project(&env, dir.path());
+
+    let empty = env
+        .story(dir.path())
+        .args(["doctor", "crashes"])
+        .output()
+        .expect("running story doctor crashes");
+    assert!(empty.status.success());
+    assert!(String::from_utf8_lossy(&empty.stdout).contains("no crashes"));
+
+    panic_the_daemon(&env, dir.path());
+    restart_and_wait_for_filing(&env, dir.path(), true);
+
+    let ledger = crash::read_crashes(&env.environment());
+    let crash_id = ledger[0].id.clone();
+    let story_id = match &ledger[0].filed {
+        FiledOutcome::Filed(id) => id.clone(),
+        other => panic!("expected the crash to be filed, got {other:?}"),
+    };
+
+    let listing = env
+        .story(dir.path())
+        .args(["doctor", "crashes"])
+        .output()
+        .expect("running story doctor crashes");
+    assert!(listing.status.success());
+    let listing_text = String::from_utf8_lossy(&listing.stdout);
+    assert!(
+        listing_text.contains(&crash_id),
+        "the listing must name the crash: {listing_text}"
+    );
+    assert!(
+        listing_text.contains("panicked"),
+        "the listing must name the classification: {listing_text}"
+    );
+    assert!(
+        listing_text.contains(&format!("filed as `{story_id}`")),
+        "the listing must say what the crash became: {listing_text}"
+    );
+
+    // `story doctor` (no subcommand) only advises — it does not fail the
+    // project just because a daemon once crashed and got a bug filed for it.
+    let plain_doctor = env
+        .story(dir.path())
+        .args(["doctor"])
+        .output()
+        .expect("running story doctor");
+    assert!(plain_doctor.status.success());
+    let plain_doctor_text = String::from_utf8_lossy(&plain_doctor.stdout);
+    assert!(
+        plain_doctor_text.contains("crash") && plain_doctor_text.contains("story doctor crashes"),
+        "plain `story doctor` must point at the crash ledger: {plain_doctor_text}"
+    );
+
+    env.story(dir.path())
+        .args(["doctor", "crashes", "clear", "--all"])
+        .assert()
+        .success();
+    let cleared = env
+        .story(dir.path())
+        .args(["doctor", "crashes"])
+        .output()
+        .expect("running story doctor crashes after clearing");
+    assert!(String::from_utf8_lossy(&cleared.stdout).contains("no crashes"));
+}
