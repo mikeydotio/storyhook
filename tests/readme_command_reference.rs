@@ -343,6 +343,7 @@ fn placeholder(token: &str) -> Option<&'static str> {
         "<glyph>" => "🐛",
         "<event_type>" => "pre-commit",
         "<request-id>" => "req-1",
+        "<crash-id>" => "crash-1",
         "<target>" => "claude-code",
         _ => return None,
     })
