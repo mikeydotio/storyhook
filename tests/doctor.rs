@@ -283,7 +283,7 @@ fn doctor_reports_and_fixes_a_hidden_story_whose_superstate_reads_open() {
     project
         .run(&["doctor"])
         .code(5)
-        .stderr(contains("story 1: hidden_at is").and(contains("but the events say `<none>`")));
+        .stderr(contains("SH-1: hidden_at is").and(contains("but the events say `<none>`")));
 
     project.run(&["doctor", "--fix"]).success();
     project.run(&["doctor"]).success();
@@ -315,9 +315,45 @@ fn doctor_reports_and_fixes_a_draft_flag_that_disagrees_with_its_events() {
     )
     .expect("fabricating an unpublished flag with no event behind it");
 
-    project.run(&["doctor"]).code(5).stderr(contains(
-        "story 1: draft is `true` but the events say `false`",
-    ));
+    project
+        .run(&["doctor"])
+        .code(5)
+        .stderr(contains("SH-1: draft is `true` but the events say `false`"));
+
+    project.run(&["doctor", "--fix"]).success();
+    project.run(&["doctor"]).success();
+}
+
+/// SH-269, and the half a same-prefix fixture cannot catch: the read-model
+/// pass renders the id from the **project's own** prefix, so a literal `SH`
+/// would pass every other test in this file and still be wrong for every
+/// project that is not this one.
+///
+/// The bare number it used to print (`story 1:`) was at least honest about
+/// knowing no prefix; a hardcoded one would be a confident lie.
+#[test]
+fn drift_findings_render_the_projects_own_prefix() {
+    let env = TestEnv::shared();
+    let project = env.project().prefix("ZZ").seed_story("A story").build();
+    let store = project.open_store();
+    let id = project.project_id(&store);
+    let story = project.story_no(&store, "ZZ-1");
+
+    let conn = rusqlite::Connection::open(store.path()).expect("opening the store");
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .expect("setting a busy timeout");
+    conn.execute(
+        "UPDATE stories SET draft = 1 WHERE project_id = ?1 AND story_no = ?2",
+        rusqlite::params![id.get(), story.get()],
+    )
+    .expect("fabricating an unpublished flag with no event behind it");
+
+    project
+        .run(&["doctor"])
+        .code(5)
+        .stderr(contains("ZZ-1: draft is `true` but the events say `false`"))
+        .stderr(contains("SH-1").not())
+        .stderr(contains("story 1:").not());
 
     project.run(&["doctor", "--fix"]).success();
     project.run(&["doctor"]).success();

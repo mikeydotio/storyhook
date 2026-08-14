@@ -829,7 +829,7 @@ fn a_row_that_disagrees_with_its_events_is_reported_and_repaired() {
     let issues = report(&fixture);
     assert_eq!(
         issues,
-        ["story 1: title is `not what the events say` but the events say `the real title`"],
+        ["SH-1: title is `not what the events say` but the events say `the real title`"],
     );
 
     assert_eq!(
@@ -865,10 +865,7 @@ fn restoring_a_lost_row_is_a_repair_the_run_admits_to() {
     drop(ctx);
 
     forget_row(&fixture, 1);
-    assert_eq!(
-        report(&fixture),
-        ["story 1: has events but no read-model row"]
-    );
+    assert_eq!(report(&fixture), ["SH-1: has events but no read-model row"]);
 
     assert_eq!(
         fix(&fixture).expect("a row its events support is restorable"),
@@ -911,7 +908,7 @@ fn a_repair_the_run_itself_dissolved_is_not_still_advised() {
         report(&fixture),
         [
             "SH-1: dangling relation `obviates` to missing story `SH-2`",
-            "story 2: has events but no read-model row",
+            "SH-2: has events but no read-model row",
         ],
         "the damage the fixture makes, as the pre-repair report sees it"
     );
@@ -1073,7 +1070,8 @@ fn a_torn_known_event_payload_is_still_a_finding_fix_cannot_repair() {
     let issues = report(&fixture);
     assert_eq!(issues.len(), 1, "{issues:?}");
     assert!(
-        issues[0].contains("event 2")
+        issues[0].starts_with("SH-1: ")
+            && issues[0].contains("event 2")
             && issues[0].contains("`StoryCommentAdded`")
             && !issues[0].contains("newer storyhook"),
         "a torn payload reads differently from a notice: {issues:?}"
@@ -1470,12 +1468,20 @@ fn a_failed_fix_still_names_the_story_it_could_not_repair() {
     let error = fix(&fixture).expect_err("a story that cannot be folded is a finding");
     let rendered = error.to_string();
     assert!(
-        rendered.contains("cannot be folded"),
+        rendered.contains("SH-1: cannot be folded"),
         "the finding that failed the run: {rendered}"
     );
     assert!(
         rendered.contains("could not be repaired"),
         "the repair `--fix` declined to guess at must be named, not dropped: {rendered}"
+    );
+    // SH-269: the advice block names the story the way the finding above it
+    // does. It used to say `1: <reason>` — not even the word "story".
+    assert!(
+        rendered
+            .lines()
+            .any(|line| line.starts_with("SH-1: ") && !line.contains("cannot be folded:")),
+        "the unrepairable list spells its id like every other line: {rendered}"
     );
 
     // The catalog goes back so the fixture's drop-time drift check has
@@ -1594,8 +1600,12 @@ fn a_divergence_carries_the_four_values_sh243_had_to_regex_out() {
     assert_eq!(
         divergence.subject.as_deref(),
         Some("SH-1"),
-        "`subject` carries the rendered id every other surface speaks, even though \
-         the sentence itself still says `story 1:`"
+        "`subject` carries the rendered id every other surface speaks"
+    );
+    assert!(
+        divergence.message.starts_with("SH-1: "),
+        "and since SH-269 the sentence spells it the same way: {}",
+        divergence.message
     );
     match divergence.data {
         Some(FindingData::Divergence {
@@ -1699,6 +1709,100 @@ fn the_rendered_report_is_exactly_its_findings_joined() {
     );
 
     fix(&fixture).expect("repairing the one-sided edge this test made");
+}
+
+// --- one report, one name per story (SH-269) -------------------------------
+
+/// **SH-269's acceptance criterion.** `story doctor` named one story two ways
+/// in one report: `SH-41:` from the story-level pass and `story 41:` from the
+/// read-model pass. A reader of a mixed report could not tell whether the two
+/// lines were about the same story — the ids differ in *both* halves of the
+/// spelling, so neither one is a substring of the other.
+///
+/// Derived rather than enumerated: a finding that identifies a story must
+/// *lead* with the id [`Finding::subject`] carries, whichever pass produced
+/// it. A check added later inherits the rule instead of getting to spell its
+/// own id, which is how the two spellings diverged in the first place.
+#[test]
+fn every_finding_that_names_a_story_leads_with_the_rendered_id() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let a = new_story(&ctx, "one");
+    new_story(&ctx, "two");
+    drop(ctx);
+
+    // Damage from both passes, in one report: a malformed label on SH-1
+    // (story-level), SH-2's row deleted out from under its own history and
+    // SH-1's title rewritten behind the events' back (read-model).
+    //
+    // Deliberately *no* relation between the two. An edge naming a story whose
+    // row is missing reads as dangling to the repair pass, which retracts it —
+    // SH-285, a live data-loss defect this test found and must not depend on.
+    append_to_one_end(
+        &fixture,
+        &a,
+        &[StoryEvent::StoryLabelsSet {
+            at: FIXTURE_NOW.to_string(),
+            labels: vec!["web,sse".to_string()],
+        }],
+    );
+    forget_row(&fixture, 2);
+    let connection = Connection::open(fixture.store().path()).expect("opening the store");
+    connection
+        .execute("UPDATE stories SET title = 'wrong'", [])
+        .expect("damaging the read model");
+
+    let found = findings(&fixture);
+    let codes: BTreeSet<FindingCode> = found.iter().map(|finding| finding.code).collect();
+    assert!(
+        codes.contains(&FindingCode::MalformedLabels),
+        "the fixture must reach the story-level pass: {found:?}"
+    );
+    assert!(
+        codes.contains(&FindingCode::MissingRow)
+            && codes.contains(&FindingCode::ReadModelDivergence),
+        "and the read-model pass, or this test proves nothing: {found:?}"
+    );
+
+    for finding in &found {
+        let Some(subject) = finding.subject.as_deref() else {
+            // A property of the *project* rather than of a story — the catalog
+            // findings, which name no story and must not invent one.
+            continue;
+        };
+        assert!(
+            finding.message.starts_with(&format!("{subject}: ")),
+            "a finding must lead with the id its `subject` carries, and `{}` does not \
+             lead with `{subject}`",
+            finding.message
+        );
+    }
+
+    assert_eq!(
+        fix(&fixture).expect("every fault this test made is repairable"),
+        "doctor repaired supported integrity issues"
+    );
+    assert!(report(&fixture).is_empty(), "{:?}", report(&fixture));
+}
+
+/// The same rule for the notice channel, which is rendered beside the findings
+/// and had the same bare number (SH-269). `Finding::subject` never covered
+/// this half: a notice is a bare `String`.
+#[test]
+fn a_notice_names_its_story_the_way_the_findings_do() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    new_story(&ctx, "visited by a newer storyhook");
+    drop(ctx);
+    inject_unrecognised_kind(&fixture);
+
+    let notices = examine(&fixture).notices;
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert!(
+        notices[0].starts_with("SH-1: "),
+        "a notice sits in the same report as the findings and spells ids the same way: \
+         {notices:?}"
+    );
 }
 
 /// Every code this build can emit is reachable from a fixture.
