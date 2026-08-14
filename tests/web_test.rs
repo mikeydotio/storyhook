@@ -784,6 +784,28 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
         "served dashboard HTML must never contain a raw NUL byte"
     );
 
+    // SH-217: the dashboard builds DOM, never HTML text. With
+    // `script-src 'unsafe-inline'` (src/api/http.rs::CSP) a single
+    // string-to-markup sink turns any story description or comment body
+    // into script the moment the markdown renderer exists to build one
+    // from untrusted text. `esc()`, the file's one-time innerHTML reader
+    // with zero call sites, was removed so this assertion is true rather
+    // than aspirational.
+    for sink in [
+        "innerHTML =",
+        "innerHTML=",
+        "outerHTML",
+        "insertAdjacentHTML",
+        "document.write",
+        "new Function(",
+        "eval(",
+    ] {
+        assert!(
+            !body.contains(sink),
+            "the dashboard must never build markup from a string: found `{sink}`"
+        );
+    }
+
     // Board + List + view toggle
     assert!(body.contains(r#"id="board-view""#));
     assert!(body.contains(r#"id="list-view""#));
@@ -947,6 +969,21 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains("var clearedBlockers"));
     assert!(body.contains(".blocker-cleared"));
     assert!(body.contains("BLOCKER_CLEARED_DWELL_MS"));
+
+    // SH-217: the markdown renderer -- builds DOM nodes directly (never an
+    // HTML string, see the sink-pin assertions above), and its link
+    // scheme allowlist by name so a future edit that widens it is a
+    // visible diff rather than a silent one.
+    assert!(body.contains("function renderMarkdown"));
+    assert!(body.contains("function appendBlocks"));
+    assert!(body.contains("function appendInline"));
+    assert!(body.contains("function appendList"));
+    assert!(body.contains("function safeHref"));
+    assert!(body.contains("MARKDOWN_LINK_SCHEMES"));
+    assert!(body.contains(r#"rel: "noopener noreferrer""#));
+    assert!(body.contains(r#"target: "_blank""#));
+    assert!(body.contains(".description-view"));
+    assert!(body.contains(".description-section"));
 }
 
 /// The dashboard's `<style>` block, so a selector assertion below cannot
@@ -1335,6 +1372,78 @@ fn web_serve_root_html_styles_the_status_light_and_card_blockers() {
         "the cleared-blocker pulse must be gated behind prefers-reduced-motion, \
          like every other card flash animation"
     );
+}
+
+/// SH-217: three CSS rules ARE the description's read/edit mechanism --
+/// the field is `display: none` by default, shown only under `.editing`,
+/// while the read view flips the opposite way. A selector rename here
+/// would silently break the swap in every browser at once; this pins the
+/// mechanism without needing one.
+#[test]
+fn web_serve_root_html_styles_the_description_read_edit_swap_and_rendered_markdown() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    assert!(
+        declarations(css, ".description-section .description-field").contains("display: none"),
+        "the raw textarea must be hidden outside edit mode"
+    );
+    assert!(
+        declarations(css, ".description-section.editing .description-field")
+            .contains("display: block"),
+        "the raw textarea must be shown in edit mode"
+    );
+    assert!(
+        declarations(css, ".description-section.editing .description-view")
+            .contains("display: none"),
+        "the rendered view must be hidden in edit mode -- the two must never both show"
+    );
+
+    // The read view matches the textarea's own pinned floor (SH-235) and
+    // reads a --control-font-* token like every other text-entry control,
+    // so the read<->edit swap never resizes the box or the type.
+    let view = declarations(css, ".description-view");
+    assert!(
+        view.contains("min-height: max(2.5rem, var(--tap-min))"),
+        ".description-view must match .description-field's own height floor"
+    );
+    assert!(
+        view.contains("font-size: var(--control-font-"),
+        ".description-view must size its text from a --control-font-* token"
+    );
+    assert!(
+        declarations(css, ".description-view:focus-visible").contains("outline"),
+        "a keyboard user tabbing to the read view needs a visible focus ring"
+    );
+
+    // Rendered markdown (the description's read view, and comment bodies):
+    // a code block scrolls rather than wrapping or widening the drawer
+    // (the same lesson as docs/spec/responsive-dashboard.md's defect D2),
+    // and a table is wrapped for the same reason.
+    assert!(declarations(css, ".md pre").contains("overflow-x: auto"));
+    assert!(declarations(css, ".md-table-wrap").contains("overflow-x: auto"));
+    assert!(declarations(css, ".md code").contains("var(--mono)"));
+    assert!(declarations(css, ".md a").contains("var(--accent)"));
+
+    // .comment-text no longer forces every line break visible with
+    // pre-wrap -- the markdown renderer's block structure supplies
+    // paragraph spacing now; overflow-wrap survives unrelated to that.
+    let comment_text = declarations(css, ".comment-text");
+    assert!(
+        !comment_text.contains("pre-wrap"),
+        "SH-217: .comment-text's content is block-structured now, so \
+         pre-wrap would double every blank line the renderer already \
+         turned into real paragraph spacing"
+    );
+    assert!(comment_text.contains("overflow-wrap: anywhere"));
 }
 
 /// SH-235: the filter bar's dropdowns, checkboxes and sort buttons collapse
