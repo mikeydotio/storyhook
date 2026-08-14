@@ -68,6 +68,36 @@ fn relations_of(fixture: &ServiceFixture, id: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The state a story's row currently reports.
+fn story_state(fixture: &ServiceFixture, id: &str) -> String {
+    let no = StoryNo::parse_id("SH", id).expect("a well-formed id");
+    fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), no))
+        .expect("reading the story")
+        .expect("the story exists")
+        .snapshot
+        .state
+}
+
+/// A story's decodable events, straight from its log.
+///
+/// The assertion surface for a test whose question is what a repair *appended*
+/// (SH-285). A rendered relation is a fold of these, and the fold is exactly
+/// what is in doubt when a row is missing — so a test about an endpoint the
+/// read model cannot answer for has to read the log rather than the cache.
+fn events_of(fixture: &ServiceFixture, story: i64) -> Vec<StoryEvent> {
+    let no = StoryNo::new(story);
+    fixture
+        .store()
+        .read(|tx| {
+            let stored = tx.events_for(fixture.project(), no)?;
+            let (known, _unknown) = partition_known(no, &stored);
+            Ok(known)
+        })
+        .expect("reading a log")
+}
+
 /// Appends events to **one** story and folds only that story, bypassing the
 /// services that would keep both ends of a relation in step.
 fn append_to_one_end(fixture: &ServiceFixture, id: &str, events: &[StoryEvent]) {
@@ -927,6 +957,271 @@ fn a_repair_the_run_itself_dissolved_is_not_still_advised() {
     assert_eq!(
         relations_of(&fixture, &b),
         [("obviated-by".to_string(), a.clone())]
+    );
+}
+
+/// SH-285: the same hazard on the path SH-271 did not close. An **open**
+/// claimant is not advised about, it is *written to* — so a missing row on the
+/// far end does not produce a blocked repair to reconcile, it produces a
+/// `StoryRelationshipRemoved` event that destroys a correct edge.
+///
+/// `repair_read_model` then restores SH-2's row from its own events, SH-2 still
+/// claims its half, and the run's own closing report names an asymmetry the run
+/// itself created — from a store that, before the repair, held nothing worse
+/// than a rebuildable cache miss.
+#[test]
+fn a_fix_does_not_retract_an_open_storys_edge_to_a_story_whose_row_is_missing() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let a = new_story(&ctx, "A");
+    let b = new_story(&ctx, "B");
+    RelationService::new(&ctx)
+        .relate(&a, "blocks", &b, false)
+        .expect("relating");
+    drop(ctx);
+
+    forget_row(&fixture, 2);
+    assert_eq!(
+        report(&fixture),
+        [
+            "SH-1: dangling relation `blocks` to missing story `SH-2`",
+            "SH-2: has events but no read-model row",
+        ],
+        "the damage the fixture makes, as the pre-repair report sees it"
+    );
+
+    assert_eq!(
+        fix(&fixture).expect("a row its events support is restorable"),
+        "doctor repaired supported integrity issues"
+    );
+    assert!(
+        report(&fixture).is_empty(),
+        "the run reported damage it created itself: {:?}",
+        report(&fixture)
+    );
+    assert_eq!(
+        relations_of(&fixture, &a),
+        [("blocks".to_string(), b.clone())],
+        "the repair retracted a valid edge"
+    );
+    assert_eq!(
+        relations_of(&fixture, &b),
+        [("blocked-by".to_string(), a.clone())]
+    );
+}
+
+/// SH-285's **second** mechanism, isolated: an endpoint whose row is missing
+/// *and unrestorable*, because its own events will not fold.
+///
+/// Re-folding the read model first cannot help here —
+/// [`storyhook::store::repair_read_model`] leaves an unfoldable story's row
+/// exactly as it found it, on purpose, because overwriting it with a guess
+/// would destroy the evidence. So SH-2 is absent from `all_stories` however
+/// early the re-fold runs, and only resolving existence from the *events*
+/// keeps SH-1's valid edge.
+///
+/// The unfoldable shape is a story sitting in a state its catalog no longer
+/// defines, which is the same back door
+/// [`a_failed_fix_still_names_the_story_it_could_not_repair`] uses. A torn
+/// event payload will not do: the fold skips what it cannot decode and
+/// succeeds, so the row comes back and the fixture proves nothing. `shelved`
+/// rather than a required state, so the catalog repair does not put it back.
+///
+/// The run legitimately **fails** — a torn payload is a finding no repair can
+/// clear — so the assertion is on SH-1's event log, never on the verdict. The
+/// log rather than the rendered relations because the row is the thing in
+/// doubt: what matters is that nothing was appended.
+///
+/// It also characterizes SH-286 as-is. The *report* still resolves endpoint
+/// existence through the read model, so it calls SH-1's edge dangling in the
+/// same breath that `--fix` declines to retract it. That divergence is
+/// deliberately out of scope here — an unfoldable story's missing row poisons
+/// far more than existence, and the narrow fix would mask the rest — so it is
+/// asserted rather than corrected, and fixing SH-286 turns this assertion red
+/// at the line that says why.
+#[test]
+fn a_fix_does_not_retract_an_edge_to_a_story_whose_events_will_not_fold() {
+    let mut states = storyhook_test_support::default_states();
+    states.push(StateDef {
+        slug: "shelved".into(),
+        super_state: SuperState::Closed,
+        role: None,
+        description: None,
+    });
+    let fixture = ServiceFixture::with_states(&states);
+    let ctx = fixture.ctx();
+    let a = new_story(&ctx, "A");
+    let b = new_story(&ctx, "B");
+    RelationService::new(&ctx)
+        .relate(&a, "blocks", &b, false)
+        .expect("relating");
+    StoryService::new(&ctx)
+        .set_state(&b, "shelved", None, None, None)
+        .expect("shelving B");
+    drop(ctx);
+
+    storyhook::store::test_support::forget_state(fixture.store(), fixture.project(), "shelved")
+        .expect("retiring a state out from under its story");
+    forget_row(&fixture, 2);
+
+    let before = events_of(&fixture, 1);
+    fix(&fixture).expect_err("a story that cannot be folded is a finding no repair clears");
+
+    assert_eq!(
+        events_of(&fixture, 1),
+        before,
+        "the repair wrote to SH-1's history over an endpoint it could not read"
+    );
+    assert_eq!(
+        relations_of(&fixture, &a),
+        [("blocks".to_string(), b.clone())],
+        "the repair retracted a valid edge"
+    );
+
+    let issues = report(&fixture);
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.starts_with("SH-2: ") && issue.contains("cannot be folded")),
+        "the fold failure is the finding the operator has to act on: {issues:?}"
+    );
+    assert!(
+        issues.contains(&"SH-1: dangling relation `blocks` to missing story `SH-2`".to_string()),
+        "SH-286, asserted as-is: the report still resolves existence through the read model, so \
+         it names an edge `--fix` rightly refused to retract. When SH-286 lands, delete this \
+         assertion: {issues:?}"
+    );
+
+    // The catalog goes back so the fixture's drop-time drift check has
+    // something to fold against, and then the row SH-2 lost — foldable again
+    // now the state exists — goes back with it. This test's damage is not its
+    // to report.
+    fixture
+        .store()
+        .write(|tx| tx.put_states(fixture.project(), &states))
+        .expect("restoring the state this test retired");
+    storyhook::store::repair_read_model(fixture.store(), fixture.project())
+        .expect("restoring the row the retired state made unrestorable");
+}
+
+/// SH-285's **first** mechanism, isolated: a repair the pass can only make if
+/// it is reading a row the events support.
+///
+/// SH-1's labels are malformed (SH-164) and its row is then forgotten. With the
+/// re-fold *after* the story pass, the pass sees no row for SH-1 at all, makes
+/// no repair, and the restored row's malformed labels come back as a finding —
+/// so the run fails and the operator has to run `--fix` a second time. With the
+/// re-fold first, one run is enough.
+///
+/// The existence probe cannot green this: SH-1 is the story being repaired, not
+/// an endpoint being resolved.
+#[test]
+fn one_fix_run_repairs_a_label_on_a_story_whose_row_it_had_to_restore() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let a = new_story(&ctx, "A");
+    drop(ctx);
+
+    append_to_one_end(
+        &fixture,
+        &a,
+        &[StoryEvent::StoryLabelsSet {
+            at: FIXTURE_NOW.to_string(),
+            labels: vec!["web,sse".to_string()],
+        }],
+    );
+    forget_row(&fixture, 1);
+
+    assert_eq!(
+        fix(&fixture).expect("one run repairs a row and the labels that row carries"),
+        "doctor repaired supported integrity issues"
+    );
+    assert_eq!(labels_of(&fixture, &a), ["sse", "web"]);
+    assert!(report(&fixture).is_empty(), "{:?}", report(&fixture));
+}
+
+/// The anti-overfit pin, and the reason SH-285 is not "stop retracting".
+///
+/// An edge whose far end has **no row and no events** names a story that really
+/// is not there, and retracting it is the repair. Without this test the
+/// cheapest way to pass the two above is to stop retracting anything at all,
+/// which would trade a data-loss defect for a silent-failure one — a `--fix`
+/// that reports a dangling relation it will never clear, run after run.
+#[test]
+fn a_fix_still_retracts_an_edge_to_a_story_that_is_genuinely_gone() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let a = new_story(&ctx, "A");
+    let b = new_story(&ctx, "B");
+    RelationService::new(&ctx)
+        .relate(&a, "blocks", &b, false)
+        .expect("relating");
+    drop(ctx);
+
+    // Both halves, and in this order: the events first, because forgetting the
+    // row is what makes the story invisible and forgetting the log is what
+    // makes it *absent*. Either alone is a story the fix must not touch.
+    storyhook::store::test_support::forget_events(
+        fixture.store(),
+        fixture.project(),
+        StoryNo::new(2),
+    )
+    .expect("forgetting a history");
+    forget_row(&fixture, 2);
+
+    assert_eq!(
+        report(&fixture),
+        ["SH-1: dangling relation `blocks` to missing story `SH-2`"],
+        "the damage the fixture makes, as the pre-repair report sees it"
+    );
+
+    assert_eq!(
+        fix(&fixture).expect("retracting a genuinely dangling edge is a repair"),
+        "doctor repaired supported integrity issues"
+    );
+    assert!(
+        relations_of(&fixture, &a).is_empty(),
+        "the edge to a story with neither a row nor a history was left standing: {:?}",
+        relations_of(&fixture, &a)
+    );
+    assert!(report(&fixture).is_empty(), "{:?}", report(&fixture));
+}
+
+/// The re-fold moved to the front of `repair`, but it must not move past the
+/// catalog write: [`storyhook::store::repair_read_model`] folds every story
+/// against the project's state definitions, so a project below the
+/// required-state floor cannot fold the stories sitting in the state it is
+/// missing.
+///
+/// One run has to do both — add `blocked` back to the catalog, then restore the
+/// row of the story sitting in it. Ordering the re-fold ahead of the catalog
+/// write makes this red, which is the failure the reorder invites.
+#[test]
+fn the_read_model_repair_runs_after_the_catalog_repair() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let a = new_story(&ctx, "A");
+    StoryService::new(&ctx)
+        .set_state(&a, "blocked", Some("waiting"), None, None)
+        .expect("blocking A");
+    drop(ctx);
+
+    storyhook::store::test_support::forget_state(fixture.store(), fixture.project(), "blocked")
+        .expect("retiring a state a story sits in");
+    forget_row(&fixture, 1);
+
+    let message =
+        fix(&fixture).expect("one run repairs the catalog and then the rows that need it");
+    assert!(
+        message.starts_with("doctor repaired supported integrity issues")
+            && message.contains("added 1 required state this project was missing"),
+        "{message}"
+    );
+    assert!(report(&fixture).is_empty(), "{:?}", report(&fixture));
+    assert_eq!(
+        story_state(&fixture, &a),
+        "blocked",
+        "the restored row must fold against the state the same run put back"
     );
 }
 
