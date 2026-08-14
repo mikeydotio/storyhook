@@ -1032,7 +1032,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 </head>
 <body>
 
-<div class="app">
+<!-- `data-modal="covered"`: this whole shell goes `inert` while any overlay is
+     open (SH-299). See `applyOverlayModality()` for what that buys and why the
+     marker lives here rather than in a list inside the script. -->
+<div class="app" id="app" data-modal="covered">
   <header class="topbar">
     <div class="brand">
       <h1>Storyhook</h1>
@@ -1123,8 +1126,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   <div class="footer" id="footer">Updated just now</div>
 </div>
 
-<div class="backdrop" id="drawer-backdrop" hidden></div>
-<aside class="drawer" id="drawer" aria-hidden="true">
+<!-- Every `.backdrop` names the surface it dims in `data-overlay`, and that
+     attribute is the whole registry the overlay-modality machinery reads
+     (SH-299) — an eighth overlay added below joins the focus trap by
+     existing rather than by being remembered. `tests/web_test.rs` refuses to
+     serve a backdrop that names no surface, or one whose surface is never
+     handed to `activateOverlay()`/`releaseOverlay()`. -->
+<div class="backdrop" id="drawer-backdrop" data-overlay="drawer" hidden></div>
+<aside class="drawer" id="drawer" tabindex="-1" aria-hidden="true">
   <div class="drawer-header">
     <span id="drawer-type-badge"></span>
     <span class="drawer-id" id="drawer-id"></span>
@@ -1135,8 +1144,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   <span class="sr-only" id="description-view-kbd-hint">Press Enter to edit the description.</span>
 </aside>
 
-<div class="backdrop" id="modal-backdrop" hidden></div>
-<div class="modal" id="create-modal" aria-hidden="true">
+<div class="backdrop" id="modal-backdrop" data-overlay="create-modal" hidden></div>
+<div class="modal" id="create-modal" tabindex="-1" aria-hidden="true">
   <div class="modal-header" id="create-modal-header">New story</div>
   <div class="modal-body">
     <input type="text" id="create-title" placeholder="Title" autocomplete="off">
@@ -1156,8 +1165,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   </div>
 </div>
 
-<div class="backdrop" id="drafts-backdrop" hidden></div>
-<div class="modal" id="drafts-modal" aria-hidden="true">
+<div class="backdrop" id="drafts-backdrop" data-overlay="drafts-modal" hidden></div>
+<div class="modal" id="drafts-modal" tabindex="-1" aria-hidden="true">
   <div class="modal-header">Drafts</div>
   <div class="modal-body">
     <ul class="drafts-list" id="drafts-list"></ul>
@@ -1167,8 +1176,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   </div>
 </div>
 
-<div class="backdrop" id="drop-blocked-reason-backdrop" hidden></div>
-<div class="modal" id="drop-blocked-reason-modal" aria-hidden="true">
+<div class="backdrop" id="drop-blocked-reason-backdrop" data-overlay="drop-blocked-reason-modal" hidden></div>
+<div class="modal" id="drop-blocked-reason-modal" tabindex="-1" aria-hidden="true">
   <div class="modal-header">Why is this blocked?</div>
   <div class="modal-body">
     <div class="field"><label for="drop-blocked-reason-input">Reason (optional)</label>
@@ -1180,8 +1189,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   </div>
 </div>
 
-<div class="backdrop" id="token-modal-backdrop" hidden></div>
-<div class="modal" id="token-modal" aria-hidden="true">
+<div class="backdrop" id="token-modal-backdrop" data-overlay="token-modal" hidden></div>
+<div class="modal" id="token-modal" tabindex="-1" aria-hidden="true">
   <div class="modal-header">Dashboard token required</div>
   <div class="modal-body">
     <p>The dashboard requires a named token. Run
@@ -1196,8 +1205,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   </div>
 </div>
 
-<div class="backdrop" id="archive-modal-backdrop" hidden></div>
-<div class="modal" id="archive-modal" aria-hidden="true">
+<div class="backdrop" id="archive-modal-backdrop" data-overlay="archive-modal" hidden></div>
+<div class="modal" id="archive-modal" tabindex="-1" aria-hidden="true">
   <div class="modal-header" id="archive-modal-header">Archive column</div>
   <div class="modal-body">
     <div id="archive-modal-summary"></div>
@@ -1210,8 +1219,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   </div>
 </div>
 
-<div class="backdrop" id="delete-modal-backdrop" hidden></div>
-<div class="modal" id="delete-modal" aria-hidden="true">
+<div class="backdrop" id="delete-modal-backdrop" data-overlay="delete-modal" hidden></div>
+<div class="modal" id="delete-modal" tabindex="-1" aria-hidden="true">
   <div class="modal-header">Delete story</div>
   <div class="modal-body">
     <div id="delete-modal-summary"></div>
@@ -1737,6 +1746,138 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   // ============================================================
+  // OVERLAY MODALITY (SH-299)
+  // ============================================================
+
+  /** The open overlays, outermost first. A stack rather than a flag because
+   * they genuinely nest: the drawer's own footer opens the delete modal over
+   * it, and a 401 from anything at all opens the token modal over whatever
+   * asked. Only the last entry is interactive. */
+  var overlayStack = [];
+
+  /** What had focus when each open overlay took it, keyed by surface id, so
+   * closing one puts the user back where they were rather than at the top of
+   * the document. */
+  var overlayReturnFocus = {};
+
+  /** The surface ids of every backdrop-based overlay, read off the markup:
+   * each `.backdrop` names the surface it dims in `data-overlay`. Derived
+   * rather than listed so an overlay added to this file cannot be half-wired
+   * — present in the markup, absent from the trap. */
+  function overlaySurfaceIds() {
+    return Array.prototype.map.call(
+      document.querySelectorAll(".backdrop[data-overlay]"),
+      function(node) { return node.dataset.overlay; }
+    );
+  }
+
+  /** Marks everything but the topmost open overlay `inert`, which is what
+   * makes an overlay modal for the KEYBOARD (SH-299).
+   *
+   * `.backdrop` is `position: fixed; inset: 0`, so it has always made these
+   * surfaces modal for the mouse — and only for the mouse. The board, the
+   * topbar and the settings table behind an open drawer kept their place in
+   * the tab order and stayed activatable with Enter, so the dashboard was
+   * modal for one input device and non-modal for the other. That asymmetry
+   * is not merely an accessibility failure: it is the mechanism SH-290's
+   * defect rode in on, where the Statuses button under an open drawer could
+   * not be clicked and could be pressed.
+   *
+   * **Every *closed* overlay is inert too, and that is not belt-and-braces.**
+   * `.modal` closes to `opacity: 0; pointer-events: none` and `.drawer` to
+   * `transform: translateX(100%)`; neither takes anything out of the tab
+   * order, so six shut dialogs' inputs and buttons sat in the tab sequence —
+   * behind the open one, and in front of the board when nothing was open at
+   * all. Inerting by "is not the active overlay" rather than by "is the app
+   * shell" answers both with one rule, and is why this runs at boot as well
+   * as on every open and close.
+   *
+   * **The rule for what is covered is "whatever the backdrop covers", and
+   * nothing wider.** `#toast-stack` and `#dispatch-history` are `z-index: 60`
+   * against the backdrop's 40 — they render *over* an open overlay by an
+   * older, deliberate decision, so the backdrop never dimmed them and a mouse
+   * has always been able to reach the dispatch history's Dismiss buttons with
+   * a drawer open. They are therefore already symmetric, which is the whole
+   * property this function exists to restore; inerting them would not fix an
+   * asymmetry, it would create a new behaviour (unreachable by either device)
+   * and silence two `aria-live` regions while a modal is up. Restoring
+   * symmetry means covering exactly what is dimmed: the app shell, and the
+   * overlays that are not on top.
+   *
+   * The attribute rather than the `.inert` property: it is visible in the
+   * DOM, so a test can assert it and a developer can see it in the
+   * inspector. `inert` shipped in Chrome 102 and Safari 15.5, both older than
+   * the `dvh` units `.app` and `.modal` already depend on, so it moves no
+   * floor this file did not already stand on. */
+  function applyOverlayModality() {
+    var active = overlayStack.length ? overlayStack[overlayStack.length - 1] : null;
+    document.querySelectorAll('[data-modal="covered"]').forEach(function(node) {
+      node.toggleAttribute("inert", active !== null);
+    });
+    overlaySurfaceIds().forEach(function(id) {
+      $(id).toggleAttribute("inert", id !== active);
+    });
+  }
+
+  /** Opens `surfaceId` as a modal surface: remembers what had focus, makes
+   * everything else inert, and moves focus inside.
+   *
+   * `initialFocusId` names the surface's one obvious first control where it
+   * has one (a title field, a reason field); the surface itself is the
+   * fallback, which is what lets a screen reader read a dialog with no such
+   * control — the drawer, the drafts list — from its top rather than
+   * resuming wherever the now-inert background left off. Every surface
+   * carries `tabindex="-1"` so that fallback can land.
+   *
+   * Idempotent by design: `openDrawer()` is reachable from a relation button
+   * *inside* an already-open drawer, and a second push would strand the
+   * first entry and lose the real return-focus target. */
+  function activateOverlay(surfaceId, initialFocusId) {
+    if (overlayStack.indexOf(surfaceId) !== -1) return;
+    overlayReturnFocus[surfaceId] = document.activeElement;
+    overlayStack.push(surfaceId);
+    applyOverlayModality();
+    ((initialFocusId && $(initialFocusId)) || $(surfaceId)).focus();
+  }
+
+  /** The inverse: drops `surfaceId` out of the stack, restores modality for
+   * whatever is left, and returns focus to the element that opened it.
+   *
+   * A no-op when `surfaceId` is not open, which is load-bearing rather than
+   * defensive. The shared Escape handler calls every `close*` function on
+   * every press; `renderScreen()` calls `closeDrawer()` on every non-repo
+   * render; `updateDraftsButton()` calls `closeDraftsModal()` on every
+   * navigation including the one at boot (SH-284). Without the guard each of
+   * those would yank focus away from wherever the user actually is. */
+  function releaseOverlay(surfaceId) {
+    var at = overlayStack.indexOf(surfaceId);
+    if (at === -1) return;
+    overlayStack.splice(at, 1);
+    var returnTo = overlayReturnFocus[surfaceId];
+    delete overlayReturnFocus[surfaceId];
+    applyOverlayModality();
+    restoreOverlayFocus(returnTo);
+  }
+
+  /** Returns focus to `node` when it can still take it.
+   *
+   * Every rejection here is a state the app reaches on an ordinary path, not
+   * a hypothetical: a card removed by the `/data` arrival that closed the
+   * drawer, a control hidden by the screen change that closed it
+   * (`renderScreen()`), or one still inert under an overlay further down the
+   * stack. Focusing any of those either drops the focus silently or scrolls
+   * the page to something the user cannot see, so it is skipped — leaving
+   * focus at the document, which is where the browser puts it anyway. */
+  function restoreOverlayFocus(node) {
+    if (!node || node === document.body) return;
+    if (typeof node.focus !== "function") return;
+    if (!document.body.contains(node)) return;
+    if (node.closest("[inert]")) return;
+    if (!node.getClientRects().length) return;
+    node.focus();
+  }
+
+  // ============================================================
   // API
   // ============================================================
 
@@ -2138,11 +2279,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("token-input").value = "";
     $("token-error").textContent = "";
     $("token-modal-backdrop").hidden = false;
+    activateOverlay("token-modal", "token-input");
     requestAnimationFrame(function() {
       $("token-modal-backdrop").classList.add("open");
       $("token-modal").classList.add("open");
       $("token-modal").setAttribute("aria-hidden", "false");
-      $("token-input").focus();
     });
   }
 
@@ -2150,6 +2291,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("token-modal-backdrop").classList.remove("open");
     $("token-modal").classList.remove("open");
     $("token-modal").setAttribute("aria-hidden", "true");
+    releaseOverlay("token-modal");
     setTimeout(function() { $("token-modal-backdrop").hidden = true; }, 150);
     tokenModalCallback = null;
   }
@@ -4159,11 +4301,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     dropBlockedReasonMoveId = id;
     $("drop-blocked-reason-input").value = "";
     $("drop-blocked-reason-backdrop").hidden = false;
+    activateOverlay("drop-blocked-reason-modal", "drop-blocked-reason-input");
     requestAnimationFrame(function() {
       $("drop-blocked-reason-backdrop").classList.add("open");
       $("drop-blocked-reason-modal").classList.add("open");
       $("drop-blocked-reason-modal").setAttribute("aria-hidden", "false");
-      $("drop-blocked-reason-input").focus();
     });
   }
 
@@ -4171,6 +4313,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("drop-blocked-reason-backdrop").classList.remove("open");
     $("drop-blocked-reason-modal").classList.remove("open");
     $("drop-blocked-reason-modal").setAttribute("aria-hidden", "true");
+    releaseOverlay("drop-blocked-reason-modal");
     setTimeout(function() { $("drop-blocked-reason-backdrop").hidden = true; }, 150);
   }
 
@@ -5314,6 +5457,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("drawer").setAttribute("aria-hidden", "false");
     $("drawer-backdrop").hidden = false;
     requestAnimationFrame(function() { $("drawer-backdrop").classList.add("open"); });
+    activateOverlay("drawer");
     renderDrawer();
     syncUrl();
     api("GET", apiBase() + "/story/" + encodeURIComponent(id))
@@ -5332,6 +5476,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("drawer").classList.remove("open");
     $("drawer").setAttribute("aria-hidden", "true");
     $("drawer-backdrop").classList.remove("open");
+    releaseOverlay("drawer");
     setTimeout(function() { if (!state.drawerId) $("drawer-backdrop").hidden = true; }, 180);
     syncUrl();
   }
@@ -6939,11 +7084,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     labelsField.appendChild(createLabelCombobox.element);
 
     $("modal-backdrop").hidden = false;
+    activateOverlay("create-modal", "create-title");
     requestAnimationFrame(function() {
       $("modal-backdrop").classList.add("open");
       $("create-modal").classList.add("open");
       $("create-modal").setAttribute("aria-hidden", "false");
-      $("create-title").focus();
     });
   }
 
@@ -6952,6 +7097,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("modal-backdrop").classList.remove("open");
     $("create-modal").classList.remove("open");
     $("create-modal").setAttribute("aria-hidden", "true");
+    releaseOverlay("create-modal");
     setTimeout(function() { $("modal-backdrop").hidden = true; }, 150);
   }
 
@@ -7067,6 +7213,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function openDraftsModal() {
     renderDraftsList();
     $("drafts-backdrop").hidden = false;
+    activateOverlay("drafts-modal");
     requestAnimationFrame(function() {
       $("drafts-backdrop").classList.add("open");
       $("drafts-modal").classList.add("open");
@@ -7097,6 +7244,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("drafts-backdrop").classList.remove("open");
     $("drafts-modal").classList.remove("open");
     $("drafts-modal").setAttribute("aria-hidden", "true");
+    releaseOverlay("drafts-modal");
     setTimeout(function() {
       if ($("drafts-modal").classList.contains("open")) return;
       $("drafts-backdrop").hidden = true;
@@ -7183,6 +7331,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("archive-modal-submit").onclick = function() { submitArchiveColumn(plan.state); };
 
     $("archive-modal-backdrop").hidden = false;
+    activateOverlay("archive-modal");
     requestAnimationFrame(function() {
       $("archive-modal-backdrop").classList.add("open");
       $("archive-modal").classList.add("open");
@@ -7194,6 +7343,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("archive-modal-backdrop").classList.remove("open");
     $("archive-modal").classList.remove("open");
     $("archive-modal").setAttribute("aria-hidden", "true");
+    releaseOverlay("archive-modal");
     setTimeout(function() { $("archive-modal-backdrop").hidden = true; }, 150);
   }
 
@@ -7227,11 +7377,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("delete-reason").value = "";
     $("delete-modal-error").textContent = "";
     $("delete-modal-backdrop").hidden = false;
+    activateOverlay("delete-modal", "delete-reason");
     requestAnimationFrame(function() {
       $("delete-modal-backdrop").classList.add("open");
       $("delete-modal").classList.add("open");
       $("delete-modal").setAttribute("aria-hidden", "false");
-      $("delete-reason").focus();
     });
   }
 
@@ -7240,6 +7390,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("delete-modal-backdrop").classList.remove("open");
     $("delete-modal").classList.remove("open");
     $("delete-modal").setAttribute("aria-hidden", "true");
+    releaseOverlay("delete-modal");
     setTimeout(function() { $("delete-modal-backdrop").hidden = true; }, 150);
   }
 
@@ -7306,6 +7457,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // ============================================================
 
   function bindShell() {
+    // Before anything is bound, and before anything is open: this is what
+    // takes the seven *closed* overlays out of the tab order they have
+    // always been in (see `applyOverlayModality()`).
+    applyOverlayModality();
     document.querySelectorAll("#view-toggle button").forEach(function(btn) {
       btn.classList.toggle("active", btn.dataset.view === state.view);
       btn.addEventListener("click", function() { setView(btn.dataset.view); });

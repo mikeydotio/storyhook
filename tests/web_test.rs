@@ -986,6 +986,110 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(".description-section"));
 }
 
+/// The full opening tag containing the byte at `at`, e.g. `<div class="x" id="y">`.
+///
+/// Walks out from the match to the enclosing `<` and `>` rather than
+/// re-finding the element, so a caller can locate a tag by any attribute it
+/// carries and then read the rest of them.
+fn enclosing_tag(body: &str, at: usize) -> &str {
+    let open = body[..at]
+        .rfind('<')
+        .expect("an attribute sits inside a tag");
+    let close = open + body[open..].find('>').expect("the tag closes");
+    &body[open..=close]
+}
+
+/// The value of `tag`'s `name` attribute, if it carries one.
+fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let needle = format!(" {name}=\"");
+    let start = tag.find(&needle)? + needle.len();
+    let end = start + tag[start..].find('"')?;
+    Some(&tag[start..end])
+}
+
+/// Every backdrop-based overlay is wired into the focus trap (SH-299).
+///
+/// `.backdrop` is `position: fixed; inset: 0`, which makes an overlay modal
+/// for the mouse and for nothing else: before SH-299 nothing marked the
+/// background `inert`, so the board, the topbar and the settings table behind
+/// an open drawer kept their place in the tab order and stayed activatable
+/// with Enter. Half a modal is worse than none, because the half that works
+/// is the half a sighted mouse user tests with.
+///
+/// Derived over the served markup rather than from a list kept here, the same
+/// style `tests/dead_public_surface.rs` and `tests/store_isolation.rs` use for
+/// the same reason: an eighth overlay is exactly the thing most likely to be
+/// half-wired, and a hand-maintained list goes stale precisely then. Each
+/// backdrop must name the surface it dims, that surface must exist, must be
+/// focusable as a fallback target (`activateOverlay()` focuses the container
+/// when a surface has no obvious first control), and must be handed to both
+/// halves of the machinery. Behaviour is proved in a real browser by
+/// `e2e/specs/overlay-modality.spec.ts`; this fences the wiring, which that
+/// suite can only check for the overlays it can reach.
+#[test]
+fn every_backdrop_overlay_is_wired_into_the_focus_trap() {
+    let fixture = served();
+
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+
+    let backdrops: Vec<&str> = body
+        .match_indices(r#"class="backdrop""#)
+        .map(|(at, _)| enclosing_tag(&body, at))
+        .collect();
+    assert!(
+        backdrops.len() >= 7,
+        "expected the dashboard's backdrop overlays, found {}: {backdrops:?}",
+        backdrops.len()
+    );
+
+    for backdrop in &backdrops {
+        let surface = attribute(backdrop, "data-overlay").unwrap_or_else(|| {
+            panic!(
+                "this backdrop names no surface in `data-overlay`, so nothing goes inert while \
+                 it is up and it is modal for the mouse only (SH-299): {backdrop}"
+            )
+        });
+
+        let id_at = body
+            .find(&format!(r#"id="{surface}""#))
+            .unwrap_or_else(|| panic!("`{backdrop}` dims `{surface}`, which is not in the markup"));
+        let tag = enclosing_tag(&body, id_at);
+        assert_eq!(
+            attribute(tag, "tabindex"),
+            Some("-1"),
+            "`{surface}` needs `tabindex=\"-1\"` so `activateOverlay()` can put focus on the \
+             surface itself when it has no first control to focus: {tag}"
+        );
+
+        for half in ["activateOverlay", "releaseOverlay"] {
+            assert!(
+                body.contains(&format!("{half}(\"{surface}\"")),
+                "nothing calls {half}(\"{surface}\"), so opening or closing that overlay leaves \
+                 the background in whatever modality the previous one left behind (SH-299)"
+            );
+        }
+    }
+
+    // The app shell is what every one of those backdrops dims. The marker
+    // lives on the element rather than in a list inside the script, so
+    // `applyOverlayModality()` needs no names of its own.
+    let app_at = body
+        .find(r#"id="app""#)
+        .expect("the app shell carries an id");
+    assert_eq!(
+        attribute(enclosing_tag(&body, app_at), "data-modal"),
+        Some("covered"),
+        "the app shell must be marked `data-modal=\"covered\"` or no overlay covers anything"
+    );
+}
+
 /// The dashboard's `<style>` block, so a selector assertion below cannot
 /// accidentally match the same text in the markup that follows it --
 /// `.search-input` names both a CSS rule and a `class="search-input"`
