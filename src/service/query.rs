@@ -826,7 +826,11 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
 const READY_PREVIEW: usize = 5;
 
 /// `story handoff`'s window when `--since` is not given.
-const DEFAULT_HANDOFF_HOURS: i64 = 24;
+///
+/// `pub` so `tests/help_topic_references.rs` can pin the help text's stated
+/// default against this value rather than a second hand-copied literal —
+/// `src/help_topics.rs` named the wrong one (found in passing, SH-280).
+pub const DEFAULT_HANDOFF_HOURS: i64 = 24;
 
 /// Every story in the project, keyed by id.
 pub(crate) fn story_map(
