@@ -937,6 +937,37 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     // modal (commit 3) the drawer footer's own Delete button opens.
     assert!(body.contains("\"Delete\", danger: true"));
 
+    // SH-305: every board column gets its own sort menu (replacing SH-128's
+    // single board-wide pair of buttons), opened from a `.column-sort-btn`
+    // in the column header and built on the same `.ctxmenu` machinery the
+    // story context menu above uses.
+    assert!(body.contains("function openColumnSortMenu"));
+    assert!(body.contains("function columnSortMenuModel"));
+    assert!(body.contains("function columnSortFor"));
+    assert!(body.contains(".column-sort-btn"));
+    for label in [
+        "Added ↑",
+        "Added ↓",
+        "Modified ↑",
+        "Modified ↓",
+        "Priority ↑",
+        "Priority ↓",
+    ] {
+        assert!(
+            body.contains(label),
+            "the column sort menu must offer `{label}`"
+        );
+    }
+    // The global filter-panel sort control SH-128 built is gone outright --
+    // SH-305 replaced it, rather than adding the per-column menu alongside
+    // it.
+    assert!(
+        !body.contains(r#"id="board-sort""#),
+        "the board-wide sort control was replaced by a per-column menu"
+    );
+    assert!(!body.contains(r#"id="boardsort-priority""#));
+    assert!(!body.contains(r#"id="boardsort-order""#));
+
     // SH-203: the status-light component and its consumers -- storyLight()
     // (the dot alone), storyRef() (light + the existing .rel-id id
     // button), and linkifyStoryIds() (splitting free text around bare
@@ -1716,7 +1747,6 @@ fn web_serve_root_html_meets_wcag_tap_target_size() {
         ".back-link",
         ".fdd-option",
         ".filter-toggle",
-        ".board-sort-btn",
         ".filter-clear",
         ".column-archive-btn",
         ".section-toggle",
@@ -1747,6 +1777,10 @@ fn web_serve_root_html_meets_wcag_tap_target_size() {
         ".label-chip button",
         ".rel-id",
         ".rel-remove",
+        // SH-305: the per-column board sort button is glyph-only (a bare
+        // "⇅"), narrower than --tap-min on its own the same way the
+        // dismiss/remove buttons above are.
+        ".column-sort-btn",
         ".dispatch-history-dismiss",
         // SH-304 gave the durable error toast a dismiss button of its own.
         // It shares one grouped rule with the history row's, which is why
@@ -1780,6 +1814,34 @@ fn web_serve_root_html_meets_wcag_tap_target_size() {
             "`{selector}` must set `{expected}`"
         );
     }
+}
+
+/// SH-305: the column header's Archive button (CLOSED-superstate columns
+/// only) moved to sit between the title and the count/sort-button group,
+/// via a second `margin-left: auto` splitting the header's free space with
+/// `.column-count`'s own -- pinned so the centering can't be quietly
+/// reverted to Archive being packed against the title again.
+#[test]
+fn web_serve_root_html_centers_the_column_archive_button() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    assert!(
+        declarations(css, ".column-archive-btn").contains("margin-left: auto"),
+        "`.column-archive-btn` must carry its own margin-left: auto"
+    );
+    assert!(
+        declarations(css, ".column-count").contains("margin-left: auto"),
+        "`.column-count` must keep its margin-left: auto"
+    );
 }
 
 /// SH-304: a notification is the one element that appears unbidden, so its
