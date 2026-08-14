@@ -1187,6 +1187,193 @@ fn a_fix_still_retracts_an_edge_to_a_story_that_is_genuinely_gone() {
     assert!(report(&fixture).is_empty(), "{:?}", report(&fixture));
 }
 
+// --- report and fix are one contract ---------------------------------------
+
+/// Whether a story's row puts it in an OPEN state — the test-side spelling of
+/// the set `--fix` is allowed to append to.
+///
+/// Production asks `StoryQuery::all().archived(false)`, which also excludes a
+/// deleted story; no fixture below has one, so the two agree. A story with no
+/// row at all is not open, which is the right answer for one that has been
+/// erased.
+fn is_open(fixture: &ServiceFixture, id: &str) -> bool {
+    let no = StoryNo::parse_id("SH", id).expect("a well-formed id");
+    fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), no))
+        .expect("reading the story")
+        .is_some_and(|row| row.snapshot.superstate == SuperState::Open)
+}
+
+/// `--fix` appends to exactly the stories its own findings name as remedies,
+/// and to no others.
+///
+/// Both halves of one contract, asserted in both directions over a project
+/// damaged four ways at once:
+///
+/// * **No invention.** Every story the run appended to was named by the
+///   `remedy` of a finding the *pre-repair report* produced. A repair with no
+///   finding behind it is SH-268 — a filter applied to `report()` and not to
+///   `fix()`, so `--fix` repaired what the report called healthy.
+/// * **No omission.** Every finding whose remedy is *reachable* — an open
+///   story — is gone afterwards. `remedy` is documented as a pointer rather
+///   than a promise, and this is the extent of the promise it does make:
+///   [`storyhook::domain::finding`] says the one thing that can defeat it is a
+///   destination that is closed.
+///
+/// The expected set is derived from the findings rather than written out, so
+/// the assertion cannot be satisfied by a repair loop and a test that drifted
+/// together; the literal beside it is what makes a *derivation* that quietly
+/// collapsed to nothing still fail.
+///
+/// Three shapes make the directions bite. The missing inverse is reported
+/// against SH-1 and repaired on SH-2, so a run that appended to its findings'
+/// *subjects* fails (SH-225). SH-6's unknown type carries no remedy, so a run
+/// that treats every finding as repairable fails. SH-7's remedy is itself and
+/// it is closed, so a run that ignores reachability fails.
+///
+/// One documented exception is deliberately absent from the fixture: a
+/// `DanglingRelation` whose endpoint has events but no foldable row is
+/// reported and rightly *not* repaired (SH-286), which is the one case where a
+/// reachable remedy survives a run. It has its own test —
+/// [`a_fix_does_not_retract_an_edge_to_a_story_whose_events_will_not_fold`] —
+/// and putting it here too would blunt this one into a tautology.
+#[test]
+fn a_fix_appends_exactly_where_its_findings_name_a_reachable_remedy() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let a = new_story(&ctx, "A");
+    let b = new_story(&ctx, "B");
+    let c = new_story(&ctx, "C");
+    let d = new_story(&ctx, "D");
+    let e = new_story(&ctx, "E");
+    let f = new_story(&ctx, "F");
+    let g = new_story(&ctx, "G");
+    StoryService::new(&ctx)
+        .set_fields(
+            &f,
+            &storyhook::service::FieldEdits {
+                story_type: Some("bug".into()),
+                ..storyhook::service::FieldEdits::default()
+            },
+        )
+        .expect("typing F");
+    RelationService::new(&ctx)
+        .relate(&d, "blocks", &e, false)
+        .expect("relating D to the story that is about to vanish");
+    StoryService::new(&ctx)
+        .set_state(&g, "done", None, None, None)
+        .expect("closing G");
+    drop(ctx);
+
+    // A missing inverse: reported against SH-1, repaired on SH-2.
+    append_to_one_end(
+        &fixture,
+        &a,
+        &[StoryEvent::StoryRelationshipAdded {
+            at: FIXTURE_NOW.to_string(),
+            other_id: b.clone(),
+            relation: "blocks".to_string(),
+        }],
+    );
+    // Malformed labels on an open story, and on a closed one.
+    for story in [&c, &g] {
+        append_to_one_end(
+            &fixture,
+            story,
+            &[StoryEvent::StoryLabelsSet {
+                at: FIXTURE_NOW.to_string(),
+                labels: vec!["web,sse".to_string()],
+            }],
+        );
+    }
+    // A genuinely dangling edge: SH-5 loses both its row and its history, so
+    // it is absent rather than merely uncached.
+    storyhook::store::test_support::forget_events(
+        fixture.store(),
+        fixture.project(),
+        StoryNo::new(5),
+    )
+    .expect("forgetting a history");
+    forget_row(&fixture, 5);
+    // And a type the catalog no longer defines, which nothing but a human can
+    // repair.
+    let project = fixture.project();
+    fixture
+        .store()
+        .write(|tx| {
+            tx.put_types(
+                project,
+                &[TypeDef {
+                    slug: "feature".into(),
+                    description: None,
+                    emoji: None,
+                }],
+            )
+        })
+        .expect("shrinking the catalog under F");
+
+    let stories: Vec<String> = (1..=7).map(|no| format!("SH-{no}")).collect();
+    let before: Vec<usize> = (1..=7).map(|no| events_of(&fixture, no).len()).collect();
+    let reachable: BTreeSet<String> = findings(&fixture)
+        .into_iter()
+        .filter_map(|finding| finding.remedy)
+        .filter(|remedy| is_open(&fixture, remedy))
+        .collect();
+
+    let outcome = IntegrityService::new(&fixture.ctx())
+        .repair()
+        .expect("a repair that leaves findings is still a repair");
+
+    let appended: BTreeSet<String> = stories
+        .iter()
+        .zip(&before)
+        .filter(|(story, count)| {
+            let no = StoryNo::parse_id("SH", story).expect("a well-formed id");
+            events_of(&fixture, no.get()).len() > **count
+        })
+        .map(|(story, _)| story.clone())
+        .collect();
+
+    assert_eq!(
+        appended, reachable,
+        "the run appended somewhere its own findings did not send it, or skipped somewhere they \
+         did"
+    );
+    assert_eq!(
+        appended,
+        ["SH-2", "SH-3", "SH-4"]
+            .into_iter()
+            .map(String::from)
+            .collect::<BTreeSet<_>>(),
+        "the inverse lands on SH-2 (not SH-1, which reported it), the labels on SH-3, the \
+         retraction on SH-4 — and nothing lands on SH-6, whose finding names no remedy, or on \
+         SH-7, whose remedy is closed"
+    );
+
+    assert_eq!(
+        report(&fixture),
+        [
+            "SH-6: unknown type `bug`",
+            "SH-7: malformed labels [\"web,sse\"] — a label cannot contain a comma or be blank",
+        ],
+        "what is left must be exactly the findings with no reachable remedy"
+    );
+    assert!(
+        outcome
+            .advice
+            .iter()
+            .any(|entry| entry.contains("SH-7: normalize its labels to [\"sse\", \"web\"]")),
+        "the one repair the run could not reach went unnamed (SH-225): {:?}",
+        outcome.advice
+    );
+    assert_eq!(
+        relations_of(&fixture, &b),
+        [("blocked-by".to_string(), a.clone())],
+        "the inverse was written to the end that lacked it"
+    );
+}
+
 /// The re-fold moved to the front of `repair`, but it must not move past the
 /// catalog write: [`storyhook::store::repair_read_model`] folds every story
 /// against the project's state definitions, so a project below the
