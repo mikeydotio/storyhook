@@ -94,6 +94,18 @@ pub enum FindingCode {
     /// storyhook's data and is not a finding at all — it rides the advice
     /// channel, per SH-185.
     UndecodableEvent,
+    /// A story the events do not corroborate, whose story-level checks were
+    /// therefore not run (SH-286).
+    ///
+    /// The disclosure half of a suppression. The doctor's story-level checks
+    /// read the `stories` table, which is a cache of a fold of the events; when
+    /// a story's row is missing, or present but unattested by its own history,
+    /// nothing that row says is evidence and nothing its absence implies is
+    /// damage. So those checks are skipped and this is minted in their place —
+    /// **one per unattested story**, so the report cannot get quieter without
+    /// saying why. See [`crate::domain::compute_integrity_issues`] for the
+    /// three rules and `crate::store::ReadModelDiff::unattested` for the set.
+    UnexaminedStory,
     /// An integrity fault raised as prose by a caller that has no structure to
     /// offer — a story missing a required field mid-fold, a refused migration,
     /// a store invariant.

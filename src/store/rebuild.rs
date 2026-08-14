@@ -96,6 +96,14 @@ pub struct RebuiltStory {
     pub unknown_events: Vec<UnknownEventDiagnostic>,
 }
 
+/// [`Divergence::field`] for the whole embedded snapshot — the column
+/// `service::query::story_map` builds every story-level integrity check from.
+///
+/// Named once so [`diff_rebuilt`], which produces the divergence, and
+/// [`ReadModelDiff::unattested`], which singles it out of the rest, cannot come
+/// to mean different columns by the same string.
+const SNAPSHOT_FIELD: &str = "snapshot";
+
 /// One disagreement between the persisted read model and the events.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Divergence {
@@ -161,6 +169,54 @@ impl ReadModelDiff {
         !self.asymmetric_relations.is_empty() || !self.fold_failures.is_empty()
     }
 
+    /// Every story in this project the events do not corroborate — the set
+    /// `story doctor`'s story-level checks may assert nothing from (SH-286).
+    ///
+    /// The doctor's story-level checks read the `stories` table, which is a
+    /// cache of a fold of the events. This is every way this diff has found
+    /// that cache untrustworthy for one story, and the four are here rather
+    /// than the one SH-286 was filed about because each defeats those checks
+    /// the same way:
+    ///
+    /// * [`missing_rows`](Self::missing_rows) — the events describe a story the
+    ///   checks cannot see at all. The case SH-285 found: its inbound edges are
+    ///   valid and read as dangling.
+    /// * [`fold_failures`](Self::fold_failures) — the events will not fold, so
+    ///   nothing derives a row. **Whether or not one is still sitting there:**
+    ///   [`diff_rebuilt`] files a story here and moves on *before* it looks for
+    ///   a row, so a stale one survives untouched, and a check computed from it
+    ///   is computed from a snapshot this very run failed to reproduce.
+    /// * [`extra_rows`](Self::extra_rows) — a row no events back. It is not a
+    ///   story at all by the authority that decides, yet it sits in the map,
+    ///   where it silently blesses every edge naming it. The SH-285 defect
+    ///   inverted.
+    /// * [`divergences`](Self::divergences) on the `snapshot` field — the story
+    ///   map is built from that column (`service::query::story_map` reads
+    ///   `row.snapshot`), so this is a row the checks compute *every* finding
+    ///   from and the same run proves wrong. Only that field: a `title` or
+    ///   `state` column the fold disagrees with is drift the checks never read,
+    ///   and widening this to all divergences would take a badly drifted
+    ///   project's whole report down to `UnexaminedStory`, which is the SH-268
+    ///   shape of going quiet.
+    ///
+    /// Ordered and deduplicated — a story can reach this by more than one route,
+    /// and it is named once however many.
+    #[must_use]
+    pub fn unattested(&self) -> BTreeSet<StoryNo> {
+        self.missing_rows
+            .iter()
+            .copied()
+            .chain(self.fold_failures.iter().map(|(story, _)| *story))
+            .chain(self.extra_rows.iter().copied())
+            .chain(
+                self.divergences
+                    .iter()
+                    .filter(|divergence| divergence.field == SNAPSHOT_FIELD)
+                    .map(|divergence| divergence.story_no),
+            )
+            .collect()
+    }
+
     /// A human-readable summary, one line per finding.
     #[must_use]
     pub fn describe(&self) -> String {
@@ -199,6 +255,36 @@ pub struct RepairReport {
     pub repaired: ReadModelDiff,
     /// Stories that could not be repaired because their events do not fold.
     pub unrepairable: Vec<(StoryNo, String)>,
+}
+
+impl RepairReport {
+    /// Every story the events still do not corroborate **after** this repair —
+    /// what [`ReadModelDiff::unattested`] would answer if it were asked again
+    /// now (SH-286).
+    ///
+    /// Two members, and the reason is what the repair could and could not do:
+    ///
+    /// * [`unrepairable`](Self::unrepairable) — the fold failures, which a
+    ///   re-fold by definition cannot clear; and
+    /// * [`repaired`](Self::repaired)`.extra_rows` — a row with no events, which
+    ///   re-folding does not remove either, so it survives the repair unchanged.
+    ///
+    /// Everything else in `repaired` is *gone*: missing rows were written and
+    /// divergent ones rewritten, which is the whole of what this repair does.
+    /// Reading the rest of that field would be reading the damage as it was
+    /// **before** the repair and skipping checks on the very rows the repair had
+    /// just restored — the label a story could not be repaired of because the
+    /// same run had already fixed the row carrying it
+    /// (`tests/service_integrity.rs::one_fix_run_repairs_a_label_on_a_story_
+    /// whose_row_it_had_to_restore`).
+    #[must_use]
+    pub fn unattested(&self) -> BTreeSet<StoryNo> {
+        self.unrepairable
+            .iter()
+            .map(|(story, _)| *story)
+            .chain(self.repaired.extra_rows.iter().copied())
+            .collect()
+    }
 }
 
 /// Re-folds every story in a project from its events.
@@ -422,7 +508,7 @@ pub fn diff_rebuilt(
         // what catches a change to a field that has no column of its own, such
         // as a comment.
         report(
-            "snapshot",
+            SNAPSHOT_FIELD,
             serde_json::to_string(&row.snapshot)?,
             serde_json::to_string(expected)?,
         );
