@@ -468,6 +468,60 @@ export async function holdFetch<T>(
   };
 }
 
+/** A request held in flight until the test decides its fate. See
+ * {@link holdUntilRefused}. */
+export interface HeldRoute {
+  /** Refuses the held request, and every later one matching the same
+   * predicate, so nothing repairs the view behind the assertions that
+   * follow. */
+  refuse: () => void;
+  /** Stops refusing: from here on these requests reach the daemon, which is
+   * how a spec puts a store back in service under a page that has already
+   * given up on it. */
+  restore: () => void;
+}
+
+/**
+ * Holds every request matching `matches` in flight until `refuse()` is
+ * called, then aborts it and every later match -- until `restore()` says
+ * otherwise.
+ *
+ * A simpler tool than {@link holdFetch} above: this one answers no requests
+ * from the daemon at all, it only ever holds-then-aborts or holds-then-lets-
+ * through, which is what a readiness spec needs to drive a fetch through
+ * "never completed" and back to "answers again" without caring about the
+ * ordering of several in-flight replies. Originated as `board-readiness.spec.ts`'s
+ * own `holdDataFor` (SH-291, scoped to one project's `/data`); generalised
+ * here to whatever URL a spec needs, since SH-301's catalog and
+ * statuses-editor specs both need the identical lifecycle on different
+ * routes.
+ *
+ * `restore()` flips a flag the handler reads rather than removing the route:
+ * `page.unroute()` identifies a route by the matcher it was registered with,
+ * and a URL *predicate* is a function, so a second one spelled identically is
+ * a different route and removes nothing -- a spec that "restored" that way
+ * would sit and watch its requests go on being aborted until the assertion
+ * timed out, blaming the behaviour under test rather than the harness.
+ */
+export async function holdUntilRefused(
+  page: Page,
+  matches: (url: URL) => boolean,
+): Promise<HeldRoute> {
+  const gate = latch();
+  let refusing = true;
+  await page.route(matches, async (route) => {
+    await gate.held;
+    if (refusing) await route.abort();
+    else await route.continue();
+  });
+  return {
+    refuse: gate.release,
+    restore: () => {
+      refusing = false;
+    },
+  };
+}
+
 /**
  * Board stories, as `GET .../data` reports them: open and closed alike,
  * neither deleted nor draft (`project_data_json` in `src/api/rest.rs`).
