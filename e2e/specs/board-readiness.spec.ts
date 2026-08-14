@@ -2,7 +2,7 @@ import { test, expect, type APIRequestContext } from "@playwright/test";
 import {
   activateBehindOverlay,
   cleanUpCreatedStories,
-  latch,
+  holdUntilRefused,
   openProject,
   projectSlug,
   requiredEnv,
@@ -476,51 +476,23 @@ test("a popover opened moments after a navigation is not hidden by the previous 
  * tests above act inside.
  */
 
-/** One project's `/data` reads, under the test's control. See
- * {@link holdDataFor}. */
-interface HeldProjectData {
-  /** Refuses the held read, and every later one, so nothing repairs the view
-   * behind the assertions that follow. */
-  refuse: () => void;
-  /** Stops refusing: from here on these reads reach the daemon, which is how
-   * a spec puts a store back in service under a page that has already given
-   * up on it. */
-  restore: () => void;
-}
-
 /** Holds every `/data` read for `slug` in flight until `refuse()` is called.
  *
  * Scoped to one project on purpose: a store is not what fails here, a
  * project's own reads are — which is what lets the third test below hold two
  * projects in two different states at once.
  *
- * `restore()` flips a flag the handler reads rather than removing the route,
- * because removing it is not available: `page.unroute()` identifies a route by
- * the matcher object it was registered with, and a URL *predicate* is a
- * function, so a second one spelled identically is a different route and
- * removes nothing. A spec that "restored" that way would sit and watch its
- * requests go on being aborted until the assertion timed out, blaming the
- * behaviour under test. */
-async function holdDataFor(
-  page: import("@playwright/test").Page,
-  slug: string,
-): Promise<HeldProjectData> {
-  const gate = latch();
-  let refusing = true;
-  await page.route(
+ * A thin wrapper over `holdUntilRefused()` (SH-301, `./support`), which
+ * generalised this function beyond one project's `/data` once
+ * `catalog-readiness.spec.ts` needed the identical held/refused/restored
+ * lifecycle on the catalog and statuses-editor routes. See its own doc
+ * comment for why `restore()` flips a flag rather than calling
+ * `page.unroute()`. */
+function holdDataFor(page: import("@playwright/test").Page, slug: string) {
+  return holdUntilRefused(
+    page,
     (url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`,
-    async (route) => {
-      await gate.held;
-      if (refusing) await route.abort();
-      else await route.continue();
-    },
   );
-  return {
-    refuse: gate.release,
-    restore: () => {
-      refusing = false;
-    },
-  };
 }
 
 test("a project whose data never arrives names the failure, once there is one to name", async ({
