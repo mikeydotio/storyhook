@@ -1934,6 +1934,60 @@ fn web_serve_root_html_lets_the_next_board_column_peek_on_narrow_phones() {
     );
 }
 
+/// SH-303: the `<=768px` block used to remove `.projsel-btn`'s only width
+/// ceiling outright (`max-width: none`) -- exactly the widths that can least
+/// afford it, since `.projsel-label`'s `text-overflow: ellipsis` (elsewhere
+/// in this stylesheet) has nothing to elide against once the button is
+/// unconstrained. A long project name then carried `.brand`, `.projsel` and
+/// the whole document past the viewport's own width (measured:
+/// `document.documentElement.scrollWidth` 799px against a 320px
+/// `clientWidth`, with a 100-character name).
+///
+/// The fix keeps the button's own 14rem ceiling under the narrow-width block
+/// too -- council-decided (`.council/sh303-projsel-mobile-max-width/`) over a
+/// wider mobile-only figure, because `.projsel-btn` shares topbar row 1 with
+/// `.view-toggle`/`.topbar-right` under the same `<=768px` block, and that
+/// row's own chrome-budget test (`responsive.mobile.spec.ts`) has too little
+/// headroom to safely absorb a wider button with no test that would catch a
+/// regression there -- plus a `calc(100vw - 2.5rem)` backstop, `2.5rem` being
+/// `.topbar`'s own horizontal padding, for viewports narrower than anything
+/// this file's own sweep tests. This is the cheap, browser-free layer: it
+/// pins the source text so the mechanism can't be quietly reverted to
+/// `none`. Whether the browser actually *resolves* it correctly is
+/// `responsive.mobile.spec.ts`'s own job.
+#[test]
+fn web_serve_root_html_caps_the_project_selector_width_on_narrow_phones() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    assert!(
+        declarations(css, ".projsel-btn").contains("max-width: 14rem"),
+        ".projsel-btn's base rule must keep its 14rem ceiling outside the narrow-phone override"
+    );
+
+    let block_start = css
+        .find("@media (max-width: 768px) {")
+        .expect("the <=768px layout block is what used to remove .projsel-btn's ceiling");
+    let block = &css[block_start..];
+    let block = &block[..block.find("\n}").expect("the <=768px block closes")];
+    assert!(
+        !block.contains(".projsel-btn { max-width: none; }"),
+        "the <=768px block must not remove .projsel-btn's width ceiling -- that is SH-303"
+    );
+    assert!(
+        block.contains(".projsel-btn { max-width: min(14rem, calc(100vw - 2.5rem)); }"),
+        "the <=768px block must cap .projsel-btn at min(14rem, calc(100vw - 2.5rem))"
+    );
+}
+
 #[test]
 fn web_serve_api_data_empty_project() {
     let fixture = served();
