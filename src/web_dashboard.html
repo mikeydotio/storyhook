@@ -5207,7 +5207,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * Also tolerates a focused element that isn't a form control (SH-217's
    * description read view, `data-field="description-view"`) -- `value`
    * is only captured when the element actually has one, so restoring
-   * never assigns a value onto a plain element that has none. */
+   * never assigns a value onto a plain element that has none.
+   *
+   * Deliberately carries no story/repo identity of its own (SH-283) --
+   * `data-field` alone would let a snapshot taken from one story's body get
+   * replayed onto a different story's matching field after a rebuild.
+   * `renderDrawer()` is the sole caller and the only place that knows
+   * whether the body it is about to hand to this function still belongs to
+   * the story being rendered; it gates the call itself rather than this
+   * function taking an id it would have to trust its caller to pass
+   * correctly every time. */
   function captureDrawerFocus(body) {
     var active = document.activeElement;
     if (!active || !body.contains(active)) return null;
@@ -5282,10 +5291,21 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var drawerBadge = buildTypeBadge(st.story_type);
     if (drawerBadge) typeBadgeMount.appendChild(drawerBadge);
     var body = $("drawer-body");
-    var focused = captureDrawerFocus(body);
+    // SH-283: `body`'s own fields still belong to whichever story last
+    // rendered into it -- read that stamp BEFORE overwriting it below.
+    // A focus snapshot is only meaningful when it was taken from the same
+    // story this render is building; otherwise a field left focused across
+    // a story switch (nothing found reaches this today via a real
+    // interaction -- see that story's own comment for the search -- but
+    // `data-field` alone has no way to refuse it if one ever does) would
+    // get its stale value written into a different story's own field.
+    var sameDrawer = body.dataset.storyId === st.id && body.dataset.repoId === state.repoId;
+    var focused = sameDrawer ? captureDrawerFocus(body) : null;
     drawerRerendering = true;
     clear(body);
     drawerRerendering = false;
+    body.dataset.storyId = st.id;
+    body.dataset.repoId = state.repoId;
 
     body.appendChild(buildTitleField(st));
     body.appendChild(buildFieldGrid(st));
