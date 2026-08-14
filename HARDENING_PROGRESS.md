@@ -15761,3 +15761,79 @@ the full Rust suite, the plugin harness, **191** e2e specs (187 + 4).
 run's own "stage only paths you changed" rule; nothing unintended was staged
 (`.council/` is gitignored), and it was reset and re-staged by explicit path
 before the commit.
+
+### SH-296 — done
+
+**Outcome:** merged (PR #405). `migrate::verify` now requires `PRAGMA
+page_count > 0` after the integrity check, so a file that never received a
+backup is refused rather than believed.
+
+**The defect, in one line:** `PRAGMA integrity_check` answers `ok` for a
+pageless database — a fresh, empty file genuinely *is* sound — so `verify`'s
+promise proved the file was not corrupt, never that it was a backup. Under the
+experiment that found it (SH-295, `VACUUM INTO` pointed at the final name while
+the staging machinery stayed), `Connection::open` created the staging file
+empty, `verify` passed it, the rename put those zero bytes over the real copy,
+and `snapshot` returned `Ok` for a 0-byte backup.
+
+**No council vote, and that is the entry's point.** The story offered two fix
+directions and this run's charter sends a genuine two-way choice to the council.
+It was not one. Three measurements — taken before writing any code, on the
+bundled SQLite 3.51.0 — collapsed it:
+
+1. `VACUUM INTO` **refuses to run inside a transaction**. So the stronger
+   option, matching the copy's `user_version` against the source connection,
+   cannot be made race-free: no read snapshot spans the copy and the source
+   read. A second process committing a migration in that window — the race
+   `apply` exists to survive, and
+   `two_backups_in_one_millisecond_collapse_to_one_verified_file` deliberately
+   provokes — would fail a *good* backup and abort a *safe* migration. Unsound,
+   not merely bigger.
+2. Comparing page **counts** against the source, also suggested by the story, is
+   wrong outright: `VACUUM INTO` compacts, so a sound copy legitimately holds
+   fewer pages than its source.
+3. `VACUUM INTO` writes a **one-page** database even from a source with no
+   pages. This is what makes `page_count > 0` safe rather than merely small: it
+   can never refuse a genuine copy, so a real backup and an unwritten file
+   separate exactly, with no case in between.
+
+Measurement is cheaper than deliberation when the question is factual. A council
+asked to choose between these two would have been choosing between an option and
+a race condition, without the facts that say so.
+
+**Two tests, red before and green after.**
+`a_pageless_database_does_not_verify_as_a_backup` writes a zero-byte file and
+requires a refusal — the story's stated acceptance criterion.
+`a_backup_of_a_pageless_database_still_verifies` is the false-positive half and
+the load-bearing one: it pins fact 3, so a future SQLite that ever wrote a
+pageless copy fails a test here rather than turning every backup in the field
+into a refused migration. The red was real — the first test failed with the
+check absent while the second already passed, which is the shape that proves the
+fix is aimed at the defect and not at the test.
+
+**Sibling sweep, one hit.** No product code restores from a backup, so there is
+no second site that *reads* one. But `tests/backup_restore.rs::assert_openable`
+— the promise "checked from outside" — had the identical hole: SH-295 hardened
+the two unit tests beside it to read a copied row back and missed this third
+site. It asserts pages now. Three contract statements that promised only the
+integrity check were corrected to say what is actually checked: `Store::snapshot`'s
+trait doc (the engine-neutral contract a future engine must meet), the daemon
+backup module header, and `story store backup`'s own output line.
+
+**Supervision — one lapse, caught and corrected.** The first `make test` watch
+used a pgrep pattern (`scripts/run-tests.sh|cargo test`) that does not match the
+plugin shell-test phase, so at t=330s it reported `running=no` and `DONE` while
+the run was still going and the log still growing. Nothing was lost — the log
+was re-checked, the run confirmed alive, and supervision resumed on `make test`
+itself for another 300s to a true finish. Worth recording because it is the
+supervision rule's own failure mode inverted: not a stall mistaken for progress,
+but **progress mistaken for completion**, from a heartbeat watching the wrong
+process. The log-growth pulse was right and the liveness check was wrong; when
+they disagree, believe the bytes. No wedge, no kill, no restart.
+
+**Gate:** `make test` green in full — 157 Rust suites, plugin harness 32/0,
+191 e2e specs. The one `error: the storyhook daemon stopped answering: io: Peer
+disconnected` line in the log is expected stderr from the deliberate
+daemon-stop test that reports `ok` on the next line, not a failure.
+
+**Deviations:** none.
