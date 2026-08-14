@@ -185,6 +185,14 @@ async function findSmallTargets(
           : "");
       const out: { describe: string; width: number; height: number }[] = [];
       for (const el of Array.from(node.querySelectorAll(selector))) {
+        // SH-217: a link inside rendered markdown (a description or a
+        // comment body) sits inline within a sentence or block of
+        // running text -- WCAG 2.2 SC 2.5.8 explicitly exempts a target
+        // in that position, and a 44px min-height floor on it would
+        // wreck the paragraph's own line layout for no accessibility
+        // gain (`.rel-id`, a standalone story reference and NOT inline
+        // in prose, keeps its own floor unaffected).
+        if (el.tagName === "A" && el.closest(".md")) continue;
         const r = el.getBoundingClientRect();
         if (r.width === 0 && r.height === 0) continue;
         if (r.width < minPx || r.height < minPx) {
