@@ -670,10 +670,6 @@ impl std::fmt::Display for HookOutcome {
     }
 }
 
-pub fn build_payload(fields: serde_json::Value) -> String {
-    serde_json::to_string(&fields).unwrap_or_default()
-}
-
 pub fn list_hooks(root: &Path) -> String {
     match load_hooks_config_result(root) {
         Err(reason) => format!("hooks are configured but not active: {reason}"),
