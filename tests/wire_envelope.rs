@@ -818,7 +818,7 @@ fn error_corpus() -> Vec<AppError> {
                 }),
                 Finding::new(
                     FindingCode::ReadModelDivergence,
-                    "story 3: draft is `true` but the events say `false`",
+                    "SH-3: draft is `true` but the events say `false`",
                 )
                 .about("SH-3")
                 .carrying(FindingData::Divergence {
@@ -827,7 +827,7 @@ fn error_corpus() -> Vec<AppError> {
                     rebuilt: "false".to_string(),
                 }),
             ],
-            advice: vec!["story 9: event 4 is of kind `StoryVibed`, …".to_string()],
+            advice: vec!["SH-9: event 4 is of kind `StoryVibed`, …".to_string()],
         }),
         AppError::Storage("failed to read .storyhook/stories: no such file".to_string()),
         // The prefixed variants: their `Display` is not their payload, so a
