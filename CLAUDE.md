@@ -158,6 +158,19 @@ Standing rules for every wave:
   `test-fake-tmux-state.sh` pins it. Note what did **not** reproduce it: stale state seeded
   before a run, which `new-window` resets. It took a concurrent second writer, which is what a
   fixed shared path is *for*.
+- **A `pub` item with no caller is invisible to `dead_code`, so a test has to find it**
+  (SH-198). `get_timeline` sat on `GithubClient` with zero call sites anywhere in `src/`
+  or `tests/`, and the compiler never warned: `dead_code` only fires for an item
+  unreachable from a crate root, and `pub` makes everything reachable — correct for a
+  published library, wrong here, since this crate is published nowhere
+  (`.github/workflows/release.yml` ships binaries on version tags, never `cargo
+  publish`) and nothing outside `src/` and `tests/` can ever call one. Nine more had
+  already accumulated the same way, two of them actively misleading rather than merely
+  idle — `is_executable`'s doc promised an execute-bit check its body never performed,
+  and `ArchiveRepairReport` documented a function (`repair_archived_snapshots`) that a
+  prior deletion had already removed. `tests/dead_public_surface.rs` fences the class:
+  derived over `git ls-files`, the same style the store-isolation scans use, rather than
+  a hand-maintained list — which is exactly what let ten of these go uncounted.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
