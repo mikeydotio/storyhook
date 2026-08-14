@@ -81,6 +81,57 @@ test("choosing another project from the selector switches the board", async ({
   ).not.toBeVisible();
 });
 
+/**
+ * SH-290: `selectRepo()`'s own `closeDrawer()` call, which nothing in this
+ * suite asserted before — every other `#drawer … not.toHaveClass(/open/)` in
+ * the suite follows `#drawer-close`, Escape, or the delete modal, so no spec
+ * claimed that *navigating* dismisses a drawer at all.
+ *
+ * It needs its own pin because it is not the screen rule. SH-290 derives
+ * dismissal from `renderScreen()`'s `!isRepo` check, and `selectRepo()` sets
+ * `screen = "repo"` — so the derived rule is false exactly here, leaving this
+ * the one hand-placed call in a file that otherwise documents dismissal as
+ * derived. Read as duplication and deleted, it would fail nothing without
+ * this, and fail quietly: `apiBase()` is `repoApiBase(state.repoId)`, so
+ * between `state.repoId = id` and the new board's first `/data`, the surviving
+ * drawer's edit fields, relation adder and Delete button all address the
+ * project the user just left, and all succeed.
+ *
+ * The selector-label assertion is load-bearing, not decoration: without it the
+ * test passes just as happily on a switch that never happened.
+ *
+ * Driven by keyboard, and not as a stylistic choice — `openMenu()`'s click
+ * cannot reach `#projsel-btn` at all here. `.backdrop` is `position: fixed;
+ * inset: 0`, so with the drawer open Playwright reports
+ * `<div id="drawer-backdrop"> intercepts pointer events` and times out; a real
+ * mouse fares no better, and the click it does land closes the drawer, so the
+ * transition under test never happens. This dismissal is therefore reachable
+ * only from the keyboard, exactly like the one SH-290 was filed for — the
+ * backdrop hides both from the mouse while nothing marks the background
+ * `inert`. `drawer-screen-scope.spec.ts` documents that pairing at length.
+ */
+test("switching project closes a drawer belonging to the project being left", async ({
+  page,
+}) => {
+  await openProject(page, "Alpha Project");
+  await page
+    .locator(".card-title", { hasText: "Wire up the auth flow" })
+    .click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+
+  // The same route "the selector is fully operable by keyboard" drives below:
+  // opening focuses the current project (Alpha, first in the seeded list), so
+  // one ArrowDown reaches Beta.
+  await page.locator("#projsel-btn").focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#projsel-menu")).toBeVisible();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+
+  await expect(page.locator("#projsel-btn")).toContainText("BB · Beta Project");
+  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
+});
+
 test("the menu lists every project and marks the open one as checked", async ({
   page,
 }) => {
