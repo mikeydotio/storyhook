@@ -462,16 +462,16 @@ fn release_matrix_targets(workflow: &serde_yml::Value) -> Vec<&str> {
         .collect()
 }
 
-/// Every tracked `Cargo.toml`, found by `git ls-files` rather than a
-/// hand-maintained list — the same idiom `tests/store_isolation.rs`'s
+/// Every tracked file matching `pathspec`, found by `git ls-files` rather
+/// than a hand-maintained list — the same idiom `tests/store_isolation.rs`'s
 /// `data_dir_harnesses` and `tests/harness_path_entries.rs` use for shell
-/// scripts, applied to manifests instead.
-fn tracked_manifests(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+/// scripts.
+fn tracked_files(root: &std::path::Path, pathspec: &str) -> Vec<std::path::PathBuf> {
     let listed = std::process::Command::new("git")
         .current_dir(root)
-        .args(["ls-files", "-z", "--", "*Cargo.toml"])
+        .args(["ls-files", "-z", "--", pathspec])
         .output()
-        .expect("listing this repository's tracked manifests");
+        .expect("listing this repository's tracked files");
     assert!(
         listed.status.success(),
         "`git ls-files` failed, so this scan proved nothing: {}",
@@ -484,6 +484,12 @@ fn tracked_manifests(root: &std::path::Path) -> Vec<std::path::PathBuf> {
         .filter(|entry| !entry.is_empty())
         .map(|path| root.join(std::str::from_utf8(path).expect("a UTF-8 path")))
         .collect()
+}
+
+/// Every tracked `Cargo.toml` — [`tracked_files`] narrowed to the manifests
+/// [`target_os_dependency_tables`] reads.
+fn tracked_manifests(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    tracked_files(root, "*Cargo.toml")
 }
 
 /// Every `target_os` a manifest's `[target.'cfg(...)'.dependencies]` tables
@@ -608,6 +614,167 @@ fn every_platform_gated_dependency_table_targets_a_built_platform() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// SH-276: the manifest scan's sibling, for `cfg` arms with no manifest entry
+// ---------------------------------------------------------------------------
+
+/// The one file allowed to contain a `target_os = "…"` string that is not a
+/// real `cfg` predicate: this file's own control test below, which feeds
+/// [`cfg_target_oses`] example attribute text as string literals to prove it
+/// matches what it claims to. Byte for byte, an escaped fixture like
+/// `"#[cfg(target_os = \"windows\")]"` is indistinguishable from a genuine
+/// attribute once quote *characters* are all this scan looks for — scanning
+/// this file for its own examples would flag the tests that prove the
+/// scanner works, not a real defect. Excluded the same way
+/// `tests/store_isolation.rs` excludes `REAL_STORE_OWNER`, with the same
+/// staleness check on the exclusion.
+const SOURCE_SCAN_OWNER: &str = "tests/release_targets.rs";
+
+/// Every `target_os` literal inside a `cfg`-shaped line of `text`, paired
+/// with its 1-indexed line number (for a legible failure message).
+///
+/// Line-based and deliberately crude, in the spirit of
+/// `tests/invoker_seam.rs::the_legacy_write_path_is_gone`: a line is a
+/// candidate only if its trimmed form does not open a comment (`//` or `*`
+/// — doc comments describe a platform without claiming to support it) and
+/// the raw line contains `cfg`, so `#[cfg(target_os = "windows")]` and
+/// `cfg!(target_os = "macos")` both qualify while an unrelated mention of
+/// the bare identifier `target_os` (a parameter name, a doc reference) does
+/// not. Quoted values are extracted with the same loop
+/// `target_os_dependency_tables` above uses on a TOML key, so
+/// `not(any(target_os = "macos", target_os = "windows"))` yields both.
+///
+/// Single-line only — every `cfg(target_os = ...)` this tree writes today is
+/// one line, the same scope `target_os_dependency_tables` has for a TOML
+/// key. A multi-line attribute would need a different scanner; nothing here
+/// writes one.
+fn cfg_target_oses(text: &str) -> Vec<(usize, String)> {
+    let mut found = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with('*') || !line.contains("cfg") {
+            continue;
+        }
+        let mut rest = line;
+        while let Some(at) = rest.find("target_os") {
+            rest = &rest[at + "target_os".len()..];
+            let Some(open) = rest.find('"') else { break };
+            let Some(close) = rest[open + 1..].find('"') else {
+                break;
+            };
+            let os = rest[open + 1..open + 1 + close].to_string();
+            found.push((index + 1, os));
+            rest = &rest[open + 1 + close + 1..];
+        }
+    }
+    found
+}
+
+/// The pattern above matches the shapes this tree actually writes, and
+/// stays quiet on shapes that only mention the same identifier — the same
+/// self-check
+/// `store_isolation.rs::the_real_store_regression_pattern_matches_what_it_claims_to`
+/// makes for its own predicate. A scan that matched everything, or nothing,
+/// would pass every assertion built on it for the wrong reason.
+#[test]
+fn the_source_arm_pattern_matches_what_it_claims_to() {
+    assert_eq!(
+        cfg_target_oses("#[cfg(target_os = \"windows\")]"),
+        vec![(1, "windows".to_string())]
+    );
+    assert_eq!(
+        cfg_target_oses("    if cfg!(target_os = \"macos\") && unindexed.is_dir() {"),
+        vec![(1, "macos".to_string())]
+    );
+    assert_eq!(
+        cfg_target_oses(
+            "#[cfg(not(any(target_os = \"macos\", target_os = \"linux\", target_os = \"windows\")))]"
+        ),
+        vec![
+            (1, "macos".to_string()),
+            (1, "linux".to_string()),
+            (1, "windows".to_string()),
+        ]
+    );
+    // A doc comment that quotes the pattern is not the pattern.
+    assert!(cfg_target_oses("/// See #[cfg(target_os = \"windows\")] above.").is_empty());
+    assert!(cfg_target_oses("* #[cfg(target_os = \"windows\")] in a block comment").is_empty());
+    // No `cfg` on the line at all.
+    assert!(cfg_target_oses("let target_os = \"windows\";").is_empty());
+    // `cfg`, and the identifier, but no quoted value to find.
+    assert!(
+        cfg_target_oses("fn matrix_substring_for(target_os: &str) -> &'static str {").is_empty()
+    );
+    // `#[cfg(unix)]` names no target_os at all.
+    assert!(cfg_target_oses("#[cfg(unix)]").is_empty());
+}
+
+/// The general invariant SH-276 built from the one SH-260 shipped for
+/// dependency tables: every `target_os` a tracked source file's `cfg` arms
+/// name corresponds to a target the release matrix actually builds.
+/// SH-260's manifest scan could not see `src/clipboard.rs`'s and
+/// `src/web.rs`'s Windows arms — hardcoded argv, no Cargo dependency, so
+/// nothing about them appeared in a manifest. This is the same rule,
+/// applied to the artifact type that hid them.
+///
+/// As with the manifest scan, this is matrix-derived rather than a
+/// Windows-specific block: it goes green for a new platform the day that
+/// platform's target joins `release.yml`'s matrix, with no edit here. No
+/// allowlist — a real hit gets fixed or the matrix grows to justify it, the
+/// same policy `dead_public_surface.rs` states outright ("extend the scan
+/// rather than special-casing the name").
+#[test]
+fn every_platform_gated_source_arm_targets_a_built_platform() {
+    let root = repo_root();
+    assert!(
+        root.join(SOURCE_SCAN_OWNER).is_file(),
+        "SOURCE_SCAN_OWNER is stale — {SOURCE_SCAN_OWNER} no longer exists, so \
+         this scan's one exclusion excludes nothing"
+    );
+
+    let workflow = release_workflow();
+    let matrix_targets = release_matrix_targets(&workflow);
+
+    let mut hits = 0;
+    for source_path in tracked_files(&root, "*.rs") {
+        let relative = source_path
+            .strip_prefix(&root)
+            .unwrap_or(&source_path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if relative == SOURCE_SCAN_OWNER {
+            continue;
+        }
+        let text = std::fs::read_to_string(&source_path)
+            .unwrap_or_else(|e| panic!("reading {relative}: {e}"));
+        for (line, target_os) in cfg_target_oses(&text) {
+            hits += 1;
+            let substring = matrix_substring_for(&target_os);
+            assert!(
+                matrix_targets
+                    .iter()
+                    .any(|target| target.contains(substring)),
+                "{relative}:{line} names target_os \"{target_os}\" in a `cfg` \
+                 arm, but no target in release.yml's build matrix matches \
+                 (matrix targets: {matrix_targets:?}). Either add {target_os} \
+                 to the matrix and prove the arm by building it, or delete \
+                 the arm for a platform this project does not ship (SH-276)."
+            );
+        }
+    }
+
+    // A scan that matched nothing would pass the loop above by vacuum.
+    // src/clipboard.rs and src/web.rs still carry real macOS and Linux arms
+    // after SH-276's fix, so this floor stays meaningful rather than
+    // needing a fixture of its own.
+    assert!(
+        hits >= 10,
+        "this scan is supposed to find every `target_os` in a tracked source \
+         file's `cfg` arms, and it found {hits}. The pattern is broken, not \
+         the tree."
+    );
 }
 
 /// A guard on the guard: `read` resolves against the repository, and a test

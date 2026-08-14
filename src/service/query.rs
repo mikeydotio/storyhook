@@ -600,6 +600,41 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
     /// Each of the three sections below sorts by story number, not by the
     /// legacy directory-listing order `all_stories_legacy_order` still walks
     /// to build them (SH-64).
+    ///
+    /// # Each heading is bucketed on the fact it names (SH-280)
+    ///
+    /// This is the end-of-session record, read by a person or an agent who
+    /// was not there — `plugin/claude-code/hooks/stop-handoff.sh` runs
+    /// `handoff --since 4h` and feeds the result to the next session
+    /// verbatim. Nothing parses it, so its only contract is that every line
+    /// is true.
+    ///
+    /// "Closed" used to mean `superstate == CLOSED` and `updated_at` inside
+    /// the window, which is a different claim: `updated_at` is bumped by any
+    /// append, and three writes reach a story that closed months ago —
+    /// `story hide`/`unhide` (SH-43), `story comment` (SH-261) and
+    /// `commit-sync`'s commit link (SH-279). Any one of them re-reported a
+    /// long-finished story as this session's work.
+    ///
+    /// So "Closed" asks about `closed_at`, the fact it actually claims.
+    /// `closed_at` is always the *current* closure: [`domain::fold_story`]
+    /// clears it when a story reopens into an OPEN state and restamps it on
+    /// the next close, so a story closed twice reports the closure that
+    /// really happened in this window, not the first one.
+    ///
+    /// Membership is three separate questions — is `closed_at`,
+    /// `created_at` or `updated_at` inside the window — rather than one
+    /// `updated_at` pre-filter followed by a superstate split. The three
+    /// timestamps are not ordered against one another: [`domain::fold_story`]
+    /// sets `updated_at` to the *last replayed* event's `at`, not the
+    /// greatest one seen, and nothing — no schema CHECK, no guard in
+    /// `append_and_fold` — stops a later event from carrying an earlier
+    /// `at` than its predecessor's. A restored import replaying an old
+    /// export, or a system clock that stepped back, can leave `updated_at`
+    /// behind `closed_at`. A single `updated_at` gate ahead of the split
+    /// would then silently drop a closure that genuinely happened in the
+    /// window — the same defect this method exists to fix, reached from the
+    /// other direction.
     pub fn handoff(&self, since: Option<&str>) -> Result<String, AppError> {
         let duration = match since {
             Some(raw) => parse_duration(raw).ok_or_else(|| {
@@ -612,14 +647,23 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
 
         let (mut created, mut updated, mut closed) = (Vec::new(), Vec::new(), Vec::new());
         for story in self.all_stories_legacy_order()? {
-            if story.updated_at.as_str() < threshold.as_str() {
-                continue;
-            }
-            if story.superstate == SuperState::Closed {
+            // `closed_at.is_some()` *is* `superstate == CLOSED` — tied
+            // together by two schema CHECKs on the row this snapshot was
+            // read from (`archived = (closed_at IS NOT NULL)` and
+            // `(superstate = 'CLOSED') = archived`,
+            // `0004_state_superstate_agree.sql`). Testing the superstate too
+            // would restate that invariant in Rust and, on a row where the
+            // two ever disagreed, quietly route around it instead of letting
+            // the store's own constraint be what fails.
+            if story
+                .closed_at
+                .as_deref()
+                .is_some_and(|at| at >= threshold.as_str())
+            {
                 closed.push(story);
             } else if story.created_at.as_str() >= threshold.as_str() {
                 created.push(story);
-            } else {
+            } else if story.updated_at.as_str() >= threshold.as_str() {
                 updated.push(story);
             }
         }
@@ -782,7 +826,11 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
 const READY_PREVIEW: usize = 5;
 
 /// `story handoff`'s window when `--since` is not given.
-const DEFAULT_HANDOFF_HOURS: i64 = 24;
+///
+/// `pub` so `tests/help_topic_references.rs` can pin the help text's stated
+/// default against this value rather than a second hand-copied literal —
+/// `src/help_topics.rs` named the wrong one (found in passing, SH-280).
+pub const DEFAULT_HANDOFF_HOURS: i64 = 24;
 
 /// Every story in the project, keyed by id.
 pub(crate) fn story_map(
