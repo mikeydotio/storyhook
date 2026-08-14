@@ -18,10 +18,10 @@
 //! pins that a hop through JSON changes neither.
 
 use storyhook::cli::{
-    AbandonedAction, Attach, ConflictSide, DaemonAction, EpicAction, GithubAuthAction, GraphMode,
-    HistoryAction, HooksAction, Invocation, MemberInput, NewProjectRequest, NewProjectSpec,
-    PhaseAction, PluginAction, ProjectAction, SettingsAction, SetupMode, SetupStrategy,
-    StateAction, StoreAction, TokenAction, TypeAction, WebAction,
+    AbandonedAction, Attach, ConflictSide, CrashesAction, DaemonAction, EpicAction,
+    GithubAuthAction, GraphMode, HistoryAction, HooksAction, Invocation, MemberInput,
+    NewProjectRequest, NewProjectSpec, PhaseAction, PluginAction, ProjectAction, SettingsAction,
+    SetupMode, SetupStrategy, StateAction, StoreAction, TokenAction, TypeAction, WebAction,
 };
 use storyhook::domain::finding::{Finding, FindingCode, FindingData};
 use storyhook::domain::{
@@ -1491,6 +1491,17 @@ fn invocation_corpus() -> Vec<Invocation> {
         Invocation::DoctorAbandoned {
             action: AbandonedAction::Clear { request_id: None },
         },
+        Invocation::DoctorCrashes {
+            action: CrashesAction::List,
+        },
+        Invocation::DoctorCrashes {
+            action: CrashesAction::Clear {
+                crash_id: Some("crash-1".to_string()),
+            },
+        },
+        Invocation::DoctorCrashes {
+            action: CrashesAction::Clear { crash_id: None },
+        },
         Invocation::Store {
             action: StoreAction::New {
                 path: "/tmp/scratch/store.db".to_string(),
@@ -1524,6 +1535,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Report { .. } => "Report",
         Invocation::Doctor { .. } => "Doctor",
         Invocation::DoctorAbandoned { .. } => "DoctorAbandoned",
+        Invocation::DoctorCrashes { .. } => "DoctorCrashes",
         Invocation::Show { .. } => "Show",
         Invocation::Comment { .. } => "Comment",
         Invocation::Assign { .. } => "Assign",
@@ -1587,7 +1599,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        62,
+        63,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

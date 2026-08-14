@@ -183,6 +183,7 @@ Usage:
   story graph [--critical-path] [--blocked-by <id>] [--parallel-groups]
   story doctor [--fix]
   story doctor abandoned [clear (--all | <request-id>)]
+  story doctor crashes [clear (--all | <crash-id>)]
   story update [--check] [--force]                 (self-update the story binary)
   story hooks install|uninstall|list|test <event_type>
   story commit-sync [--since <duration>]
@@ -344,6 +345,15 @@ pub enum Invocation {
     /// under the daemon's own state directory.
     DoctorAbandoned {
         action: AbandonedAction,
+    },
+    /// `story doctor crashes [clear (--all | <crash-id>)]` — the ledger of
+    /// crashes a daemon's successor noticed on relaunch, and what became of
+    /// each: filed as a bug, folded into one already filed, or withheld with
+    /// a reason (SH-287). The same shape as [`Self::DoctorAbandoned`] and for
+    /// the same reason: neither a project nor a store, one file under the
+    /// daemon's own state directory.
+    DoctorCrashes {
+        action: CrashesAction,
     },
     Show {
         id: String,
@@ -683,6 +693,17 @@ pub enum AbandonedAction {
     /// `--all`) — a human's confirmation that they reviewed it, not a claim
     /// about whether the abandoned work actually landed.
     Clear { request_id: Option<String> },
+}
+
+/// `story doctor crashes …`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CrashesAction {
+    /// List every entry in the ledger.
+    List,
+    /// Forget one entry (`Some(crash_id)`) or every entry (`None`, from
+    /// `--all`) — a human's confirmation that they reviewed it, not a claim
+    /// about whether it was ever actually filed.
+    Clear { crash_id: Option<String> },
 }
 
 /// The `story project …` subcommands — a repository's whole lifecycle.
@@ -1426,6 +1447,11 @@ static VERB_FLAGS: &[VerbFlags] = &[
     VerbFlags {
         verb: "doctor",
         subcommand: Some("abandoned"),
+        flags: &[bare("all")],
+    },
+    VerbFlags {
+        verb: "doctor",
+        subcommand: Some("crashes"),
         flags: &[bare("all")],
     },
     VerbFlags {
@@ -3038,6 +3064,9 @@ fn parse_doctor(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() >= 2 && args[1] == "abandoned" {
         return parse_doctor_abandoned(args);
     }
+    if args.len() >= 2 && args[1] == "crashes" {
+        return parse_doctor_crashes(args);
+    }
 
     if args.len() == 1 {
         return Ok(Invocation::Doctor { fix: false });
@@ -3048,7 +3077,9 @@ fn parse_doctor(args: &[String]) -> Result<Invocation, AppError> {
     }
 
     Err(AppError::Usage(
-        "usage: story doctor [--fix] | abandoned [clear (--all | <request-id>)]".to_string(),
+        "usage: story doctor [--fix] | abandoned [clear (--all | <request-id>)] | crashes \
+         [clear (--all | <crash-id>)]"
+            .to_string(),
     ))
 }
 
@@ -3068,6 +3099,23 @@ fn parse_doctor_abandoned(args: &[String]) -> Result<Invocation, AppError> {
         _ => return Err(AppError::Usage(usage.to_string())),
     };
     Ok(Invocation::DoctorAbandoned { action })
+}
+
+fn parse_doctor_crashes(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = "usage: story doctor crashes [clear (--all | <crash-id>)]";
+    let action = match &args[2..] {
+        [] => CrashesAction::List,
+        [clear, target] if clear == "clear" && target == "--all" => {
+            CrashesAction::Clear { crash_id: None }
+        }
+        [clear, id] if clear == "clear" => CrashesAction::Clear {
+            crash_id: Some(id.clone()),
+        },
+        // `clear` with nothing after it is refused rather than treated as
+        // `--all`, the same reasoning `parse_doctor_abandoned` uses.
+        _ => return Err(AppError::Usage(usage.to_string())),
+    };
+    Ok(Invocation::DoctorCrashes { action })
 }
 
 fn parse_update(args: &[String]) -> Result<Invocation, AppError> {

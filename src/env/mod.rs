@@ -318,6 +318,18 @@ impl Environment {
         self.daemon_state_dir().join("daemon.log")
     }
 
+    /// The previous daemon's [`Self::daemon_log`], one spawn old (SH-287).
+    ///
+    /// [`crate::daemon::lifecycle::spawn_child`] renames the live log here
+    /// before truncating a fresh one — a crash's whole stderr would otherwise
+    /// be destroyed by the very next spawn, which is usually the very next
+    /// `story` command. [`crate::daemon::crash::harvest`] is the only reader,
+    /// and only once: it moves whatever it finds into
+    /// [`Self::crash_logs_dir`] before this file can be rotated away again.
+    pub fn daemon_log_rotated(&self) -> PathBuf {
+        self.daemon_state_dir().join("daemon.log.1")
+    }
+
     /// Where this store's daemon persists its finished
     /// [`crate::api::dispatch::DispatchRecord`]s across a restart (SH-232).
     ///
@@ -402,6 +414,42 @@ impl Environment {
     /// `story doctor abandoned` is how they review and clear it.
     pub fn daemon_abandoned(&self) -> PathBuf {
         self.daemon_state_dir().join("daemon.abandoned.json")
+    }
+
+    /// Where a dying daemon's panic hook records what it caught (SH-287).
+    ///
+    /// Written by [`crate::daemon::crash::install_panic_hook`] the instant a
+    /// panic unwinds, from inside the panic hook itself — best-effort, mode
+    /// 0600, the same discipline [`Self::daemon_abandoned`] uses. Consumed and
+    /// cleared by [`crate::daemon::crash::harvest`] at the *next* daemon's
+    /// start, which is the only reader: nothing about a panic is actionable
+    /// until there is a fresh daemon to act on it.
+    pub fn daemon_panics(&self) -> PathBuf {
+        self.daemon_state_dir().join("daemon.panics.json")
+    }
+
+    /// The ledger of every crash this store's daemon has noticed, oldest
+    /// first (SH-287).
+    ///
+    /// Written by [`crate::daemon::crash::harvest`], the same moment it
+    /// consumes [`Self::daemon_panics`] — a crash a daemon caused but a human
+    /// has not yet reviewed. `story doctor crashes` is how they review and
+    /// clear it, the same shape [`Self::daemon_abandoned`] and
+    /// `story doctor abandoned` already established.
+    pub fn daemon_crashes(&self) -> PathBuf {
+        self.daemon_state_dir().join("daemon.crashes.json")
+    }
+
+    /// Where a crash's own preserved `daemon.log` is kept, one file per
+    /// crash, named by [`crate::daemon::crash::CrashRecord::id`] (SH-287).
+    ///
+    /// A crash's log would otherwise be destroyed by the very next daemon
+    /// spawn, which truncates [`Self::daemon_log`] unconditionally
+    /// ([`crate::daemon::lifecycle::spawn_child`]) — this directory is where
+    /// [`crate::daemon::crash::harvest`] moves it before that happens.
+    /// Pruned to the newest few the same way [`Self::backups_dir`] is.
+    pub fn crash_logs_dir(&self) -> PathBuf {
+        self.daemon_state_dir().join("crashes")
     }
 
     /// Where a daemon that fails to start records *why*, for the client that

@@ -27,9 +27,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::{
-    AbandonedAction, Attach, DaemonAction, EpicAction, HELP_TEXT, HistoryAction, HooksAction,
-    Invocation, NewProjectRequest, PhaseAction, PluginAction, ProjectAction, SettingsAction,
-    StateAction, StoreAction, TokenAction, TypeAction, WebAction,
+    AbandonedAction, Attach, CrashesAction, DaemonAction, EpicAction, HELP_TEXT, HistoryAction,
+    HooksAction, Invocation, NewProjectRequest, PhaseAction, PluginAction, ProjectAction,
+    SettingsAction, StateAction, StoreAction, TokenAction, TypeAction, WebAction,
 };
 use crate::domain::provenance::{ActorLabel, Provenance};
 use crate::domain::{FieldEdit, ImportStory, StateChanges, SuperState, TypeChanges, TypeDef};
@@ -839,6 +839,7 @@ pub fn dispatch<S: Store>(
         | Invocation::Daemon { .. }
         | Invocation::Token { .. }
         | Invocation::DoctorAbandoned { .. }
+        | Invocation::DoctorCrashes { .. }
         | Invocation::Store { .. }
         | Invocation::Update { .. }
         | Invocation::ImportProject { .. }
@@ -1442,6 +1443,76 @@ fn abandoned_ledger_message(ledger: &[crate::daemon::lifecycle::AbandonedRequest
     body
 }
 
+/// `story doctor crashes [clear (--all | <crash-id>)]` (SH-287) — the same
+/// shape [`dispatch_doctor_abandoned`] uses, and for the same reason: reads
+/// and writes one file under the daemon's own state directory, no project or
+/// store involved.
+fn dispatch_doctor_crashes(action: CrashesAction) -> Result<Response, AppError> {
+    let env = Environment::from_process(None)?;
+    match action {
+        CrashesAction::List => {
+            let ledger = crate::daemon::crash::read_crashes(&env);
+            Ok(Response::Message(crashes_ledger_message(&ledger)))
+        }
+        CrashesAction::Clear { crash_id } => {
+            let changed = crate::daemon::crash::clear_crash(&env, crash_id.as_deref());
+            Ok(Response::Message(match crash_id {
+                Some(id) if changed => format!("forgot the crash `{id}`."),
+                Some(id) => format!("no crash named `{id}`; nothing changed."),
+                None if changed => "forgot every crash.".to_string(),
+                None => "the crash ledger was already empty.".to_string(),
+            }))
+        }
+    }
+}
+
+/// What `story doctor crashes` prints: every crash this daemon has noticed on
+/// relaunch, what the evidence says caused it, and what became of its bug
+/// report.
+fn crashes_ledger_message(ledger: &[crate::daemon::crash::CrashRecord]) -> String {
+    use crate::daemon::crash::{CrashClassification, FiledOutcome};
+
+    if ledger.is_empty() {
+        return "no crashes.".to_string();
+    }
+    let mut body = format!(
+        "{} crash{}, each one this daemon noticed on relaunch:\n\n",
+        ledger.len(),
+        if ledger.len() == 1 { "" } else { "s" }
+    );
+    for entry in ledger {
+        let classification = match &entry.classification {
+            CrashClassification::Panicked => "panicked".to_string(),
+            CrashClassification::FatalSignal(signal) => format!("fatal signal {signal}"),
+            CrashClassification::UncleanExit => "unclean exit".to_string(),
+        };
+        let daemon = entry
+            .daemon
+            .as_ref()
+            .map(|d| format!(", daemon {} pid {}", d.version, d.pid))
+            .unwrap_or_default();
+        let filed = match &entry.filed {
+            FiledOutcome::Pending => "pending — not yet reviewed".to_string(),
+            FiledOutcome::Filed(id) => format!("filed as `{id}`"),
+            FiledOutcome::Deduped(id) => format!("seen again; folded into `{id}`"),
+            FiledOutcome::Withheld(reason) => format!("withheld: {reason}"),
+        };
+        body.push_str(&format!(
+            "  {}  {classification}{daemon}\n    detected {}\n    {filed}\n",
+            entry.id, entry.detected_at,
+        ));
+        if let Some(log_path) = &entry.log_path {
+            body.push_str(&format!("    log: `{}`\n", log_path.display()));
+        }
+        body.push('\n');
+    }
+    body.push_str(
+        "`story doctor crashes clear <crash-id>` forgets one once you have checked it; \
+         `--all` forgets every entry above.",
+    );
+    body
+}
+
 /// `story update` — self-update, which touches no project data at all.
 fn update(check: bool, force: bool) -> Result<Response, AppError> {
     #[cfg(feature = "github-sync")]
@@ -1771,6 +1842,7 @@ pub fn needs_no_store(invocation: &Invocation) -> bool {
             | Invocation::Web { .. }
             | Invocation::Token { .. }
             | Invocation::DoctorAbandoned { .. }
+            | Invocation::DoctorCrashes { .. }
             | Invocation::Store {
                 action: StoreAction::New { .. }
             }
@@ -1837,6 +1909,9 @@ pub fn dispatch_without_store(invocation: Invocation) -> Result<Response, AppErr
         // Reads and writes one file under the daemon's own state directory
         // — no project, no store, exactly like the daemon commands above.
         Invocation::DoctorAbandoned { action } => dispatch_doctor_abandoned(action),
+        // The same shape as `DoctorAbandoned` immediately above, and for the
+        // same reason (SH-287).
+        Invocation::DoctorCrashes { action } => dispatch_doctor_crashes(action),
         // `main` answers this one before a store is ever opened, for the
         // reasons on [`create_store`]. Reaching here means a caller went round
         // the front door, and the honest answer is that no store this arm could
@@ -2163,6 +2238,7 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
         | Invocation::DoctorAbandoned { .. }
+        | Invocation::DoctorCrashes { .. }
         | Invocation::Show { .. }
         | Invocation::Log { .. }
         | Invocation::Comment { .. }
@@ -2407,6 +2483,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Daemon { .. } => "daemon",
         Invocation::Token { .. } => "token",
         Invocation::DoctorAbandoned { .. } => "doctor-abandoned",
+        Invocation::DoctorCrashes { .. } => "doctor-crashes",
         Invocation::Store { .. } => "store",
         Invocation::SessionStart => "session-start",
         Invocation::Update { .. } => "update",
@@ -3239,6 +3316,7 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
         | Invocation::DoctorAbandoned { .. }
+        | Invocation::DoctorCrashes { .. }
         | Invocation::Show { .. }
         | Invocation::Log { .. }
         | Invocation::Comment { .. }
@@ -3665,6 +3743,7 @@ fn doctor_advice<S: Store>(
     advice.extend(origin_advice(&origins));
     advice.extend(github_remote_advice(ctx)?);
     advice.extend(abandoned_advice(ctx.env()));
+    advice.extend(crash_advice(ctx.env()));
     advice.extend(pointer_origin_advice(ctx)?);
     advice.extend(pointer_prefix_advice(ctx)?);
     advice.extend(legacy_link_advice(ctx)?);
@@ -3837,6 +3916,27 @@ fn abandoned_advice(env: &Environment) -> Vec<String> {
          from `story daemon stop --force`, or a crash. `story doctor abandoned` lists each \
          with a recovery suggestion; `story doctor abandoned clear` forgets one once you \
          have checked it.",
+        ledger.len(),
+        if ledger.len() == 1 { "" } else { "s" }
+    )]
+}
+
+/// What `story doctor` says about a non-empty crash ledger (SH-287).
+///
+/// Advisory for the same reason [`abandoned_advice`] is: a crash may already
+/// have become a bug report, or been withheld with a reason that is nobody's
+/// emergency (no project registered, say) — `story doctor crashes` is where
+/// the detail and each one's actual outcome live; this is only the pointer to
+/// it, kept brief so a machine that has never crashed never sees it grow.
+fn crash_advice(env: &Environment) -> Vec<String> {
+    let ledger = crate::daemon::crash::read_crashes(env);
+    if ledger.is_empty() {
+        return Vec::new();
+    }
+    vec![format!(
+        "{} crash{} this daemon noticed on relaunch. `story doctor crashes` lists each one's \
+         classification and what became of its bug report; `story doctor crashes clear` \
+         forgets one once you have checked it.",
         ledger.len(),
         if ledger.len() == 1 { "" } else { "s" }
     )]
