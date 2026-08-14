@@ -34,10 +34,11 @@ file and the plan above. Read the plan, then:
 3. **Read it whole**: `story show <id>`, comments included. A story's comment
    thread can carry a re-spec or a council verdict that supersedes its own
    title or original description — the comment always wins over the title.
-4. **Work it.** Red→green TDD. Reproduce a bug with a failing test before
-   changing code. Every fix ships its regression test. Two hats: a behaviour
-   change and a refactor never share a commit. Doc comments on every public
-   item. Warnings are errors.
+4. **Work it — in the story's own worktree**, never on a branch in this
+   checkout (see **One worktree per story** below). Red→green TDD. Reproduce
+   a bug with a failing test before changing code. Every fix ships its
+   regression test. Two hats: a behaviour change and a refactor never share a
+   commit. Doc comments on every public item. Warnings are errors.
 5. **Gate**: `make test` must be green before you push. Never `--no-verify`,
    never `SKIP_PREPUSH_TESTS=1` for a change that touches code (a docs-only
    push may bypass per CLAUDE.md's own carve-out — confirm nothing but docs
@@ -46,11 +47,14 @@ file and the plan above. Read the plan, then:
    `make test` is the whole gate. Run it as a supervised background command
    with a log-growth heartbeat — see **Supervising background work** below;
    this is the rule's most frequent application.
-6. **Land it** — branch off `main` in this checkout (not a worktree):
+6. **Land it** — push and open the PR **from the worktree**, then merge **from
+   this checkout**:
    ```
+   # in .claude/worktrees/<id>:
    git -c url."https://github.com/".insteadOf="git@github.com:" push origin <branch>
    gh pr create ...
-   gh pr merge <n> --merge --delete-branch
+   # back in /Volumes/Code/mikeyward/storyhook:
+   gh pr merge <n> --merge
    ```
    Merge commit only — squash and rebase are disabled org-wide. Verify it
    landed, return to clean `main`, `git pull --ff-only`. Stage only paths you
@@ -68,6 +72,42 @@ file and the plan above. Read the plan, then:
      queue "Continue the storyhook hardening run: read /Volumes/Code/mikeyward/storyhook/HARDENING_PROGRESS.md and follow its START HERE section." \
      --source storyhook-hardening --summary "<story just finished> done, next: <id>"
    ```
+
+**One worktree per story — created for it, torn down after it.** Added
+2026-08-14 at Mikey's direction; it supersedes the earlier "branch off `main`
+in this checkout" instruction wherever the two disagree, including in log
+entries written before that date. Every story's code, and the story's log
+entry too, is written in a fresh linked worktree:
+
+```
+git pull --ff-only                                   # in this checkout first
+git worktree add .claude/worktrees/<id> -b <branch>  # gitignored path
+```
+
+Work, gate and commit there; push and open the PR from there. Then **come back
+to this checkout to merge** — `gh pr merge` from inside a linked worktree
+fast-forwards local `main` underneath it and can strand it on a branch that no
+longer exists. Merge here, `git pull --ff-only` here, and only then tear the
+worktree down:
+
+```
+git worktree remove .claude/worktrees/<id>   # --force if it holds a target/
+git branch -d <branch>
+git push origin --delete <branch>
+git worktree list                            # confirm it is gone
+```
+
+Two things this costs, both accepted: a worktree carries its own `target/`, so
+its first `make test` is a cold build of the whole tree, and the checkout's
+`target/` no longer warms the next story's. What it buys is a checkout that is
+never mid-story — no half-finished branch to inherit, no build artifacts from
+work that was abandoned, and a torn-down worktree as positive evidence that a
+cycle finished rather than a branch left lying around.
+
+**Remove only the worktree this cycle created.** Thirteen others from earlier
+`/story do` sessions live under `.claude/worktrees/`; any of them may be a live
+tmux session, and `tmux list-windows -a` is the check before touching one. They
+are not this run's to clean up.
 
 **Dogfooding `story next`.** This run drove off a hand-maintained checklist
 (below, now removed) through 2026-08-11. It was already showing the failure
