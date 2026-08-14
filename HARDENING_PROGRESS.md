@@ -15360,3 +15360,99 @@ stalling.
 
 **Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push,
 no version bump, no deploy.
+
+### SH-299 — done
+
+**Outcome:** merged (PR #397, two commits, +687/−69). Every backdrop overlay in
+the dashboard is now modal for the keyboard as well as the mouse.
+
+**The fix.** `applyOverlayModality()` marks everything but the topmost open
+overlay `inert` — the app shell, plus every overlay surface that is not the
+active one. A **stack, not a flag**, because they genuinely nest: the drawer's
+own footer opens the delete modal over it, and a 401 from anything opens the
+token modal over whatever asked. Focus moves into a surface on open and returns
+to the invoker on close, skipping a target since removed, hidden by a screen
+change, or left inert under a lower overlay.
+
+**The registry is the markup.** Each `.backdrop` names the surface it dims in
+`data-overlay`; `data-modal="covered"` marks the shell. Both the app and
+`tests/web_test.rs::every_backdrop_overlay_is_wired_into_the_focus_trap` read
+that, so an eighth overlay joins the trap by existing rather than by being
+remembered — the same derived shape `dead_public_surface.rs` and
+`store_isolation.rs` use.
+
+**Three things the work turned up that the story did not name:**
+
+1. **Closed overlays were in the tab order.** `.modal` closes to `opacity: 0;
+   pointer-events: none` and `.drawer` to `translateX(100%)`; neither leaves the
+   tab sequence. Six shut dialogs' fields and buttons sat behind the open one —
+   and in front of the board when nothing was open at all. Inerting by "is not
+   the active overlay" rather than "is the app shell" answers both with one rule,
+   and is load-bearing rather than tidy: without it the trap leaks into six
+   closed dialogs.
+2. **Cover exactly what the backdrop dims, and no wider.** The first version also
+   inerted `#toast-stack` and `#dispatch-history`. `dispatch.spec.ts` went red —
+   Playwright reporting the drawer intercepting a click on a Dismiss button that
+   had become un-hit-testable. Those two are `z-index: 60` against the backdrop's
+   40: they render *over* an open overlay by an older, deliberate decision, so a
+   mouse has always reached them with a drawer open. They were **already
+   symmetric**, which is the property the story is about; inerting them would not
+   repair an asymmetry, it would invent a behaviour and silence two `aria-live`
+   regions while a modal is up. A failing test plus one z-index settled it.
+3. **The casualty was six times larger than the story predicted.** SH-299 put the
+   blast radius at "one line — the `press()` call" in
+   `drawer-screen-scope.spec.ts`. The full e2e run found **six tests across three
+   files**: `drawer-screen-scope` (**3**, not 1 — the Home and Settings routes
+   press from behind the backdrop too), `board-readiness` (2), `project-selector`
+   (1). Every one focused a background control and pressed Enter, and each
+   **documented that choice at length as a genuine user path**. Those comments
+   were made false by this fix, so the repair was three prose rewrites as well as
+   six call sites — the part a one-line estimate could not see.
+
+**How the casualty was repaired.** No assertion deleted or weakened. All six go
+through one helper, `activateBehindOverlay()` (`e2e/specs/support.ts`), which
+dispatches a synthetic click straight to the production listener — the same
+`goHome()`, `goStatuses()`, `selectRepo()` — skipping hit-testing and inertness.
+It models no user, deliberately, and says so, along with the rule that it is
+never a way around an ordinary actionability failure. The states are still
+reached without a gesture: `fetchReposOnce()` calls `goHome()` when the open
+project is deleted by another client, and a deep-linked drawer lands on whatever
+screen the user got to first. What the tests pin is what those functions do to an
+open overlay *however* they are entered — which is the durable half of the
+original claim.
+
+**Red→green, proven rather than asserted.** The new spec was written first, then
+the fix was parked in the scratchpad, `src/web_dashboard.html` reverted, and the
+suite run against unmodified code: **11 of 12 failed**. (The twelfth — "the create
+modal takes focus when it opens" — passed, because that one modal already focused
+its title field.) Fix restored: 12/12. The same park-and-revert then proved the
+*first* commit green without the second, so the pair is bisectable rather than
+hoped to be.
+
+**Commit order.** `test(e2e): drive controls behind a backdrop by handler, not by
+key` lands before `fix(web): make every overlay modal for the keyboard, not only
+the mouse`. Two hats: the spec re-drive changes no behaviour and passes on both
+sides of the fix.
+
+**Coverage.** `e2e/specs/overlay-modality.spec.ts` (new, 12 tests) proves five of
+the seven overlays behaviourally — including the stacked drawer→delete pair, a
+20-press Tab sweep, the focus hand-back, and the closed-dialog leak — deriving
+the surface list from `.backdrop[data-overlay]` so an eighth is asserted about
+the moment it exists. The Rust fence covers all seven, which is what makes
+covering a representative set in the browser honest rather than a sample. The
+two overlays reached only by mutating a fixture (a drag into Blocked, a column
+archive) are fenced statically and share the one code path.
+
+**No council.** No decision here had two defensible answers. The one live
+question — whether the `z-index: 60` notification layers belong under the trap —
+was settled by a failing test and the backdrop's own z-index, not by taste.
+
+**Gate:** `make test` green — fmt, clippy, full Rust suite, plugin harness, **179**
+e2e specs, zero failures. Supervised with a log-growth heartbeat throughout; no
+wedge, no restart. Two poll loops hit their own two-minute ceiling while the gate
+was healthy and growing, and were re-polled rather than killed.
+
+**Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push, no
+version bump, no deploy. SH-299 closed itself: the merge commit's body named it,
+and the post-merge hook moved it to `done` before a closing comment could be
+added — so this entry, not a story comment, is the record.
