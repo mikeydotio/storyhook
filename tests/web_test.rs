@@ -6028,27 +6028,25 @@ fn read_sse_until(
     needle: &str,
     timeout: Duration,
 ) -> String {
-    use std::io::Read;
-
-    let start = Instant::now();
     let mut acc = Vec::new();
-    let mut buf = [0u8; 4096];
-    while start.elapsed() < timeout {
-        match reader.read(&mut buf) {
-            Ok(0) => break, // connection closed
-            Ok(n) => {
-                acc.extend_from_slice(&buf[..n]);
-                if String::from_utf8_lossy(&acc).contains(needle) {
-                    break;
-                }
-            }
-            Err(e)
-                if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(e) => panic!("reading the SSE stream: {e}"),
-        }
-    }
+    read_sse_into_until(reader, &mut acc, needle, Instant::now() + timeout);
     String::from_utf8_lossy(&acc).into_owned()
+}
+
+/// Reads into `acc` until `needle` appears in it or `deadline` passes,
+/// reporting whether the connection is still open — which the caller needs in
+/// order to tell a stream that has gone quiet from one that has gone away.
+fn read_sse_into_until(
+    reader: &mut std::io::BufReader<std::net::TcpStream>,
+    acc: &mut Vec<u8>,
+    needle: &str,
+    deadline: Instant,
+) -> bool {
+    let mut open = true;
+    while open && Instant::now() < deadline && !String::from_utf8_lossy(acc).contains(needle) {
+        open = !matches!(read_sse_chunk(reader, acc), SseRead::Closed);
+    }
+    open
 }
 
 /// The outcome of one bounded `read` on an SSE socket. The distinction that
@@ -6121,13 +6119,7 @@ fn read_sse_until_quiet_after(
     overall_timeout: Duration,
 ) -> String {
     let mut acc = Vec::new();
-    let mut open = true;
-
-    let start_deadline = Instant::now() + overall_timeout;
-    while open && Instant::now() < start_deadline && !String::from_utf8_lossy(&acc).contains(first)
-    {
-        open = !matches!(read_sse_chunk(reader, &mut acc), SseRead::Closed);
-    }
+    let mut open = read_sse_into_until(reader, &mut acc, first, Instant::now() + overall_timeout);
 
     let quiet_backstop = Instant::now() + overall_timeout;
     let mut last_activity = Instant::now();
