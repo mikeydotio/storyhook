@@ -869,6 +869,20 @@ fn a_row_that_disagrees_with_its_events_is_reported_and_repaired() {
     assert!(report(&fixture).is_empty());
 }
 
+/// The `UnexaminedStory` sentence a report carries for `id` (SH-286).
+///
+/// Written once here rather than at each of the assertion sites below, because
+/// what those assertions are about is *which* stories the report declares
+/// unexaminable — the wording is `story_issues`' to own, and six copies of it
+/// in this file would make rephrasing it a six-file edit for no gain.
+fn unexamined(id: &str) -> String {
+    format!(
+        "{id}: not examined — the events do not vouch for its read-model row, so its own label, \
+         type, parent and cycle checks were skipped, and no edge naming it was called dangling or \
+         one-sided. The finding naming the damage itself is elsewhere in this report"
+    )
+}
+
 /// Deletes a story's read-model row while leaving its history — and every edge
 /// naming it — in place. See
 /// [`storyhook::store::test_support::forget_read_model_row`] for why
@@ -895,7 +909,15 @@ fn restoring_a_lost_row_is_a_repair_the_run_admits_to() {
     drop(ctx);
 
     forget_row(&fixture, 1);
-    assert_eq!(report(&fixture), ["SH-1: has events but no read-model row"]);
+    assert_eq!(
+        report(&fixture),
+        [
+            // SH-286: the row is gone, so nothing this report says about SH-1
+            // was read from it.
+            unexamined("SH-1"),
+            "SH-1: has events but no read-model row".to_string(),
+        ]
+    );
 
     assert_eq!(
         fix(&fixture).expect("a row its events support is restorable"),
@@ -937,8 +959,11 @@ fn a_repair_the_run_itself_dissolved_is_not_still_advised() {
     assert_eq!(
         report(&fixture),
         [
-            "SH-1: dangling relation `obviates` to missing story `SH-2`",
-            "SH-2: has events but no read-model row",
+            // Since SH-286 the report withholds SH-1's edge rather than calling
+            // it dangling — SH-2 is missing from the *read model*, not from the
+            // project — and says so in SH-2's place.
+            unexamined("SH-2"),
+            "SH-2: has events but no read-model row".to_string(),
         ],
         "the damage the fixture makes, as the pre-repair report sees it"
     );
@@ -984,8 +1009,10 @@ fn a_fix_does_not_retract_an_open_storys_edge_to_a_story_whose_row_is_missing() 
     assert_eq!(
         report(&fixture),
         [
-            "SH-1: dangling relation `blocks` to missing story `SH-2`",
-            "SH-2: has events but no read-model row",
+            // As above (SH-286): a valid edge is not evidence of damage just
+            // because the read model cannot show its far end.
+            unexamined("SH-2"),
+            "SH-2: has events but no read-model row".to_string(),
         ],
         "the damage the fixture makes, as the pre-repair report sees it"
     );
@@ -1032,13 +1059,12 @@ fn a_fix_does_not_retract_an_open_storys_edge_to_a_story_whose_row_is_missing() 
 /// log rather than the rendered relations because the row is the thing in
 /// doubt: what matters is that nothing was appended.
 ///
-/// It also characterizes SH-286 as-is. The *report* still resolves endpoint
-/// existence through the read model, so it calls SH-1's edge dangling in the
-/// same breath that `--fix` declines to retract it. That divergence is
-/// deliberately out of scope here — an unfoldable story's missing row poisons
-/// far more than existence, and the narrow fix would mask the rest — so it is
-/// asserted rather than corrected, and fixing SH-286 turns this assertion red
-/// at the line that says why.
+/// It used to characterize SH-286 as-is: the *report* resolved endpoint
+/// existence through the read model, so it called SH-1's edge dangling in the
+/// same breath that `--fix` declined to retract it, and the assertion said so
+/// and instructed its own deletion. SH-286 has landed, and the two assertions
+/// that replaced it are its inverse — the report withholds that finding now, and
+/// says in SH-2's place that it could not examine it.
 #[test]
 fn a_fix_does_not_retract_an_edge_to_a_story_whose_events_will_not_fold() {
     let mut states = storyhook_test_support::default_states();
@@ -1086,10 +1112,16 @@ fn a_fix_does_not_retract_an_edge_to_a_story_whose_events_will_not_fold() {
         "the fold failure is the finding the operator has to act on: {issues:?}"
     );
     assert!(
-        issues.contains(&"SH-1: dangling relation `blocks` to missing story `SH-2`".to_string()),
-        "SH-286, asserted as-is: the report still resolves existence through the read model, so \
-         it names an edge `--fix` rightly refused to retract. When SH-286 lands, delete this \
-         assertion: {issues:?}"
+        !issues
+            .iter()
+            .any(|issue| issue.contains("dangling relation")),
+        "SH-286: the report resolves existence from the events now, so it must not name an edge \
+         `--fix` rightly refuses to retract: {issues:?}"
+    );
+    assert!(
+        issues.contains(&unexamined("SH-2")),
+        "SH-286: and it must say why it went quiet — a suppression with no disclosure beside it \
+         is the SH-268 shape: {issues:?}"
     );
 
     // The catalog goes back so the fixture's drop-time drift check has
@@ -1185,6 +1217,375 @@ fn a_fix_still_retracts_an_edge_to_a_story_that_is_genuinely_gone() {
         relations_of(&fixture, &a)
     );
     assert!(report(&fixture).is_empty(), "{:?}", report(&fixture));
+}
+
+// --- what the doctor may assert about a story the events do not corroborate --
+//
+// SH-286. The doctor's story-level checks read the `stories` table, which is a
+// cache of a fold of the events; where that cache cannot be believed, the
+// checks are skipped and an `UnexaminedStory` finding is minted in their place.
+// Each test below picks one of the four ways a row loses its standing, damages
+// the project *and* leaves a second, ordinary fault on the same story, and
+// asserts both halves of the swap: the ordinary finding is withheld, and the
+// story is still named.
+//
+// The narrow reading of this story — "a story with events and no row" — passes
+// only the first of them. The other three have a row.
+
+/// A story whose events will not fold, **whose stale row survives**.
+///
+/// The case that decides how wide the set is drawn.
+/// [`storyhook::store::diff_rebuilt`] files a story under `fold_failures` and
+/// moves on *before* it looks for a row, so a row written when the story last
+/// folded is still sitting there — and a doctor that resolved "can I believe
+/// this?" as "is there a row?" would examine it, computing findings from a
+/// snapshot the same run has just failed to reproduce and offering `--fix` a
+/// repair built out of them.
+///
+/// The ordinary fault is a malformed label (SH-164), which is repairable, so a
+/// doctor that still saw it would not merely report it — it would append.
+#[test]
+fn a_story_whose_events_will_not_fold_is_not_examined_through_its_stale_row() {
+    let mut states = storyhook_test_support::default_states();
+    states.push(StateDef {
+        slug: "shelved".into(),
+        super_state: SuperState::Closed,
+        role: None,
+        description: None,
+    });
+    let fixture = ServiceFixture::with_states(&states);
+    let ctx = fixture.ctx();
+    let a = new_story(&ctx, "A");
+    drop(ctx);
+
+    append_to_one_end(
+        &fixture,
+        &a,
+        &[StoryEvent::StoryLabelsSet {
+            at: FIXTURE_NOW.to_string(),
+            labels: vec!["web,sse".to_string()],
+        }],
+    );
+    let ctx = fixture.ctx();
+    StoryService::new(&ctx)
+        .set_state(&a, "shelved", None, None, None)
+        .expect("shelving A");
+    drop(ctx);
+    assert_eq!(
+        labels_of(&fixture, &a),
+        ["web,sse"],
+        "the fixture needs a row carrying a repairable fault"
+    );
+
+    storyhook::store::test_support::forget_state(fixture.store(), fixture.project(), "shelved")
+        .expect("retiring a state out from under its story");
+
+    let issues = report(&fixture);
+    assert!(
+        !issues
+            .iter()
+            .any(|issue| issue.contains("malformed labels")),
+        "a finding was computed from a row this run could not reproduce: {issues:?}"
+    );
+    assert!(
+        issues.contains(&unexamined("SH-1")),
+        "the suppression has to say so, or the report has silently gone quiet: {issues:?}"
+    );
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.starts_with("SH-1: ") && issue.contains("cannot be folded")),
+        "and the damage itself is still named: {issues:?}"
+    );
+
+    let before = events_of(&fixture, 1);
+    fix(&fixture).expect_err("a story that cannot be folded is a finding no repair clears");
+    assert_eq!(
+        events_of(&fixture, 1),
+        before,
+        "`--fix` normalized labels it read from a row the events do not support"
+    );
+
+    // The catalog goes back, and with it the row — foldable again — so the
+    // fixture's drop-time drift check has something to fold against.
+    fixture
+        .store()
+        .write(|tx| tx.put_states(fixture.project(), &states))
+        .expect("restoring the state this test retired");
+    storyhook::store::repair_read_model(fixture.store(), fixture.project())
+        .expect("restoring the row the retired state made unrestorable");
+}
+
+/// A read-model row with no events behind it — the SH-285 defect inverted.
+///
+/// By the authority that decides what exists, this story does not: nothing in
+/// the events describes it. Yet it sits in the story map, where the checks read
+/// its labels as facts and `--fix` would answer them by **appending the first
+/// event this story has ever had** — fabricating a history for a story the
+/// project does not have, which is the same irreversible write SH-285 stopped,
+/// arriving from the other direction.
+#[test]
+fn a_row_with_no_events_behind_it_is_not_examined_either() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    new_story(&ctx, "A");
+    let b = new_story(&ctx, "B");
+    drop(ctx);
+
+    append_to_one_end(
+        &fixture,
+        &b,
+        &[StoryEvent::StoryLabelsSet {
+            at: FIXTURE_NOW.to_string(),
+            labels: vec!["web,sse".to_string()],
+        }],
+    );
+    storyhook::store::test_support::forget_events(
+        fixture.store(),
+        fixture.project(),
+        StoryNo::new(2),
+    )
+    .expect("forgetting a history and leaving the row");
+
+    let issues = report(&fixture);
+    assert!(
+        !issues
+            .iter()
+            .any(|issue| issue.contains("malformed labels")),
+        "a finding was computed from a row nothing in the events supports: {issues:?}"
+    );
+    assert!(issues.contains(&unexamined("SH-2")), "{issues:?}");
+    assert!(
+        issues.contains(&"SH-2: read-model row with no events".to_string()),
+        "{issues:?}"
+    );
+
+    let _ = fix(&fixture);
+    assert!(
+        events_of(&fixture, 2).is_empty(),
+        "`--fix` invented a history for a story the events do not describe: {:?}",
+        events_of(&fixture, 2)
+    );
+
+    // The orphan row goes, since re-folding cannot remove it and the fixture
+    // checks for drift when it drops.
+    forget_row(&fixture, 2);
+}
+
+/// A row whose embedded snapshot the events contradict.
+///
+/// The subtlest member of the set, and the one that would be easiest to leave
+/// out: `service::query::story_map` builds the story map from the `snapshot`
+/// column specifically, so this is not drift in some field the checks never
+/// read — it is the exact value every story-level finding is computed from,
+/// disagreeing with the events in the same report that says so.
+///
+/// Only the `snapshot` field earns this. A `title` or `state` column the fold
+/// disagrees with is drift the story checks never consult, and treating every
+/// divergence as disqualifying would take a badly drifted project's whole
+/// report down to `UnexaminedStory` — which is going quiet, the thing this
+/// design exists to refuse.
+#[test]
+fn a_row_whose_snapshot_the_events_contradict_is_not_examined() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    new_story(&ctx, "A");
+    drop(ctx);
+
+    storyhook::store::test_support::corrupt_snapshot(
+        fixture.store(),
+        fixture.project(),
+        StoryNo::new(1),
+        |snapshot| {
+            snapshot["labels"] = serde_json::json!(["web,sse"]);
+        },
+    )
+    .expect("corrupting the column the story map is built from");
+
+    let issues = report(&fixture);
+    assert!(
+        !issues
+            .iter()
+            .any(|issue| issue.contains("malformed labels")),
+        "the doctor reported a label the same run proved the story does not have: {issues:?}"
+    );
+    assert!(issues.contains(&unexamined("SH-1")), "{issues:?}");
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.starts_with("SH-1: snapshot is ")),
+        "and the divergence itself is still named: {issues:?}"
+    );
+
+    assert_eq!(
+        fix(&fixture).expect("re-folding is exactly the repair for a divergent row"),
+        "doctor repaired supported integrity issues"
+    );
+    assert!(report(&fixture).is_empty(), "{:?}", report(&fixture));
+}
+
+/// A divergence in a column the story checks never read leaves the story
+/// examinable — the anti-overfit pin for the test above.
+///
+/// Without it, the cheapest way to pass that one is to disqualify a story on
+/// any divergence at all, which would make a project whose rows have drifted in
+/// one ordinary field report `UnexaminedStory` for every story in it and
+/// nothing else. That is SH-268's shape: a report that went quiet about real
+/// damage.
+#[test]
+fn a_divergence_in_a_column_the_checks_do_not_read_leaves_the_story_examinable() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let a = new_story(&ctx, "A");
+    drop(ctx);
+
+    append_to_one_end(
+        &fixture,
+        &a,
+        &[StoryEvent::StoryLabelsSet {
+            at: FIXTURE_NOW.to_string(),
+            labels: vec!["web,sse".to_string()],
+        }],
+    );
+    Connection::open(fixture.store().path())
+        .expect("opening the store")
+        .execute("UPDATE stories SET title = 'not what the events say'", [])
+        .expect("damaging one column of the read model");
+
+    let issues = report(&fixture);
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.contains("malformed labels")),
+        "the story is still examinable: its labels come from a snapshot column the events \
+         agree with: {issues:?}"
+    );
+    assert!(
+        !issues.iter().any(|issue| issue == &unexamined("SH-1")),
+        "a title that drifted is not a reason to stop examining the story: {issues:?}"
+    );
+
+    assert_eq!(
+        fix(&fixture).expect("both the row and the label are repairable"),
+        "doctor repaired supported integrity issues"
+    );
+    assert!(report(&fixture).is_empty(), "{:?}", report(&fixture));
+}
+
+/// The rule reaches `story show` and `story list`, which carry the same checks
+/// through `StoryView::flagged_reasons` and have no `MissingRow` finding beside
+/// them to explain a false one.
+///
+/// `story_views` resolves the question more cheaply than the doctor does — one
+/// indexed probe per endpoint the map cannot show, none at all on a healthy
+/// project — so its answer is a strict *subset* of the doctor's. This pins the
+/// direction that matters: whatever it may still flag, it never flags an edge
+/// the doctor would withhold.
+#[test]
+fn story_views_never_flags_an_edge_the_doctor_would_withhold() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let a = new_story(&ctx, "A");
+    let b = new_story(&ctx, "B");
+    RelationService::new(&ctx)
+        .relate(&a, "blocks", &b, false)
+        .expect("relating");
+    drop(ctx);
+
+    forget_row(&fixture, 2);
+
+    let project = fixture.project();
+    let flagged: Vec<String> = fixture
+        .store()
+        .read(|tx| {
+            Ok(QueryService::new(tx, project, FIXTURE_NOW)
+                .story_views(false)?
+                .into_iter()
+                .flat_map(|view| view.flagged_reasons)
+                .collect::<Vec<_>>())
+        })
+        .expect("reading views");
+    assert!(
+        flagged.is_empty(),
+        "`story show {a}` called a valid edge dangling because the far end's row is missing: \
+         {flagged:?}"
+    );
+
+    // And the anti-overfit half, in the same fixture's shape: an endpoint with
+    // neither a row nor a history really is gone, and `story show` still says
+    // so.
+    storyhook::store::test_support::forget_events(fixture.store(), project, StoryNo::new(2))
+        .expect("forgetting a history");
+    let flagged: Vec<String> = fixture
+        .store()
+        .read(|tx| {
+            Ok(QueryService::new(tx, project, FIXTURE_NOW)
+                .story_views(false)?
+                .into_iter()
+                .flat_map(|view| view.flagged_reasons)
+                .collect::<Vec<_>>())
+        })
+        .expect("reading views");
+    assert_eq!(
+        flagged,
+        [format!("dangling relation `blocks` to missing story `{b}`")],
+        "an edge to a story with neither a row nor a history is genuinely dangling"
+    );
+
+    fix(&fixture).expect("retracting a genuinely dangling edge is a repair");
+}
+
+/// The disclosure is conservation, not decoration: for every way a row can lose
+/// its standing, the report still names the story.
+///
+/// Asserted over all four at once, in one project, because the property is
+/// about the *set* — a report that named three of them and dropped the fourth
+/// would pass each of the tests above and still have gone quiet about a story.
+#[test]
+fn a_report_names_a_story_it_could_not_examine() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    for title in ["A", "B", "C", "D"] {
+        new_story(&ctx, title);
+    }
+    drop(ctx);
+
+    // Four stories, four ways to lose standing. SH-4 is left healthy, so the
+    // assertion below cannot pass by naming everything.
+    forget_row(&fixture, 1);
+    storyhook::store::test_support::forget_events(
+        fixture.store(),
+        fixture.project(),
+        StoryNo::new(2),
+    )
+    .expect("forgetting a history and leaving the row");
+    storyhook::store::test_support::corrupt_snapshot(
+        fixture.store(),
+        fixture.project(),
+        StoryNo::new(3),
+        |snapshot| {
+            snapshot["description"] = serde_json::json!("not what the events say");
+        },
+    )
+    .expect("corrupting the column the story map is built from");
+
+    let unexamined_subjects: BTreeSet<String> = findings(&fixture)
+        .into_iter()
+        .filter(|finding| finding.code == FindingCode::UnexaminedStory)
+        .filter_map(|finding| finding.subject)
+        .collect();
+    assert_eq!(
+        unexamined_subjects,
+        ["SH-1", "SH-2", "SH-3"]
+            .into_iter()
+            .map(String::from)
+            .collect::<BTreeSet<_>>(),
+        "every story the events do not corroborate is named once, and a healthy one is not"
+    );
+
+    forget_row(&fixture, 2);
+    storyhook::store::repair_read_model(fixture.store(), fixture.project())
+        .expect("restoring the rows this test damaged");
 }
 
 // --- report and fix are one contract ---------------------------------------
@@ -2347,6 +2748,7 @@ fn every_finding_code() -> Vec<FindingCode> {
             | FindingCode::FoldFailure
             | FindingCode::ReadModelDivergence
             | FindingCode::UndecodableEvent
+            | FindingCode::UnexaminedStory
             | FindingCode::Unstructured => code,
         }
     };
@@ -2365,6 +2767,7 @@ fn every_finding_code() -> Vec<FindingCode> {
         FindingCode::FoldFailure,
         FindingCode::ReadModelDivergence,
         FindingCode::UndecodableEvent,
+        FindingCode::UnexaminedStory,
         FindingCode::Unstructured,
     ]
     .into_iter()
@@ -2538,6 +2941,14 @@ fn excused() -> Vec<(FindingCode, &'static str)> {
             FindingCode::UndecodableEvent,
             "a torn payload of a kind this build knows — the encoder cannot produce one, \
              so it needs a hand-written row",
+        ),
+        (
+            FindingCode::UnexaminedStory,
+            "the disclosure minted for exactly the stories MissingRow, ExtraRow, FoldFailure \
+             and a `snapshot` divergence name (SH-286), so it is provoked wherever they are \
+             and excused for the same reason — with one addition of its own, \
+             `a_report_names_a_story_it_could_not_examine` below, which is where the swap \
+             itself is pinned",
         ),
         (
             FindingCode::Unstructured,

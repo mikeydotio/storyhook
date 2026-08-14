@@ -144,7 +144,13 @@ fn a_migrated_project_has_no_integrity_issues_at_all() {
             let stories =
                 storyhook::service::QueryService::new(tx, project, "2026-01-01T00:00:00Z")
                     .story_map()?;
-            Ok(storyhook::domain::compute_integrity_issues(&stories))
+            // No unattested stories: a project migrated a moment ago has a row
+            // for everything its events describe, which is what the assertion
+            // below is really about (SH-286).
+            Ok(storyhook::domain::compute_integrity_issues(
+                &stories,
+                &Default::default(),
+            ))
         })
         .expect("reading");
     assert!(

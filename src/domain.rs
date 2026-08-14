@@ -1644,13 +1644,69 @@ pub fn is_mutual_relation(relation: &str) -> bool {
     matches!(relation, "relates-to" | "duplicate-of")
 }
 
+/// The cross-story integrity checks, over the stories the read model can show
+/// and the ids it cannot vouch for.
+///
+/// # What may be asserted about a story the events do not corroborate (SH-286)
+///
+/// `stories` is a map of read-model rows, and a row is a *cache* of a fold of
+/// a story's events. For some stories the cache cannot be trusted at all: the
+/// row is missing, or it is present and the same run has just proved it wrong.
+/// `unattested` names them — see [`crate::store::ReadModelDiff::unattested`] for
+/// how the set is drawn, and note that it is drawn from the events, which are
+/// the authority a row is derived from.
+///
+/// Before SH-286 there was no such parameter and absence from `stories` was read
+/// as *absence from the project*. That is the SH-285 defect's shape: a story
+/// whose events will not fold keeps no row however often the read model is
+/// repaired, so a **valid** edge naming it read as `DanglingRelation` — and
+/// `story doctor --fix` retracted correct data over it, until SH-285 taught the
+/// repair half to resolve existence from the events instead. That left the two
+/// halves of one contract disagreeing about one predicate, which is SH-273's
+/// forbidden shape and this story's reason to exist.
+///
+/// Three rules answer it once, rather than one symptom at a time:
+///
+/// 1. **An unattested id is unknown, not absent.** An edge naming one yields
+///    neither a `DanglingRelation` nor a `MissingInverseRelation` — the far
+///    end's half cannot be read, so neither its presence nor its absence is a
+///    fact. Silencing only the first would trade one false finding for another,
+///    since the inverse check on that same edge runs next.
+/// 2. **An unattested story's claims are not evidence.** Its edges are left out
+///    of the hierarchy graph, so no `MultipleParents` or `ParentChildCycle` is
+///    asserted on the strength of an edge only it claims.
+/// 3. **An unattested story is never a finding's subject.** Its own checks —
+///    here, and the label and type checks in
+///    `crate::service::IntegrityService`'s story pass — are skipped rather than
+///    computed from a row that is not evidence.
+///
+/// Each rule removes findings, and a report that gets quieter without saying
+/// why is the SH-268 defect. So suppression is a **swap**: the doctor mints one
+/// `UnexaminedStory` finding per unattested story in their place. That is the
+/// service layer's job rather than this function's, because this is also
+/// `crate::service::query::story_views`' checker and a `StoryView` has no place
+/// to hang a project-level statement.
+///
+/// A story with neither a row **nor** events is in neither `stories` nor
+/// `unattested`, and its inbound edges are still `DanglingRelation` — it really
+/// is gone, and retracting them is the repair
+/// (`tests/service_integrity.rs::a_fix_still_retracts_an_edge_to_a_story_that_
+/// is_genuinely_gone`).
+///
+/// No finding this returns is ever keyed on an unattested id, which is what lets
+/// the service pass skip those stories without dropping findings on the floor.
 pub fn compute_integrity_issues(
     stories: &BTreeMap<String, StorySnapshot>,
+    unattested: &BTreeSet<String>,
 ) -> BTreeMap<String, Vec<Finding>> {
     let mut issues: BTreeMap<String, Vec<Finding>> = BTreeMap::new();
-    let graph = HierarchyGraph::from_stories(stories);
+    let graph = HierarchyGraph::from_attested(stories, unattested);
 
     for story in stories.values() {
+        // Rule 3: a row that is not evidence answers no question about itself.
+        if unattested.contains(&story.id) {
+            continue;
+        }
         let parent_count = graph.parents_of(&story.id).len();
 
         if parent_count > 1 {
@@ -1661,6 +1717,12 @@ pub fn compute_integrity_issues(
         }
 
         for relation in &story.relationships {
+            // Rule 1: unknown, not absent. Both checks below are about what the
+            // far end does or does not hold, and this one holds no readable
+            // answer either way.
+            if unattested.contains(&relation.other_id) {
+                continue;
+            }
             let Some(other_story) = stories.get(&relation.other_id) else {
                 issues.entry(story.id.clone()).or_default().push(
                     Finding::new(
@@ -1724,6 +1786,13 @@ pub fn compute_integrity_issues(
     }
 
     for node in graph.cycle_nodes() {
+        // Rule 3 again: the cycle is still reported against whichever of its
+        // members *can* be examined. Rule 2 has already kept the arcs only an
+        // unattested story claims out of the graph, so every arc reaching this
+        // point is one a story whose row its own events support asserts.
+        if unattested.contains(&node) {
+            continue;
+        }
         issues.entry(node.clone()).or_default().push(
             Finding::new(FindingCode::ParentChildCycle, "parent/child cycle detected").about(node),
         );
@@ -2051,7 +2120,27 @@ struct HierarchyGraph {
 }
 
 impl HierarchyGraph {
+    /// The hierarchy every story's row claims.
     fn from_stories(stories: &BTreeMap<String, StorySnapshot>) -> Self {
+        Self::from_attested(stories, &BTreeSet::new())
+    }
+
+    /// The hierarchy, minus the arcs only an unattested story claims (SH-286).
+    ///
+    /// Rule 2 of [`compute_integrity_issues`], and the reason it is a separate
+    /// constructor: the other two callers — [`would_create_parent_cycle`] and
+    /// [`derive_family_relationships`] — answer authoring and display questions
+    /// about the project as the read model holds it, not integrity questions
+    /// about whether the read model may be believed, so they take the whole
+    /// graph through [`from_stories`](Self::from_stories) above.
+    ///
+    /// An arc a *visible* story claims survives whatever the far end's standing
+    /// is: the claimant's own history asserts it, which is exactly the evidence
+    /// this is filtering for.
+    fn from_attested(
+        stories: &BTreeMap<String, StorySnapshot>,
+        unattested: &BTreeSet<String>,
+    ) -> Self {
         let mut children_by_parent = stories
             .keys()
             .cloned()
@@ -2064,6 +2153,9 @@ impl HierarchyGraph {
             .collect::<BTreeMap<_, _>>();
 
         for story in stories.values() {
+            if unattested.contains(&story.id) {
+                continue;
+            }
             for relation in &story.relationships {
                 match relation.relation.as_str() {
                     "parent-of" if stories.contains_key(&relation.other_id) => {
