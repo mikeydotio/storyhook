@@ -1604,12 +1604,30 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     repos: [],
     reposFetchOk: false,
     reposFetchAt: 0,
+    // "unasked" | "loaded" | "failed" — whether a `/api/repos` round trip has
+    // *completed*, as opposed to `repos.length === 0`, which is also true
+    // before the first fetch and stays true forever if it never succeeds
+    // (SH-301). Distinct from `reposFetchOk` above, which drives the
+    // connection indicator (`activePollState()`) and is not a candidate here
+    // for the same reason `state.fetchOk` was ruled out for the per-repo
+    // fetch (SH-291): it initialises `false` and takes `false` again on every
+    // failure, so it cannot tell "never asked" from "asked and refused". A
+    // three-value enum rather than a settled boolean, unlike `fetchSettledFor`
+    // below, because this fetch has no project dimension to key an id on —
+    // see `fetchReposOnce()`'s own comment on why it carries no `askedFor`.
+    reposReadiness: "unasked",
     // Settings screen: null shows the repo table, a repo id shows that
     // repo's statuses editor. Independent of `repoId` above — you can
     // configure a repo's statuses without opening its board.
     settingsRepoId: null,
     // GET /api/repos/<settingsRepoId>/states, or null before it arrives.
     statuses: null,
+    // "unasked" | "loaded" | "failed", the same three-value shape as
+    // `reposReadiness` above and for the same reason (SH-301): `statuses ===
+    // null` cannot tell "never asked" from "asked and failed". Reset to
+    // "unasked" everywhere `statuses` itself is nulled (`goSettings()`,
+    // `goStatuses()`), since both are keyed to `settingsRepoId`.
+    statusesReadiness: "unasked",
     data: null,
     view: localStorage.getItem("storyhook.view") === "list" ? "list" : "board",
     // A display preference, not a per-repo filter: like `view` above, it
@@ -2385,6 +2403,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       // leave the dashboard on no screen at all.
       if (xhr.status === 200 && ticket <= reposFetchFloor) {
         updateConnection();
+        markReposSettled(ticket, true);
         if (onDone) onDone();
         return;
       }
@@ -2406,6 +2425,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         // rather than running `onDone` (and rendering) against a response
         // that never arrived.
         state.reposFetchOk = false;
+        markReposSettled(ticket, false);
         openTokenModal(function() { fetchReposOnce(onDone); });
         return;
       } else {
@@ -2429,6 +2449,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         updateDraftsButton();
         if (state.screen === "home") renderHome();
         if (state.screen === "settings") renderSettings();
+        // Not called from here before SH-301: a project created or deleted
+        // elsewhere while this tab sat on Home left "N projects" stale until
+        // the next screen change, since nothing else on this path repaints
+        // the subtitle's count.
+        updateSubtitle();
         // The currently-viewed project was deleted elsewhere (another tab,
         // another client) — don't keep showing its now-orphaned data.
         if (state.screen === "repo" && state.repoId && !state.repos.some(function(r) { return r.id === state.repoId; })) {
@@ -2438,11 +2463,43 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         }
       }
       updateConnection();
+      markReposSettled(ticket, state.reposFetchOk);
       if (onDone) onDone();
     };
-    xhr.ontimeout = function() { state.reposFetchOk = false; updateConnection(); if (onDone) onDone(); };
-    xhr.onerror = function() { state.reposFetchOk = false; updateConnection(); if (onDone) onDone(); };
+    xhr.ontimeout = function() { state.reposFetchOk = false; updateConnection(); markReposSettled(ticket, false); if (onDone) onDone(); };
+    xhr.onerror = function() { state.reposFetchOk = false; updateConnection(); markReposSettled(ticket, false); if (onDone) onDone(); };
     xhr.send();
+  }
+
+  /** Records that a `/api/repos` round trip has completed, which is the
+   * question `state.reposReadiness` exists to answer — see its own comment
+   * in `state`'s declaration for why `state.reposFetchOk` cannot (SH-301,
+   * same reasoning `markDataSettled()` carries for `state.fetchOk`).
+   *
+   * Guarded by the same floor `fetchReposOnce()`'s own success path raises
+   * (`reposFetchFloor`): a *failure* below the floor is an older request
+   * whose reply is now known-stale — a newer request has already answered,
+   * successfully or not — and recording it would un-mark a catalog that has,
+   * in fact, settled. `state.reposFetchOk` itself does not have this guard
+   * and can still be lowered by a stale timeout; left as is here, since
+   * repairing it is an independent change from naming the failure this story
+   * is about.
+   *
+   * Repaints on the transition, and only on it. The success path already
+   * repaints unconditionally on every poll (`fetchReposOnce()`'s own
+   * `if (state.reposFetchOk)` block, which needs the fresh list every time,
+   * not just on the readiness edge) — what this adds is the failure edge,
+   * which has no other repaint at all: nothing else re-renders Home, the
+   * selector or the subtitle when `/api/repos` starts failing mid-session. */
+  function markReposSettled(ticket, ok) {
+    if (!ok && ticket <= reposFetchFloor) return;
+    var next = ok ? "loaded" : "failed";
+    if (state.reposReadiness === next) return;
+    state.reposReadiness = next;
+    renderProjectSelector();
+    if (state.screen === "home") renderHome();
+    if (state.screen === "settings") renderSettings();
+    updateSubtitle();
   }
 
   // ============================================================
@@ -3601,14 +3658,23 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    *
    * An empty subtitle is *hidden*, not merely blank. `.brand` is a flex row
    * with a gap, so a blank span is still a flex item and its gap would go
-   * on padding the wordmark away from the search field. */
+   * on padding the wordmark away from the search field.
+   *
+   * Home's branch is empty (hidden) rather than "0 projects" until the
+   * catalog has actually answered empty (SH-301): this is the one slot on
+   * this screen that states a number, and a number nobody counted is not a
+   * count. `renderHome()`'s own empty-state text carries the loading/failed
+   * distinction for the same window; this simply says nothing rather than
+   * saying it twice. */
   function updateSubtitle() {
     var node = $("subtitle");
     var text;
     if (state.screen === "repo") {
       text = "";
     } else if (state.screen === "home") {
-      text = state.repos.length + " " + (state.repos.length === 1 ? "project" : "projects");
+      text = (state.repos.length || state.reposReadiness === "loaded")
+        ? state.repos.length + " " + (state.repos.length === 1 ? "project" : "projects")
+        : "";
     } else if (state.settingsRepoId) {
       text = "Settings · statuses";
     } else {
@@ -3618,33 +3684,49 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     node.hidden = text === "";
   }
 
-  /** What a control says about a project whose `/data` has not arrived: that
-   * it is still loading, or that a fetch for it has completed without data
-   * (SH-291). One sentence generator for both controls that make this claim —
-   * the Drafts popover's list and `#new-story-btn`'s tooltip — so the two
-   * cannot drift into explaining the same failure differently, which is the
-   * risk SH-284's council named when it gave those two neighbours
-   * deliberately different *behaviour* in this same window.
+  /** Whether the open project's `/data` has completed *without* leaving data
+   * behind — the `settled` half of what `readinessNote()` used to compute
+   * inline, extracted so the generator itself carries no assumption that its
+   * subject is scoped to a project (SH-301 widened it to also cover the
+   * catalog and the statuses editor, neither of which is one).
    *
-   * `subject` is the control's own half of the sentence ("drafts"; "states,
-   * types and labels"), and still never a project name — even though the
-   * popover now names one (SH-292). The name belongs to the surface, not to
-   * this sentence: it is written once, into `#drafts-subject`, by the
-   * function that paints the popover. This generator's other call site is
-   * `#new-story-btn`'s tooltip, which renders on an un-overlaid topbar
-   * inches from `#projsel-btn` itself, so a name here would be a second
-   * copy in one place and a duplicate in the other.
+   * Only meaningful under a caller's own `!state.data` guard, same as before
+   * extraction — a settled project with data is exactly the state this
+   * returns `true` for if asked, which is why nothing calls it unguarded. */
+  function dataFetchFailed() {
+    return state.repoId !== null && state.fetchSettledFor === state.repoId;
+  }
+
+  /** What a control says about something that has not arrived: that it is
+   * still loading, or that a fetch for it has completed without an answer
+   * (SH-291, widened to non-project subjects by SH-301). One sentence
+   * generator for every control that makes this claim — the Drafts
+   * popover's list, `#new-story-btn`'s tooltip, Home's empty state, the
+   * project selector, and the statuses editor — so none of them can drift
+   * into explaining the same shape of failure differently, which is the risk
+   * SH-284's council named when it gave two of these controls deliberately
+   * different *behaviour* in the same window.
    *
-   * "Retrying…" is a claim `pollTick()` keeps rather than a softener — the
-   * 25s safety poll re-fetches for as long as the board is on screen, and a
-   * 401 additionally opens the token modal. So the failed state is never
-   * terminal, and it is left the instant any reply parses: both call sites
-   * are keyed on `!state.data`, which no failure path assigns. */
-  function readinessNote(subject) {
-    var settled = state.repoId !== null && state.fetchSettledFor === state.repoId;
-    return settled
-      ? "Couldn't load this project's " + subject + ". Retrying…"
-      : "Loading this project's " + subject + "…";
+   * `subject` is the whole possessive phrase ("this project's drafts"; "your
+   * projects"), not a bare noun — the catalog is nobody's project, so the
+   * old hardcoded "this project's " prefix cannot serve it. It is still never
+   * the project's own *name* (SH-292): the Drafts popover names its project
+   * separately, into `#drafts-subject`, by the function that paints the
+   * popover, so a name here would be a second copy in one place and a
+   * duplicate in the other -- on `#new-story-btn`'s tooltip, which renders on
+   * an un-overlaid topbar inches from `#projsel-btn` itself. `failed` is the
+   * caller's own settled predicate (`dataFetchFailed()` for the per-project
+   * surfaces, `state.reposReadiness`/`state.statusesReadiness` for the
+   * others), passed in rather than read from one fixed field, since which
+   * field answers "has this settled?" differs per fetch.
+   *
+   * "Retrying…" is a claim every caller's own safety poll keeps rather than
+   * a softener — see each poll's own comment for its interval. So the failed
+   * state is never terminal, and it is left the instant any reply succeeds. */
+  function readinessNote(subject, failed) {
+    return failed
+      ? "Couldn't load " + subject + ". Retrying…"
+      : "Loading " + subject + "…";
   }
 
   /** The "+ New" button is live only once this project's own vocabulary is
@@ -3668,7 +3750,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function syncCreateAvailability() {
     var btn = $("new-story-btn");
     btn.disabled = !state.data;
-    btn.title = state.data ? "" : readinessNote("states, types and labels");
+    btn.title = state.data ? "" : readinessNote("this project's states, types and labels", dataFetchFailed());
   }
 
   /** Switches between the three top-level screens, showing/hiding the
@@ -6558,9 +6640,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * `PREFIX · name` on the board screen — unambiguous, this is the project
    * whose stories are on screen — "All projects" on Home/Settings, where
    * there genuinely is no current project and showing one would be a lie,
-   * or "No projects yet" when the catalog is empty. */
+   * "No projects yet" when the catalog has genuinely answered empty, or the
+   * neutral "Projects" while that has not been earned (SH-301 — the same
+   * "not yet" vs "not at all" distinction SH-291 gave `#new-story-btn`;
+   * `renderProjectSelector()`'s own `btn.title` carries which one it is,
+   * this label never does, matching `updateDraftsButton()`'s division of
+   * labour between a neutral label and a tooltip beside it). */
   function projselLabelText() {
-    return currentProjectLabel() || (state.repos.length ? "All projects" : "No projects yet");
+    var current = currentProjectLabel();
+    if (current) return current;
+    if (state.repos.length) return "All projects";
+    return state.reposReadiness === "loaded" ? "No projects yet" : "Projects";
   }
 
   /** The index `projselFocusItem` last moved to, so arrow keys can move
@@ -6608,6 +6698,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
     $("projsel-label").textContent = projselLabelText();
     btn.disabled = !state.repos.length;
+    // Same "not yet" vs "not at all" the label itself withholds (SH-301):
+    // the button stays disabled either way, since there is nothing to
+    // switch to in either case, but the tooltip says which is true. Empty,
+    // not merely unset, once the catalog has genuinely answered empty —
+    // there is nothing wrong to explain then.
+    btn.title = (state.repos.length || state.reposReadiness === "loaded")
+      ? "" : readinessNote("your projects", state.reposReadiness === "failed");
 
     var fingerprint = state.repos.map(repoCardFingerprint).join("|") + "|" + state.repoId;
     if (menu.dataset.fingerprint === fingerprint) return;
@@ -6773,6 +6870,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     state.screen = "settings";
     state.settingsRepoId = null;
     state.statuses = null;
+    state.statusesReadiness = "unasked";
     // Force renderSettings() to rebuild the register form fresh on this
     // explicit (re-)entry — see the flag's own comment for why routine
     // polls must NOT do this.
@@ -6788,6 +6886,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     state.screen = "settings";
     state.settingsRepoId = repoId;
     state.statuses = null;
+    // Beside `state.statuses`, and for the same reason `selectRepo()` resets
+    // `state.fetchSettledFor`: this repo's statuses editor has not answered
+    // *this* opening of it, whatever its last visit ended in (SH-301).
+    state.statusesReadiness = "unasked";
     delete $("settings-view").dataset.built;
     renderScreen();
     fetchStatuses();
@@ -6797,15 +6899,30 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * by `data-id` (`populateRepoCard`) rather than rebuilt, and a card whose
    * summary counts actually changed since the last render gets a brief
    * flash (`flash-updated`) so a live update here reads as "this repo just
-   * changed" rather than a silent number swap. */
+   * changed" rather than a silent number swap.
+   *
+   * The empty branch below is three states, not two (SH-301): `state.repos`
+   * initialises `[]`, so an unqualified "No projects yet." here was an
+   * *unearned* claim about a catalog that had never answered, and the
+   * stronger form of the bug SH-291 fixed one screen down — that one painted
+   * an honest but permanent "Loading…"; this one painted a specific,
+   * actionable wrong answer, "Add a project" included, over a store that may
+   * hold hundreds. The "Add a project" call to action is offered only once
+   * `state.reposReadiness === "loaded"` earns it — the one thing here that
+   * is not merely a copy change, since acting on it writes a project record
+   * the user did not ask to create. */
   function renderHome() {
     var container = $("home-view");
     if (!state.repos.length) {
       clear(container);
-      container.appendChild(el("div", { class: "home-empty" }, [
-        "No projects yet.",
-        el("button", { class: "btn btn-primary", onClick: goSettings }, ["Add a project"])
-      ]));
+      container.appendChild(state.reposReadiness === "loaded"
+        ? el("div", { class: "home-empty" }, [
+            "No projects yet.",
+            el("button", { class: "btn btn-primary", onClick: goSettings }, ["Add a project"])
+          ])
+        : el("div", { class: "home-empty" }, [
+            readinessNote("your projects", state.reposReadiness === "failed")
+          ]));
       return;
     }
     var totals = state.repos.reduce(function(acc, r) {
@@ -6995,11 +7112,36 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         if (state.settingsRepoId !== repoId || statusEditorIsBusy()) return;
         state.statuses = payload.states || [];
         renderStatuses();
+        markStatusesSettled(repoId, true);
       })
       .catch(function(err) {
         if (state.settingsRepoId !== repoId) return;
         toastError(err);
+        markStatusesSettled(repoId, false);
       });
+  }
+
+  /** Records that a `/api/repos/<repoId>/states` round trip for `repoId` has
+   * completed — the same "has this fetch settled" question `markDataSettled()`
+   * and `markReposSettled()` each answer for their own fetch (SH-301), so
+   * `renderStatuses()`'s permanent, unqualified "Loading…" (SH-291's own
+   * defect, on a third fetch) can become a claim that leaves once there is
+   * something to leave for.
+   *
+   * Guarded exactly as `fetchStatuses()`'s own callbacks are: a reply about
+   * an editor the user has left names nothing on screen, and one landing
+   * mid-edit (`statusEditorIsBusy()`) must not repaint out from under a
+   * half-typed description — the same reason its success path already skips
+   * `renderStatuses()` while busy. A busy failure is still toasted by the
+   * caller; only the readiness repaint is held back, and the next idle fetch
+   * (`refreshStatusesIfIdle()`'s own poll, or the next explicit entry)
+   * settles it. */
+  function markStatusesSettled(repoId, ok) {
+    if (state.settingsRepoId !== repoId || statusEditorIsBusy()) return;
+    var next = ok ? "loaded" : "failed";
+    if (state.statusesReadiness === next) return;
+    state.statusesReadiness = next;
+    renderStatuses();
   }
 
   /** Whether the user is mid-edit inside the editor: typing a description,
@@ -7041,7 +7183,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     ]));
 
     if (!state.statuses) {
-      container.appendChild(el("div", { class: "status-empty" }, ["Loading…"]));
+      container.appendChild(el("div", { class: "status-empty" }, [
+        readinessNote("this project's statuses", state.statusesReadiness === "failed")
+      ]));
       return;
     }
 
@@ -7714,7 +7858,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var list = $("drafts-list");
     clear(list);
     if (!state.data) {
-      list.appendChild(el("li", { class: "drafts-list-empty" }, [readinessNote("drafts")]));
+      list.appendChild(el("li", { class: "drafts-list-empty" }, [readinessNote("this project's drafts", dataFetchFailed())]));
       return;
     }
     var drafts = state.data.drafts || [];
