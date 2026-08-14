@@ -582,7 +582,7 @@ story hooks test create
 
 ### `story handoff [--since <duration>]`
 
-Generate a session handoff document summarizing recent activity (default: last 2 hours).
+Generate a session handoff document summarizing recent activity (default: last 24 hours).
 
 ```bash
 story handoff --since 4h

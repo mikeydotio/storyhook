@@ -18,6 +18,7 @@
 use std::path::{Path, PathBuf};
 
 use storyhook::help_topics::{get_help_topic, list_topics};
+use storyhook::service::query::DEFAULT_HANDOFF_HOURS;
 
 /// How this codebase writes a command reference in prose and in shipped
 /// strings: inside backticks. Matching the delimiter rather than a bare word is
@@ -167,5 +168,20 @@ fn the_storage_topic_names_every_store_naming_lever_in_precedence_order() {
         store_path_at < data_dir_at,
         "STORYHOOK_STORE_PATH outranks STORYHOOK_DATA_DIR and must be named first, \
          so the topic's order matches the precedence it documents"
+    );
+}
+
+/// The `handoff` topic said "Default: last 2 hours" while
+/// `DEFAULT_HANDOFF_HOURS` was 24 — wrong by 12x, found in passing while
+/// fixing SH-280. Pinned against the real constant rather than a second
+/// hand-copied literal, so the two cannot drift apart again silently.
+#[test]
+fn the_handoff_topic_states_the_real_default_window() {
+    let topic = get_help_topic("handoff").expect("the handoff topic exists");
+    let expected = format!("Default: last {DEFAULT_HANDOFF_HOURS} hours");
+    assert!(
+        topic.contains(&expected),
+        "the handoff topic must state the real default window; expected to find \
+         `{expected}` in:\n{topic}"
     );
 }

@@ -523,7 +523,7 @@ When to use:
   different projects or tasks.
 
 Examples:
-  story handoff                   # Default: last 2 hours
+  story handoff                   # Default: last 24 hours
   story handoff --since 4h        # Last 4 hours
   story handoff --since 1d        # Last day
 
