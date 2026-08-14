@@ -41,6 +41,19 @@ pub trait ConformanceFixture: Sized {
 
     /// Closes this store and opens the same backing storage again.
     fn reopen(self) -> Self;
+
+    /// A directory the suite may ask the store to write copies into.
+    ///
+    /// Owned by the fixture, so it is cleaned up with everything else.
+    fn snapshot_dir(&self) -> std::path::PathBuf;
+
+    /// Opens a copy [`Store::write_with_snapshot`] wrote, as a store.
+    ///
+    /// The suite has to be able to *read* a copy to say anything about what is
+    /// in it, and what a copy even is depends on the engine — one file here, a
+    /// dump restored into a scratch database elsewhere. That is why this is
+    /// the fixture's job rather than the suite's.
+    fn open_snapshot(&self, path: &std::path::Path) -> Self::Store;
 }
 
 /// Generates the conformance suite for one [`ConformanceFixture`].
@@ -4444,6 +4457,69 @@ macro_rules! store_conformance_suite {
                         reader.join().unwrap();
                     }
                 });
+            }
+
+            // ===============================================================
+            // A write, and the copy of the state it began from (SH-297)
+            // ===============================================================
+
+            /// The first of `write_with_snapshot`'s two clauses, which needs no
+            /// concurrency to state: the copy is the state the transaction
+            /// **begins from**, so the transaction's own writes cannot be in
+            /// it.
+            ///
+            /// This is a property of the contract rather than of an engine —
+            /// unlike backup verification, which the suite deliberately leaves
+            /// to `tests/store_migrations.rs`. It is here because without it an
+            /// implementation can satisfy the trait by calling `snapshot()` and
+            /// then `write()`, which is the whole of SH-297: two critical
+            /// sections, and any writer fits between them.
+            #[test]
+            fn the_copy_a_write_hands_back_predates_that_write() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                let dir = f.snapshot_dir();
+
+                let written = f
+                    .store()
+                    .write_with_snapshot(&dir, "conformance", |tx| {
+                        let story = tx.allocate_story_no(project)?;
+                        let head = tx.append_events(
+                            project,
+                            story,
+                            ExpectedSeq::Exact(EventSeq::ZERO),
+                            &[created("written inside the copied transaction", "2026-01-01T00:00:00Z")],
+                            &$crate::domain::provenance::Provenance::unrecorded(),
+                        )?;
+                        let prefix = tx.project(project)?.expect("the project exists").prefix;
+                        let state_map = tx.state_map(project)?;
+                        let stored = tx.events_for(project, story)?;
+                        let (known, _) = partition_known(story, &stored);
+                        let snapshot = fold_story(&story.to_id(&prefix), &known, &state_map)
+                            .map_err(|e| StoreError::Invariant(e.to_string()))?;
+                        tx.put_story(project, &snapshot, head)?;
+                        Ok(story)
+                    })
+                    .expect("a write with a copy of the state it began from");
+
+                // The write committed: the live store has the story.
+                let live = f
+                    .store()
+                    .read(|tx| tx.stories(project, &StoryQuery::all()))
+                    .expect("querying the live store");
+                assert_eq!(live.len(), 1, "the write itself must have committed");
+
+                // The copy is what the store looked like before it did.
+                let copy = f.open_snapshot(&written.snapshot);
+                let copied = copy
+                    .read(|tx| tx.stories(project, &StoryQuery::all()))
+                    .expect("querying the copy");
+                assert!(
+                    copied.is_empty(),
+                    "the copy holds this transaction's own writes, so it is not the \
+                     state the transaction began from — restoring it would not undo \
+                     the write it was taken to protect against"
+                );
             }
         }
     };
