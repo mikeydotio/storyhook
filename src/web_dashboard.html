@@ -992,7 +992,21 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 @media (max-width: 768px) {
   .topbar { flex-wrap: wrap; gap: 0.375rem; }
   .search-wrap { order: 3; max-width: none; flex-basis: 100%; }
-  .projsel-btn { max-width: none; }
+  /* SH-303: this used to read `max-width: none`, removing the only ceiling
+     `.projsel-label`'s `text-overflow: ellipsis` had to elide against --
+     exactly at the widths that can least afford an unconstrained box. A long
+     project name then carried `.brand`, `.projsel` and the whole document
+     past the viewport's own width. `14rem` keeps the desktop ceiling rather
+     than widening it: `.projsel-btn` shares this row with `.view-toggle` and
+     `.topbar-right` once `.search-wrap` wraps below, and that row's own
+     chrome budget (this block's own comment, and
+     responsive.mobile.spec.ts's "topbar and collapsed filter bar" test) has
+     too little headroom to safely absorb a wider button with nothing here to
+     catch a regression -- council-decided over a wider mobile-only figure,
+     `.council/sh303-projsel-mobile-max-width/`. `calc(100vw - 2.5rem)`
+     -- `.topbar`'s own horizontal padding -- is a backstop for viewports
+     narrower than anything this file's own sweep tests. */
+  .projsel-btn { max-width: min(14rem, calc(100vw - 2.5rem)); }
   /* SH-235: the topbar's chrome budget (responsive.mobile.spec.ts's own
      "topbar and collapsed filter bar" test) is what forced this -- at a
      375px width every one of Home/Settings/+ New/Drafts/the connection

@@ -418,14 +418,83 @@ for (const width of SWEEP_WIDTHS) {
       page.locator("#drafts-modal"),
       `the Drafts popover @ ${width}px`,
     );
-    // Deliberately NOT `expectNoHorizontalOverflow(page, …)`, which every
-    // other sweep here calls. It fails at all four widths, on the topbar
-    // behind this popover rather than on the popover: `.projsel-btn` drops to
-    // `max-width: none` under 768px, so the same long name renders at full
-    // length and takes `document.documentElement.scrollWidth` to 799px
-    // against a 320px viewport. That is SH-303 -- found by this test, filed
-    // rather than folded in, and its own completion criterion is adding this
-    // line back.
+    // SH-303: `.projsel-btn` used to drop to `max-width: none` under 768px,
+    // so the same long name behind this popover rendered at full length and
+    // took `document.documentElement.scrollWidth` to 799px against a 320px
+    // viewport -- this call used to fail at all four widths on the topbar,
+    // not on the popover in front of it. Fixed by giving that rule a
+    // viewport-relative ceiling; see the topbar-scoped test below for the
+    // one that pins the mechanism directly.
+    await expectNoHorizontalOverflow(page, `the Drafts popover @ ${width}px`);
+  });
+}
+
+/**
+ * SH-303: the topbar itself, not the popover in front of it. `.projsel-btn`'s
+ * `max-width: 14rem` (the constraint that gives `.projsel-label`'s
+ * `text-overflow: ellipsis` something to elide against) used to drop to
+ * `max-width: none` inside `@media (max-width: 768px)` -- exactly the widths
+ * that can least afford an unconstrained box. A 100-character project name
+ * then rendered at full length and carried the whole document past its own
+ * viewport width (measured: `scrollWidth` 799px against a 320px
+ * `clientWidth`).
+ *
+ * This sweep proves it on the board screen directly, where the defect lives,
+ * rather than through the Drafts popover above it -- the two assertions
+ * together (document-level overflow, and the label's own truncation
+ * mechanism) are what the topbar's own `.projsel-btn`/`.projsel-label` pair
+ * needs, the same two-assertion shape SH-292 used for `#drafts-subject`.
+ */
+for (const width of SWEEP_WIDTHS) {
+  test(`the header project selector elides a long project name at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: SWEEP_HEIGHT });
+    await page.route("**/api/repos", async (route) => {
+      // The token explicitly: `route.fetch()` replays the request without the
+      // cookie the page authenticates with, and the daemon answers a 401 whose
+      // body is not JSON at all.
+      const response = await route.fetch({
+        headers: {
+          ...route.request().headers(),
+          "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
+        },
+      });
+      const repos = (await response.json()) as Array<{
+        name: string;
+      }>;
+      repos.forEach((repo) => {
+        if (repo.name === "Alpha Project") repo.name = LONG_PROJECT_NAME;
+      });
+      await route.fulfill({ response, json: repos });
+    });
+    await page.goto("/");
+    await openProject(page, LONG_PROJECT_NAME);
+
+    await expectNoHorizontalOverflow(
+      page,
+      `the board screen's topbar @ ${width}px`,
+    );
+
+    const label = page.locator("#projsel-label");
+    const box = await label.evaluate((el) => ({
+      scrollWidth: el.scrollWidth,
+      clientWidth: el.clientWidth,
+      textOverflow: getComputedStyle(el).textOverflow,
+      whiteSpace: getComputedStyle(el).whiteSpace,
+    }));
+    expect(
+      box.scrollWidth,
+      `#projsel-label (${box.clientWidth}px wide, white-space: ` +
+        `${box.whiteSpace}) is not truncating a ${LONG_PROJECT_NAME.length}-` +
+        `character project name at ${width}px -- \`.projsel-btn\` has no ` +
+        "ceiling for the ellipsis to elide against",
+    ).toBeGreaterThan(box.clientWidth);
+    expect(
+      box.textOverflow,
+      "#projsel-label must truncate with an ellipsis rather than clip a " +
+        "name mid-glyph or let it push the topbar off-screen",
+    ).toBe("ellipsis");
   });
 }
 
