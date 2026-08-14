@@ -15655,3 +15655,109 @@ harness, **186** e2e specs (182 + 4), zero failures.
 
 **Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push, no
 version bump, no deploy.
+
+### SH-292 — the popover that would not say whose drafts these were · PR #403 · **done**
+
+**Outcome:** merged. `#drafts-subject` names `PREFIX · name` under the Drafts
+popover's header. The header itself is untouched, and so are the other six
+overlays.
+
+**The story's own premise was dead, and the fix survived anyway.** SH-292 was
+filed on a board-to-board switch: repaint from A's drafts to B's with nothing
+inside the overlay saying the subject changed. SH-299 closed that between the
+filing and the work — the app shell is `inert` while any overlay is open, so no
+gesture reaches the project selector with the popover up, and the one
+asynchronous route (`fetchReposOnce()` finding the open project deleted)
+dismisses the popover rather than re-pointing it. All three council seats
+verified this independently. The e2e switch this story was named for is now
+reachable only through `activateBehindOverlay()`, i.e. by running listeners with
+no user at all.
+
+What survives is **dwell**, and it is a different argument: a `/data` that keeps
+failing parks this popover on "Couldn't load this project's drafts. Retrying…"
+with no end — `readinessNote()`'s own comment calls that "not a window but a
+state a project can stay in forever" — while `.backdrop` blurs the only label
+naming the project and `inert` removes it from the accessibility tree entirely.
+Degraded for a sighted user, absent for an assistive-technology one, indefinitely.
+So this change buys little on the happy path; the code says so rather than
+implying otherwise.
+
+**Council: convened, and it reversed a seat.** Panel `ux-designer-web`,
+`software-architect`, `skeptic` — the last seated because "decline as obsolete"
+was a live option and it was the seat best placed to argue it. It did, in round
+one, and lost 0-2-1. Then in deliberation it **reversed its own position**, on an
+argument neither other seat had made: not attention drift across the 200ms
+between click and read, which it still calls an unmeasured assumption, but dwell.
+The runoff was unanimous for its revised ballot with no chair tiebreak, and
+unanimous on the architect's proposal second — so the verdict is a composition,
+recorded as such: that proposal's design, carrying the skeptic's three gaps.
+Full trail in `.council/sh292-drafts-popover-project-identity/`; the verdict is a
+comment on SH-292, which is the copy that survives a clone.
+
+**The reusable half is the scope rule**, which is what stopped this being a
+question about seven overlays: *a surface that says "this project" must be able to
+resolve it; one that does not, needn't.* The popover says it twice
+(`readinessNote()`'s "this project's drafts", and "No drafts in this project.").
+`#create-modal` ("New story"/"Edit draft") and `#archive-modal` ("Archive
+`state`") say it never, so they are untouched — a decidable test for the next
+contributor instead of an aesthetic one.
+
+**What the council caught that the chair had not.** Three findings, each verified
+by every seat before it was accepted:
+
+1. **The mobile sweep was cited as coverage and never opened this overlay.** The
+   argument for a separate subject line rather than the header rested on
+   `responsive.mobile.spec.ts` catching an overflow — and that file opens
+   `#create-modal`, `#drawer`, `#list-view`, `#settings-view`, the toast stack and
+   the dispatch history, never `#drafts-modal`. Unfounded *as applied*. The fix
+   owes the sweep an entry, and now has one at four widths.
+2. **The fence the architect proposed sits on a route production cannot reach** —
+   the `activateBehindOverlay` switch. Kept as a structural invariant with its
+   inherited rationale corrected, and the assertion that matches the motivation
+   added at the parked failure state instead.
+3. **`fetchReposOnce()` repaints the topbar and not the popover.** A project
+   renamed by another client would have left the popover naming the old name
+   *indefinitely* — `renderAll()` runs only on a parsed 200, `markDataSettled()`
+   fires at most once per project — in exactly the dwell state the name was added
+   for. Left as an explicit either/or by the verdict (close it, or record it); the
+   chair closed it, on the architect's reasoning rather than its own.
+
+**One ARIA claim died on inspection.** The web-UX seat proposed
+`aria-labelledby="drafts-modal-header"`; the skeptic pointed out that id does not
+exist. None of the seven overlays carries `role="dialog"`, `aria-modal` or
+`aria-labelledby` at all — a real gap, and one that would be worse fixed for one
+overlay than for none. Not filed yet; it wants a story covering all seven,
+including adding the header id.
+
+**Tests.** Two structural fences in `tests/web_test.rs` (the slot exists inside
+the popover, hidden, carrying the full one-line ellipsis recipe; the catalog
+refresh repaints it) — both red first, for the right reason, with the failure
+message printing the offending block. Three in the browser: the subject read
+*without retrying* across a switch, beside the count assertion that already reads
+that way and for the same reason; the subject named in the parked failure state;
+and a rename arriving from another client, which mocks `/api/repos`'s reply and
+`/api/events`' stream — data and transport, never behaviour — and blocks `/data`
+first so the only repaint path left is the one under test.
+
+**Sibling defect found by the new sweep: SH-303, filed not folded.**
+`.projsel-btn` drops to `max-width: none` under 768px, so a ~100-character
+project name renders at full length and takes `document.documentElement.
+scrollWidth` to 799px against a 320px viewport. Measured, not inferred. The
+document-level assertion that catches it is deliberately absent from SH-292's
+test with a comment naming SH-303; adding that one line back is SH-303's
+completion criterion.
+
+**Two hats.** Commit 1 extracts `currentProjectLabel()` from
+`projselLabelText()` — byte-identical output for all three cases the selector
+renders. Commit 2 is the behaviour change and its tests.
+
+**Supervision.** Every background run watched with a log-growth pulse. No wedge,
+no kill, no restart. `make test` run twice end to end: once on the working tree,
+once again on the exact pushed tree after a comment-only reshuffle across the two
+commits — the second run is the one the merge stands on. Both green: fmt, clippy,
+the full Rust suite, the plugin harness, **191** e2e specs (187 + 4).
+
+**Deviations:** one, self-corrected. `git add -A` was typed once, against this
+run's own "stage only paths you changed" rule; nothing unintended was staged
+(`.council/` is gitignored), and it was reset and re-staged by explicit path
+before the commit.
