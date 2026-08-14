@@ -1,5 +1,11 @@
 import { test, expect } from "@playwright/test";
-import { holdFetch, projectSlug, requiredEnv, seedToken } from "./support";
+import {
+  holdFetch,
+  openProject,
+  projectSlug,
+  requiredEnv,
+  seedToken,
+} from "./support";
 
 /**
  * SH-290 — the drawer belongs to the repo screen, and to no other.
@@ -63,6 +69,52 @@ async function openDrawerOverSettings(
   await held.deliver();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
   await expect(page.locator("#drawer-id")).toHaveText(ALPHA_STORY_ID);
+}
+
+/**
+ * Opens Alpha's board and a story's drawer the ordinary way — a mouse click on
+ * a card, no race arranged.
+ *
+ * Navigates here rather than in a `beforeEach`, because the race test below
+ * must register its `holdFetch` route *before* its own `page.goto()`.
+ */
+async function openBoardDrawer(
+  page: import("@playwright/test").Page,
+): Promise<void> {
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await page
+    .locator(".card-title", { hasText: "Wire up the auth flow" })
+    .click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await expect(page.locator("#drawer-id")).toHaveText(ALPHA_STORY_ID);
+}
+
+/**
+ * The two topbar routes off the board, each pinned before the `closeDrawer()`
+ * call inside `goHome()`/`goSettings()` was removed in favour of
+ * `renderScreen()`'s derived rule — so the removal was covered rather than
+ * merely believed to be.
+ *
+ * `press()` again, and again not stylistic: with the drawer open, `.backdrop`
+ * intercepts a click on either button, and the click that does land is the
+ * backdrop's own dismissal, which closes the drawer without ever running the
+ * navigation under test. See this file's header.
+ */
+for (const route of [
+  { name: "Home", button: "#home-btn", view: "#home-view" },
+  { name: "Settings", button: "#settings-btn", view: "#settings-view" },
+]) {
+  test(`leaving the board for ${route.name} dismisses the drawer`, async ({
+    page,
+  }) => {
+    await openBoardDrawer(page);
+
+    await page.locator(route.button).press("Enter");
+
+    await expect(page.locator(route.view)).toBeVisible();
+    await expect(page.locator("#drawer")).not.toHaveClass(/open/);
+  });
 }
 
 test("a drawer open over Settings does not survive into the statuses sub-view", async ({
