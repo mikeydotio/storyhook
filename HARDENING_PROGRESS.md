@@ -14146,3 +14146,120 @@ and the next session should not read this as precedent.
 **Council:** not convened. The story named both spellings and the target was the
 majority one every other finding in the same report already used; there was no
 second defensible answer to delegate.
+
+### SH-285 — `--fix` retracted a valid relation over a missing row · PR #373 · **done**
+
+The defect SH-269's mixed fixture surfaced, fixed at its origin. `story doctor
+--fix` resolved "does this story exist?" through `all_stories`, which reads the
+`stories` **table** — a *cache* of a fold of the events. A story with events and
+no read-model row is missing from that cache while being entirely present in the
+project, so a perfectly valid edge naming it read as dangling, and when the
+claimant was **open** the repair tool appended a `StoryRelationshipRemoved` and
+destroyed it. Then the same run restored the far end's row, the far end still
+claimed its half, and the closing report named an asymmetry the run had created
+itself — from a store that held nothing worse than a rebuildable cache miss.
+
+**Reproduced first, as filed.** The story's repro became a failing test before
+any code moved, and it failed with exactly the message the story predicted:
+`MissingInverseRelation ... subject: Some("SH-2"), remedy: Some("SH-1")`.
+
+**Two mechanisms, one invariant each — and that framing is the whole finding.**
+
+| | Guards | Why the other cannot |
+|---|---|---|
+| the read-model repair moves **ahead** of the story pass | that what the pass reads about a story is *true* | ordering cannot help a story whose events will not **fold** — it keeps no row however often the model is repaired, and its inbound edges are still valid |
+| existence resolved from the **events** (`endpoint_exists`, an indexed `MAX(seq)` probe, asked only of an endpoint the table could not answer for) | *does this story exist* | the probe alone leaves the pass reading stale rows, where it **fabricates** — an inverse the claimant's history never asserted, a label set computed from labels the story does not have |
+
+The second row is the defect nobody had filed: SH-285's mirror image. Every one
+of those writes is an **append**, and an append cannot be un-written. The re-fold
+sits *after* the catalog write, because the fold resolves superstates through the
+project's state definitions.
+
+**The test set was designed to be falsifiable, then falsified.** Six tests, and
+the point of the shape is that no test greens on the other mechanism — SH-268's
+lesson is that a fix whose test passes for two independent reasons is untested.
+Verified rather than asserted: each mechanism was reverted in turn and exactly
+the predicted test went red, then restored. The filed repro is deliberately
+*not* the proof — either mechanism greens it — so it is joined by one test that
+isolates the probe (asserting on the **event log**, not the rendered relations,
+inside a run that legitimately fails), one that isolates the ordering, one that
+pins the catalog-ordering constraint the reorder introduces, one at the CLI, and
+the anti-overfit pin: **an edge to a story that really is gone must still be
+retracted.** Without that last one the cheapest way to pass the others is to
+stop retracting anything, which trades a data-loss defect for a silent-failure
+one — and this run exists to catch exactly that trade.
+
+**`surviving_repairs` deleted, in its own commit, on evidence.** SH-271 answered
+this defect one layer from where it happened, filtering the rendered advice
+against the post-repair report. With the origin fixed, nothing lands between the
+blocked list being built and the closing report except the pass's own appends,
+each made for a repair that was *not* blocked — so the filter could only return
+its input, and a filter whose only reachable effect is to *delete* advice is the
+SH-225 defect it existed to prevent. It was not deleted on that argument: an
+`assert!(blocked == surviving_repairs(…))` was installed at the call site and
+the **whole suite** run against it, and nothing tripped. The commit body claims
+what that establishes — no test in the suite provokes a difference — and not
+that the branch is formally unreachable. `FindingKey`, `finding_key` and the
+`cause` field on two structs died with it.
+
+**Council: convened, and it earned its keep.** The story said the fix shape was
+"not settled" and named two candidates, which is the run's own trigger. Three
+seats (data-engineer, software-architect, qa-engineer) independently proposed
+the *same* shape in round 1 — both mechanisms, not either — so the vote was never
+about the fix. It split 0-1-2 over **disposal discipline**: two seats voted for
+the proposal that gated the `surviving_repairs` deletion on an empirical no-op
+proof rather than an argument from control flow. Deliberation moved all three;
+the runoff was 2-1 on first preferences, and *all three* ranked last the only
+proposal that put the residual in scope. Two mechanical corrections from the
+dissenting seat were adopted because nobody contested them, one of which was
+load-bearing: `debug_assert_eq!` would not have compiled, since neither
+`BlockedRepair` nor `FindingKey` derives `Debug`. Audit trail in
+`.council/sh-285-doctor-fix-retracts-valid-relation/`.
+
+**Filed: SH-286** (`low`), the residual the panel deferred 3-0. The *report*
+still resolves endpoint existence through the read model while `--fix` resolves
+it from the events, so an unfoldable endpoint yields a `DanglingRelation` the
+run declines to act on. Deferred because the narrow fix would itself be masking:
+that story's missing row also poisons `MultipleParents`, the far end of every
+edge it claims, and its own label and type checks — the story to write is the
+general one. It is not invisible — the fold-failure test asserts today's
+behaviour **as-is**, with SH-286's id in the assertion message, so fixing it
+turns that test red at the line documenting why.
+
+**Two fixtures that did not work, and why they are worth writing down.** A torn
+event *payload* does not make a story unfoldable: the fold skips what it cannot
+decode and succeeds, so the row comes straight back and the fixture proves
+nothing. The shape that does is a story sitting in a state its catalog no longer
+defines. And the anti-overfit test cannot use `forget_story`, which deletes the
+relation rows with foreign keys **on**; `forget_read_model_row` works with them
+**off**, so the edges survive — which is the only reason the reorder does not
+trip the `story_relations` foreign key on a re-fold. That distinction is already
+documented on the helper, and reading it was cheaper than discovering it.
+
+**Gate:** `make test` green — three full supervised runs across the change (one
+per commit plus the removal-gate run), then the pre-push run. 155 `test result:
+ok` lines, plugin harness 32/32, e2e 158/158.
+
+**Supervision finding: `pgrep -f 'make test'` is not a liveness probe.** The
+third run appeared to wedge — the log stopped growing at "158 passed" and the
+pattern still matched a live process, for 200s past the 120s stall bound. It had
+not wedged. `pgrep -f` was matching **another session's** `make test` on the same
+machine (started 19:14:50, PPID 1, with its own watchdog polling
+`/private/tmp/sh198-make-test-2.log`). `lsof` on my own log showed no writer:
+my run had finished cleanly. Nothing was killed, because the diagnosis came
+before the kill. **Use the PID from `$!`, not a pattern**; on a shared machine a
+command-line pattern is a *class*, not an instance — the same lesson SH-263
+learned about a fake's shared state directory, one layer up.
+
+**A flake, recorded rather than filed.** The first pre-push gate failed on
+`tests/web_test.rs::sse_collapses_a_burst_of_out_of_band_writes_into_fewer_
+events` ("expected at least one repo-changed event, got none"). It passed alone,
+passed with its whole 180-test file, and had passed in all three full runs
+before it. The confounder is named above: a second full suite was running
+concurrently on this machine, and the test times SSE coalescing. One observation
+with a live confounder is not a defect report; it is a data point for the second
+one to join. Not bypassed — the push was retried and the hook's own gate ran
+green.
+
+**Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push,
+no version bump.
