@@ -31,14 +31,52 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::daemon::lifecycle::{self, CurrentRequest, DaemonInfo};
+use crate::domain::provenance::Provenance;
 use crate::env::Environment;
+use crate::service::Ctx;
+use crate::service::query::QueryService;
+use crate::service::story::{NewStoryInput, StoryService};
+use crate::store::{ProjectId, ReadOps, Store};
 
 /// How many preserved crash logs are kept, oldest pruned first — the same
 /// figure and the same reasoning [`crate::daemon::backup::RETAIN`] uses: a
 /// week of daily use, and a bound on a directory nothing else prunes.
 pub const RETAIN: usize = 7;
+
+/// Every crash-filed story carries this label — what `story doctor crashes`
+/// and the github-sync push filter both key on.
+pub const CRASH_LABEL: &str = "crash";
+
+/// Prefix for a crash's fingerprint label (`crash:<8 hex chars>`) — the one
+/// slot [`crate::service::query::QueryService::search`] can find it in, since
+/// search covers titles, comments and labels but not descriptions.
+const FINGERPRINT_LABEL_PREFIX: &str = "crash:";
+
+/// Marks a story this daemon wrote, not a human.
+const AUTO_FILED_LABEL: &str = "auto-filed";
+
+/// The uuid this repository's own committed `.storyhook.toml` declares —
+/// storyhook's own project, and the only place SH-287 files a crash it
+/// caused in itself. Specific to this checkout by design (a decision
+/// SH-287's plan makes explicit): a crash story belongs beside every other
+/// storyhook defect, not in whatever project happened to be open when the
+/// daemon died.
+const SELF_PROJECT_UUID: &str = "291ea25f-3363-4b5d-9051-66636c1066f9";
+
+/// How many new stories one daemon start will file, at most. A crashloop
+/// ledgers the rest as [`FiledOutcome::Withheld`] rather than minting one
+/// story per iteration — this bounds only *new* stories; folding a repeat
+/// into an existing one via [`FiledOutcome::Deduped`] is cheap and uncapped.
+const MAX_FILED_PER_START: usize = 3;
+
+/// The largest log excerpt a filed story's description carries. Filing runs
+/// in-process, so [`crate::api::http::MAX_BODY_BYTES`] (the wire cap on
+/// `/api/v1/invoke`) does not apply here — this bound is the store's own, to
+/// keep an unbounded blob out of a description column nothing else limits.
+const MAX_LOG_EXCERPT_BYTES: usize = 32 * 1024;
 
 /// Where in the source a caught panic originated, when the panic carried one
 /// — every panic from `panic!`, `assert!`, or an `unwrap`/`expect` does.
@@ -111,6 +149,33 @@ pub enum CrashClassification {
     UncleanExit,
 }
 
+impl CrashClassification {
+    /// Whether this classification is proof of a defect worth filing a bug
+    /// for. An `UncleanExit` alone never is — SH-287's own decision, since
+    /// most are a reboot or a hand `kill`, not a defect.
+    #[must_use]
+    pub fn is_defect_evidence(&self) -> bool {
+        !matches!(self, Self::UncleanExit)
+    }
+}
+
+/// What became of a crash's bug report.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum FiledOutcome {
+    /// Not yet decided — [`harvest`]'s own default, resolved the next time
+    /// [`file_pending`] runs.
+    Pending,
+    /// A new story was created; the id is its own.
+    Filed(String),
+    /// The same fingerprint already produced a story; a "seen again" comment
+    /// was folded into it instead of minting a duplicate.
+    Deduped(String),
+    /// Deliberately not filed, and why — an `UncleanExit`, no project
+    /// registered, the per-start cap, or a store error worth retrying next
+    /// start. Never silent: `story doctor crashes` reads this.
+    Withheld(String),
+}
+
 /// One crash this store's daemon has noticed, ledgered for review.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CrashRecord {
@@ -138,6 +203,9 @@ pub struct CrashRecord {
     /// [`crate::env::Environment::daemon_log_rotated`], which the *next*
     /// spawn is free to overwrite.
     pub log_path: Option<PathBuf>,
+    /// What became of this crash's bug report — [`FiledOutcome::Pending`]
+    /// until [`file_pending`] decides otherwise.
+    pub filed: FiledOutcome,
 }
 
 /// A crash's ledger id: sortable, filesystem-safe, and stable enough to
@@ -325,11 +393,21 @@ fn panic_record(env: &Environment, info: &std::panic::PanicHookInfo<'_>) -> Pani
 /// startup recovery ([`crate::daemon::lifecycle::InFlight::harvest_stale`])
 /// has run — panicking any earlier would leave nothing for the *next* daemon
 /// to find a residue portfile for, which is the scenario this exists to test.
+///
+/// The variable's *value* is folded into the panic message when it is
+/// anything other than `1` — `STORYHOOK_TEST_PANIC=distinct-marker` — so a
+/// test needing several non-deduplicating crashes (the per-start filing cap,
+/// say) can tell them apart without a second lever.
 #[cfg(feature = "fault-injection")]
 pub fn maybe_trigger_test_panic() {
-    if std::env::var_os("STORYHOOK_TEST_PANIC").is_some() {
+    let Some(marker) = std::env::var_os("STORYHOOK_TEST_PANIC") else {
+        return;
+    };
+    let marker = marker.to_string_lossy();
+    if marker.as_ref() == "1" {
         panic!("STORYHOOK_TEST_PANIC: a deliberate panic for SH-287's crash-detection tests");
     }
+    panic!("STORYHOOK_TEST_PANIC({marker}): a deliberate panic for SH-287's crash-detection tests");
 }
 
 /// Looks at whatever portfile is on disk right now and decides whether the
@@ -371,6 +449,7 @@ pub fn harvest(env: &Environment) -> Option<CrashRecord> {
         panics,
         inflight,
         log_path,
+        filed: FiledOutcome::Pending,
     };
     record_crash(env, record.clone());
     Some(record)
@@ -522,6 +601,398 @@ fn prune_logs(dir: &std::path::Path) {
     );
 }
 
+/// Whether this build may write a crash story to a real tracker.
+///
+/// [`crate::env::is_test_build`] already answers "may this build write to a
+/// real tracker?" for the store; the same answer applies here for the same
+/// reason. `STORYHOOK_CRASH_FILE=1` overrides it, the same shape
+/// `STORYHOOK_FAULT` uses, so the integration suite can prove filing works
+/// end to end against its own isolated store without a real user ever being
+/// able to trigger it.
+fn should_file() -> bool {
+    !crate::env::is_test_build() || std::env::var_os("STORYHOOK_CRASH_FILE").is_some()
+}
+
+/// Files a bug story for every ledgered crash that is defect evidence and
+/// still [`FiledOutcome::Pending`], folds a "seen again" comment into
+/// whichever story a repeat fingerprint already produced, and records every
+/// refusal with its reason.
+///
+/// Called once per daemon start, on a background thread after `ready()` —
+/// see the call site in [`crate::daemon::serve::serve`] for why a store write
+/// must never delay startup. Best-effort throughout: a store error part-way
+/// through leaves the remaining records `Pending` for the *next* daemon start
+/// to retry, rather than losing them.
+pub fn file_pending<S: Store>(store: &S, env: &Environment) {
+    if !should_file() {
+        return;
+    }
+    let mut ledger = read_crashes(env);
+    if !ledger
+        .iter()
+        .any(|record| record.filed == FiledOutcome::Pending)
+    {
+        return;
+    }
+
+    let project = match store.read(|tx| tx.project_by_uuid(SELF_PROJECT_UUID)) {
+        Ok(Some(project)) => project.id,
+        Ok(None) => {
+            withhold_all_pending(
+                &mut ledger,
+                &format!(
+                    "storyhook's own project (uuid {SELF_PROJECT_UUID}) is not registered in \
+                     this store"
+                ),
+            );
+            write_crashes(env, &ledger);
+            return;
+        }
+        // Best-effort: a store error here says nothing about whether the
+        // project exists, so nothing is ledgered — every `Pending` record
+        // stays `Pending` for the next daemon start to try again.
+        Err(_) => return,
+    };
+    let has_bug_type = store
+        .read(|tx| tx.types(project))
+        .map(|types| types.iter().any(|t| t.slug == "bug"))
+        .unwrap_or(false);
+
+    let mut filed_this_start = 0usize;
+    for record in &mut ledger {
+        if record.filed != FiledOutcome::Pending {
+            continue;
+        }
+        record.filed = file_one(
+            store,
+            env,
+            project,
+            has_bug_type,
+            record,
+            &mut filed_this_start,
+        );
+    }
+    write_crashes(env, &ledger);
+}
+
+/// Sets every still-[`FiledOutcome::Pending`] record's outcome to
+/// [`FiledOutcome::Withheld`] with `reason`.
+fn withhold_all_pending(ledger: &mut [CrashRecord], reason: &str) {
+    for record in ledger.iter_mut() {
+        if record.filed == FiledOutcome::Pending {
+            record.filed = FiledOutcome::Withheld(reason.to_string());
+        }
+    }
+}
+
+/// Decides one record's fate: withheld, deduped into an existing story, or
+/// filed as a new one.
+fn file_one<S: Store>(
+    store: &S,
+    env: &Environment,
+    project: ProjectId,
+    has_bug_type: bool,
+    record: &CrashRecord,
+    filed_this_start: &mut usize,
+) -> FiledOutcome {
+    if !record.classification.is_defect_evidence() {
+        return FiledOutcome::Withheld(
+            "an unclean exit alone is not evidence of a defect".to_string(),
+        );
+    }
+
+    let fingerprint_label = format!("{FINGERPRINT_LABEL_PREFIX}{}", fingerprint(record));
+    let now = env.now();
+    // `store.read`'s closure must return `Result<_, StoreError>`, but
+    // `QueryService::search` returns `Result<_, AppError>` — nested rather
+    // than converted, so both layers of failure are handled explicitly below
+    // instead of losing one to a lossy `From` conversion.
+    let existing = match store.read(|tx| {
+        let query = QueryService::new(tx, project, &now);
+        Ok(query.search(&fingerprint_label))
+    }) {
+        Ok(Ok(results)) => results
+            .into_iter()
+            .find(|view| view.story.labels.iter().any(|l| l == &fingerprint_label)),
+        Ok(Err(app_error)) => {
+            return FiledOutcome::Withheld(format!(
+                "could not check for a duplicate story: {app_error}; will retry next start"
+            ));
+        }
+        Err(store_error) => {
+            return FiledOutcome::Withheld(format!(
+                "could not check for a duplicate story: {store_error}; will retry next start"
+            ));
+        }
+    };
+
+    if let Some(existing) = existing {
+        let ctx = build_ctx(store, project, env);
+        let comment = format!(
+            "This crash was seen again: `{}`, detected {}.",
+            record.id, record.detected_at
+        );
+        return match StoryService::new(&ctx).comment(&existing.story.id, &comment) {
+            Ok(_) => FiledOutcome::Deduped(existing.story.id),
+            Err(e) => FiledOutcome::Withheld(format!(
+                "found the existing story {} but could not comment on it: {e}",
+                existing.story.id
+            )),
+        };
+    }
+
+    if *filed_this_start >= MAX_FILED_PER_START {
+        return FiledOutcome::Withheld(format!(
+            "more than {MAX_FILED_PER_START} new crashes this daemon start; ledgered rather \
+             than filed to avoid flooding the tracker"
+        ));
+    }
+
+    let ctx = build_ctx(store, project, env);
+    let input = NewStoryInput {
+        title: title_for(record),
+        state: None,
+        story_type: has_bug_type.then(|| "bug".to_string()),
+        description: Some(describe_crash(record)),
+        priority: Some("high".to_string()),
+        labels: Some(vec![
+            CRASH_LABEL.to_string(),
+            fingerprint_label,
+            AUTO_FILED_LABEL.to_string(),
+        ]),
+        assignee: None,
+        draft: false,
+    };
+    match StoryService::new(&ctx).create(&input) {
+        Ok(snapshot) => {
+            *filed_this_start += 1;
+            FiledOutcome::Filed(snapshot.id)
+        }
+        Err(e) => FiledOutcome::Withheld(format!("creating the story failed: {e}")),
+    }
+}
+
+/// The hook-suppressed, daemon-internal context shape
+/// [`crate::daemon::github_poll::poll_github`] and
+/// [`crate::service::grouping`]'s own `quiet` already use: no user's hooks
+/// fire for a write nobody asked for, and the write carries a provenance a
+/// human reading `story log` can attribute to this detector rather than to
+/// nothing at all (SH-246).
+fn build_ctx<'a, S: Store>(store: &'a S, project: ProjectId, env: &Environment) -> Ctx<'a, S> {
+    Ctx::new(store, project, env.home(), env.clone())
+        .no_hooks(true)
+        .with_provenance(Provenance::command("crash-detector"))
+}
+
+/// A crash's fingerprint: 8 hex characters of a SHA-256 digest over the
+/// panicking message and source location, or the fatal signal, plus the
+/// daemon's version — carried as a label because
+/// [`QueryService::search`] does not search descriptions.
+///
+/// Exact-match rather than normalized: a panic message that embeds a varying
+/// value (an index, a byte count) will fingerprint distinctly per value
+/// rather than merging with its siblings. That is deliberate — the risk on
+/// the other side is two *different* bugs at the same call site collapsing
+/// into one dedup, silently hiding one of them from review.
+fn fingerprint(record: &CrashRecord) -> String {
+    let mut input = String::new();
+    match &record.classification {
+        CrashClassification::Panicked => {
+            if let Some(panic) = record.panics.first() {
+                input.push_str(&panic.message);
+                if let Some(location) = &panic.location {
+                    input.push_str(&location.file);
+                    input.push_str(&location.line.to_string());
+                }
+            }
+        }
+        CrashClassification::FatalSignal(signal) => {
+            input.push_str("fatal-signal-");
+            input.push_str(&signal.to_string());
+        }
+        CrashClassification::UncleanExit => {}
+    }
+    if let Some(daemon) = &record.daemon {
+        input.push_str(&daemon.version);
+    }
+    let hex = format!("{:x}", Sha256::digest(input.as_bytes()));
+    hex[..8].to_string()
+}
+
+/// The title a filed story carries.
+fn title_for(record: &CrashRecord) -> String {
+    match &record.classification {
+        CrashClassification::Panicked => {
+            let message = record
+                .panics
+                .first()
+                .map(|panic| panic.message.as_str())
+                .unwrap_or("unknown panic");
+            format!("Daemon panic: {}", truncate_title(message))
+        }
+        CrashClassification::FatalSignal(signal) => format!("Daemon crash: fatal signal {signal}"),
+        CrashClassification::UncleanExit => "Daemon crash: unclean exit".to_string(),
+    }
+}
+
+/// The first line of `message`, clipped to a length a story list stays
+/// scannable at.
+fn truncate_title(message: &str) -> String {
+    const MAX_CHARS: usize = 100;
+    let first_line = message.lines().next().unwrap_or(message);
+    if first_line.chars().count() <= MAX_CHARS {
+        return first_line.to_string();
+    }
+    let clipped: String = first_line.chars().take(MAX_CHARS).collect();
+    format!("{clipped}…")
+}
+
+/// The body a filed story's description carries: what the evidence says,
+/// what else was going on, and — bounded and redacted — the crash's own
+/// preserved log.
+fn describe_crash(record: &CrashRecord) -> String {
+    let mut body = String::new();
+    match &record.classification {
+        CrashClassification::Panicked => {
+            body.push_str("The daemon panicked and did not exit cleanly.\n\n");
+            if let Some(panic) = record.panics.first() {
+                body.push_str(&format!("**Message:** {}\n", panic.message));
+                if let Some(location) = &panic.location {
+                    body.push_str(&format!(
+                        "**Location:** {}:{}:{}\n",
+                        location.file, location.line, location.column
+                    ));
+                }
+                body.push_str(&format!("**Thread:** {}\n", panic.thread));
+            }
+        }
+        CrashClassification::FatalSignal(signal) => {
+            body.push_str(&format!(
+                "The daemon died of signal {signal}, which macOS reported in its own crash \
+                 report.\n\n"
+            ));
+        }
+        CrashClassification::UncleanExit => {
+            body.push_str("The daemon exited without cleaning up after itself.\n\n");
+        }
+    }
+    if let Some(daemon) = &record.daemon {
+        body.push_str(&format!(
+            "**Version:** {}\n**Pid:** {}\n**Started:** {}\n",
+            daemon.version, daemon.pid, daemon.started_at
+        ));
+    }
+    body.push_str(&format!("**Detected:** {}\n", record.detected_at));
+    if !record.inflight.is_empty() {
+        body.push_str(&format!(
+            "\n**In flight at the time ({}):**\n",
+            record.inflight.len()
+        ));
+        for request in &record.inflight {
+            let project = request
+                .project
+                .as_deref()
+                .map(|p| format!(" on `{p}`"))
+                .unwrap_or_default();
+            body.push_str(&format!("- `{}`{project}\n", request.command));
+        }
+    }
+    if let Some(log_path) = &record.log_path {
+        body.push_str(&format!(
+            "\n**Preserved log:** `{}`\n\n",
+            log_path.display()
+        ));
+        if let Ok(raw) = std::fs::read_to_string(log_path) {
+            body.push_str("```\n");
+            body.push_str(&bounded_excerpt(&redact(&raw), MAX_LOG_EXCERPT_BYTES));
+            body.push_str("\n```\n");
+        }
+    }
+    body
+}
+
+/// The tail of `text`, bounded to `max_bytes` — a panic's message and
+/// backtrace land at the *end* of a daemon's stderr, so the tail is the part
+/// worth keeping when the whole thing does not fit.
+fn bounded_excerpt(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    let dropped = text.len() - max_bytes;
+    let mut start = text.len() - max_bytes;
+    while start < text.len() && !text.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("[{dropped} bytes dropped]\n...\n{}", &text[start..])
+}
+
+/// GitHub token prefixes SH-153 already had to reckon with, longest first so
+/// `github_pat_` is never shadowed by a shorter prefix of it.
+const GITHUB_TOKEN_PREFIXES: &[&str] = &["github_pat_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_"];
+
+/// Header names whose *value* must never reach a story — this daemon's own
+/// bearer token travels in one of these on every `/api/v1/*` request.
+const REDACTED_HEADERS: &[&str] = &["Authorization:", "X-Storyhook-Token:"];
+
+/// Strips the shapes this codebase already knows leak into a daemon's stderr
+/// — a GitHub token (SH-153) and this daemon's own bearer-token transport
+/// headers — before any log text reaches the store.
+///
+/// Pattern-based rather than value-based, and deliberately so:
+/// [`CrashedDaemon`]'s own doc explains why the bearer token this daemon was
+/// serving with is never carried past [`harvest`], so there is no specific
+/// value here to compare against — only the shapes a leaked one takes.
+fn redact(text: &str) -> String {
+    let token_free = redact_github_tokens(text);
+    token_free
+        .lines()
+        .map(redact_header_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn redact_github_tokens(text: &str) -> String {
+    let mut result = text.to_string();
+    for prefix in GITHUB_TOKEN_PREFIXES {
+        result = redact_prefixed_run(&result, prefix, "[REDACTED-GITHUB-TOKEN]");
+    }
+    result
+}
+
+/// Replaces every run of `prefix` followed by alphanumerics/underscores with
+/// `replacement`, scanning left to right.
+fn redact_prefixed_run(text: &str, prefix: &str, replacement: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(prefix) {
+        out.push_str(&rest[..start]);
+        let after_prefix = &rest[start + prefix.len()..];
+        let token_end = after_prefix
+            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .unwrap_or(after_prefix.len());
+        out.push_str(replacement);
+        rest = &after_prefix[token_end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn redact_header_line(line: &str) -> String {
+    let lower = line.to_ascii_lowercase();
+    for header in REDACTED_HEADERS {
+        let needle = header.to_ascii_lowercase();
+        if let Some(pos) = lower.find(&needle) {
+            let value_starts = pos + header.len();
+            // A trailing space is added unconditionally, not copied from the
+            // original: the value after it is always replaced wholesale, so
+            // whether the source had zero, one, or several spaces there is
+            // irrelevant to what a reader of the redacted line sees.
+            return format!("{} [REDACTED]", &line[..value_starts]);
+        }
+    }
+    line.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -642,6 +1113,7 @@ mod tests {
             panics: Vec::new(),
             inflight: Vec::new(),
             log_path: None,
+            filed: FiledOutcome::Pending,
         }
     }
 
@@ -798,6 +1270,189 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&log_path).expect("reading the preserved log"),
             "the dead daemon's own stderr"
+        );
+    }
+
+    fn panicked_record(message: &str, version: &str) -> CrashRecord {
+        CrashRecord {
+            id: "id".to_string(),
+            detected_at: "2026-01-01T00:00:00Z".to_string(),
+            classification: CrashClassification::Panicked,
+            daemon: Some(CrashedDaemon {
+                pid: 1,
+                version: version.to_string(),
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+            }),
+            panics: vec![PanicRecord {
+                at: "2026-01-01T00:00:00Z".to_string(),
+                pid: 1,
+                version: version.to_string(),
+                thread: "main".to_string(),
+                message: message.to_string(),
+                location: Some(PanicLocation {
+                    file: "src/daemon/serve.rs".to_string(),
+                    line: 42,
+                    column: 5,
+                }),
+            }],
+            inflight: Vec::new(),
+            log_path: None,
+            filed: FiledOutcome::Pending,
+        }
+    }
+
+    #[test]
+    fn is_defect_evidence_is_true_for_panicked_and_fatal_signal_only() {
+        assert!(CrashClassification::Panicked.is_defect_evidence());
+        assert!(CrashClassification::FatalSignal(libc::SIGSEGV).is_defect_evidence());
+        assert!(!CrashClassification::UncleanExit.is_defect_evidence());
+    }
+
+    #[test]
+    fn fingerprint_is_deterministic_for_the_same_panic() {
+        let a = panicked_record("index out of bounds", "2.1.1");
+        let b = panicked_record("index out of bounds", "2.1.1");
+        assert_eq!(fingerprint(&a), fingerprint(&b));
+    }
+
+    #[test]
+    fn fingerprint_differs_for_a_different_message() {
+        let a = panicked_record("index out of bounds", "2.1.1");
+        let b = panicked_record("called `unwrap` on a `None` value", "2.1.1");
+        assert_ne!(fingerprint(&a), fingerprint(&b));
+    }
+
+    #[test]
+    fn fingerprint_differs_for_a_different_version() {
+        let a = panicked_record("index out of bounds", "2.1.1");
+        let b = panicked_record("index out of bounds", "2.1.2");
+        assert_ne!(fingerprint(&a), fingerprint(&b));
+    }
+
+    #[test]
+    fn fingerprint_is_eight_lowercase_hex_characters() {
+        let fp = fingerprint(&panicked_record("oops", "2.1.1"));
+        assert_eq!(fp.len(), 8);
+        assert!(
+            fp.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        );
+    }
+
+    #[test]
+    fn title_for_a_panic_names_the_message() {
+        let record = panicked_record("index out of bounds: the len is 3", "2.1.1");
+        assert_eq!(
+            title_for(&record),
+            "Daemon panic: index out of bounds: the len is 3"
+        );
+    }
+
+    #[test]
+    fn title_for_a_fatal_signal_names_it() {
+        let mut record = panicked_record("unused", "2.1.1");
+        record.classification = CrashClassification::FatalSignal(libc::SIGSEGV);
+        record.panics.clear();
+        assert_eq!(
+            title_for(&record),
+            format!("Daemon crash: fatal signal {}", libc::SIGSEGV)
+        );
+    }
+
+    #[test]
+    fn truncate_title_leaves_a_short_message_alone() {
+        assert_eq!(truncate_title("short"), "short");
+    }
+
+    #[test]
+    fn truncate_title_clips_a_long_first_line_and_keeps_only_the_first_line() {
+        let long = "x".repeat(150);
+        let message = format!("{long}\nsecond line never appears");
+        let title = truncate_title(&message);
+        assert_eq!(title.chars().count(), 101, "100 chars plus the ellipsis");
+        assert!(title.ends_with('…'));
+        assert!(!title.contains("second line"));
+    }
+
+    #[test]
+    fn redact_github_tokens_replaces_every_known_prefix() {
+        for prefix in GITHUB_TOKEN_PREFIXES {
+            let line = format!("using token {prefix}abc123XYZ_789 for the request");
+            let redacted = redact(&line);
+            assert!(
+                !redacted.contains(&format!("{prefix}abc123XYZ_789")),
+                "{prefix}: token survived redaction: {redacted:?}"
+            );
+            assert!(redacted.contains("[REDACTED-GITHUB-TOKEN]"));
+        }
+    }
+
+    #[test]
+    fn redact_stops_a_token_at_the_first_non_token_character() {
+        let redacted = redact("token=ghp_abc123, and more text after a comma");
+        assert!(redacted.contains("[REDACTED-GITHUB-TOKEN], and more text after a comma"));
+    }
+
+    #[test]
+    fn redact_strips_authorization_and_storyhook_token_header_values() {
+        let redacted = redact("Authorization: Bearer s3cr3t-value-here\nnext line unaffected");
+        assert!(!redacted.contains("s3cr3t-value-here"));
+        assert!(redacted.contains("Authorization: [REDACTED]"));
+        assert!(redacted.contains("next line unaffected"));
+
+        let redacted = redact("X-Storyhook-Token: abcdef0123456789");
+        assert!(!redacted.contains("abcdef0123456789"));
+        assert!(redacted.contains("X-Storyhook-Token: [REDACTED]"));
+    }
+
+    #[test]
+    fn redact_is_case_insensitive_on_header_names() {
+        let redacted = redact("authorization: Bearer whatever-this-is");
+        assert!(!redacted.contains("whatever-this-is"));
+    }
+
+    #[test]
+    fn redact_leaves_ordinary_text_alone() {
+        let text = "the daemon started normally on port 4321";
+        assert_eq!(redact(text), text);
+    }
+
+    #[test]
+    fn bounded_excerpt_leaves_short_text_alone() {
+        assert_eq!(bounded_excerpt("short", 100), "short");
+    }
+
+    #[test]
+    fn bounded_excerpt_keeps_the_tail_and_says_what_it_dropped() {
+        let text = "0123456789";
+        let excerpt = bounded_excerpt(text, 4);
+        assert!(excerpt.contains("6 bytes dropped"));
+        assert!(excerpt.ends_with("6789"));
+        assert!(!excerpt.contains('0'));
+    }
+
+    /// One test, not two: `STORYHOOK_CRASH_FILE` is process-wide state, and
+    /// `cargo test` runs test functions concurrently by default — two tests
+    /// each mutating and reading it would race each other. Nothing else in
+    /// this crate reads the variable, so one sequential test is sufficient
+    /// and safe rather than needing a shared lock.
+    #[test]
+    fn should_file_only_overrides_a_test_build_when_explicitly_told_to() {
+        // SAFETY: this is the only test in the crate that touches this
+        // variable, and the two mutations below are sequential within it.
+        unsafe { std::env::remove_var("STORYHOOK_CRASH_FILE") };
+        assert!(
+            !should_file(),
+            "a test build must never file to a real tracker by default"
+        );
+
+        unsafe { std::env::set_var("STORYHOOK_CRASH_FILE", "1") };
+        assert!(should_file());
+
+        unsafe { std::env::remove_var("STORYHOOK_CRASH_FILE") };
+        assert!(
+            !should_file(),
+            "removing the override must restore the default"
         );
     }
 }
