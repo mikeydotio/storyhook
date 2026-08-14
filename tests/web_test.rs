@@ -5386,12 +5386,16 @@ fn sse_collapses_a_burst_of_out_of_band_writes_into_fewer_events() {
         fixture.seed(&["comment", "SH-1", "rapid update"]);
     }
 
-    // Let the poll tick (250ms) and one more publish cycle settle, then count
-    // how many `repo-changed` events actually arrived. Adaptive rather than a
-    // fixed sleep, since this whole suite can run with other test binaries
-    // hammering the CPU in parallel under `cargo test`'s default concurrency.
-    let received =
-        read_sse_until_quiet(&mut sse, Duration::from_millis(500), Duration::from_secs(8));
+    // Wait for the poll tick (250ms) to publish at all — bounded by the 8s
+    // cap, because that tick can be descheduled for far longer than a debounce
+    // window under the CPU load this suite generates — and only then let 500ms
+    // of quiet decide that the burst is over and the count is final.
+    let received = read_sse_until_quiet_after(
+        &mut sse,
+        "event: repo-changed",
+        Duration::from_millis(500),
+        Duration::from_secs(8),
+    );
     let occurrences = received.matches("event: repo-changed").count();
     assert!(
         occurrences >= 1,
@@ -5489,8 +5493,12 @@ fn sse_delivers_a_second_change_to_the_same_repo_immediately_after_the_first() {
         assert_eq!(resp.status(), 201, "creating {title:?} must return 201");
     }
 
-    let received =
-        read_sse_until_quiet(&mut sse, Duration::from_millis(500), Duration::from_secs(8));
+    let received = read_sse_until_quiet_after(
+        &mut sse,
+        "event: repo-changed",
+        Duration::from_millis(500),
+        Duration::from_secs(8),
+    );
     let occurrences = received.matches("event: repo-changed").count();
     assert_eq!(
         occurrences, 2,
@@ -6043,46 +6051,200 @@ fn read_sse_until(
     String::from_utf8_lossy(&acc).into_owned()
 }
 
-/// Reads from an SSE connection until `quiet_for` elapses with no new bytes
-/// arriving, or `overall_timeout` elapses — whichever comes first. Used
-/// where the assertion is about *how many* events arrived (e.g. debounce
-/// coalescing) rather than whether one particular event did, so there's no
-/// single needle to watch for. Adaptive rather than a fixed sleep: under
-/// system load, scheduling the watcher/heartbeat/writer threads involved
-/// can be slow, so this waits up to `overall_timeout` for the *first* byte,
-/// then only `quiet_for` past whatever activity actually happens — fast in
-/// the common case, tolerant in a contended one.
-fn read_sse_until_quiet(
+/// The outcome of one bounded `read` on an SSE socket. The distinction that
+/// matters is [`Idle`](SseRead::Idle) versus [`Closed`](SseRead::Closed): the
+/// short per-read timeout [`connect_sse`] sets makes "nothing has arrived yet"
+/// an ordinary, frequent result, and a reader that mistook it for a hang-up
+/// would stop at the first pause in the stream.
+enum SseRead {
+    /// Bytes arrived and were appended to the accumulator.
+    Bytes,
+    /// The per-read timeout expired with nothing to show for it.
+    Idle,
+    /// The server hung up.
+    Closed,
+}
+
+/// Performs one bounded read, appending whatever arrived to `acc`.
+fn read_sse_chunk(
     reader: &mut std::io::BufReader<std::net::TcpStream>,
+    acc: &mut Vec<u8>,
+) -> SseRead {
+    use std::io::Read;
+
+    let mut buf = [0u8; 4096];
+    match reader.read(&mut buf) {
+        Ok(0) => SseRead::Closed,
+        Ok(n) => {
+            acc.extend_from_slice(&buf[..n]);
+            SseRead::Bytes
+        }
+        Err(e)
+            if e.kind() == std::io::ErrorKind::WouldBlock
+                || e.kind() == std::io::ErrorKind::TimedOut =>
+        {
+            SseRead::Idle
+        }
+        Err(e) => panic!("reading the SSE stream: {e}"),
+    }
+}
+
+/// Reads from an SSE connection until `first` has appeared *and* `quiet_for`
+/// has then elapsed with no new bytes arriving. Used where the assertion is
+/// about *how many* events arrived (e.g. debounce coalescing) rather than
+/// whether one particular event did, so a needle alone will not do.
+///
+/// The two bounds answer two different questions, which is why they are two
+/// phases rather than one loop (SH-288):
+///
+/// * **Has the stream started?** Bounded by `overall_timeout`, which is
+///   generous, because this is where system load shows up — a publisher's tick
+///   can be descheduled for far longer than any debounce window.
+/// * **Has it stopped?** Bounded by `quiet_for` since the last byte, which is
+///   a debounce measure and correct for that job alone.
+///
+/// Conflating them is the defect this signature exists to prevent: a quiet
+/// window cannot tell "no more events are coming" from "events have not
+/// started yet", and the preamble every SSE stream opens with (`retry:`, a
+/// `: connected` comment) is enough to start the clock on a stream that has
+/// published nothing. Under load the window then closed before the first real
+/// event and the caller counted none.
+///
+/// `overall_timeout` backstops the second phase too, so a stream that never
+/// falls quiet cannot hang the suite. Returning early from either phase is not
+/// an error here — the accumulated text is returned either way, and the
+/// caller's own assertion reports it.
+fn read_sse_until_quiet_after(
+    reader: &mut std::io::BufReader<std::net::TcpStream>,
+    first: &str,
     quiet_for: Duration,
     overall_timeout: Duration,
 ) -> String {
-    use std::io::Read;
-
-    let start = Instant::now();
-    let mut last_activity: Option<Instant> = None;
     let mut acc = Vec::new();
-    let mut buf = [0u8; 4096];
-    loop {
-        if start.elapsed() > overall_timeout {
-            break;
-        }
-        if last_activity.is_some_and(|t| t.elapsed() > quiet_for) {
-            break;
-        }
-        match reader.read(&mut buf) {
-            Ok(0) => break, // connection closed
-            Ok(n) => {
-                acc.extend_from_slice(&buf[..n]);
-                last_activity = Some(Instant::now());
-            }
-            Err(e)
-                if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(e) => panic!("reading the SSE stream: {e}"),
+    let mut open = true;
+
+    let start_deadline = Instant::now() + overall_timeout;
+    while open && Instant::now() < start_deadline && !String::from_utf8_lossy(&acc).contains(first)
+    {
+        open = !matches!(read_sse_chunk(reader, &mut acc), SseRead::Closed);
+    }
+
+    let quiet_backstop = Instant::now() + overall_timeout;
+    let mut last_activity = Instant::now();
+    while open && Instant::now() < quiet_backstop && last_activity.elapsed() <= quiet_for {
+        match read_sse_chunk(reader, &mut acc) {
+            SseRead::Bytes => last_activity = Instant::now(),
+            SseRead::Idle => {}
+            SseRead::Closed => open = false,
         }
     }
+
     String::from_utf8_lossy(&acc).into_owned()
+}
+
+/// Serves exactly one SSE connection on a fresh loopback port: the stream
+/// preamble immediately, then `events` `repo-changed` frames back to back —
+/// but only after `first_event_after`. Returns the port it bound.
+///
+/// A fake rather than a daemon, because the subject here is the *reader*, and
+/// the shape it must survive is one the real publisher only produces under
+/// heavy load: a preamble that arrives at once and a first event that does
+/// not. Driving that from a real daemon would mean reproducing the load, which
+/// is exactly what made SH-288 read as a product-neutral flake instead of the
+/// test-side timing assumption it was.
+///
+/// The connection is held open well past the last frame on purpose: a server
+/// that hangs up ends the read with `Ok(0)`, which would let a reader with no
+/// working quiet window pass this test for the wrong reason.
+fn spawn_sse_server_whose_first_event_is_late(first_event_after: Duration, events: usize) -> u16 {
+    use std::io::{BufRead, BufReader, Write};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binding a fake SSE server");
+    let port = listener
+        .local_addr()
+        .expect("the fake SSE server's address")
+        .port();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("accepting the reader's connection");
+        let mut head = BufReader::new(stream.try_clone().expect("cloning the accepted socket"));
+        loop {
+            let mut line = String::new();
+            match head.read_line(&mut line) {
+                Ok(0) => return,
+                Ok(_) if line == "\r\n" => break,
+                Ok(_) => {}
+                Err(e) => panic!("reading the fake server's request head: {e}"),
+            }
+        }
+        // Everything a real `/api/events` response opens with, and nothing an
+        // assertion counts: the bytes that used to satisfy the quiet window.
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n\
+             retry: 3000\n\n: connected\n\n"
+        )
+        .expect("writing the fake SSE preamble");
+        stream.flush().expect("flushing the fake SSE preamble");
+
+        std::thread::sleep(first_event_after);
+        for i in 0..events {
+            write!(
+                stream,
+                "event: repo-changed\ndata: {{\"repo_id\":\"R{i}\"}}\n\n"
+            )
+            .expect("writing a fake repo-changed frame");
+        }
+        stream
+            .flush()
+            .expect("flushing the fake repo-changed frames");
+        std::thread::sleep(Duration::from_secs(5));
+    });
+    port
+}
+
+/// **SH-288.** A quiet window cannot tell "no more events are coming" from
+/// "events have not started yet", so the reader must not start one until the
+/// stream has actually said something worth counting.
+///
+/// Here the preamble arrives immediately and the first real event only after
+/// three times the quiet window — the timing a contended machine produced,
+/// where `poll_change_token`'s 250ms tick slipped past the 500ms window and
+/// `sse_collapses_a_burst_of_out_of_band_writes_into_fewer_events` failed with
+/// `got none: 19\nretry: 3000\n: connected`: a preamble and nothing else.
+///
+/// No `sse_test_lock`: this fixture is a socket, with no daemon, no store and
+/// no filesystem watcher for the lock to serialize against.
+#[test]
+fn read_sse_until_quiet_after_waits_for_the_first_event_not_the_first_byte() {
+    const QUIET: Duration = Duration::from_millis(400);
+    const EVENTS: usize = 3;
+    let port = spawn_sse_server_whose_first_event_is_late(QUIET * 3, EVENTS);
+
+    let mut sse = connect_sse(port, "fake-token");
+    let start = Instant::now();
+    let received = read_sse_until_quiet_after(
+        &mut sse,
+        "event: repo-changed",
+        QUIET,
+        Duration::from_secs(15),
+    );
+    let elapsed = start.elapsed();
+
+    assert_eq!(
+        received.matches("event: repo-changed").count(),
+        EVENTS,
+        "the read must outlast a quiet window that elapses before the first event, and then \
+         count every event that follows it: {received}"
+    );
+    // The other half of the contract: the quiet window still ends the read.
+    // A reader that simply ran to its cap would satisfy the count above while
+    // costing every caller the full overall timeout.
+    assert!(
+        elapsed < Duration::from_secs(7),
+        "the quiet window, not the overall cap, must end the read; it took {elapsed:?}"
+    );
 }
 
 // --- Which checkout the dashboard acts in ---
