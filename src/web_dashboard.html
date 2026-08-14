@@ -6305,17 +6305,33 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // SCREENS: header project selector, home, settings
   // ============================================================
 
+  /** The project whose board is on screen, as `PREFIX · name`, or `null`
+   * when there is none.
+   *
+   * The `state.screen === "repo"` gate lives inside this function rather than
+   * at a call site, and that is the point of naming it at all: `goSettings()`
+   * and `goStatuses()` deliberately keep `state.repoId` alive (a Settings
+   * sub-view configures a project, and need not be the open one), so a caller
+   * keyed on `state.repoId` alone would name a project on a screen that is
+   * not showing it. One contract — "the project the board is currently
+   * showing, or nothing" — beats a gate copied per caller, which is the shape
+   * that lets two labels disagree.
+   *
+   * `null` rather than a fallback string, because the fallback below is a
+   * *selector's* answer: a second reader of this would have its own. */
+  function currentProjectLabel() {
+    if (state.screen !== "repo") return null;
+    var current = state.repos.filter(function(r) { return r.id === state.repoId; })[0];
+    return current ? current.prefix + " · " + current.name : null;
+  }
+
   /** What the header selector's button reads. The current project's
    * `PREFIX · name` on the board screen — unambiguous, this is the project
    * whose stories are on screen — "All projects" on Home/Settings, where
    * there genuinely is no current project and showing one would be a lie,
    * or "No projects yet" when the catalog is empty. */
   function projselLabelText() {
-    if (state.screen === "repo") {
-      var current = state.repos.filter(function(r) { return r.id === state.repoId; })[0];
-      if (current) return current.prefix + " · " + current.name;
-    }
-    return state.repos.length ? "All projects" : "No projects yet";
+    return currentProjectLabel() || (state.repos.length ? "All projects" : "No projects yet");
   }
 
   /** The index `projselFocusItem` last moved to, so arrow keys can move
