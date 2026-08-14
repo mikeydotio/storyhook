@@ -3155,6 +3155,31 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // arrival edge; this covers the `state.data = null` edge and every screen
     // change, including the ones that must dismiss an open popover.
     updateDraftsButton();
+    // SH-290: the drawer belongs to the repo screen, and to no other. This
+    // used to be hand-placed at each function that changes screen, and
+    // `goStatuses()` was the one of four that forgot -- so an open drawer
+    // survived into the statuses editor, still addressing the project the
+    // user had left (`apiBase()` reads `state.repoId`, which the Settings
+    // navigations deliberately keep alive), with its edit fields, relation
+    // adder and Delete button all live. Derived here rather than re-added
+    // there because `renderScreen()` is the one place a screen change cannot
+    // route around: every site that assigns `state.screen` calls it
+    // immediately, since a screen change that skips it does not repaint and
+    // is instantly, visibly broken. A `navigate()` helper would only move the
+    // same drift -- a plain assignment bypasses it with the app still
+    // working.
+    //
+    // ORDERING IS LOAD-BEARING: an early return added above this line
+    // disarms dismissal for every screen at once, silently. That is not
+    // hypothetical -- SH-284 fenced the identical hazard in
+    // `renderDraftsList()`, whose `clear(list)` must likewise precede its
+    // branches. Council: `.council/sh290-drawer-dismissal-placement/`.
+    //
+    // `selectRepo()` keeps its own `closeDrawer()`: it is a different rule
+    // (the project changed, not the screen), and since it sets
+    // `screen = "repo"` this one is false exactly when that one must fire.
+    // No single rule covers both.
+    if (!isRepo) closeDrawer();
 
     if (isRepo) {
       renderView();
@@ -6150,7 +6175,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   /** Enters the "repo" screen for `id`. Closes the drawer (meaningless
-   * across a project switch) but, since SH-155, leaves the filter bar and
+   * across a project switch — pinned by `project-selector.spec.ts`'s
+   * "switching project closes a drawer belonging to the project being left";
+   * this call is NOT the redundant twin of `renderScreen()`'s screen-scoped
+   * dismissal, because this stays on the repo screen, so read SH-290's note
+   * there before deleting it) but, since SH-155, leaves the filter bar and
    * sort alone: `state.filter`/`state.sort` carry over as-is, and the
    * search/showClosed controls are synced to whatever they already hold
    * rather than forced back to defaults. Per-repo-vocabulary filter values
