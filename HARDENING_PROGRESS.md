@@ -15005,3 +15005,89 @@ dissent), SH-293 (the flake above).
 
 **Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push,
 no version bump, no deploy.
+
+### SH-293 — the eight-connection race migrated past this binary's own ceiling · PR #389
+
+**The defect was in the test's premise, and the product was right.**
+`store_backup_naming.rs` built its migration list as `MIGRATIONS.to_vec()` plus
+a test-only step at `len() + 1` — version 14, one *past* the 13 this binary
+supports — and then called `open_with` **inside** each of the eight racing
+threads. The moment one thread committed migration 14, every connection that
+had not yet opened was refused with `SchemaTooNew { found: 14, supported: 13 }`.
+That refusal is the store protecting a real database from an older binary; it
+is load-bearing, it is pinned elsewhere, and the test simply could not survive
+meeting it. So the test was green only while all eight opens beat the winner's
+commit — a race it does not control. It won 8/8 alone and lost it, six
+connections of eight, inside a full `make test` at load average 39–46, where
+cargo's fail-fast killed ~50 later targets and the failure read as "you broke
+the store layer" to a branch that changes only HTML.
+
+**Fixed by a different shape than the story filed, and the reason is the
+regression test.** The filed direction (A) was to hoist the eight opens out of
+the threads so every connection is open before the winner can commit. What
+landed (G) replaces the tree's **last** migration with the controlled step
+instead of appending past it: `all_but_the_last_migration()` builds 1..=12, the
+test-only `CREATE TABLE later` goes back at 13, and `migrated_store` brings a
+store to 12 with one migration pending. Nothing this file writes now exceeds
+`current_schema_version()`, so no open can be refused, whenever it happens and
+whoever wins.
+
+A orders around the hazard; G removes it — under A the store still finishes at
+14, so any future edit that opens a connection after the race brings the flake
+back. But the deciding argument is that **only G admits a deterministic
+regression test**. The new guard is one line after the race: open the store the
+eight of them produced, and require it to open. Against the old shape that
+fails **3/3** with `SchemaTooNew { found: 14, supported: 13 }` — the flake's own
+error, now arriving every run, load-independent — and passes **10/10** after.
+Under A that assertion cannot be written at all: the store is legitimately
+beyond the ceiling, so the test has no invariant left to state. A rare
+timing-dependent flake became a deterministic invariant check.
+
+**Kept deliberately.** The opens stay *inside* the threads: that is what eight
+processes do — open, then migrate — and under G it is safe. The eight
+`SqliteStore`s stay separate, because separate stores mean separate
+process-wide write locks, which is the only way this file's original defect (two
+`VACUUM INTO`s landing on one millisecond name) can reproduce at all.
+`store_migrations.rs`'s concurrent test shares one `Arc<SqliteStore>` and
+therefore serialises on that mutex — it is a test of `apply`'s
+inside-the-transaction re-read, not of the backup.
+
+**Toggle-the-failure, because a fix that costs a test its purpose is not a
+fix.** With `snapshot`'s staging name replaced by its final name — the original
+defect reinstated verbatim — the repaired race test goes red with the original
+message ("could not write …-v12.db: table schema_migrations already exists").
+The repair did not blunt it.
+
+**That experiment also caught a sibling, filed as SH-295.**
+`backups_taken_in_the_same_millisecond_do_not_collide` stayed **green** with the
+defect reinstated: its two backups were stamped 1 ms apart, because between them
+the test opens and migrates a second store. It asserts two names differ, and
+they differ for a reason unrelated to the property. Its own doc comment claims
+"a loop is a more reliable way to put two calls in one millisecond than a race
+is" — it is not putting them in one millisecond at all. Filed rather than
+absorbed: the honest repair is an injectable clock, a change to `snapshot`'s
+signature. Right now the eight-way race is the *only* test that catches the
+collision.
+
+**Sweep.** The hazard needs three things at once — a store migrated past the
+binary's ceiling, a concurrent `open_with`, and the two racing. Only this file
+had them. `store_migrations.rs` builds beyond-ceiling stores freely (its
+`NEXT_VERSION` is 14) but every such test is single-threaded, so it would fail
+100% rather than intermittently; its one concurrent test opens a single store
+up front and migrates the real list. No other test file touches the store layer
+from a thread.
+
+**Gate:** green on the branch — **157** `test result: ok` targets, **32** plugin
+tests, **163** e2e specs, zero failures, and no wedge to report: the heartbeat
+watched log growth *and* the process table together, which is what the SH-284
+false wedge cost was for. The one `error:` line in the log is a passing test's
+own asserted output (`a_forced_stop_kills_a_daemon_that_is_still_draining`),
+read before it was believed.
+
+**Council:** no. A and G are not a matter of taste once the regression test is
+on the table — A cannot state the invariant and G can — and the story's own
+direction was filed "unverified". The reasoning is recorded as a comment on
+SH-293 rather than only here.
+
+**Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no
+force-push, no version bump, no deploy.
