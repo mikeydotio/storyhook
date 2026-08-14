@@ -200,16 +200,26 @@ impl<'a, S: Store> IntegrityService<'a, S> {
     /// guarding one invariant: the probe answers *does this story exist*, the
     /// ordering answers *is what I am reading about it true*.
     ///
-    /// # What it *undid*, it stops saying (SH-271)
+    /// # What it *undid*, it stops saying — and why nothing reconciles that now
+    /// (SH-271, closed by SH-285)
     ///
-    /// That list is decided in the story pass and printed after it, so a later
-    /// step could once dissolve a finding the pass had written advice about:
-    /// the missing row above made a valid edge read as dangling, and the advice
-    /// was then to reopen the claiming story and retract an edge the same run
-    /// had just made whole. [`surviving_repairs`] reconciles the list against
-    /// the post-repair findings, per entry. With the re-fold ahead of the pass
-    /// it has nothing left to reconcile away, and it is retained only until a
-    /// run over the whole suite says so — see its own doc comment.
+    /// The blocked list is decided in the story pass and printed after it, so a
+    /// later step could once dissolve a finding the pass had written advice
+    /// about: the missing row above made a valid edge read as dangling, and the
+    /// advice was then to reopen the claiming story and retract an edge the
+    /// same run had just made whole. SH-271 reconciled the rendered list
+    /// against the post-repair findings to drop those entries — the same defect
+    /// answered one layer away from where it happened.
+    ///
+    /// With the re-fold ahead of the pass there is nothing left to reconcile.
+    /// Only the pass's own appends land between the list being built and the
+    /// closing report, and each is made for a repair that was *not* blocked —
+    /// an entry is blocked precisely because the story it would append to is
+    /// closed. So the filter became an identity whose only reachable effect was
+    /// to *delete* advice, which is the SH-225 defect it was written to avoid,
+    /// and it is gone. That it was an identity is not an argument from control
+    /// flow: it was asserted here and the whole suite run against it before the
+    /// deletion, and nothing tripped.
     ///
     /// # What it *did*, it says — including when it failed (SH-266)
     ///
@@ -279,17 +289,11 @@ impl<'a, S: Store> IntegrityService<'a, S> {
             let mut blocked: BTreeSet<BlockedRepair> = BTreeSet::new();
 
             for (id, story) in &all {
-                // Each candidate carries the event, the imperative sentence
-                // describing it, and the finding it answers: a story too closed
-                // to be appended to owes the operator the sentence rather than
-                // the event, and owes this run's own verdict the finding.
+                // Each candidate carries the event and the imperative sentence
+                // describing it: a story too closed to be appended to owes the
+                // operator the sentence rather than the event.
                 let mut own_repairs: Vec<OwnRepair> = Vec::new();
                 for relation in &story.relationships {
-                    let claim = FindingKey::Edge {
-                        claimant: id.clone(),
-                        relation: relation.relation.clone(),
-                        other: relation.other_id.clone(),
-                    };
                     let other = match all.get(&relation.other_id) {
                         Some(other) => other,
                         None => {
@@ -315,7 +319,6 @@ impl<'a, S: Store> IntegrityService<'a, S> {
                                     "retract its dangling relation `{}` to the missing story `{}`",
                                     relation.relation, relation.other_id
                                 ),
-                                cause: claim,
                             });
                             continue;
                         }
@@ -340,7 +343,6 @@ impl<'a, S: Store> IntegrityService<'a, S> {
                                 "write the missing inverse relation `{expected}` of {id}'s `{}`",
                                 relation.relation
                             ),
-                            cause: claim,
                         });
                         continue;
                     }
@@ -375,10 +377,6 @@ impl<'a, S: Store> IntegrityService<'a, S> {
                             labels: normalized_labels,
                         },
                         repair,
-                        cause: FindingKey::Labels {
-                            story: id.clone(),
-                            labels: story.labels.clone(),
-                        },
                     });
                 }
 
@@ -391,7 +389,6 @@ impl<'a, S: Store> IntegrityService<'a, S> {
                     blocked.extend(own_repairs.into_iter().map(|candidate| BlockedRepair {
                         reopen: id.clone(),
                         repair: candidate.repair,
-                        cause: candidate.cause,
                     }));
                     continue;
                 }
@@ -439,12 +436,6 @@ impl<'a, S: Store> IntegrityService<'a, S> {
             findings: remaining,
             notices,
         } = self.examine()?;
-        // Everything `blocked` says was decided before `repair_read_model` ran,
-        // against the read model it has since repaired — so an entry can name a
-        // finding this very run dissolved (SH-271). Reconciling drops those and
-        // keeps the rest, per entry: a run that repairs one thing must not fall
-        // silent about another it could not.
-        let blocked = surviving_repairs(blocked, &remaining);
         let blocked_detail = blocked_repairs_detail(&blocked);
 
         // Everything this run has to say that is not a finding, assembled
@@ -649,21 +640,14 @@ impl FixOutcome {
 /// A repair [`IntegrityService::repair`] identified, could not make, and owes the
 /// operator a sentence about (SH-225).
 ///
-/// It carries the finding it would have answered because the list is built
-/// *before* the read-model repair and rendered *after* it — see
-/// [`surviving_repairs`].
-///
 /// Ordered by the story to reopen, then the repair, which is the order
-/// [`blocked_repairs_detail`] prints; `cause` is last so it never reorders a
-/// report an operator reads.
+/// [`blocked_repairs_detail`] prints.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct BlockedRepair {
     /// The closed story whose history blocks the repair — the one to reopen.
     reopen: String,
     /// The imperative sentence describing what would have been written.
     repair: String,
-    /// The finding this repair exists to clear.
-    cause: FindingKey,
 }
 
 /// A repair that appends to the story that raised it, before that story's state
@@ -674,119 +658,6 @@ struct OwnRepair {
     /// The sentence describing it, for the operator who has to make it happen
     /// by hand.
     repair: String,
-    /// The finding it answers.
-    cause: FindingKey,
-}
-
-/// A finding keyed by the fact it reports rather than by the sentence it
-/// prints.
-///
-/// Two producers have to agree on it: the repair loop, which knows the claim it
-/// is about to skip, and [`examine`](IntegrityService::examine), which recomputes
-/// findings from the repaired read model. Keying on the sentence would make
-/// them agree by string formatting; keying on the *fact* is why they agree at
-/// all — the same values `compute_integrity_issues` puts in
-/// [`Finding::subject`] and [`FindingData`].
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum FindingKey {
-    /// An edge as its claiming end records it. The [`FindingCode`] is
-    /// deliberately not part of the key: one claim produces at most one finding
-    /// — dangling *or* missing-inverse, never both — so the code adds nothing,
-    /// while including it would split a key over
-    /// [`FindingCode::MissingReciprocalRelation`], which is the same fact
-    /// spelled for a mutual relation.
-    Edge {
-        /// The story whose history asserts the edge, and which the finding is
-        /// reported against.
-        claimant: String,
-        /// The relation it asserts.
-        relation: String,
-        /// The story at the far end.
-        other: String,
-    },
-    /// A story's unrepaired label set (SH-164).
-    Labels {
-        /// The story carrying them.
-        story: String,
-        /// The labels, exactly as stored.
-        labels: Vec<String>,
-    },
-}
-
-/// The fact a finding reports, when it is one a blocked repair can answer.
-///
-/// `None` for every other finding — a cycle, an unknown type, read-model drift
-/// — none of which [`IntegrityService::repair`] ever puts in its blocked list, so
-/// none of which can keep an entry alive.
-fn finding_key(finding: &Finding) -> Option<FindingKey> {
-    let subject = finding.subject.clone()?;
-    match (finding.code, &finding.data) {
-        (
-            FindingCode::DanglingRelation
-            | FindingCode::MissingInverseRelation
-            | FindingCode::MissingReciprocalRelation,
-            Some(FindingData::Relation { relation, other }),
-        ) => Some(FindingKey::Edge {
-            claimant: subject,
-            relation: relation.clone(),
-            other: other.clone(),
-        }),
-        (FindingCode::MalformedLabels, Some(FindingData::Labels { labels })) => {
-            Some(FindingKey::Labels {
-                story: subject,
-                labels: labels.clone(),
-            })
-        }
-        _ => None,
-    }
-}
-
-/// The blocked repairs still worth advising, given what the run left behind.
-///
-/// SH-271: `blocked` is computed inside the write that repairs *stories*, and
-/// `repair_read_model` runs after it. A story with events and no read-model row
-/// is absent from `all_stories`, so a perfectly valid edge naming it reads as
-/// dangling — and when the claiming story is closed, the run advises reopening
-/// it to retract an edge the same run then makes whole again. Following that
-/// advice destroys good data.
-///
-/// So an entry whose finding is gone from the post-repair report is dropped.
-/// Dropping is per entry rather than wholesale, because a run that repairs one
-/// thing must not fall silent about another it could not: that silence is
-/// exactly the SH-225 defect this list exists to end.
-///
-/// The remaining findings are the oracle rather than a second walk of the
-/// graph, which is as close to SH-273's fix as this change goes: the report is
-/// already the authority on what is wrong with the project, so asking it is the
-/// only way `fix` can be sure it is not answering a question that no longer
-/// exists.
-///
-/// # Kept on notice (SH-285)
-///
-/// SH-285 fixed the origin: the read-model repair now runs *before* the story
-/// pass, so nothing between `blocked` being computed and the closing
-/// [`IntegrityService::examine`] can dissolve one of its entries except the
-/// pass's own appends, which are made for repairs that were not blocked. On
-/// that reading this filter is an identity and its only possible effect is to
-/// *delete* advice, which is the SH-225 defect it was written to avoid.
-///
-/// It is still here because that reading is an argument from control flow, and
-/// this codebase has been wrong about exactly that shape before (SH-268). The
-/// removal is gated on evidence instead: assert `blocked ==
-/// surviving_repairs(blocked.clone(), &remaining)` here, run the whole suite,
-/// and delete only if nothing trips. If something does trip, it names the
-/// provocation and this function stays, with a fixture pointing at it.
-/// (`debug_assert_eq!` will not compile — neither [`BlockedRepair`] nor
-/// [`FindingKey`] derives `Debug`.)
-fn surviving_repairs(
-    blocked: BTreeSet<BlockedRepair>,
-    remaining: &[Finding],
-) -> BTreeSet<BlockedRepair> {
-    let live: BTreeSet<FindingKey> = remaining.iter().filter_map(finding_key).collect();
-    blocked
-        .into_iter()
-        .filter(|entry| live.contains(&entry.cause))
-        .collect()
 }
 
 /// Whether the project's catalog meets the required-state floor (SH-125).
