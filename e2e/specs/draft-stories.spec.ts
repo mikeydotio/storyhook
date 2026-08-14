@@ -132,6 +132,41 @@ test("the Drafts popover dismisses on an outside click, unlike the New Story mod
   await expect(page.locator("#drafts-modal")).not.toHaveClass(/open/);
 });
 
+/**
+ * `closeDraftsModal()` hides the backdrop on a 150ms timer, so the fade-out
+ * has something to fade. That delayed write used to be unconditional — it
+ * trusted what was true when it was scheduled — and the Escape handler calls
+ * `closeDraftsModal()` on every press, open or not. So pressing Escape and
+ * then opening the popover inside that window landed the hide on the *open*
+ * popover: `<div id="drafts-backdrop" class="backdrop open" hidden>`, which
+ * is invisible and unclickable, with the popover itself still open above it.
+ */
+test("a popover opened inside the previous close's fade-out keeps its backdrop", async ({
+  page,
+}) => {
+  // Both halves in one JavaScript tick, so the timer is guaranteed to fire
+  // after the popover is open rather than whenever the machine allows —
+  // driven as separate Playwright actions this straddles the 150ms and
+  // passes or fails on load.
+  await page.evaluate(() => {
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    (document.getElementById("drafts-btn") as HTMLElement).click();
+  });
+  await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
+
+  // Past the timer deliberately. Asserting immediately would pass even
+  // against the bug, since the backdrop is genuinely visible until the stale
+  // timer fires at 150ms — the assertion has to outlive it to mean anything.
+  await page.waitForTimeout(250);
+  await expect(page.locator("#drafts-backdrop")).toBeVisible();
+
+  // And the guard must not have pinned it open the other way.
+  await page.locator("#drafts-backdrop").click({ position: { x: 4, y: 4 } });
+  await expect(page.locator("#drafts-modal")).not.toHaveClass(/open/);
+});
+
 test("publishing a draft from the Edit Draft modal makes it a live board card", async ({
   page,
 }) => {
