@@ -2,6 +2,7 @@ import { test, expect, type APIRequestContext } from "@playwright/test";
 import {
   activateBehindOverlay,
   cleanUpCreatedStories,
+  latch,
   openProject,
   projectSlug,
   requiredEnv,
@@ -238,7 +239,7 @@ test("the Drafts button claims no count until this project's data arrives", asyn
 
   await btn.click();
   await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
-  await expect(page.locator("#drafts-list")).toHaveText("Loading drafts…");
+  await expect(page.locator("#drafts-list")).toHaveText("Loading this project's drafts…");
   await expect(page.locator("#drafts-list")).not.toContainText(
     "No drafts in this project.",
   );
@@ -300,7 +301,7 @@ test("a switch to another project carries neither the count nor the rows", async
   // rows inside Beta -- an ordering nothing else ties to this decision. Pinned
   // here so a refactor that breaks it fails a test rather than a user.
   await expect(page.locator("#drafts-list .drafts-row")).toHaveCount(0);
-  await expect(page.locator("#drafts-list")).toHaveText("Loading drafts…");
+  await expect(page.locator("#drafts-list")).toHaveText("Loading this project's drafts…");
   // Repaint, not dismissal: the popover keeps its place across a board-to-board
   // switch, because Beta has an honest answer to repaint into. It is dismissed
   // only where its owning button goes away -- the next test.
@@ -413,4 +414,194 @@ test("a popover opened moments after a navigation is not hidden by the previous 
   // And it still dismisses the way `draft-stories.spec.ts` says it does.
   await page.locator("#drafts-backdrop").click({ position: { x: 4, y: 4 } });
   await expect(page.locator("#drafts-modal")).not.toHaveClass(/open/);
+});
+
+/**
+ * SH-291: the same window, when it never ends.
+ *
+ * Both readiness surfaces above are keyed on `!state.data`, which is also the
+ * state a project stays in *permanently* when `/data` times out, errors, or
+ * answers 401 — `fetchData()` assigns `state.data` only on a parsed 200. So a
+ * store that never answers used to say "Loading…" forever: true, in the sense
+ * that the 25s safety poll really is still trying, and useless as an
+ * explanation.
+ *
+ * `state.fetchOk` cannot tell the two apart. It initialises `false`, so it
+ * reads identically before the first fetch and after a failed one, and copy
+ * keyed on it would name an error during boot, before anything had gone wrong.
+ * What the surfaces read instead is `state.fetchSettledFor` — the project whose
+ * `/data` has *completed*, with data, with an error, or with no answer at all —
+ * and the first test below is red against either shortcut: against the old code
+ * on its second assertion, against a `fetchOk` version on its first.
+ *
+ * The failure is driven by a held request rather than by a timer, unlike
+ * `slowData` above. A timer ends its window when the machine gets round to it,
+ * which is fine for a spec that only asserts what is on screen *during* the
+ * window; these have to assert the transition, so the boundary has to be the
+ * test's. The one clock left is the page's own `xhr.timeout = 8000`, which
+ * settles a held request whether or not a test asks it to — so everything
+ * asserted before `refuse()` runs on an 8s budget, four times the window the
+ * tests above act inside.
+ */
+
+/** One project's `/data` reads, under the test's control. See
+ * {@link holdDataFor}. */
+interface HeldProjectData {
+  /** Refuses the held read, and every later one, so nothing repairs the view
+   * behind the assertions that follow. */
+  refuse: () => void;
+  /** Stops refusing: from here on these reads reach the daemon, which is how
+   * a spec puts a store back in service under a page that has already given
+   * up on it. */
+  restore: () => void;
+}
+
+/** Holds every `/data` read for `slug` in flight until `refuse()` is called.
+ *
+ * Scoped to one project on purpose: a store is not what fails here, a
+ * project's own reads are — which is what lets the third test below hold two
+ * projects in two different states at once.
+ *
+ * `restore()` flips a flag the handler reads rather than removing the route,
+ * because removing it is not available: `page.unroute()` identifies a route by
+ * the matcher object it was registered with, and a URL *predicate* is a
+ * function, so a second one spelled identically is a different route and
+ * removes nothing. A spec that "restored" that way would sit and watch its
+ * requests go on being aborted until the assertion timed out, blaming the
+ * behaviour under test. */
+async function holdDataFor(
+  page: import("@playwright/test").Page,
+  slug: string,
+): Promise<HeldProjectData> {
+  const gate = latch();
+  let refusing = true;
+  await page.route(
+    (url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`,
+    async (route) => {
+      await gate.held;
+      if (refusing) await route.abort();
+      else await route.continue();
+    },
+  );
+  return {
+    refuse: gate.release,
+    restore: () => {
+      refusing = false;
+    },
+  };
+}
+
+test("a project whose data never arrives names the failure, once there is one to name", async ({
+  page,
+  request,
+}) => {
+  await seedDraft(request, "Alpha Project", DRAFT_TITLE);
+  await seedToken(page);
+  const slug = await projectSlug(page.request, "Alpha Project");
+  const alphaData = await holdDataFor(page, slug);
+  await page.goto(`/?project=${encodeURIComponent(slug)}`);
+
+  await expect(page.locator("#board-view")).toBeVisible();
+  await page.locator("#drafts-btn").click();
+  await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
+
+  // Held, not yet refused: nothing has completed, so the loading line is the
+  // honest one and the error would be a lie. This is the assertion a
+  // `state.fetchOk` implementation fails — that flag is already `false` here.
+  const list = page.locator("#drafts-list");
+  const newBtn = page.locator("#new-story-btn");
+  await expect(list).toHaveText("Loading this project's drafts…");
+  await expect(newBtn).toHaveAttribute(
+    "title",
+    "Loading this project's states, types and labels…",
+  );
+
+  alphaData.refuse();
+
+  // And now there is something to name. Both controls say it, in the same
+  // words about their own subject, because both draw the sentence from
+  // `readinessNote()` — the drift the story asks to be designed out.
+  await expect(list).toHaveText("Couldn't load this project's drafts. Retrying…");
+  await expect(newBtn).toHaveAttribute(
+    "title",
+    "Couldn't load this project's states, types and labels. Retrying…",
+  );
+  // Unchanged by the failure, both deliberately: `#new-story-btn` stays
+  // disabled (SH-265 — the modal it opens is built once from a `meta()` that
+  // never arrived), and the Drafts button stays operable and neutral. "No
+  // Drafts" here would be the specific wrong answer for a project that has
+  // one, and the count is not merely late now but unknown — exact text,
+  // since "Drafts" is a suffix of "1 Drafts".
+  await expect(newBtn).toBeDisabled();
+  await expect(page.locator("#drafts-btn")).toBeEnabled();
+  await expect(page.locator("#drafts-btn-text")).toHaveText("Drafts");
+});
+
+test("a project that answers after a failure drops the error where it stands", async ({
+  page,
+  request,
+}) => {
+  await seedToken(page);
+  const slug = await projectSlug(page.request, "Alpha Project");
+  const alphaData = await holdDataFor(page, slug);
+  await page.goto(`/?project=${encodeURIComponent(slug)}`);
+
+  await expect(page.locator("#board-view")).toBeVisible();
+  await page.locator("#drafts-btn").click();
+  alphaData.refuse();
+  const list = page.locator("#drafts-list");
+  await expect(list).toHaveText("Couldn't load this project's drafts. Retrying…");
+
+  // The claim is "Retrying…", so the repair must need no reload, no reopen and
+  // no gesture: the store starts answering, and the very next arrival —
+  // pushed by the write below over `/api/events`, exactly as another client's
+  // would be — replaces the error with the project's real drafts under an
+  // already-open popover.
+  alphaData.restore();
+  await seedDraft(request, "Alpha Project", DRAFT_TITLE);
+
+  await expect(page.locator("#drafts-list .drafts-row")).toHaveCount(1, {
+    timeout: 10_000,
+  });
+  await expect(page.locator("#drafts-list .drafts-row")).toContainText(
+    DRAFT_TITLE,
+  );
+  await expect(page.locator("#drafts-btn-text")).toHaveText("1 Drafts");
+});
+
+test("one project's failure is not carried into the next project's loading window", async ({
+  page,
+}) => {
+  await seedToken(page);
+  const alpha = await projectSlug(page.request, "Alpha Project");
+  const beta = await projectSlug(page.request, "Beta Project");
+  const alphaData = await holdDataFor(page, alpha);
+  // Beta's reads are held and never refused, so its own window stays open for
+  // the assertions below rather than resolving out from under them.
+  await holdDataFor(page, beta);
+  await page.goto(`/?project=${encodeURIComponent(alpha)}`);
+
+  await expect(page.locator("#board-view")).toBeVisible();
+  await page.locator("#drafts-btn").click();
+  alphaData.refuse();
+  const list = page.locator("#drafts-list");
+  await expect(list).toHaveText("Couldn't load this project's drafts. Retrying…");
+
+  // The popover's backdrop covers the topbar, and since SH-299 the keyboard
+  // too, so the switch goes through the selector's own listeners — the same
+  // route `board-readiness`'s own switch test takes, and for the same reason.
+  await activateBehindOverlay(page.locator("#projsel-btn"));
+  await expect(page.locator("#projsel-menu")).toBeVisible();
+  await activateBehindOverlay(
+    page.locator("#projsel-menu .projsel-item", { hasText: "Beta Project" }),
+  );
+
+  // Beta has not failed. Beta has not answered either — and a settled flag
+  // that were a bare boolean, rather than the project it settled for, would
+  // report Alpha's failure as Beta's here, on Beta's very first paint.
+  await expect(list).toHaveText("Loading this project's drafts…");
+  await expect(page.locator("#new-story-btn")).toHaveAttribute(
+    "title",
+    "Loading this project's states, types and labels…",
+  );
 });
