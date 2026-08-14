@@ -7005,11 +7005,29 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     });
   }
 
+  /** Closes the Drafts popover. The backdrop is hidden on a delay so the
+   * fade-out (`.backdrop` transitions `opacity`) has something to fade;
+   * hiding it immediately would cut the transition off.
+   *
+   * That delayed write re-reads the popover's state when it fires rather
+   * than trusting what was true when it was scheduled. 150ms is long enough
+   * for the popover to have been *reopened* in the meantime, and hiding the
+   * backdrop then leaves an open popover above an invisible, unclickable
+   * one — `<div id="drafts-backdrop" class="backdrop open" hidden>`, as
+   * contradictory as it looks.
+   *
+   * Reachable because this is called whether or not anything is open: the
+   * Escape handler calls it on every press. Pinned by
+   * `draft-stories.spec.ts`, which presses Escape and opens the popover in
+   * one tick so the timer is guaranteed to land on it. */
   function closeDraftsModal() {
     $("drafts-backdrop").classList.remove("open");
     $("drafts-modal").classList.remove("open");
     $("drafts-modal").setAttribute("aria-hidden", "true");
-    setTimeout(function() { $("drafts-backdrop").hidden = true; }, 150);
+    setTimeout(function() {
+      if ($("drafts-modal").classList.contains("open")) return;
+      $("drafts-backdrop").hidden = true;
+    }, 150);
   }
 
   /** Populates the Drafts popover's row list from `state.data.drafts` —
