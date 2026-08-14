@@ -15172,3 +15172,88 @@ draining`), read before it was believed.
 
 **Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push, no
 version bump, no deploy.
+
+### SH-286 — what the doctor may assert when its read model is incomplete · PR #393
+
+**The story asked for the general answer and rejected the narrow one in its own
+text**, so the work started with a council rather than with an edit. Three seats
+— architect, data/event-store, skeptic — and the ballot was **3-0 unanimous on
+the first round with both other seats voting against their own proposals**, each
+naming the concrete defect that decided it. The architect conceded that its
+narrower set ("has events, no row") trusts a stale row that survives a fold
+failure, because `diff_rebuilt` files a story under `fold_failures` and continues
+*before* it looks for a row; the data seat conceded that `RepairReport::repaired`
+is documented as the diff found **before** the repair, so deriving `--fix`'s set
+from it would skip label repairs on the very rows the same run had just restored.
+Verdict recorded as a comment on SH-286; audit trail
+`.council/sh-286-doctor-assertions-over-an-occluded-read-model/`.
+
+**The rule, stated once.** A story the events do not corroborate is *unattested*,
+and three consequences follow: an unattested id is **unknown, not absent** (an
+edge naming it yields neither a dangling nor a missing-inverse finding — silencing
+only the first trades one false finding for another, since the inverse check on
+that same edge runs next); its **claims are not evidence** (its arcs leave the
+hierarchy graph); and it is **never a finding's subject**. Each removes findings,
+and a report that gets quieter without saying why is SH-268 — so suppression is a
+**swap**, one `UnexaminedStory` finding per unattested story in their place.
+
+**The set is wider than the story that filed it**, which is the council's real
+contribution: `missing_rows u fold_failures u extra_rows u {divergences on the
+`snapshot` field}`. An extra row is a snapshot corroborated by nothing that
+silently blesses every edge naming it — SH-285 inverted. A `snapshot` divergence
+is the column `story_map` builds *every* finding from, disagreeing with the events
+in the same report that says so. Only that field: widening it to all divergences
+would take a drifted project's whole report down to `UnexaminedStory`, which is
+going quiet, and `a_divergence_in_a_column_the_checks_do_not_read_leaves_the_
+story_examinable` is the pin that says so.
+
+**No new fold.** `examine` moves `diff` above the story pass inside the
+transaction they already share; `repair` derives its set from the `RepairReport`
+it already holds. SH-267's `counted == 2` stayed green throughout.
+
+**Mutation-tested rather than assumed.** The new tests were written after the fix,
+so they had never been red — that is a real gap in red-green, and it was closed by
+mutating the shipped code instead: narrowing `unattested()` back to `missing_rows`
+alone turns **5** red, neutering the `story_views` probe turns **1** red. Both
+mutations were applied and reverted from a `/tmp` copy.
+
+**A `git checkout` of one file cost the whole file's work.** Reverting the second
+mutation with `git checkout src/service/integrity.rs` discarded every edit made to
+that file, not the three-line mutation — roughly forty minutes of doc-comment
+work, redone from context. `cp` to `/tmp` first was the right instinct and it was
+applied to `rebuild.rs` and not to `integrity.rs`. Mutate through a backup, always,
+or mutate a file you have not edited.
+
+**The gate caught what I had not predicted, on the second run.**
+`doctor_fix_leaves_the_catalog_alone_when_the_repair_write_aborts` provoked its
+abort by making a repair destination unfoldable — *exactly* the shape SH-286
+suppresses. So the fix removed that test's fixture as a class. The alternatives
+were **searched against a real store rather than argued about**: the single-parent
+unique index is the only other constraint a repair event can reach, and its
+precondition is unrepresentable because the mirror trigger materializes the inverse
+on insert — both orderings were tried and both are refused at *injection* time, not
+at repair time. `STORYHOOK_FAULT` is the wrong instrument entirely: it delivers
+`SIGKILL`, so the process dies and the arm's control flow is never exercised.
+
+That left a choice between quietly weakening a safety test and recording the loss.
+The test was rewritten to pin the invariant that replaced its fixture — the run
+completes, appends nothing to the story it could not read, sweeps, and still fails
+— and **SH-298** was filed for the coverage that went with it, with the extent
+written from what was actually tried. SH-270's distinction is still held by the
+`?` on `service.repair()?` in `src/invoke.rs`; that is structural, but it is no
+longer pinned.
+
+**Two gate runs were spent on things a pre-flight would have caught.** The first
+failed on `cargo fmt --check` alone. And the first run's completion notification
+read *exit code 0* while the log read `EXIT=2` — the trailing `echo` in the
+compound command was what the harness saw. **The log is the outcome; the
+notification is not.** Both runs were supervised with a log-growth heartbeat and a
+120s stall alarm; neither wedged.
+
+**Gate:** green on the branch — **157** `test result: ok` targets, **32** plugin
+tests, **163** e2e specs, zero failures, no wedge. The one `error:` line is a
+passing test's own asserted output (`a_forced_stop_kills_a_daemon_that_is_still_
+draining`), read before it was believed.
+
+**Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push, no
+version bump, no deploy.
