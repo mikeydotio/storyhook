@@ -318,6 +318,18 @@ impl Environment {
         self.daemon_state_dir().join("daemon.log")
     }
 
+    /// The previous daemon's [`Self::daemon_log`], one spawn old (SH-287).
+    ///
+    /// [`crate::daemon::lifecycle::spawn_child`] renames the live log here
+    /// before truncating a fresh one — a crash's whole stderr would otherwise
+    /// be destroyed by the very next spawn, which is usually the very next
+    /// `story` command. [`crate::daemon::crash::harvest`] is the only reader,
+    /// and only once: it moves whatever it finds into
+    /// [`Self::crash_logs_dir`] before this file can be rotated away again.
+    pub fn daemon_log_rotated(&self) -> PathBuf {
+        self.daemon_state_dir().join("daemon.log.1")
+    }
+
     /// Where this store's daemon persists its finished
     /// [`crate::api::dispatch::DispatchRecord`]s across a restart (SH-232).
     ///
