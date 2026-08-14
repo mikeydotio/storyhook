@@ -15257,3 +15257,106 @@ draining`), read before it was believed.
 
 **Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push, no
 version bump, no deploy.
+### SH-290 — an open drawer survives into the statuses sub-view · PR #395 · merged
+
+**Outcome:** fixed by deriving, not by re-enumerating. Four commits, `make test`
+green, two follow-on stories filed.
+
+**The story's own premise was wrong, and checking it changed the answer.** The
+"Fix direction" section said SH-284's council "chose the enumerated form 2-1, so
+read that DECISION.md before reopening the question" — an instruction that, taken
+at face value, closes the question. Read, it says the opposite: that council
+*moved* dismissal off its hand-maintained list into `updateDraftsButton()`,
+reached from `renderScreen()`, and its 2-1 was about **when** to dismiss, not
+**where** the rule lives. The precedent pointed toward deriving. A story that
+cites a prior decision is citing a document, not quoting it; open the document.
+
+**Reachability was the thing the story asked for, and it changed the test.** The
+story filed it as unverified and said so explicitly. It is reachable, by a path
+neither obvious nor theoretical, and it needs two facts at once:
+
+- `consumeDeepLinkStory()` opens a drawer off the first `/data` reply and is
+  gated on `state.repoId` — which `goSettings()` deliberately preserves. So a
+  `?project=&story=` link still in flight when the user reaches Settings lands
+  its drawer *over* Settings.
+- `.backdrop` is `position: fixed; inset: 0`, so the Statuses button is
+  unreachable by **mouse** — the click hits the backdrop, which closes the drawer
+  — and perfectly reachable by **keyboard**, because nothing marks the background
+  `inert` and there is no focus trap anywhere in the file.
+
+A `click()` here doesn't fail loudly in a useful way — it exercises the
+backdrop's own dismissal and the navigation under test never runs. The same fact
+bit again on the `selectRepo()` pin, written click-first: Playwright timed out
+naming `<div id="drawer-backdrop"> intercepts pointer events`. **Both** of these
+dismissals are keyboard-only reachable, which is not a fact either story
+predicted.
+
+**Severity was understated at `low`.** `apiBase()` reads `state.repoId`, which
+neither `goSettings()` nor `goStatuses()` touches — so the stranded drawer's edit
+fields, relation adder and Delete button all still addressed the project the user
+had left, and all succeeded. A live writable surface, not a cosmetic leftover.
+Found by the `skeptic` seat, not by the filing.
+
+**Council:** yes — `.council/sh290-drawer-dismissal-placement/`, three seats
+(`ux-designer-web`, `software-architect`, `skeptic`), ranked-choice majority, no
+chair vote and no tiebreaker. Worth reading for how it moved rather than for the
+verdict. Round 1 split 0-2-1 with **the skeptic voting against its own proposal**
+after checking the architect's counter-facts and finding its decisive layering
+objection falsified (`renderDrawer()` already calls `closeDrawer()`;
+`renderScreen()` already calls `syncUrl()`). Deliberation collapsed the placement
+question entirely — all three revised, none stood. The runoff then turned on the
+skeptic falsifying its **own** surviving amendment: its "first statement"
+argument rested on a `throw` in `renderHome()`/`renderSettings()` disarming the
+rule, but those run *below both* candidate placements, and its cited line numbers
+were wrong besides.
+
+**Two of my own framings were disproved by seats that checked them**, and are
+recorded in the artifacts rather than buried:
+
+- "A Playwright spec is the only mechanism to pin this." False —
+  `tests/web_test.rs` already asserts source-text properties of the served
+  dashboard. A fence was still declined, on a criterion worth keeping: **every
+  derived fence this repo has polices a *silent* property** (SH-136, SH-198,
+  SH-258, SH-260/276). A screen write that skips `renderScreen()` is loud. Fence
+  silence, not loudness.
+- "A guard in `openDrawer()` is free belt-and-braces." False, found
+  independently by two seats: `consumeDeepLinkStory()` clears
+  `pendingDeepLinkStory` *before* calling, so a refusal silently discards a
+  one-shot deep link and `syncUrl()` then strips `?story=`.
+
+**Commit order is the part worth copying.** Four commits, and the two test-only
+ones land *before* the removals they cover, green on both sides:
+
+| | |
+|---|---|
+| `6aa9569` | pins `selectRepo()`'s dismissal — **nothing in the suite had ever asserted that navigating dismisses a drawer** |
+| `ed270c9` | the fix + its repro |
+| `dbc8742` | pins Home and Settings dismissal |
+| `45a46f7` | removes the two calls the derived rule now covers |
+
+So the suite passing on `45a46f7` is *evidence* nothing changed, not a hope. The
+council's winning proposal stopped at three commits; `dbc8742` was added because
+the dissent had flagged exactly that gap and it was cheap — the alternative was
+deleting two calls whose behaviour no test held.
+
+**What deliberately did not ship:** "leaving the board closes the drawer", not
+the total invariant. A deep-linked drawer can still open over Settings, and
+`deep-link.spec.ts` still asserts it does.
+
+**Follow-ons filed:** **SH-299** (no overlay traps focus; every backdrop is modal
+for the mouse and non-modal for the keyboard) and **SH-300** (the deep-linked
+drawer, and why the obvious guard is wrong). SH-299 carries a warning it must
+honour: correct `inert` work removes the keyboard route this story's repro
+depends on, so the spec's `press()` step must be re-driven rather than deleted.
+The spec asserts the *heading* before the *drawer* precisely so that failure is
+loud rather than vacuous.
+
+**Gate:** `make test` green on the branch — full Rust suite, clippy, fmt, plugin
+harness, **167** e2e specs, zero failures. Supervised with a log-growth heartbeat
+throughout; no wedge. One poll loop hit its own 10-minute ceiling while the gate
+was still healthy — the log had grown at every checkpoint, so it was re-polled
+rather than killed. Growth is the pulse; the poller timing out is not the task
+stalling.
+
+**Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push,
+no version bump, no deploy.
