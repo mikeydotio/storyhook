@@ -19,7 +19,7 @@
 
 use std::path::{Path, PathBuf};
 
-use chrono::{SecondsFormat, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::Connection;
 
 use crate::store::error::StoreError;
@@ -419,6 +419,27 @@ pub(crate) fn snapshot(
     backup_dir: &Path,
     label: &str,
 ) -> Result<PathBuf, StoreError> {
+    snapshot_at(conn, backup_dir, label, Utc::now())
+}
+
+/// [`snapshot`] with the clock as a parameter.
+///
+/// The name a backup gets is a millisecond timestamp, so *the moment* is the
+/// only input that decides whether two calls collide — and a test that cannot
+/// choose it cannot state this module's central property. Two calls a
+/// millisecond apart prove nothing: they are two names, and they were two names
+/// before the collision was fixed too. `taken_at` is what lets a test put two
+/// backups in one millisecond deliberately rather than hope for it, which is
+/// the whole of SH-295: the test that claimed to guard the collision never
+/// produced one, and stayed green with the defect reinstated.
+///
+/// Production has exactly one caller — [`snapshot`], passing [`Utc::now`].
+pub(crate) fn snapshot_at(
+    conn: &Connection,
+    backup_dir: &Path,
+    label: &str,
+    taken_at: DateTime<Utc>,
+) -> Result<PathBuf, StoreError> {
     std::fs::create_dir_all(backup_dir).map_err(|e| {
         StoreError::Backup(format!(
             "could not create the backup directory {}: {e}",
@@ -426,7 +447,7 @@ pub(crate) fn snapshot(
         ))
     })?;
 
-    let stamp = Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
+    let stamp = taken_at.format("%Y%m%dT%H%M%S%.3fZ");
     let path = backup_dir.join(format!("storyhook-{stamp}-{label}.db"));
     // Written to a private name and renamed into place, never straight to
     // `path`. `VACUUM INTO` **refuses an output file that already exists**, and
