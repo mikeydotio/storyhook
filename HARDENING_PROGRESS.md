@@ -14359,3 +14359,120 @@ machine. Confirms concurrent execution, not conflicting work.
 **Semver: none suggested** — dead-code deletion and a new test, no
 behavior to version. Not bumped or deployed from this worktree per standing
 policy.
+### SH-273 — `--fix` re-walked the graph `report()` had already walked · PR #375 · **done**
+
+The tech-debt story SH-268's council filed as "the durable fix behind two
+defects it decided not to take on". `IntegrityService::repair` walked
+`story.relationships` itself, recomputing the dangling edges and missing
+inverses `compute_integrity_issues` had already computed for `examine`, over
+the same story set — `all_stories` and `query::story_map` issue the identical
+`StoryQuery::all()`. That duplicate walk was the **only** reason the two halves
+of one contract could disagree at all, and the whole defect family was that
+disagreement: SH-268 (a filter on one walk and not the other, so `--fix`
+repaired what the report called healthy), SH-271 (one walk's answer rendered
+after the other walk's world changed), SH-225 (a repair one walk skipped in
+silence, which the other never mentioned). Each was fixed at its encounter
+point. The origin was that the predicate had two implementations.
+
+**The trigger the story named had just fired.** "The next change to either walk"
+— SH-285 changed one of them the day before.
+
+**The story's caveat had exactly one implementation, so no council.** It warns
+that `fix()` needs the *pre*-repair findings for its repairs and the *post*-repair
+ones for its verdict, "so the refactor has to keep two report passes". The
+obvious reading — call `examine()` twice — is a regression twice over: it folds
+the whole project a third time, which
+`tests/service_integrity.rs::a_doctor_fix_folds_the_project_twice` pins against
+by name (SH-267), and it reads the project from a separate read transaction, at
+an instant other than the one the repairs are made at, which is the hazard
+`examine`'s own "one transaction" section exists to describe. The pre-repair
+pass is therefore `story_issues()` called **inside `repair`'s own write
+transaction**: the same producer `examine` reads, no extra fold, same instant as
+the writes. Two report passes, as the caveat requires, at no cost. With one
+implementation left standing there was no second defensible answer to delegate;
+the reasoning is a comment on the story.
+
+**What the refactor buys is structural, not cosmetic.** Each finding is mapped
+to a repair by a new `plan_repair`, and two properties follow from there being
+one such function:
+
+| | Why it now holds by construction |
+|---|---|
+| `--fix` cannot repair what the report did not raise | a repair is reachable only by handing `plan_repair` a finding — the SH-268 shape is unrepresentable rather than merely absent |
+| a check added later cannot ship undecided | the match is exhaustive over `FindingCode`, so a new code stops the build until somebody says whether `--fix` repairs it — the forcing function `FindingCode`'s own docs already claimed for the renderer |
+
+`remedy` stops being advice and becomes the destination. SH-244 added it as the
+answer to "where does the fix go, when that is not the story the finding names",
+and SH-225 is the week an operator spent reopening the wrong story for want of
+it; it was still only rendered prose until now.
+
+**The proof is a test written against the *old* code.** A pure refactor has no
+red→green — there is no bug to reproduce — so the discipline is inverted: the
+contract test was written first, run against the pre-refactor implementation,
+and committed green *before* the refactor landed. It asserts both directions
+over a project damaged four ways at once — no append the run makes is unnamed by
+a pre-repair finding's `remedy`, no finding whose remedy is an open story
+survives the run — with the expected set **derived from the findings** rather
+than written out, so a repair loop and a test cannot drift together, and a
+literal beside it so a derivation that collapsed to nothing still fails. Three
+shapes make it bite: the missing inverse is reported against SH-1 and repaired
+on SH-2 (a run that appends to subjects fails), SH-6's unknown type carries no
+remedy (a run that treats every finding as repairable fails), SH-7's remedy is
+itself and closed (a run that ignores reachability fails).
+
+**Falsified rather than trusted.** Three mutations, each with a prediction
+recorded before it ran:
+
+| Mutation | Predicted | Observed |
+|---|---|---|
+| repair sent to the finding's `subject`, not its `remedy` | the new test red, with the SH-225 pins | 11 red, the new test among them |
+| SH-285's existence probe deleted | only `…_whose_events_will_not_fold` | exactly that, 1 red |
+| SH-285's re-fold moved back after the pass | only `one_fix_run_repairs_a_label_…` | exactly that, 1 red |
+
+The last two matter beyond this story: they re-establish, against *new* code,
+SH-285's claim that its two mechanisms are one invariant each rather than two
+guarding one. Each still has exactly one isolating test, and the refactor did
+not quietly make either redundant.
+
+**The SH-286 residual is preserved and localized, not closed.** The existence
+probe becomes an explicit filter on a `DanglingRelation` finding, so report and
+`--fix` still disagree about that one code and nothing else — where before the
+disagreement was a property of two whole walks. Closing it here was refused as
+out of scope: SH-285's council deferred it 3-0 because the narrow fix would
+itself be masking.
+
+**A repairable finding with no remedy or no payload now fails the run loudly.**
+Silently declining the repair would restore the divergence one finding at a
+time, and the operator would read a report that never clears.
+
+`all_stories` and `has_relation` died with the walk; `open_stories` became
+`open_story_ids`, because every claim a repair is built from now arrives on the
+finding that asked for it, so the snapshots it carried had no reader left.
+
+**Gate:** `make test` green — one full supervised run before committing (155
+`test result: ok` lines, plugin harness 32/32, e2e 158/158, exit 0), then the
+pre-push run, then a **third run on merged `main`** (156 `ok` lines — the extra
+one is SH-198's new suite, arriving with the merge below). No wedges.
+
+**The third run was not ceremony: `main` moved under this branch.** SH-198's PR
+(#372) merged while this one was in flight, so GitHub merged #375 into a `main`
+neither run had seen — thirteen other files, including deletions of public items
+"nothing calls" and a new `tests/dead_public_surface.rs` that fences them.
+Nothing conflicted textually, which is exactly when a semantic conflict hides: a
+branch that passes alone and a branch that passes alone can fail together, and
+the fence test is derived over the source rather than over a list, so it reads
+whatever the merge produced. `main` was verified green rather than assumed, and
+this is the general rule the run should keep — **after a merge that fast-forwards
+`main` past commits your gate never ran against, re-run the gate on `main`.**
+The PR gate answers "is my branch green", which is a different question.
+
+**Supervision note:** the push leg's stall bound was widened to 300s from the
+usual 120s, deliberately and before starting. The bound is the longest plausible
+gap *between signs of progress*, and the pre-push hook's log has one genuinely
+quiet stretch the suite's own log does not — the `cargo build` the plugin leg
+needs, measured at 1m08s in the run immediately before. 120s would have been
+crying wolf at a known-quiet phase rather than watching for a wedge.
+
+**Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push,
+no version bump.
+
