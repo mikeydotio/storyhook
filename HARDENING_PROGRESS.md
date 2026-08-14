@@ -15091,3 +15091,84 @@ SH-293 rather than only here.
 
 **Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no
 force-push, no version bump, no deploy.
+
+### SH-295 — a test that could only pass by avoiding its own premise · PR #391
+
+**The story filed a timing defect; the assertion was wrong too, and that is what
+decided the shape of the repair.** `backups_taken_in_the_same_millisecond_do_not_
+collide` migrated a second store between its two backups — a file create, WAL
+setup, twelve migrations and a `VACUUM INTO` — which costs more than a
+millisecond, so the two names differed for a reason unrelated to the property.
+Reproduced before touching anything: with the pre-fix shape reinstated it passed,
+while the eight-way race beside it failed, exactly as filed.
+
+But both of its backups carried the **same label** (`v12`), and a backup's name is
+the stamp plus the label. So had the two calls ever met their own premise, the
+names would have been *identical*, the rename is last-writer-wins, `first ==
+second`, and `assert_ne!` would have **failed**. The test asserted a property the
+product deliberately does not provide. That kills the story's own filed direction
+(hoist the setup so the calls are back-to-back): it narrows the window onto an
+assertion that cannot hold. Only an injectable clock *and* a corrected assertion
+repair this.
+
+**Council: unanimous** (`.council/sh295-deterministic-backup-collision-test/`).
+Three seats proposed the same seam blind — `pub(crate) snapshot_at(conn, dir,
+label, taken_at)`, `snapshot` a one-line `Utc::now()` wrapper — and all three
+rejected a feature-gated `pub SqliteStore::snapshot_at` (it buys no coverage:
+`Store::snapshot` adds only `checkout` and `explain_corruption`, neither of which
+participates in naming) and rejected uniquifying the final name. The architect
+seat's argument against uniquifying is the one worth keeping: `daemon::backup::
+prune` reaps that directory to the newest few **by name**, so distinct names for
+byte-identical content would evict real history to store duplicates —
+last-writer-wins is a *retention* property, not an accident. It is also
+check-then-act over an unconditionally-overwriting `fs::rename`. The vote turned
+on the assertion: two seats would have dropped `assert_ne!` and asserted only
+success; the winner pins `assert_eq!` on the path, so nobody can quietly restore
+the old claim.
+
+**Two unit tests, beside the code, replacing one integration test.**
+`two_backups_in_one_millisecond_collapse_to_one_verified_file` hands one instant
+to both calls and states what the product provides — both succeed, both return
+the same path, one verified file survives holding the source's contents, no
+staging file remains. `two_labels_at_one_instant_are_two_files` pins the other
+half of the naming contract, which nothing had tested: a pre-migration backup and
+a daily snapshot must stay distinguishable in one directory.
+`tests/store_backup_naming.rs` keeps what only an integration test can say —
+eight real connections racing — and gains a pointer to the deterministic sibling.
+
+**The first toggle-the-failure was unfaithful, and the test stayed green — twice
+worth recording.** Pointing `VACUUM INTO` at the final name while leaving the
+staging machinery standing is *not* the pre-fix shape, and under it the new test
+passed. The reason: `verify` ran on a staging file that was never written,
+`Connection::open` **created** it empty, `PRAGMA integrity_check` called it sound,
+and the rename put those zero bytes over the real copy — a 0-byte backup,
+reported as success. A shell experiment refuted the first hypothesis (SQLite
+rejects even a zero-length target), so the code was instrumented rather than
+argued about, and the probe printed `size=0` for both calls.
+
+Two lessons kept. The experiment now restores the pre-fix shape **verbatim** — no
+staging, no rename — under which the test goes red **3/3** with the original
+error (`output file already exists`), load-independent. And since `verify` alone
+cannot tell a backup from an empty file, both tests now read the copied row back;
+`holds_the_copied_row` says why where the next author will look. A toggle that
+leaves the surrounding machinery in place tests a *third* shape that never
+shipped — reinstate the original, not something adjacent to it.
+
+**Two siblings filed, neither folded in.** SH-296: `verify` accepts an empty
+database, so verification adds no evidence independent of `VACUUM INTO` having
+succeeded — unreachable in production today, filed low, with the `page_count > 0`
+direction. SH-297: `set_prefix` takes its "state before this rewrite" snapshot
+*outside* the `store.write` it protects (`Store::snapshot` does not take
+`write_guard`), so the copy can be stale, and two concurrent runs sharing a
+millisecond can lose the one that matters. Raised by the council's data-engineer
+seat, verified independently before filing rather than taken at face value, and
+kept out of this PR because SH-295 is a test-quality repair and a service-layer
+change would have broken two hats.
+
+**Gate:** green on the branch — **157** `test result: ok` targets, **32** plugin
+tests, **163** e2e specs, zero failures, no wedge. The one `error:` line is a
+passing test's own asserted output (`a_forced_stop_kills_a_daemon_that_is_still_
+draining`), read before it was believed.
+
+**Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push, no
+version bump, no deploy.
