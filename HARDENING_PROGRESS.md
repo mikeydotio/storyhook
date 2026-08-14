@@ -16194,6 +16194,102 @@ resumed rather than restarting the run.
 **Deviations:** the log entry you are reading rides in its own worktree and its
 own PR, per step 8 and the new rule together.
 
+### SH-300 — a deep-linked drawer can open over Settings · PR #415
+
+**Outcome:** merged (PR #415). A deep-linked story that resolves after the
+user has navigated away — to another screen, or to a different project's
+board — is now refused and reported, never opened silently over what the
+user is actually looking at.
+
+**Two defects, one root cause.** `consumeDeepLinkStory()` runs off a repo's
+first `/data` reply and used to call `openDrawer()` unconditionally:
+
+1. **The screen gap**, exactly as the story described. Since SH-299,
+   `openDrawer()` marks the entire `.app` shell `inert` and moves focus into
+   the drawer — so a link resolving after the user reached Settings would
+   seize the screen and keyboard out from under them, not just render behind
+   a rendering overlap.
+2. **The project gap**, found while fixing the first. `pendingDeepLinkStory`
+   was a bare story id with no project of its own. Switching boards during
+   the same async window left it stranded, and the *next* project's own
+   first load consumed it — searching that project's stories for an id that
+   was never its to find, and reporting "No story `<id>` in `<wrong
+   project>`", blaming the project the user switched to for a story it was
+   never asked about. `fetchData()`'s own stale-reply guard
+   (`askedFor !== state.repoId`) runs *before* `consumeDeepLinkStory()` and
+   never touches the pending link, so it did nothing to prevent this.
+
+Both are the same shape — a one-shot value consumed outside the exact
+context that armed it — and got the same repair: the pending link now
+carries the project id it was named alongside, and `consumeDeepLinkStory()`
+refuses (durable, error-variant toast, same voice as its existing
+"no such story" sibling case) unless both the screen and the project still
+match at the moment it runs.
+
+**Why not the obvious guard.** The story itself flagged this: a bare
+`if (state.screen !== "repo") return;` looks free and isn't.
+`pendingDeepLinkStory` is cleared before acting, and `syncUrl()` has already
+stripped `?project=&story=` from the address bar by the time this fires — so
+a silent refusal would leave no trace anywhere that a valid link ever
+existed. Reporting was not optional.
+
+**Where the guard lives, decided by council rather than assumed.** Three
+seats (`ux-designer-web`, `software-architect`, `skeptic`) converged
+independently in round 1 — unanimous 3-0 — on refuse-and-report, durable,
+with the guard living *solely* at `consumeDeepLinkStory()`'s call site, not
+duplicated as a second runtime check inside `openDrawer()`. Every other
+caller of `openDrawer()` is DOM the board renders only while it's the
+visible screen; a second guard would either silently no-op (recreating the
+exact silent-swallow failure this story exists to prevent) or duplicate
+deep-link-specific messaging inside a generic primitive that has no business
+owning it — SH-302's own "a second way of saying the same thing is only a
+second thing to keep true" note, applied on point. `openDrawer()`'s doc
+comment states the precondition instead. Audit trail on SH-300 itself
+(`.council/` is gitignored and this worktree was reaped on completion, so
+the story comment is the durable record, not the directory).
+
+**A retired test, called out by all three council seats before it happened.**
+`drawer-screen-scope.spec.ts`'s `openDrawerOverSettings()` helper existed
+solely to arrange the state this fix closes off (a drawer open over
+Settings via a late-resolving deep link) for its statuses-sub-view test.
+That state became unreachable the moment the fix landed — not a coverage
+loss, since SH-290's dismissal rule is derived and the file's other two
+tests (Home, Settings) already exercise it. The helper moved to
+`deep-link.spec.ts`, inverted, to assert the refusal instead.
+
+**A regression test that raced itself, caught by running it against the
+wrong source on purpose.** The project-mismatch spec originally held *any*
+`/data` reply generically (`sealOnHold` off, so Beta's own load could pass
+through). That let Alpha's own SSE-driven resync fetch race Alpha's own
+bootstrap fetch for the identical URL — whichever hit the route handler
+first got held, and on an unlucky ordering the *other* one landed unheld and
+opened the drawer immediately, before the test ever got to switch projects,
+independent of whether the source fix was present. Scoping the held
+predicate to Alpha's own `/api/repos/<slug>/data` path (with `sealOnHold`
+restored) fixed it: either of Alpha's two requests is a fine one to hold,
+Beta's distinct URL is untouched, and the race disappeared. Caught by
+literally swapping in the pre-fix and intermediate-fix source (via plain
+file copies, never `git stash` — this repo's own worktree rule) and
+confirming each new test failed for the *right* reason before it was
+allowed to pass for the right one.
+
+**Two hats, two fix commits, both reproduced red first.** The screen guard
+landed alone and green; the project-binding guard landed second, verified
+red against the first commit's own state (the exact wrong-project toast
+text) before being added. `docs(progress)` here is a third, non-behavioral
+commit, same as this file's own convention.
+
+**Gate:** `make test` green — `cargo fmt --check`, `cargo clippy --workspace
+--all-targets -- -D warnings`, full Rust suite (1361+ tests, 0 failed),
+plugin suite, e2e (208/208 passed). Run by hand rather than trusted to the
+pre-push hook alone, per the SH-304 entry's own caution above that the hook
+has silently no-op'd before.
+
+**Supervision:** `make test` run in the background with its own log file,
+polled to confirm real progress rather than assumed; no stalls.
+
+**Deviations:** none.
+
 ### SH-298 — the abort no longer had a fixture, but it still had an instrument
 
 **Outcome:** merged. The SH-270 negative — a repair write that rolls back must
