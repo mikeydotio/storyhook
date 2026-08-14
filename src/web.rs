@@ -204,8 +204,15 @@ pub fn handle_address() -> Result<String, AppError> {
     Ok(format!("Copied dashboard URL to clipboard: {url}"))
 }
 
-/// The default browser-opener argv for the host OS, with `url` appended. Empty
-/// on unsupported platforms (the caller turns that into a clear error).
+/// The default browser-opener argv for the host OS, with `url` appended.
+/// Empty on a platform outside the two storyhook ships prebuilt binaries
+/// for — a `#[cfg(target_os = "windows")]` arm used to sit here, hardcoding
+/// a `cmd /C start` invocation for a platform nothing has ever compiled
+/// this crate against. Removed by SH-276, the same call SH-260 made for
+/// `src/github/credential_store.rs`'s Windows arm: no build, no test, no
+/// way to know if the argv was even right. `$BROWSER` still overrides on
+/// every platform, so the caller turns an empty argv into a clear,
+/// actionable error rather than a silent no-op.
 #[cfg(target_os = "macos")]
 fn default_open_argv(url: &str) -> Vec<String> {
     vec!["open".to_string(), url.to_string()]
@@ -214,18 +221,7 @@ fn default_open_argv(url: &str) -> Vec<String> {
 fn default_open_argv(url: &str) -> Vec<String> {
     vec!["xdg-open".to_string(), url.to_string()]
 }
-#[cfg(target_os = "windows")]
-fn default_open_argv(url: &str) -> Vec<String> {
-    // `start` is a `cmd` builtin; the empty "" is its (ignored) window-title arg.
-    vec![
-        "cmd".to_string(),
-        "/C".to_string(),
-        "start".to_string(),
-        String::new(),
-        url.to_string(),
-    ]
-}
-#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn default_open_argv(_url: &str) -> Vec<String> {
     Vec::new()
 }
