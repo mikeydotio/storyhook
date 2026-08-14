@@ -68,7 +68,7 @@ const DELTA_CHECKOUT = requiredEnv("DASHBOARD_DELTA_CHECKOUT");
  * dashboard's.
  *
  * A green run pays nothing for the larger number: the assertion resolves
- * the moment the toast (or history row) appears. The only cost is a slower
+ * the moment the notice appears. The only cost is a slower
  * report on a dispatch that genuinely never finishes, which the per-test
  * timeout still bounds.
  */
@@ -165,7 +165,7 @@ test("a tab authenticates once on load, and dispatch needs no second prompt (AC2
 
   const toast = page.locator("#toast-stack .toast.success");
   await expect(toast).toBeVisible({ timeout: DISPATCH_COMPLETION_TIMEOUT });
-  await expect(toast).toContainText(ALPHA_STORY_ID);
+  await expect(toast).toHaveText(`${ALPHA_STORY_ID} dispatched`);
 
   // The button returns to its normal, clickable state once the poll
   // resolves.
@@ -188,10 +188,20 @@ test("a tab authenticates once on load, and dispatch needs no second prompt (AC2
   // distinguishable only by a 3px border color.
   await dispatchButton.click();
   const refusedToast = page.locator("#toast-stack .toast.error", {
-    hasText: "Dispatch refused",
+    hasText: `${ALPHA_STORY_ID} refused`,
   });
   await expect(refusedToast).toBeVisible({ timeout: DISPATCH_COMPLETION_TIMEOUT });
-  await expect(refusedToast).toContainText("already in-progress");
+  // SH-304: the headline is composed from typed fields and the script's own
+  // prose is demoted to the detail line -- still on screen, still in the
+  // aria-live region, no longer the whole notice.
+  await expect(refusedToast.locator(".notice-detail")).toContainText("already in-progress");
+  // And a refusal is durable now: it outlives the 9s lifetime SH-196 gave it
+  // and the 3s one a success gets, because nothing else in this UI records
+  // that the dispatch didn't happen. Dismissed only by its own button.
+  await page.waitForTimeout(5_000);
+  await expect(refusedToast).toBeVisible();
+  await refusedToast.locator(".toast-dismiss").click();
+  await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
 });
 
 test("Dispatch Auto sends ?auto=1 and runs a real autonomous dispatch (SH-208)", async ({
@@ -225,18 +235,19 @@ test("Dispatch Auto sends ?auto=1 and runs a real autonomous dispatch (SH-208)",
   await expect(page.locator("#dispatch-btn")).toBeDisabled();
   await expect(page.locator("#dispatch-btn")).toHaveText("Dispatch");
 
-  // SH-232: an --auto result is a DURABLE row, not a self-deleting toast --
-  // nobody is necessarily watching the tab when an autonomous dispatch
-  // finishes, which is the whole reason to run one. No toast at all for
-  // this completion.
-  const historyRow = page.locator("#dispatch-history .dispatch-history-row.success");
-  await expect(historyRow).toBeVisible({ timeout: DISPATCH_COMPLETION_TIMEOUT });
-  await expect(historyRow).toContainText(DELTA_STORY_ID);
-  // story.sh's own auto_note names the session autonomous in `display`,
-  // relayed verbatim into the row -- the one place this spec can observe
-  // the daemon actually forwarded `--auto` all the way to the script.
-  await expect(historyRow).toContainText(/utonomous/);
-  await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
+  // SH-232 sent every --auto result to a durable row; SH-304's council
+  // narrowed that to the outcomes it protects. A SUCCEEDING autonomous
+  // dispatch is corroborated by the story moving on the board and by the
+  // tmux window that now exists, so its notice clears itself like any other
+  // success -- and says `(auto)`, which is this spec's observation that the
+  // daemon forwarded the flag all the way to the script and back.
+  const toast = page.locator("#toast-stack .toast.success");
+  await expect(toast).toBeVisible({ timeout: DISPATCH_COMPLETION_TIMEOUT });
+  await expect(toast).toHaveText(`${DELTA_STORY_ID} dispatched (auto)`);
+  // story.sh's own paragraph -- the ~90 words SH-304 was filed about -- no
+  // longer reaches the UI at all on the success path.
+  await expect(toast).not.toContainText(/utonomous/);
+  await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(0);
 
   await expect(dispatchAutoButton).toBeEnabled();
   await expect(dispatchAutoButton).toHaveText("Dispatch Auto");
@@ -251,13 +262,14 @@ test("Dispatch Auto sends ?auto=1 and runs a real autonomous dispatch (SH-208)",
     `expected a real worktree at ${worktreePath}`,
   ).toBe(true);
 
-  // The row survives well past a toast's own 4.5s/9s lifetime -- the whole
-  // point -- and is dismissed only by the user's own click, which then
-  // removes it from the DOM.
-  await page.waitForTimeout(5_000);
-  await expect(historyRow).toBeVisible();
-  await historyRow.locator(".dispatch-history-dismiss").click();
-  await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(0);
+  // And it clears itself, unprompted -- SH-304's second ask, on the exact
+  // surface its screenshot showed. The durable half of SH-232 lives on for
+  // the outcomes that need it: `notification-contract.spec.ts` drives a
+  // refused --auto dispatch (which a real story.sh cannot be asked for on
+  // demand) and holds its row to the same 5.5s probe this used to.
+  await expect(page.locator("#toast-stack .toast")).toHaveCount(0, {
+    timeout: 10_000,
+  });
 });
 
 test("a saved token is not asked for again on a second dispatch", async ({

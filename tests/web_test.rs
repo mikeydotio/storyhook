@@ -1316,18 +1316,81 @@ fn stylesheet(body: &str) -> &str {
     &body[start..start + end]
 }
 
-/// The declaration text of `selector`'s rule -- what's between its opening
-/// brace and the next `}`. Panics naming the selector when the rule is
-/// absent, so a rule that was renamed rather than deleted fails by name
-/// instead of as a silent `false`.
-fn declarations<'a>(css: &'a str, selector: &str) -> &'a str {
-    let needle = format!("\n{selector} {{");
-    let start = css
-        .find(&needle)
-        .unwrap_or_else(|| panic!("no `{selector}` rule in the dashboard's stylesheet"))
-        + needle.len();
-    let end = css[start..].find('}').expect("every CSS rule closes");
-    &css[start..start + end]
+/// Every `/* … */` span replaced by a single space, so a comment can neither
+/// join two selectors nor hide inside a declaration block. Unterminated
+/// comment: everything from the opener on is dropped, which is what a browser
+/// does with one too.
+fn strip_css_comments(css: &str) -> String {
+    let mut out = String::with_capacity(css.len());
+    let mut rest = css;
+    while let Some(open) = rest.find("/*") {
+        out.push_str(&rest[..open]);
+        out.push(' ');
+        match rest[open + 2..].find("*/") {
+            Some(close) => rest = &rest[open + 2 + close + 2..],
+            None => return out,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The declaration text of the rule that styles `selector` -- what's between
+/// its opening brace and the next `}`. Panics naming the selector when no
+/// such rule exists, so a rule that was renamed rather than deleted fails by
+/// name instead of as a silent `false`.
+///
+/// A rule written for `selector` **alone** is the rule for it. Failing that,
+/// every rule listing it as a *member* of a selector list answers, their
+/// declarations concatenated: two selectors that must carry identical
+/// declarations belong in one grouped rule rather than two copies free to
+/// drift, and the contract each is asserted against here is a property of the
+/// selector rather than of how the stylesheet chose to group it. The
+/// alone-first order matters -- `.projsel-item` carries `touch-action` in a
+/// list of ten and its own sizing in a rule of its own, and it is the second
+/// that answers "how big is this control". Members are compared exactly after
+/// trimming, so `.toast-dismiss` never matches `.toast-dismiss:hover`.
+fn declarations(css: &str, selector: &str) -> String {
+    // Comments come out first, and they are not cosmetic to this parser: a
+    // rule's selector list is read as "the text since the previous rule
+    // closed", and this stylesheet documents nearly every rule with a comment
+    // sitting in exactly that gap. One containing a comma (`/* Stacked
+    // arrows, the only way to reorder without a pointer ... */`, above
+    // `.status-reorder button`) would otherwise split into members that match
+    // nothing.
+    let css = &strip_css_comments(css);
+    let mut exact = None;
+    let mut grouped = String::new();
+    let mut cursor = 0;
+
+    while let Some(offset) = css[cursor..].find('{') {
+        let brace = cursor + offset;
+        // The selector list is whatever follows the previous rule's close (or
+        // the start of a block) -- `}`, `{` and `;` all terminate one, the
+        // last so an at-rule's prelude cannot be read as a selector.
+        let list_start = css[..brace]
+            .rfind(['}', '{', ';'])
+            .map_or(0, |index| index + 1);
+        let list = css[list_start..brace].trim();
+        let end = css[brace + 1..].find('}').expect("every CSS rule closes") + brace + 1;
+        let body = &css[brace + 1..end];
+
+        if list == selector {
+            exact.get_or_insert(body);
+        } else if list.split(',').any(|member| member.trim() == selector) {
+            grouped.push_str(body);
+        }
+        cursor = brace + 1;
+    }
+
+    if let Some(body) = exact {
+        return body.to_string();
+    }
+    assert!(
+        !grouped.is_empty(),
+        "no `{selector}` rule in the dashboard's stylesheet"
+    );
+    grouped
 }
 
 /// SH-256: on a coarse pointer, no text-entry control may compute under 16
@@ -1613,6 +1676,12 @@ fn web_serve_root_html_meets_wcag_tap_target_size() {
         ".rel-id",
         ".rel-remove",
         ".dispatch-history-dismiss",
+        // SH-304 gave the durable error toast a dismiss button of its own.
+        // It shares one grouped rule with the history row's, which is why
+        // `declarations` resolves a selector that is a *member* of a list --
+        // the alternative was a second copy of the same six declarations,
+        // free to drift on one surface and not the other.
+        ".toast-dismiss",
     ] {
         let decl = declarations(css, selector);
         assert!(
@@ -1639,6 +1708,69 @@ fn web_serve_root_html_meets_wcag_tap_target_size() {
             "`{selector}` must set `{expected}`"
         );
     }
+}
+
+/// SH-304: a notification is the one element that appears unbidden, so its
+/// entrance and exit are exactly the motion a reader who asked for less of it
+/// did not ask for -- and `.toast`/`.toast.leaving` sat OUTSIDE the
+/// reduced-motion block for as long as it has existed, while `.card`'s
+/// equivalents sat inside it.
+///
+/// Two halves, and the second is the one that keeps this honest: the
+/// animations must be gated, and the *dismissal* must not be. A fix that
+/// silenced the fade by never dismissing at all would satisfy the first
+/// assertion and leave notices piling up forever under reduced motion.
+/// `e2e/specs/notification-contract.spec.ts` proves the behaviour in a real
+/// browser with `emulateMedia`; this is the cheap layer that fails in seconds
+/// if the rules are moved back out.
+#[test]
+fn web_serve_root_html_gates_notification_motion_but_never_its_dismissal() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .expect("dashboard responds");
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    for selector in [".toast", ".dispatch-history-row"] {
+        assert!(
+            !declarations(css, selector).contains("animation:"),
+            "`{selector}`'s ungated rule must not animate -- move the animation \
+             inside the prefers-reduced-motion block"
+        );
+    }
+
+    let motion_block_start = css
+        .find("@media (prefers-reduced-motion: no-preference) {")
+        .expect("the reduced-motion block exists");
+    let motion_block = &css[motion_block_start..];
+    for fragment in [".toast, .dispatch-history-row", ".toast.leaving"] {
+        assert!(
+            motion_block.contains(fragment),
+            "`{fragment}` must be gated behind prefers-reduced-motion, like every \
+             other decorative animation in this file"
+        );
+    }
+
+    // The fade duration is a token the script reads (`readMsToken`), not a
+    // number restated on both sides: two hand-kept copies let the node be
+    // removed mid-fade the first time one of them moves.
+    assert!(
+        css.contains("--toast-fade:"),
+        "the fade duration must be a custom property, so the script can read it"
+    );
+    assert!(
+        body.contains("animation: toast-out var(--toast-fade)"),
+        "the fade animation must be driven by --toast-fade rather than a literal"
+    );
+    assert!(
+        body.contains("readMsToken(\"--toast-fade\""),
+        "the script must READ --toast-fade rather than restate its value"
+    );
 }
 
 /// SH-203: the status light itself never carries the `unknown` colour --
