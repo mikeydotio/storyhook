@@ -1316,18 +1316,81 @@ fn stylesheet(body: &str) -> &str {
     &body[start..start + end]
 }
 
-/// The declaration text of `selector`'s rule -- what's between its opening
-/// brace and the next `}`. Panics naming the selector when the rule is
-/// absent, so a rule that was renamed rather than deleted fails by name
-/// instead of as a silent `false`.
-fn declarations<'a>(css: &'a str, selector: &str) -> &'a str {
-    let needle = format!("\n{selector} {{");
-    let start = css
-        .find(&needle)
-        .unwrap_or_else(|| panic!("no `{selector}` rule in the dashboard's stylesheet"))
-        + needle.len();
-    let end = css[start..].find('}').expect("every CSS rule closes");
-    &css[start..start + end]
+/// Every `/* … */` span replaced by a single space, so a comment can neither
+/// join two selectors nor hide inside a declaration block. Unterminated
+/// comment: everything from the opener on is dropped, which is what a browser
+/// does with one too.
+fn strip_css_comments(css: &str) -> String {
+    let mut out = String::with_capacity(css.len());
+    let mut rest = css;
+    while let Some(open) = rest.find("/*") {
+        out.push_str(&rest[..open]);
+        out.push(' ');
+        match rest[open + 2..].find("*/") {
+            Some(close) => rest = &rest[open + 2 + close + 2..],
+            None => return out,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The declaration text of the rule that styles `selector` -- what's between
+/// its opening brace and the next `}`. Panics naming the selector when no
+/// such rule exists, so a rule that was renamed rather than deleted fails by
+/// name instead of as a silent `false`.
+///
+/// A rule written for `selector` **alone** is the rule for it. Failing that,
+/// every rule listing it as a *member* of a selector list answers, their
+/// declarations concatenated: two selectors that must carry identical
+/// declarations belong in one grouped rule rather than two copies free to
+/// drift, and the contract each is asserted against here is a property of the
+/// selector rather than of how the stylesheet chose to group it. The
+/// alone-first order matters -- `.projsel-item` carries `touch-action` in a
+/// list of ten and its own sizing in a rule of its own, and it is the second
+/// that answers "how big is this control". Members are compared exactly after
+/// trimming, so `.toast-dismiss` never matches `.toast-dismiss:hover`.
+fn declarations(css: &str, selector: &str) -> String {
+    // Comments come out first, and they are not cosmetic to this parser: a
+    // rule's selector list is read as "the text since the previous rule
+    // closed", and this stylesheet documents nearly every rule with a comment
+    // sitting in exactly that gap. One containing a comma (`/* Stacked
+    // arrows, the only way to reorder without a pointer ... */`, above
+    // `.status-reorder button`) would otherwise split into members that match
+    // nothing.
+    let css = &strip_css_comments(css);
+    let mut exact = None;
+    let mut grouped = String::new();
+    let mut cursor = 0;
+
+    while let Some(offset) = css[cursor..].find('{') {
+        let brace = cursor + offset;
+        // The selector list is whatever follows the previous rule's close (or
+        // the start of a block) -- `}`, `{` and `;` all terminate one, the
+        // last so an at-rule's prelude cannot be read as a selector.
+        let list_start = css[..brace]
+            .rfind(['}', '{', ';'])
+            .map_or(0, |index| index + 1);
+        let list = css[list_start..brace].trim();
+        let end = css[brace + 1..].find('}').expect("every CSS rule closes") + brace + 1;
+        let body = &css[brace + 1..end];
+
+        if list == selector {
+            exact.get_or_insert(body);
+        } else if list.split(',').any(|member| member.trim() == selector) {
+            grouped.push_str(body);
+        }
+        cursor = brace + 1;
+    }
+
+    if let Some(body) = exact {
+        return body.to_string();
+    }
+    assert!(
+        !grouped.is_empty(),
+        "no `{selector}` rule in the dashboard's stylesheet"
+    );
+    grouped
 }
 
 /// SH-256: on a coarse pointer, no text-entry control may compute under 16
