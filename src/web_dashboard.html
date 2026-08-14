@@ -1057,7 +1057,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       <button type="button" class="btn btn-ghost icon-compact-btn" id="home-btn"><span class="btn-icon" aria-hidden="true">⌂</span><span class="btn-text">Home</span></button>
       <button type="button" class="btn btn-ghost icon-compact-btn" id="settings-btn"><span class="btn-icon" aria-hidden="true">⚙</span><span class="btn-text">Settings</span></button>
       <button type="button" class="btn btn-primary" id="new-story-btn">+ New</button>
-      <button type="button" class="btn btn-ghost icon-compact-btn" id="drafts-btn"><span class="btn-icon" aria-hidden="true">✎</span><span class="btn-text" id="drafts-btn-text">No Drafts</span></button>
+      <button type="button" class="btn btn-ghost icon-compact-btn" id="drafts-btn"><span class="btn-icon" aria-hidden="true">✎</span><span class="btn-text" id="drafts-btn-text">Drafts</span></button>
       <div class="connection">
         <span class="conn-dot" id="conn-dot"></span>
         <span id="conn-text" class="conn-text">Connecting…</span>
@@ -3041,10 +3041,46 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * per this project's own draft count. Also refreshes the popover's list
    * if it happens to be open, so a draft published or discarded from
    * elsewhere (another tab, another client) doesn't leave a stale row
-   * behind the next poll tick already updated the button for. */
+   * behind the next poll tick already updated the button for.
+   *
+   * Holds one invariant since SH-284: **the Drafts surface exists exactly
+   * while a project's board is on screen, and never claims a count it does
+   * not have.** Both halves were broken, and both are fixed here rather than
+   * at the call sites, because this function owns what this button renders:
+   *
+   * - `renderScreen()` gates the button's *visibility* on `isRepo` (SH-175
+   *   added it to the topbar and never wired it in), and calls this for the
+   *   `state.data = null` edge — `renderAll()`, the only previous caller,
+   *   early-returns there, so nothing repainted the label until one `/data`
+   *   round trip later and it kept the *previous* project's count.
+   * - The popover is dismissed where its owning button goes away, which
+   *   `renderScreen()` hiding the button does not do by itself: an open
+   *   modal stays open behind it. The path that needs this is asynchronous
+   *   and has no gesture to hang it off — `fetchReposOnce()` calls
+   *   `goHome()` when the open project is deleted by another client — so it
+   *   belongs on the state change, not on a click handler.
+   *
+   * A board-to-board switch *repaints* instead: `state.data` is null by the
+   * time this runs, so the open list is cleared to its loading line and then
+   * filled with the new project's drafts. Closing there would be the odd one
+   * out — rows appearing under an open popover is already what every `/data`
+   * does (see the paragraph above).
+   *
+   * Deliberately **not** disabled during that window, unlike its neighbour
+   * `#new-story-btn` (`syncCreateAvailability()`, SH-265). That button is
+   * disabled because `openCreateModal()` builds its fields once from `meta()`
+   * and never repopulates, so a click inside the window reaches a
+   * permanently-wrong modal; this popover re-renders on every arrival, so
+   * disabling it would remedy nothing and cost the tab order. The asymmetry
+   * is a council verdict, not an oversight: `story show SH-284` carries it in
+   * full, including the dissent (audit trail in `.council/sh284-drafts-button-
+   * pre-data-window/`, which is untracked — the story comment is the copy that
+   * survives a clone). */
   function updateDraftsButton() {
-    var drafts = (state.data && state.data.drafts) || [];
-    $("drafts-btn-text").textContent = (drafts.length || "No") + " Drafts";
+    if (state.screen !== "repo") { closeDraftsModal(); return; }
+    $("drafts-btn-text").textContent = state.data
+      ? ((state.data.drafts || []).length || "No") + " Drafts"
+      : "Drafts";
     if (!$("drafts-modal").classList.contains("open")) return;
     renderDraftsList();
   }
@@ -3112,7 +3148,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("search-wrap").hidden = !isRepo;
     $("view-toggle").hidden = !isRepo;
     $("new-story-btn").hidden = !isRepo;
+    $("drafts-btn").hidden = !isRepo;
     syncCreateAvailability();
+    // Both edges this button has, and the reason it is called here at all:
+    // see `updateDraftsButton()`'s own comment. `renderAll()` covers the
+    // arrival edge; this covers the `state.data = null` edge and every screen
+    // change, including the ones that must dismiss an open popover.
+    updateDraftsButton();
 
     if (isRepo) {
       renderView();
@@ -7006,20 +7048,24 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   /** Closes the Drafts popover. The backdrop is hidden on a delay so the
-   * fade-out (`.backdrop` transitions `opacity`) has something to fade;
-   * hiding it immediately would cut the transition off.
+   * fade-out (`.backdrop` transitions `opacity` over 0.18s) has something to
+   * fade; `hidden` immediately would cut it off.
    *
-   * That delayed write re-reads the popover's state when it fires rather
-   * than trusting what was true when it was scheduled. 150ms is long enough
-   * for the popover to have been *reopened* in the meantime, and hiding the
-   * backdrop then leaves an open popover above an invisible, unclickable
-   * one — `<div id="drafts-backdrop" class="backdrop open" hidden>`, as
-   * contradictory as it looks.
+   * That delayed write re-reads the popover's state when it fires rather than
+   * trusting what was true when it was scheduled. 150ms is long
+   * enough for the popover to have been *reopened* in the meantime, and
+   * hiding the backdrop then leaves an open popover with an invisible,
+   * unclickable one behind it — visible in the DOM as
+   * `<div id="drafts-backdrop" class="backdrop open" hidden>`, which is
+   * exactly as contradictory as it looks.
    *
-   * Reachable because this is called whether or not anything is open: the
-   * Escape handler calls it on every press. Pinned by
-   * `draft-stories.spec.ts`, which presses Escape and opens the popover in
-   * one tick so the timer is guaranteed to land on it. */
+   * Two callers make that reachable, and neither checks whether anything is
+   * open first: the Escape handler, which has always called this on every
+   * press, and `updateDraftsButton()`, which since SH-284 calls it on every
+   * navigation to a non-repo screen — including the `renderScreen()` at
+   * module init. So an ordinary page load now schedules one of these before
+   * the user has done anything, and the window is only 150ms wide but sits
+   * exactly where a user reaching for the button lands. */
   function closeDraftsModal() {
     $("drafts-backdrop").classList.remove("open");
     $("drafts-modal").classList.remove("open");
@@ -7032,11 +7078,30 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   /** Populates the Drafts popover's row list from `state.data.drafts` —
    * this project's own drafts, per `updateDraftsButton()`'s doc comment.
-   * Clicking a row opens it in the create modal's Edit Draft mode. */
+   * Clicking a row opens it in the create modal's Edit Draft mode.
+   *
+   * Clearing the list *before* branching is load-bearing, not tidiness
+   * (SH-284). This runs on the `state.data = null` edge of a project switch,
+   * with the popover possibly open: the clear is the only thing that takes
+   * the previous project's rows off screen, since the branch below appends
+   * rather than replaces. An early return added above it — for a null
+   * `state.data`, say — would leave project A's drafts listed, and clickable,
+   * inside project B. `board-readiness.spec.ts` asserts a row count of zero
+   * across exactly that switch, so this cannot rot silently.
+   *
+   * "No drafts in this project." is an *earned* claim and is made only once
+   * the project has actually answered. Before that there is no count to
+   * report and the two cases are not the same: the old single branch said
+   * "none" whenever `state.data.drafts` was empty *or* `state.data` was null,
+   * which asserted an emptiness it did not have. */
   function renderDraftsList() {
     var list = $("drafts-list");
     clear(list);
-    var drafts = (state.data && state.data.drafts) || [];
+    if (!state.data) {
+      list.appendChild(el("li", { class: "drafts-list-empty" }, ["Loading drafts…"]));
+      return;
+    }
+    var drafts = state.data.drafts || [];
     if (!drafts.length) {
       list.appendChild(el("li", { class: "drafts-list-empty" }, ["No drafts in this project."]));
       return;
