@@ -33,7 +33,7 @@ use crate::error::AppError;
 use crate::output::{DeletePlan, SetPrefixPlan};
 use crate::store::{
     DeletedProject, ExpectedSeq, NewProject, ProjectId, ProjectRecord, ReadOps, Store, StoreError,
-    StoryNo, StoryQuery, WriteOps,
+    StoryNo, StoryQuery, WriteOps, WriteWithSnapshot,
 };
 
 use super::state_set::write_states;
@@ -1516,6 +1516,13 @@ impl<'a, S: Store> ProjectService<'a, S> {
     /// delete it before an operator who needed it ever looked. See
     /// [`crate::env::Environment::maintenance_backups_dir`].
     ///
+    /// It is taken through [`crate::store::Store::write_with_snapshot`], which
+    /// makes the copy and this rewrite **one** critical section. Taking it
+    /// through [`crate::store::Store::snapshot`] beforehand would be two, and
+    /// any writer landing between them would be missing from the copy — so
+    /// restoring it would discard that writer's committed work as well as the
+    /// rename it exists to undo (SH-297).
+    ///
     /// Refuses if `new_prefix` is not valid, is the prefix this project
     /// already has, or already belongs to another project — nothing in the
     /// schema stops two projects sharing a prefix, and project resolution
@@ -1529,78 +1536,84 @@ impl<'a, S: Store> ProjectService<'a, S> {
     ) -> Result<SetPrefixOutcome, AppError> {
         let new_prefix = crate::domain::prefix::validate(new_prefix)?;
         let now = self.clock.now();
-        let backup_path = self.store.snapshot(backups_dir, "set-prefix")?;
 
-        let plan = self.store.write(|tx| {
-            let record = tx
-                .project(project)?
-                .ok_or_else(|| StoreError::NotFound(format!("project {project} does not exist")))?;
-            validate_prefix_change(&*tx, &record, &new_prefix)?;
-            let old_prefix = record.prefix;
+        let written = self
+            .store
+            .write_with_snapshot(backups_dir, "set-prefix", |tx| {
+                let record = tx.project(project)?.ok_or_else(|| {
+                    StoreError::NotFound(format!("project {project} does not exist"))
+                })?;
+                validate_prefix_change(&*tx, &record, &new_prefix)?;
+                let old_prefix = record.prefix;
 
-            // First, so every write below — this story's own refold
-            // included — validates its relationships against the prefix
-            // they are about to be rewritten to rather than the one they
-            // are being rewritten from.
-            tx.set_prefix(project, &new_prefix)?;
+                // First, so every write below — this story's own refold
+                // included — validates its relationships against the prefix
+                // they are about to be rewritten to rather than the one they
+                // are being rewritten from.
+                tx.set_prefix(project, &new_prefix)?;
 
-            let states = tx.state_map(project)?;
-            let rows = tx.stories(project, &StoryQuery::all())?;
-            let mut relationships = 0usize;
-            let mut github_bases = 0usize;
+                let states = tx.state_map(project)?;
+                let rows = tx.stories(project, &StoryQuery::all())?;
+                let mut relationships = 0usize;
+                let mut github_bases = 0usize;
 
-            for row in &rows {
-                if row.snapshot.relationships.is_empty() {
-                    refold_story(tx, project, row.story_no, &new_prefix, &states)?;
-                } else {
-                    let mut events = Vec::with_capacity(row.snapshot.relationships.len() * 2);
-                    for relation in &row.snapshot.relationships {
-                        let other_no = StoryNo::parse_id(&old_prefix, &relation.other_id)?;
-                        events.push(StoryEvent::StoryRelationshipRemoved {
-                            at: now.clone(),
-                            other_id: relation.other_id.clone(),
-                            relation: relation.relation.clone(),
-                        });
-                        events.push(StoryEvent::StoryRelationshipAdded {
-                            at: now.clone(),
-                            other_id: other_no.to_id(&new_prefix),
-                            relation: relation.relation.clone(),
-                        });
-                        relationships += 1;
+                for row in &rows {
+                    if row.snapshot.relationships.is_empty() {
+                        refold_story(tx, project, row.story_no, &new_prefix, &states)?;
+                    } else {
+                        let mut events = Vec::with_capacity(row.snapshot.relationships.len() * 2);
+                        for relation in &row.snapshot.relationships {
+                            let other_no = StoryNo::parse_id(&old_prefix, &relation.other_id)?;
+                            events.push(StoryEvent::StoryRelationshipRemoved {
+                                at: now.clone(),
+                                other_id: relation.other_id.clone(),
+                                relation: relation.relation.clone(),
+                            });
+                            events.push(StoryEvent::StoryRelationshipAdded {
+                                at: now.clone(),
+                                other_id: other_no.to_id(&new_prefix),
+                                relation: relation.relation.clone(),
+                            });
+                            relationships += 1;
+                        }
+                        append_and_fold(
+                            tx,
+                            project,
+                            row.story_no,
+                            &new_prefix,
+                            &states,
+                            ExpectedSeq::Exact(row.head_seq),
+                            &events,
+                            &self.provenance,
+                        )?;
                     }
-                    append_and_fold(
-                        tx,
-                        project,
-                        row.story_no,
-                        &new_prefix,
-                        &states,
-                        ExpectedSeq::Exact(row.head_seq),
-                        &events,
-                        &self.provenance,
-                    )?;
+
+                    if let Some(mut base) = tx.github_base(project, row.story_no)? {
+                        base.id = row.story_no.to_id(&new_prefix);
+                        for relation in &mut base.relationships {
+                            let other_no = StoryNo::parse_id(&old_prefix, &relation.other_id)?;
+                            relation.other_id = other_no.to_id(&new_prefix);
+                        }
+                        tx.put_github_base(project, row.story_no, &base)?;
+                        github_bases += 1;
+                    }
                 }
 
-                if let Some(mut base) = tx.github_base(project, row.story_no)? {
-                    base.id = row.story_no.to_id(&new_prefix);
-                    for relation in &mut base.relationships {
-                        let other_no = StoryNo::parse_id(&old_prefix, &relation.other_id)?;
-                        relation.other_id = other_no.to_id(&new_prefix);
-                    }
-                    tx.put_github_base(project, row.story_no, &base)?;
-                    github_bases += 1;
-                }
-            }
+                Ok(SetPrefixPlan {
+                    slug: record.slug,
+                    name: record.name,
+                    old_prefix,
+                    new_prefix: new_prefix.clone(),
+                    stories: rows.len(),
+                    relationships,
+                    github_bases,
+                })
+            })?;
 
-            Ok(SetPrefixPlan {
-                slug: record.slug,
-                name: record.name,
-                old_prefix,
-                new_prefix: new_prefix.clone(),
-                stories: rows.len(),
-                relationships,
-                github_bases,
-            })
-        })?;
+        let WriteWithSnapshot {
+            snapshot: backup_path,
+            value: plan,
+        } = written;
 
         let pointer_updated = self.update_checkout_pointer(project, &plan.new_prefix);
         Ok(SetPrefixOutcome {
