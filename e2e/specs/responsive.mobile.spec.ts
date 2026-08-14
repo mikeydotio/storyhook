@@ -5,6 +5,7 @@ import {
   deleteStory,
   openFilters,
   openProject,
+  requiredEnv,
   seedToken,
 } from "./support";
 
@@ -335,6 +336,98 @@ test("the list table scrolls sideways to its far columns instead of clipping the
 
   await expectNoClippedElements(page.locator("#list-view"), "the list view @ 390px");
 });
+
+/**
+ * SH-292: the Drafts popover names its project, and a project name is
+ * unbounded user input landing in a `min(30rem, 92vw)` box.
+ *
+ * This overlay had no entry in this sweep at all until now, which is what the
+ * story's council found when it checked the claim that the sweep already
+ * covered the risk: the file opened `#create-modal`, `#drawer`, `#list-view`,
+ * `#settings-view`, the toast stack and the dispatch history, and never this
+ * one. So the argument for putting the name on its own line rather than in
+ * `.modal-header` was resting on coverage that did not exist.
+ *
+ * Two different failures are asserted, because the sweep alone cannot catch
+ * both. A plain `<div>` holding a long name *wraps*: it grows to two or three
+ * lines, overflows nothing, and passes `expectNoClippedElements` while pushing
+ * the list down and reading as a title. Truncation is therefore asserted
+ * directly — the box is one line wide, its content is wider, and
+ * `text-overflow` resolves to `ellipsis` — while the sweep catches the other
+ * shape, a fixed width or a `nowrap` without an ellipsis that clips the name
+ * off the edge instead.
+ *
+ * The name arrives by rewriting `GET /api/repos`'s reply rather than by
+ * renaming the fixture: data, not behaviour, and nothing another spec runs
+ * against changes.
+ */
+const LONG_PROJECT_NAME =
+  "Storyhook Dashboard Marketing Website Redesign And Rollout Programme, " +
+  "Phase Two (Northern Hemisphere)";
+
+for (const width of SWEEP_WIDTHS) {
+  test(`the Drafts popover elides a long project name at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: SWEEP_HEIGHT });
+    await page.route("**/api/repos", async (route) => {
+      // The token explicitly: `route.fetch()` replays the request without the
+      // cookie the page authenticates with, and the daemon answers a 401 whose
+      // body is not JSON at all.
+      const response = await route.fetch({
+        headers: {
+          ...route.request().headers(),
+          "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
+        },
+      });
+      const repos = (await response.json()) as Array<{
+        name: string;
+      }>;
+      repos.forEach((repo) => {
+        if (repo.name === "Alpha Project") repo.name = LONG_PROJECT_NAME;
+      });
+      await route.fulfill({ response, json: repos });
+    });
+    await page.goto("/");
+    await openProject(page, LONG_PROJECT_NAME);
+    await page.locator("#drafts-btn").click();
+    await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
+
+    const subject = page.locator("#drafts-subject");
+    const box = await subject.evaluate((el) => ({
+      scrollWidth: el.scrollWidth,
+      clientWidth: el.clientWidth,
+      textOverflow: getComputedStyle(el).textOverflow,
+      whiteSpace: getComputedStyle(el).whiteSpace,
+    }));
+    expect(
+      box.scrollWidth,
+      `#drafts-subject (${box.clientWidth}px wide, white-space: ` +
+        `${box.whiteSpace}) is not truncating a ${LONG_PROJECT_NAME.length}-` +
+        `character project name at ${width}px -- it wrapped to more lines ` +
+        "instead, which turns a subject line into a title",
+    ).toBeGreaterThan(box.clientWidth);
+    expect(
+      box.textOverflow,
+      "#drafts-subject must truncate with an ellipsis, the treatment " +
+        "`.projsel-label` and `.drafts-row-title` already use -- clipping a " +
+        "name mid-glyph says nothing about where it was cut",
+    ).toBe("ellipsis");
+
+    await expectNoClippedElements(
+      page.locator("#drafts-modal"),
+      `the Drafts popover @ ${width}px`,
+    );
+    // Deliberately NOT `expectNoHorizontalOverflow(page, …)`, which every
+    // other sweep here calls. It fails at all four widths, on the topbar
+    // behind this popover rather than on the popover: `.projsel-btn` drops to
+    // `max-width: none` under 768px, so the same long name renders at full
+    // length and takes `document.documentElement.scrollWidth` to 799px
+    // against a 320px viewport. That is SH-303 -- found by this test, filed
+    // rather than folded in, and its own completion criterion is adding this
+    // line back.
+  });
+}
 
 /**
  * SH-235 (D5): `.toast-stack` and `.dispatch-history` are both
