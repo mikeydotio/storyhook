@@ -3,10 +3,13 @@ import { holdFetch, openProject, projectSlug, requiredEnv, seedToken } from "./s
 
 /**
  * Exercises SH-197's `?project=<slug>&story=<id>` deep link against a real
- * daemon and the two seeded projects `project-selector.spec.ts` also uses:
+ * daemon and the three seeded projects `project-selector.spec.ts` also uses:
  *
  *   - "Alpha Project" (prefix AA) — has a checkout, two open stories,
  *     including `DASHBOARD_ALPHA_STORY_ID` ("Wire up the auth flow")
+ *   - "Beta Project" (prefix BB) — has a checkout, one open story
+ *     ("Draft the release notes") — SH-300's project-mismatch spec switches
+ *     here mid-flight
  *   - "Gamma Archive" (prefix GA) — `--no-attach`: no checkout, so it's
  *     reachable read-only, exactly the case `resolveDeepLinkProject()`
  *     (`src/web_dashboard.html`) must gate on `canOpen`, not `available`
@@ -192,4 +195,72 @@ test("a deep link that resolves after the user left the board is refused, not op
   const toast = page.locator("#toast-stack .toast.error");
   await expect(toast).toBeVisible();
   await expect(toast).toContainText(ALPHA_STORY_ID);
+});
+
+/**
+ * SH-300's sibling defect: a pending deep link belongs to the project it
+ * named, not to whichever project's board happens to load first.
+ *
+ * Before this fix, `pendingDeepLinkStory` was a bare story id with no
+ * project of its own. Switching projects during the loading window didn't
+ * clear it -- `fetchData()` drops a stale reply by comparing `askedFor`
+ * against `state.repoId`, but that check runs *before*
+ * `consumeDeepLinkStory()` and never touches the pending link -- so the
+ * *next* project's own first load consumed it, searched its own stories for
+ * an id that belonged to a different project, and reported
+ * "No story `<id>` in <wrong project>", blaming the project the user
+ * switched to for a story it was never asked about.
+ *
+ * `held`'s `matches` is scoped to Alpha's own `/data` endpoint specifically
+ * (`/api/repos/<alpha>/data`), not every project's -- generically matching
+ * any `/data` reply races Alpha's own initial load against the SSE
+ * connection's onopen resync fetch for the *same* project, and whichever of
+ * those two identical-looking requests happens to arrive at the route
+ * handler first becomes "the held one," leaving the other free to land and
+ * open the drawer before this spec ever gets to switch projects. Scoping to
+ * Alpha's URL means either of Alpha's own requests is a fine one to hold --
+ * both satisfy `isFirstLoadForRepo` identically -- while leaving Beta's own
+ * `/data` endpoint (a different URL) alone entirely, so its board loads
+ * normally without needing to reason about the race a second time.
+ * `sealOnHold` closes the same race a second way: once the first Alpha
+ * reply is held, a second one landing unheld first would set `state.data`
+ * and make the held one a no-op.
+ */
+test("a deep link pending for one project is not consumed by a different project's load", async ({
+  page,
+  request,
+}) => {
+  const alpha = await projectSlug(request, "Alpha Project");
+  const alphaDataPath = `/api/repos/${alpha}/data`;
+  const held = await holdFetch(
+    page,
+    (url) => url.pathname === alphaDataPath,
+    () => true,
+    { sealOnHold: true },
+  );
+
+  await page.goto(`/?project=${alpha}&story=${ALPHA_STORY_ID}`);
+  await held.taken;
+
+  await page.locator("#projsel-btn").click();
+  await page
+    .locator("#projsel-menu .projsel-item", { hasText: "Beta Project" })
+    .click();
+  await expect(
+    page.locator(".card-title", { hasText: "Draft the release notes" }),
+  ).toBeVisible();
+
+  // Beta's own first load fires `consumeDeepLinkStory()` while the link is
+  // still pending -- refused and reported, naming ALPHA, never Beta.
+  const toast = page.locator("#toast-stack .toast.error");
+  await expect(toast).toBeVisible();
+  await expect(toast).toContainText(ALPHA_STORY_ID);
+  await expect(toast).toContainText(alpha);
+  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
+
+  // Alpha's held reply, delivered last, is now a stale/wrong-project reply
+  // by `fetchData()`'s own ticket check -- dropped before it can touch
+  // anything, including the (already-cleared) pending link.
+  await held.deliver();
+  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 });
