@@ -217,62 +217,6 @@ fn key_row(lines: &mut Vec<Line<'static>>, key: &str, action: &str, theme: &Them
     ]));
 }
 
-/// Returns all keys that appear in the help overlay, for test verification.
-pub fn all_help_keys() -> Vec<&'static str> {
-    vec![
-        // Global
-        "q",
-        "Ctrl+C",
-        "?",
-        "1",
-        "2",
-        "3",
-        "r",
-        "Ctrl+Z",
-        "Ctrl+Y",
-        // Board
-        "j / Down",
-        "k / Up",
-        "h",
-        "l",
-        "g",
-        "G",
-        "Space",
-        "Enter",
-        "> / L",
-        "< / H",
-        "n",
-        "/",
-        // Filter Bar
-        "Text input",
-        "Enter",
-        "Tab",
-        "Backspace",
-        "Esc",
-        "Ctrl+U",
-        // Story Detail
-        "Esc",
-        "j / Down",
-        "k / Up",
-        "e",
-        "Enter",
-        "c",
-        "Ctrl+E",
-        ">",
-        "<",
-        "Tab / Shift+Tab",
-        // Create Form
-        "Esc",
-        "Tab / Shift+Tab",
-        "Enter",
-        // Graph View
-        "Tab / m",
-        // Help
-        "Esc / q / ?",
-        "j / k",
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,7 +225,8 @@ mod tests {
     #[test]
     fn help_contains_all_design_keys() {
         // Every keybinding from DESIGN.md should appear in the help lines.
-        // We check that key strings from all_help_keys() appear in the rendered text.
+        // We check that each key string in design_keys below appears in the
+        // rendered text.
         let theme = Theme::colored();
         let lines = build_help_lines(&theme);
         let full_text: String = lines

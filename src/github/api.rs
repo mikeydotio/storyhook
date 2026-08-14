@@ -4,10 +4,12 @@
 //! initial setup make against a GitHub repository — mirroring
 //! [`super::storage::SyncStorage`]'s own rationale: a trait names what the
 //! engine needs, not everything the concrete client can do. [`GithubClient`]
-//! stays the only production implementation, unchanged; a `get_timeline`
-//! caller would find it on `GithubClient` directly, not through this trait,
-//! because nothing under `src/github/` calls it (tracked as its own
-//! dead-code finding, SH-198).
+//! stays the only production implementation, unchanged, and now offers
+//! nothing beyond these 7 calls: SH-158 left a `get_timeline` off the trait
+//! for lack of any caller, and SH-198 deleted it outright — remote-change
+//! detection went with `list_issues`'s `since` filter and
+//! [`super::diff::three_way_merge`], never the GitHub timeline API the
+//! original design (`.planning/IDEA.md`) had named instead.
 //!
 //! `dyn`, not a generic parameter, for the same reason `SyncStorage` is: this
 //! is a network-bound command whose cost is measured in HTTP round trips, so

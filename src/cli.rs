@@ -263,21 +263,6 @@ Global options:
   -V, --version   Print the installed story version
 "#;
 
-/// One parsed command line: what to do, plus the three global flags.
-///
-/// Only `no_hooks` reaches the layer that executes the invocation — `json`
-/// and `quiet` are rendering decisions, consumed by
-/// [`crate::output::render_response`] after the work is done. That split is
-/// why [`crate::invoke::InvokeRequest`], not this type, is what crosses a
-/// process boundary.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CliOptions {
-    pub json: bool,
-    pub quiet: bool,
-    pub no_hooks: bool,
-    pub invocation: Invocation,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MemberInput {
     Identity(String),

@@ -754,18 +754,6 @@ pub fn load_all_snapshots(root: &Path) -> Result<Vec<StorySnapshot>, AppError> {
     Ok(stories)
 }
 
-/// Outcome of [`repair_archived_snapshots`]: which archived stories' cached
-/// snapshots were rewritten, and which could not be re-folded at all.
-pub struct ArchiveRepairReport {
-    /// IDs of archived stories whose cached `snapshot_json` was stale and has
-    /// been rewritten to match a fresh fold of their event log.
-    pub repaired: Vec<String>,
-    /// Human-readable notes for archived stories that failed to re-fold
-    /// (e.g. their event log references a state slug no longer configured),
-    /// left untouched rather than overwritten with a broken snapshot.
-    pub issues: Vec<String>,
-}
-
 /// Reads the pre-rearchitecture github-sync configuration file, if this tree
 /// carries one — `.storyhook/github-sync.toml` (SH-189).
 ///
