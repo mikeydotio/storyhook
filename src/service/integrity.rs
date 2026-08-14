@@ -118,7 +118,7 @@ impl<'a, S: Store> IntegrityService<'a, S> {
             let prefix = project_prefix(tx, project)?;
             findings.extend(drift_issues(&drift, &prefix));
 
-            let mut notices = notice_issues(&drift);
+            let mut notices = notice_issues(&drift, &prefix);
             notices.extend(active_state_notice(&states));
             notices.extend(blocked_without_reason_notices(tx, project)?);
             Ok(Examination { findings, notices })
@@ -228,7 +228,10 @@ impl<'a, S: Store> IntegrityService<'a, S> {
             Ok(after.len() - before.len())
         })?;
 
-        let (touched, blocked) = self.ctx.store().write(|tx| {
+        // `prefix` rides out of the write because the advice assembled after it
+        // has to render a `StoryNo` the way the report does (SH-269), and this
+        // is where the project already answered for it.
+        let (touched, blocked, prefix) = self.ctx.store().write(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let states = tx.state_map(project)?;
             let all = all_stories(&*tx, project)?;
@@ -356,7 +359,7 @@ impl<'a, S: Store> IntegrityService<'a, S> {
                 )?;
                 touched.insert(id.clone());
             }
-            Ok((touched, blocked))
+            Ok((touched, blocked, prefix))
         })?;
 
         let repair = repair_read_model(self.ctx.store(), project)?;
@@ -425,7 +428,11 @@ impl<'a, S: Store> IntegrityService<'a, S> {
                 repair
                     .unrepairable
                     .iter()
-                    .map(|(story, reason)| format!("{story}: {reason}"))
+                    // The rendered id, like every finding above it (SH-269).
+                    // This line named a bare `StoryNo` without even the word
+                    // "story" in front of it, so `41: …` sat under `SH-41: …`
+                    // in one block.
+                    .map(|(story, reason)| format!("{}: {reason}", story.to_id(&prefix)))
                     .collect::<Vec<_>>()
                     .join("\n")
             ));
@@ -885,57 +892,70 @@ fn story_issues(tx: &impl ReadOps, project: ProjectId) -> Result<Vec<Finding>, A
 /// has never heard of is a newer storyhook's data sitting patiently in a store
 /// an older one is reading. SH-185's council put that second half somewhere it
 /// cannot move `report()`'s health verdict at all: [`notice_issues`].
-/// # `subject` is the rendered id; the sentence keeps the bare number
 ///
-/// These sentences say `story 41:` while every story-level one says `SH-41:` —
-/// one command with two names for one story. The prose is left exactly as it
-/// was, because it is pinned by golden snapshots and changing it here would be
-/// two hats in one commit; `subject` carries the id every other surface
-/// speaks, so a consumer never has to know the difference. The inconsistency
-/// itself is filed separately.
+/// # One name per story (SH-269)
+///
+/// These sentences used to lead with the bare [`StoryNo`] — `story 41:` —
+/// while every story-level one led with the rendered id, `SH-41:`. One command,
+/// two names for one story, in one report, and neither spelling a substring of
+/// the other: a reader of a mixed report could not tell the two lines were
+/// about the same story. SH-244 had already plumbed `prefix` in here to give
+/// each finding a `subject`, which made a machine consumer immune and left the
+/// prose as the only surface still saying it twice.
+///
+/// So the sentence is rendered from the same value `subject` carries, not
+/// merely from the same prefix — one expression, used twice, which is why they
+/// cannot drift apart again.
+/// `tests/service_integrity.rs::every_finding_that_names_a_story_leads_with_
+/// the_rendered_id` pins the rule over the whole report rather than over these
+/// five sentences, so a check added later inherits it.
 fn drift_issues(drift: &crate::store::ReadModelDiff, prefix: &str) -> Vec<Finding> {
     let id = |story: &StoryNo| story.to_id(prefix);
     let mut lines = Vec::new();
     for story in &drift.missing_rows {
+        let story = id(story);
         lines.push(
             Finding::new(
                 FindingCode::MissingRow,
-                format!("story {story}: has events but no read-model row"),
+                format!("{story}: has events but no read-model row"),
             )
-            .about(id(story)),
+            .about(story),
         );
     }
     for story in &drift.extra_rows {
+        let story = id(story);
         lines.push(
             Finding::new(
                 FindingCode::ExtraRow,
-                format!("story {story}: read-model row with no events"),
+                format!("{story}: read-model row with no events"),
             )
-            .about(id(story)),
+            .about(story),
         );
     }
     for (story, reason) in &drift.fold_failures {
+        let story = id(story);
         lines.push(
             Finding::new(
                 FindingCode::FoldFailure,
-                format!("story {story}: cannot be folded: {reason}"),
+                format!("{story}: cannot be folded: {reason}"),
             )
-            .about(id(story))
+            .about(story)
             .carrying(FindingData::Reason {
                 reason: reason.clone(),
             }),
         );
     }
     for divergence in &drift.divergences {
+        let story = id(&divergence.story_no);
         lines.push(
             Finding::new(
                 FindingCode::ReadModelDivergence,
                 format!(
-                    "story {}: {} is `{}` but the events say `{}`",
-                    divergence.story_no, divergence.field, divergence.persisted, divergence.rebuilt
+                    "{story}: {} is `{}` but the events say `{}`",
+                    divergence.field, divergence.persisted, divergence.rebuilt
                 ),
             )
-            .about(id(&divergence.story_no))
+            .about(story)
             // The four values SH-243 hand-parsed out of 1.68MB of prose. They
             // were structured here all along and thrown away one line later.
             .carrying(FindingData::Divergence {
@@ -947,16 +967,17 @@ fn drift_issues(drift: &crate::store::ReadModelDiff, prefix: &str) -> Vec<Findin
     }
     for unknown in &drift.unknown_events {
         if crate::domain::is_known_event_kind(&unknown.kind) {
+            let story = id(&unknown.story_no);
             lines.push(
                 Finding::new(
                     FindingCode::UndecodableEvent,
                     format!(
-                        "story {}: event {} is a `{}` this build cannot decode — retained \
+                        "{story}: event {} is a `{}` this build cannot decode — retained \
                          verbatim, but not folded",
-                        unknown.story_no, unknown.seq, unknown.kind
+                        unknown.seq, unknown.kind
                     ),
                 )
-                .about(id(&unknown.story_no))
+                .about(story)
                 .carrying(FindingData::Event {
                     seq: unknown.seq.get(),
                     event_kind: unknown.kind.clone(),
@@ -976,17 +997,24 @@ fn drift_issues(drift: &crate::store::ReadModelDiff, prefix: &str) -> Vec<Findin
 /// code — the caller decides separately how (never *whether*) to surface it,
 /// because dropping it silently just because it lost a seat in the health
 /// vector would be its own regression.
-fn notice_issues(drift: &crate::store::ReadModelDiff) -> Vec<String> {
+///
+/// It takes `prefix` for the reason [`drift_issues`] does (SH-269): a notice is
+/// rendered in the same report as the findings, so it names a story the same
+/// way they do. This half had no `subject` to fall back on — a notice is a bare
+/// `String` — which made it the worse of the two.
+fn notice_issues(drift: &crate::store::ReadModelDiff, prefix: &str) -> Vec<String> {
     drift
         .unknown_events
         .iter()
         .filter(|unknown| !crate::domain::is_known_event_kind(&unknown.kind))
         .map(|unknown| {
             format!(
-                "story {}: event {} is of kind `{}`, which this build does not know — retained \
+                "{}: event {} is of kind `{}`, which this build does not know — retained \
                  verbatim and carried by `story export`, but not folded. A newer storyhook wrote \
                  it.",
-                unknown.story_no, unknown.seq, unknown.kind
+                unknown.story_no.to_id(prefix),
+                unknown.seq,
+                unknown.kind
             )
         })
         .collect()
