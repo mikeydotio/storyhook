@@ -5,8 +5,7 @@ use ureq::Agent;
 use crate::error::AppError;
 
 use super::types::{
-    CreateIssueRequest, GithubComment, GithubIssue, PullRequestStatus, TimelineEvent,
-    UpdateIssueRequest,
+    CreateIssueRequest, GithubComment, GithubIssue, PullRequestStatus, UpdateIssueRequest,
 };
 
 const API_BASE: &str = "https://api.github.com";
@@ -374,62 +373,5 @@ impl GithubClient {
             .map_err(|e| AppError::GithubApi(format!("failed to parse pull request: {e}")))?;
 
         Ok(pr)
-    }
-
-    /// Get timeline events for an issue, with optional `since` filter.
-    ///
-    /// Automatically paginates. When `since` is provided, only events with
-    /// `created_at` after that timestamp are returned.
-    pub fn get_timeline(
-        &self,
-        issue_number: u64,
-        since: Option<&str>,
-    ) -> Result<Vec<TimelineEvent>, AppError> {
-        let mut all_events = Vec::new();
-        let mut page: u32 = 1;
-
-        loop {
-            let path = format!(
-                "/repos/{}/{}/issues/{issue_number}/timeline",
-                self.owner, self.repo
-            );
-            let req = self
-                .get(&path)
-                .header("Accept", "application/vnd.github.mockingbird-preview+json")
-                .query("per_page", PER_PAGE.to_string())
-                .query("page", page.to_string());
-
-            let mut response = req.call().map_err(|e| AppError::GithubApi(e.to_string()))?;
-
-            let status = response.status().as_u16();
-            if !response.status().is_success() {
-                return Err(self.handle_error_status(status, &mut response));
-            }
-            self.check_rate_limit(&response)?;
-
-            let events: Vec<TimelineEvent> = response
-                .body_mut()
-                .read_json()
-                .map_err(|e| AppError::GithubApi(format!("failed to parse timeline: {e}")))?;
-
-            let count = events.len();
-
-            if let Some(since_val) = since {
-                all_events.extend(
-                    events
-                        .into_iter()
-                        .filter(|ev| ev.created_at.as_deref().is_some_and(|ts| ts > since_val)),
-                );
-            } else {
-                all_events.extend(events);
-            }
-
-            if count < PER_PAGE as usize {
-                break;
-            }
-            page += 1;
-        }
-
-        Ok(all_events)
     }
 }
