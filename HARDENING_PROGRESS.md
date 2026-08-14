@@ -14476,3 +14476,93 @@ crying wolf at a known-quiet phase rather than watching for a wedge.
 **Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push,
 no version bump.
 
+### SH-275 — done
+
+**Outcome:** merged (PR #377, `dc69cec`). The origin sweep is one transaction —
+all of it lands or none of it does — and the sentence a failed sweep prints no
+longer claims something the code cannot know.
+
+**The story asked which of two fixes to build, and the council chose neither of
+the two the filing favoured.** `register_found_origins` opened one `store.write`
+per registration, so a failure part-way along committed the earlier ones while
+the `?` propagated and the function returned nothing at all: partial mutation,
+reported as total failure. The filing offered one transaction (all-or-nothing)
+or per-write plus a report of what landed, and leaned to the second on the
+SH-266 precedent — *say what you did, including when you failed*. Three seats
+chose the first, independently, blind, in round one, and the reason is worth
+keeping: **SH-266 is a rule about the advice channel, not about transaction
+granularity, and the account it exists to protect is `deregister_orphaned`'s —
+which has been one transaction all along, five lines from this call site.** The
+precedent was built on top of an atomic half and cannot be read as requiring a
+non-atomic one. Three further facts made it lopsided: per-write independence
+never bought *continuing* (the loop `?`-propagates either way), only *keeping
+what landed*, which the next `--fix` re-derives for free; every reachable
+failure is store-wide, so item-level independence was illusory; and N `BEGIN
+IMMEDIATE`/`COMMIT` cycles collapse to one.
+
+**What the round actually changed was the message, and no seat saw it coming.**
+All three round-one proposals shipped a *definite* failure sentence — "no
+origins were registered", "whatever it did not report above did not happen" —
+and by the end all three authors had withdrawn their own. `AfterCommitBeforeAck`
+is reachable in production: a crash between `COMMIT` and the acknowledgement
+leaves rows durable while the caller is told nothing landed. **From the failure
+path the caller cannot know which side of the commit it fell on**, so every
+absence claim was one the data layer could not back — and would have been false
+at precisely the moment it mattered. The shipped sentence claims atomicity and a
+safe retry, true on both sides, and a unit test pins the *absence* of absolute
+wording so it cannot come back. The generalisable form: **a definite sentence is
+not automatically an honest one; check what the code can actually know before
+promising it.** The vagueness this story set out to remove was half right — it
+was vague for a bad reason (a defect) about a fact that genuinely is unknowable.
+
+**A test whose GREEN arm never fires the fault it arms is not evidence.** That
+argument, raised by the qa seat against its own proposal, decided the mechanism
+and eliminated two others. Both rejected pins would have passed with the
+injection machinery broken: a new counted `FaultAction::FailAfter` (also
+permanent production surface for an injection-only defect) and a `Counted`
+`Store` decorator asserting `writes == 1` (also a second `Store` impl to keep in
+step with a five-method GAT trait, and a white-box bet that `SqliteStore::write`
+is exactly one `BEGIN IMMEDIATE`/`COMMIT`). What shipped instead arms the
+**existing** `AfterCommitBeforeAck` and asserts the recorded count is 0 or 3,
+never a strict subset — RED before at 1, GREEN after at 3, with the fault
+genuinely firing on both arms. It is also the guard against a future reader
+reintroducing a per-registration write "for progress reporting": that puts it
+straight back to 1, naming the harm rather than the plumbing.
+
+**Reachability, which the story explicitly asked to settle first:** latent. Not
+reachable without fault injection or a real store-level I/O failure, because the
+only domain conflict answers `Registration::HeldBy` as a value rather than an
+error. Recorded as a finding, per the story's own instruction, rather than
+treated as a reason to close it unfixed.
+
+**Gate:** green unforced twice — one full supervised run before committing (156
+`test result: ok` lines, e2e 158/158, exit 0, no orphan daemons) and the
+pre-push run that landed it.
+
+**Three earlier pre-push runs failed, on two unrelated timing-sensitive tests,
+and nothing was bypassed.** Load averaged **28** at the time — macOS
+`mediaanalysisd` at ~360% CPU plus `corespotlightd` and `photolibraryd`, none of
+it this suite's. Both tests passed in this branch's own clean gate run and pass
+in isolation; the push landed on an unforced green run once the indexer
+subsided. **The rule this run should keep: when a gate fails, check the
+machine's load before checking your diff.** Three suite runs (~27 minutes) were
+spent proving a change innocent that a single `uptime` would have exonerated in
+seconds. Two findings came out of it, both filed rather than absorbed:
+**SH-288** (`read_sse_until_quiet` returns after 500ms of silence, which cannot
+distinguish "no more events" from "events have not started", so under load it
+returns the stream preamble alone and fails an at-least-one assertion) and
+**SH-289** (the driven-deadline exchange test's churn thread republishes every
+50ms against a 250ms deadline — a 5x margin that scheduling jitter crosses).
+
+**One process note:** the pre-push hook runs the whole suite for a *branch
+deletion* push, which pushes no content at all. The merged branch was removed
+with `gh api -X DELETE .../git/refs/heads/<branch>` instead — no bypass needed,
+because the deletion never goes through `git push`.
+
+**Council:** yes — unanimous on the shape in round one, unanimous C > B > A in
+the runoff, with every seat ranking its own proposal below another's. Audit
+trail in `.council/sh275-origin-sweep-transaction-shape/`, verdict recorded as a
+comment on SH-275.
+
+**Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push,
+no version bump.
