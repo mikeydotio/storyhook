@@ -34,6 +34,20 @@
 //! understands (SH-293; the helper below says why that matters). Eight
 //! connections on one file is what eight processes are, as far as SQLite is
 //! concerned: separate connections, separate transactions, one write-ahead log.
+//!
+//! # Where the deterministic statement lives
+//!
+//! **In `src/store/migrate.rs`'s own unit tests**, not here:
+//! `two_backups_in_one_millisecond_collapse_to_one_verified_file`. The naming
+//! collision is decided by the moment a backup is taken, and no integration
+//! test can choose that moment — `migrate_with` and `Store::snapshot` both read
+//! the clock themselves, so a test on this side of the crate boundary can only
+//! *hope* two calls share a millisecond. This file used to hold a test that
+//! hoped, and it never once succeeded: it migrated a second store between its
+//! two backups, which costs more than a millisecond, so it stayed green with
+//! the defect fully reinstated (SH-295). The unit test passes one instant to
+//! `snapshot_at` twice, and is true by construction. What remains here is what
+//! only an integration test can say: eight real connections, racing.
 
 use std::path::Path;
 
@@ -139,43 +153,6 @@ fn eight_connections_migrating_one_store_all_succeed() {
         })
         .expect("the store the race produced must still open"),
     );
-}
-
-/// Two backups taken in the same millisecond are two files, not one failure.
-///
-/// The narrower statement of the same defect, without the concurrency: the
-/// property that matters is that a name collision cannot occur, and a loop is a
-/// more reliable way to put two calls in one millisecond than a race is.
-#[test]
-fn backups_taken_in_the_same_millisecond_do_not_collide() {
-    let dir = scratch_dir();
-    let path = dir.path().join("store.db");
-    let backups = dir.path().join("backups");
-    let store = migrated_store(&path, &backups);
-    let migrations = with_the_last_migration_replaced();
-
-    // The first call migrates; the rest find nothing pending. Only the first
-    // backs up, so a second store is needed to take a second backup — which is
-    // the realistic shape anyway: one machine, several projects, one upgrade.
-    let first = store
-        .migrate_with(&migrations)
-        .expect("the first migration")
-        .backup
-        .expect("a database with a schema is backed up");
-
-    let second_path = dir.path().join("second.db");
-    let second_store = migrated_store(&second_path, &backups);
-    let second = second_store
-        .migrate_with(&migrations)
-        .expect("the second migration")
-        .backup
-        .expect("and so is the second database");
-
-    assert_ne!(
-        first, second,
-        "two backups must not be handed the same filename"
-    );
-    assert!(first.exists() && second.exists());
 }
 
 /// No staging file is left behind.
