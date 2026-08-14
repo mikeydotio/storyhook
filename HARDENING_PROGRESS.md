@@ -14326,13 +14326,35 @@ worktree reap that closes the window a second PR would need. This entry and
 `CLAUDE.md`'s new standing rule ride the same branch as the three code
 commits, added once the PR (#372) existed to name.
 
-**Gate:** `make test` green — fmt, clippy `-D warnings` (workspace, all
-targets), full Rust suite, 32/32 plugin harness, 137/137 e2e — no failures,
-no warnings. `cargo check --no-default-features` also compiles (`src/github/`
-is feature-gated). One real wedge: the first `make test` run failed at the
-e2e leg because this worktree had never run `make e2e-install` — bootstrapped
-it (chromium already cached from another worktree, so download was fast) and
-re-ran the full gate clean, the same shape SH-274's entry recorded.
+**Gate:** `make test` green, three full runs. The first `make test` failed at
+the e2e leg because this worktree had never run `make e2e-install` —
+bootstrapped it (chromium already cached from another worktree, so download
+was fast) and re-ran clean (137/137 e2e). Main moved twice more while this
+docs commit was in flight (PR #373 SH-285, then PR #374 its own progress-log
+entry), both appending to this same file's tail — the append-only shape this
+file shares with every concurrent session on it. `git rebase origin/main`
+replayed the three code commits clean; only this docs commit conflicted, on
+the append point itself, resolved by keeping both sides in landing order
+(`git merge-tree` first, to see the full conflict shape before touching
+anything) rather than dropping either. Re-ran the full gate after — fmt,
+clippy `-D warnings` (workspace, all targets), full Rust suite, 32/32 plugin
+harness, 158/158 e2e (up from 137: SH-285/SH-267/SH-269 landed new specs
+during the rebase window) — no failures, no warnings, no orphan daemons
+before or after. `cargo check --no-default-features` also compiles
+(`src/github/` is feature-gated).
+
+**One false alarm, resolved before it became one.** Investigating the
+rebase's conflict, `git log --all --grep=SH-198` initially appeared to show a
+*second* branch independently doing this same deletion — `--all` includes a
+detached `HEAD`, and mid-rebase `HEAD` sits on this session's own
+already-replayed commits under new SHAs (same content, new parent). No
+duplicate work existed; confirmed by `gh pr list` (one PR names SH-198: this
+one) and by `git show origin/main:src/github/client.rs` still naming
+`get_timeline`. A second, genuine coincidence surfaced in the same
+investigation: SH-285's own progress-log entry (PR #374) names
+`/private/tmp/sh198-make-test-2.log` — this session's own scratch log path —
+as the "other session" its `pgrep -f 'make test'` matched on this shared
+machine. Confirms concurrent execution, not conflicting work.
 
 **Semver: none suggested** — dead-code deletion and a new test, no
 behavior to version. Not bumped or deployed from this worktree per standing
