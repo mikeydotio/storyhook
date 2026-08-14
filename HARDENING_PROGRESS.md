@@ -13994,3 +13994,69 @@ trusting the branch's own green.
 and re-run green on merged `main`.
 Supervised background runs throughout, 240s stall bound. No orphan daemons
 before or after any run.
+
+### SH-267 — `story doctor` folded the project four times · PR #368 · merged
+
+**The defect, and why nothing noticed it.** `diff_read_model` is not a lookup:
+it re-folds every story in the project from its own events. `IntegrityService::
+report` and `::notices` each opened with one, and every caller wanted both
+halves — so `story doctor` folded the whole project twice, and `--fix` four
+times (the two above, plus `repair_read_model` calling `diff` and then
+`rebuild` inside one write transaction). No answer changed, no byte of output
+moved, no test could see it. **A caller sees results and never the work behind
+them**, which is the whole reason this survived: re-asking a question whose
+answer you already hold is invisible from outside, and the command it made
+expensive is the one an operator reaches for when the store is *already*
+misbehaving.
+
+**Two hats, two commits, both behaviour-neutral.** `fix(store)` split
+`diff_rebuilt` out of `diff`, so a repair folds once and diffs the result the
+fold produced — the second fold was against the same snapshot in the same
+transaction and could not possibly have disagreed. `fix(service)` collapsed
+`report` and `notices` into one `examine() -> Examination`. Counts: doctor
+2 → 1, `--fix` 4 → 2. Both survivors are load-bearing — one to rebuild the read
+model, one to see what the repair left behind, which is a different question
+asked of a project the run has since written to.
+
+**Deleting the second method was the fix; deduplicating the call was not.**
+Keeping `report`/`notices` as wrappers over `examine` would have restored the
+count *today* and left the defect's shape intact: two entry points, each
+folding, whose callers all want both. There is now no way to ask for one half
+alone, so the pairing cannot drift back apart. The same edit closed a latent
+consistency hazard the file had already documented for its other two halves —
+the drift oracle used to run in a transaction of its own, so a report could name
+a divergence the rest of it never saw. One transaction now.
+
+**A test for something that produces no output.** This is the hard part of a
+pure-cost defect: there is nothing to assert on. Three shapes were weighed —
+(a) a `Store` decorator counting `events_since` from outside, ~70 delegating
+methods of test-support to observe a number the fold already knows; (b) a
+source-scanning structural guard, the `invoker_seam.rs` pattern, which pins
+call sites rather than behaviour; (c) a counter inside the fold.
+(c) won on this codebase's own precedent: `store::fault`'s crash points already
+exist for exactly this — a fact only observable from inside the process — and
+its `test-seam` sibling feature already gates `bind_and_serve`. So
+`store::rebuild::folds::counting(|| …)` is a thread-local counter, scoped
+rather than a `reset`/`read` pair so a test cannot measure whatever ran before
+it, and with the feature off the module does not exist and the call site is an
+empty inlined `fn`. `cargo build --release` carries no counter.
+
+**Each of the four new tests was verified red**, against the pre-fix shape
+rather than against a mutant: the store one by restoring `diff`-then-`rebuild`
+(2 vs 1), the service ones by folding the drift twice inside `examine` (2 vs 1
+and 3 vs 2). A count assertion that has never failed is a count assertion that
+might be counting nothing.
+
+**PR #367 landed between this branch's gate and its merge** — the same shape as
+the SH-265 entry above, but disjoint this time: #367 is dashboard HTML, e2e
+specs and `tests/web_test.rs`, and this branch is `src/store`, `src/service`
+and their suites, with no file in common and no behaviour changed on either
+side. The doctor suites were spot-checked on merged `main` immediately, and
+`make test` re-run on it in full anyway, because "merged clean" is not "tested
+together" and a merge commit preserves both parents forever.
+
+**Gate:** `make test` green on the branch — 155 `test result: ok` lines, 32
+plugin tests, 145 e2e specs, zero failures, exit 0 — and re-run green on merged
+`main` (158 e2e specs there, #367's thirteen included). Supervised background
+runs with a 120s stall bound and log growth as the pulse; no wedges, no orphan
+daemons before or after.
