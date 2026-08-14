@@ -15456,3 +15456,105 @@ was healthy and growing, and were re-polled rather than killed.
 version bump, no deploy. SH-299 closed itself: the merge commit's body named it,
 and the post-merge hook moved it to `done` before a closing comment could be
 added — so this entry, not a story comment, is the record.
+
+### SH-291 — the window that never ends · PR #399 · **done**
+
+**Outcome:** merged. A project whose `/data` never succeeds now says so, in the
+popover the user opened and in the tooltip of the button beside it, instead of
+claiming to be loading forever.
+
+**The story's premise held, and it was the useful part.** SH-284's `skeptic`
+seat filed this having already checked and rejected the obvious fix:
+`state.fetchOk` initialises `false` and takes `false` again on every failure, so
+it reads *identically* before the first fetch and after a failed one, and copy
+keyed on it names an error during boot. The fix is a state-model change, as
+filed — `state.fetchSettledFor`, the project whose `/data` has **completed**,
+with data, with an error, or with no answer at all. A project id rather than a
+flag, so a reply about a project the user has left cannot answer for the one on
+screen, and nulled by `selectRepo()` so a project re-opened is unanswered again
+whatever its last visit ended in.
+
+**The failure edge has no repaint of its own, which is the part a copy change
+would have missed.** `renderAll()` early-returns while `state.data` is null, so
+nothing repaints when a fetch fails — the same structural half SH-284 had to
+add for the `state.data = null` edge. `markDataSettled()` does both jobs:
+records the outcome, and repaints **on the transition only**, since repainting
+on every completed fetch would rebuild an open popover's rows every 25 seconds
+for nothing.
+
+**No council, and here is the argument rather than the assertion.** The one
+question with two answers — does the *button label* name the failure, or only
+the surfaces the user opens — is settled by two decisions already in the file,
+not by taste. SH-284's invariant is that this button "never claims a count it
+does not have": `"Drafts"` claims nothing, which is exactly right for a count
+that is now unknown rather than merely late. And SH-265 already decided the
+division of labour for the sibling control — the topbar stays neutral, the
+connection indicator says the store is not answering. What SH-291 adds is the
+one thing neither covers: an *opened* surface that was making a specific claim
+("Loading…") that had become misleading. Both surfaces draw their sentence from
+one `readinessNote()`, so the drift the story warned about is designed out
+rather than agreed to.
+
+**Red→green proven by toggling the failure, twice, because the first red run
+was contaminated.** The three new specs also change the loading copy, so
+against unmodified `main` they went red on their *first* assertion — the copy —
+which proves nothing about the behaviour underneath. Two variants fixed that:
+
+| variant | result |
+|---|---|
+| writer disabled (`markDataSettled` a no-op) | the two "names the failure" tests red |
+| flag reduced to a bare boolean, no per-project reset | the cross-project test red, **and SH-284's own project-switch test red beside it** |
+
+The second is the more interesting one: the alternative design a reader would
+reach for first (a boolean, not a project id) is refused by a test that already
+existed.
+
+**Held requests, not timers.** `slowData` — the file's existing helper — ends
+its window when the machine gets round to it, which is fine for a spec that only
+asserts what is on screen *during* a window and useless for one asserting the
+transition out of it. `holdDataFor(page, slug)` holds a project's reads until
+the test refuses them, scoped per project so two projects can sit in two
+different states at once. The one clock left is the page's own
+`xhr.timeout = 8000`.
+
+**A Playwright gotcha worth the comment it now carries.** `page.unroute()`
+identifies a route by the matcher it was registered with, so a URL *predicate*
+— a function — cannot be removed by passing a second one spelled identically.
+The recovery test "restored" the store that way and watched its requests go on
+being aborted for the full 10s budget, blaming the behaviour under test. It
+flips a flag the handler reads instead.
+
+**Sibling sweep — two filed, neither fixed here.**
+
+- **SH-301**: the same class on the *catalog* fetch, in its stronger form.
+  `renderHome()` paints "No projects yet." **and an "Add a project" button**
+  whenever `state.repos` is empty — which is what a store holding 500 projects
+  looks like when `/api/repos` never answers. Plus `projselLabelText()`,
+  `updateSubtitle()`, and `renderStatuses()`'s own permanent "Loading…". A
+  different fetch with its own state pair (`reposFetchOk` carries the identical
+  ambiguity), different screens, roughly double this diff.
+- **SH-302**: `closeDraftsModal()`'s 150ms backdrop timer can still land inside
+  `openDraftsModal()`'s own `requestAnimationFrame`. SH-284's fix made the timer
+  re-read `classList.contains("open")`, but that class is added a frame *after*
+  the popover opens, so a blocked renderer reopens the window — producing
+  exactly the `class="backdrop open" hidden` state SH-284 was filed for.
+  Observed once here, in SH-284's own regression test, on a variant
+  behaviourally identical to `main` (load ~5–6, a `cargo build` in the same
+  run); passed in the four other runs of that file this session. Filed rather
+  than fixed: it is another story's defect and needs its own deterministic
+  repro (defer `requestAnimationFrame` past 150ms), not a footnote in this one.
+
+**Supervision.** Six background runs, all watched. One 120-second silence in the
+gate's compile phase was checked against the process table rather than killed —
+three `dsymutil` at ~99% CPU, load 34 — which is SH-284's own recorded lesson
+(log growth is the right pulse for the test phase and the wrong one for the
+compile phase). No wedge, no kill, no restart. One self-inflicted trap worth
+naming: a `( … ) &` *inside* a backgrounded tool call returns a completion
+notification for the backgrounding, not for the work, so the first e2e run
+reported "done" while it had not started. Poll the log, never the notification.
+
+**Gate:** `make test` green — fmt, clippy, **157** `test result: ok`, the plugin
+harness, **182** e2e specs, zero failures.
+
+**Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push,
+no version bump, no deploy.
