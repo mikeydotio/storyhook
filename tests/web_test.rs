@@ -1676,6 +1676,12 @@ fn web_serve_root_html_meets_wcag_tap_target_size() {
         ".rel-id",
         ".rel-remove",
         ".dispatch-history-dismiss",
+        // SH-304 gave the durable error toast a dismiss button of its own.
+        // It shares one grouped rule with the history row's, which is why
+        // `declarations` resolves a selector that is a *member* of a list --
+        // the alternative was a second copy of the same six declarations,
+        // free to drift on one surface and not the other.
+        ".toast-dismiss",
     ] {
         let decl = declarations(css, selector);
         assert!(
@@ -1702,6 +1708,69 @@ fn web_serve_root_html_meets_wcag_tap_target_size() {
             "`{selector}` must set `{expected}`"
         );
     }
+}
+
+/// SH-304: a notification is the one element that appears unbidden, so its
+/// entrance and exit are exactly the motion a reader who asked for less of it
+/// did not ask for -- and `.toast`/`.toast.leaving` sat OUTSIDE the
+/// reduced-motion block for as long as it has existed, while `.card`'s
+/// equivalents sat inside it.
+///
+/// Two halves, and the second is the one that keeps this honest: the
+/// animations must be gated, and the *dismissal* must not be. A fix that
+/// silenced the fade by never dismissing at all would satisfy the first
+/// assertion and leave notices piling up forever under reduced motion.
+/// `e2e/specs/notification-contract.spec.ts` proves the behaviour in a real
+/// browser with `emulateMedia`; this is the cheap layer that fails in seconds
+/// if the rules are moved back out.
+#[test]
+fn web_serve_root_html_gates_notification_motion_but_never_its_dismissal() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .expect("dashboard responds");
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    for selector in [".toast", ".dispatch-history-row"] {
+        assert!(
+            !declarations(css, selector).contains("animation:"),
+            "`{selector}`'s ungated rule must not animate -- move the animation \
+             inside the prefers-reduced-motion block"
+        );
+    }
+
+    let motion_block_start = css
+        .find("@media (prefers-reduced-motion: no-preference) {")
+        .expect("the reduced-motion block exists");
+    let motion_block = &css[motion_block_start..];
+    for fragment in [".toast, .dispatch-history-row", ".toast.leaving"] {
+        assert!(
+            motion_block.contains(fragment),
+            "`{fragment}` must be gated behind prefers-reduced-motion, like every \
+             other decorative animation in this file"
+        );
+    }
+
+    // The fade duration is a token the script reads (`readMsToken`), not a
+    // number restated on both sides: two hand-kept copies let the node be
+    // removed mid-fade the first time one of them moves.
+    assert!(
+        css.contains("--toast-fade:"),
+        "the fade duration must be a custom property, so the script can read it"
+    );
+    assert!(
+        body.contains("animation: toast-out var(--toast-fade)"),
+        "the fade animation must be driven by --toast-fade rather than a literal"
+    );
+    assert!(
+        body.contains("readMsToken(\"--toast-fade\""),
+        "the script must READ --toast-fade rather than restate its value"
+    );
 }
 
 /// SH-203: the status light itself never carries the `unknown` colour --
