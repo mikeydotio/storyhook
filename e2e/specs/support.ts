@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import type {
   APIRequestContext,
   APIResponse,
+  Locator,
   Page,
   Request,
   Route,
@@ -142,6 +143,40 @@ export async function openProject(page: Page, name: string): Promise<void> {
   await page.locator(".repo-card-name", { hasText: name }).click();
   await expect(page.locator("#board-view")).toBeVisible();
   await waitForBoardData(page);
+}
+
+/**
+ * Runs `locator`'s own click handler with no user gesture, for the specs whose
+ * subject is what a navigation does to an overlay that is already open.
+ *
+ * Since SH-299 every overlay marks the background `inert`, so a control behind
+ * an open drawer, modal or popover can be neither clicked (the backdrop takes
+ * the click and dismisses the overlay instead) nor focused-and-pressed (an
+ * inert element is not a focusable area). Closing that second route is the
+ * entire point of that story: the dashboard used to be modal for the mouse and
+ * non-modal for the keyboard, and SH-290's defect rode in on the difference.
+ *
+ * Several specs were built on that difference, and say so at length in their
+ * own headers — they reached for the keyboard precisely because the backdrop
+ * blocked the mouse. The states they arrange are still reachable without a
+ * gesture: `fetchReposOnce()` calls `goHome()` on its own when the open
+ * project is deleted by another client, and a deep-linked drawer can land on a
+ * screen the user has already navigated to. What those tests pin is what
+ * `goHome()`, `goStatuses()` and `selectRepo()` do to an open overlay however
+ * they are entered, and that is worth pinning whether or not a hand can still
+ * enter them.
+ *
+ * `dispatchEvent("click")` delivers a synthetic event straight to the element,
+ * so it skips hit-testing and inertness while still running the production
+ * listener — the real handler, the real function, the real render. It models no
+ * user, deliberately, and each caller says so.
+ *
+ * Never reach for this to get past an ordinary actionability failure. A control
+ * the user can actually reach must be driven the way the user reaches it, or
+ * the spec stops describing the product.
+ */
+export async function activateBehindOverlay(locator: Locator): Promise<void> {
+  await locator.dispatchEvent("click");
 }
 
 /**

@@ -1,5 +1,6 @@
 import { test, expect, type APIRequestContext } from "@playwright/test";
 import {
+  activateBehindOverlay,
   cleanUpCreatedStories,
   openProject,
   projectSlug,
@@ -267,20 +268,23 @@ test("a switch to another project carries neither the count nor the rows", async
   await page.locator("#drafts-btn").click();
   await expect(page.locator("#drafts-list .drafts-row")).toHaveCount(1);
 
-  // The switch is driven by keyboard because that is the only way a real user
-  // reaches the project selector from here: `.backdrop` is `position: fixed;
-  // inset: 0` over an unpositioned topbar, so a *mouse* click on
-  // `#projsel-btn` hits the backdrop and closes the popover instead. Nothing
-  // traps focus, so Enter on the focused selector is a genuine user path --
-  // the same one `project-selector.spec.ts` drives.
+  // The switch cannot be driven by hand from here, and that is now true of
+  // both input devices. `.backdrop` is `position: fixed; inset: 0` over an
+  // unpositioned topbar, so a *mouse* click on `#projsel-btn` hits the
+  // backdrop and closes the popover instead; this test used to reach it with
+  // Enter on the focused selector, which SH-299 closed on purpose by marking
+  // the background `inert`. The state itself is still reachable with no
+  // gesture at all -- `fetchReposOnce()` calls `goHome()` when the open
+  // project is deleted elsewhere, and every one of these navigations runs
+  // `renderScreen()` the same way -- so the two steps below go through
+  // `activateBehindOverlay()`, which runs the selector's own listeners
+  // without one. See that helper's comment.
   await slowData(page);
-  await page.locator("#projsel-btn").focus();
-  await page.keyboard.press("Enter");
+  await activateBehindOverlay(page.locator("#projsel-btn"));
   await expect(page.locator("#projsel-menu")).toBeVisible();
-  // Opening focuses the current project (Alpha, first in the seeded list),
-  // so one ArrowDown reaches Beta.
-  await page.keyboard.press("ArrowDown");
-  await page.keyboard.press("Enter");
+  await activateBehindOverlay(
+    page.locator("#projsel-menu .projsel-item", { hasText: "Beta Project" }),
+  );
 
   // The regression this story is named for: Alpha's count must never describe
   // Beta, not even for the one `/data` round trip Beta takes to answer.
@@ -334,13 +338,12 @@ test("the Drafts button belongs to the board, and its popover does not outlive i
   await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
   await expect(page.locator("#drafts-list .drafts-row")).toHaveCount(1);
 
-  // Keyboard again, and for the same reason: the open popover's backdrop
-  // covers the topbar, so this is the path by which a user genuinely can
-  // leave the board with the popover still up. The asynchronous route --
-  // `fetchReposOnce()` calling `goHome()` when the open project is deleted by
-  // another client -- reaches the same state with no gesture at all.
-  await page.locator("#home-btn").focus();
-  await page.keyboard.press("Enter");
+  // The open popover's backdrop covers the topbar, and since SH-299 marks it
+  // `inert` the keyboard is covered too -- so no gesture leaves the board with
+  // the popover still up. The asynchronous route named above still does:
+  // `fetchReposOnce()` calls `goHome()` when the open project is deleted by
+  // another client, which is the caller this assertion is really about.
+  await activateBehindOverlay(page.locator("#home-btn"));
 
   await expect(page.locator("#drafts-btn")).toBeHidden();
   // The popover must not be left orphaned on a screen with no owning control
