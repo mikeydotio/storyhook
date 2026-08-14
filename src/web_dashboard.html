@@ -1502,42 +1502,53 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return match;
   }
 
-  /** The story id `?story=` named, held here until `resolveDeepLinkProject`'s
-   * project has actually loaded -- consumed (and cleared) by
-   * `consumeDeepLinkStory()`, called from `fetchData()`'s first-load branch
-   * for `state.repoId`. */
-  var pendingDeepLinkStory = null;
+  /** The `?story=` id and the project it was named alongside, held here
+   * until `resolveDeepLinkProject`'s project has actually loaded --
+   * consumed (and cleared) by `consumeDeepLinkStory()`, called from
+   * `fetchData()`'s first-load branch for `state.repoId`. `null` when no
+   * story is pending. The project id travels with the story id (rather
+   * than a bare id, before SH-300's own sibling fix) because
+   * `state.repoId` can move to a DIFFERENT project during the same async
+   * gap this guards against: switching boards while this is still pending
+   * left it stranded, and the NEXT project's own first load consumed it,
+   * searching that project's stories for an id that was never its to find
+   * and blaming it for a story that belonged elsewhere. */
+  var pendingDeepLink = null;
 
-  /** Opens `pendingDeepLinkStory` now that this repo's first `/data` has
-   * landed, or refuses and reports why, stripping it from the URL either
-   * way. One-shot: `pendingDeepLinkStory` is cleared up front, so a later
-   * poll of the same repo never retries it.
+  /** Opens `pendingDeepLink`'s story now that its project's first `/data`
+   * has landed, or refuses and reports why, stripping it from the URL
+   * either way. One-shot: `pendingDeepLink` is cleared up front, so a
+   * later poll of the same repo never retries it.
    *
-   * Refuses (SH-300) if `state.screen !== "repo"` -- the user has left the
-   * board for Home or Settings during the async gap between arming this
-   * and this repo's first reply landing. `openDrawer()` itself carries no
-   * runtime guard for this: it is reachable only from DOM the board renders
-   * while it's the visible screen, and this is the one call site that can
-   * reach it asynchronously, after that has stopped being true. A refusal
-   * reports rather than silently drops the link -- the same reason the
-   * not-found case below has always toasted -- because `syncUrl()` (below,
-   * and via `renderScreen()` on every navigation) has by now already
-   * stripped `?project=&story=` from the address bar, so a silent refusal
-   * would leave no trace anywhere that a valid link was ever there. Durable
-   * (`error` variant) for the same reason: nothing else in this page
-   * records that the link resolved once the toast itself is gone.
+   * Refuses (SH-300) unless BOTH still hold at the moment this runs:
+   * `state.screen === "repo"` (the user hasn't left the board for Home or
+   * Settings) and `state.repoId === pendingDeepLink.repoId` (the user
+   * hasn't switched to a different project's board) -- see the field's own
+   * doc comment for why both can go false independently. `openDrawer()`
+   * itself carries no runtime guard for this: it is reachable only from
+   * DOM the board renders while it's the visible screen, and this is the
+   * one call site that can reach it asynchronously, after that has stopped
+   * being true. A refusal reports rather than silently drops the link --
+   * the same reason the not-found case below has always toasted --
+   * because `syncUrl()` (below, and via `renderScreen()` on every
+   * navigation) has by now already stripped `?project=&story=` from the
+   * address bar, so a silent refusal would leave no trace anywhere that a
+   * valid link was ever there. Durable (`error` variant) for the same
+   * reason: nothing else in this page records that the link resolved once
+   * the toast itself is gone.
    *
    * Resolved case-insensitively, since a pasted id's case shouldn't matter
    * even though every other lookup in this file (`findStory`) is exact. */
   function consumeDeepLinkStory() {
-    var id = pendingDeepLinkStory;
-    pendingDeepLinkStory = null;
-    if (!id) return;
-    if (state.screen !== "repo") {
-      toast("`" + id + "` in " + state.repoId + " didn't open — you navigated away before it loaded", "error");
+    var pending = pendingDeepLink;
+    pendingDeepLink = null;
+    if (!pending) return;
+    if (state.screen !== "repo" || state.repoId !== pending.repoId) {
+      toast("`" + pending.storyId + "` in " + pending.repoId + " didn't open — you navigated away before it loaded", "error");
       syncUrl();
       return;
     }
+    var id = pending.storyId;
     var target = (state.data.stories || []).filter(function(v) {
       return v.story.id.toLowerCase() === id.toLowerCase();
     })[0];
@@ -8240,7 +8251,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       var linked = resolveDeepLinkProject();
       urlSyncArmed = true;
       if (linked) {
-        pendingDeepLinkStory = deepLink.story;
+        if (deepLink.story) pendingDeepLink = { repoId: linked.id, storyId: deepLink.story };
         selectRepo(linked.id);
         return;
       }
