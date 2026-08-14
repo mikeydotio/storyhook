@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+#
+# The push gate — SH-306.
+#
+# Refuses to push a tree that `make test` has not certified. Git runs this hook
+# itself, synchronously, with no timeout and no interest in whether the push was
+# typed, scripted, backgrounded or issued by an agent — which is the whole
+# reason the gate lives here now. Its predecessor was a Claude Code `PreToolUse`
+# hook that got SIGTERMed at its own 900-second ceiling, after which the push
+# proceeded ungated and unannounced; six of eight logs on that machine ended at
+# exactly 900s over three days.
+#
+# This hook does no work. It asks whether the tree being pushed has a receipt
+# and answers in milliseconds. `scripts/gate-receipt.sh` is what writes one, as
+# the last line of `make test`.
+#
+# Bypasses, both deliberate and both documented in CLAUDE.md:
+#   SKIP_PREPUSH_TESTS=1   announced loudly here (a silent bypass is the same
+#                          defect class in a friendlier costume)
+#   git push --no-verify   git's own; this hook never runs at all
+
+set -uo pipefail
+
+if [ "${SKIP_PREPUSH_TESTS:-}" = "1" ]; then
+    echo "pre-push: BYPASS — SKIP_PREPUSH_TESTS=1, shipping without a certified tree." >&2
+    exit 0
+fi
+
+common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd)" || exit 1
+receipts="$common_dir/storyhook/gate-receipts"
+
+refused=0
+unreceipted_commits=""
+
+while read -r local_ref local_sha _remote_ref remote_sha; do
+    [ -n "${local_sha:-}" ] || continue
+
+    # An all-zero local sha is a ref DELETION. It ships no content, so there is
+    # nothing to certify — and resolving `^{tree}` on it would fail for entirely
+    # the wrong reason.
+    case "$local_sha" in
+    *[!0]*) ;;
+    *) continue ;;
+    esac
+
+    tree="$(git rev-parse --quiet --verify "${local_sha}^{tree}" </dev/null)" || {
+        echo "pre-push: cannot resolve a tree for $local_ref ($local_sha)" >&2
+        refused=1
+        continue
+    }
+
+    if [ ! -f "$receipts/$tree" ]; then
+        echo "pre-push: REFUSED — $local_ref (tree $tree) has no green receipt." >&2
+        echo "  Nothing certifies that this content passes. Run 'make test'; its" >&2
+        echo "  last step writes the receipt. Bypass deliberately with" >&2
+        echo "  SKIP_PREPUSH_TESTS=1 or --no-verify if this is a docs-only push." >&2
+        refused=1
+        continue
+    fi
+
+    # Per-commit greenness is a rule this project states, and one this gate
+    # deliberately does not enforce: a receipt per commit would mean a
+    # nine-minute suite per commit, which is the pressure that produced SH-306
+    # in the first place. So name what is being let through rather than either
+    # blocking it or hiding it.
+    if [ -z "${remote_sha:-}" ] || [ "${remote_sha//0/}" = "" ]; then
+        range=(--max-count=50 "$local_sha" --not --remotes)
+    else
+        range=(--max-count=50 "${remote_sha}..${local_sha}")
+    fi
+    while read -r sha subject; do
+        [ -n "${sha:-}" ] || continue
+        commit_tree="$(git rev-parse --quiet --verify "${sha}^{tree}" </dev/null)" || continue
+        [ -f "$receipts/$commit_tree" ] && continue
+        unreceipted_commits="$unreceipted_commits  ${sha:0:9} ${subject:-}
+"
+    done < <(git log --format='%H %s' "${range[@]}" </dev/null 2>/dev/null || true)
+done
+
+if [ -n "$unreceipted_commits" ]; then
+    echo "pre-push: these pushed commits carry no receipt of their own — the tip" >&2
+    echo "  is certified, they are not, so a bisect can land on one nothing ran:" >&2
+    printf '%s' "$unreceipted_commits" >&2
+fi
+
+exit "$refused"
