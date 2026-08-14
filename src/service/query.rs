@@ -621,6 +621,20 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
     /// clears it when a story reopens into an OPEN state and restamps it on
     /// the next close, so a story closed twice reports the closure that
     /// really happened in this window, not the first one.
+    ///
+    /// Membership is three separate questions — is `closed_at`,
+    /// `created_at` or `updated_at` inside the window — rather than one
+    /// `updated_at` pre-filter followed by a superstate split. The three
+    /// timestamps are not ordered against one another: [`domain::fold_story`]
+    /// sets `updated_at` to the *last replayed* event's `at`, not the
+    /// greatest one seen, and nothing — no schema CHECK, no guard in
+    /// `append_and_fold` — stops a later event from carrying an earlier
+    /// `at` than its predecessor's. A restored import replaying an old
+    /// export, or a system clock that stepped back, can leave `updated_at`
+    /// behind `closed_at`. A single `updated_at` gate ahead of the split
+    /// would then silently drop a closure that genuinely happened in the
+    /// window — the same defect this method exists to fix, reached from the
+    /// other direction.
     pub fn handoff(&self, since: Option<&str>) -> Result<String, AppError> {
         let duration = match since {
             Some(raw) => parse_duration(raw).ok_or_else(|| {
@@ -633,9 +647,6 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
 
         let (mut created, mut updated, mut closed) = (Vec::new(), Vec::new(), Vec::new());
         for story in self.all_stories_legacy_order()? {
-            if story.updated_at.as_str() < threshold.as_str() {
-                continue;
-            }
             // `closed_at.is_some()` *is* `superstate == CLOSED` — tied
             // together by two schema CHECKs on the row this snapshot was
             // read from (`archived = (closed_at IS NOT NULL)` and
@@ -652,7 +663,7 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
                 closed.push(story);
             } else if story.created_at.as_str() >= threshold.as_str() {
                 created.push(story);
-            } else {
+            } else if story.updated_at.as_str() >= threshold.as_str() {
                 updated.push(story);
             }
         }
