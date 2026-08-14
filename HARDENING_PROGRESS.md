@@ -15927,3 +15927,106 @@ the log is expected stderr from the deliberate daemon-stop test that reports
 **Deviations:** one, caught and corrected — see Supervision above. No
 `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push, no version bump, no
 deploy.
+
+### SH-304 — done
+
+**Outcome:** merged (PR #410). A dispatch notification is now reported by
+**what happened**, not by **who started it** — and the ~90-word paragraph in
+the story's screenshot is gone from the UI entirely.
+
+**The paragraph was `story.sh` talking to an agent.** `display` is authored for
+`story.sh`'s Claude *skill* consumer and was relayed verbatim into the browser.
+Trimming the relay would not have held — the next thing the script chose to say
+would land in the UI too — so the headline is composed client-side from typed
+fields the daemon already sends: `<id> <verb>`, plus `(auto)`, where the verb is
+the `DispatchState` itself.
+
+**Two prior decisions pointed the other way, which is why this went to the
+council.** SH-232 made every `--auto` result durable (nobody necessarily watches
+an unattended run — SH-227's incident review is why it exists); SH-196 doubled
+the error-toast lifetime to 9s so a remedy sentence could be read. The story
+asked for terse text and a 3s fade, and the screenshot showed a *successful*
+auto dispatch, so the failure case may never have been in view.
+
+**The council's verdict: route by outcome, not by the `auto` flag.** A success is
+corroborated twice whether or not anyone saw the notice — the story moves to
+in-progress, and the tmux window exists — so it may clear itself. A refusal or
+failure is corroborated nowhere; it leaves the story exactly as it was. That was
+as true of an *attended* failure (a 9s toast until now) as of an unattended one.
+So SH-232's durability survives, **narrowed** to the outcomes it was protecting
+and **extended** to the attended ones it never covered. `TOAST_ERROR_LIFETIME_MS`
+is deleted rather than raised: the honest version of "long enough to read a
+remedy" is no deadline at all.
+
+**Three seats, two rounds, IRV after a 1-1-1 split.** Round 1 went 0-1-2 with
+Seat 1 abandoning its own proposal immediately. Deliberation converged all three
+on outcome-based routing — including Seat 3 (accessibility) reversing its own
+"every `--auto` row is durable" rule after separating WCAG conformance from
+operational discoverability, and concluding only the first is its seat's to
+enforce. The runoff eliminated the one structural dissent (relocating attended
+failures to the history panel) on zero second-choice votes. Audit trail:
+`.council/sh-304-dashboard-notification-contract/`.
+
+**The chair corrected the council twice, from the code.** Both are in
+`DECISION.md` as binding constraints:
+
+1. A seat justified its reversal partly on "the daemon persists
+   `DispatchRecord`s, so discoverability is solved server-side". Half true and
+   the wrong half is load-bearing: it does persist them, but **no route exposes
+   them, the dashboard never reads them, and they evict after 30 minutes or 32
+   records** (`RETAIN_FOR`/`RETAIN_FINISHED`). It does not disturb letting a
+   success fade; it is exactly why a failure may never fade.
+2. The story's first example, `<story-id> created`, names a toast **SH-127's
+   council unanimously deleted** — the card's own `entering` animation confirms
+   creation in place. Read as *format* guidance. Reversing a unanimous prior
+   verdict was not in this story's ask.
+
+**A pre-existing accessibility gap closed on the way past.** `.toast` and
+`.toast.leaving` sat *outside* the `prefers-reduced-motion` guard that `.card`'s
+equivalents have always sat inside — so a reader who asked for less motion got
+the slide-in and slide-out anyway, from the one element that appears unbidden.
+The animations moved inside; the *dismissal* deliberately did not, matching the
+split `.card` has drawn since SH-203 (information stays, decoration drops). The
+surviving 3s timer also pauses on hover, on focus, and while `document.hidden` —
+WCAG SC 2.2.1, and the case a bare `setTimeout` gets exactly backwards for a
+notice that exists because nobody may be looking.
+
+**Two hats, three commits.** The CSS-contract test helper could not find a rule
+whose selector was one member of a list, so two dismiss buttons would have needed
+two copies of the same declarations. That refactor landed **first and alone**,
+verified green against the *unmodified* stylesheet (185 passed) before the
+behaviour change touched anything.
+
+**My own "behaviour-preserving" refactor wasn't, twice — and the suite caught
+both, not my reasoning.** First it resolved `.projsel-item` to a grouped
+`touch-action` rule instead of that selector's own sizing rule (fixed: a rule
+written for the selector *alone* wins). Then a CSS comment containing a comma,
+sitting in the gap the parser reads as a selector list, broke `.status-reorder
+button` (fixed: strip comments first). The original helper was immune to both
+because it anchored on `\n<selector> {`. Worth recording as the reason to run the
+suite rather than trust a diff that looks obviously safe.
+
+**Tests, and one that was wrong before it was right.**
+`notification-contract.spec.ts` (8 new) covers both halves of the outcome rule
+over stubbed dispatches — the `refused`/`failed` `--auto` outcomes a real
+`story.sh` cannot be asked for on demand — plus all three timer guards,
+including the suite's first `prefers-reduced-motion` and hidden-document cases.
+The hidden-tab test initially drove a real background tab and failed: **headless
+Chromium reports every page as `visible`**, so `bringToFront` proves nothing. It
+now asserts that fact explicitly, so a future browser reporting honestly fails
+the assertion and invites the real thing. The reduced-motion pin in
+`web_test.rs` was **mutation-tested** — reintroducing the animation makes it
+fail — because a pin that cannot fail is not a pin.
+
+**Gate:** `make test` green twice. Once before the rebase (157 Rust suites,
+plugin 32/0, e2e 199/199) and again after, because SH-303 landed in the same
+file mid-run (e2e 203/203 with its four). The pre-push hook did **not** run
+`make test` — the push completed in ~20s with no gate output — which is why the
+second full run was done by hand rather than assumed. Worth watching: a hook
+believed to be enforcing the gate, that silently isn't, is this file's own
+favourite failure shape.
+
+**Supervision:** log-growth heartbeat with a 120s stall bound on every
+background run. No stalls, no wedges, no kills.
+
+**Deviations:** none.
