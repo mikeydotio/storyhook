@@ -6,13 +6,20 @@
 //!   deferred transaction, so a multi-statement read sees one consistent
 //!   snapshot. Write-ahead logging means they never block a writer and a
 //!   writer never blocks them.
-//! - **Writes** serialize on a process-wide mutex and then open with `BEGIN
-//!   IMMEDIATE`, which takes SQLite's write lock up front rather than
-//!   discovering halfway through a transaction that it cannot be had. The
-//!   mutex makes contention *within* a process free; `busy_timeout` handles
-//!   contention *between* processes, and is set to the same five seconds the
-//!   old `.storyhook/lock` deadline used, so the `LockTimeout` contract is
-//!   preserved exactly.
+//! - **Writes** serialize on a mutex belonging to *this store* and then open
+//!   with `BEGIN IMMEDIATE`, which takes SQLite's write lock up front rather
+//!   than discovering halfway through a transaction that it cannot be had. The
+//!   mutex makes contention *within* one [`SqliteStore`] free; `busy_timeout`
+//!   handles contention *between* processes, and is set to the same five
+//!   seconds the old `.storyhook/lock` deadline used, so the `LockTimeout`
+//!   contract is preserved exactly.
+//!
+//!   The mutex is a field rather than a static, which reads as process-wide
+//!   only because production opens one store per process. Two `SqliteStore`s
+//!   on one file in one process contend exactly as two processes do — through
+//!   SQLite's own lock and nothing else — which is what
+//!   `tests/service_project_set_prefix.rs` relies on to stand in for a second
+//!   process, and what `write_guard` alone therefore cannot exclude.
 //! - **The pool is explicit**, a `Mutex<Vec<Connection>>` holding at most eight
 //!   idle connections, rather than a thread-local. A thread-local pool leaks
 //!   one connection per thread that ever touched the store and cannot be
