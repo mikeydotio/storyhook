@@ -28,11 +28,17 @@
 
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::daemon::lifecycle::{self, CurrentRequest, DaemonInfo};
 use crate::env::Environment;
+
+/// How many preserved crash logs are kept, oldest pruned first — the same
+/// figure and the same reasoning [`crate::daemon::backup::RETAIN`] uses: a
+/// week of daily use, and a bound on a directory nothing else prunes.
+pub const RETAIN: usize = 7;
 
 /// Where in the source a caught panic originated, when the panic carried one
 /// — every panic from `panic!`, `assert!`, or an `unwrap`/`expect` does.
@@ -91,9 +97,17 @@ impl From<&DaemonInfo> for CrashedDaemon {
 pub enum CrashClassification {
     /// A panic record survived to be read — proof of a defect.
     Panicked,
-    /// A portfile survived with nobody holding its pidfile lock, and no
-    /// panic record explains it. Most commonly a reboot, a logout, or a hand
-    /// `kill` — not, by itself, evidence of anything wrong with the daemon.
+    /// The OS itself wrote a crash report naming this pid and this signal —
+    /// proof of a defect the panic hook could not have caught, because it
+    /// only runs for a Rust panic and this is a fatal *signal*:
+    /// `SIGSEGV`/`SIGBUS`/`SIGILL`/`SIGFPE`/`SIGTRAP`/`SIGABRT` raised
+    /// outside one, most often inside an FFI boundary.
+    FatalSignal(i32),
+    /// A portfile survived with nobody holding its pidfile lock, and neither
+    /// a panic record nor a matching crash report explains it. Most commonly
+    /// a reboot, a logout, or a hand `kill -9` — `SIGKILL` is delivered by
+    /// the kernel directly and raises no Mach exception, so it is invisible
+    /// to both. Not, by itself, evidence of anything wrong with the daemon.
     UncleanExit,
 }
 
@@ -117,6 +131,13 @@ pub struct CrashRecord {
     /// What this daemon was serving at the moment it stopped answering, read
     /// before anything else could touch it.
     pub inflight: Vec<CurrentRequest>,
+    /// Where the dead daemon's own log was preserved, if there was one to
+    /// preserve — a first spawn has none, and a launchd-started daemon has no
+    /// [`lifecycle::spawn_child`] rotating one into place at all. Under
+    /// [`crate::env::Environment::crash_logs_dir`], never under
+    /// [`crate::env::Environment::daemon_log_rotated`], which the *next*
+    /// spawn is free to overwrite.
+    pub log_path: Option<PathBuf>,
 }
 
 /// A crash's ledger id: sortable, filesystem-safe, and stable enough to
@@ -335,22 +356,170 @@ pub fn harvest(env: &Environment) -> Option<CrashRecord> {
     let panics = read_panics(env);
     clear_panics(env);
     let inflight = lifecycle::read_inflight(env);
-    let classification = if panics.is_empty() {
-        CrashClassification::UncleanExit
-    } else {
-        CrashClassification::Panicked
-    };
     let detected_at = env.now();
+    let id = crash_id(&detected_at, residue.pid);
+    let classification = classify(
+        &panics,
+        fatal_signal_report(env, residue.pid, &residue.started_at),
+    );
+    let log_path = preserve_log(env, &id);
     let record = CrashRecord {
-        id: crash_id(&detected_at, residue.pid),
+        id,
         detected_at,
         classification,
         daemon: Some(CrashedDaemon::from(&residue)),
         panics,
         inflight,
+        log_path,
     };
     record_crash(env, record.clone());
     Some(record)
+}
+
+/// The pure decision [`harvest`] hands its evidence to — no filesystem, no
+/// clock, fully covered by unit tests that never touch a real crash report.
+fn classify(panics: &[PanicRecord], fatal_signal: Option<i32>) -> CrashClassification {
+    if !panics.is_empty() {
+        CrashClassification::Panicked
+    } else if let Some(signal) = fatal_signal {
+        CrashClassification::FatalSignal(signal)
+    } else {
+        CrashClassification::UncleanExit
+    }
+}
+
+/// Best-effort: a fatal signal the OS itself reported for `pid`, if it wrote
+/// a crash report after `started_at` and this build knows how to look.
+///
+/// Absent entirely off macOS, and absent in a test build's isolated
+/// environment even on one — [`Environment::home`] is redirected under
+/// [`crate::env::is_test_build`]'s isolation, so this looks in a directory
+/// that does not exist and finds nothing, which is the correct answer for a
+/// test: it must never attribute a developer's real crash report to a
+/// fixture daemon.
+#[cfg(target_os = "macos")]
+fn fatal_signal_report(env: &Environment, pid: u32, started_at: &str) -> Option<i32> {
+    let after = chrono::DateTime::parse_from_rfc3339(started_at).ok()?;
+    let dir = env.home().join("Library/Logs/DiagnosticReports");
+    let mut entries: Vec<_> = std::fs::read_dir(&dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .collect();
+    entries.sort_by_key(|entry| {
+        std::cmp::Reverse(entry.metadata().and_then(|meta| meta.modified()).ok())
+    });
+    for entry in entries.into_iter().take(50) {
+        let Ok(modified) = entry.metadata().and_then(|meta| meta.modified()) else {
+            continue;
+        };
+        if modified < std::time::SystemTime::from(after) {
+            continue;
+        }
+        let Ok(contents) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        if names_pid(&contents, pid)
+            && let Some(signal) = extract_fatal_signal(&contents)
+        {
+            return Some(signal);
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+fn fatal_signal_report(_env: &Environment, _pid: u32, _started_at: &str) -> Option<i32> {
+    None
+}
+
+/// Whether a macOS crash report's text names `pid` — the JSON-lines format
+/// (macOS 12+) and the older text format spell the field differently, so both
+/// are checked. A pure string search, unit-tested with fixture text rather
+/// than a real report.
+#[cfg(target_os = "macos")]
+fn names_pid(contents: &str, pid: u32) -> bool {
+    contents.contains(&format!("\"pid\" : {pid}"))
+        || contents.contains(&format!("\"pid\":{pid}"))
+        || contents.contains(&format!("Identifier:{pid}"))
+        || contents.contains(&format!("PID: {pid}"))
+}
+
+/// The fatal signal a macOS crash report's text names, if any of the six that
+/// raise a Mach exception appear in it. Checked in a fixed order so a report
+/// naming more than one (some do, in an "Exception Codes" line alongside the
+/// underlying `si_signo`) resolves the same way every time. A pure string
+/// search, unit-tested with fixture text rather than a real report.
+#[cfg(target_os = "macos")]
+fn extract_fatal_signal(contents: &str) -> Option<i32> {
+    const NAMED: &[(&str, i32)] = &[
+        ("SIGSEGV", libc::SIGSEGV),
+        ("SIGBUS", libc::SIGBUS),
+        ("SIGILL", libc::SIGILL),
+        ("SIGFPE", libc::SIGFPE),
+        ("SIGTRAP", libc::SIGTRAP),
+        ("SIGABRT", libc::SIGABRT),
+    ];
+    NAMED
+        .iter()
+        .find(|(name, _)| contents.contains(name))
+        .map(|(_, signal)| *signal)
+}
+
+/// Moves the previous daemon's rotated log into [`Environment::crash_logs_dir`]
+/// under `id`, mode 0600, then prunes to the newest [`RETAIN`] — the same
+/// pattern [`crate::daemon::backup::run_if_due`] and its own `prune` use for
+/// the same reason: a directory nothing else bounds is a directory that grows
+/// forever.
+///
+/// Returns `None` without error when there was no rotated log to preserve — a
+/// daemon's first-ever spawn, or one launchd started, which never rotates one
+/// in ([`lifecycle::spawn_child`] is the only writer of
+/// [`Environment::daemon_log_rotated`]).
+fn preserve_log(env: &Environment, id: &str) -> Option<PathBuf> {
+    let source = env.daemon_log_rotated();
+    if !source.exists() {
+        return None;
+    }
+    let dir = env.crash_logs_dir();
+    std::fs::create_dir_all(&dir).ok()?;
+    let dest = dir.join(format!("{id}.log"));
+    std::fs::rename(&source, &dest).ok()?;
+    prune_logs(&dir);
+    Some(dest)
+}
+
+/// Keeps the newest [`RETAIN`] preserved crash logs in `dir`, oldest first
+/// out — and says what it dropped on `daemon.log`, rather than pruning in
+/// silence: a silent cap reads as "every crash log was kept" when it was not.
+///
+/// Sorted by filename, not by mtime — [`crate::daemon::backup::snapshots`]'s
+/// own reasoning applies unchanged: a crash log is named `<id>.log`, and
+/// [`crash_id`] embeds an RFC 3339 timestamp with fixed-width, most-significant-
+/// first fields, so lexicographic order on the name already **is**
+/// chronological order. Filesystem mtimes are a second, independent clock
+/// that can disagree with it (a restored backup, a clock adjustment) and a
+/// test would otherwise have to fight to control.
+fn prune_logs(dir: &std::path::Path) {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut logs: Vec<PathBuf> = read
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "log"))
+        .collect();
+    if logs.len() <= RETAIN {
+        return;
+    }
+    logs.sort();
+    let drop_count = logs.len() - RETAIN;
+    for path in &logs[..drop_count] {
+        let _ = std::fs::remove_file(path);
+    }
+    eprintln!(
+        "storyhook daemon: pruned {drop_count} crash log{} beyond the newest {RETAIN}",
+        if drop_count == 1 { "" } else { "s" }
+    );
 }
 
 #[cfg(test)]
@@ -462,32 +631,26 @@ mod tests {
         );
     }
 
+    /// A minimal, otherwise-uninteresting record for the ledger tests below,
+    /// which only care about `id`.
+    fn bare_crash(id: &str, at: &str) -> CrashRecord {
+        CrashRecord {
+            id: id.to_string(),
+            detected_at: at.to_string(),
+            classification: CrashClassification::UncleanExit,
+            daemon: None,
+            panics: Vec::new(),
+            inflight: Vec::new(),
+            log_path: None,
+        }
+    }
+
     #[test]
     fn clearing_one_crash_by_id_leaves_the_others() {
         let dir = scratch();
         let env = Environment::at(dir.path());
-        record_crash(
-            &env,
-            CrashRecord {
-                id: "keep-me".to_string(),
-                detected_at: "2026-01-01T00:00:00Z".to_string(),
-                classification: CrashClassification::UncleanExit,
-                daemon: None,
-                panics: Vec::new(),
-                inflight: Vec::new(),
-            },
-        );
-        record_crash(
-            &env,
-            CrashRecord {
-                id: "forget-me".to_string(),
-                detected_at: "2026-01-01T00:00:01Z".to_string(),
-                classification: CrashClassification::UncleanExit,
-                daemon: None,
-                panics: Vec::new(),
-                inflight: Vec::new(),
-            },
-        );
+        record_crash(&env, bare_crash("keep-me", "2026-01-01T00:00:00Z"));
+        record_crash(&env, bare_crash("forget-me", "2026-01-01T00:00:01Z"));
 
         assert!(clear_crash(&env, Some("forget-me")));
         let remaining = read_crashes(&env);
@@ -501,19 +664,140 @@ mod tests {
     fn clearing_all_crashes_empties_the_ledger_and_removes_the_file() {
         let dir = scratch();
         let env = Environment::at(dir.path());
-        record_crash(
-            &env,
-            CrashRecord {
-                id: "one".to_string(),
-                detected_at: "2026-01-01T00:00:00Z".to_string(),
-                classification: CrashClassification::UncleanExit,
-                daemon: None,
-                panics: Vec::new(),
-                inflight: Vec::new(),
-            },
-        );
+        record_crash(&env, bare_crash("one", "2026-01-01T00:00:00Z"));
         assert!(clear_crash(&env, None));
         assert!(read_crashes(&env).is_empty());
         assert!(!env.daemon_crashes().exists());
+    }
+
+    #[test]
+    fn classify_prefers_a_panic_over_a_fatal_signal() {
+        let panics = vec![PanicRecord {
+            at: "2026-01-01T00:00:00Z".to_string(),
+            pid: 1,
+            version: "2.1.1".to_string(),
+            thread: "main".to_string(),
+            message: "oops".to_string(),
+            location: None,
+        }];
+        assert_eq!(
+            classify(&panics, Some(libc::SIGSEGV)),
+            CrashClassification::Panicked
+        );
+    }
+
+    #[test]
+    fn classify_falls_back_to_a_fatal_signal_with_no_panic() {
+        assert_eq!(
+            classify(&[], Some(libc::SIGSEGV)),
+            CrashClassification::FatalSignal(libc::SIGSEGV)
+        );
+    }
+
+    #[test]
+    fn classify_is_an_unclean_exit_with_neither() {
+        assert_eq!(classify(&[], None), CrashClassification::UncleanExit);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn names_pid_matches_both_report_formats() {
+        assert!(names_pid(r#"{"pid" : 4321, "other": 1}"#, 4321));
+        assert!(names_pid(r#"{"pid":4321}"#, 4321));
+        assert!(names_pid("Identifier:4321\nsome other line", 4321));
+        assert!(!names_pid(r#"{"pid" : 4322}"#, 4321));
+        assert!(!names_pid("nothing relevant here", 4321));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn extract_fatal_signal_recognizes_every_named_signal() {
+        assert_eq!(
+            extract_fatal_signal("Exception Type: EXC_BAD_ACCESS (SIGSEGV)"),
+            Some(libc::SIGSEGV)
+        );
+        assert_eq!(
+            extract_fatal_signal("Termination Reason: SIGABRT"),
+            Some(libc::SIGABRT)
+        );
+        assert_eq!(extract_fatal_signal("no signal named here"), None);
+    }
+
+    #[test]
+    fn preserve_log_moves_the_rotated_log_and_prunes_the_oldest() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        std::fs::create_dir_all(env.daemon_state_dir()).expect("the state dir");
+
+        // Seed RETAIN pre-existing preserved logs, each named so its
+        // lexicographic order matches its chronological one — the same
+        // property a real crash id has, so pruning has an unambiguous oldest
+        // to drop without needing to control any file's mtime.
+        let logs_dir = env.crash_logs_dir();
+        std::fs::create_dir_all(&logs_dir).expect("the crash logs dir");
+        for i in 0..RETAIN {
+            let path = logs_dir.join(format!("2020-01-0{}T00-00-00Z-1.log", i + 1));
+            std::fs::write(&path, "old").expect("seeding an old log");
+        }
+
+        std::fs::write(env.daemon_log_rotated(), "the dead daemon's stderr")
+            .expect("writing a rotated log to preserve");
+
+        let preserved = preserve_log(&env, "new-crash").expect("a rotated log existed");
+        assert_eq!(preserved, logs_dir.join("new-crash.log"));
+        assert_eq!(
+            std::fs::read_to_string(&preserved).expect("reading the preserved log"),
+            "the dead daemon's stderr"
+        );
+        assert!(
+            !env.daemon_log_rotated().exists(),
+            "the rotated log must be moved, not copied"
+        );
+
+        let remaining: Vec<_> = std::fs::read_dir(&logs_dir)
+            .expect("reading the crash logs dir")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            remaining.len(),
+            RETAIN,
+            "pruning must keep exactly RETAIN logs: {remaining:?}"
+        );
+        assert!(
+            !remaining.contains(&"2020-01-01T00-00-00Z-1.log".to_string()),
+            "the lexicographically oldest seeded log must be the one pruned: {remaining:?}"
+        );
+        assert!(remaining.contains(&"new-crash.log".to_string()));
+    }
+
+    #[test]
+    fn preserve_log_is_none_when_there_is_nothing_rotated() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        assert!(preserve_log(&env, "no-residue").is_none());
+    }
+
+    #[test]
+    fn harvest_preserves_the_rotated_log_and_names_it_in_the_record() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let info = info_for(
+            &loopback_only(4321),
+            "t".to_string(),
+            "2026-01-01T00:00:00Z",
+            env.store_path(),
+        )
+        .expect("building a portfile");
+        write_info(&env, &info).expect("writing it");
+        std::fs::write(env.daemon_log_rotated(), "the dead daemon's own stderr")
+            .expect("writing a rotated log");
+
+        let record = harvest(&env).expect("a residue portfile to harvest");
+        let log_path = record.log_path.expect("the rotated log must be preserved");
+        assert_eq!(
+            std::fs::read_to_string(&log_path).expect("reading the preserved log"),
+            "the dead daemon's own stderr"
+        );
     }
 }
