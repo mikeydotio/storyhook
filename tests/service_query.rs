@@ -551,6 +551,41 @@ fn handoff_reports_a_closure_whose_last_event_is_stamped_earlier() {
     assert_eq!(section(&body, "## Closed"), [id.as_str()], "{body}");
 }
 
+/// `--stale` never asks about a closed story, and that is why SH-280 left
+/// `annotate_staleness` alone.
+///
+/// `annotate_staleness` reads `updated_at` and would happily call a story
+/// finished in January "five months stale" the moment someone commented on
+/// it (SH-261) — the same false sentence SH-280 fixed one surface over. It
+/// never gets the chance: `list` retains `superstate == Open` *before* it
+/// annotates, so a closed story is filtered out first. That exemption is one
+/// `retain` away from being lost, and losing it would be silent — the
+/// annotation is advisory, so nothing else would fail. Pinned here rather
+/// than assumed.
+#[test]
+fn stale_never_reports_a_closed_story_however_long_ago_it_closed() {
+    let fixture = ServiceFixture::new();
+    let closed = closed_long_ago(&fixture, "finished in January");
+    let open = new_story(&fixture.ctx(), "still open");
+
+    // Both last moved at `FIXTURE_NOW`, five months past the threshold at
+    // `JUNE_LATER`; only the closed one is exempt from being reported.
+    let filters = ListFilters {
+        stale: Some("1d".into()),
+        ..ListFilters::default()
+    };
+    let views = query_at(&fixture, JUNE_LATER, |service| service.list(&filters));
+    assert_eq!(
+        ids(&views),
+        [open.as_str()],
+        "a closed story is finished, not stale; {closed} must not appear"
+    );
+    assert!(
+        views[0].stale_info.is_some(),
+        "and the open one is still annotated"
+    );
+}
+
 // --- what the surfaces include ---------------------------------------------
 
 #[test]
