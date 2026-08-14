@@ -81,9 +81,11 @@ pub use error::StoreError;
 pub use fault::FaultPoint;
 pub use ids::{EventSeq, ExpectedSeq, GlobalSeq, ProjectId, StoryNo, StoryRef};
 pub use migrate::{MIGRATIONS, Migration, current_schema_version};
+#[cfg(feature = "test-seam")]
+pub use rebuild::folds;
 pub use rebuild::{
-    Divergence, ReadModelDiff, RebuiltStory, RepairReport, diff_read_model, rebuild_read_model,
-    repair_read_model,
+    Divergence, ReadModelDiff, RebuiltStory, RepairReport, diff, diff_read_model,
+    rebuild_read_model, repair_read_model,
 };
 pub use sqlite::{SqliteReadTx, SqliteStore, SqliteWriteTx, StoreConfig};
 pub use types::{

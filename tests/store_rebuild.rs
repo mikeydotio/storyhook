@@ -12,7 +12,7 @@ use storyhook::domain::{Priority, StoryEvent};
 use storyhook::store::fault::{FaultAction, arm};
 use storyhook::store::{
     EventSeq, ExpectedSeq, FaultPoint, ReadOps, Store, StoreError, StoryNo, StoryQuery, WriteOps,
-    diff_read_model, rebuild_read_model, repair_read_model,
+    diff_read_model, folds, rebuild_read_model, repair_read_model,
 };
 
 // ---------------------------------------------------------------------------
@@ -610,6 +610,58 @@ fn repair_rewrites_damaged_rows_and_leaves_the_project_clean() {
     assert_eq!(row.head_seq, EventSeq::new(3));
     let edges = store.read(|tx| tx.relations_to(project, two)).unwrap();
     assert_eq!(edges.len(), 1, "the mirror was restored too");
+}
+
+/// A repair re-folds the project once, not twice (SH-267).
+///
+/// `repair_read_model` needs two things a fold produces — the diff, to say what
+/// was wrong, and the rebuilt stories, to write the rows that put it right —
+/// and it used to obtain them by folding the whole project twice inside one
+/// transaction, where the second fold could not possibly disagree with the
+/// first. Nothing about the answer changed; only what it cost, and a fold is
+/// every event in the project.
+///
+/// Counted rather than timed: [`folds::counting`] is a `test-seam`-gated
+/// counter inside the fold itself, because a caller sees results and never the
+/// work behind them, which is exactly why this went unnoticed.
+#[test]
+fn repair_folds_the_project_once() {
+    let (_dir, store) = new_store();
+    let project = seed_project(&store, "alpha", "SH");
+    create_story(&store, project, "First", "2026-01-01T00:00:00Z");
+    let damage = raw(&store);
+    damage
+        .execute("UPDATE stories SET title = 'wrong'", [])
+        .unwrap();
+    drop(damage);
+
+    let (report, counted) = folds::counting(|| repair_read_model(&store, project).unwrap());
+
+    assert_eq!(counted, 1, "a repair folds the project exactly once");
+    // And still repairs it: the fold that was removed was the redundant one.
+    assert!(!report.repaired.is_clean(), "it found something to fix");
+    assert!(diff_read_model(&store, project).unwrap().is_clean());
+    assert_eq!(
+        store
+            .read(|tx| tx.story(project, StoryNo::new(1)))
+            .unwrap()
+            .unwrap()
+            .title,
+        "First"
+    );
+}
+
+/// The read half of the same measurement: asking what is wrong folds once.
+#[test]
+fn a_diff_folds_the_project_once() {
+    let (_dir, store) = new_store();
+    let project = seed_project(&store, "alpha", "SH");
+    create_story(&store, project, "First", "2026-01-01T00:00:00Z");
+
+    let (diff, counted) = folds::counting(|| diff_read_model(&store, project).unwrap());
+
+    assert_eq!(counted, 1);
+    assert!(diff.is_clean());
 }
 
 #[test]
