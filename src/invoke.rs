@@ -690,8 +690,11 @@ pub fn dispatch<S: Store>(
                 }
                 outcome.verdict().map(Response::Message)
             } else {
-                let findings = service.report()?;
-                let advice = doctor_advice(ctx, &catalog, service.notices()?, audit_catalog)?;
+                // One fold for both halves (SH-267): the drift oracle is the
+                // expensive half of this read, and it answers both.
+                let examination = service.examine()?;
+                let advice = doctor_advice(ctx, &catalog, examination.notices, audit_catalog)?;
+                let findings = examination.findings;
                 // The emptiness question is asked once, by the constructor
                 // that owns the invariant (SH-244): `Some` *is* the unhealthy
                 // verdict, and neither branch re-decides it.

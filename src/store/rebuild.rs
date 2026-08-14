@@ -24,6 +24,61 @@ use crate::store::{ReadOps, Store, WriteOps};
 /// How many change-feed entries a rebuild reads at a time.
 const FEED_PAGE: u32 = 4096;
 
+/// Counts project-wide re-folds, so a test can pin how many one command
+/// performs (SH-267).
+///
+/// A fold is invisible from outside: it reads, it allocates, it produces the
+/// same answers whether it ran once or four times. That is precisely why
+/// `story doctor` re-folded the whole project twice per read and four times per
+/// `--fix` for as long as it did — no output moved, so nothing said so. A
+/// caller sees results, not work, and this is the only place the work is
+/// countable at all.
+///
+/// Gated behind `test-seam` — the same mechanism, and the same reasoning, as
+/// [`crate::store::fault`]'s crash points: with the feature off this module
+/// does not exist and [`note_fold`] is an empty inlined function, so a release
+/// binary carries no counter. The alternative was a `Store` decorator counting
+/// [`ReadOps::events_since`] from outside, which is ~70 delegating methods of
+/// test-support to observe a number the fold already knows.
+///
+/// Thread-local, because integration tests share a process: a process-global
+/// counter would make one test's fold another test's failure.
+#[cfg(feature = "test-seam")]
+pub mod folds {
+    use std::cell::Cell;
+
+    thread_local! {
+        static FOLDS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// Runs `f` and reports how many project-wide folds it performed on this
+    /// thread.
+    ///
+    /// Scoped rather than a `reset`/`read` pair, so a test cannot forget to
+    /// zero the counter and measure whatever ran before it. Nesting composes:
+    /// an inner scope's folds are counted by the outer one too.
+    pub fn counting<T>(f: impl FnOnce() -> T) -> (T, usize) {
+        let outer = FOLDS.replace(0);
+        let value = f();
+        let counted = FOLDS.get();
+        FOLDS.set(outer + counted);
+        (value, counted)
+    }
+
+    /// Records one project-wide fold.
+    pub(super) fn note() {
+        FOLDS.set(FOLDS.get() + 1);
+    }
+}
+
+/// Records that a project-wide fold happened; compiles to nothing without the
+/// `test-seam` feature. See [`folds`](self::folds) for why it exists.
+#[inline]
+fn note_fold() {
+    #[cfg(feature = "test-seam")]
+    folds::note();
+}
+
 /// One story as the events say it should be.
 #[derive(Clone, Debug)]
 pub struct RebuiltStory {
@@ -151,6 +206,7 @@ pub struct RepairReport {
 /// Reads only, and works from a [`ReadOps`] rather than a whole [`Store`] so
 /// that a repair can rebuild and rewrite inside one transaction.
 pub fn rebuild(tx: &impl ReadOps, project: ProjectId) -> Result<Vec<RebuiltStory>, StoreError> {
+    note_fold();
     let states = tx.state_map(project)?;
     let prefix = tx
         .project(project)?
@@ -213,7 +269,20 @@ pub fn diff_read_model<S: Store>(
 
 /// [`diff_read_model`], inside a transaction the caller already has.
 pub fn diff(tx: &impl ReadOps, project: ProjectId) -> Result<ReadModelDiff, StoreError> {
-    let rebuilt = rebuild(tx, project)?;
+    diff_rebuilt(tx, project, &rebuild(tx, project)?)
+}
+
+/// [`diff`] against a rebuild the caller has already performed.
+///
+/// The split exists for [`repair_read_model`], which needs both the comparison
+/// and the rebuilt stories themselves — and used to obtain them by folding the
+/// whole project twice inside one transaction, where the second fold could not
+/// possibly differ from the first (SH-267).
+pub fn diff_rebuilt(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    rebuilt: &[RebuiltStory],
+) -> Result<ReadModelDiff, StoreError> {
     let prefix = tx
         .project(project)?
         .ok_or_else(|| StoreError::NotFound(format!("project {project} does not exist")))?
@@ -226,7 +295,7 @@ pub fn diff(tx: &impl ReadOps, project: ProjectId) -> Result<ReadModelDiff, Stor
         .collect();
 
     let mut diff = ReadModelDiff::default();
-    let (expected_edges, asymmetric) = relation_closure(&rebuilt, &prefix);
+    let (expected_edges, asymmetric) = relation_closure(rebuilt, &prefix);
     diff.asymmetric_relations = asymmetric;
     let mut seen = BTreeSet::new();
 
@@ -395,8 +464,12 @@ pub fn repair_read_model<S: Store>(
     project: ProjectId,
 ) -> Result<RepairReport, StoreError> {
     store.write(|tx| {
-        let before = diff(tx, project)?;
+        // One fold, read twice: once to say what was wrong, once to write the
+        // rows that put it right. Nothing between them could change the answer
+        // — they were always inside this one transaction — so the second fold
+        // was pure cost (SH-267).
         let rebuilt = rebuild(tx, project)?;
+        let before = diff_rebuilt(tx, project, &rebuilt)?;
         let mut report = RepairReport {
             repaired: before,
             ..RepairReport::default()
