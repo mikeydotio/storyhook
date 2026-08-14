@@ -51,9 +51,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::domain::finding::{Finding, FindingCode, FindingData};
 use crate::domain::{
-    STATE_ROLE_ACTIVE, StateDef, StoryEvent, StorySnapshot, TypeDef, active_state,
-    compute_integrity_issues, inverse_relation, normalize_labels, validate_required_states,
-    validate_type_slug,
+    STATE_ROLE_ACTIVE, StateDef, StoryEvent, TypeDef, active_state, compute_integrity_issues,
+    inverse_relation, normalize_labels, validate_required_states, validate_type_slug,
 };
 use crate::error::{AppError, IntegrityDetail};
 use crate::store::{
@@ -134,10 +133,14 @@ impl<'a, S: Store> IntegrityService<'a, S> {
     ///    than only the archived ones. It goes **first** because the story
     ///    repairs below read what it writes — see *The cache is repaired before
     ///    it is consulted* (SH-285).
-    /// 2. **Missing inverse edges are written**, as events, on the story that
-    ///    is missing them — the only layer that can fix an asymmetric history.
-    /// 3. **Relations pointing at stories that do not exist are retracted**,
-    ///    also as events.
+    /// 2. **Every story-level finding is asked for a repair**, and the ones
+    ///    that have one are written as events on the story each finding's
+    ///    `remedy` names — a missing inverse edge on the end that lacks it, a
+    ///    retraction on the end claiming a relation to a story that does not
+    ///    exist, a normalized label set on the story carrying a malformed one.
+    ///    They are the report's own findings rather than a second walk of the
+    ///    same graph — see *The repairs are the report's own findings*
+    ///    (SH-273).
     ///
     /// Then [`examine`](Self::examine) runs again, and what it still finds rides
     /// out on the returned [`FixOutcome`] rather than being raised here: a
@@ -158,7 +161,40 @@ impl<'a, S: Store> IntegrityService<'a, S> {
     /// the repair lands, which is what the open/closed distinction was always
     /// really about: **appends go to open stories only**. A missing inverse is
     /// written to the end that lacks it whenever that end is open, whichever
-    /// end raised the question.
+    /// end raised the question — which is exactly what a finding's `remedy`
+    /// names, and since SH-273 it is read from there rather than recomputed.
+    ///
+    /// # The repairs are the report's own findings (SH-273)
+    ///
+    /// This pass used to walk `story.relationships` itself, recomputing the
+    /// dangling edges and missing inverses that [`compute_integrity_issues`]
+    /// had already computed for [`examine`](Self::examine), over the same story
+    /// set. That duplicate walk was the **only** reason the two halves of one
+    /// contract could disagree at all — and every defect in this family was a
+    /// disagreement between them. SH-268: a filter applied to one walk and not
+    /// the other, so `--fix` repaired what the report called healthy. SH-271:
+    /// one walk's answer rendered after the other walk's world had changed.
+    /// SH-225: a repair one walk identified and skipped in silence, which the
+    /// other never mentioned. Each was fixed at its own encounter point; the
+    /// origin was that the predicate had two implementations.
+    ///
+    /// So the pass asks [`story_issues`] — the same producer `examine` reads —
+    /// and maps each finding to a repair through [`plan_repair`]. Since SH-244
+    /// a [`Finding`] carries everything that needs: the [`FindingCode`] to
+    /// match on, the `subject` it is about, the `remedy` naming the story a
+    /// repair is written *to*, and the [`FindingData`] the event is built from.
+    /// The two halves now agree by construction rather than by two authors
+    /// keeping step, and `plan_repair`'s match is exhaustive over `FindingCode`,
+    /// so a check added later cannot ship without somebody deciding whether
+    /// `--fix` repairs it.
+    ///
+    /// The findings are asked for **inside this write transaction**, not from a
+    /// second [`examine`](Self::examine). A second `examine` would fold the
+    /// whole project again — the cost SH-267 removed, pinned by
+    /// `tests/service_integrity.rs::a_doctor_fix_folds_the_project_twice` — and
+    /// would read the project at an instant other than the one the repairs are
+    /// made at, which is the hazard `examine`'s own "one transaction" section
+    /// describes.
     ///
     /// # What it could not do, it says (SH-225)
     ///
@@ -283,120 +319,40 @@ impl<'a, S: Store> IntegrityService<'a, S> {
         let (touched, blocked, prefix) = self.ctx.store().write(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let states = tx.state_map(project)?;
-            let all = all_stories(&*tx, project)?;
-            let open = open_stories(&*tx, project)?;
-            let mut touched: BTreeSet<String> = BTreeSet::new();
+            let open = open_story_ids(&*tx, project)?;
             let mut blocked: BTreeSet<BlockedRepair> = BTreeSet::new();
+            // Keyed by the story the repair appends to, so a story owed
+            // several takes one append rather than one per finding. The whole
+            // pass is one transaction either way, so the grouping is not about
+            // atomicity — it is about not writing a history in more pieces
+            // than the run has decisions.
+            let mut pending: BTreeMap<String, Vec<StoryEvent>> = BTreeMap::new();
 
-            for (id, story) in &all {
-                // Each candidate carries the event and the imperative sentence
-                // describing it: a story too closed to be appended to owes the
-                // operator the sentence rather than the event.
-                let mut own_repairs: Vec<OwnRepair> = Vec::new();
-                for relation in &story.relationships {
-                    let other = match all.get(&relation.other_id) {
-                        Some(other) => other,
-                        None => {
-                            // Missing from the read model is not missing from
-                            // the project (SH-285). The row was restored above
-                            // unless this story's events will not fold, and an
-                            // unfoldable story is still a story: its inbound
-                            // edges are valid and retracting them would destroy
-                            // correct data. Nothing more can be said about it
-                            // here — its claims are exactly what could not be
-                            // read — so the pass leaves it to the report, which
-                            // names the fold failure the operator has to act on.
-                            if endpoint_exists(&*tx, project, &prefix, &relation.other_id)? {
-                                continue;
-                            }
-                            own_repairs.push(OwnRepair {
-                                event: StoryEvent::StoryRelationshipRemoved {
-                                    at: now.clone(),
-                                    other_id: relation.other_id.clone(),
-                                    relation: relation.relation.clone(),
-                                },
-                                repair: format!(
-                                    "retract its dangling relation `{}` to the missing story `{}`",
-                                    relation.relation, relation.other_id
-                                ),
-                            });
-                            continue;
-                        }
-                    };
-                    let Some(expected) = inverse_relation(&relation.relation) else {
-                        continue;
-                    };
-                    if has_relation(other, expected, id) {
-                        continue;
-                    }
-                    // An archived story's history is closed; a missing inverse
-                    // on one is a finding, not something to append to. Named
-                    // here rather than left silent (SH-225), and named against
-                    // the *other* end, because that is the story an operator
-                    // has to reopen — `compute_integrity_issues` reports this
-                    // finding against `id`, which is the end that already has
-                    // its half.
-                    if !open.contains_key(&relation.other_id) {
-                        blocked.insert(BlockedRepair {
-                            reopen: relation.other_id.clone(),
-                            repair: format!(
-                                "write the missing inverse relation `{expected}` of {id}'s `{}`",
-                                relation.relation
-                            ),
-                        });
-                        continue;
-                    }
-                    let other_no = StoryNo::parse_id(&prefix, &relation.other_id)
-                        .map_err(|error| AppError::Storage(format!("unparseable id: {error}")))?;
-                    append_and_fold(
-                        tx,
-                        project,
-                        other_no,
-                        &prefix,
-                        &states,
-                        ExpectedSeq::Any,
-                        &[StoryEvent::StoryRelationshipAdded {
-                            at: now.clone(),
-                            other_id: id.clone(),
-                            relation: expected.to_string(),
-                        }],
-                        self.ctx.provenance(),
-                    )?;
-                    touched.insert(relation.other_id.clone());
-                }
-
-                // A comma-bearing or blank label (SH-164) is repaired the same
-                // way a stale read-model row is: re-emit the normalized set as
-                // a fresh event.
-                let normalized_labels = normalize_labels(&story.labels);
-                if normalized_labels != story.labels {
-                    let repair = format!("normalize its labels to {normalized_labels:?}");
-                    own_repairs.push(OwnRepair {
-                        event: StoryEvent::StoryLabelsSet {
-                            at: now.clone(),
-                            labels: normalized_labels,
-                        },
-                        repair,
+            for finding in story_issues(&*tx, project)? {
+                let Some(planned) = plan_repair(&*tx, project, &prefix, &now, &finding)? else {
+                    continue;
+                };
+                // Every repair appends to exactly one story, so a closed
+                // destination puts it out of reach — and it says so instead of
+                // vanishing (SH-225). Frequently that is not the story the
+                // finding names: a missing inverse is reported against the end
+                // that already has its half.
+                if !open.contains(&planned.destination) {
+                    blocked.insert(BlockedRepair {
+                        reopen: planned.destination,
+                        repair: planned.repair,
                     });
+                    continue;
                 }
+                pending
+                    .entry(planned.destination)
+                    .or_default()
+                    .push(planned.event);
+            }
 
-                if own_repairs.is_empty() {
-                    continue;
-                }
-                // Every repair above appends to `story` itself, so a closed one
-                // is out of reach and says so instead of vanishing (SH-225).
-                if !open.contains_key(id) {
-                    blocked.extend(own_repairs.into_iter().map(|candidate| BlockedRepair {
-                        reopen: id.clone(),
-                        repair: candidate.repair,
-                    }));
-                    continue;
-                }
-                let events: Vec<StoryEvent> = own_repairs
-                    .into_iter()
-                    .map(|candidate| candidate.event)
-                    .collect();
-                let story_no = StoryNo::parse_id(&prefix, id)
+            let mut touched: BTreeSet<String> = BTreeSet::new();
+            for (destination, events) in pending {
+                let story_no = StoryNo::parse_id(&prefix, &destination)
                     .map_err(|error| AppError::Storage(format!("unparseable id: {error}")))?;
                 append_and_fold(
                     tx,
@@ -408,7 +364,7 @@ impl<'a, S: Store> IntegrityService<'a, S> {
                     &events,
                     self.ctx.provenance(),
                 )?;
-                touched.insert(id.clone());
+                touched.insert(destination);
             }
             Ok((touched, blocked, prefix))
         })?;
@@ -650,14 +606,182 @@ struct BlockedRepair {
     repair: String,
 }
 
-/// A repair that appends to the story that raised it, before that story's state
-/// decides whether it is written or [`blocked`](BlockedRepair).
-struct OwnRepair {
+/// A repair [`plan_repair`] derived from one [`Finding`], before the
+/// destination's state decides whether it is written or
+/// [`blocked`](BlockedRepair).
+struct PlannedRepair {
+    /// The story the event is appended to — always the finding's `remedy`,
+    /// which is frequently not the story the finding is *about* (SH-225).
+    destination: String,
     /// What would be appended.
     event: StoryEvent,
     /// The sentence describing it, for the operator who has to make it happen
     /// by hand.
     repair: String,
+}
+
+/// The repair one finding calls for, or `None` when it calls for none.
+///
+/// The whole of what `story doctor --fix` knows about turning a report into
+/// writes, in one exhaustive match (SH-273). Two properties follow from that
+/// and are the point of the function:
+///
+/// * **`--fix` cannot repair anything the report did not raise**, because a
+///   repair can only be reached by handing this a finding; and
+/// * **a check added later cannot ship undecided**, because a new
+///   [`FindingCode`] stops this match compiling until somebody says whether
+///   `--fix` repairs it. That is the same forcing function `FindingCode`'s own
+///   documentation claims for the renderer.
+///
+/// Every repair lands on the finding's `remedy` and is built from its
+/// [`FindingData`]. A repairable code carries both unconditionally — the
+/// producers set them in the same expression that mints the finding — so a
+/// missing one is a defect in this build rather than damage in the store, and
+/// it fails the run loudly instead of silently withholding a repair the report
+/// has already promised.
+///
+/// It answers for any finding a report can carry, not only the ones this pass
+/// is fed. The catalog and read-model halves reach it as `None` because their
+/// repairs are not per-story appends at all: they are the two dedicated steps
+/// [`IntegrityService::repair`] runs *before* this pass, each in its own
+/// transaction.
+fn plan_repair(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    prefix: &str,
+    now: &str,
+    finding: &Finding,
+) -> Result<Option<PlannedRepair>, AppError> {
+    match finding.code {
+        FindingCode::DanglingRelation => {
+            let (relation, other) = relation_payload(finding)?;
+            // Missing from the read model is not missing from the project
+            // (SH-285). The row was restored before this pass ran unless the
+            // story's events will not fold, and an unfoldable story is still a
+            // story: its inbound edges are valid and retracting them would
+            // destroy correct data. So the report's answer is overruled here
+            // and the finding is left standing, for the operator to act on
+            // alongside the fold failure that explains it. Report and `--fix`
+            // therefore still disagree about this one code — that residual is
+            // SH-286, deferred deliberately, and it is the only place the two
+            // halves are allowed to differ.
+            if endpoint_exists(tx, project, prefix, other)? {
+                return Ok(None);
+            }
+            Ok(Some(PlannedRepair {
+                destination: remedy(finding)?,
+                event: StoryEvent::StoryRelationshipRemoved {
+                    at: now.to_string(),
+                    other_id: other.to_string(),
+                    relation: relation.to_string(),
+                },
+                repair: format!(
+                    "retract its dangling relation `{relation}` to the missing story `{other}`"
+                ),
+            }))
+        }
+        // One arm for both spellings: they differ only in wording, and a
+        // mutual relation is its own inverse.
+        FindingCode::MissingInverseRelation | FindingCode::MissingReciprocalRelation => {
+            let (relation, _) = relation_payload(finding)?;
+            let subject = finding
+                .subject
+                .as_deref()
+                .ok_or_else(|| incomplete(finding, "subject"))?;
+            let expected = inverse_relation(relation).ok_or_else(|| {
+                AppError::Storage(format!(
+                    "internal: `{relation}` has no inverse, so `story doctor --fix` cannot build \
+                     the repair for a finding that says one is missing: {}",
+                    finding.message
+                ))
+            })?;
+            Ok(Some(PlannedRepair {
+                destination: remedy(finding)?,
+                event: StoryEvent::StoryRelationshipAdded {
+                    at: now.to_string(),
+                    other_id: subject.to_string(),
+                    relation: expected.to_string(),
+                },
+                repair: format!(
+                    "write the missing inverse relation `{expected}` of {subject}'s `{relation}`"
+                ),
+            }))
+        }
+        // A comma-bearing or blank label (SH-164) is repaired the way a stale
+        // read-model row is: re-emit the normalized set as a fresh event.
+        FindingCode::MalformedLabels => {
+            let Some(FindingData::Labels { labels }) = &finding.data else {
+                return Err(incomplete(finding, "label payload"));
+            };
+            let normalized = normalize_labels(labels);
+            Ok(Some(PlannedRepair {
+                destination: remedy(finding)?,
+                event: StoryEvent::StoryLabelsSet {
+                    at: now.to_string(),
+                    labels: normalized.clone(),
+                },
+                repair: format!("normalize its labels to {normalized:?}"),
+            }))
+        }
+
+        // Repaired by this run, but not by this pass: the catalog write and
+        // the read-model re-fold each ran ahead of it, in a transaction of
+        // their own.
+        FindingCode::RequiredStates
+        | FindingCode::MissingRow
+        | FindingCode::ReadModelDivergence => Ok(None),
+
+        // Not automatically repairable at all, each for its own reason. An
+        // unaddressable type slug (SH-134) and a story typed with one the
+        // catalog does not define: the only repairs available are a rename the
+        // write path bans and retyping stories the user never mentioned.
+        // Multiple parents and a parent/child cycle: which edge is the wrong
+        // one is not this command's to guess. An extra row: re-folding does
+        // not remove it. A fold failure and a torn event payload: the evidence
+        // is the thing that is damaged, and overwriting it with a guess would
+        // destroy what an operator needs to read. And an unstructured finding
+        // is not a doctor check at all — it is what a raise site with only
+        // prose to offer mints.
+        FindingCode::UnaddressableType
+        | FindingCode::UnknownType
+        | FindingCode::MultipleParents
+        | FindingCode::ParentChildCycle
+        | FindingCode::ExtraRow
+        | FindingCode::FoldFailure
+        | FindingCode::UndecodableEvent
+        | FindingCode::Unstructured => Ok(None),
+    }
+}
+
+/// The edge a relation finding carries, as `(relation, other)`.
+fn relation_payload(finding: &Finding) -> Result<(&str, &str), AppError> {
+    match &finding.data {
+        Some(FindingData::Relation { relation, other }) => Ok((relation, other)),
+        _ => Err(incomplete(finding, "relation payload")),
+    }
+}
+
+/// The story a finding's repair is written to.
+fn remedy(finding: &Finding) -> Result<String, AppError> {
+    finding
+        .remedy
+        .clone()
+        .ok_or_else(|| incomplete(finding, "remedy"))
+}
+
+/// A finding that broke its producer's promise, as an error.
+///
+/// Loud rather than skipped: a repairable finding with no remedy or no payload
+/// means this build's producer and its repair table disagree, which is exactly
+/// the divergence SH-273 removed the duplicate walk to prevent. Silently
+/// declining the repair would restore it, one finding at a time, and the
+/// operator would see a report that never clears.
+fn incomplete(finding: &Finding, missing: &str) -> AppError {
+    AppError::Storage(format!(
+        "internal: a {:?} finding carries no {missing}, so `story doctor --fix` cannot build the \
+         repair its own report promised: {}",
+        finding.code, finding.message
+    ))
 }
 
 /// Whether the project's catalog meets the required-state floor (SH-125).
@@ -746,6 +870,17 @@ fn catalog_issues(states: &[StateDef], types: &[TypeDef]) -> Vec<Finding> {
 ///
 /// The unknown-type check is separate because it is a property of the story
 /// *and the catalog*, which the cross-story integrity pass does not see.
+///
+/// # Two readers, one walk (SH-273)
+///
+/// [`IntegrityService::repair`] reads this too, and derives its repairs from
+/// what it returns rather than walking the same graph a second time. That is
+/// why the checks live here rather than inside `examine`: report and `--fix`
+/// are two halves of one contract — fix's postcondition is that report goes
+/// clean — and every defect in that family (SH-225, SH-268, SH-271) was the
+/// two halves computing the predicate separately and disagreeing. A filter
+/// added here now applies to both by construction, which is precisely what
+/// SH-268 found was not true of the one deleted above.
 fn story_issues(tx: &impl ReadOps, project: ProjectId) -> Result<Vec<Finding>, AppError> {
     let types: BTreeSet<String> = tx
         .types(project)?
@@ -1070,19 +1205,7 @@ fn endpoint_exists(
     Ok(tx.head_seq(project, story)?.get() > 0)
 }
 
-/// Every story in the project, keyed by id — archived and deleted included.
-fn all_stories(
-    tx: &impl ReadOps,
-    project: ProjectId,
-) -> Result<BTreeMap<String, StorySnapshot>, AppError> {
-    Ok(tx
-        .stories(project, &StoryQuery::all())?
-        .into_iter()
-        .map(|row| (row.snapshot.id.clone(), row.snapshot))
-        .collect())
-}
-
-/// The project's unarchived stories, keyed by id.
+/// The ids of the project's unarchived stories.
 ///
 /// `--fix` appends to these and no others: an archived story's history is
 /// closed, and appending a repair event to it would reopen a question the
@@ -1090,21 +1213,15 @@ fn all_stories(
 /// question test — see [`IntegrityService::repair`] for the difference, and
 /// [`blocked_repairs_detail`] for what a repair with no open destination
 /// becomes instead.
-fn open_stories(
-    tx: &impl ReadOps,
-    project: ProjectId,
-) -> Result<BTreeMap<String, StorySnapshot>, AppError> {
+///
+/// Ids alone, because that is the whole of what the destination test needs.
+/// Every claim a repair is *built* from now arrives on the finding that asked
+/// for it (SH-273), so the snapshots this used to carry beside them had no
+/// remaining reader.
+fn open_story_ids(tx: &impl ReadOps, project: ProjectId) -> Result<BTreeSet<String>, AppError> {
     Ok(tx
         .stories(project, &StoryQuery::all().archived(false))?
         .into_iter()
-        .map(|row| (row.snapshot.id.clone(), row.snapshot))
+        .map(|row| row.snapshot.id)
         .collect())
-}
-
-/// Whether `story` already asserts `relation` to `other_id`.
-fn has_relation(story: &StorySnapshot, relation: &str, other_id: &str) -> bool {
-    story
-        .relationships
-        .iter()
-        .any(|candidate| candidate.relation == relation && candidate.other_id == other_id)
 }
