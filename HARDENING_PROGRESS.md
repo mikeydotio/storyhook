@@ -16070,3 +16070,126 @@ favourite failure shape.
 background run. No stalls, no wedges, no kills.
 
 **Deviations:** none.
+
+### SH-297 — the safety copy is inside the write it protects · 2026-08-14
+
+**Outcome:** merged, PR #413, three commits. Story closed. The first cycle run
+under the new **one worktree per story** rule, which Mikey added mid-session and
+which is recorded above.
+
+`ProjectService::set_prefix` called `Store::snapshot` and then `Store::write`.
+Two critical sections: `snapshot` checks out a pooled connection and takes no
+lock at all, `write` takes the guard and then `BEGIN IMMEDIATE`. Any writer
+committing between them was missing from the copy an operator is told is *the
+state before this rewrite* — so restoring it would have discarded that writer's
+committed work along with the rename it exists to undo.
+
+**Council: yes** — `.council/sh297-snapshot-inside-the-write/`, verdict recorded
+as a comment on the story, unanimous in both rounds. Round 1: three seats,
+dispatched blind, all three chose the strong ordering over merely holding the
+process-local guard across both calls, and all three said the capability had to
+be a **required** `Store` method with no default body — the only default that
+could be written is `snapshot()` then `write()`, which is the defect, inherited
+silently by the next engine. The argument that decided it against the cheaper
+option is in the store's own documentation: `sqlite/mod.rs` says the mutex
+covers contention *within* a process and `busy_timeout` covers *between*, and
+`change_token`'s doc names the outside writers by hand — "a `story tui` session,
+a second machine, a developer with a `sqlite3` prompt open". That last person is
+precisely who a maintenance backup exists to protect against, so excluding
+everyone but them fixes the encounter point, not the origin.
+
+**The ordering.** `write_guard()`, then `BEGIN IMMEDIATE` on connection A —
+which is the only thing here that excludes another *process* — then `VACUUM
+INTO` on a second connection B, then the closure on A. Verified with two
+`sqlite3` processes before a line was written: a second connection can copy
+while another holds `BEGIN IMMEDIATE`, it returns immediately, and the copy holds
+exactly the last committed state. Hoisting the copy back above `begin` is the
+defect reinstated and fails **silently**; collapsing it onto A's own connection
+fails **loudly**, with SQLite's own "cannot VACUUM from within a transaction".
+Only one of those two needed a test.
+
+**Red before green, on unchanged production code.** Two racing-writer cases, one
+per handle — the same handle is what the daemon's eight dispatchers already do,
+a second handle stands in for another process because `write_lock` is a field
+rather than a static. Both failed on the content assertion, naming the harm:
+*the copy is missing a story that was committed before the rewrite began*.
+Neither reads a clock: the racer commits before the rewrite can start, the
+fixture decides when, and the assertions read the ordering out of the copy — the
+racer's story present **by title**, the count equal to `outcome.plan.stories`
+under the same query on both sides, the copy still reading the old prefix.
+
+**What the council's concerns changed, and they were right to.** The winning
+proposal had **no anti-vacuity control** and all three seats said so: the racer's
+story is now asserted present in the *live* store too, so "absent from the copy"
+can never quietly mean "never written"; the backups directory is asserted empty
+before and holding exactly one copy after; and the timing clause is derived from
+`StoreConfig::busy_timeout` rather than written as a literal, and is labelled
+**corroboration, not proof**, in the test's own doc comment because it fails in
+the rot direction. The architect seat also reversed its own round-1 position and
+asked for a conformance case, which now states clause 1 with no concurrency at
+all — a write's own changes cannot be in the copy it hands back — because
+without it a future engine satisfies the trait by calling `snapshot()` then
+`write()`. The seat that authored the losing proposal voted against it: its
+raw-connection `SQLITE_BUSY` probe was the stronger instrument but needed a bare
+`pub` seam existing for one test, and the architect seat resolved the precedent
+clash cleanly — seams in `src/` are fine here (`snapshot_at`'s clock,
+`fault.rs`'s points), every one of them is `pub(crate)` or `cfg`-gated, so SH-198
+constrains the *visibility*, not the seam.
+
+**Second consequence, second commit.** Two `set-prefix` runs in one millisecond
+still shared a filename, and the last-writer-wins collapse is justified by one
+sentence — the losers are byte-equivalent — which coupling a copy to a write
+falsifies. `snapshot_at` now takes a `Naming`; `Collapsing` leaves SH-295
+untouched for every backup no write is waiting on, `PerRun` puts the pid and
+counter that already made the staging name unique into the final name. Its
+deterministic statement sits beside its SH-295 sibling, where the clock is a
+parameter, for the reason that module already documents.
+
+**Third fence, and the only one that reaches the next author.**
+`tests/coupled_snapshot.rs`, derived over `git ls-files`: no `src/` file outside
+`daemon/backup.rs` and the engine itself may call `Store::snapshot`. The
+behavioural tests only ever speak about `set_prefix`; this is what stops the next
+destructive verb reaching for the same two calls in the same order. It carries
+its own check that the matcher still recognises the shape SH-297 was filed for,
+and `git show HEAD~3:src/service/project.rs` confirms it would have fired on the
+pre-fix line.
+
+**Gate:** `make test` green twice on this branch — once on the tree that became
+the first commit, once on the final tree: 158 Rust suites, plugin bash harness
+32/0, Playwright 207/207 both times. The two later commits were additionally
+covered by a targeted batch (`backup_restore`, `store_backup_naming`, both
+set-prefix files, `coupled_snapshot`, `store_sqlite_conformance` 194/194) plus
+clippy `-D warnings`.
+
+**Process finding 1 — I caused a false red and should not have.** The baseline
+`make test` failed one test, `web_test::every_loading_line_comes_from_the_one_
+generator`. It was not a defect: a `git push` in a compound command tripped the
+pre-push hook, which started a *second* full `make test` while the first was
+still running, and the two contended. The test passes alone, and the hook's own
+run cleared the whole Rust suite. **Never let a second gate run start while one
+is in flight** — the supervision rule above says watch a background task, and
+this is its corollary: know what else you are about to launch.
+
+**Process finding 2 — the gate is optional and nobody is told. Filed as
+SH-306 (high).** The same push hook that fired on a foreground command did
+**not** fire on the backgrounded one: the branch push completed in under 30
+seconds with no gate output, for a suite that takes nine minutes. Nothing shipped
+ungated — the full run was done by hand immediately before, green — but that is
+luck plus habit, not a gate. The SH-303/304 entry above recorded the identical
+observation and flagged it "worth watching" without filing it; two independent
+sightings is enough. Hypothesis in the story: it is a `PreToolUse` hook matching
+a Bash command string, so the bypass is not specific to `git push` — every
+command it is meant to gate is bypassable the same way, by accident.
+
+**Cost of the new rule, measured once:** a fresh worktree carries its own
+`target/` and its own `e2e/node_modules`, so the first gate in it is a cold build
+plus `make e2e-install`. Around eleven minutes before the first test runs. Worth
+it, and worth knowing in advance rather than mid-cycle.
+
+**Supervision:** log-growth heartbeat with a 120s stall bound on every background
+run. No stalls, no wedges, no kills. One tool call hit its own ten-minute ceiling
+while the log was still growing — that is a ceiling, not a stall, and the check
+resumed rather than restarting the run.
+
+**Deviations:** the log entry you are reading rides in its own worktree and its
+own PR, per step 8 and the new rule together.
