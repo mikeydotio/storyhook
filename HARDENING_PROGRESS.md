@@ -14566,3 +14566,76 @@ comment on SH-275.
 
 **Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push,
 no version bump.
+
+### SH-288 — done
+
+**Outcome:** merged (PR #379). The reader that counts SSE events no longer
+starts its quiet window on bytes that carry no events.
+
+**The defect, in one sentence:** a quiet window cannot tell *"no more events are
+coming"* from *"events have not started yet"*, and the first bytes of any SSE
+stream are the preamble the server sends immediately (`retry: 3000`, a
+`: connected` comment). `read_sse_until_quiet` started its 500ms clock on those,
+so when load pushed `poll_change_token`'s 250ms tick past the window, the read
+ended before the first `repo-changed` frame and the caller counted none. The 8s
+cap never came into it — the read had already returned, successfully, with a
+preamble.
+
+**The fix separates the two questions the two bounds were always answering.**
+*Has the stream started?* is bounded by the overall cap, which is generous
+because that is where load lands: a publisher's tick can be descheduled for far
+longer than any debounce window. *Has it stopped?* is bounded by the quiet
+window, which is a debounce measure and correct for that job alone. Conflating
+them is what made a debounce measure answer a liveness question it has no
+information about. The cap backstops the second phase too, so a stream that
+never falls quiet still cannot hang the suite.
+
+**Sibling sweep, per the story's own instruction:** both callers of
+`read_sse_until_quiet` assert a minimum count (`>= 1` and `== 2`), so both had
+the hole and both were converted. The `read_sse_until` callers are needle-bounded
+by construction and do not — including `no_filesystem_watcher_remains`, which
+asserts `== 1` but waits on a needle only the real event carries.
+
+**The regression test drives a fake SSE server, not a daemon** — a socket that
+sends the preamble at once and its first event only after three times the quiet
+window. The subject is the *reader*, and the shape it must survive is one the
+real publisher only produces near a load average of 30; reproducing it through a
+daemon would mean reproducing the load, which is exactly what made SH-288 read
+as a product-neutral flake instead of the test-side timing assumption it was.
+RED on the old reader with the reported signature (`left: 0, right: 3`, preamble
+only), GREEN on the new one. The fake holds its connection open past the last
+frame on purpose: a server that hangs up ends the read with `Ok(0)`, which would
+let a reader with no working quiet window pass for the wrong reason. The test
+also pins the other half of the contract — that the quiet window still *ends*
+the read — which a reader that simply ran to its cap would satisfy silently
+while costing every caller the full eight seconds.
+
+**Two hats:** `fix:` changed the behaviour; a separate `refactor:` folded
+`read_sse_until`'s duplicate read-match and wait-loop onto the `read_sse_chunk`
+/ `read_sse_into_until` the fix introduced. Two duplicate loops and one
+duplicate match became one of each.
+
+**A note on the class, since SH-275 filed this one from the other side.** SH-275's
+log entry ended with *"when a gate fails, check the machine's load before
+checking your diff"*. That is right, and incomplete: this defect was **not**
+load's fault. Load only revealed a test that had been asserting on a timing
+coincidence since the quiet window replaced a fixed sleep — never a known-good
+version. A timing assumption that holds only on an idle machine is a latent
+defect with an environmental trigger, not an environmental problem. The load
+check tells you where to look; it is not a verdict.
+
+**Supervision:** one full gate run, watchdogged on log growth with a 120s stall
+bound. No wedges, no restarts. 156 `test result: ok`, plugin leg all PASS, e2e
+158/158, `fmt --check` and `clippy -D warnings` clean, zero failures. The single
+`error:` line in the log is a daemon-stop test printing its own expected output.
+
+**Housekeeping, worth recording because it is recurring:** the data volume was
+at **95%** with `target/` holding 86G, 37G of it `debug/incremental` — the
+disk-fill shape that reads as "TESTS FAILED" rather than as a full disk. Cleared
+before the gate, no `cargo clean` needed.
+
+**Council:** no. The story specified the fix shape; nothing was left with two
+defensible answers.
+
+**Deviations:** none. No `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push,
+no version bump.
