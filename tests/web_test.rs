@@ -1172,6 +1172,138 @@ fn every_backdrop_is_shown_and_hidden_through_the_helpers() {
     }
 }
 
+/// The Drafts popover names its project, and does it in a box that can hold
+/// an unbounded name (SH-292).
+///
+/// Two halves, both cheap and both load-bearing, and neither observable from
+/// the browser suite without a project whose name is long enough to prove it:
+///
+/// 1. **The slot exists, inside the popover, hidden by default.** Hidden
+///    because `currentProjectLabel()` answers `null` off the board screen and
+///    an empty subject line would otherwise reserve its own padding above the
+///    list.
+/// 2. **It elides.** `.modal` is `min(30rem, 92vw)` and a project name has no
+///    length bound anywhere in `src/domain/` — so the one-line ellipsis recipe
+///    `.projsel-label` and `.drafts-row-title` already use is the whole reason
+///    this line can be given user input at all. Without `nowrap` a long name
+///    silently wraps to two or three lines and reads as a title;
+///    `e2e/specs/responsive.mobile.spec.ts` proves the rendered consequence at
+///    four widths, and this fails in seconds if the recipe is unpicked.
+///
+/// The header is asserted to stay the control's own name. Folding the project
+/// into it is the shape SH-292's council rejected: `.modal-header` is
+/// `1rem/700` with no truncation and is shared by six modals, so one surface's
+/// data would impose a truncation rule on five that never asked for one.
+#[test]
+fn the_drafts_popover_names_its_project_in_a_box_that_can_hold_one() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+
+    let modal_at = body
+        .find(r#"<div class="modal" id="drafts-modal""#)
+        .expect("the dashboard has a drafts popover");
+    let modal_end = modal_at
+        + body[modal_at..]
+            .find("</div>\n\n")
+            .expect("the drafts popover's markup ends");
+    let modal = &body[modal_at..modal_end];
+
+    assert!(
+        modal.contains(r#"<div class="modal-header">Drafts</div>"#),
+        "the Drafts popover's header must stay the control's own name. Folding the project \
+         into it puts unbounded user input in a `1rem/700` box with no truncation, shared by \
+         six modals (SH-292)"
+    );
+    let subject_at = modal.find(r#"id="drafts-subject""#).unwrap_or_else(|| {
+        panic!(
+            "the Drafts popover names no project. Its own copy says \"this project's drafts\" \
+             and \"No drafts in this project.\" while `.backdrop` blurs the topbar and SH-299's \
+             `inert` removes it from the accessibility tree, so nothing inside the overlay \
+             resolves either sentence (SH-292): {modal}"
+        )
+    });
+    let subject = enclosing_tag(modal, subject_at);
+    assert_eq!(
+        attribute(subject, "class"),
+        Some("drafts-subject"),
+        "the subject line's class is deliberately named for this surface rather than for the \
+         modal family: a `.modal-subject` reads as a house pattern the next contributor is \
+         invited to spread to `#create-modal` and `#archive-modal`, neither of which claims a \
+         project scope it cannot resolve (SH-292)"
+    );
+    assert!(
+        subject.contains(" hidden"),
+        "the subject line starts hidden: `currentProjectLabel()` answers null off the board \
+         screen, and an empty line would still reserve its own padding above the list -- {subject}"
+    );
+
+    let css = stylesheet(&body);
+    let rule = declarations(css, ".drafts-subject");
+    for (property, value) in [
+        ("overflow", "hidden"),
+        ("text-overflow", "ellipsis"),
+        ("white-space", "nowrap"),
+    ] {
+        assert!(
+            rule.contains(&format!("{property}: {value}")),
+            "`.drafts-subject` must carry `{property}: {value}` -- a project name has no length \
+             bound, and without the full one-line ellipsis recipe a long one wraps into a title \
+             or clips mid-glyph inside a `min(30rem, 92vw)` box (SH-292). Found: {rule}"
+        );
+    }
+}
+
+/// A catalog refresh repaints the Drafts popover's project name, not just the
+/// topbar's (SH-292).
+///
+/// `fetchReposOnce()`'s success path is the only thing that reassigns
+/// `state.repos`, and the subject line is derived from it. It repainted the
+/// project selector, the home cards and the settings table and nothing
+/// belonging to this popover — so a project renamed by another client left the
+/// popover naming the old one, and left it there: the board's `/data` is a
+/// separate request, `renderAll()` runs only on a parsed 200, and
+/// `markDataSettled()` fires at most once per project. A stale name is worse
+/// than no name, and this is the dwell state the naming exists for.
+///
+/// `updateDraftsButton()` is the right call and not a fourth `render*`: it
+/// owns this surface (SH-284) and early-returns unless the popover is open.
+/// Behaviour is proved in a real browser by `board-readiness.spec.ts`'s
+/// renamed-elsewhere test; this is the cheap layer that fails without one.
+#[test]
+fn a_catalog_refresh_repaints_the_drafts_popover_not_only_the_topbar() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+
+    let guard = "if (state.reposFetchOk) {";
+    let at = body
+        .find(guard)
+        .expect("`fetchReposOnce()` repaints behind a `state.reposFetchOk` guard");
+    let block_end = at + body[at..].find("\n      }").expect("that block closes");
+    let block = &body[at..block_end];
+
+    assert!(
+        block.contains("updateDraftsButton()"),
+        "nothing repaints the Drafts popover when the catalog changes, so a project renamed by \
+         another client leaves the popover naming the old one indefinitely -- the board's own \
+         `/data` cannot correct it, and this is exactly the dwell state the name was added for \
+         (SH-292). Found: {block}"
+    );
+}
+
 /// The dashboard's `<style>` block, so a selector assertion below cannot
 /// accidentally match the same text in the markup that follows it --
 /// `.search-input` names both a CSS rule and a `class="search-input"`
