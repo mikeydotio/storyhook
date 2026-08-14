@@ -79,7 +79,25 @@ INSTALL_DIR ?= $(STORYHOOK_INSTALL_DIR)
 # Raise it if the wall clock ever becomes the problem, but re-measure first: the
 # symptom of overshooting is a stall, not a failure. The lever is threads, never
 # scope.
+#
+# `gate-receipt.sh` brackets the run the way check-no-orphan-servers does, and
+# the two phases are not interchangeable (SH-306). The preflight ENROLS this
+# clone -- it sets core.hooksPath so git's own pre-push hook enforces the gate,
+# which is what makes running this target the thing that installs the gate
+# rather than a ritual someone has to remember. The postlude WRITES THE RECEIPT
+# naming the tree that just went green, and it is the LAST recipe line on
+# purpose: make aborts the recipe at the first failing line, so "no receipt
+# unless every leg passed" is true by construction rather than by exit-code
+# plumbing. Anything appended after it starts certifying failed runs.
+#
+# The gate it feeds replaced a Claude Code PreToolUse hook that was SIGTERMed at
+# its own 900-second ceiling, after which the push proceeded ungated and
+# unannounced -- six times in three days. A pre-push hook that re-ran this
+# target instead would have inherited the same deadline pressure and started a
+# second nine-minute suite while the first was still running, which this project
+# has already recorded as the cause of a false red.
 test: check-no-orphan-servers
+	@bash scripts/gate-receipt.sh preflight
 	cargo fmt --all -- --check
 	cargo clippy --workspace --all-targets -- -D warnings
 	@bash scripts/run-tests.sh -- --test-threads=4
@@ -87,6 +105,7 @@ test: check-no-orphan-servers
 	PATH="$(CURDIR)/target/debug:$$PATH" bash plugin/claude-code/tests/run-tests.sh
 	bash scripts/run-e2e.sh
 	@bash scripts/check-no-orphan-servers.sh postlude
+	@bash scripts/gate-receipt.sh postlude
 
 # Installs the e2e/ Node toolchain and Playwright's chromium browser. Not part
 # of `test` itself -- it is a one-time (per-machine, per-Playwright-version)
