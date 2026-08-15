@@ -67,8 +67,36 @@ if ! command -v story &>/dev/null; then
   exit 0
 fi
 
-# Check if git hooks are already installed (avoid double sync)
-if [[ -f ".git/hooks/post-commit" ]] && grep -q "# storyhook managed hook" ".git/hooks/post-commit" 2>/dev/null; then
+# Skip this stand-in only when git will itself run a storyhook post-commit hook
+# here. Which file that is is git's question to answer, not this script's: this
+# used to test `.git/hooks/post-commit`, the `<root>/.git/hooks` assumption
+# SH-313 and SH-314 removed from `src/`, which survived here in shell (SH-320).
+# It was wrong in both directions. Open: a linked worktree's `.git` is a *file*,
+# so the test could never resolve, and this synced on top of a hook that had
+# already run. Closed, and worse: with `core.hooksPath` set, a marker left in
+# `.git/hooks/post-commit` by an earlier install made this skip while git ran
+# something else — and if that something else does not delegate, nothing synced
+# at all, silently.
+#
+# `--git-path hooks` is `HookDirs::effective` asked from bash: the directory git
+# will actually consult. Never `--git-common-dir/hooks` (`managed`) — a hook git
+# has been told not to look at syncs nothing, so it is no reason to skip. Git
+# answers relative to the cwd it is asked from, and this script never cds, so the
+# answer is used as given; `HookDirs` joins onto `--show-toplevel` because it
+# writes from the daemon against an envelope root, which is a different problem.
+#
+# `-x`, not `-f`: git runs only an *executable* hook, and stores that bit in the
+# index — so a tracked hooks directory restored without mode 100755 holds a
+# marker-bearing file git will skip. Asking git's own question costs at worst one
+# redundant idempotent sync; asking a weaker one costs a silent miss.
+#
+# Both failure paths land on "sync", which is the safe direction: outside a
+# repository `rev-parse` exits 128 printing nothing (the `||` is what keeps
+# `set -e` from aborting the hook), and a `core.hooksPath` naming a non-directory
+# — `/dev/null`, the documented way to switch hooks off — fails the `-x` test.
+git_hooks_dir=$(git rev-parse --git-path hooks 2>/dev/null) || git_hooks_dir=""
+if [[ -n "$git_hooks_dir" && -x "$git_hooks_dir/post-commit" ]] &&
+  grep -q "# storyhook managed hook" "$git_hooks_dir/post-commit" 2>/dev/null; then
   printf '{}'
   exit 0
 fi
