@@ -31,7 +31,7 @@ human-readable `display`. The model routes and renders; it never drives `story`,
 `git`, or `tmux` itself. That is what keeps behavior testable: the bash suite
 exercises the real logic, and the prose can't quietly diverge from it.
 
-`bin/story.sh` accepts twelve subcommands:
+`bin/story.sh` accepts fifteen subcommands:
 
 | Subcommand | Verb it backs |
 |---|---|
@@ -47,11 +47,26 @@ exercises the real logic, and the prose can't quietly diverge from it.
 | `context [--full]` | `/story-context` |
 | `sync [--since <d>]` | `/story-sync` |
 | `handoff [--since <d>]` | `/story-handoff` |
+| `work [story-id]` | `/story-work` |
+| `triage` | `/story-triage` |
+| `scaffold-claude-md [--path <file>]` | `/story-setup`'s step 4 |
 
-The last four (SH-308) route not through this skill but through their own standalone
-skills (`skills/story-context`, `story-sync`, `story-handoff`), and through
-`references/ensure-cli.md`, which six of the nine standalone skills load — same
-one-JSON-object contract, same "route and render" rule, different door in.
+The last seven (SH-308) route not through this skill but through their own standalone
+skills (`skills/story-context`, `story-sync`, `story-handoff`, `story-work`,
+`story-triage`, `story-setup`), and through `references/ensure-cli.md`, which six of the
+nine standalone skills load — same one-JSON-object contract, same "route and render" rule,
+different door in. `triage` is read-only: it gathers and classifies findings, but the
+resolution commands (`prioritize`/`label`/`block`/…) stay direct `story` calls in the
+skill, since each is already one unambiguous CLI invocation with nothing to parse.
+`scaffold-claude-md` is a sentinel-delimited insert-or-replace, never a full rewrite —
+everything outside the `<!-- BEGIN STORYHOOK -->` … `<!-- END STORYHOOK -->` block passes
+through byte-for-byte.
+
+**`story-install` and `story-update` were deliberately left as prose (SH-308).** Both are
+already about as deterministic as prose gets — single unambiguous commands (`command -v
+story`, `story --version`, `story update --check`), no double-nested JSON to parse, and no
+hand-copyable CLI default to drift. Wrapping `command -v story` in yet another script layer
+would add indirection without removing any real ambiguity.
 
 ## Provenance
 

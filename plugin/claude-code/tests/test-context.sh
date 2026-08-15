@@ -29,6 +29,11 @@ esac
 out=$(cd "$repo" && STORY_STALE_THRESHOLD=1d bash "$SCRIPT" context --full 2>&1)
 assert_contains "$(jqf "$out" .display)" "Stale (1d+)" "full: honours STORY_STALE_THRESHOLD"
 
+# --- a malformed STORY_STALE_THRESHOLD fails loudly, not "(unavailable)" ---
+out=$(cd "$repo" && STORY_STALE_THRESHOLD='not-a-duration' bash "$SCRIPT" context --full 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "full: a malformed threshold is a real failure, not silently swallowed"
+assert_contains "$(jqf "$out" .display)" "invalid duration" "full: names the real CLI error"
+
 # --- read-only ---
 assert_eq "$(cd "$repo" && story show "$id" --json | jq -r '.story.story.state')" "todo" \
   "context: does not mutate anything"

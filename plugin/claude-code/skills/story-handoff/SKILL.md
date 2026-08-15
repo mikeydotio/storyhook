@@ -22,10 +22,10 @@ Follow `${CLAUDE_PLUGIN_ROOT}/references/ensure-cli.md`. Do not continue until i
 
 Run `bash ${CLAUDE_PLUGIN_ROOT}/bin/story.sh handoff`, adding ` --since <duration>` only if
 the user gave one (e.g., `/story-handoff --since 4h`) — pass nothing and the CLI's own
-default window applies; never restate a number here (a hand-copied default is exactly what
-went stale before: this file used to say `2h` after the CLI's real default had been `24h`
-for a full release, because the fix that corrected it never touched this file). `ok:false`
-→ show `display`, stop.
+default window applies; never restate a number here. A hand-copied default is exactly what
+went stale before: this file once quoted a default that had gone wrong by 12x, because the
+commit that fixed the real value elsewhere never touched this file (`git show 04ac259` in
+this repo has the full story). `ok:false` → show `display`, stop.
 
 The result carries two things:
 - `display` — the handoff document itself: stories that changed state during the window,

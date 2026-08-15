@@ -36,7 +36,7 @@ assert_eq "$(jqf "$out" .ok)" "false" "unknown subcommand: ok:false"
 # wrong, so it must name every verb the router actually accepts. Pins the two
 # from drifting apart as verbs are added.
 usage=$(jqf "$(bash "$SCRIPT" bogus-subcommand 2>&1)" .display)
-for verb in list view dispatch create complete reap doctor capture ensure-cli context sync handoff; do
+for verb in list view dispatch create complete reap doctor capture ensure-cli context sync handoff work triage scaffold-claude-md; do
   assert_contains "$usage" "$verb" "usage: names the \`$verb\` verb"
 done
 
