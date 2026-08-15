@@ -177,3 +177,73 @@ fn hooks_uninstall_idempotent() {
         .stdout(predicate::str::contains("post-merge — not present"))
         .stdout(predicate::str::contains("prepare-commit-msg — not present"));
 }
+
+/// **Nothing under `src/` builds a hooks directory by hand** (SH-313, SH-314).
+///
+/// The defect both stories share is one line: `<root>/.git/hooks`, assumed
+/// rather than asked. That assumption is wrong twice over — `core.hooksPath`
+/// replaces the directory wholesale, and a linked worktree's `.git` is a file —
+/// and in both cases it fails *silently*, writing executables git will never
+/// run and reporting success.
+///
+/// Derived over `git ls-files` rather than a hand-maintained list, in the style
+/// of `tests/store_isolation.rs` and `tests/dead_public_surface.rs`. SH-136
+/// records three separate drifts of a hand-maintained count in this repository
+/// before it stopped being trusted, and SH-198 records ten dead `pub` items
+/// accumulating for the same reason: a list someone has to remember to update
+/// is the thing that goes stale.
+///
+/// The rule is deliberately about *hooks* paths, not about `.git` generally.
+/// `service::project::is_repository_top_level` joins `.git` on purpose and
+/// wants a directory specifically — that is how it tells a main checkout from a
+/// linked worktree — so a blanket ban would have to carve an exception for it,
+/// and an exception is the seed of the next stale list.
+#[test]
+fn no_source_file_builds_a_hooks_directory_by_hand() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let listed = std::process::Command::new("git")
+        .current_dir(root)
+        .args(["ls-files", "-z", "--", "src/*.rs"])
+        .output()
+        .expect("listing tracked sources");
+    assert!(
+        listed.status.success(),
+        "`git ls-files` failed, so this scan proved nothing"
+    );
+    let files: Vec<&str> = std::str::from_utf8(&listed.stdout)
+        .expect("utf-8 paths")
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .collect();
+    assert!(
+        files.len() > 20,
+        "the scan found only {} source files — it is broken, not the tree",
+        files.len()
+    );
+
+    for file in files {
+        let text = std::fs::read_to_string(root.join(file))
+            .unwrap_or_else(|e| panic!("reading {file}: {e}"));
+        // Line comments only: this is about what the code does, and every
+        // mention of the old path in this tree is prose explaining why it was
+        // wrong.
+        let code: String = text
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            !code.contains(".git/hooks"),
+            "{file} names `.git/hooks` in code. That is not where git looks when \
+             `core.hooksPath` is set, and it does not exist in a linked worktree. \
+             Ask git: `rev-parse --git-path hooks` and `--git-common-dir`."
+        );
+        assert!(
+            !(code.contains(r#"join(".git")"#) && code.contains(r#"join("hooks")"#)),
+            "{file} builds a hooks directory from a hand-joined `.git`. Ask git \
+             instead — `hooks::HookDirs` already does, and two answers to one \
+             question is how SH-313 and SH-314 both happened."
+        );
+    }
+}

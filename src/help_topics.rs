@@ -1193,7 +1193,7 @@ Commands returning a message ("message" field):
   story handoff               -> "message": "<markdown string>"
   story report --html         -> "message": "<html string>"
   story scaffold              -> "message": "<template content>"
-  story hooks install/...     -> "message": "<status text>"
+  story hooks install/...     -> "message": "<status text>", "warnings": [...]
   story commit-sync            -> "message": "scanned N commits..."
   story next (no results)     -> "message": "no ready stories"
   story help <topic>          -> "message": "<help text>"

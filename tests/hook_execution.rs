@@ -22,7 +22,8 @@
 //! - The merges are `--no-ff`, which is what produces an `ORIG_HEAD` and a
 //!   merge commit for the hook to look at.
 
-use std::path::Path;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use storyhook_test_support::{TestEnv, scratch_dir};
@@ -38,6 +39,22 @@ impl HookRepo {
     /// A repository on `main`, with one commit, a project, and the hooks in
     /// place.
     fn new() -> Self {
+        let repo = Self::unhooked();
+        repo.story(repo.path(), &["hooks", "install"]);
+        assert!(
+            repo.path().join(".git/hooks/post-merge").is_file(),
+            "fixture: the managed hooks must be installed"
+        );
+        repo
+    }
+
+    /// The same repository, stopping **before** `story hooks install`.
+    ///
+    /// SH-313's cases all turn on what the hook directory looks like at install
+    /// time, so they need to arrange it first. Splitting this out is what lets
+    /// them share the rest of the fixture — a real repository, a real project,
+    /// and a `PATH` that finds the binary under test.
+    fn unhooked() -> Self {
         let env = TestEnv::shared();
         let repo = Self {
             env,
@@ -51,12 +68,49 @@ impl HookRepo {
         repo.git(&["commit", "-qm", "init"]);
 
         repo.story(repo.path(), &["project", "new", "--prefix", "SH"]);
-        repo.story(repo.path(), &["hooks", "install"]);
-        assert!(
-            repo.path().join(".git/hooks/post-merge").is_file(),
-            "fixture: the managed hooks must be installed"
-        );
         repo
+    }
+
+    /// Points `core.hooksPath` at `dir` (relative to the repository), creating
+    /// it, and seeds `body` there under **every** managed hook name when one is
+    /// given.
+    ///
+    /// All three, not just the one a test drives. Occupying a single name
+    /// leaves the other two free, storyhook installs *those* directly, and they
+    /// go on doing their job — which silently confounds any test asking whether
+    /// a blocked hook ran. This was not hypothetical: seeding only `post-merge`
+    /// made the "a non-delegating occupant means the story does not move"
+    /// control fail, because `post-commit` had been installed into the free
+    /// name and moved the story through `commit-sync` instead. It is also the
+    /// truthful fixture — husky and lefthook generate a directory of hooks, not
+    /// one.
+    fn hooks_path(&self, dir: &str, occupant: Option<&str>) -> PathBuf {
+        let path = self.path().join(dir);
+        std::fs::create_dir_all(&path).expect("creating the hooksPath directory");
+        self.git(&["config", "core.hooksPath", dir]);
+        if let Some(body) = occupant {
+            for name in ["post-commit", "post-merge", "prepare-commit-msg"] {
+                let hook = path.join(name);
+                std::fs::write(&hook, body).expect("seeding an occupant");
+                std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))
+                    .expect("making the occupant executable");
+            }
+        }
+        path
+    }
+
+    /// `story <args>`, returning stdout and stderr together whatever the exit
+    /// status — for the tests that are about what the command *says*.
+    fn story_output(&self, args: &[&str]) -> (bool, String) {
+        let out = self
+            .env
+            .raw_story(self.path())
+            .args(args)
+            .output()
+            .expect("running story");
+        let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&out.stderr));
+        (out.status.success(), text)
     }
 
     fn path(&self) -> &Path {
@@ -403,5 +457,172 @@ fn a_commit_in_a_linked_worktree_links_the_same_project() {
         shown.contains("[git] "),
         "a commit made in a linked worktree must reach the same project as one \
          made in the main checkout — two checkouts, one tracker: {shown}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// SH-313: core.hooksPath, and what "installed" is allowed to mean
+// ---------------------------------------------------------------------------
+//
+// `core.hooksPath` REPLACES the hook directory wholesale — `$GIT_DIR/hooks` is
+// not consulted at all, not even as a fallback. `story hooks install` wrote
+// there unconditionally and reported success, so for any repository using husky,
+// lefthook, pre-commit, or a tracked `.githooks/` it wrote three files git would
+// never execute and said it had installed them.
+//
+// Every test below asserts on a story MOVING, not on a file existing. That is
+// the whole point: a file at a path is not evidence git will run it, and the
+// old behaviour would have passed any test that only looked for the file.
+
+/// Case 2 — `core.hooksPath` names a directory with no hook of that name. The
+/// hook goes *there*, because that is where git looks.
+///
+/// Before the fix this failed on the last assertion: install reported three
+/// hooks installed into `.git/hooks`, and the merge that should have closed the
+/// story did nothing at all.
+#[test]
+fn a_hook_installs_where_core_hookspath_points_and_actually_runs() {
+    let repo = HookRepo::unhooked();
+    let hooks = repo.hooks_path("team-hooks", None);
+
+    let (ok, output) = repo.story_output(&["hooks", "install"]);
+    assert!(
+        ok,
+        "install must succeed when git has a directory to run: {output}"
+    );
+    assert!(
+        hooks.join("post-merge").is_file(),
+        "the hook is not in the directory core.hooksPath names, so git will \
+         never run it: {output}"
+    );
+
+    let id = repo.new_story("Closed under core.hooksPath");
+    repo.merge_branch_with_message("feature", &format!("fix(x): something\n\nCloses {id}"));
+    assert_eq!(
+        repo.state_of(&id),
+        "done",
+        "the managed post-merge hook did not run, so `story hooks install` \
+         reported success for a file git never executes"
+    );
+}
+
+/// Case 2, continued — the report must not say a bare "installed" for a
+/// directory storyhook does not own.
+///
+/// The council made this its one blocking condition, and both the CLI-UX and
+/// the challenger seat named it independently: the file is untracked, in a
+/// directory another tool regenerates and `git clean -fd` deletes, and the
+/// unqualified word is the same word SH-313 was filed about.
+#[test]
+fn installing_outside_the_managed_directory_says_where_and_says_it_is_untracked() {
+    let repo = HookRepo::unhooked();
+    repo.hooks_path("team-hooks", None);
+
+    let (ok, output) = repo.story_output(&["hooks", "install"]);
+    assert!(ok, "{output}");
+    assert!(
+        output.contains("team-hooks"),
+        "the report does not name the directory it wrote to: {output}"
+    );
+    assert!(
+        output.contains("untracked"),
+        "the report does not say the hooks it wrote are untracked: {output}"
+    );
+}
+
+/// Cases 3 and 4 — someone else's hook holds the name git runs.
+///
+/// Storyhook cannot tell a delegating occupant (this repository's own chainers)
+/// from a non-delegating one (husky's) without executing a stranger's script,
+/// so it does not try. It writes the managed copy where a delegator would look,
+/// leaves the occupant's bytes alone, and states the condition.
+#[test]
+fn a_foreign_hook_is_never_overwritten_and_the_condition_is_stated() {
+    let repo = HookRepo::unhooked();
+    let occupant = "#!/bin/sh\n# husky, or anyone else\nexit 0\n";
+    let hooks = repo.hooks_path("team-hooks", Some(occupant));
+
+    let (ok, output) = repo.story_output(&["hooks", "install"]);
+    assert!(
+        ok,
+        "a foreign occupant is not a failure of this command: {output}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(hooks.join("post-merge")).expect("reading the occupant"),
+        occupant,
+        "storyhook overwrote a hook it did not write"
+    );
+    assert!(
+        repo.path().join(".git/hooks/post-merge").is_file(),
+        "the managed copy must go where a delegator would look for it: {output}"
+    );
+    assert!(
+        output.contains("delegates") && output.contains("git rev-parse --git-common-dir"),
+        "the report must state the condition and print the delegator verbatim, so \
+         a paste carries no shell the user had to author: {output}"
+    );
+
+    // And the truth of it: a NON-delegating occupant means the story does not
+    // move. Without this the two tests above would pass for the wrong reason.
+    let id = repo.new_story("Behind a hook that does not delegate");
+    repo.merge_branch_with_message("feature", &format!("fix(x): something\n\nCloses {id}"));
+    assert_eq!(
+        repo.state_of(&id),
+        "todo",
+        "the occupant does not delegate, so the managed hook cannot have run — \
+         if this says `done`, the test is not measuring what it claims"
+    );
+}
+
+/// Case 4 proper — an occupant that *does* delegate, which is exactly how this
+/// repository runs its own managed hooks under SH-306's push gate.
+///
+/// This is the regression both directions the story suggested would have caused:
+/// installing into the effective directory alone would have skipped the name and
+/// left `.git/hooks` empty, and refusing outright would have made storyhook's own
+/// repository permanently un-installable.
+#[test]
+fn a_delegating_occupant_still_reaches_the_managed_hook() {
+    let repo = HookRepo::unhooked();
+    let chainer = "#!/bin/sh\n\
+         managed=\"$(git rev-parse --git-common-dir)/hooks/$(basename \"$0\")\"\n\
+         [ -x \"$managed\" ] || exit 0\n\
+         exec \"$managed\" \"$@\"\n";
+    repo.hooks_path("team-hooks", Some(chainer));
+
+    let (ok, output) = repo.story_output(&["hooks", "install"]);
+    assert!(ok, "{output}");
+
+    let id = repo.new_story("Closed through a chainer");
+    repo.merge_branch_with_message("feature", &format!("fix(x): something\n\nCloses {id}"));
+    assert_eq!(
+        repo.state_of(&id),
+        "done",
+        "a chainer delegating to the common directory must still reach the \
+         managed hook — this is how storyhook's own repository works: {output}"
+    );
+}
+
+/// `core.hooksPath` pointing at something that is not a directory means git runs
+/// no hooks at all. There is nothing to install and nowhere to install it, so
+/// the command fails rather than reporting success.
+///
+/// Generalised rather than special-cased: `/dev/null` is the deliberate
+/// off-switch, but the dangerous member of this class is a typo naming a regular
+/// file, which would otherwise get the cheerful "installed" this story is about.
+#[test]
+fn a_hooks_path_that_is_not_a_directory_is_refused() {
+    let repo = HookRepo::unhooked();
+    std::fs::write(repo.path().join("not-a-dir"), "").expect("seeding a regular file");
+    repo.git(&["config", "core.hooksPath", "not-a-dir"]);
+
+    let (ok, output) = repo.story_output(&["hooks", "install"]);
+    assert!(
+        !ok,
+        "git runs no hooks here, so reporting success is the SH-313 lie: {output}"
+    );
+    assert!(
+        output.contains("not a directory") && output.contains("core.hooksPath"),
+        "the refusal must name the cause and the setting: {output}"
     );
 }
