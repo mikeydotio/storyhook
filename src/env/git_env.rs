@@ -251,6 +251,28 @@ pub fn scrubbed() -> Vec<OsString> {
     REDIRECTS_GIT.iter().map(OsString::from).collect()
 }
 
+/// `git <args>` in `cwd`, trimmed — or `None` if git failed for any reason at
+/// all.
+///
+/// One place that knows a missing `git`, a directory that is not a repository
+/// and a command that ran and failed are the same outcome to a caller that only
+/// wants the answer. Callers that need to tell those apart are asking a
+/// different question and should not use this.
+///
+/// Lives beside [`command`] rather than beside its first caller because the
+/// environment a `git` runs with is this module's rule, and reading that git's
+/// answer is the other half of the same rule.
+#[must_use]
+pub fn output(cwd: &Path, args: &[&str]) -> Option<String> {
+    let output = command(cwd).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout)
+        .ok()
+        .map(|text| text.trim().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
