@@ -16780,3 +16780,87 @@ have widened a bug fix:
 Closed by the merge of #421 — and closed **by the post-merge hook itself**,
 which is the neatest available proof that the managed hook now runs through this
 repo's `.githooks` chainer.
+
+### SH-298 — the abort no longer had a fixture, but it still had an instrument
+
+**Outcome:** merged. The SH-270 negative — a repair write that rolls back must
+leave the catalog sweep unstarted — is pinned again, with **zero production
+code changed**. `IntegrityService::repair`'s `let mut outcome =
+service.repair()?;` in `src/invoke.rs` was untouched throughout.
+
+**The story's own extent search was thorough and still incomplete.** SH-286
+made the data-layer fixture for this abort unreachable — a story whose events
+would not fold is `unattested` now, so no repair is ever planned against it —
+and the search that followed tried the only other data-layer route (the
+single-parent unique index, refused at injection time rather than repair time)
+and named the one out-of-process instrument (`STORYHOOK_FAULT`, which delivers
+`SIGKILL` and never reaches the arm's control flow). What it did not consider:
+the store layer's own thread-local fault seam, `src/store/fault.rs`'s `mod
+armed`, already in use by eight other test files
+(`tests/service_catalog.rs` among them) and named in the story's own
+*Direction, unverified* section as the shape that would restore the pin. It
+needed no new seam, no new `FaultAction`, nothing — only a test pointed at it.
+
+**The discriminator:** `FaultPoint::MidReadModelUpdate`, which fires inside
+`put_story`. `repair_read_model` calls it for every story it rebuilds — the
+rewrite is unconditional, so a single healthy story in the resolved project is
+enough to reach it — while neither catalog half ever touches a story row
+(`deregister_orphaned` writes through `forget_checkout`;
+`register_found_origins` through `register_origin`). Arming it fails the
+repair while leaving the sweep able to succeed, which is exactly the asymmetry
+the SH-270 `?` exists to hold. Run through `StoreInvoker` rather than the
+subprocess `story` helper the rest of the file uses — the fault is thread-local
+and a subprocess talking to a daemon cannot see an arm made in this process.
+
+**Two tests, not one.** The restored pin
+(`doctor_fix_leaves_the_catalog_alone_when_the_repair_write_rolls_back`) and an
+unarmed control over the identical fixture
+(`the_same_repair_write_sweeps_the_catalog_when_nothing_is_armed`). The control
+is load-bearing, not decoration: `audit_catalog` goes silent under a temporary
+store, and `non_temporary_dir`'s fallback chain (env override, then the cargo
+target dir, then a `$HOME` cache dir) only refuses when *every* rung is
+temporary — a plan-time assumption that one bad rung alone would trigger the
+refusal turned out to be wrong when checked directly. Without the control,
+test 1 could pass against a version that never swept at all; the direct
+evidence that it does not is stronger than that refusal would have been
+anyway — both mutation runs below rendered "deregistered 1 stale registration"
+naming a real path under `target/debug/real-fixtures`, not a temp one.
+
+**Mutation-tested twice, both in `/tmp` copies** (per the SH-286 lesson: never
+`git checkout` a file to revert a mutation — it discards every other edit to
+that file too). First, the fault-arming line itself commented out: the run
+went green (the repair completed) and the pin's own assertion caught it,
+failing on "the sweep must not have run" with the message naming the
+deregistration. Second, the actual production shape the pin exists to catch —
+`service.repair()?` rewritten to swallow the error and substitute an empty
+`FixOutcome`, simulating exactly the catch-and-continue SH-270 forbids: red,
+same assertion, same message. Both reverted from the backup copy; `git diff`
+confirmed zero drift after each restore.
+
+**Gate:** green in full, two runs. The first `make test` failed at the very
+last step — `scripts/run-e2e.sh` refused because this fresh worktree had never
+run `make e2e-install` (`e2e/node_modules` and the Playwright browser were
+missing), a worktree cold-start cost the docs above don't yet name for e2e the
+way they do for `target/`. Not a defect in this change: every Rust suite and
+the full plugin harness (32/32) were already green in that run. `make
+e2e-install` fixed it; the re-run gate was **158** `test result: ok` targets
+across the Rust suite, 32/32 plugin tests, **207/207** e2e specs, clean
+postlude, no orphan servers.
+
+**Supervision, twice adjusted.** The first watchdog's 120s stall threshold
+fired a false positive at 378 bytes of log — not a wedge, but the silent
+multi-minute phase where `cargo test --workspace` links every one of 150+
+integration test binaries with no incremental output. `ps` confirmed the
+process was alive and later log growth confirmed it was working the whole
+time. Restarted at 420s and it completed cleanly. The lesson the file's own
+supervision rule half-states and this makes explicit: 120s is right for gaps
+*between* visible test-progress lines once tests are running, and too short
+for the initial link phase of a full-workspace `cargo test` — the two need
+different thresholds, not one borrowed for both.
+
+**Deviations:** the log entry rides in the code PR as a separate commit
+rather than a follow-up docs PR, per the plan decision taken before
+implementation — this worktree reaps itself immediately after the merge, and a
+second branch would be stranded with nothing left to land it. No
+`SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push, no version bump, no
+deploy.
