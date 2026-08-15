@@ -511,12 +511,25 @@ history row's. `TOAST_LIFETIME_MS` is 3000ms, and the 1s fade is `--toast-fade`,
 the script *reads* (`readMsToken`) rather than restating — two hand-kept copies would let a
 node be removed mid-fade the first time one moved.
 
-**The surviving timer had to satisfy SC 2.2.1 (Timing Adjustable) to ship at all.** A time
-limit is conformant when the user can pause it, so `scheduleAutoDismiss` holds its clock
-on pointer hover, on focus within the notice, and — the perverse case a bare `setTimeout`
-gets wrong — while `document.hidden`, since a notice exists precisely because nobody may be
-watching and a background tab is the one state where "three seconds of being visible"
-definitively did not happen. Pausing preserves what is left rather than restarting it.
+**The surviving timer holds its clock on pointer hover, on focus within the notice, and —
+the perverse case a bare `setTimeout` gets wrong — while `document.hidden`**, since a
+notice exists precisely because nobody may be watching and a background tab is the one
+state where "three seconds of being visible" definitively did not happen. Pausing
+preserves what is left rather than restarting it.
+
+*Correction (SH-322, retrofitted here — the source doc comment and the e2e test comment
+were corrected at the time, this paragraph was missed): this section originally claimed
+the pause behavior above satisfies **SC 2.2.1 (Timing Adjustable)**. It does not, and SH-322
+found two independent reasons why. First, SC 2.2.1's mechanisms are Turn off, Adjust and
+Extend — pause is SC 2.2.2's word, not this criterion's, so satisfying it was never the
+right target regardless of whether the mechanism worked. Second, the mechanism didn't work
+in any case: the focus branch above could never fire, because a self-clearing notice (the
+only kind this timer ever runs on) carries no focusable content by construction — durable
+notices get the dismiss button, self-clearing ones don't, and the two are exact
+complements. SH-322's actual SC 2.2.1 conformance route is `storyhook.keepNotices`, a
+default-off Turn-off preference reachable from Settings before a notice is ever raised;
+the dead focus-pause branch was deleted rather than repaired (`4007367`,
+`refactor(dashboard): delete a focus-pause branch nothing could reach`).*
 
 **A real pre-existing gap closed on the way past.** `.toast` and `.toast.leaving` sat
 *outside* the `prefers-reduced-motion: no-preference` guard that `.card`'s equivalents have
