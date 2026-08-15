@@ -4825,6 +4825,29 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     });
   }
 
+  /** Every sentence the blocked badge can say, derived in one place (SH-309)
+   * so a cause can't go untested the way this used to: the badge tested
+   * only `awaiting`, while `blocked_ids` (server-side, `src/service/
+   * query.rs`) is driven by `is_ready`'s multi-clause test (`src/
+   * domain.rs`) -- a story blocked by an open `blocked-by` edge got the
+   * same "(no reason)" label as one genuinely parked with none. Returns
+   * `{ children, title, ariaText }`: `children` feeds the badge's `el()`
+   * call directly (a mixed array of strings and nodes, exactly what
+   * `appendChildren()` already accepts), `title` is the badge's own hover
+   * text (or `null`), and `ariaText` is what the card's `aria-label`
+   * appends so the reason reaches assistive tech too -- which the badge
+   * alone never did. */
+  function blockedFlag(st) {
+    if (st.awaiting) {
+      return { children: ["● blocked"], title: null, ariaText: "blocked" };
+    }
+    return {
+      children: ["● blocked (no reason)"],
+      title: "No awaiting reason recorded — click the card to add one.",
+      ariaText: "blocked, no reason recorded"
+    };
+  }
+
   function buildCard(v, ready, blocked, isClosed) {
     var id = v.story.id;
     // role="button" + tabIndex (SH-197): every card starts as a Tab stop
@@ -4908,11 +4931,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
     var flags = el("div", { class: "card-flags" }, []);
     if (blocked[st.id]) {
-      // SH-205: a blocked card with no `awaiting` reason is called out
-      // distinctly — the doctor notice's dashboard-facing half.
-      var label = st.awaiting ? "● blocked" : "● blocked (no reason)";
-      var flag = el("span", { class: "flag flag-blocked" }, [label]);
-      if (!st.awaiting) flag.title = "No awaiting reason recorded — click the card to add one.";
+      var flagDesc = blockedFlag(st);
+      var flag = el("span", { class: "flag flag-blocked" }, flagDesc.children);
+      if (flagDesc.title) flag.title = flagDesc.title;
       flags.appendChild(flag);
     }
     // Ready is the default state and gets no badge — only the blocked
