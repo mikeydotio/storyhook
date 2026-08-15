@@ -16194,6 +16194,110 @@ resumed rather than restarting the run.
 **Deviations:** the log entry you are reading rides in its own worktree and its
 own PR, per step 8 and the new rule together.
 
+### SH-186 — a wedged tailscale must cost the dashboard nothing · 2026-08-15
+
+**Outcome:** the reported symptom (an isolated-run test failure) was already
+gone — the story's own baseline reproduction depended on a pre-SH-237 test
+design (`--port <reserve_port()>`) this repo had already replaced with
+portfile discovery. Reassessed rather than closed as unreproducible: the same
+code path carried a live defect the original test's 20s bound was too loose
+to catch. `bind_listeners` shelled out to `tailscale status --json` (capped
+at 3s) *between* binding the loopback socket and starting to serve it.
+Measured, wedged `tailscale`: `story web start` took 3.28s of its 5s
+`SPAWN_DEADLINE`; a direct `story web --serve` had a 2.96s window where the
+socket accepted connections and answered nothing.
+
+**Council: yes** — `.council/sh-186-tailnet-advertise/`, 3 seats
+(security-researcher, software-architect, qa-engineer), round 1 split 1-0-2
+(the architect's own tri-state-portfile proposal got zero votes including
+their own), one deliberation round converged all three on the same
+mechanism, ranked-choice runoff 2-1. Decided against a new `Pending | Absent
+| Bound` portfile field: trust is bind-derived, not advertisement-derived,
+and `probe_and_bind_tailnet`'s own doc comment already declares its `None`
+result deliberately undifferentiated across three causes — a tri-state would
+contradict a precedent one function away, for a security benefit nobody
+could name. `story web start` prints loopback immediately, plus a stderr
+note when the tailnet is not yet known.
+
+**The fix.** `bind_listeners` binds loopback and stops, on every machine —
+no probe, no tailnet bind attempt. `serve::tailnet_reprobe` (SH-146's
+self-heal thread) becomes the only path a tailnet interface is ever bound,
+first attempt included; its loop inverted from sleep-then-probe to
+probe-then-sleep so the first attempt fires immediately rather than after a
+2s default backoff delay — the one implementation hazard the council
+surfaced and fixed before it could ship as a flat regression on the healthy
+case. The test seam (`bind_and_serve`, `test-seam` feature only) keeps its
+own synchronous probe, since it's the one caller whose contract needs the
+tailnet answer at `ready()` time — production has no such caller anymore.
+
+**A sibling defect the frequency shift exposed, found by chasing a flake
+rather than by inspection.** `worker`'s per-connection closure held
+`trusted_hosts`'s `RwLock` read guard for the *entire* request it was
+handling — latent as long as `tailnet_reprobe`'s write (the lock's only
+writer) almost never ran on a tailnet-equipped machine's daemon (the sync
+probe had already succeeded before `serve` started). Making that write run
+for nearly every daemon turned it into a five-second `story daemon stop`
+timeout against any daemon serving an open SSE connection — a browser tab,
+or this repo's own heartbeat test, which flaked 5/8 under load and 0/8 on
+the unmodified baseline under identical load, ruling out "just the machine
+is busy" before writing a line of fix. Root-caused by manual reproduction
+outside `cargo test` (curl against a real daemon, in a tight loop, saving
+the daemon's own log on failure) once the in-suite flake resisted three
+different theories. Fixed at the origin: the closure clones the small
+`TrustedHosts` value out and drops the lock immediately, rather than holding
+it across a request that can run for as long as a browser tab stays open.
+
+**Test-fixture fallout.** One existing test
+(`web_open_falls_back_to_the_bare_url_when_arming_fails`) corrupted a live
+daemon's portfile token on the documented assumption that "the daemon reads
+its portfile once at startup and never again" — true before this story,
+false after, on a tailnet-equipped machine. Fixed by starting that one
+daemon with no `tailscale` on `PATH`, so it can never rewrite the portfile a
+second time — deterministic, not a race against timing luck. Swept for
+siblings across every other test that mutates the portfile directly
+(`tests/daemon_lifecycle.rs`, `tests/daemon_git_env.rs`); one other
+(`a_daemon_from_another_build_is_replaced_rather_than_reused`) has the same
+theoretical shape but did not reproduce in 8/8 stress runs — its
+corrupt-then-read window is orders of magnitude narrower. Left as a named,
+unfixed residual rather than patched speculatively.
+
+**Measured, before → after** (`TAILNET_PROBE_TIMEOUT` = 3s, `SPAWN_DEADLINE`
+= 5s): `web start` under a wedged `tailscale`, 3.28s → ~0.1s; accepting-but-
+silent window, 2.96s → 0.00s; `web start` with no `tailscale` on `PATH` at
+all, 0.08s → 0.08–1.3s (system-load noise, confirmed not a regression by
+direct comparison against the unmodified baseline under the same load).
+
+**Tests:** new `tests/tailnet_startup.rs` (4 tests, bounds derived from
+`TAILNET_PROBE_TIMEOUT` rather than a magic number), one new unit test
+(`bind_listeners_never_itself_produces_a_tailnet_bind`), one new lock-
+scoping regression test, `tests/tailnet_probe_budget.rs` restated to a
+stronger premise with a race-free assertion (waits for the daemon's own
+confirmed bind rather than a counter-quiet-window heuristic — the first
+version of that fix was itself racy under `--test-threads=4` and had to be
+rewritten once already). `tests/tailnet_rebind.rs` and
+`tests/tailnet_advertise.rs` unchanged and green. The six tailnet-listener
+tests in `web_test.rs` keep exercising a real bind via the test seam, not
+skipped — checked directly (zero `skipping: the test server bound no
+tailnet interface` lines in the gate run), the single highest-risk way this
+story could have shipped looking complete while quietly deleting that
+coverage.
+
+**Gate:** `make test` red three times before green — each a different real
+defect, not the same one retried: (1) the mutation itself, caught before any
+commit; (2) the SSE lock-scoping sibling, caught by the flaky-test
+investigation above; (3) the portfile-corruption test-fixture race, caught
+by the same class of investigation applied a second time. Green on the
+fourth full run: 3506+ Rust tests, plugin harness 32/32, Playwright 207/207,
+fmt and clippy clean. Mutation-checked: reinstating the synchronous probe
+inside `bind_listeners` turns all four `tailnet_startup.rs` assertions red;
+reverting the `trusted_hosts` clone turns the new lock-scoping test red.
+Both reverted after confirming.
+
+**Deviations:** none from the approved plan. The council's advertised-host
+decision and the two sibling defects were not anticipated in the plan; both
+are documented above and in `docs/spec/dashboard-authorization.md`'s new "As
+built — SH-186" section.
+
 ### SH-300 — a deep-linked drawer can open over Settings · PR #415
 
 **Outcome:** merged (PR #415). A deep-linked story that resolves after the
@@ -16460,6 +16564,97 @@ The gate's own first real push demonstrated both halves of its contract
 unprompted: the tip was certified and allowed, and the intermediate commit
 `5bf9658` was **named and not blocked** — the deliberate limit, proving itself
 on the first live push rather than in a test.
+### SH-305 — done
+
+**Outcome:** merged. Every board column now has its own sort, chosen from a
+popup menu opened by a glyph at the column header's top-right corner —
+replacing SH-128's single board-wide Priority/Order pair in the filter panel.
+
+**This reverses a decision SH-128's council made deliberately, on new
+information.** That council voted 3-0 for one shared pair of buttons rather
+than repeating them per column, reasoning that "board sort is one value with
+no per-column identity" — and recorded the choice as a documented deviation
+from SH-128's own text, which had literally said "in the status column
+header." SH-305 asserts the opposite: a `todo` column and a `done` column can
+legitimately want different orders, and a board-wide toggle can never express
+that. Both verdicts were right for what they knew — SH-128 had no story yet
+asking for per-column identity; SH-305 is that story.
+
+**The option set changed too, in a way that touches the same ground SH-128's
+council already surveyed.** That council explicitly rejected `created_at` as
+a sort basis, on fixture evidence that it disagrees with numeric id order
+(SH-1 created after SH-2 but numbered lower — `domain.rs::
+ready_order_ignores_created_at_entirely` pins the disagreement) — and chose
+`story_number` instead, calling it "story order." SH-305's own text asks for
+"Added" and "Modified," which are exactly `created_at`/`updated_at`. Confirmed
+with the user before implementing: these are a different question than
+SH-128's "what order was this created in, id-wise" — "Added"/"Modified" ask
+when a *timestamp* landed, not where a story sits in the numbering, and both
+can coexist without contradiction. `story_number`'s own comparison stays
+alive as the tiebreak inside the comparator (ties at second precision are
+common — SH-63's own finding), it is simply no longer offered as a menu
+option in its own right.
+
+**Built.** `state.columnSort`, a sparse slug-keyed map (`{slug: {key, dir}}`),
+replaces `state.boardSort`'s single `{key, dir}` — renamed, not reshaped in
+place, so an older build's persisted blob can't be misread as a slug map (its
+literal `"key"`/`"dir"` strings would otherwise look like state slugs).
+`columnCardCompare(slug)` replaces the single `boardCardCompare`, keyed by
+`state.columnSort[slug]` (or the default, priority descending). Pruned in
+`pruneCarriedFilters()` alongside `hiddenColumns`, since it is state-slug
+vocabulary with the identical per-repo hazard. Not touched by Clear Filters,
+matching `hiddenColumns`/`sort`'s own precedent.
+
+The menu reuses the story context menu's `.ctxmenu` machinery rather than the
+filter bar's `.fdd-panel` — the latter is `position: absolute`, and a column
+header sits inside `.board`'s `overflow-x: auto`, so a panel could clip; the
+former is already `position: fixed` and viewport-clamped. Landed as two
+commits: a pure refactor first (`focusMenuItem`/`handleMenuKeydown`/
+`renderMenuNode` extracted from `storyMenuFocusItem`/`bindStoryMenuKeys`/
+`renderStoryMenuNode`, verified behavior-identical against the full suite
+before anything else changed), then the feature, which extends
+`renderMenuNode` with the `checked`/`role="menuitemradio"` shape the sort menu
+needs and the story menu doesn't use.
+
+The Archive button (CLOSED-superstate columns only) moved from beside the
+column count to between the title and the count/sort-button group, via a
+second `margin-left: auto` splitting the header's free space with the
+count's own — an approximation of centering rather than absolute
+positioning, deliberately: `.column` narrows to `min(18rem, 85vw)` under the
+mobile breakpoint, and auto margins can't overlap the way absolute
+positioning could at that width.
+
+**Tests.** `tests/web_test.rs`: `.board-sort-btn` dropped from the tap-target
+list, `.column-sort-btn` added to the glyph-only (`min-width`+`min-height`)
+one; new structural pins for the menu functions and all six option labels;
+negative pins confirming `#board-sort`/`#boardsort-priority`/
+`#boardsort-order` are gone, so the global control can't quietly come back.
+`e2e/specs/board-sort.spec.ts` fully rewritten, 8 cases against a real daemon
+and browser — including one that sets `todo`'s sort and asserts `in-progress`'s
+own sort and card order are untouched, the assertion SH-128's board-wide
+design could never have passed.
+
+**Gate: `make test` green, on the second of two full runs.** The first run (4
+failures — `description-edit-mode.spec.ts`, `markdown-rendering.spec.ts`, and
+two `notification-contract.spec.ts` timer-timeout cases) was investigated
+before assuming anything about this story's own diff: none of the four
+failing specs touch board sort, the shared `.ctxmenu` extraction, or column
+headers, and all four are timer/timeout-shaped tests (`Test timeout of
+15000ms exceeded`) — exactly what CPU contention breaks. `ps`/`uptime` at the
+time showed load averages of 5.5/13.4/18.7 with a second worktree's own
+`cargo test --workspace` running concurrently on the same machine (confirmed
+directly: both sessions were mid-`dead_public_surface.rs` at the same
+moment). Reran the four failing specs alone — 21/21 green, no changes — then
+ran the full gate a second time end to end rather than stitching partial runs
+together as evidence: 211/211 e2e, EXIT_CODE=0. Matches this file's own
+`playwright.config.ts` comment, which measured its 15s timeout budget against
+specific load averages and always expected a busy machine to be the failure
+mode, not this story's code.
+
+**Supervision:** log-growth heartbeat with a 120s stall bound on both full
+`make test` runs and the isolated rerun. No stalls, no wedges, no kills.
+
+**Deviations:** none.
 
 ### SH-298 — the abort no longer had a fixture, but it still had an instrument
 
