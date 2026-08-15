@@ -2257,22 +2257,40 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     restoreOverlayFocus(returnTo);
   }
 
-  /** Returns focus to `node` when it can still take it.
+  /** Whether `node` can still receive focus and be seen to have it.
    *
    * Every rejection here is a state the app reaches on an ordinary path, not
    * a hypothetical: a card removed by the `/data` arrival that closed the
    * drawer, a control hidden by the screen change that closed it
    * (`renderScreen()`), or one still inert under an overlay further down the
    * stack. Focusing any of those either drops the focus silently or scrolls
-   * the page to something the user cannot see, so it is skipped — leaving
-   * focus at the document, which is where the browser puts it anyway. */
+   * the page to something the user cannot see.
+   *
+   * Extracted from `restoreOverlayFocus`, which is still its first caller, so
+   * that the notice surfaces can ask the same question rather than a second
+   * approximation of it (SH-326). The approximation that was nearly written
+   * there checked `isConnected` and the `hidden` *attribute* and knew nothing
+   * about `[inert]` — accurate enough to pass today, because `syncNoticeBar`
+   * happens to use `bar.hidden`, and wrong the day either half changed. Two
+   * copies of one rule is the class SH-136 already cost this project three
+   * times.
+   *
+   * `document.body` is deliberately NOT rejected here: it satisfies every
+   * clause honestly (it is connected, it has rects, it has a `focus` method).
+   * "Body is not a place focus should live" is a different judgement, and it
+   * belongs to each caller — both of which make it. */
+  function canTakeFocus(node) {
+    if (!node || typeof node.focus !== "function") return false;
+    if (!document.body.contains(node)) return false;
+    if (node.closest("[inert]")) return false;
+    return !!node.getClientRects().length;
+  }
+
+  /** Returns focus to `node` when it can still take it, leaving focus at the
+   * document otherwise — which is where the browser puts it anyway. */
   function restoreOverlayFocus(node) {
     if (!node || node === document.body) return;
-    if (typeof node.focus !== "function") return;
-    if (!document.body.contains(node)) return;
-    if (node.closest("[inert]")) return;
-    if (!node.getClientRects().length) return;
-    node.focus();
+    if (canTakeFocus(node)) node.focus();
   }
 
   /** How long a backdrop stays in the document after `.open` comes off, so
