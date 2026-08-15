@@ -581,6 +581,18 @@ case "${1:-}" in
     ;;
   kill-window)
     printf '%s\n' "$*" >> "$STATE/kill_window_args.log" 2>/dev/null || true
+    # $FAKE_TMUX_KILL_WINDOW_PROBE=<path> (SH-308) — a test proving `complete`
+    # closes a window BEFORE removing its worktree needs more than "kill-window
+    # was called somewhere in the run"; the args log alone can't say WHEN. Each
+    # call records whether <path> exists AT THIS MOMENT, so a test can assert
+    # the worktree was still on disk the instant the window died.
+    if [ -n "${FAKE_TMUX_KILL_WINDOW_PROBE:-}" ]; then
+      if [ -e "$FAKE_TMUX_KILL_WINDOW_PROBE" ]; then
+        printf 'exists\n' >> "$STATE/kill_window_probe.log" 2>/dev/null || true
+      else
+        printf 'gone\n' >> "$STATE/kill_window_probe.log" 2>/dev/null || true
+      fi
+    fi
     ;;
   list-panes)
     # `list-panes -a -F <fmt>` — the `capture` verb enumerates windows→panes. Emit

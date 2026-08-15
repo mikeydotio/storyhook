@@ -4,6 +4,8 @@
 # the preview mutates nothing.
 source "$(dirname "$0")/lib.sh"
 
+export PATH="$TESTS_DIR/fakes:$PATH"
+
 repo=$(mk_story_repo)
 
 # --- everything actionable: open story, clean worktree, merged branch ---
@@ -14,7 +16,37 @@ assert_eq "$(jqf "$out" .ok)" "true" "plan: ok"
 assert_eq "$(jqf "$out" .plan.worktree.status)" "removable" "plan: clean worktree is removable"
 assert_eq "$(jqf "$out" .plan.branch.status)" "deletable" "plan: merged branch is deletable"
 assert_eq "$(jqf "$out" .plan.close.to)" "done" "plan: resolves the CLOSED state from states.toml"
+assert_eq "$(jqf "$out" .plan.window.status)" "none" "plan: outside tmux, no window is reported"
 assert_eq "$(jqf "$out" .actions_count)" "3" "plan: counts close + worktree + branch"
+
+# --- SH-308: an open dispatched window is a 4th actionable item ---
+out=$(cd "$repo" \
+  && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$w")" \
+     bash "$SCRIPT" complete plan "$id" 2>&1)
+assert_eq "$(jqf "$out" .plan.window.status)" "open" "plan: a dispatched window still alive reports open"
+assert_eq "$(jqf "$out" .actions_count)" "4" "plan: an open window on a removable worktree counts as an action"
+assert_contains "$(jqf "$out" .display)" "would close before removing the worktree" \
+  "plan: display previews the window close"
+
+# --- SH-308: the window the caller is asking FROM is `self`, never an action ---
+out=$(cd "$repo" \
+  && TMUX=fake TMUX_PANE=%7 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$w")" \
+     bash "$SCRIPT" complete plan "$id" 2>&1)
+assert_eq "$(jqf "$out" .plan.window.status)" "self" "plan: the caller's own pane resolves to self"
+assert_eq "$(jqf "$out" .actions_count)" "3" "plan: self is never counted as an action"
+assert_contains "$(jqf "$out" .display)" "use \`reap\` for that" "plan: display points a self window at reap"
+
+# --- SH-308: an open window on a preserved (dirty, no --force) worktree is
+# NOT previewed as an action -- default execute would not touch it either ---
+dwin=$(new_story "$repo" "Dirty with a window")
+wdwin=$(mk_dispatched "$repo" "$dwin")
+echo scratch >"$repo/.claude/worktrees/$wdwin/scratch.txt"
+out=$(cd "$repo" \
+  && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%9' "$wdwin")" \
+     bash "$SCRIPT" complete plan "$dwin" 2>&1)
+assert_eq "$(jqf "$out" .plan.window.status)" "open" "plan: dirty-worktree window still reports open"
+assert_contains "$(jqf "$out" .display)" 'only if `--force`' \
+  "plan: display makes the window's fate conditional on --force"
 
 # The preview really is read-only.
 [ -d "$repo/.claude/worktrees/$w" ] || fail_test "plan: worktree was removed by a PLAN run"
