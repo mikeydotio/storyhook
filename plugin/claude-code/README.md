@@ -31,7 +31,7 @@ human-readable `display`. The model routes and renders; it never drives `story`,
 `git`, or `tmux` itself. That is what keeps behavior testable: the bash suite
 exercises the real logic, and the prose can't quietly diverge from it.
 
-`bin/story.sh` accepts eight subcommands:
+`bin/story.sh` accepts twelve subcommands:
 
 | Subcommand | Verb it backs |
 |---|---|
@@ -39,10 +39,19 @@ exercises the real logic, and the prose can't quietly diverge from it.
 | `view <id>` | `/story view`, `/story <id>` |
 | `dispatch <id> [--auto]` | `/story do` |
 | `create --title …` | `/story new` |
-| `complete <plan\|execute> <id>` | `/story complete` |
+| `complete <plan\|execute> <id> [--no-close] [--no-clean] [--force]` | `/story complete` |
 | `reap <id>` | not routed by the skill (SH-208) — the `--auto` charter's own final act; see below |
 | `capture <id>` | `/story capture` |
 | `doctor` | `/story doctor` |
+| `ensure-cli` | the CLI-availability check six standalone skills used to hand-roll in prose |
+| `context [--full]` | `/story-context` |
+| `sync [--since <d>]` | `/story-sync` |
+| `handoff [--since <d>]` | `/story-handoff` |
+
+The last four (SH-308) route not through this skill but through their own standalone
+skills (`skills/story-context`, `story-sync`, `story-handoff`), and through
+`references/ensure-cli.md`, which six of the nine standalone skills load — same
+one-JSON-object contract, same "route and render" rule, different door in.
 
 ## Provenance
 
