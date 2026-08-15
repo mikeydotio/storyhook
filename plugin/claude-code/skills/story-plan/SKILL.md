@@ -14,12 +14,12 @@ Decompose a feature or spec into structured stories with dependencies.
 
 ### 0. Ensure the storyhook CLI is available
 
-Before running any `story` command, confirm the CLI is installed by running `command -v story`. If it is missing, follow `${CLAUDE_PLUGIN_ROOT}/references/ensure-cli.md`: tell the user, ask permission to install (via `AskUserQuestion`), and if approved use the `story-install` skill before continuing. Do not run `story` commands until this check passes.
+Follow `${CLAUDE_PLUGIN_ROOT}/references/ensure-cli.md`. Do not continue until it passes.
 
 ### 1. Identify input
 
 - **If a file path is provided** (e.g., `/story-plan ./spec.md`), read the file to verify it exists
-- **If an inline description is provided** (e.g., `/story-plan "Add user authentication with OAuth2"`), write it to a temporary markdown file at `/tmp/storyhook-plan-input.md`
+- **If an inline description is provided** (e.g., `/story-plan "Add user authentication with OAuth2"`), write it to a markdown file — **use the session scratchpad directory if one exists, otherwise `mktemp`** — never a fixed shared path like `/tmp/storyhook-plan-input.md`: two concurrent `/story-plan` sessions (or a second run in the same session) would silently overwrite each other's input mid-flight, the exact collision class SH-263 fixed for this plugin's fake tmux
 - **If no argument**, ask the user to describe what they want to plan or provide a spec file
 
 ### 2. Preview the decomposition

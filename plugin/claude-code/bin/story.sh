@@ -1696,6 +1696,107 @@ cmd_triage() {
   rm -rf "$tmpdir"
 }
 
+# ---- subcommand: scaffold-claude-md ------------------------------------------
+#
+# cmd_scaffold_claude_md [--path <file>] — SH-308. Sentinel-delimited
+# insert-or-replace of `story scaffold claude-md`'s output into a CLAUDE.md
+# file, replacing skills/story-setup/SKILL.md's step 4 hand-rolled text
+# surgery ("wrap the output in sentinel markers... if CLAUDE.md already
+# contains the begin marker, replace the existing block"). A model doing
+# this by hand risks exactly the bug this class of change tends to produce —
+# a near-miss on the sentinel string, or a replace that eats a line it
+# shouldn't — for a mechanical operation with one right answer. NOT awk: BSD
+# awk (this project's target, per lib/session.sh's own header) refuses a raw
+# newline inside a `-v` value ("newline in string"), so the multi-line
+# replacement block is threaded through a plain bash read loop instead.
+cmd_scaffold_claude_md() {
+  local path="CLAUDE.md"
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --path) path="${2:-}"; shift 2 || fail "--path needs a value." ;;
+      *) fail "unknown argument \`$1\` — usage: story.sh scaffold-claude-md [--path <file>]" ;;
+    esac
+  done
+  [ -n "$path" ] || fail "--path was given no value."
+  require_story
+
+  local content
+  content=$(story_cli scaffold claude-md 2>/dev/null) || true
+  [ -n "$content" ] || fail "story scaffold claude-md produced no output."
+
+  local begin='<!-- BEGIN STORYHOOK -->' end='<!-- END STORYHOOK -->'
+  local action
+  if [ -f "$path" ]; then
+    if grep -qF "$begin" "$path"; then action="replaced"; else action="appended"; fi
+  else
+    action="created"
+  fi
+
+  if [ -n "$DRY_RUN" ]; then
+    jq -n --arg path "$path" --arg action "$action" '
+      # $action is the PAST-tense form the real run reports (created/replaced/
+      # appended) — kept as one vocabulary across both modes rather than a
+      # second set of verbs, so a caller comparing a dry-run preview against
+      # the real result is comparing the same word. Only this one display
+      # string needs the present tense, so it maps locally instead.
+      ({created:"create", replaced:"replace", appended:"append"}[$action]) as $verb
+      | {ok:true, dry_run:true, path:$path, action:$action,
+         display:("[story] DRY RUN scaffold-claude-md: would " + $verb + " the storyhook block in `" + $path + "`.")}'
+    return 0
+  fi
+
+  local content_file
+  content_file=$(mktemp /tmp/story-scaffold.XXXXXX) || fail "could not create a scratch file."
+  printf '%s\n' "$content" >"$content_file"
+
+  case "$action" in
+    replaced)
+      # A plain bash line-reader, not sed/awk: it never has to know the
+      # block's own contents in advance (sed's -e would need the WHOLE
+      # replacement pre-escaped into its own script text), and it edits
+      # nothing outside the sentinel pair — everything else in the file
+      # passes through byte-for-byte.
+      local tmp in_block=0 line
+      tmp=$(mktemp "${path}.XXXXXX") || fail "could not create a scratch file next to $path."
+      while IFS= read -r line || [ -n "$line" ]; do
+        if [ "$line" = "$begin" ]; then
+          printf '%s\n' "$begin"
+          cat "$content_file"
+          printf '%s\n' "$end"
+          in_block=1
+          continue
+        fi
+        if [ "$in_block" = 1 ]; then
+          [ "$line" = "$end" ] && in_block=0
+          continue
+        fi
+        printf '%s\n' "$line"
+      done <"$path" >"$tmp"
+      mv "$tmp" "$path"
+      ;;
+    appended)
+      {
+        [ -s "$path" ] && printf '\n'
+        printf '%s\n' "$begin"
+        cat "$content_file"
+        printf '%s\n' "$end"
+      } >>"$path"
+      ;;
+    created)
+      {
+        printf '%s\n' "$begin"
+        cat "$content_file"
+        printf '%s\n' "$end"
+      } >"$path"
+      ;;
+  esac
+  rm -f "$content_file"
+
+  jq -n --arg path "$path" --arg action "$action" '
+    {ok:true, path:$path, action:$action,
+     display:("[story] scaffold-claude-md: " + $action + " the storyhook block in `" + $path + "`.")}'
+}
+
 # ---- subcommands: doctor / capture ------------------------------------------
 # FORKED from agentics' plugins/issue/bin/issue.sh (cmd_doctor / cmd_capture,
 # as of 2026-07-25, issue plugin v2.36.0).
@@ -2541,5 +2642,6 @@ case "${1:-}" in
   handoff)    shift; cmd_handoff "$@" ;;
   work)       shift; cmd_work "$@" ;;
   triage)     shift; cmd_triage "$@" ;;
-  *)          fail "usage: story.sh <list | view <story-id> | dispatch <story-id> [--auto] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | doctor | capture <story-id> | ensure-cli | context [--full] | sync [--since <d>] | handoff [--since <d>] | work [story-id] | triage>" ;;
+  scaffold-claude-md) shift; cmd_scaffold_claude_md "$@" ;;
+  *)          fail "usage: story.sh <list | view <story-id> | dispatch <story-id> [--auto] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | doctor | capture <story-id> | ensure-cli | context [--full] | sync [--since <d>] | handoff [--since <d>] | work [story-id] | triage | scaffold-claude-md [--path <file>]>" ;;
 esac

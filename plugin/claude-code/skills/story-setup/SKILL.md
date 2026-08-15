@@ -2,21 +2,16 @@
 name: story-setup
 description: "Use when setting up storyhook in a new project, when the 'story' command is not found, or when asked to configure storyhook integration. Detects CLI availability, installs if missing, initializes project, and configures plugin behavior."
 user-invocable: true
-allowed-tools: Read, Write, Bash(command -v *), Bash(story *), Bash(cargo *), Bash(curl *), AskUserQuestion
+allowed-tools: Read, Write, Bash(command -v *), Bash(story *), Bash(cargo *), Bash(curl *), Bash(bash ${CLAUDE_PLUGIN_ROOT}/bin/story.sh *), AskUserQuestion
 ---
 
 # Storyhook Setup
-
-Set up storyhook CLI and project configuration.
 
 ## Steps
 
 ### 1. Check CLI availability
 
-Run `command -v story` to see if the CLI is installed.
-
-- **If missing**, follow the `story-install` skill to install and verify the `story` CLI. It asks the user's permission and offers the official installer or cargo. Do not continue until `story --help` works.
-- **If present**, continue to the next step.
+Follow `${CLAUDE_PLUGIN_ROOT}/references/ensure-cli.md`. Do not continue until it passes.
 
 ### 2. Initialize the project
 
@@ -54,14 +49,11 @@ Ask the user if they want to adjust the tracking level.
 
 Ask if the user wants storyhook instructions added to their CLAUDE.md file.
 
-- If yes, run `story scaffold claude-md` to generate the instructions block
-- Wrap the output in sentinel markers when appending to CLAUDE.md:
-  ```
-  <!-- BEGIN STORYHOOK -->
-  (scaffold output here)
-  <!-- END STORYHOOK -->
-  ```
-- If CLAUDE.md already contains `<!-- BEGIN STORYHOOK -->`, replace the existing block
+If yes, run `bash ${CLAUDE_PLUGIN_ROOT}/bin/story.sh scaffold-claude-md`. `ok:false` → show
+`display`, stop. `ok:true` → show `display`; `action` names what happened (`created`,
+`appended`, or `replaced` — the helper already finds any existing `<!-- BEGIN STORYHOOK
+-->` block and replaces it in place, byte-preserving everything else in the file). Do not
+edit CLAUDE.md yourself for this step.
 
 ### 5. Git hooks (optional)
 
