@@ -982,7 +982,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    `--notice-row-min` is a floor with a stated meaning rather than a policy, and
    the test that both regions stay above it and never intersect is what makes it
    real -- a constant nobody can violate silently. */
-.notice-region { display: flex; flex-direction: column; min-height: var(--notice-row-min); max-width: 100%; align-items: flex-end; flex: 0 1 auto; }
+.notice-region { display: flex; flex-direction: column; gap: 0.375rem; min-height: var(--notice-row-min); max-width: 100%; align-items: flex-end; flex: 0 1 auto; }
+/* Above the scroller rather than below it, so it is a stable first tab stop
+   that does not move as notices arrive under it. `flex-shrink: 0` because the
+   one control able to clear a full dock must not be the thing the dock shrinks
+   away when it is full. */
+.notice-region-bar { flex-shrink: 0; display: flex; justify-content: flex-end; pointer-events: auto; }
+.notice-dismiss-all { font-size: 0.75rem; padding: 0.25rem 0.5rem; box-shadow: var(--shadow-sm); }
 /* `min-height: 0` is load-bearing, not defensive: without it a flex child
    refuses to shrink below its content and every height bound above is inert. */
 .notice-scroll { overflow-y: auto; overflow-x: hidden; min-height: 0; max-width: 100%; padding: 0.25rem; pointer-events: auto; }
@@ -1443,15 +1449,26 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
      version never had. -->
 <div class="notice-dock" id="notice-dock">
   <div class="notice-region" id="toast-region">
+    <div class="notice-region-bar" id="toast-bar" hidden>
+      <button type="button" class="btn btn-ghost notice-dismiss-all" id="toast-dismiss-all">Dismiss all <span id="toast-count"></span></button>
+    </div>
     <div class="notice-scroll" id="toast-scroll" role="group" aria-label="Notices">
       <div class="toast-stack" id="toast-stack" role="status" aria-live="polite"></div>
     </div>
   </div>
   <div class="notice-region" id="dispatch-history-region">
+    <div class="notice-region-bar" id="dispatch-history-bar" hidden>
+      <button type="button" class="btn btn-ghost notice-dismiss-all" id="dispatch-history-dismiss-all">Dismiss all <span id="dispatch-history-count"></span></button>
+    </div>
     <div class="notice-scroll" id="dispatch-history-scroll" role="group" aria-label="Dispatch results">
       <div class="dispatch-history" id="dispatch-history" role="region" aria-label="Autonomous dispatch results" aria-live="polite"></div>
     </div>
   </div>
+  <!-- Outside both notice regions, so clearing the stack is announced without
+       the announcement itself being a notice. A keyboard user who presses
+       "Dismiss all" and hears nothing, with focus now somewhere else, has been
+       told nothing about what just happened. -->
+  <span class="sr-only" id="notice-dock-status" role="status"></span>
 </div>
 
 <script>
@@ -2889,6 +2906,117 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       if (scroll.scrollHeight > scroll.clientHeight) scroll.setAttribute("tabindex", "0");
       else scroll.removeAttribute("tabindex");
     });
+    // Durable notices only: a self-clearing one is gone in three seconds, so a
+    // control that appeared and vanished on that rhythm would be a tab stop
+    // flickering in and out under the user. Counting what the reader must act
+    // on makes the bar's presence a consequence of a state only they can change.
+    syncNoticeBar("toast", $("toast-stack").querySelectorAll(".toast .toast-dismiss").length);
+    syncNoticeBar("dispatch-history", state.dispatchHistory.length);
+  }
+
+  /** How many notices a region must hold before it offers to clear them all.
+   *
+   * Two, not one: a single notice's own dismiss button already *is* "dismiss
+   * all", so at one the bar would be a second control doing the first one's job
+   * and an extra tab stop in the common case. This is a judgement call with no
+   * criterion behind it, and it is written down as one. */
+  var NOTICE_DISMISS_ALL_THRESHOLD = 2;
+
+  /** Shows or hides one region's "Dismiss all" bar and keeps its count current.
+   *
+   * The count lives in the button's own visible text, never in an `aria-hidden`
+   * span beside it and never in a fixed `aria-label`. Both of those are **SC
+   * 2.5.3 Label in Name (Level A)** failures in opposite directions: the first
+   * shows "Dismiss all 9" while announcing "Dismiss all", and the second
+   * announces something the user cannot see. Speech-input users say what they
+   * read, so the visible text has to BE the name. The cost is a name that
+   * changes as notices arrive, which no criterion forbids -- and because the bar
+   * sits outside the live region, that change is never announced as a notice. */
+  function syncNoticeBar(prefix, count) {
+    var bar = $(prefix + "-bar");
+    if (!bar) return;
+    bar.hidden = count < NOTICE_DISMISS_ALL_THRESHOLD;
+    if (!bar.hidden) $(prefix + "-count").textContent = String(count);
+  }
+
+  /** Where focus goes when a control has just destroyed itself and everything
+   * around it.
+   *
+   * "Dismiss all" deletes the focused element and every sibling, so it strands
+   * focus on `<body>` **every time, by construction** -- which is what separates
+   * it from SH-326, where dismissing one notice of five strands focus only
+   * sometimes and leaves siblings to Tab to. Shipping a brand-new control with a
+   * guaranteed strand is not deferring to SH-326, it is adding a fresh instance
+   * of a filed defect.
+   *
+   * The dock itself is deliberately NOT the answer, though it is the nearest
+   * thing to hand: it is `pointer-events: none`, visually empty, carries no
+   * focus indicator, and sits last in the document, so Tab from it leaves for
+   * the browser chrome. That is `document.body` with extra steps for a sighted
+   * keyboard user, offered as the remedy for a focus-order problem.
+   *
+   * So: the active overlay's own container when one is open -- every overlay
+   * surface already carries `tabindex="-1"` for `activateOverlay`'s fallback --
+   * and otherwise the visible `<main>` for the current screen. Both are real,
+   * visible elements with the page's own content after them in tab order.
+   *
+   * Called only from the two bulk-clear handlers. The per-notice
+   * `.toast-dismiss` handler is left exactly as it was, so SH-326 keeps its
+   * subject and its repro, and extends this helper to two more call sites
+   * rather than unpicking a policy it never agreed to. */
+  function focusAfterNoticeRemoval() {
+    var active = overlayStack.length ? overlayStack[overlayStack.length - 1] : null;
+    var target = active ? $(active) : visibleMain();
+    if (!target) return;
+    if (!target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1");
+    target.focus();
+  }
+
+  /** The `<main>` the current screen is showing, or `null` if none is. */
+  function visibleMain() {
+    var found = null;
+    ["board-view", "list-view", "home-view", "settings-view"].forEach(function(id) {
+      var node = $(id);
+      if (!found && node && !node.hidden) found = node;
+    });
+    return found;
+  }
+
+  /** Announces an outcome that is not itself a notice.
+   *
+   * Cleared first so that dismissing twice in a row announces twice: a live
+   * region whose text is reassigned to the value it already holds is not a
+   * mutation, and several screen readers say nothing at all. */
+  function announceInNoticeDock(message) {
+    var status = $("notice-dock-status");
+    if (!status) return;
+    status.textContent = "";
+    status.textContent = message;
+  }
+
+  /** Clears every notice in the toast stack, clocked ones included.
+   *
+   * `cancelNoticeClock` is what keeps a removed-but-still-running notice from
+   * leaving its `visibilitychange` listener attached to `document` for the rest
+   * of the session -- the node is gone, so nothing else would ever release it. */
+  function dismissAllToasts() {
+    var stack = $("toast-stack");
+    Array.prototype.slice.call(stack.children).forEach(function(node) {
+      if (node.cancelNoticeClock) node.cancelNoticeClock();
+      node.remove();
+    });
+    syncNoticeDock();
+    focusAfterNoticeRemoval();
+    announceInNoticeDock("All notices dismissed");
+  }
+
+  /** The same, for the dispatch history, which is rendered from state rather
+   * than mutated node by node. */
+  function dismissAllDispatchHistory() {
+    state.dispatchHistory = [];
+    renderDispatchHistory();
+    focusAfterNoticeRemoval();
+    announceInNoticeDock("All dispatch results dismissed");
   }
 
   // ============================================================
@@ -3008,6 +3136,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     node.addEventListener("mouseenter", pause);
     node.addEventListener("mouseleave", resume);
     document.addEventListener("visibilitychange", onVisibility);
+    // The teardown this notice's own removal has to run (SH-323). `depart()`
+    // detaches the document-level listener on the path where the clock expires;
+    // a notice removed by "Dismiss all" never reaches `depart()`, so without a
+    // handle here its listener would outlive the node it belongs to, for the
+    // rest of the session, with nothing left able to release it.
+    node.cancelNoticeClock = function() {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = null;
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
     resume();
   }
 
@@ -9026,6 +9164,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("delete-modal-submit").addEventListener("click", submitDeleteStory);
     $("delete-reason").addEventListener("keydown", function(e) { if (e.key === "Enter") submitDeleteStory(); });
     $("drawer-close").addEventListener("click", closeDrawer);
+    $("toast-dismiss-all").addEventListener("click", dismissAllToasts);
+    $("dispatch-history-dismiss-all").addEventListener("click", dismissAllDispatchHistory);
     $("drawer-backdrop").addEventListener("click", closeDrawer);
     document.addEventListener("keydown", function(e) {
       // SH-175: `create-modal` is deliberately absent here — see the
