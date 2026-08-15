@@ -384,11 +384,18 @@ enum Verdict {
 /// Verbs that never reach `parse_invocation` in a real run, so testing them
 /// through it directly would report a false failure. Written down with a
 /// reason, same idiom as `EXCLUDED_VERBS`.
-const PARSED_ELSEWHERE: &[(&str, &str)] = &[(
-    "tui",
-    "src/main.rs dispatches it ahead of parse_invocation, so `story tui --help` explains \
-     rather than launches",
-)];
+const PARSED_ELSEWHERE: &[(&str, &str)] = &[
+    (
+        "tui",
+        "src/main.rs dispatches it ahead of parse_invocation, so `story tui --help` explains \
+         rather than launches",
+    ),
+    (
+        "mcp",
+        "src/main.rs dispatches it ahead of parse_invocation, exactly like `tui` above, so \
+         `story mcp --help` explains rather than starting the stdio server",
+    ),
+];
 
 /// Global flags that precede the verb and consume a following value, used
 /// only to find the verb position for [`Verdict::Skip`] — this is a raw-token

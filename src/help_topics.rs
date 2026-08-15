@@ -988,6 +988,59 @@ Related:
         );
 
         m.insert(
+            "mcp",
+            r#"story mcp
+
+Run a Model Context Protocol server on stdin/stdout, exposing a curated set
+of storyhook operations as MCP tools to an AI agent host — the same door
+every other client uses (the daemon's /api/v1/invoke), so a tool call is
+exactly as safe, and exactly as visible in a story's write history, as the
+equivalent typed command.
+
+When to use:
+  Configure it as an MCP server in an agent host that speaks the protocol
+  (see plugin/claude-code/.claude-plugin/plugin.json's "mcpServers" entry
+  for Claude Code's own configuration). Not something you run by hand at a
+  shell for its own output — it speaks newline-delimited JSON-RPC, not
+  human-readable text.
+
+Every tool call names its own project — this server infers nothing from a
+working directory, because a stdio session run by an agent host has none of
+its own that a person chose. An optional 'actor' argument on a writing tool
+records who made the change, the same way $STORYHOOK_ACTOR does for the CLI.
+
+Tools:
+  story_list        List open stories with filters
+  story_next        The highest-priority ready story or stories
+  story_show        Full details for one story
+  story_search      Full-text search
+  story_summary     Counts by state and priority
+  story_new         Create a story
+  story_move        Transition a story's state
+  story_comment     Add a comment
+  story_assign      Assign to a team member
+  story_prioritize  Set priority
+  story_label       Add labels
+  story_relate      Add a relationship between two stories
+  story_block       Mark blocked, with a reason
+  story_unblock     Clear blocked status
+  story_set         Update multiple fields at once
+  story_context     A session-start context document
+
+What is not here:
+  This is a curated slice of the CLI's full surface, not a 1:1 mirror of it
+  — verbs like 'story decompose', 'story github-sync', and anything
+  destructive enough to ask a human to confirm (like 'story purge') are not
+  exposed as tools. Use the CLI directly for those.
+
+Related:
+  story help --compact — a CLI reference for a host without MCP support
+  story load-context    — what story_context's underlying command answers
+  docs/spec/mcp-server.md — the design of record
+"#,
+        );
+
+        m.insert(
             "import",
             r#"story import [<file>]
 
