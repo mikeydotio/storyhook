@@ -7642,9 +7642,9 @@ fn the_status_delete_confirmation_runs_on_no_clock() {
     );
 }
 
-/// The armed confirmation's state lives in `state`, not on the DOM node
-/// (SH-324) -- the class fence, in the style of `dead_public_surface.rs` and
-/// `release_targets.rs`.
+/// The statuses editor's open question lives in `state`, not on the DOM node
+/// (SH-324, reshaped by SH-334) -- the class fence, in the style of
+/// `dead_public_surface.rs` and `release_targets.rs`.
 ///
 /// This is the half a `setTimeout` scan cannot see. The flag used to live in
 /// `button.dataset.confirming`, and `renderStatuses()` clears and rebuilds every
@@ -7652,17 +7652,20 @@ fn the_status_delete_confirmation_runs_on_no_clock() {
 /// which (`statusMutation()`'s callbacks) consult no busy guard and so discarded
 /// it on every browser. Deleting the six-second timer while leaving the flag on
 /// the node would have swapped a visible limit for an invisible 0-25s one set by
-/// the safety poll, which is worse for being undeclared.
+/// the safety poll, which is worse for being undeclared. SH-334 reshaped the
+/// field from a bare slug (`armedDeleteSlug`) into an object (`statusPrompt`) so
+/// the same substrate covers the destination/reclassify question too; this fence
+/// moved with the rename and still guards the identical property.
 ///
 /// So the fence is on the *substrate*, not on this one call site: a future
-/// confirmation reintroduced as per-node state is the same defect wearing a
+/// question reintroduced as per-node state is the same defect wearing a
 /// different name, and nothing else in the suite would catch it.
 ///
 /// Comment lines (trimmed to start with `*` or `//`) are exempt -- the state
 /// field's own doc comment names `button.dataset.confirming` while explaining
 /// what replaced it, and is not a second source of the pattern.
 #[test]
-fn armed_confirmation_state_lives_in_state_not_on_the_node() {
+fn status_prompt_state_lives_in_state_not_on_the_node() {
     let fixture = served();
     let port = fixture.port;
 
@@ -7682,7 +7685,7 @@ fn armed_confirmation_state_lives_in_state_not_on_the_node() {
             continue;
         }
         panic!(
-            "a confirmation's armed state is on a DOM node again, at script byte {at}: \
+            "the editor's open question is on a DOM node again, at script byte {at}: \
              {line:?} -- renderStatuses() rebuilds every row from scratch, so a rebuild \
              eats it, and the rebuild happens on a poll the user cannot see. Keep it in \
              `state` and paint from it (SH-324)."
@@ -7701,9 +7704,9 @@ fn armed_confirmation_state_lives_in_state_not_on_the_node() {
         + close.len();
 
     assert!(
-        script[fn_start..fn_end].contains("state.armedDeleteSlug"),
-        "buildStatusRow no longer reads state.armedDeleteSlug, so a rebuild stops \
-         repainting an armed confirmation and starts discarding it again. Painting from \
+        script[fn_start..fn_end].contains("state.statusPrompt"),
+        "buildStatusRow no longer reads state.statusPrompt, so a rebuild stops \
+         repainting an open question and starts discarding it again. Painting from \
          state on every render is what makes \"this dashboard sets no time limit here\" \
          true structurally, rather than true only while every renderStatuses() caller \
          remembers to consult a busy predicate -- and two callers already do not."

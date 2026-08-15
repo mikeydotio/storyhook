@@ -1889,13 +1889,22 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // "unasked" everywhere `statuses` itself is nulled (`goSettings()`,
     // `goStatuses()`), since both are keyed to `settingsRepoId`.
     statusesReadiness: "unasked",
-    // The status slug whose Delete confirmation is armed, or null (SH-324).
+    // The statuses editor's open question, or null (SH-324, reshaped by SH-334).
     //
-    // **One slug, not a set.** Arming a second row disarms the first by
-    // construction, so "every empty status left armed at once" is
-    // unrepresentable rather than merely discouraged. The six-second clock this
-    // replaces never provided that, and it is the only safety property the
-    // clock's own comment claimed which turned out to be worth keeping.
+    // `{ slug, intent: "delete", superState: null, destination: null }` is the
+    // only shape this commit produces — SH-324's original one-slug case,
+    // reshaped from a bare slug into an object so SH-334 can extend `intent`
+    // with a second value and give `destination`/`superState` a use, in the very
+    // next commit, without a second migration of every call site. This commit
+    // changes no observable behaviour: everywhere the old `armedDeleteSlug`
+    // string was set, compared or cleared, this object is set, compared by
+    // `.slug`, or cleared instead.
+    //
+    // **One question, not a set.** Opening a second one replaces the first by
+    // construction, so "two questions open at once" is unrepresentable rather
+    // than merely discouraged. The six-second clock this replaces never
+    // provided that, and it is the only safety property the clock's own comment
+    // claimed which turned out to be worth keeping.
     //
     // **In `state`, not on the button.** It lived in `button.dataset.confirming`
     // until SH-324, which meant `renderStatuses()`'s `clear(container)` ate it —
@@ -1920,14 +1929,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // substrate to rest correctness on.
     //
     // So `buildStatusRow()` paints from this, and every rebuild — including one
-    // added by someone who never read this comment — **repaints the confirmation
+    // added by someone who never read this comment — **repaints the question
     // instead of eating it**. That is what makes "no time limit exists" true
     // structurally rather than true-while-every-caller-remembers-a-predicate.
     // It ends on the delete, on Cancel or Escape, on leaving the editor, on
     // another status mutation completing, or on the slug leaving the list. It
     // ends on no poll, no push, no re-render, no focus change, and no elapsed
-    // time. `.council/sh324-delete-confirmation-time-limit/DECISION.md`.
-    armedDeleteSlug: null,
+    // time. `.council/sh324-delete-confirmation-time-limit/DECISION.md` and
+    // `.council/sh-334-destination-prompt-state-model/DECISION.md`.
+    statusPrompt: null,
     data: null,
     view: localStorage.getItem("storyhook.view") === "list" ? "list" : "board",
     // A display preference, not a per-repo filter: like `view` above, it
@@ -3129,7 +3139,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * === 0` is not a keyboard test: assistive technology dispatches synthesised
    * clicks with `detail === 0`, so it fires for AT-driven pointer users and not
    * for real ones. This file already records the measurement that settles it --
-   * WebKit focuses no `<button>` on click (see `armedDeleteSlug`), so "was this
+   * WebKit focuses no `<button>` on click (see `statusPrompt`), so "was this
    * activated by keyboard" is unanswerable while "did focus survive" is
    * observable. Ask what a thing is, not what it is spelled (SH-226).
    *
@@ -8282,9 +8292,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     state.settingsRepoId = null;
     state.statuses = null;
     state.statusesReadiness = "unasked";
-    // Leaving the editor ends any confirmation armed in it (SH-324): it names a
+    // Leaving the editor ends any question open in it (SH-324): it names a
     // status in a project this screen is no longer showing.
-    state.armedDeleteSlug = null;
+    state.statusPrompt = null;
     // Force renderSettings() to rebuild the register form fresh on this
     // explicit (re-)entry — see the flag's own comment for why routine
     // polls must NOT do this.
@@ -8304,9 +8314,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // `state.fetchSettledFor`: this repo's statuses editor has not answered
     // *this* opening of it, whatever its last visit ended in (SH-301).
     state.statusesReadiness = "unasked";
-    // Same rule as `goSettings()`: a confirmation armed in one project's editor
+    // Same rule as `goSettings()`: a question open in one project's editor
     // does not follow the user into another's (SH-324).
-    state.armedDeleteSlug = null;
+    state.statusPrompt = null;
     delete $("settings-view").dataset.built;
     renderScreen();
     fetchStatuses();
@@ -8570,13 +8580,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         // at now.
         if (state.settingsRepoId !== repoId || statusEditorIsBusy()) return;
         state.statuses = payload.states || [];
-        // The status an armed confirmation names is gone — deleted from another
-        // client, or from the CLI. There is nothing left to confirm, and a flag
+        // The status an open question names is gone — deleted from another
+        // client, or from the CLI. There is nothing left to ask, and a prompt
         // naming a slug the list no longer holds would paint nothing while
         // still swallowing the next Escape (SH-324).
-        if (state.armedDeleteSlug && !state.statuses.some(function(s) {
-          return s.slug === state.armedDeleteSlug;
-        })) state.armedDeleteSlug = null;
+        if (state.statusPrompt && !state.statuses.some(function(s) {
+          return s.slug === state.statusPrompt.slug;
+        })) state.statusPrompt = null;
         renderStatuses();
         markStatusesSettled(repoId, true);
       })
@@ -8748,15 +8758,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     ]));
 
     var blocked = deleteBlockReason(status);
-    // A status that stopped being deletable while its confirmation sat armed
+    var prompt = state.statusPrompt && state.statusPrompt.slug === status.slug
+      ? state.statusPrompt : null;
+    // A status that stopped being deletable while its confirmation sat open
     // withdraws the question: a story landed in it, or the project lost the
     // last other status of some superstate. Cleared here rather than in a
     // watcher because this is the one place that recomputes `blocked`.
-    if (blocked && state.armedDeleteSlug === status.slug) state.armedDeleteSlug = null;
+    if (prompt && blocked) { state.statusPrompt = null; prompt = null; }
 
-    var armed = state.armedDeleteSlug === status.slug;
+    var armed = !!prompt;
     row.appendChild(armed
-      ? el("button", { class: "btn btn-ghost", onClick: function() { disarmDelete(); } }, ["Cancel"])
+      ? el("button", { class: "btn btn-ghost", onClick: function() { cancelStatusMove(); } }, ["Cancel"])
       : el("button", {
           class: "btn btn-danger", disabled: !!blocked,
           title: blocked || ("Remove " + status.slug),
@@ -8808,7 +8820,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       el("button", {
         class: "btn btn-danger", disabled: !!blocked,
         onClick: function() {
-          state.armedDeleteSlug = null;
+          state.statusPrompt = null;
           deleteStatus(status.slug, null, row);
         }
       }, ["Delete " + status.slug])
@@ -8825,9 +8837,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * today, and would stop being safe the day it did not.
    *
    * That this also makes `statusEditorIsBusy()` true is a side effect and
-   * explicitly not the mechanism. The armed state survives a rebuild because
+   * explicitly not the mechanism. The open question survives a rebuild because
    * `buildStatusRow()` repaints it from `state`; if focus leaves for any
-   * reason the refreshes resume and the confirmation is still there. */
+   * reason the refreshes resume and the question is still there. */
   function focusInStatusRow(slug, selector) {
     var rows = document.querySelectorAll("#settings-view .status-row");
     for (var i = 0; i < rows.length; i++) {
@@ -8838,15 +8850,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     }
   }
 
-  /** Withdraws an armed confirmation. The single exit, used by Cancel and by
-   * Escape — the reconciliation rules elsewhere clear `state.armedDeleteSlug`
+  /** Withdraws the editor's open question. The single exit, used by Cancel and
+   * by Escape — the reconciliation rules elsewhere clear `state.statusPrompt`
    * directly, because they are already re-rendering and are not announcing a
-   * user's own action back to them. A no-op when nothing is armed, which is
+   * user's own action back to them. A no-op when nothing is open, which is
    * what lets the shared Escape handler call it unconditionally. */
-  function disarmDelete() {
-    if (!state.armedDeleteSlug) return;
-    var slug = state.armedDeleteSlug;
-    state.armedDeleteSlug = null;
+  function cancelStatusMove() {
+    if (!state.statusPrompt) return;
+    var slug = state.statusPrompt.slug;
+    state.statusPrompt = null;
     renderStatuses();
     focusInStatusRow(slug, ".btn-danger");
     announceInNoticeDock(slug + " kept.");
@@ -8898,8 +8910,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * And deleting the `setTimeout` alone would not have been enough: it would
    * have swapped a visible six-second limit for an invisible 0–25s one set by
    * the poll, which is still a limit and is worse for being undeclared. See
-   * `state.armedDeleteSlug` for the eight rebuild paths that made that true and
-   * for why the armed state now lives in `state`.
+   * `state.statusPrompt` for the eight rebuild paths that made that true and
+   * for why the open question now lives in `state`.
    *
    * `.council/sh324-delete-confirmation-time-limit/DECISION.md` has the full
    * reasoning, the vote (unanimous, with two seats voting against their own
@@ -8915,7 +8927,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       );
       return;
     }
-    state.armedDeleteSlug = status.slug;
+    state.statusPrompt = { slug: status.slug, intent: "delete", superState: null, destination: null };
     renderStatuses();
     // Focus lands on Cancel, the least destructive control (WAI-ARIA APG), so a
     // buffered Enter or a key repeat arriving just after the arming keystroke
@@ -9018,14 +9030,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (row) row.classList.add("pending");
     api(method, path, body)
       .then(function(payload) {
-        // The list an armed confirmation was asked about has just changed, so
-        // the question is withdrawn rather than carried over onto a new one
+        // The list the open question was asked about has just changed, so the
+        // question is withdrawn rather than carried over onto a new one
         // (SH-324). This is a rule with a reason, not the incidental
         // consequence of a rebuild that it used to be: these two callbacks
         // consult no busy guard, and cannot -- repainting from the server's
         // authoritative answer is their whole job. Withdrawal here is triggered
         // by the user's own edit, never by elapsed time, so it is not a limit.
-        state.armedDeleteSlug = null;
+        state.statusPrompt = null;
         state.statuses = payload.states || [];
         renderStatuses();
         if (payload.message) toast(payload.message, "success");
@@ -9037,9 +9049,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         // Withdrawn on the failure path too, and for the same reason as the
         // success path above: this redraws from the last known-good list, which
         // is a list the user has now seen change under them. Leaving a
-        // confirmation armed across a redraw they did not ask for would make
+        // question open across a redraw they did not ask for would make
         // the next click mean something they did not aim at.
-        state.armedDeleteSlug = null;
+        state.statusPrompt = null;
         toastError(err);
         renderStatuses();
       });
@@ -9766,17 +9778,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       // SH-175: `create-modal` is deliberately absent here — see the
       // comment above its own listener bindings.
       if (e.key === "Escape") {
-        // Read BEFORE the closers run, not after (SH-324). An armed delete
-        // confirmation yields to any open overlay — Escape belongs to the
+        // Read BEFORE the closers run, not after (SH-324). An open editor
+        // question yields to any open overlay — Escape belongs to the
         // topmost surface, and an overlay is always above the editor behind it
         // — but the closers are about to empty the stack, so asking afterwards
-        // would find it empty and disarm in the same keystroke that closed the
-        // token modal. `disarmDelete()` is itself a no-op when nothing is
-        // armed, which is what lets it be called unconditionally here, the way
+        // would find it empty and withdraw in the same keystroke that closed the
+        // token modal. `cancelStatusMove()` is itself a no-op when nothing is
+        // open, which is what lets it be called unconditionally here, the way
         // every closer beside it already is.
         var armedYieldsToNothing = overlayStack.length === 0;
         closeDrawer(); closeDraftsModal(); cancelTokenModal(); closeArchiveModal(); skipDropBlockedReasonModal(); closeDeleteModal();
-        if (armedYieldsToNothing) disarmDelete();
+        if (armedYieldsToNothing) cancelStatusMove();
       }
     });
   }
