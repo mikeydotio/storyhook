@@ -398,6 +398,49 @@ pub(super) fn set_checkout_path(
     Ok(())
 }
 
+/// Records that this store scanned this project's commits at `at`.
+///
+/// One column, by a targeted `UPDATE` — never through `put_settings`, whose
+/// unconditional full-row rewrite is SH-129's hazard and would sit on a path
+/// taken once per commit. See migration 0014's header.
+pub(super) fn record_commit_scan(
+    conn: &Connection,
+    project: ProjectId,
+    at: &str,
+) -> Result<(), StoreError> {
+    sql(
+        conn.execute(
+            "UPDATE projects SET commit_scan_at = ?2 WHERE id = ?1",
+            params![project.get(), at],
+        ),
+        "recording a project commit scan",
+    )?;
+    Ok(())
+}
+
+/// Sets the receipt only if this project has never had one, answering whether
+/// it did.
+///
+/// `WHERE commit_scan_at IS NULL` rather than a read-then-write, so the "arm
+/// once, never re-arm" rule is the database's and not a caller's: two installs
+/// racing cannot both observe NULL and both write, and the second's `changes()`
+/// of zero is what tells it so.
+pub(super) fn arm_commit_scan(
+    conn: &Connection,
+    project: ProjectId,
+    at: &str,
+) -> Result<bool, StoreError> {
+    let armed = sql(
+        conn.execute(
+            "UPDATE projects SET commit_scan_at = ?2 \
+             WHERE id = ?1 AND commit_scan_at IS NULL",
+            params![project.get(), at],
+        ),
+        "arming a project commit scan",
+    )?;
+    Ok(armed > 0)
+}
+
 // ---------------------------------------------------------------------------
 // Allocation
 // ---------------------------------------------------------------------------
