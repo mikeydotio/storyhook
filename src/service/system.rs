@@ -8,20 +8,31 @@
 //! than a generic one.
 //!
 //! Grouping them is not filing convenience. Each one writes somewhere the rest
-//! of storyhook never touches: the repository's working tree, its `.git/hooks`
+//! of storyhook never touches: the repository's working tree, its hook
 //! directory, the user's editor configuration. Keeping them behind one service
 //! is what makes "which commands can write outside the store?" a question with
 //! a short, checkable answer.
 //!
 //! # Where the git hooks go
 //!
-//! `story hooks install` asks git, and does not assume a layout. It used to
-//! write `<root>/.git/hooks`, which fails outright in a *linked* worktree —
-//! there `.git` is a file holding a `gitdir:` pointer, so `hooks` cannot be
-//! joined onto it (SH-314) — and a worktree is where this project does most of
-//! its work. `hooks::HookDirs` resolves `--git-common-dir` instead, which is
-//! the directory git consults for **every** worktree, so the answer is one
-//! answer rather than one per checkout.
+//! `story hooks install` **asks git** and does not assume a layout. It used to
+//! build `<root>/.git/hooks`, which is wrong twice and silently both times.
+//!
+//! In a *linked* worktree `.git` is a file holding a `gitdir:` pointer, so
+//! `hooks` cannot be joined onto it at all (SH-314) — and a worktree is where
+//! this project does most of its work. And when `core.hooksPath` is set, git
+//! stops consulting `$GIT_DIR/hooks` **wholesale**, not as a fallback, so every
+//! file written there is one git will never execute (SH-313) — while the
+//! command reported success.
+//!
+//! `hooks::HookDirs` resolves both directories that matter: `--git-path hooks`,
+//! where git will actually look, and `--git-common-dir/hooks`, the directory
+//! storyhook owns and which git consults for every worktree. Hooks go where git
+//! looks; when someone else's hook already holds that name, the managed copy
+//! goes to the directory storyhook owns and the report states — rather than
+//! assumes — that git reaches it only if that hook delegates. Distinguishing a
+//! delegating occupant from a non-delegating one would mean executing a
+//! stranger's script, so storyhook does not guess either way.
 
 use crate::error::AppError;
 use crate::store::Store;
@@ -69,13 +80,13 @@ impl<'ctx, S: Store> SystemService<'ctx, S> {
     /// A hook file that exists and was not written by storyhook is left alone
     /// and reported as skipped — the user's own `pre-commit` is not ours to
     /// overwrite.
-    pub fn install_git_hooks(&self) -> Result<String, AppError> {
+    pub fn install_git_hooks(&self) -> Result<hooks::InstallReport, AppError> {
         install_git_hooks(self.ctx.cwd())
     }
 
     /// Removes storyhook's git hooks from this checkout, leaving anyone
     /// else's alone.
-    pub fn uninstall_git_hooks(&self) -> Result<String, AppError> {
+    pub fn uninstall_git_hooks(&self) -> Result<hooks::UninstallReport, AppError> {
         uninstall_git_hooks(self.ctx.cwd())
     }
 
@@ -105,21 +116,22 @@ impl<'ctx, S: Store> SystemService<'ctx, S> {
 
 // --- the project-less half --------------------------------------------------
 //
-// These five need a *directory*, not a project: they write `.git/hooks`, read
-// `hooks.toml`, or install an editor plugin, and the legacy path answered every
-// one of them in a directory storyhook had never heard of. Root resolution
+// These five need a *directory*, not a project: they write the repository's
+// hook directory, read `hooks.toml`, or install an editor plugin, and the
+// legacy path answered every one of them in a directory storyhook had never
+// heard of. Root resolution
 // routes them before it looks for a project, which is why they exist as free
 // functions rather than only as methods. `hooks test` is deliberately not among
 // them — it fires a real hook against a real project, and the legacy path calls
 // `ensure_project` first.
 
 /// Installs storyhook's git hooks into the checkout at `cwd`.
-pub fn install_git_hooks(cwd: &std::path::Path) -> Result<String, AppError> {
+pub fn install_git_hooks(cwd: &std::path::Path) -> Result<hooks::InstallReport, AppError> {
     hooks::install_hooks(cwd)
 }
 
 /// Removes storyhook's git hooks from the checkout at `cwd`.
-pub fn uninstall_git_hooks(cwd: &std::path::Path) -> Result<String, AppError> {
+pub fn uninstall_git_hooks(cwd: &std::path::Path) -> Result<hooks::UninstallReport, AppError> {
     hooks::uninstall_hooks(cwd)
 }
 
