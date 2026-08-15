@@ -34,6 +34,19 @@ fn security_header_frame() -> Header {
 /// two paths can never drift apart.
 pub const CSP: &str = "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'";
 
+/// A legitimate same-origin dashboard request keeps sending `Referer`
+/// (SH-319's cookie-borne-read fallback,
+/// [`crate::api::admission::named_token_ok`], depends on it for `EventSource`
+/// on an origin that never gets `Sec-Fetch-Site`), while a cross-origin
+/// navigation away from the dashboard sends none — never a foreign origin,
+/// which is what the fallback would need to leak nothing. Shared between
+/// [`finish`] and [`write_sse_head`] for the same reason [`CSP`] is.
+pub const REFERRER_POLICY: &str = "same-origin";
+
+fn security_header_referrer_policy() -> Header {
+    Header::from_bytes("Referrer-Policy", REFERRER_POLICY).unwrap()
+}
+
 fn security_header_csp() -> Header {
     Header::from_bytes("Content-Security-Policy", CSP).unwrap()
 }
@@ -171,7 +184,8 @@ pub fn finish(request: Request, reply: Reply) {
         .with_header(content_type_header(reply.content_type))
         .with_header(security_header_nosniff())
         .with_header(security_header_frame())
-        .with_header(security_header_csp());
+        .with_header(security_header_csp())
+        .with_header(security_header_referrer_policy());
     match reply.caching {
         Caching::Unset => {}
         Caching::NoCache => {
@@ -685,6 +699,7 @@ pub fn write_sse_head(w: &mut dyn Write) -> io::Result<()> {
          X-Content-Type-Options: nosniff\r\n\
          X-Frame-Options: DENY\r\n\
          Content-Security-Policy: {CSP}\r\n\
+         Referrer-Policy: {REFERRER_POLICY}\r\n\
          \r\n"
     )
 }
