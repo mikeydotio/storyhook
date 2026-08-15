@@ -16864,3 +16864,99 @@ implementation — this worktree reaps itself immediately after the merge, and a
 second branch would be stranded with nothing left to land it. No
 `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push, no version bump, no
 deploy.
+
+### SH-309 — the blocked badge asserted a cause it never tested
+
+**Outcome:** merged. A blocked card's badge now names what is actually
+blocking it, every story id a live link, instead of claiming "(no reason)"
+for causes it was never checking.
+
+**The filing, confirmed live before writing a line of code.** SH-307's card
+read "● blocked (no reason)" with an SH-308 chip sitting directly beneath it
+in `.card-blockers` — SH-308 confirmed OPEN/todo/non-draft/non-deleted, so
+fully resolvable client-side. The badge (`populateCard`,
+`src/web_dashboard.html`) tested a single clause, `st.awaiting`, while the
+server's `blocked_ids` (`src/service/query.rs`) is driven by `is_ready`'s
+five-clause test (`src/domain.rs`): an open `blocked-by` edge and an
+`obviated-by` edge both land a story in `blocked_ids` and both got the same
+"(no reason)" label as a story genuinely parked with none. One defect, two
+live instances; SH-307/SH-308 was the `blocked-by` one.
+
+**`blockedFlag(st, isBlocked)`** is now the single owner of every badge
+sentence — a comma-joined cause list (open `blocked-by` refs, then
+`obviated-by` refs, then a quoted `awaiting` reason), falling back to the
+doctor's own "(no reason)" only when the list is empty and
+`state === "blocked"`, and to a bare "blocked" with an explanatory title
+when even that doesn't apply (a `blocked-by` edge onto an open draft or
+soft-deleted story — real, server-side causes invisible to this client).
+The live half of `.card-blockers` moved into the badge (it was printing the
+same blocking story's id twice on one card); the row is now the
+cleared-blocker dwell's home alone, which must survive since the badge
+disappears the instant the last blocker clears.
+
+**A real staleness bug, caught by the existing e2e suite rather than
+written for it.** A first pass gated the whole badge behind
+`blocked[st.id]` (the server's whole-project `blocked_ids` aggregate). That
+went red on `stale-data-response.spec.ts`'s in-flight-write case: a
+`/relate` mutation's own response patches the story's `relationships` in
+place and can render before the next `/data` reply recomputes
+`blocked_ids` — normally invisible (SSE closes the gap in well under a
+second) but this spec deliberately seals the board fetch to prove exactly
+this ordering. `openBlockers()`/`.card-blockers` never had this problem
+pre-SH-309 because they read `st.relationships` directly, independent of
+`blocked_ids`. Fix: `isBlocked` now gates only the two *fallback* branches;
+a non-empty cause list is shown regardless, since every clause it derives
+from is one `is_ready` already tests — a locally-derived cause is never
+less correct than a possibly-lagging aggregate, only fresher.
+
+**Council: convened once, unanimous 3–0 in round 1** —
+`.council/sh309-unresolvable-obviated-by-badge-ref/`, verdict recorded as a
+comment on the story. Question: should an `obviated-by` target this client
+can't resolve (draft, soft-deleted, another project) be silently skipped
+(mirroring `openBlockers()`'s own skip for `blocked-by`) or shown via
+`storyRef()`'s existing "unknown" ring? All three seats
+(`ux-designer-web`, `software-architect`, `skeptic`), researching blind,
+landed on **show, unconditionally** — `is_ready`'s `obviated-by` clause has
+no resolvability check at all (unlike its `blocked-by` clause), so skipping
+would under-report a real, server-verified cause; and the drawer's own
+relationships list already renders every relation, `obviated-by` included,
+unconditionally through the same component, so skipping in the badge would
+put it in visible disagreement with the drawer one click away for the
+identical edge.
+
+**Two hats.** `refactor(web)`: extracted `blockedFlag()` reproducing the
+pre-fix two cases exactly, plus the defect-class fence
+(`every_blocked_badge_sentence_comes_from_the_one_deriver`, modelled on
+`every_loading_line_comes_from_the_one_generator`) pinning "(no reason)"
+and "● blocked" to inside that one function — established and proved
+*before* any behaviour moved. `fix(web)`: the cause list, the `isBlocked`
+staleness fix, `ariaText` appended to the card's `aria-label` (the badge's
+reason previously reached only a sighted mouse hover, never assistive
+tech), `.card-flags { flex-wrap: wrap }` (three tap-target-floored refs
+overflow a 320px card with no overflow clip), the corrected `openBlockers()`
+comment (it claimed client/server agreement on drafts and soft-deleted
+blockers not blocking; only "another project" genuinely does), and every
+e2e edit below. `docs(spec)`: `story-status-light.md`'s Consumer 2 section,
+As-built, and guards table.
+
+**e2e:** new cases in `status-flags.spec.ts` (which now owns the badge's
+rendered text) for the filed bug, click-through to the blocker's own
+drawer, two-blocker comma-join, an awaiting reason alongside a blocker, and
+`obviated-by`; `card-blockers.spec.ts` narrowed to own only the dwell, with
+a new assertion pinning the badge-to-row handoff at the instant a blocker
+clears; three probe sites in `drawer-detail-race.spec.ts` and
+`stale-data-response.spec.ts` swapped from `.card-blockers` to
+`.flag-blocked`, unchanged in intent. `blocked-drop-reason.spec.ts`'s two
+genuine "(no reason)" cases (skip, Escape) are untouched; its "submitted a
+reason" case now expects the reason quoted in the badge, since a typed
+reason is a cause like any other.
+
+**Gate:** `make test` green — `cargo fmt --check`, `cargo clippy --workspace
+--all-targets -- -D warnings`, full Rust suite (189/189 in `web_test.rs`,
+whole suite green), plugin suite, e2e (212/212 passed, including the one
+that caught the staleness bug above before it shipped).
+
+**Supervision:** each `cargo`/e2e run watched to completion in the
+foreground; no stalls, no wedges.
+
+**Deviations:** none.
