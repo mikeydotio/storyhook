@@ -227,6 +227,9 @@ This file does not restate them.
 
 ## Where the rest of the record lives
 
-`HARDENING_PROGRESS.md` carries the per-story execution log — how each child was
-claimed, what it found, and what it deferred. `docs/rearch/STATE.md` remains the
-record for the nine rearchitecture waves that preceded this epic, not for this one.
+Each child story carries its own execution record as `story comment`s — how it
+was claimed, what it found, and what it deferred. `HARDENING_PROGRESS.md` held
+that record as a `## Log` section until 2026-08-15 and is now the run's
+procedure only; the entries written before the change are in its git history.
+`docs/rearch/STATE.md` remains the record for the nine rearchitecture waves that
+preceded this epic, not for this one.
