@@ -35,6 +35,7 @@ use crate::api::http::{
 };
 use crate::api::routes::{ProjectRoute, Route, StoryAction, classify};
 use crate::cli::{Invocation, ProjectAction, StateAction};
+use crate::domain::provenance::Provenance;
 use crate::domain::{Priority, default_open_state, default_type};
 use crate::env::Environment;
 use crate::error::AppError;
@@ -120,6 +121,65 @@ pub(crate) fn mutating(method: &Method) -> bool {
     matches!(method, Method::Post | Method::Patch | Method::Delete)
 }
 
+/// The provenance a per-project write is recorded with (SH-312).
+///
+/// Before this, [`Ctx::new`] at this door carried no provenance at all, so
+/// every dashboard write folded to [`Provenance::unrecorded`] — the same
+/// answer a pre-SH-246 row or a test fixture gives, and indistinguishable
+/// from either without reading the store's bytes directly. That is what made
+/// diagnosing SH-310/SH-311 (two identical stories, 24 seconds apart, filed
+/// from the dashboard) take a forensic pass over the raw database instead of
+/// a `story log`.
+///
+/// Labelled `web:<verb>` rather than reusing [`crate::invoke::invocation_name`]
+/// bare: several of these routes (`route_patch_story` most notably) answer
+/// without ever building an [`Invocation`] at all, so there is no single verb
+/// source every arm shares — and prefixing makes a REST-door write visually
+/// distinct from a CLI one at a glance, which is the more useful fact for a
+/// reader asking "did this come from the terminal or the browser?" A read
+/// route gets a label too, even though nothing it does ever appends an event
+/// that would render it — assigning it here costs nothing and keeps this
+/// function total over [`ProjectRoute`] rather than reaching for a `_` arm a
+/// route added later could silently fall into.
+fn route_provenance(route: &ProjectRoute<'_>) -> Provenance {
+    let verb = match route {
+        ProjectRoute::Data => "data",
+        ProjectRoute::StoryCreate => "new",
+        ProjectRoute::StoryShow { .. } => "show",
+        ProjectRoute::StoryPatch { .. } => "set-fields",
+        ProjectRoute::StoryDelete { .. } => "delete",
+        ProjectRoute::StoryAction { action, .. } => match action {
+            StoryAction::Move => "move",
+            StoryAction::Comment => "comment",
+            StoryAction::Priority => "set-priority",
+            StoryAction::Assign => "assign",
+            StoryAction::Labels => "set-labels",
+            StoryAction::Block => "set-awaiting",
+            StoryAction::Unblock => "clear-awaiting",
+            StoryAction::Reopen => "reopen",
+            StoryAction::Archive => "archive",
+            StoryAction::Unarchive => "unarchive",
+            StoryAction::Publish => "publish",
+            StoryAction::LinkPr => "link-pr",
+            StoryAction::UnlinkPr => "unlink-pr",
+        },
+        ProjectRoute::StoryActionUnknown => "unknown-action",
+        ProjectRoute::Dispatch { .. } => "dispatch",
+        ProjectRoute::DispatchPoll => "dispatch-poll",
+        ProjectRoute::States => "states",
+        ProjectRoute::StateCreate => "state-create",
+        ProjectRoute::StatesReorder => "states-reorder",
+        ProjectRoute::StatePatch { .. } => "state-patch",
+        ProjectRoute::StateDelete { .. } => "state-delete",
+        ProjectRoute::StateArchive { .. } => "state-archive",
+        ProjectRoute::Relate => "relate",
+        ProjectRoute::Unrelate => "unrelate",
+        ProjectRoute::MethodNotAllowed => "method-not-allowed",
+        ProjectRoute::NotFound => "not-found",
+    };
+    Provenance::command(format!("web:{verb}"))
+}
+
 /// Decides how to respond to a request against `store`.
 ///
 /// The path is turned into a [`Route`] by [`classify`] and answered by the
@@ -176,7 +236,9 @@ pub fn route<S: Store>(
                 }
                 let hookless = checkout.is_none();
                 let root = checkout.unwrap_or_else(|| no_checkout_placeholder(id));
-                let ctx = Ctx::new(store, project, root, env.clone()).no_hooks(hookless);
+                let ctx = Ctx::new(store, project, root, env.clone())
+                    .no_hooks(hookless)
+                    .with_provenance(route_provenance(&route));
                 let reply = route_project(&ctx, route, headers, body, trusted_hosts);
                 Routed::changing(method, reply, Changed::Project(id.to_string()))
             }
