@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::provenance::Provenance;
 use crate::domain::{StateDef, StoryEvent, SuperState, TypeDef};
+use crate::env::git_env::output as git_output;
 use crate::error::AppError;
 use crate::output::{DeletePlan, SetPrefixPlan};
 use crate::store::{
@@ -641,23 +642,6 @@ fn no_origin_to_take(cwd: &Path) -> AppError {
          explicitly:\n\n  story project link origin <url>",
         cwd.display()
     ))
-}
-
-/// `git <args>` in `cwd`, or `None` if git failed for any reason at all.
-///
-/// Shared by [`origin_of`], [`origin_at`] and [`origin_here`] so there is one
-/// place that knows a missing `git`, a non-repository and a failed command are
-/// the same outcome. The environment that `git` runs with belongs to
-/// [`crate::env::git_env`], which owns the same rule for every other `git`
-/// storyhook runs.
-fn git_output(cwd: &Path, args: &[&str]) -> Option<String> {
-    let output = crate::env::git_env::command(cwd).args(args).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8(output.stdout)
-        .ok()
-        .map(|text| text.trim().to_string())
 }
 
 /// Records an origin against a project — **the only place `src/` calls
