@@ -1795,7 +1795,7 @@ fn web_serve_root_html_keeps_text_controls_above_the_ios_zoom_threshold() {
     // double-tapping to zoom the board's own text is a gesture the reader
     // is entitled to.
     let touch_action_selector = "button, select, .card, .repo-card, tbody tr, .ctxmenu-item, \
-         .projsel-item, .fdd-option, .filter-toggle";
+         .projsel-item, .fdd-option, .filter-toggle, .pref-toggle";
     assert!(
         declarations(css, touch_action_selector).contains("touch-action: manipulation"),
         "the dashboard's tap targets should carry touch-action: manipulation"
