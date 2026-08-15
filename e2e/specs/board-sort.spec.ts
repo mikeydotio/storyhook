@@ -1,5 +1,13 @@
 import { test, expect } from "@playwright/test";
-import { cleanUpCreatedStories, deleteStory, openProject, seedToken } from "./support";
+import {
+  cleanUpCreatedStories,
+  deleteStory,
+  openProject,
+  projectSlug,
+  requiredEnv,
+  seedToken,
+  waitUntilStoreClockPasses,
+} from "./support";
 
 /**
  * Exercises SH-305: every board column gets its own sort, chosen from a
@@ -120,6 +128,34 @@ async function selectColumnSort(
   await expect(menu).toBeVisible();
   await menu.locator(".ctxmenu-item", { hasText: label }).click();
   await expect(menu).not.toBeVisible();
+}
+
+/** Reads `title`'s story's `updated_at` from the store, through the same
+ * `/data` endpoint the board itself renders from -- so an assertion made on
+ * it is an assertion about what the store actually holds, not about what the
+ * page happens to be showing. Used by the "Modified" test to prove its own
+ * precondition (SH-329) rather than assume it. */
+async function updatedAtOf(
+  page: import("@playwright/test").Page,
+  title: string,
+): Promise<string> {
+  const slug = await projectSlug(page.request, "Alpha Project");
+  const resp = await page.request.get(
+    `/api/repos/${encodeURIComponent(slug)}/data`,
+    { headers: { "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN") } },
+  );
+  if (!resp.ok()) {
+    throw new Error(
+      `updatedAtOf: GET /data answered ${resp.status()}: ${await resp.text()}`,
+    );
+  }
+  const data: { stories?: Array<{ story: { title: string; updated_at: string } }> } =
+    await resp.json();
+  const match = (data.stories ?? []).find((v) => v.story.title === title);
+  if (!match) {
+    throw new Error(`updatedAtOf: no story titled "${title}" in GET /data`);
+  }
+  return match.story.updated_at;
 }
 
 /** This spec's own cards' titles within `slug`'s column, in DOM order --
@@ -244,11 +280,31 @@ test('choosing "Modified" reorders a column by last-touched time, not creation t
 
   await createStory(page, untouched, "medium");
   await createStory(page, touched, "medium");
+  // The store stamps at one-second precision, and all three of this test's
+  // writes fit comfortably inside one second on a warm machine -- which
+  // makes "touched after" unrepresentable and hands the sort a tie it
+  // breaks on story number, i.e. creation order (SH-329). Waiting the
+  // second out is what makes the bump below a bump at all.
+  await waitUntilStoreClockPasses(await updatedAtOf(page, untouched));
   // Bumps `touched`'s updated_at past both stories' created_at -- by
   // creation order alone the pair would read [untouched, touched]; a
   // passing assertion for "Modified ↓" (most recent first) below proves
   // the sort is reading `updated_at`, not `created_at`.
   await touchPriority(page, touched, "high");
+
+  // Asserted from the store's own answer, before the board is asked
+  // anything: if this ever stops holding -- a coarser clock, a priority
+  // change that no longer counts as a modification -- the failure names
+  // the two timestamps and the reason, instead of surfacing as an
+  // unexplained ordering mismatch below.
+  const untouchedAt = await updatedAtOf(page, untouched);
+  const touchedAt = await updatedAtOf(page, touched);
+  expect(
+    touchedAt > untouchedAt,
+    `the touched story's updated_at (${touchedAt}) is not later than the ` +
+      `untouched story's (${untouchedAt}), so "Modified" cannot tell them ` +
+      "apart and the assertion below would be testing nothing",
+  ).toBe(true);
 
   await selectColumnSort(page, "todo", "Modified ↓");
   await expect(columnSortBtn(page, "todo")).toHaveAttribute(
