@@ -47,14 +47,13 @@ const MARGIN_SECS: u64 = 15;
 fn dashboard_mutation_timeout_ms() -> u64 {
     let html = read("src/web_dashboard.html");
     let marker = "intFromQuery(\"mutationTimeoutMs\", ";
-    let after = html
-        .split(marker)
-        .nth(1)
-        .unwrap_or_else(|| panic!("src/web_dashboard.html must declare MUTATION_TIMEOUT_MS via `{marker}<n>)`"));
+    let after = html.split(marker).nth(1).unwrap_or_else(|| {
+        panic!("src/web_dashboard.html must declare MUTATION_TIMEOUT_MS via `{marker}<n>)`")
+    });
     let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
-    digits
-        .parse()
-        .unwrap_or_else(|error| panic!("MUTATION_TIMEOUT_MS's value {digits:?} must parse as an integer: {error}"))
+    digits.parse().unwrap_or_else(|error| {
+        panic!("MUTATION_TIMEOUT_MS's value {digits:?} must parse as an integer: {error}")
+    })
 }
 
 #[test]

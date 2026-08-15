@@ -3327,7 +3327,8 @@ fn web_create_story_twice_with_identical_bodies_files_two_stories() {
 
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
     let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story");
-    let body = r#"{"title":"Add a priority chooser to the story card right click menu","labels":["web"]}"#;
+    let body =
+        r#"{"title":"Add a priority chooser to the story card right click menu","labels":["web"]}"#;
 
     let first = post_json(&fixture, &url, body).unwrap();
     let second = post_json(&fixture, &url, body).unwrap();
@@ -3338,8 +3339,14 @@ fn web_create_story_twice_with_identical_bodies_files_two_stories() {
         serde_json::from_str(&first.into_body().read_to_string().unwrap()).unwrap();
     let second_json: serde_json::Value =
         serde_json::from_str(&second.into_body().read_to_string().unwrap()).unwrap();
-    assert_ne!(story_field(&first_json, "id"), story_field(&second_json, "id"));
-    assert_eq!(story_field(&first_json, "title"), story_field(&second_json, "title"));
+    assert_ne!(
+        story_field(&first_json, "id"),
+        story_field(&second_json, "id")
+    );
+    assert_eq!(
+        story_field(&first_json, "title"),
+        story_field(&second_json, "title")
+    );
 
     let data = fixture
         .agent()
