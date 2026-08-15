@@ -13,6 +13,60 @@ command -v story >/dev/null 2>&1 || exit 0
 story commit-sync --since 1h --quiet 2>/dev/null || true
 "#;
 
+/// Links the commits a merge brought, and closes the stories it says it closes.
+///
+/// # The sync half (SH-330)
+///
+/// `post-commit` is the only managed hook that ever called `commit-sync`, and a
+/// merge does not run it — measured, a merge fires `post-merge` **only**. So
+/// commits arriving by merge were linked by nobody, and the plugin's own
+/// stand-in skipped on the strength of a `post-commit` that could not have
+/// fired. This half is that repair: what arrives is linked here, by the hook
+/// the arrival actually runs.
+///
+/// It sits **outside** the branch check on purpose, and the split is the whole
+/// design: linking is a function of commits *arriving*, whatever branch
+/// received them; closing is a function of a merge reaching a trunk. The two
+/// were fused only because one hook happened to hold both.
+///
+/// ## Why the window is derived and not a constant
+///
+/// `commit-sync` takes a *duration*, and `read_log` turns it into
+/// `git log --since`, which filters on **committer date**. A merged commit
+/// keeps the date it was originally made — so the obvious spelling, the flat
+/// `--since 1h` that `POST_COMMIT_HOOK` and the plugin both use, would
+/// reproduce here exactly the defect this half was added to fix: the merge
+/// runs, the sync runs, and everything older than the window is missed. The
+/// window is therefore derived from the oldest committer date in
+/// `ORIG_HEAD..HEAD` — the exact set of commits that arrived.
+///
+/// ## Why the slack is five minutes, and why it must not be tightened
+///
+/// This script computes `NOW` with `date +%s`; the *daemon* computes the cutoff
+/// later, with its own clock, after a spawn and possibly a cold start — up to
+/// **150s** (SH-182). Integer truncation of `/ 60` eats up to 59s more. So the
+/// slack must satisfy `slack × 60 ≥ 150 + 59`, i.e. at least four minutes; five
+/// is that with room. Tightening this toward the arriving commits reads as an
+/// obvious optimisation and is a silent reintroduction of SH-330.
+///
+/// The floor does a second job: `parse_duration` accepts a **negative** number,
+/// and a negative duration puts the cutoff in the *future*, where the scan
+/// finds nothing at all. A clock that jumps backwards cannot produce one here.
+///
+/// Scanning too wide is a no-op — `commit-sync` short-circuits an already-linked
+/// commit on a primary-key probe, and moves no story it has already moved.
+/// Scanning too narrow is the defect. The asymmetry is what pays for the
+/// generosity.
+///
+/// ## Why an empty range syncs nothing
+///
+/// An empty `ORIG_HEAD..HEAD` means no commit arrived, so there is nothing to
+/// scan and no age to derive a window from. Falling back to a default window
+/// would scan a period this merge has no claim on; computing one from the empty
+/// string would be arithmetic on nothing.
+///
+/// # The closing half (SH-56)
+///
 /// Auto-closes stories a merge says it closes.
 ///
 /// `%B`, not `%s` (SH-56). The subject line is reserved for a summary under 72
@@ -38,9 +92,15 @@ story commit-sync --since 1h --quiet 2>/dev/null || true
 const POST_MERGE_HOOK: &str = r#"#!/bin/sh
 # storyhook managed hook -- do not edit this line
 command -v story >/dev/null 2>&1 || exit 0
+ORIG_HEAD="$(git rev-parse ORIG_HEAD 2>/dev/null)" || exit 0
+OLDEST="$({ git log --format='%ct' "$ORIG_HEAD..HEAD" | sort -n | head -n 1; } 2>/dev/null)"
+if [ -n "$OLDEST" ]; then
+  MINUTES=$(( ($(date +%s) - OLDEST) / 60 + 5 ))
+  if [ "$MINUTES" -lt 5 ]; then MINUTES=5; fi
+  story commit-sync --since "${MINUTES}m" --quiet 2>/dev/null || true
+fi
 BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null)"
 case "$BRANCH" in main|master) ;; *) exit 0 ;; esac
-ORIG_HEAD="$(git rev-parse ORIG_HEAD 2>/dev/null)" || exit 0
 git log --format='%B' "$ORIG_HEAD..HEAD" 2>/dev/null |
   grep -oiE '(closes?|fixes?|resolves?)[[:space:]]+[A-Z]+-[0-9]+' |
   while IFS= read -r match; do
