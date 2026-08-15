@@ -656,6 +656,10 @@ macro_rules! impl_read_ops {
                 read::checkout_path(&self.conn, project)
             }
 
+            fn commit_scan_at(&self, project: ProjectId) -> Result<Option<String>, StoreError> {
+                read::commit_scan_at(&self.conn, project)
+            }
+
             fn states(&self, project: ProjectId) -> Result<Vec<StateDef>, StoreError> {
                 read::states(&self.conn, project)
             }
@@ -817,6 +821,14 @@ impl WriteOps for SqliteWriteTx<'_> {
         path: Option<&Path>,
     ) -> Result<(), StoreError> {
         write::set_checkout_path(&self.conn, project, path)
+    }
+
+    fn record_commit_scan(&mut self, project: ProjectId, at: &str) -> Result<(), StoreError> {
+        write::record_commit_scan(&self.conn, project, at)
+    }
+
+    fn arm_commit_scan(&mut self, project: ProjectId, at: &str) -> Result<bool, StoreError> {
+        write::arm_commit_scan(&self.conn, project, at)
     }
 
     fn rename_project(&mut self, project: ProjectId, name: &str) -> Result<(), StoreError> {
