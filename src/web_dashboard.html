@@ -969,7 +969,24 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 /* Same reasoning as `.toast-stack` just above -- `right: 1rem` needs a
    matching 1rem on the left, so the ceiling is the viewport minus both
    margins, not a bare `26rem`. */
-.dispatch-history { position: fixed; bottom: 1rem; right: 1rem; display: flex; flex-direction: column-reverse; gap: 0.5rem; z-index: 60; max-width: min(26rem, calc(100vw - 2rem)); }
+/* `column`, not `column-reverse` (SH-323). `addDispatchHistoryRow` unshifts, so
+   DOM order here has always been newest-first; `column-reverse` then painted
+   that first child last, which put the newest row nearest the viewport corner
+   and made DOM order the exact reverse of visual order. That mismatch was inert
+   while this panel had `overflow: visible` -- nothing ever asked which edge
+   `scrollTop 0` meant. SH-323 gives it a height bound and a scroller, which is
+   what makes the question load-bearing, and browsers have historically disagreed
+   on the answer for reverse-direction containers. This suite drives only
+   Chromium (`e2e/playwright.config.ts` -- both projects are Blink, because `make
+   e2e-install` installs chromium and nothing else), so that disagreement is not
+   something a test here could ever catch: pinning it would attest to one engine
+   while reading as a guarantee about all of them, which is the shape of evidence
+   SH-226 and SH-306 already cost this project. The dependency is removed instead
+   of pinned. Cost, accepted deliberately: the newest row now sits at this
+   panel's top edge rather than nearest the screen corner. What matters is that
+   the row reporting a failed dispatch is visible on arrival without scrolling,
+   and that is asserted directly rather than inferred from which edge it is on. */
+.dispatch-history { position: fixed; bottom: 1rem; right: 1rem; display: flex; flex-direction: column; gap: 0.5rem; z-index: 60; max-width: min(26rem, calc(100vw - 2rem)); }
 .dispatch-history-row {
   display: flex; align-items: flex-start; gap: 0.5rem;
   background: var(--bg-raised); border: 1px solid var(--border); border-left: 3px solid var(--accent);
@@ -2796,7 +2813,26 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * `detail` and `reason` (both optional) are the diagnosis lines a durable
    * notice keeps beneath its headline -- in the DOM, inside `#toast-stack`'s
    * existing `aria-live` region, never in a `title` attribute, which is
-   * unreachable by keyboard and by many screen readers. */
+   * unreachable by keyboard and by many screen readers.
+   *
+   * **Newest first, so DOM order, visual order and scroll position all agree**
+   * (SH-323). This was `appendChild` until the stack gained a height bound: with
+   * nothing that scrolls, "where does the newest go" was free, and oldest-first
+   * was the incidental default of appending into a top-anchored column. Bounding
+   * the stack is what makes the answer decide whether the notice that just fired
+   * is visible at all, so the choice stopped being free and had to be made.
+   *
+   * The two alternatives were weighed and rejected by SH-323's council. A
+   * `column-reverse` stack inverts DOM order against visual order -- the exact
+   * mismatch `#dispatch-history` carried until this story, harmless only while it
+   * had nothing that scrolled. Writing `scrollTop` on every insert carries a
+   * correctness condition this has none of: it yanks the viewport away from a
+   * reader mid-notice and scrolls a focused `.toast-dismiss` out of view, which
+   * is this page's own script removing the keyboard focus indicator, and the
+   * guard that repairs it needs state plus a one-pixel boundary between a reader
+   * resting at the bottom and one just off it. Prepending needs no scroll write
+   * anywhere, and leaves the newest notice at `scrollTop 0` -- the
+   * best-specified value in the DOM. */
   function toast(message, variant, detail, reason) {
     var stack = $("toast-stack");
     var durable = noticeIsDurable(variant);
@@ -2809,7 +2845,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         onClick: function() { node.remove(); }
       }, ["×"]) : null
     ]);
-    stack.appendChild(node);
+    stack.insertBefore(node, stack.firstChild);
     if (!durable) scheduleAutoDismiss(node);
   }
 
