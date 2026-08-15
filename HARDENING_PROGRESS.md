@@ -18002,3 +18002,93 @@ defect in the recommender to file this cycle.
 **No version bump** — left for the next batched `/semver` pass.
 
 **Next:** run `story next` fresh.
+
+### SH-330 — post-git.sh credited post-commit for merges and pushes it never ran for — 2026-08-15
+
+**Done**, PR #449 (code), PR #450 (this entry). Council: `.council/sh-330-post-git-verb-blind-guard/`.
+
+The story named two shapes and forbade implementing before choosing between
+them, so the choice went to the council per this run's autonomy rule. Three
+blind seats — integration, architecture, challenger — **independently chose
+both**, and the architecture seat's specification carried the vote 2–1. Nobody
+self-voted; the losing seat disowned its own window rather than vote for it.
+
+**What the council found that the story did not name, and what it cost.**
+
+1. **`git pull` was not watched at all.** A pull fast-forward fires `post-merge`
+   and no `post-commit` — measured independently by the chair and by two seats.
+   This project lands work by `gh pr merge` (server-side, no local hook of any
+   kind) followed by `git pull --ff-only`. So the dominant flow arrived through
+   a verb the plugin hook never matched, and **shape A alone would have fixed
+   the plugin for other people's workflows and not this one's**. `git pull`
+   joined both verb lists as its own commit.
+2. **A fixed `--since 1h` in `post-merge` would have reproduced the defect it
+   was added to fix.** `read_log` filters on committer date; a merged commit
+   keeps the date it was originally made. The window is derived from
+   `ORIG_HEAD..HEAD` instead. The integration seat's proposal specified the flat
+   hour, which is why it did not carry — and why it voted against itself.
+3. **The derived window's slack had to clear the daemon cold-start ceiling, and
+   both surviving specifications got it wrong.** The hook reads the clock with
+   `date +%s`; the daemon computes the cutoff later, after a spawn and possibly
+   a 150s cold start (SH-182), with integer truncation eating 59s more — so
+   `slack × 60 ≥ 150 + 59`, four minutes minimum. The architect had specified
+   two, the challenger an hour-granular floor whose worst case is ~1s of margin.
+   Ships at five, with the arithmetic in the doc comment so the next reader does
+   not tighten it back. The chair verified this from the code before carrying it.
+4. **The exact-looking repair was the unsafe one.** A rev-range scan
+   (`--range ORIG_HEAD..HEAD`) reads as more precise than a duration, and it
+   would advance SH-316's unconditional scan receipt while leaving time-adjacent
+   commits unscanned — silently disarming the only detector that reports dark
+   hooks. The architecture seat proposed it as the follow-up and then
+   **withdrew it inside its own ballot** on the challenger's argument. No story
+   was filed for it, deliberately.
+
+**Shipped**, four commits, split so a bisect lands on one: `post-merge` syncs as
+well as closes (sync outside the branch guard, auto-close inside it); the plugin
+guard becomes verb-aware, stated positively so it degrades safely as verbs are
+added; `git pull` joins both verb lists; the conflicted-merge hole pinned as a
+named limit. SH-320's path logic is left byte-identical inside the new test —
+path-blind, verb-blind and verb-incomplete stay three attributable defects.
+
+The guard is deliberately **not** extended to grep `post-merge` for the marker
+now that it syncs, and the comment says why: that is this same defect wearing a
+different hook's name.
+
+**Mutation-checked in both directions, each restored** — the fixed window fails
+only the backdated case; deleting the sync fails exactly the three sync cases
+and no trailer case; moving the sync inside the branch guard fails only the
+side-branch case; reverting the verb test fails merge, push and compound;
+inverting it fails all five, the control first.
+
+**Filed, not folded in** (two hats): SH-341 (a conflicted merge fires
+`post-commit` only, so `post-merge` never runs for it — SH-56's auto-close has
+never fired there either), SH-342 (`post-git.sh`'s `systemMessage` branch is
+unreachable under `--quiet`; that line has never once appeared), SH-343 (neither
+managed hook carries a `--deadline`), SH-345 (see below).
+
+**The gate, and two false reds worth recording.** `make test` went green in full
+on the tip tree — 256 e2e, 34/34 plugin, every Rust leg — and wrote its receipt.
+The `pre-push-tests.sh` hook then re-ran the whole suite twice more and failed
+**both** times, on two *different* tests, neither related to this change:
+`daemon_lifecycle`'s version-skew test, then an e2e mobile tap-target
+measurement.
+
+Rather than bypass, each was characterised: the daemon test passed 5/5 isolated
+and 3/3 at suite concurrency; the tap-target test passed 3/3. Nine-plus green
+against one red each. The cause was then found rather than guessed — a second
+session (SH-308) was running **its own full suite concurrently**, daemons and
+headless Chromium included. Waiting for that suite to finish and retrying pushed
+clean, first attempt, with no flag bypassed.
+
+This is the SH-306 hazard from the other side: that section already records a
+re-running hook as a cause of false reds, and here it cost roughly twenty
+minutes and two nine-minute suites. `SKIP_PREPUSH_TESTS=1` was never used — the
+receipt from the genuine green run is what `.githooks/pre-push` checks, and it
+was valid the whole time. **The lesson worth keeping: when the gate goes red on
+a tree whose own gate went green, look for the second suite before looking at
+the diff.** Filed as SH-345 for the test that gave way first.
+
+**No version bump** — left for the next batched `/semver` pass.
+
+**Next:** the loop is **paused here at Mikey's request**, at the end of this
+story. `story next` when resuming; the queue was not consulted for a successor.
