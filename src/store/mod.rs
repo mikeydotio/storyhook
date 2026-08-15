@@ -282,6 +282,14 @@ pub trait ReadOps {
     /// which project this is — is gone.
     fn checkout_path(&self, project: ProjectId) -> Result<Option<PathBuf>, StoreError>;
 
+    /// When this store last scanned this project's commits (SH-316).
+    ///
+    /// **Never an answer to "is a git hook installed?"** — see migration 0014's
+    /// header. It records that a `story commit-sync` ran, whoever ran it, and a
+    /// reader may compare it against git and say what git says. `None` means no
+    /// scan has ever been recorded here, which is unknowable rather than absent.
+    fn commit_scan_at(&self, project: ProjectId) -> Result<Option<String>, StoreError>;
+
     /// How many events a project holds.
     ///
     /// A count rather than `events_since(..).len()`: `story project delete`
@@ -488,6 +496,26 @@ pub trait WriteOps: ReadOps {
         project: ProjectId,
         path: Option<&Path>,
     ) -> Result<(), StoreError>;
+
+    /// Records that this store scanned this project's commits at `at`.
+    ///
+    /// A plain overwrite: the receipt is the *latest* scan, and the history of
+    /// scans is not a thing anything asks for. Written by `commit-sync` on every
+    /// invocation and by nothing else — see [`ReadOps::commit_scan_at`] and
+    /// migration 0014 for what it may and may not be read to mean.
+    fn record_commit_scan(&mut self, project: ProjectId, at: &str) -> Result<(), StoreError>;
+
+    /// Sets the receipt to `at` **only if this project has never had one**, and
+    /// answers whether it did.
+    ///
+    /// The conditional is the whole method. `story hooks install` arms a project
+    /// that has never recorded a scan, so that a hook which never fires once
+    /// still has a baseline to be measured against; re-arming a receipt that is
+    /// already set would overwrite the evidence a re-run exists to surface,
+    /// which is the single action that destroys the signal. Expressed as `WHERE
+    /// commit_scan_at IS NULL` rather than as a read-then-write, so two installs
+    /// racing cannot both see NULL and both write.
+    fn arm_commit_scan(&mut self, project: ProjectId, at: &str) -> Result<bool, StoreError>;
 
     /// Sets a project's display name.
     ///
