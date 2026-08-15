@@ -157,7 +157,8 @@ fn installing_writes_three_executable_hooks_carrying_the_marker() {
 
     let summary = SystemService::new(&ctx)
         .install_git_hooks()
-        .expect("installing");
+        .expect("installing")
+        .message();
     for name in MANAGED {
         let path = hooks_dir.join(name);
         let content = read(&path);
@@ -189,7 +190,8 @@ fn a_users_own_hook_is_never_overwritten() {
     let ctx = fixture.ctx();
     let summary = SystemService::new(&ctx)
         .install_git_hooks()
-        .expect("installing");
+        .expect("installing")
+        .message();
     assert_eq!(read(&mine), "#!/bin/sh\necho mine\n");
     assert!(
         summary.contains("post-commit — skipped (existing user hook)"),
@@ -204,9 +206,15 @@ fn installing_is_idempotent() {
     let hooks_dir = git_repo(&fixture);
     let ctx = fixture.ctx();
     let service = SystemService::new(&ctx);
-    let first = service.install_git_hooks().expect("first install");
+    let first = service
+        .install_git_hooks()
+        .expect("first install")
+        .message();
     let content = read(&hooks_dir.join("post-commit"));
-    let second = service.install_git_hooks().expect("second install");
+    let second = service
+        .install_git_hooks()
+        .expect("second install")
+        .message();
     assert_eq!(first, second);
     assert_eq!(read(&hooks_dir.join("post-commit")), content);
 }
@@ -222,7 +230,10 @@ fn uninstalling_removes_only_the_hooks_storyhook_wrote() {
     let ctx = fixture.ctx();
     let service = SystemService::new(&ctx);
     service.install_git_hooks().expect("installing");
-    let summary = service.uninstall_git_hooks().expect("uninstalling");
+    let summary = service
+        .uninstall_git_hooks()
+        .expect("uninstalling")
+        .message();
 
     assert!(!hooks_dir.join("post-commit").exists());
     assert!(!hooks_dir.join("prepare-commit-msg").exists());
@@ -240,7 +251,8 @@ fn uninstalling_reports_hooks_that_were_never_there() {
     let ctx = fixture.ctx();
     let summary = SystemService::new(&ctx)
         .uninstall_git_hooks()
-        .expect("uninstalling");
+        .expect("uninstalling")
+        .message();
     for name in MANAGED {
         assert!(
             summary.contains(&format!("{name} — not present")),
@@ -296,7 +308,8 @@ fn installing_from_a_linked_worktree_writes_to_the_shared_common_directory() {
     // rather than about a project, which is exactly why `system.rs` exposes the
     // project-less half as free functions.
     let summary = storyhook::service::system::install_git_hooks(&worktree)
-        .expect("a linked worktree installs into the common directory");
+        .expect("a linked worktree installs into the common directory")
+        .message();
 
     // Where git actually looks, asked of git rather than assumed.
     let common = PathBuf::from(git(&worktree, &["rev-parse", "--git-common-dir"]));

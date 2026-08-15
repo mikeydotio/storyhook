@@ -1576,8 +1576,12 @@ fn dispatch_epic<S: Store>(ctx: &Ctx<'_, S>, action: EpicAction) -> Result<Respo
 fn dispatch_hooks<S: Store>(ctx: &Ctx<'_, S>, action: HooksAction) -> Result<Response, AppError> {
     let service = SystemService::new(ctx);
     match action {
-        HooksAction::Install => service.install_git_hooks().map(Response::Message),
-        HooksAction::Uninstall => service.uninstall_git_hooks().map(Response::Message),
+        HooksAction::Install => service
+            .install_git_hooks()
+            .map(|r| Response::MessageWithWarnings(r.message(), r.warnings())),
+        HooksAction::Uninstall => service
+            .uninstall_git_hooks()
+            .map(|r| Response::MessageWithWarnings(r.message(), r.warnings())),
         HooksAction::List => Ok(Response::Message(service.list_event_hooks())),
         HooksAction::Test { event_type } => {
             service.test_event_hook(&event_type).map(Response::Message)
@@ -1986,12 +1990,15 @@ pub fn dispatch_unscoped_with_stdin<S: Store>(
             }
             Ok(Response::Message(serde_json::to_string_pretty(&stories)?))
         }
-        // A directory, not a project: these write `.git/hooks`, read
-        // `hooks.toml`, or install an editor plugin, and the legacy path
-        // answered all of them in a directory storyhook had never heard of.
+        // A directory, not a project: these write the repository's hook
+        // directory (wherever git says that is), read `hooks.toml`, or install
+        // an editor plugin, and the legacy path answered all of them in a
+        // directory storyhook had never heard of.
         Invocation::Hooks { action } => match action {
-            HooksAction::Install => system::install_git_hooks(root).map(Response::Message),
-            HooksAction::Uninstall => system::uninstall_git_hooks(root).map(Response::Message),
+            HooksAction::Install => system::install_git_hooks(root)
+                .map(|r| Response::MessageWithWarnings(r.message(), r.warnings())),
+            HooksAction::Uninstall => system::uninstall_git_hooks(root)
+                .map(|r| Response::MessageWithWarnings(r.message(), r.warnings())),
             HooksAction::List => Ok(Response::Message(system::list_event_hooks(root))),
             // `hooks test` fires a real hook against a real project; it is
             // routed to `dispatch` instead and never arrives here.
