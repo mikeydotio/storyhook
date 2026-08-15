@@ -29,6 +29,18 @@ use std::process::Command;
 use storyhook_test_support::{TestEnv, scratch_dir};
 use tempfile::TempDir;
 
+/// A git date `seconds` in the past, in git's **raw** format (`<epoch> <tz>`).
+///
+/// `GIT_COMMITTER_DATE` and `GIT_AUTHOR_DATE` parse this form; they reject the
+/// approxidate spellings (`3 hours ago`) that `git commit --date` accepts.
+fn epoch_ago(seconds: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("a clock at or after the epoch")
+        .as_secs();
+    format!("{} +0000", now - seconds)
+}
+
 /// A git repository with a storyhook project and the managed hooks installed.
 struct HookRepo {
     env: &'static TestEnv,
@@ -180,6 +192,76 @@ impl HookRepo {
             .to_string()
     }
 
+    /// The full SHAs of every commit linked to `id`.
+    ///
+    /// The link, not the state, is what SH-330's sync is observed by: its
+    /// fixtures name a story with a **non-claiming** reference on purpose, so
+    /// the trailer scan provably cannot produce the assertion and only the
+    /// sync can.
+    fn linked_shas(&self, id: &str) -> Vec<String> {
+        let out = self.story(self.path(), &["show", id, "--json"]);
+        let value: serde_json::Value = serde_json::from_str(&out).expect("`story show --json`");
+        value["story"]["story"]["referenced_by_commits"]
+            .as_array()
+            .map(|commits| {
+                commits
+                    .iter()
+                    .filter_map(|c| c["sha"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Commits on `branch` with **every git hook suppressed**, and returns the
+    /// new commit's full SHA.
+    ///
+    /// `core.hooksPath=/dev/null` is git's own documented way to switch hooks
+    /// off wholesale, and it is what makes SH-330's tests mean anything: a
+    /// commit made the ordinary way in a hooked repository is linked by
+    /// `post-commit` before any merge happens, so a later assertion cannot
+    /// distinguish "the merge synced it" from "post-commit already had". This
+    /// commit is one **no `post-commit` has ever seen**, which is exactly the
+    /// commit that arrives by merge or pull from somewhere else.
+    ///
+    /// `date`, when given, backdates both the author and committer dates, in
+    /// git's **raw** format (`<epoch> <tz>`, e.g. `1755200000 +0000`) — see
+    /// [`epoch_ago`]. The environment variables take that form and reject the
+    /// approxidate spellings `--date` accepts, which is worth stating because
+    /// `GIT_COMMITTER_DATE="3 hours ago"` fails with `invalid date format`
+    /// rather than being interpreted.
+    ///
+    /// Committer date is the load-bearing one — `read_log` filters the scan
+    /// window with `git log --since`, which compares against it.
+    fn commit_unhooked(&self, message: &str, date: Option<&str>) -> String {
+        let mut command = Command::new("git");
+        command.current_dir(self.path());
+        self.env.apply(&mut command);
+        command.env("GIT_TERMINAL_PROMPT", "0");
+        if let Some(date) = date {
+            command.env("GIT_AUTHOR_DATE", date);
+            command.env("GIT_COMMITTER_DATE", date);
+        }
+        let output = command
+            .args([
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                message,
+            ])
+            .output()
+            .expect("running git");
+        assert!(
+            output.status.success(),
+            "committing with hooks suppressed failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let sha = self.git(&["rev-parse", "HEAD"]);
+        String::from_utf8_lossy(&sha.stdout).trim().to_string()
+    }
+
     /// Commits `message` on a new branch and merges it back into `main` with
     /// `--no-ff`, which is what sets `ORIG_HEAD` and fires `post-merge`.
     fn merge_branch_with_message(&self, branch: &str, message: &str) {
@@ -310,6 +392,134 @@ fn a_merge_on_a_side_branch_closes_nothing() {
         "in-progress",
         "the hook only auto-closes on main or master — a merge into a topic \
          branch is not a release"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// SH-330: the post-merge hook links what arrived, as well as closing what the
+// merge says it closes
+// ---------------------------------------------------------------------------
+//
+// `post-merge` only ever auto-closed stories named by a trailer. Nothing linked
+// the commits a merge *brought*, and the plugin's stand-in skipped on the
+// strength of `post-commit` — a hook a merge never runs. So commits arriving by
+// merge were linked by nobody.
+//
+// Every fixture below builds its branch commit with [`commit_unhooked`], so no
+// `post-commit` can be credited for the outcome, and names its story with a
+// **non-claiming** reference (`Refs`), so the trailer scan cannot be credited
+// either. What remains is the sync.
+
+/// The defect itself: a commit that arrives by merge, seen by no `post-commit`,
+/// is linked to the story it names.
+#[test]
+fn a_merge_links_a_commit_no_post_commit_ever_saw() {
+    let repo = HookRepo::new();
+    let id = repo.new_story("Arrived by merge");
+
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    let sha = repo.commit_unhooked(&format!("feat: the work\n\nRefs {id}"), None);
+    repo.git(&["checkout", "-q", "main"]);
+    repo.git(&["merge", "-q", "--no-ff", "-m", "Merge feature", "feature"]);
+
+    assert!(
+        repo.linked_shas(&id).contains(&sha),
+        "a commit arriving by merge must be linked: no post-commit ran for it, \
+         and `Refs` claims nothing, so only post-merge's own sync can do this"
+    );
+}
+
+/// The branch check's placement, pinned in **both** directions at once.
+///
+/// Linking is a function of commits arriving, whatever branch received them.
+/// Closing is a function of a merge reaching a trunk. So the sync sits outside
+/// the `main`/`master` guard and the trailer scan stays inside it — and a
+/// single merge onto a topic branch is the fixture that can tell.
+#[test]
+fn a_merge_on_a_side_branch_links_but_does_not_close() {
+    let repo = HookRepo::new();
+    let id = repo.new_story("Merged onto a topic branch");
+
+    repo.git(&["checkout", "-q", "-b", "integration"]);
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    // `Closes`, deliberately: the trailer scan would fire on this were it not
+    // for the branch guard, so the story staying open is a real assertion
+    // rather than a vacuous one.
+    let sha = repo.commit_unhooked(&format!("fix: work\n\nCloses {id}"), None);
+    repo.git(&["checkout", "-q", "integration"]);
+    repo.git(&["merge", "-q", "--no-ff", "-m", "Merge feature", "feature"]);
+
+    assert!(
+        repo.linked_shas(&id).contains(&sha),
+        "the sync sits outside the branch guard — a commit that arrived is a \
+         commit that arrived, whatever branch received it"
+    );
+    assert_ne!(
+        repo.state_of(&id),
+        "done",
+        "and the auto-close stays inside it: a merge into a topic branch is \
+         not a release"
+    );
+}
+
+/// The window, and the reason it is derived rather than fixed.
+///
+/// **This is the mutation-check on the whole of SH-330's window arithmetic.**
+/// A merged commit carries the committer date it was originally made with, and
+/// `read_log` filters the scan with `git log --since`, which compares against
+/// exactly that. So a literal `--since 1h` in the hook — the obvious spelling,
+/// and the one the plugin's own stand-in uses — reproduces the defect it was
+/// added to fix: the merge runs, the sync runs, and the commit is older than
+/// the window, so nothing is linked.
+///
+/// Three hours is comfortably outside any fixed window anyone would plausibly
+/// write, and comfortably inside a window derived from the commit's own age.
+#[test]
+fn a_merged_commit_older_than_an_hour_is_still_linked() {
+    let repo = HookRepo::new();
+    let id = repo.new_story("Made three hours ago, merged now");
+
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    let sha = repo.commit_unhooked(
+        &format!("feat: older than the window\n\nRefs {id}"),
+        Some(&epoch_ago(3 * 60 * 60)),
+    );
+    repo.git(&["checkout", "-q", "main"]);
+    repo.git(&["merge", "-q", "--no-ff", "-m", "Merge feature", "feature"]);
+
+    assert!(
+        repo.linked_shas(&id).contains(&sha),
+        "the scan window is derived from the oldest commit in ORIG_HEAD..HEAD, \
+         not fixed: a merged commit keeps the date it was made, so a constant \
+         window misses exactly the case this hook exists for"
+    );
+}
+
+/// A merge that brings nothing links nothing, and says nothing.
+///
+/// An empty `ORIG_HEAD..HEAD` means no commit arrived, so there is no window to
+/// derive and nothing to scan. The hook must not fall back to a default window
+/// — and must not compute one from an empty string either.
+#[test]
+fn an_empty_merge_range_links_nothing_and_exits_clean() {
+    let repo = HookRepo::new();
+    let id = repo.new_story("Never arrives");
+
+    // A commit on main that names the story, made with hooks off so nothing
+    // links it, and a branch that is already an ancestor of main.
+    repo.git(&["checkout", "-q", "-b", "stale"]);
+    repo.git(&["checkout", "-q", "main"]);
+    let sha = repo.commit_unhooked(&format!("chore: already here\n\nRefs {id}"), None);
+    let merge = repo.git(&["merge", "-q", "--no-ff", "-m", "Merge stale", "stale"]);
+
+    assert!(
+        merge.status.success(),
+        "a merge bringing nothing must still exit clean"
+    );
+    assert!(
+        !repo.linked_shas(&id).contains(&sha),
+        "nothing arrived by the merge, so the hook derives no window and scans \
+         nothing — the commit already on main is not the merge's to link"
     );
 }
 
