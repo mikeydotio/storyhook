@@ -551,6 +551,70 @@ chair's correction of a seat's supporting claim: the daemon *does* persist finis
 evict after 30 minutes or 32 records** (`RETAIN_FOR`/`RETAIN_FINISHED`) — so "unattended
 discoverability is solved server-side" is false, and the durable row is the record.
 
+## As built — SH-333 (a kept notice stack re-announces every notice on every arrival)
+
+**`role="status"`'s implicit `aria-atomic="true"` meant `#toast-stack` re-announced its
+entire standing pile on every arrival**, not just the notice that was added — worsened by
+SH-322's `keepNotices` preference, which makes notices durable and lets the pile grow
+without bound. `#dispatch-history` had the same user-facing symptom by a wholly different
+mechanism: `renderDispatchHistory()` clears and rebuilds the panel wholesale on every
+render, so every row (not just the arriving one) is a fresh DOM addition into a live
+region on every mutation, independent of atomicity.
+
+**The two surfaces got two different fixes, because they turned out to be two different
+defects wearing the same symptom.** `#toast-stack` inserts nodes incrementally
+(`stack.insertBefore`), so `aria-atomic="false"` on the stack plus `aria-atomic="true"` on
+each `.toast` is a clean, spec-native fit: a mutation now announces exactly the node that
+changed, whole. `#dispatch-history` cannot be fixed by any live-region attribute
+combination, atomic or not, because the wholesale rebuild manufactures N fresh additions
+regardless — it lost `aria-live` entirely and gained a dedicated `sr-only role="status"`
+announcer (`#dispatch-history-status`) fed directly by `addDispatchHistoryRow()`.
+
+**Deliberate tech debt, named as such.** The dispatch-history announcer is a
+hand-maintained side channel: every future call site that adds a row must remember to
+also feed the announcer, which is exactly the class of drift this project has been burned
+by before (SH-136). It is not a redesign because the actual flaw — the wholesale rebuild —
+is already scoped as its own story, **SH-337** (`renderDispatchHistory` destroys focus on
+every rebuild, including the arrival path). Once SH-337 lands and the panel starts
+inserting incrementally, `#dispatch-history` becomes an `aria-atomic` candidate too, and
+the side-channel announcer should retire rather than persist alongside a fix that no
+longer needs it.
+
+**A second, dedicated announcer, deliberately not `#notice-dock-status`.** That element
+(SH-326) also carries the armed-delete confirmation prompt the user must read and act on;
+routing a background dispatch-history arrival through it would risk a notice silently
+overwriting a live confirmation mid-read.
+
+**What is claimed, and what isn't.** Both directly-assertable properties — which elements
+carry which ARIA attributes, and what text a `role="status"` announcer holds — are pinned
+by `e2e/specs/notice-announcement.spec.ts`. What a real assistive technology actually
+*utters*, including whether its own speech queue coalesces two adjacent identical
+announcements, is not: no AT is driven by this suite (Chromium only), and this project's
+own SH-322/SH-327 precedent is not to claim what wasn't checked. That residual is named
+here rather than implied away.
+
+**Mutation battery, run and recorded — all five reddened the pins meant to catch them,**
+none survived:
+
+| Mutation | Result |
+|---|---|
+| `aria-atomic="false"` removed from `#toast-stack` | 1 e2e pin + the Rust cheap-layer scan both red |
+| `aria-atomic="true"` removed from `.toast` in `toast()` | same two, red |
+| `announceDispatchHistoryArrival()` call dropped from `addDispatchHistoryRow()` | 4 e2e pins red |
+| Dispatch-history arrivals routed into `#notice-dock-status` instead of their own announcer | the same 4, red — including the rider-1 clobber pin, which caught the dismissal message being overwritten mid-read |
+| `setStatusText`'s clear-then-set idiom collapsed to a single assignment | the identical-arrivals pin red (3 DOM mutations expected across two announcements, 2 observed) — this is the one mutation whose outcome was not obvious in advance: `textContent` reassigned to its own existing value still fires a `childList` `MutationRecord` per the DOM spec, so the concern going in was that this pin might not discriminate at all. It does: the clear step measurably changes the mutation count, confirming rider 2 is load-bearing rather than a belt-and-braces no-op |
+
+Worth stating plainly, in this file's own established idiom: without the battery, the
+"identical arrivals" pin's actual discriminating power was not obvious even to the person
+who wrote it, and the empirical check is what settled it rather than DOM-spec reasoning
+alone.
+
+Council: `.council/sh-333-notice-stack-announcement-mechanism/` (three seats, unanimous on
+the first ballot — both members who separately proposed a single blanket mechanism for
+both surfaces switched their own vote to the split once the two surfaces' distinct failure
+mechanisms were on the table). `DECISION.md` records the full rationale and the three
+riders (announcer ownership, duplicate-arrival distinguishability, and the SH-337 tie-back).
+
 ## Verification
 
 `make test` is the gate. Coverage, by layer:
