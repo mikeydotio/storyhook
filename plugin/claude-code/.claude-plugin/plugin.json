@@ -5,5 +5,12 @@
   "author": {
     "name": "mikeydotio"
   },
-  "repository": "https://github.com/mikeydotio/storyhook"
+  "repository": "https://github.com/mikeydotio/storyhook",
+  "mcpServers": {
+    "storyhook": {
+      "command": "story",
+      "args": ["mcp"],
+      "description": "Curated story-lifecycle tools (list, next, new, move, comment, and more — see `story help mcp`) over the same door the CLI and web dashboard use. Every tool call names its own `project`; this server infers nothing from a working directory."
+    }
+  }
 }
