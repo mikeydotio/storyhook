@@ -523,6 +523,89 @@ fn an_empty_merge_range_links_nothing_and_exits_clean() {
     );
 }
 
+/// **The conflicted-merge hole (SH-341).** A merge that conflicts is concluded
+/// by `git commit`, so it fires `post-commit` and **never** `post-merge` — so
+/// neither this hook's sync nor SH-56's trailer auto-close runs for it at all.
+///
+/// This is a named limit, not a defect in what SH-330 built: `post-merge` is
+/// the hook the arrival runs, and for a conflicted merge git does not run it.
+/// Closing it means teaching `post-commit` to recognise that it is concluding a
+/// merge — a commit with two or more parents is the cheap and honest question —
+/// which is its own change with its own blast radius, filed as SH-341.
+///
+/// Pinned rather than left silent so the next reader does not meet it as a
+/// mystery and "fix" it into a false alarm. The assertion is deliberately about
+/// the **mechanism** (which hook ran), not the outcome: `post-commit` still
+/// links the commit through its own flat `--since 1h`, so a story-level
+/// assertion would pass and hide the hole.
+#[test]
+fn a_conflicted_merge_never_runs_the_merge_hook_at_all() {
+    let repo = HookRepo::new();
+
+    // A witness the merge hook leaves behind when git runs it.
+    let witness = repo.path().join("post-merge-ran");
+    let hooks = repo.path().join(".git/hooks");
+    std::fs::write(
+        hooks.join("post-merge"),
+        format!("#!/bin/sh\ntouch {}\n", witness.display()),
+    )
+    .expect("replacing the merge hook with a witness");
+    std::fs::set_permissions(
+        hooks.join("post-merge"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .expect("making the witness executable");
+
+    // **The control.** An ordinary, non-conflicting merge must leave the
+    // witness — otherwise the assertion below passes for the wrong reason
+    // (a witness installed where git never looks would satisfy it forever).
+    repo.git(&["checkout", "-q", "-b", "clean"]);
+    repo.git(&["commit", "-q", "--allow-empty", "-m", "chore: nothing"]);
+    repo.git(&["checkout", "-q", "main"]);
+    repo.git(&["merge", "-q", "--no-ff", "-m", "Merge clean", "clean"]);
+    assert!(
+        witness.exists(),
+        "fixture: a clean merge must run the witness, or this test proves nothing"
+    );
+    std::fs::remove_file(&witness).expect("clearing the witness");
+
+    // A tracked file both branches edit differently, so the merge must conflict.
+    std::fs::write(repo.path().join("f"), "base\n").expect("seeding");
+    repo.git(&["add", "f"]);
+    repo.git(&["commit", "-qm", "base"]);
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    std::fs::write(repo.path().join("f"), "theirs\n").expect("branch edit");
+    repo.git(&["commit", "-qam", "feat: theirs"]);
+    repo.git(&["checkout", "-q", "main"]);
+    std::fs::write(repo.path().join("f"), "ours\n").expect("main edit");
+    repo.git(&["commit", "-qam", "feat: ours"]);
+
+    // The merge fails, so `git` is not asserted successful here.
+    let mut merge = Command::new("git");
+    merge.current_dir(repo.path());
+    repo.env.apply(&mut merge);
+    let conflicted = merge
+        .args(["merge", "--no-ff", "-m", "Merge feature", "feature"])
+        .output()
+        .expect("running git merge");
+    assert!(
+        !conflicted.status.success(),
+        "fixture: the merge must actually conflict"
+    );
+
+    // Resolve, and conclude the merge the only way git allows: a commit.
+    std::fs::write(repo.path().join("f"), "resolved\n").expect("resolving");
+    repo.git(&["add", "f"]);
+    repo.git(&["commit", "-q", "--no-edit"]);
+
+    assert!(
+        !witness.exists(),
+        "a conflicted merge is concluded by `git commit`, so git runs \
+         post-commit and never post-merge — this is SH-341's named limit, not \
+         a regression in what post-merge does when it does run"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The post-commit hook, from every place a commit can be made
 // ---------------------------------------------------------------------------
