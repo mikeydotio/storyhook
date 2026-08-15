@@ -230,10 +230,12 @@ test("choosing a relation kind survives a board refresh that rebuilds the drawer
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
-  // And the consequence the board draws from it: only `blocked-by` puts a
-  // blockers row on the card (`openBlockers`).
+  // And the consequence the board draws from it: only `blocked-by` names
+  // the blocker in the badge (`openBlockers`, `blockedFlag` -- SH-309
+  // moved this out of `.card-blockers`, which now holds only the
+  // cleared-blocker dwell).
   const workerCard = page.locator(".card", { hasText: workerTitle });
-  await expect(workerCard.locator(".card-blockers .rel-id")).toHaveText(
+  await expect(workerCard.locator(".flag-blocked .rel-id")).toHaveText(
     blockerId,
   );
 
