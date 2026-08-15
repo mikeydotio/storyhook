@@ -1657,6 +1657,27 @@ fn stylesheet(body: &str) -> &str {
     &body[start..start + end]
 }
 
+/// The full opening tag of the first element in `html` bearing `id="target_id"`
+/// -- from its own `<` back to its own `>`. Scoped to just that tag rather than
+/// a substring search over the whole document, so a check against it cannot
+/// accidentally match an HTML comment mentioning the same attribute in prose
+/// (this file's markup comments quote `role="status"` and `aria-atomic="false"`
+/// verbatim while explaining them) or a sibling element's own attributes.
+fn opening_tag_for_id(html: &str, target_id: &str) -> String {
+    let needle = format!("id=\"{target_id}\"");
+    let at = html
+        .find(&needle)
+        .unwrap_or_else(|| panic!("no element with id=\"{target_id}\" found in the served body"));
+    let tag_start = html[..at]
+        .rfind('<')
+        .unwrap_or_else(|| panic!("id=\"{target_id}\" does not sit inside a tag"));
+    let tag_end = html[at..]
+        .find('>')
+        .unwrap_or_else(|| panic!("the tag carrying id=\"{target_id}\" never closes"))
+        + at;
+    html[tag_start..=tag_end].to_string()
+}
+
 /// Every `/* … */` span replaced by a single space, so a comment can neither
 /// join two selectors nor hide inside a declaration block. Unterminated
 /// comment: everything from the opener on is dropped, which is what a browser
@@ -2181,6 +2202,89 @@ fn web_serve_root_html_gates_notification_motion_but_never_its_dismissal() {
     assert!(
         body.contains("readMsToken(\"--toast-fade\""),
         "the script must READ --toast-fade rather than restate its value"
+    );
+}
+
+/// SH-333: `#toast-stack`'s `role="status"` carries an implicit
+/// `aria-atomic="true"` (WAI-ARIA 1.2), so every mutation re-announced the
+/// region's *entire* standing pile rather than the node that changed --
+/// worse the larger SH-322's `keepNotices` preference let that pile grow.
+/// `#dispatch-history` had the identical user-facing symptom by an
+/// unrelated mechanism: `renderDispatchHistory()` clears and rebuilds the
+/// panel wholesale on every render, so no live-region attribute can stop it
+/// re-announcing every row.
+///
+/// The council that settled the mechanism
+/// (`.council/sh-333-notice-stack-announcement-mechanism/DECISION.md`) split
+/// the fix by architecture: `aria-atomic="false"` on the stack plus
+/// `aria-atomic="true"` on each incrementally-inserted `.toast` is a
+/// spec-native fit for the first; the second lost `aria-live` outright and
+/// gained a dedicated `sr-only role="status"` announcer,
+/// `#dispatch-history-status`, fed directly by `addDispatchHistoryRow()` --
+/// deliberate tech debt tied to SH-337 (`renderDispatchHistory`'s
+/// already-scoped incremental-insert rewrite) as the trigger to retire it.
+///
+/// `e2e/specs/notice-announcement.spec.ts` proves the announced *text* in a
+/// real browser; this is the cheap layer that fails in seconds if the
+/// attributes themselves are moved back, without needing a browser at all.
+#[test]
+fn web_serve_root_html_scopes_toast_stack_atomicity_and_demotes_dispatch_history() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .expect("dashboard responds");
+    let body = resp.into_body().read_to_string().unwrap();
+
+    let toast_stack = opening_tag_for_id(&body, "toast-stack");
+    assert!(
+        toast_stack.contains(r#"role="status""#) && toast_stack.contains(r#"aria-live="polite""#),
+        "#toast-stack must keep role=\"status\" aria-live=\"polite\" -- SH-333 \
+         narrowed what gets announced, not whether the region is live. Found: \
+         {toast_stack}"
+    );
+    assert!(
+        toast_stack.contains(r#"aria-atomic="false""#),
+        "#toast-stack must override role=\"status\"'s implicit aria-atomic=\"true\", \
+         or a mutation re-announces the whole standing pile again. Found: {toast_stack}"
+    );
+
+    let dispatch_history = opening_tag_for_id(&body, "dispatch-history");
+    assert!(
+        dispatch_history.contains(r#"role="region""#),
+        "#dispatch-history must keep its role=\"region\" landmark. Found: {dispatch_history}"
+    );
+    assert!(
+        !dispatch_history.contains("aria-live"),
+        "#dispatch-history must carry no aria-live: renderDispatchHistory() \
+         clears and rebuilds it wholesale on every render, so no aria-live \
+         value stops it re-announcing every row on every arrival -- the \
+         announcement is #dispatch-history-status's job instead. Found: \
+         {dispatch_history}"
+    );
+
+    for id in ["notice-dock-status", "dispatch-history-status"] {
+        let announcer = opening_tag_for_id(&body, id);
+        assert!(
+            announcer.contains(r#"role="status""#),
+            "#{id} must be role=\"status\" -- it is the element a test (and an \
+             assistive technology) reads an arrival's announced text from. \
+             Found: {announcer}"
+        );
+    }
+
+    // `.toast`'s own aria-atomic="true" is set from JS (`el()`'s props in
+    // `toast()`), not the static markup, so it is pinned as source text
+    // rather than a tag scan.
+    let script = script(&body);
+    assert!(
+        script.contains(r#""aria-atomic": "true""#),
+        "toast() must give each .toast node its own aria-atomic=\"true\" -- \
+         without it, #toast-stack's aria-atomic=\"false\" would narrow every \
+         mutation to nothing rather than to the notice that just arrived"
     );
 }
 
