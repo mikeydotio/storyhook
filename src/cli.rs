@@ -161,7 +161,7 @@ Usage:
              [--label <labels>] [--created-after <date>] [--updated-after <date>]
              [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>]
              [--drafts]                                (narrows to drafts only)
-  story next [--count <n>] [--phase <N>]
+  story next [--count <n>] [--phase <N>] [--claim]
   story summary
   story report [--html]
   story search <query>
@@ -330,6 +330,14 @@ pub enum Invocation {
     Next {
         count: usize,
         phase: Option<String>,
+        /// Atomically move the answer into the project's active state before
+        /// returning it (SH-344) — closes the read-then-move race between
+        /// `story next` and a caller's own `story move <id> <active>`, which
+        /// otherwise lets two parallel agents both be handed the same story.
+        /// Refused together with `--count` above `1`: a claim holds exactly
+        /// one story, so a count that promises more would be a lie for every
+        /// entry past the first.
+        claim: bool,
     },
     Summary,
     Report {
@@ -1398,7 +1406,7 @@ static VERB_FLAGS: &[VerbFlags] = &[
     VerbFlags {
         verb: "next",
         subcommand: None,
-        flags: &[value("count"), value("phase")],
+        flags: &[value("count"), value("phase"), bare("claim")],
     },
     VerbFlags {
         verb: "set",
@@ -2625,8 +2633,9 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
 fn parse_next(args: &[String]) -> Result<Invocation, AppError> {
     let mut count = 1;
     let mut phase = None;
+    let mut claim = false;
     let mut index = 1;
-    let usage = "usage: story next [--count <n>] [--phase <N>]";
+    let usage = "usage: story next [--count <n>] [--phase <N>] [--claim]";
 
     while index < args.len() {
         match args[index].as_str() {
@@ -2651,13 +2660,31 @@ fn parse_next(args: &[String]) -> Result<Invocation, AppError> {
                 phase = Some(value.clone());
                 index += 2;
             }
+            "--claim" => {
+                claim = true;
+                index += 1;
+            }
             _ => {
                 return Err(AppError::Usage(usage.to_string()));
             }
         }
     }
 
-    Ok(Invocation::Next { count, phase })
+    // A claim holds exactly one story — `--count` above 1 promising several
+    // while only the first is actually taken would be a silent lie for every
+    // entry past it, so the combination is refused outright rather than
+    // resolved by picking a behavior nobody asked for.
+    if claim && count != 1 {
+        return Err(AppError::Usage(
+            "--claim cannot be combined with --count other than 1".to_string(),
+        ));
+    }
+
+    Ok(Invocation::Next {
+        count,
+        phase,
+        claim,
+    })
 }
 
 fn parse_report(args: &[String]) -> Result<Invocation, AppError> {
