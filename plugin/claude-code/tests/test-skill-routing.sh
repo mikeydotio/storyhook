@@ -13,12 +13,16 @@ SKILL="$PLUGIN_ROOT/skills/story/SKILL.md"
 # Pulled straight out of bin/story.sh's `case`, so adding a subcommand without
 # documenting how to call it fails here rather than shipping undiscoverable.
 #
-# Checked across the skill AND its reference files, and against the literal
-# `story.sh <sub>` invocation rather than a bare word: the user-facing verb and
-# the script subcommand deliberately differ in two places (`/story do` runs
-# `dispatch`, `/story new` runs `create`), so matching prose would be both
-# noisier and weaker than matching the call site.
-docs=("$SKILL" "$PLUGIN_ROOT"/references/story-*.md)
+# Checked across EVERY skill file and reference file, not just the router's
+# own two — SH-308 gave `context`/`sync`/`handoff` their own dedicated
+# skills, called from the router's delegation table rather than from its own
+# prose, so a verb's documented call site is no longer guaranteed to live in
+# $SKILL itself. Matched against the literal `story.sh <sub>` invocation
+# rather than a bare word: the user-facing verb and the script subcommand
+# deliberately differ in two places (`/story do` runs `dispatch`, `/story
+# new` runs `create`), so matching prose would be both noisier and weaker
+# than matching the call site.
+docs=("$PLUGIN_ROOT"/skills/*/SKILL.md "$PLUGIN_ROOT"/references/*.md)
 verbs=$(awk '/^case "\$\{1:-\}" in$/,/^esac$/' "$SCRIPT" \
         | sed -n 's/^  \([a-z][a-z]*\)).*/\1/p')
 [ -n "$verbs" ] || fail_test "could not extract any subcommands from $SCRIPT's router"
