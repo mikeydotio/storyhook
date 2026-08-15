@@ -183,6 +183,22 @@ pub(super) fn checkout_path(
     Ok(path.flatten().map(PathBuf::from))
 }
 
+pub(super) fn commit_scan_at(
+    conn: &Connection,
+    project: ProjectId,
+) -> Result<Option<String>, StoreError> {
+    let mut stmt = sql(
+        conn.prepare_cached("SELECT commit_scan_at FROM projects WHERE id = ?1"),
+        "preparing commit_scan_at",
+    )?;
+    let at: Option<Option<String>> = sql(
+        stmt.query_row(params![project.get()], |row| row.get(0))
+            .optional(),
+        "reading a project commit scan",
+    )?;
+    Ok(at.flatten())
+}
+
 pub(super) fn projects(conn: &Connection) -> Result<Vec<ProjectRecord>, StoreError> {
     let mut stmt = sql(
         conn.prepare_cached(&format!(
