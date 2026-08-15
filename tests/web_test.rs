@@ -1050,6 +1050,15 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains("function statusMenuItems"));
     assert!(body.contains(".ctxmenu-sub"));
 
+    // SH-310: a drawer field edit reports a client timeout the honest way --
+    // through `describeMutationFailure` (SH-312's answer for the create
+    // modal), not through the flat, sometimes-false `toastError`.
+    assert!(body.contains("toast(describeMutationFailure(err)"));
+    assert!(
+        !body.contains("api(method, path, body).then(handleMutationSuccess).catch(toastError)"),
+        "runFieldMutation must not report an unproven mutation outcome as a definite failure"
+    );
+
     // SH-197: the context menu's Delete item, reaching the same shared
     // modal (commit 3) the drawer footer's own Delete button opens.
     assert!(body.contains("\"Delete\", danger: true"));
