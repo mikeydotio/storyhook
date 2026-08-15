@@ -94,11 +94,39 @@ fi
 # repository `rev-parse` exits 128 printing nothing (the `||` is what keeps
 # `set -e` from aborting the hook), and a `core.hooksPath` naming a non-directory
 # — `/dev/null`, the documented way to switch hooks off — fails the `-x` test.
-git_hooks_dir=$(git rev-parse --git-path hooks 2>/dev/null) || git_hooks_dir=""
-if [[ -n "$git_hooks_dir" && -x "$git_hooks_dir/post-commit" ]] &&
-  grep -q "# storyhook managed hook" "$git_hooks_dir/post-commit" 2>/dev/null; then
-  printf '{}'
-  exit 0
+# ...and only when the command's verbs are ones that hook actually covers
+# (SH-330). The guard above asks git *where* the hook is; it never asked what
+# *happened*, though the answer was free in `$command_str`, parsed above.
+#
+# Stated positively: skip only when every git verb in this command is one a
+# managed `post-commit` covers. `git commit` is; the others are not.
+#
+#   * `git push` runs no post-push hook — git has none, and neither does
+#     `src/hooks.rs`'s HOOKS table. The guard skipped on a hook that cannot
+#     have fired.
+#   * `git merge` runs `post-merge`, not `post-commit` (measured, for both a
+#     --no-ff merge and a fast-forward). Since SH-330 `post-merge` syncs too,
+#     which makes the plugin's sync here redundant rather than necessary — but
+#     redundant is the cheap direction and it is not a reason to skip: every
+#     repository installed before that change keeps the old body until
+#     `story hooks install` is re-run.
+#
+# Deliberately NOT extended to grep `post-merge` for the marker, which is the
+# obvious next "optimisation" and is this same defect wearing a different
+# hook's name: it would credit an installed file for work that file's version
+# may not do. A redundant sync costs one warm round trip (~15ms, measured)
+# against a silent miss.
+#
+# A compound command falls open: `git commit -m x && git merge side` ran both,
+# only one is covered, so the command as a whole is not. Substring matching is
+# the same imprecision the pre-filter above already accepts.
+if [[ "$command_str" != *"git merge"* && "$command_str" != *"git push"* ]]; then
+  git_hooks_dir=$(git rev-parse --git-path hooks 2>/dev/null) || git_hooks_dir=""
+  if [[ -n "$git_hooks_dir" && -x "$git_hooks_dir/post-commit" ]] &&
+    grep -q "# storyhook managed hook" "$git_hooks_dir/post-commit" 2>/dev/null; then
+    printf '{}'
+    exit 0
+  fi
 fi
 
 # Run sync. --deadline 8: this hook has 10s (hooks.json) before Claude Code
