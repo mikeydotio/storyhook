@@ -17368,3 +17368,142 @@ has previously seen read as a spurious "TESTS FAILED".
 
 **`story next` behaved.** It handed back SH-322, which was genuinely ready, and
 nothing about the recommendation needed routing around.
+
+### SH-320 — done
+
+**Outcome:** merged (PR #436). The plugin's skip-guard asks git where hooks
+live, and the scan that fences that class can finally see the file that held it.
+
+**The story's own "Extent" section was wrong, and that is the finding.** SH-320
+says the guard fails *open* — a double sync, mild, idempotent since W6. It also
+fails **closed**, and this repository is a live instance. `core.hooksPath=.githooks`
+is set by `scripts/gate-receipt.sh preflight`; `.git/hooks/post-commit` still
+carries the managed marker from an earlier install; `.githooks/post-commit` is
+the SH-306 chainer and carries no marker of its own. Running the old guard's
+exact condition in the main checkout: **it skips.** That is harmless only because
+the chainer delegates back. Point `core.hooksPath` at a directory with no chainer
+and the guard skips while nothing ever syncs — a silent total miss, which is the
+opposite direction from the one the story was filed on. Two seats reached it
+independently; the chair verified it before either could influence the vote. Two
+of the seven new fixtures are that shape, and `core.hooksPath=/dev/null` turned
+out to be a third instance nobody had named.
+
+**Council: unanimous 3-0 at first preference, and again 3-0 in the ranked
+runoff.** Audit trail in `.council/sh-320-post-git-hooks-guard/`. **Two of three
+seats ranked their own proposal last.** All three agreed on the guard's core
+before seeing each other — `git rev-parse --git-path hooks`, `effective` never
+`managed`, marker grep kept, no toplevel join — so the whole contest was
+packaging, and the winner won on three additions neither peer had.
+
+**The process failure, recorded because the run's supervision rule is what caught
+it.** The architecture seat stalled ~16 minutes through two chair pulse checks
+that the other two answered within seconds. It was killed and restarted on a
+narrower brief per the kill-and-restart rule — and the restart returned *after* a
+two-seat ballot had already gone out. Both seats answered that ballot without
+ever having seen the third proposal. The chair withdrew it and re-ran the vote
+three ways rather than let arrival order decide, which is the only reason the
+winning package was on the ballot at all. Both withdrawn votes still did work:
+seat 3 chose seat 1 for "one test, both languages" then amended it to add
+`.githooks/*`; seat 1 chose seat 3 for `.githooks/*` then amended it to add an
+honest boundary in the doc. Their two amendments describe the architecture seat's
+proposal, which neither had read.
+
+**What shipped, and the one thing nobody expected to be arguing about.** The
+guard asks `--git-path hooks` (`HookDirs::effective` asked from bash) and tests
+it with **`-x`, not `-f`** — the addition that decided the vote. Git runs only an
+executable hook and **stores that bit in the index**, so a tracked hooks
+directory restored without mode 100755 (an archive extract, a `cp` without `-p`)
+holds a marker-bearing file git skips; `-f` reports it as installed, which is the
+fail-closed silent miss reintroduced through the one door the fix was closing.
+Neither of the other seats found it. Both then failed to construct a false-sync
+case against it: on a `noexec` mount `-x` is false for everything, but so is
+git's own check, which is agreement rather than a false positive.
+
+No `--show-toplevel` join, and the reason is worth keeping: `HookDirs` needs one
+because it *writes*, from the daemon, against an envelope root at any depth. The
+guard reads one file from its own cwd, and `--git-path hooks` answering
+cwd-relative is precisely what lets it skip that step. The duplicated knowledge
+is reduced to one flag name rather than eliminated — and eliminating it, via a
+`story hooks status` round trip, was rejected as "paying a query to decide
+whether to skip a query" inside a 10s hook already budgeted to `--deadline 8`.
+
+**The marker grep stays, and the distinction from `Installed`'s refusal is
+precise.** `src/hooks.rs` refuses to decide whether a *foreign* hook delegates —
+SH-239's "a process's NAME is not its identity". The guard asks something
+answerable instead: is the file git will run storyhook's *own* artifact, carrying
+a marker storyhook wrote? Its false negative is this repository's chainer, and it
+costs one idempotent sync.
+
+**The scan: widened, and renamed because the name was half the defect.** It was
+`no_source_file_…` over `src/*.rs` — right about its own set, wrong about its
+advertised class. It now derives over `src/*.rs`, `*.sh`, `.githooks/*` and
+`:(exclude,glob)**/tests/**`: 146 files, one hit before the fix and none after.
+`.githooks/*` is named explicitly because those four chainers have **no
+extension**, so a `*.sh` glob misses all of them — hook scripts being the last
+place this class should hide — and a mode-100755 derivation would fail the other
+way, since `lib.sh` is 100644: sourced, never executed. Widening without renaming
+would have shipped a test whose name contradicts its own scan, which is the same
+defect held one commit longer.
+
+**Shell got the spelling its own defect takes.** The challenger seat argued shell
+needs only the substring check, since it has no `Path::join`. The architecture
+seat answered with `$(git rev-parse --git-dir)/hooks` — SH-314 spelled
+*correctly*, because in a linked worktree `--git-dir` names that worktree's
+**private** directory, whose hooks git never consults — plus `$GIT_DIR/hooks`,
+which git exports into every hook process. The challenger conceded outright:
+"I was wrong that shell has no analogue… it has a different one". Seat 1's
+diagnosis of the error is the transferable part: it "conflates the SYNTAX of the
+Rust mistake (an API call) with its SHAPE (asking the wrong git question)".
+
+**A chair correction the verdict needed to be implementable.** The winning
+proposal stated that fence as "a file naming `--git-dir` and `hooks` fails".
+Measured against the 146-file set before writing it, co-occurrence is red on
+**five** production files, every one legitimate: `install.sh` asks `--git-dir`
+whether a directory is a repository at all, and `scripts/gate-receipt.sh` wants
+the private directory *deliberately* and says so. What shipped matches the
+**construction** — `--git-dir)/hooks`, `$GIT_DIR/hooks`, after dropping quote and
+paren noise so one check covers every spelling. The verdict named the right
+defect; only its wording would have fenced the wrong thing.
+
+**Mutation-checked in five directions**, each restored after: the old literal
+guard, a `--git-dir` construction in a tracked `*.sh`, the literal planted in an
+**extensionless** `.githooks/*` chainer (the coverage the losing glob would have
+missed), a `$GIT_DIR/hooks` spelling, and a one-character drift in the marker the
+plugin greps for. All five fail; the tree passes. The seven plugin-bash cases
+were red before the guard change and green after — the transition itself, not an
+assertion about it.
+
+**One duplication closed that no proposal started with.** The marker literal is
+the last thing the shell guard copies from `src/hooks.rs`. Editing `HOOK_MARKER`
+used to break nothing: the plugin would simply never recognise a managed hook
+again and sync on top of every one, forever, silently. It is read as text in one
+direction rather than through the crate — `HOOK_MARKER` is private, and making a
+const `pub` so a test can reach it is the exact shape `dead_public_surface.rs`
+hunts (SH-198). Its own author ranked it last in value and noted it catches the
+*mild* direction, which is why it needed a test rather than vigilance.
+
+**A slip, named rather than smoothed over.** The first application of the guard
+fix went into the **main checkout** by absolute path — the one thing the
+one-worktree-per-story rule exists to prevent. Caught within one command by the
+tests still failing in the worktree, reverted with `git checkout --`, and the
+checkout was verified clean before work continued. Nothing was committed there.
+The lesson is mechanical: the worktree is the cwd, so a *relative* path is the
+safe habit and an absolute one silently addresses the wrong tree.
+
+**Deferred and filed: SH-330** (`relates-to SH-320`). The guard is *verb-blind*.
+It credits `post-commit` for all three triggers, but `git push` runs no local
+hook at all, and `git merge` runs `post-merge`, which auto-closes stories from
+merge-commit bodies and **never calls `commit-sync`** — so commits arriving by
+merge are linked by nobody once the guard skips. Since squash and rebase are
+disabled org-wide, merge is how work lands here. Path-blind and verb-blind are
+different defects, and the split keeps bisect attribution honest. Fixing SH-320
+makes this one *easier* to reach, not harder: the guard now skips correctly, and
+therefore more often.
+
+**Costs, both already documented and both paid again:** a cold `target/` in a
+fresh worktree, and no `e2e/node_modules`, so `make e2e-install` ran before the
+gate could. No wedges, no stalls, no kills on any background command; the council
+seat was the only stall, and the log-growth heartbeat was clean throughout.
+
+**`story next` behaved.** It handed back SH-320, which was genuinely ready, and
+nothing about the recommendation needed routing around.
