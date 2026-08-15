@@ -937,7 +937,73 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    margins (352px). `calc(100vw - 2rem)` is that same pair of margins,
    subtracted from the viewport itself; `min()` keeps 22rem as the ceiling
    everywhere wider. */
-.toast-stack { position: fixed; top: 1rem; right: 1rem; display: flex; flex-direction: column; gap: 0.5rem; z-index: 60; max-width: min(22rem, calc(100vw - 2rem)); }
+/* ---- The notice dock (SH-323) ----
+   Positioning left this rule and moved to `.notice-dock` below, which owns it
+   for both notice surfaces. `.toast-stack` keeps only its own column layout.
+
+   THE OFFSET IS MEASURED AT RUNTIME, NEVER DERIVED FROM TOKENS, and the
+   arithmetic is why. `0.75rem * 2 + var(--tap-min)` reads like the topbar's
+   height and predicts 48px. Measured, `.topbar`'s bottom edge is 62px at
+   1280, 103.5 at 768, and 145 at both 390 and 320; `.drawer-header`'s is 68.5
+   at every width against a predicted 56. The tokens never participate: the
+   topbar's row is sized by `.search-input`'s own box and `.btn`'s padding plus
+   font metrics, both larger than `--tap-min`'s 24px floor, and below 768px
+   `.search-wrap` takes a row of its own and the bar wraps. A token offset is
+   therefore wrong by 14px at desktop -- which still overlaps `#settings-btn`,
+   whose measured bottom is 48.25 -- and by 97px on a phone, where it would
+   re-ship this story's whole defect. Browser zoom and a larger root font move
+   every one of those numbers again, and a taller control added to `.topbar`
+   later moves them in silence. The code asks the element (`measureNoticeBands`).
+
+   The fallbacks below govern only until that first measurement lands, and they
+   are sized to the WORST measured band rather than the desktop one -- 145px top,
+   124.5px bottom (`.drawer-footer` in its archive-confirm state, which is prose
+   that wraps; its button row cannot wrap and so never varies), each plus the
+   8px gap. A fallback sized for the desktop case is the static-token mistake
+   wearing a different name. The rule, which is not symmetric: **err toward a
+   SMALLER dock, never a larger one** -- too small costs capacity, too large IS
+   the defect under repair.
+
+   `100vh` before `100dvh` is this file's own precedent (`.app`, `.modal`): a
+   browser that does not know the unit must still get a height rather than none. */
+:root { --notice-band-gap: 0.5rem; --notice-row-min: 3rem; }
+.notice-dock {
+  position: fixed; right: 1rem; z-index: 60;
+  top: calc(var(--notice-band-top, 10rem) + var(--notice-band-gap));
+  height: calc(100vh - var(--notice-band-top, 10rem) - var(--notice-band-bottom, 8.5rem) - var(--notice-band-gap) * 2);
+  height: calc(100dvh - var(--notice-band-top, 10rem) - var(--notice-band-bottom, 8.5rem) - var(--notice-band-gap) * 2);
+  display: flex; flex-direction: column; justify-content: space-between; align-items: flex-end;
+  gap: 0.5rem; pointer-events: none;
+  max-width: min(26rem, calc(100vw - 2rem));
+}
+/* Both regions shrink, and neither may be starved below one row. A fixed split
+   (`max-height: 50%`) was refused: nothing fails when someone changes it to 40%,
+   which makes it exactly the class of number this project has been burned by.
+   `--notice-row-min` is a floor with a stated meaning rather than a policy, and
+   the test that both regions stay above it and never intersect is what makes it
+   real -- a constant nobody can violate silently. */
+.notice-region { display: flex; flex-direction: column; gap: 0.375rem; min-height: var(--notice-row-min); max-width: 100%; align-items: flex-end; flex: 0 1 auto; }
+/* Above the scroller rather than below it, so it is a stable first tab stop
+   that does not move as notices arrive under it. `flex-shrink: 0` because the
+   one control able to clear a full dock must not be the thing the dock shrinks
+   away when it is full. */
+.notice-region-bar { flex-shrink: 0; display: flex; justify-content: flex-end; pointer-events: auto; }
+.notice-dismiss-all { font-size: 0.75rem; padding: 0.25rem 0.5rem; box-shadow: var(--shadow-sm); }
+/* `min-height: 0` is load-bearing, not defensive: without it a flex child
+   refuses to shrink below its content and every height bound above is inert. */
+.notice-scroll { overflow-y: auto; overflow-x: hidden; min-height: 0; max-width: 100%; padding: 0.25rem; pointer-events: auto; }
+/* A scroller that becomes a tab stop needs to be visibly focused and to have a
+   name, or the SC 2.1.1 repair below buys an SC 2.4.7 problem and an anonymous
+   stop. Matches the outline `.card` already uses. */
+.notice-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* `scroll-behavior` stays at its `auto` initial value on purpose. If anyone ever
+   wants `smooth`, it belongs inside the `prefers-reduced-motion: no-preference`
+   block with everything else in this file that moves. */
+/* The viewport arithmetic SH-235 added here now lives once, on `.notice-dock`,
+   which is the element that touches the viewport edge. `100%` keeps a stack
+   inside whatever the dock resolved to; `22rem` keeps the toast stack narrower
+   than the history panel, which is the difference SH-235 chose deliberately. */
+.toast-stack { display: flex; flex-direction: column; gap: 0.5rem; max-width: min(22rem, 100%); }
 .toast {
   display: flex; align-items: flex-start; gap: 0.5rem;
   background: var(--bg-raised); border: 1px solid var(--border); border-left: 3px solid var(--accent);
@@ -964,12 +1030,32 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    finishes; SH-304's council narrowed that to the outcomes it is actually
    true of -- refused and failed -- since a SUCCESS is corroborated by the
    card moving on the board and by the tmux window that now exists, while a
-   failure leaves no trace anywhere once its notice is gone. Bottom-right so
-   it never collides with the toast stack (top-right). */
-/* Same reasoning as `.toast-stack` just above -- `right: 1rem` needs a
-   matching 1rem on the left, so the ceiling is the viewport minus both
-   margins, not a bare `26rem`. */
-.dispatch-history { position: fixed; bottom: 1rem; right: 1rem; display: flex; flex-direction: column-reverse; gap: 0.5rem; z-index: 60; max-width: min(26rem, calc(100vw - 2rem)); }
+   failure leaves no trace anywhere once its notice is gone. It sat bottom-right
+   "so it never collides with the toast stack (top-right)" until SH-323, which
+   found that reasoning true only of two surfaces that cannot grow: both were
+   unbounded, so in a short viewport they grew toward each other and met. Both
+   now live in `.notice-dock`, which is one flex parent arbitrating the split
+   rather than two ceilings neither of which knows what the other is holding. */
+/* The viewport arithmetic SH-235 added here now lives once, on `.notice-dock`.
+   `100%` keeps this panel inside whatever the dock resolved to. */
+/* `column`, not `column-reverse` (SH-323). `addDispatchHistoryRow` unshifts, so
+   DOM order here has always been newest-first; `column-reverse` then painted
+   that first child last, which put the newest row nearest the viewport corner
+   and made DOM order the exact reverse of visual order. That mismatch was inert
+   while this panel had `overflow: visible` -- nothing ever asked which edge
+   `scrollTop 0` meant. SH-323 gives it a height bound and a scroller, which is
+   what makes the question load-bearing, and browsers have historically disagreed
+   on the answer for reverse-direction containers. This suite drives only
+   Chromium (`e2e/playwright.config.ts` -- both projects are Blink, because `make
+   e2e-install` installs chromium and nothing else), so that disagreement is not
+   something a test here could ever catch: pinning it would attest to one engine
+   while reading as a guarantee about all of them, which is the shape of evidence
+   SH-226 and SH-306 already cost this project. The dependency is removed instead
+   of pinned. Cost, accepted deliberately: the newest row now sits at this
+   panel's top edge rather than nearest the screen corner. What matters is that
+   the row reporting a failed dispatch is visible on arrival without scrolling,
+   and that is asserted directly rather than inferred from which edge it is on. */
+.dispatch-history { display: flex; flex-direction: column; gap: 0.5rem; max-width: 100%; }
 .dispatch-history-row {
   display: flex; align-items: flex-start; gap: 0.5rem;
   background: var(--bg-raised); border: 1px solid var(--border); border-left: 3px solid var(--accent);
@@ -1337,8 +1423,53 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   </div>
 </div>
 
-<div class="toast-stack" id="toast-stack" role="status" aria-live="polite"></div>
-<div class="dispatch-history" id="dispatch-history" role="region" aria-label="Autonomous dispatch results" aria-live="polite"></div>
+<!-- One dock for both notice surfaces (SH-323), spanning only the band between
+     the app's own chrome. Two independently positioned surfaces is what this
+     replaces, and the reason is not tidiness: each would need a height ceiling
+     of its own, neither ceiling can know what the other is currently holding,
+     and in a short viewport they grow toward each other and meet. A 720px
+     viewport with ~150px of chrome leaves ~570px of shared middle, which ten
+     notices and five dispatch failures exceed -- which is this app's ordinary
+     autonomous-dispatch-while-working state, not a contrived one. One flex
+     parent arbitrates the split for free; two ceilings are two numbers somebody
+     has to keep true, the failure class SH-136 cost this project three times.
+
+     `#toast-stack` and `#dispatch-history` keep their ids, roles and
+     `aria-live` exactly as they were, so every existing selector still resolves
+     and SH-322's fence still fences what it fenced. What is new around them is
+     a scroll container each and this wrapper.
+
+     `pointer-events: none` on the dock, `auto` on the scrollers: the inverse of
+     the case SH-322's chair correctly rejected on `.toast-stack`, where
+     `align-items: stretch` made each notice fill its parent so the declaration
+     would have exempted only the 0.5rem gaps. This wrapper genuinely is larger
+     than its children -- it spans the whole band whether or not anything is in
+     it -- so the empty band really does pass clicks through. Pinned by a hit
+     test rather than asserted, because that is the assertion the rejected
+     version never had. -->
+<div class="notice-dock" id="notice-dock">
+  <div class="notice-region" id="toast-region">
+    <div class="notice-region-bar" id="toast-bar" hidden>
+      <button type="button" class="btn btn-ghost notice-dismiss-all" id="toast-dismiss-all">Dismiss all <span id="toast-count"></span></button>
+    </div>
+    <div class="notice-scroll" id="toast-scroll" role="group" aria-label="Notices">
+      <div class="toast-stack" id="toast-stack" role="status" aria-live="polite"></div>
+    </div>
+  </div>
+  <div class="notice-region" id="dispatch-history-region">
+    <div class="notice-region-bar" id="dispatch-history-bar" hidden>
+      <button type="button" class="btn btn-ghost notice-dismiss-all" id="dispatch-history-dismiss-all">Dismiss all <span id="dispatch-history-count"></span></button>
+    </div>
+    <div class="notice-scroll" id="dispatch-history-scroll" role="group" aria-label="Dispatch results">
+      <div class="dispatch-history" id="dispatch-history" role="region" aria-label="Autonomous dispatch results" aria-live="polite"></div>
+    </div>
+  </div>
+  <!-- Outside both notice regions, so clearing the stack is announced without
+       the announcement itself being a notice. A keyboard user who presses
+       "Dismiss all" and hears nothing, with focus now somewhere else, has been
+       told nothing about what just happened. -->
+  <span class="sr-only" id="notice-dock-status" role="status"></span>
+</div>
 
 <script>
 (function() {
@@ -2653,6 +2784,242 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   // ============================================================
+  // THE NOTICE DOCK: WHERE NOTICES ARE ALLOWED TO BE (SH-323)
+  // ============================================================
+  //
+  // Notices used to be two `position: fixed` surfaces pinned to two corners,
+  // and both corners had controls under them. One ordinary notice covered
+  // `#settings-btn`, `#new-story-btn`, `#drafts-btn`, `#conn-dot` and — with the
+  // drawer open — `#drawer-close`, every one of them verified by hit-testing the
+  // control's own centre rather than by looking at the CSS.
+  //
+  // The promise this code makes is narrower than "covers no control", and the
+  // narrower wording is the honest one: there is nowhere to put a notice that is
+  // over nothing. Below the chrome band the right-hand strip is board cards,
+  // which are click, keyboard and drag-and-drop targets. So the invariant is
+  // **the dock never overlaps the app's chrome band or the drawer's header and
+  // footer bands** — plus a footprint over content that is bounded, scrollable
+  // and dismissible.
+
+  /** The elements whose bottom edges define the top of the band, and whose
+   * heights define the bottom of it.
+   *
+   * Containers, deliberately, not controls: anything added inside `.topbar` or
+   * `.drawer-footer` later is covered for free, where a list of buttons would
+   * have to be remembered. What this cannot cover is a control that floats
+   * outside all five, and no test catches that — only noticing does.
+   *
+   * `.drawer-header` and `#drawer-footer` are measured whether or not the drawer
+   * is open. `.drawer` translates in X only, so their vertical extent is
+   * identical either way; measuring them unconditionally costs a few pixels of
+   * dock height permanently and removes a whole class of bug — a dock that has
+   * to be re-measured on open, re-measured on close, and is wrong for the 200ms
+   * the drawer spends in between. */
+  var NOTICE_BAND_TOP = [".topbar", "#filter-bar", ".drawer-header"];
+  var NOTICE_BAND_BOTTOM = ["#footer", "#drawer-footer"];
+
+  /** Publishes one band edge, skipping the write when the value has not moved.
+   *
+   * The guard is what makes writing from inside a `ResizeObserver` safe: a
+   * custom property that changes on every callback would resize the dock, and a
+   * dock that resizes can call the observer again. The dock itself is never
+   * observed, so this is belt and braces rather than the only thing standing
+   * between here and a layout loop — but it costs one string compare. */
+  function setNoticeBand(name, px) {
+    var value = px + "px";
+    if (document.documentElement.style.getPropertyValue(name) !== value) {
+      document.documentElement.style.setProperty(name, value);
+    }
+  }
+
+  /** Measures the chrome band and publishes it as `--notice-band-top` and
+   * `--notice-band-bottom`.
+   *
+   * Measured rather than derived, and the CSS beside `.notice-dock` carries the
+   * arithmetic that settles it: every token-based formula anyone proposed was
+   * wrong by 14px at 1280 and 97px at 390, because the topbar's height comes
+   * from `.search-input`'s box and `.btn`'s font metrics rather than from
+   * `--tap-min`, and because the bar wraps below 768px.
+   *
+   * A hidden element answers a 0x0 rect and contributes nothing, which is what
+   * makes `#filter-bar` free to be in the list on screens that do not show it.
+   * Top edges use `bottom`; bottom edges use `height`, since both bottom
+   * elements are flush to the viewport's own bottom by construction. */
+  function measureNoticeBands() {
+    var top = 0;
+    var bottom = 0;
+    NOTICE_BAND_TOP.forEach(function(selector) {
+      var node = document.querySelector(selector);
+      if (node) top = Math.max(top, node.getBoundingClientRect().bottom);
+    });
+    NOTICE_BAND_BOTTOM.forEach(function(selector) {
+      var node = document.querySelector(selector);
+      if (node) bottom = Math.max(bottom, node.getBoundingClientRect().height);
+    });
+    setNoticeBand("--notice-band-top", Math.ceil(top));
+    setNoticeBand("--notice-band-bottom", Math.ceil(bottom));
+  }
+
+  /** Keeps the published band current.
+   *
+   * A `ResizeObserver` rather than a `resize` listener: the topbar's height
+   * changes when it wraps, which a viewport resize does cause — but it also
+   * changes when a web font lands, when the drawer footer swaps its button row
+   * for a confirmation panel, and when a project name makes the selector wider,
+   * none of which fire `resize`. The observer asks the element; a listener would
+   * guess at when to. `resize` is kept as well, for the case where the viewport
+   * changes without any observed box changing size. */
+  function observeNoticeBands() {
+    measureNoticeBands();
+    if (typeof ResizeObserver === "function") {
+      var observer = new ResizeObserver(measureNoticeBands);
+      NOTICE_BAND_TOP.concat(NOTICE_BAND_BOTTOM).forEach(function(selector) {
+        var node = document.querySelector(selector);
+        if (node) observer.observe(node);
+      });
+    }
+    window.addEventListener("resize", measureNoticeBands);
+  }
+
+  /** Reconciles what depends on how many notices are standing.
+   *
+   * Today that is one thing: a scroll container is a tab stop **exactly while it
+   * can scroll**. Both halves are load-bearing and both are pinned. Without the
+   * tabindex, a keyboard user cannot reach content that has scrolled out of view
+   * — and the case is real rather than theoretical: only durable notices carry a
+   * dismiss button, so a burst of self-clearing ones overflows the region with
+   * *zero* focusable descendants, measured at 14 notices in a 720px viewport
+   * with `dismissButtons: 0, focusable: 0`. With an unconditional tabindex, the
+   * page grows a tab stop that leads nowhere in the overwhelmingly common case
+   * where nothing has scrolled.
+   *
+   * This does not re-open SH-322, which rejected `tabindex="0"` on a `.toast`
+   * itself: that would have made a listener fireable without making anything
+   * reachable, on a node with nothing operable inside it. This one is on an
+   * ancestor and genuinely scrolls — Arrow, Page, Home and End all do something
+   * — so a clocked `.toast` still has `tabIndex -1` and still contains nothing
+   * focusable, which that story's fence continues to assert. */
+  function syncNoticeDock() {
+    ["toast-scroll", "dispatch-history-scroll"].forEach(function(id) {
+      var scroll = $(id);
+      if (!scroll) return;
+      if (scroll.scrollHeight > scroll.clientHeight) scroll.setAttribute("tabindex", "0");
+      else scroll.removeAttribute("tabindex");
+    });
+    // Durable notices only: a self-clearing one is gone in three seconds, so a
+    // control that appeared and vanished on that rhythm would be a tab stop
+    // flickering in and out under the user. Counting what the reader must act
+    // on makes the bar's presence a consequence of a state only they can change.
+    syncNoticeBar("toast", $("toast-stack").querySelectorAll(".toast .toast-dismiss").length);
+    syncNoticeBar("dispatch-history", state.dispatchHistory.length);
+  }
+
+  /** How many notices a region must hold before it offers to clear them all.
+   *
+   * Two, not one: a single notice's own dismiss button already *is* "dismiss
+   * all", so at one the bar would be a second control doing the first one's job
+   * and an extra tab stop in the common case. This is a judgement call with no
+   * criterion behind it, and it is written down as one. */
+  var NOTICE_DISMISS_ALL_THRESHOLD = 2;
+
+  /** Shows or hides one region's "Dismiss all" bar and keeps its count current.
+   *
+   * The count lives in the button's own visible text, never in an `aria-hidden`
+   * span beside it and never in a fixed `aria-label`. Both of those are **SC
+   * 2.5.3 Label in Name (Level A)** failures in opposite directions: the first
+   * shows "Dismiss all 9" while announcing "Dismiss all", and the second
+   * announces something the user cannot see. Speech-input users say what they
+   * read, so the visible text has to BE the name. The cost is a name that
+   * changes as notices arrive, which no criterion forbids -- and because the bar
+   * sits outside the live region, that change is never announced as a notice. */
+  function syncNoticeBar(prefix, count) {
+    var bar = $(prefix + "-bar");
+    if (!bar) return;
+    bar.hidden = count < NOTICE_DISMISS_ALL_THRESHOLD;
+    if (!bar.hidden) $(prefix + "-count").textContent = String(count);
+  }
+
+  /** Where focus goes when a control has just destroyed itself and everything
+   * around it.
+   *
+   * "Dismiss all" deletes the focused element and every sibling, so it strands
+   * focus on `<body>` **every time, by construction** -- which is what separates
+   * it from SH-326, where dismissing one notice of five strands focus only
+   * sometimes and leaves siblings to Tab to. Shipping a brand-new control with a
+   * guaranteed strand is not deferring to SH-326, it is adding a fresh instance
+   * of a filed defect.
+   *
+   * The dock itself is deliberately NOT the answer, though it is the nearest
+   * thing to hand: it is `pointer-events: none`, visually empty, carries no
+   * focus indicator, and sits last in the document, so Tab from it leaves for
+   * the browser chrome. That is `document.body` with extra steps for a sighted
+   * keyboard user, offered as the remedy for a focus-order problem.
+   *
+   * So: the active overlay's own container when one is open -- every overlay
+   * surface already carries `tabindex="-1"` for `activateOverlay`'s fallback --
+   * and otherwise the visible `<main>` for the current screen. Both are real,
+   * visible elements with the page's own content after them in tab order.
+   *
+   * Called only from the two bulk-clear handlers. The per-notice
+   * `.toast-dismiss` handler is left exactly as it was, so SH-326 keeps its
+   * subject and its repro, and extends this helper to two more call sites
+   * rather than unpicking a policy it never agreed to. */
+  function focusAfterNoticeRemoval() {
+    var active = overlayStack.length ? overlayStack[overlayStack.length - 1] : null;
+    var target = active ? $(active) : visibleMain();
+    if (!target) return;
+    if (!target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1");
+    target.focus();
+  }
+
+  /** The `<main>` the current screen is showing, or `null` if none is. */
+  function visibleMain() {
+    var found = null;
+    ["board-view", "list-view", "home-view", "settings-view"].forEach(function(id) {
+      var node = $(id);
+      if (!found && node && !node.hidden) found = node;
+    });
+    return found;
+  }
+
+  /** Announces an outcome that is not itself a notice.
+   *
+   * Cleared first so that dismissing twice in a row announces twice: a live
+   * region whose text is reassigned to the value it already holds is not a
+   * mutation, and several screen readers say nothing at all. */
+  function announceInNoticeDock(message) {
+    var status = $("notice-dock-status");
+    if (!status) return;
+    status.textContent = "";
+    status.textContent = message;
+  }
+
+  /** Clears every notice in the toast stack, clocked ones included.
+   *
+   * `cancelNoticeClock` is what keeps a removed-but-still-running notice from
+   * leaving its `visibilitychange` listener attached to `document` for the rest
+   * of the session -- the node is gone, so nothing else would ever release it. */
+  function dismissAllToasts() {
+    var stack = $("toast-stack");
+    Array.prototype.slice.call(stack.children).forEach(function(node) {
+      if (node.cancelNoticeClock) node.cancelNoticeClock();
+      node.remove();
+    });
+    syncNoticeDock();
+    focusAfterNoticeRemoval();
+    announceInNoticeDock("All notices dismissed");
+  }
+
+  /** The same, for the dispatch history, which is rendered from state rather
+   * than mutated node by node. */
+  function dismissAllDispatchHistory() {
+    state.dispatchHistory = [];
+    renderDispatchHistory();
+    focusAfterNoticeRemoval();
+    announceInNoticeDock("All dispatch results dismissed");
+  }
+
+  // ============================================================
   // NOTICES: TOASTS, AND THE DURABLE HALF (SH-304)
   // ============================================================
   //
@@ -2761,7 +3128,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       // reader who asked for less movement did not ask for notices that
       // never leave. Under `prefers-reduced-motion` the class simply
       // animates nothing and the node is removed on the same schedule.
-      window.setTimeout(function() { node.remove(); }, TOAST_FADE_MS);
+      window.setTimeout(function() { node.remove(); syncNoticeDock(); }, TOAST_FADE_MS);
     }
 
     function onVisibility() { if (document.hidden) pause(); else resume(); }
@@ -2769,6 +3136,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     node.addEventListener("mouseenter", pause);
     node.addEventListener("mouseleave", resume);
     document.addEventListener("visibilitychange", onVisibility);
+    // The teardown this notice's own removal has to run (SH-323). `depart()`
+    // detaches the document-level listener on the path where the clock expires;
+    // a notice removed by "Dismiss all" never reaches `depart()`, so without a
+    // handle here its listener would outlive the node it belongs to, for the
+    // rest of the session, with nothing left able to release it.
+    node.cancelNoticeClock = function() {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = null;
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
     resume();
   }
 
@@ -2796,7 +3173,26 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * `detail` and `reason` (both optional) are the diagnosis lines a durable
    * notice keeps beneath its headline -- in the DOM, inside `#toast-stack`'s
    * existing `aria-live` region, never in a `title` attribute, which is
-   * unreachable by keyboard and by many screen readers. */
+   * unreachable by keyboard and by many screen readers.
+   *
+   * **Newest first, so DOM order, visual order and scroll position all agree**
+   * (SH-323). This was `appendChild` until the stack gained a height bound: with
+   * nothing that scrolls, "where does the newest go" was free, and oldest-first
+   * was the incidental default of appending into a top-anchored column. Bounding
+   * the stack is what makes the answer decide whether the notice that just fired
+   * is visible at all, so the choice stopped being free and had to be made.
+   *
+   * The two alternatives were weighed and rejected by SH-323's council. A
+   * `column-reverse` stack inverts DOM order against visual order -- the exact
+   * mismatch `#dispatch-history` carried until this story, harmless only while it
+   * had nothing that scrolled. Writing `scrollTop` on every insert carries a
+   * correctness condition this has none of: it yanks the viewport away from a
+   * reader mid-notice and scrolls a focused `.toast-dismiss` out of view, which
+   * is this page's own script removing the keyboard focus indicator, and the
+   * guard that repairs it needs state plus a one-pixel boundary between a reader
+   * resting at the bottom and one just off it. Prepending needs no scroll write
+   * anywhere, and leaves the newest notice at `scrollTop 0` -- the
+   * best-specified value in the DOM. */
   function toast(message, variant, detail, reason) {
     var stack = $("toast-stack");
     var durable = noticeIsDurable(variant);
@@ -2806,11 +3202,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         class: "toast-dismiss",
         type: "button",
         "aria-label": "Dismiss this message",
-        onClick: function() { node.remove(); }
+        onClick: function() { node.remove(); syncNoticeDock(); }
       }, ["×"]) : null
     ]);
-    stack.appendChild(node);
+    stack.insertBefore(node, stack.firstChild);
     if (!durable) scheduleAutoDismiss(node);
+    syncNoticeDock();
   }
 
   function toastError(err) {
@@ -3158,6 +3555,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         }, ["×"])
       ]));
     });
+    syncNoticeDock();
   }
 
   // ============================================================
@@ -4109,6 +4507,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("view-toggle").hidden = !isRepo;
     $("new-story-btn").hidden = !isRepo;
     $("drafts-btn").hidden = !isRepo;
+    // The chrome band just changed shape: `#filter-bar` is in it, and hiding it
+    // is a `display: none` transition, which a `ResizeObserver` does not
+    // reliably report (SH-323). The observer is the safety net for everything
+    // else; these two explicit calls are for the transitions it cannot see.
+    measureNoticeBands();
     syncCreateAvailability();
     // Both edges this button has, and the reason it is called here at all:
     // see `updateDraftsButton()`'s own comment. `renderAll()` covers the
@@ -6575,6 +6978,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
     restoreDrawerFocus(body, focused);
     renderDrawerFooter(st);
+    // The footer is in the bottom band, and its height is not fixed: swapping
+    // its button row for a confirmation panel takes it from 68.5px to 124.5px
+    // (measured, SH-323). The observer sees that resize, but this call covers
+    // the first render, where the element may not have been observed yet.
+    measureNoticeBands();
   }
 
   function buildTitleField(st) {
@@ -8756,6 +9164,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("delete-modal-submit").addEventListener("click", submitDeleteStory);
     $("delete-reason").addEventListener("keydown", function(e) { if (e.key === "Enter") submitDeleteStory(); });
     $("drawer-close").addEventListener("click", closeDrawer);
+    $("toast-dismiss-all").addEventListener("click", dismissAllToasts);
+    $("dispatch-history-dismiss-all").addEventListener("click", dismissAllDispatchHistory);
     $("drawer-backdrop").addEventListener("click", closeDrawer);
     document.addEventListener("keydown", function(e) {
       // SH-175: `create-modal` is deliberately absent here — see the
@@ -8903,6 +9313,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   bindListSort();
 
   renderScreen();
+
+  // After the first `renderScreen()`, so the chrome being measured is the
+  // chrome that will actually be on screen rather than an unpopulated topbar
+  // (SH-323). Everything after this point is kept current by the observer.
+  observeNoticeBands();
 
   /** Starts the app proper: the initial fetch, the live-update channel, and
    * the safety-net intervals. */
