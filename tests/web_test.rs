@@ -1050,18 +1050,33 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains("function statusMenuItems"));
     assert!(body.contains(".ctxmenu-sub"));
 
-    // SH-310: a drawer field edit reports a client timeout the honest way --
-    // through `describeMutationFailure` (SH-312's answer for the create
-    // modal), not through the flat, sometimes-false `toastError`.
+    // SH-310: the context menu's Set Priority submenu -- the daemon's own
+    // priority vocabulary as a radio group with the story's current value
+    // checked, reaching the same POST /priority the drawer's own select
+    // does. Hidden (not disabled) on a closed story, for the same reason and
+    // the same expression as the Dispatch group.
+    assert!(body.contains("\"Set Priority\""));
+    assert!(body.contains("function priorityMenuItems"));
+    assert!(body.contains("function setStoryPriority"));
+    assert!(body.contains(r#"ariaLabel: "Set priority""#));
+    // The rule the daemon does not enforce on its own: `set_priority`
+    // appends an event and fires a PriorityChange hook even when the value
+    // is unchanged, so re-picking the current one must not leave this page.
+    assert!(body.contains("story.story.priority === priority"));
+
+    // SH-197: the context menu's Delete item, reaching the same shared
+    // modal (commit 3) the drawer footer's own Delete button opens.
+    assert!(body.contains("\"Delete\", danger: true"));
+
+    // SH-310: a drawer field edit (and, via the same function, a context-
+    // menu action) reports a client timeout the honest way -- through
+    // `describeMutationFailure` (SH-312's answer for the create modal),
+    // not through the flat, sometimes-false `toastError`.
     assert!(body.contains("toast(describeMutationFailure(err)"));
     assert!(
         !body.contains("api(method, path, body).then(handleMutationSuccess).catch(toastError)"),
         "runFieldMutation must not report an unproven mutation outcome as a definite failure"
     );
-
-    // SH-197: the context menu's Delete item, reaching the same shared
-    // modal (commit 3) the drawer footer's own Delete button opens.
-    assert!(body.contains("\"Delete\", danger: true"));
 
     // SH-305: every board column gets its own sort menu (replacing SH-128's
     // single board-wide pair of buttons), opened from a `.column-sort-btn`
