@@ -87,13 +87,14 @@ Adopted by:
 - Comment bodies (`buildCommentsSection`), via `linkifyStoryIds`.
 - The blocked banner's `awaiting` reason (`renderDrawer`), via `linkifyStoryIds`.
 
-Deliberately **not** adopted (filed as follow-on stories rather than folded in here,
-since each needs its own design pass): the list view's `.state-pill` — colouring it is
-now an obvious, cheap follow-on that the semantic palette makes worth doing (SH-277)
-— and the description field, a `<textarea>` where linkification needs a read/edit
-split the drawer doesn't otherwise have (filed as SH-278; that story was later
-superseded by SH-217, which built the split as part of rendering the description as
-markdown — see [`markdown-in-the-dashboard.md`](markdown-in-the-dashboard.md)).
+Deliberately **not** adopted here (filed as follow-on stories rather than folded in,
+since each needed its own design pass): the list view's `.state-pill` — colouring it
+was an obvious, cheap follow-on that the semantic palette made worth doing, later done
+as **SH-277** (its own "As built" entry below) — and the description field, a
+`<textarea>` where linkification needs a read/edit split the drawer doesn't otherwise
+have (filed as SH-278; that story was later superseded by SH-217, which built the split
+as part of rendering the description as markdown — see
+[`markdown-in-the-dashboard.md`](markdown-in-the-dashboard.md)).
 
 ### Consumer 2 — the card blockers list, then the blocked badge (SH-309)
 
@@ -213,6 +214,33 @@ fresher, locally-derived signal is strictly more correct than waiting on the agg
 — exactly the property `.card-blockers`/`openBlockers()` already had, and would have
 silently lost if the badge had swallowed it behind a single `blocked[st.id]` gate.
 
+### SH-277: the list view's `.state-pill`, and a second renderer found reading the wrong slug
+
+Colouring `.state-pill` turned out to need a prerequisite fix first, not just new CSS.
+Every other renderer in the file already read `display_state || state` — the board's
+column placement, the drag-drop no-op guard, the render diff, and this story's own
+`storyLight()` — specifically so a display-promoted epic (`compute_epic_display_state`,
+SH-165: an active child pulls a `todo` epic's *card* into `in-progress` without
+touching its own literal `state`) never disagrees with the column its card actually
+sits in. `populateListRow` was the one holdout, reading the literal `st.state` in two
+places: the pill's text and `sortValue`'s `"state"` case. Colouring the pill from the
+literal state would have painted it the wrong colour for exactly the epics this
+story's own reasoning cares about, so both were fixed to read `display_state || state`
+first, each shipping its own e2e proof, ahead of the colour commit (two hats). The
+promoted pill also carries a `title` naming the literal recorded state, so the table
+never silently disagrees with `story show`. The state *filter* (`filteredStories`)
+keeps reading the literal state on purpose — filters and rendering have always been
+two separate rules in this file, and this only completes the rendering half for the
+list view.
+
+The colour itself is carried by a `--state-color` custom property — the same idiom
+`.card`'s own `--card-accent` uses — because one write has to drive three things at
+once (the pill's `color-mix()` tint, its ring, and a `.dot` inside it matching the
+board's own dots), unlike every single-declaration `stateColor()` consumer elsewhere,
+which sets an inline `background` string directly. The plain `background`/`border-color`
+declarations stay first in the CSS, with the `color-mix()` pair after them, so a
+browser without `color-mix()` support silently keeps today's uncoloured pill.
+
 ## What guards each piece
 
 | Piece | Structural test (`tests/web_test.rs`) | Behavioral test (`e2e/specs/`) |
@@ -226,6 +254,7 @@ silently lost if the badge had swallowed it behind a single `blocked[st.id]` gat
 | Blocked badge derives from one function, never a hand-written cause | `every_blocked_badge_sentence_comes_from_the_one_deriver` (SH-309 fence, models `every_loading_line_comes_from_the_one_generator`) | — |
 | `.card-flags` wraps | `web_serve_root_html_styles_the_status_light_and_card_blockers` | — |
 | Badge names blockers/two-blocker comma-join/awaiting+blocker/obviated-by, and its ref click-throughs to the *blocker's* drawer | — | `status-flags.spec.ts` (SH-309 cases) |
+| List view `.state-pill` reads `display_state`, and its `color-mix()` mechanism | `web_serve_root_html_has_board_list_drawer_markers` (SH-277 block), `web_serve_root_html_colours_the_list_state_pill` | `list-state-pill.spec.ts` |
 
 Computed colour, click behavior, and the dwell's timing are all things only a real
 browser can prove — the Rust layer is what catches a rename or deletion in seconds,
