@@ -7816,10 +7816,22 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   /** Runs a mutation that isn't the board's optimistic move path (field
    * edits from the drawer): fire the request, then reconcile from its
-   * response (or the next poll on failure). */
+   * response, or -- on failure -- describe the outcome honestly and
+   * reconcile from a refetch instead.
+   *
+   * `describeMutationFailure`, not a bare `toastError` (SH-310): every
+   * caller of this function shares `api()`'s ambiguity between "the daemon
+   * refused this" and "the client gave up waiting, and has no idea" (see
+   * that function's own comment) -- `toastError` cannot tell those apart
+   * and reported both as the same flat, sometimes-false "request timed
+   * out". That was SH-312's defect for the create modal specifically;
+   * every field edit routed through here inherited the identical lie and
+   * had nothing to fix it until now. */
   function runFieldMutation(id, method, action, body) {
     var path = apiBase() + "/story/" + encodeURIComponent(id) + (action ? "/" + action : "");
-    api(method, path, body).then(handleMutationSuccess).catch(toastError);
+    api(method, path, body).then(handleMutationSuccess).catch(function(err) {
+      toast(describeMutationFailure(err), "error");
+    });
   }
 
   function handleMutationSuccess(resp) {
@@ -9144,23 +9156,25 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return Promise.all(calls);
   }
 
-  /** How a create-modal mutation's `.catch` describes an outcome the client
-   * cannot prove either way (SH-312). `status === 0` is `api()`'s signal
-   * that no reply ever arrived — `onerror` (a network failure) or
-   * `ontimeout` (the client gave up waiting) — and neither means the daemon
-   * did not act: a mutation's deadline ({@link MUTATION_TIMEOUT_MS}) is set
-   * to the server's own documented worst case, not to "the daemon is
-   * definitely gone," so a timeout can fire while the write is still
-   * committing or has already committed. Reporting that as a definite
-   * failure is what turned a slow-but-successful create into a duplicate
-   * one: the user believed it, and resubmitted. This mirrors
-   * `HttpInvoker`'s own "may or may not have run" wording in `src/invoke.rs`
-   * — the CLI's answer to the identical ambiguity — and refetches in the
-   * background either way, so the board behind the still-open modal already
-   * shows the truth by the time the user reads the message. Any other
-   * status is the daemon itself answering with a definite outcome
-   * (400/403/422/500/…), which is not ambiguous and keeps its own message
-   * unchanged. */
+  /** How a mutation's `.catch` describes an outcome the client cannot prove
+   * either way (SH-312, generalised from the create modal to every caller
+   * of {@link runFieldMutation} below — a drawer field edit or a context-
+   * menu action fails the identical way and used to say the identical
+   * lie). `status === 0` is `api()`'s signal that no reply ever arrived —
+   * `onerror` (a network failure) or `ontimeout` (the client gave up
+   * waiting) — and neither means the daemon did not act: a mutation's
+   * deadline ({@link MUTATION_TIMEOUT_MS}) is set to the server's own
+   * documented worst case, not to "the daemon is definitely gone," so a
+   * timeout can fire while the write is still committing or has already
+   * committed. Reporting that as a definite failure is what turned a
+   * slow-but-successful create into a duplicate one: the user believed it,
+   * and resubmitted. This mirrors `HttpInvoker`'s own "may or may not have
+   * run" wording in `src/invoke.rs` — the CLI's answer to the identical
+   * ambiguity — and refetches in the background either way, so whatever is
+   * on screen behind the toast or the still-open modal already shows the
+   * truth by the time the user reads the message. Any other status is the
+   * daemon itself answering with a definite outcome (400/403/422/500/…),
+   * which is not ambiguous and keeps its own message unchanged. */
   function describeMutationFailure(err) {
     fetchData();
     if (err.status === 0) {
