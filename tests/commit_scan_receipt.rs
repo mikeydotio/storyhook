@@ -37,6 +37,7 @@
 //! design, and a test that asserts the limit is what stops a later reader
 //! mistaking it for a bug and "fixing" it into a false alarm.
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
@@ -78,6 +79,35 @@ fn receipt(store: &SqliteStore, project: ProjectId) -> Option<String> {
     store
         .read(|tx| tx.commit_scan_at(project))
         .expect("reading the commit-scan receipt")
+}
+
+/// HEAD's committer date, in the same UTC spelling the receipt uses.
+///
+/// Two traps live in this one line, and both bite silently. `%cI` carries the
+/// *committer's* offset, so comparing it lexically against a `Z` timestamp is
+/// wrong for everybody not on UTC — hence `format-local` under `TZ=UTC`. And the
+/// comparison the caller makes must be `receipt >= newest`, **inclusive**: git's
+/// own `--since` is inclusive, so a commit in the same second as a scan was
+/// covered by it, which is exactly why the product shifts its window a second
+/// forward (`first_unscanned_second`). A `>` here would call a scanned commit
+/// unscanned and fail this test whenever a commit and its hook's sync land in
+/// one second — which is most of the time, since the hook runs immediately.
+fn newest_commit_utc(env: &TestEnv, root: &Path) -> String {
+    let mut command = Command::new("git");
+    command.current_dir(root);
+    env.apply(&mut command);
+    command.env("TZ", "UTC");
+    let output = command
+        .args([
+            "log",
+            "-1",
+            "--format=%cd",
+            "--date=format-local:%Y-%m-%dT%H:%M:%SZ",
+        ])
+        .output()
+        .expect("running git");
+    assert!(output.status.success(), "reading HEAD's committer date");
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
 /// Long enough that the next git commit lands in a later second than the
@@ -159,6 +189,433 @@ fn the_managed_hooks_own_sync_records_the_scan() {
         after > before,
         "the post-commit hook runs `story commit-sync`, so a commit made with \
          hooks live must advance the receipt on its own ({before} -> {after})"
+    );
+}
+
+/// Nothing storyhook prints may claim more than it knows.
+///
+/// The receipt says a scan happened. It cannot say a hook is missing, dark or
+/// broken, it cannot say the commits *should* have been linked (most commits
+/// name no story), and it cannot present its count as complete. Each of these
+/// is a sentence somebody will be tempted to write when the advisory reads as
+/// vague — and each would be the SH-226 defect this story exists not to repeat,
+/// one layer up: a claim inferred from evidence that does not support it.
+fn assert_claims_nothing_it_cannot_know(text: &str) {
+    for forbidden in [
+        "hook is dark",
+        "hook is not running",
+        "hooks are not running",
+        "not installed",
+        "is missing",
+        "is broken",
+        "should have been linked",
+    ] {
+        assert!(
+            !text.contains(forbidden),
+            "the advisory says {forbidden:?}, which the receipt cannot know — it \
+             records that a scan happened, not that a hook ran. Full text:\n{text}"
+        );
+    }
+}
+
+/// The combined output of `story hooks install` in this project.
+fn install_output(project: &Project<'_>) -> String {
+    let out = project
+        .story()
+        .args(["hooks", "install"])
+        .output()
+        .expect("running story hooks install");
+    assert!(
+        out.status.success(),
+        "`story hooks install` must never fail because of the receipt: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    text
+}
+
+/// The sentence the advisory always contains when it appears at all.
+const ADVISORY: &str = "dated after this store last scanned";
+
+/// Makes git stop running the managed hooks, the way the world does it.
+///
+/// `core.hooksPath` re-pointed at a directory of somebody else's hooks — husky,
+/// lefthook and pre-commit all generate exactly this — with a body that does
+/// **not** delegate. All three names are occupied on purpose: occupying one
+/// leaves the others free, storyhook installs into those, and they go on doing
+/// their job, which silently confounds any test asking whether a hook ran
+/// (`tests/hook_execution.rs` records the same trap, found the hard way).
+fn go_dark(env: &TestEnv, project: &Project<'_>) {
+    let dir = project.path().join("their-hooks");
+    std::fs::create_dir_all(&dir).expect("creating the foreign hooks directory");
+    for name in ["post-commit", "post-merge", "prepare-commit-msg"] {
+        let hook = dir.join(name);
+        std::fs::write(&hook, "#!/bin/sh\nexit 0\n").expect("seeding an occupant");
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))
+            .expect("making the occupant executable");
+    }
+    git(
+        env,
+        project.path(),
+        &["config", "core.hooksPath", "their-hooks"],
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The headline: a hook that stopped running is reported on the next install
+// ---------------------------------------------------------------------------
+
+/// SH-316's acceptance test, and the one that had to *provoke* rather than
+/// assert a file exists.
+///
+/// Install (which arms the receipt), then take the hooks away exactly as the
+/// world does — `core.hooksPath` re-pointed at a foreign directory whose hooks
+/// do not delegate — then commit twice. The install report was true when it was
+/// printed and every word of it is now false, and the only thing that can say so
+/// is the evidence the hook did not leave.
+#[test]
+fn a_hook_that_stopped_running_is_reported_on_the_next_install() {
+    let (env, project) = repository();
+    project.run(&["hooks", "install"]).success();
+    go_dark(env, &project);
+    wait_a_second();
+
+    git(
+        env,
+        project.path(),
+        &["commit", "-q", "--allow-empty", "-m", "feat: one"],
+    );
+    git(
+        env,
+        project.path(),
+        &["commit", "-q", "--allow-empty", "-m", "feat: two"],
+    );
+
+    let text = install_output(&project);
+    assert!(
+        text.contains("2 commits are dated after this store last scanned"),
+        "two commits happened with no scan behind them, and nothing said so:\n{text}"
+    );
+    assert!(
+        text.contains("story commit-sync --since"),
+        "the advisory must carry the remedy, with a window that reaches back to \
+         the receipt:\n{text}"
+    );
+    assert_claims_nothing_it_cannot_know(&text);
+}
+
+/// The control, and it is the load-bearing half: with the hooks still live the
+/// same sequence says **nothing**.
+///
+/// Without this, the test above would pass just as happily if the advisory fired
+/// on every install in every repository.
+#[test]
+fn a_repository_whose_hook_still_runs_says_nothing() {
+    let (env, project) = repository();
+    let store = project.open_store();
+    let project_id = project.project_id(&store);
+    project.run(&["hooks", "install"]).success();
+    wait_a_second();
+
+    git(
+        env,
+        project.path(),
+        &["commit", "-q", "--allow-empty", "-m", "feat: one"],
+    );
+
+    // The precondition is stated rather than assumed, because it is the whole
+    // meaning of the silence below and it can genuinely fail: `git commit` waits
+    // for `post-commit`, so by now the hook's sync has either landed or been
+    // swallowed by its own `2>/dev/null || true` — under enough concurrent load
+    // for `story` to hit its deadline, the latter. An advisory *is* the correct
+    // answer when no scan happened, so a bare "it stayed silent" assertion would
+    // otherwise fail here naming the wrong cause.
+    let after = receipt(&store, project_id).expect("install armed it at the latest");
+    let newest = newest_commit_utc(env, project.path());
+    assert!(
+        after >= newest,
+        "fixture: the post-commit hook's own sync did not land (receipt {after}, \
+         newest commit {newest}). Under heavy parallel load `story` can exceed \
+         its deadline and the hook swallows the failure — see SH-318."
+    );
+
+    let text = install_output(&project);
+    assert!(
+        !text.contains(ADVISORY),
+        "the post-commit hook scanned the commit as it was made, so there is \
+         nothing to report:\n{text}"
+    );
+}
+
+/// A first install has nothing to compare against, and says so by saying
+/// nothing.
+///
+/// It arms the receipt instead — the baseline that makes a hook which never
+/// fires *once* detectable on the next run.
+#[test]
+fn a_first_install_arms_the_receipt_and_says_nothing() {
+    let (env, project) = repository();
+    let store = project.open_store();
+    let project_id = project.project_id(&store);
+    git(
+        env,
+        project.path(),
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "feat: before any hooks",
+        ],
+    );
+
+    let text = install_output(&project);
+
+    assert!(
+        !text.contains(ADVISORY),
+        "nothing to compare against yet:\n{text}"
+    );
+    assert!(
+        receipt(&store, project_id).is_some(),
+        "the first install arms the receipt, or a hook that never fires once can \
+         never be reported"
+    );
+}
+
+/// A hook that **never ran at all** is the failure this design exists for, and
+/// the one a receipt without arming could never report.
+#[test]
+fn a_hook_that_never_ran_once_is_still_reported() {
+    let (env, project) = repository();
+    // Dark before the first install, so the receipt's only value is the one
+    // arming gave it and no sync has ever happened here.
+    go_dark(env, &project);
+    project.run(&["hooks", "install"]).success();
+    wait_a_second();
+    git(
+        env,
+        project.path(),
+        &["commit", "-q", "--allow-empty", "-m", "feat: unwitnessed"],
+    );
+
+    let text = install_output(&project);
+    assert!(
+        text.contains("1 commit is dated after this store last scanned"),
+        "a hook that has never fired once must still be reported:\n{text}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The advisory clears itself — SH-316's council dissent, answered
+// ---------------------------------------------------------------------------
+
+/// Running the remedy the advisory printed makes it go away.
+///
+/// An advisory that survives its own fix is escapable only by learning to ignore
+/// advisories, which is the habit SH-306 exists to stop. This is the property
+/// the dissenting seat doubted a timestamp comparator could hold.
+#[test]
+fn the_remedy_the_advisory_prints_clears_it() {
+    let (env, project) = repository();
+    project.run(&["hooks", "install"]).success();
+    go_dark(env, &project);
+    wait_a_second();
+    git(
+        env,
+        project.path(),
+        &["commit", "-q", "--allow-empty", "-m", "feat: unscanned"],
+    );
+    assert!(
+        install_output(&project).contains(ADVISORY),
+        "fixture: it must warn first"
+    );
+
+    project.run(&["commit-sync"]).success();
+
+    let text = install_output(&project);
+    assert!(
+        !text.contains(ADVISORY),
+        "the remedy scanned the commits, so the advisory has nothing left to \
+         report:\n{text}"
+    );
+}
+
+/// A commit dated in the **future** cannot sustain the advisory across its own
+/// remedy.
+///
+/// This is the other half of the dissent. Without an upper bound on the window,
+/// a skewed committer date post-dates every receipt this store will ever write
+/// until the wall clock catches up, and the warning becomes permanent. The cost
+/// of the bound is named rather than hidden: such a commit is invisible here.
+#[test]
+fn a_future_dated_commit_never_sustains_the_advisory() {
+    let (env, project) = repository();
+    project.run(&["hooks", "install"]).success();
+    go_dark(env, &project);
+    wait_a_second();
+
+    let mut command = Command::new("git");
+    command.current_dir(project.path());
+    env.apply(&mut command);
+    command.env("GIT_COMMITTER_DATE", "2099-01-01T00:00:00Z");
+    let out = command
+        .args([
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "feat: from the future",
+        ])
+        .output()
+        .expect("running git");
+    assert!(
+        out.status.success(),
+        "fixture: the future-dated commit must land"
+    );
+
+    let text = install_output(&project);
+    assert!(
+        !text.contains(ADVISORY),
+        "a commit dated after `now` is outside the window on purpose — reporting \
+         it would produce a warning no remedy could ever clear:\n{text}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The named limits — each pinned by the silence it causes
+//
+// Every one of these is a way a genuinely dark hook still reads as healthy.
+// None is a bug: the advisory's proposition is "these commits have not been
+// scanned", and in each case they have been, or the detector cannot see them.
+// They are pinned so that a later reader meets the limit as a decision rather
+// than as a surprise, and does not "fix" one into a false alarm.
+// ---------------------------------------------------------------------------
+
+/// **The second syncer.** Storyhook ships one itself:
+/// `plugin/claude-code/hooks/post-git.sh` runs `story commit-sync --since 1h
+/// --quiet` after every Claude-driven commit, merge and push. A user's own hands
+/// do the same thing.
+///
+/// Either refreshes the receipt, and the advisory then correctly says nothing —
+/// the commits *were* scanned. What it does not do is notice that the git hook
+/// is dark, and it never claims to. (The plugin's own skip-guard tests
+/// `.git/hooks/post-commit`, the assumption SH-313 and SH-314 removed from
+/// `src/`, so it declines to skip in exactly the configurations where git will
+/// not run the managed hook — filed as SH-320.)
+#[test]
+fn a_sync_from_anywhere_else_masks_a_dark_hook() {
+    let (env, project) = repository();
+    project.run(&["hooks", "install"]).success();
+    go_dark(env, &project);
+    wait_a_second();
+    git(
+        env,
+        project.path(),
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "feat: unwitnessed by the hook",
+        ],
+    );
+
+    // What `post-git.sh` runs, verbatim in the part that matters.
+    project.run(&["commit-sync", "--since", "1h"]).success();
+
+    let text = install_output(&project);
+    assert!(
+        !text.contains(ADVISORY),
+        "a sync is a sync, whoever ran it: the receipt attests the scan, not the \
+         mechanism, so this is a named limit and not a defect:\n{text}"
+    );
+}
+
+/// **The window hole.** A scan whose `--since` does not reach back to the
+/// receipt still advances it, so the period before its window is erased and the
+/// advisory goes quiet about commits nothing ever scanned.
+///
+/// The receipt attests an instant, not coverage. Closing this would mean storing
+/// what each scan covered, which is a different and much larger record; the
+/// successor instrument for it is `story_commit_links`, which is hole-visible
+/// where a timestamp is not.
+#[test]
+fn a_sync_with_too_short_a_window_erases_the_period_before_it() {
+    let (env, project) = repository();
+    let store = project.open_store();
+    let project_id = project.project_id(&store);
+    project.run(&["hooks", "install"]).success();
+    go_dark(env, &project);
+
+    // A receipt from three days ago, and a commit from two: inside the gap the
+    // receipt describes, outside the window the next sync will use.
+    store
+        .write(|tx| {
+            storyhook::store::WriteOps::record_commit_scan(tx, project_id, "2026-01-01T00:00:00Z")
+        })
+        .expect("backdating the receipt");
+    let mut command = Command::new("git");
+    command.current_dir(project.path());
+    env.apply(&mut command);
+    command.env("GIT_COMMITTER_DATE", "2026-01-02T00:00:00Z");
+    let out = command
+        .args([
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "feat: inside the gap",
+        ])
+        .output()
+        .expect("running git");
+    assert!(
+        out.status.success(),
+        "fixture: the backdated commit must land"
+    );
+    assert!(
+        install_output(&project).contains(ADVISORY),
+        "fixture: the commit post-dates the receipt, so it must warn first"
+    );
+
+    project.run(&["commit-sync", "--since", "1h"]).success();
+
+    let text = install_output(&project);
+    assert!(
+        !text.contains(ADVISORY),
+        "the short scan never saw the commit and advanced the receipt past it \
+         anyway — a named limit of a receipt that attests an instant rather than \
+         coverage:\n{text}"
+    );
+}
+
+/// **Backdated committer dates.** A commit dated before the receipt is invisible
+/// here, and correctly so: `commit-sync` scans by committer date too, so a
+/// detector that reported it would be printing an errand its own remedy cannot
+/// run.
+#[test]
+fn a_commit_dated_before_the_receipt_is_invisible() {
+    let (env, project) = repository();
+    project.run(&["hooks", "install"]).success();
+    go_dark(env, &project);
+
+    let mut command = Command::new("git");
+    command.current_dir(project.path());
+    env.apply(&mut command);
+    command.env("GIT_COMMITTER_DATE", "2020-06-01T00:00:00Z");
+    let out = command
+        .args(["commit", "-q", "--allow-empty", "-m", "feat: from before"])
+        .output()
+        .expect("running git");
+    assert!(
+        out.status.success(),
+        "fixture: the backdated commit must land"
+    );
+
+    let text = install_output(&project);
+    assert!(
+        !text.contains(ADVISORY),
+        "a detector should be blind exactly where its remedy is blind:\n{text}"
     );
 }
 
