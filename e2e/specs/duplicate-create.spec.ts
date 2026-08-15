@@ -104,6 +104,18 @@ test("a slow but successful create is reported honestly, not as a failure", asyn
   const title = `SH-312 honest timeout ${Date.now()}`;
   const shrunkTimeoutMs = 300;
 
+  // Signals once the intercepted route has actually called `fulfill()` --
+  // awaited at the end of this test so Playwright cannot tear the page down
+  // (between this test and the next) while that call is still pending. Without
+  // it, `route.fulfill()` intermittently throws "Fetch response has been
+  // disposed": every assertion below can resolve well before this delayed
+  // reply lands (fetchData()'s own GET already sees the commit), and a test
+  // that returns then races its own still-sleeping route handler.
+  let markRouteDone: () => void;
+  const routeDone = new Promise<void>((resolve) => {
+    markRouteDone = resolve;
+  });
+
   await page.route(/\/api\/repos\/[^/]+\/story$/, async (route) => {
     if (route.request().method() !== "POST") {
       await route.continue();
@@ -115,6 +127,7 @@ test("a slow but successful create is reported honestly, not as a failure", asyn
     const response = await route.fetch();
     await new Promise((resolve) => setTimeout(resolve, shrunkTimeoutMs + 500));
     await route.fulfill({ response });
+    markRouteDone();
   });
 
   await page.goto(`/?mutationTimeoutMs=${shrunkTimeoutMs}`);
@@ -140,4 +153,6 @@ test("a slow but successful create is reported honestly, not as a failure", asyn
     page.locator('.column[data-state="todo"] .card', { hasText: title }),
   ).toBeVisible();
   await expect(page.locator("#create-modal")).toHaveClass(/open/);
+
+  await routeDone;
 });
