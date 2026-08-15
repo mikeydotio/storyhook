@@ -192,7 +192,7 @@ button { cursor: pointer; }
    not fire on touch at all. Setting it on the two <label> wrappers covers
    the checkboxes inside them, since the effective value is the
    intersection over an element and its ancestors. */
-button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-option, .filter-toggle { touch-action: manipulation; }
+button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-option, .filter-toggle, .pref-toggle { touch-action: manipulation; }
 ::selection { background: var(--accent); color: var(--accent-fg); }
 
 /* `100vh` is the *largest* possible viewport on iOS Safari -- with the URL
@@ -343,6 +343,11 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
 .settings-table td { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .settings-table tr:last-child td { border-bottom: none; }
 .settings-path { font-family: var(--mono); font-size: 0.75rem; color: var(--fg-muted); overflow-wrap: anywhere; }
+/* SH-322: the Settings screen grew a second category (user preferences beside
+   the project registry), so it grew headings to tell them apart. */
+.settings-prefs { display: flex; flex-direction: column; align-items: flex-start; gap: 0.25rem; margin-bottom: 1.5rem; }
+.settings-section-head { font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem; }
+.settings-prefs .settings-hint { font-size: 0.75rem; color: var(--fg-muted); max-width: 42rem; }
 
 /* ---- Statuses editor (Settings -> a repo's statuses) ---- */
 .settings-head { display: flex; align-items: baseline; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap; }
@@ -444,7 +449,13 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
 .fdd-option { display: flex; align-items: center; gap: 0.5rem; padding: 0.3125rem 0.5rem; border-radius: 0.25rem; font-size: 0.8125rem; cursor: pointer; user-select: none; min-height: var(--tap-min); }
 .fdd-option:hover { background: var(--bg-sunken); }
 .fdd-option input { accent-color: var(--accent); }
-.filter-toggle { display: flex; align-items: center; gap: 0.375rem; font-size: 0.75rem; color: var(--fg-muted); user-select: none; min-height: var(--tap-min); }
+/* `.pref-toggle` rides the same rule rather than inventing a second checkbox
+   idiom for the Settings screen (SH-322) -- same gap, same tap target. It
+   overrides only what its context needs: on Settings the label IS the control's
+   name rather than a qualifier beside a board, so it takes body colour and body
+   size instead of the filter bar's muted 0.75rem. */
+.filter-toggle, .pref-toggle { display: flex; align-items: center; gap: 0.375rem; font-size: 0.75rem; color: var(--fg-muted); user-select: none; min-height: var(--tap-min); }
+.pref-toggle { font-size: 0.8125rem; color: var(--fg); cursor: pointer; }
 .filter-count { font-size: 0.75rem; color: var(--fg-faint); margin-left: auto; }
 .filter-clear { font-size: 0.75rem; color: var(--accent); background: none; border: none; text-decoration: none; display: inline-flex; align-items: center; min-height: var(--tap-min); }
 .filter-clear:hover { text-decoration: underline; }
@@ -604,7 +615,31 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     min-width: var(--tap-min); min-height: var(--tap-min);
   }
 }
-.state-pill { font-size: 0.6875rem; font-weight: 600; padding: 0.09375rem 0.5rem; border-radius: 9999px; background: var(--bg-sunken); border: 1px solid var(--border); }
+/* SH-277: coloured by stateColor() via the --state-color custom property
+   buildStatePill() writes (the same idiom .card's --card-accent already
+   uses, since one write here has to drive both the tint and the dot
+   below it, not just one declaration). The plain `background`/`border`
+   above are the fallback for a browser without color-mix() -- today's
+   uncoloured pill, unchanged -- and stay first so the enhanced pair after
+   them, when supported, simply overrides both. transparent, not
+   --bg-raised: a hovered row (tbody tr:hover) and a row-flash both change
+   the surface the pill sits on, and a translucent tint composites over
+   either -- an opaque mix against one fixed surface would go invisible
+   against a same-coloured hover, which is what the plain background
+   above already quietly does today. Body text is left at the inherited
+   --fg, so only the ground and the ring take the hue and 1.4.3 contrast
+   at this font-size is untouched; the word is still the primary channel
+   (1.4.1), same reasoning as storyLight()'s aria-label. */
+.state-pill {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  font-size: 0.6875rem; font-weight: 600; padding: 0.09375rem 0.5rem;
+  border-radius: 9999px;
+  background: var(--bg-sunken); border: 1px solid var(--border);
+  --state-color: var(--border);
+  background: color-mix(in srgb, var(--state-color) 15%, transparent);
+  border-color: color-mix(in srgb, var(--state-color) 45%, var(--border));
+}
+.state-pill .dot { background: var(--state-color); }
 .empty { text-align: center; padding: 3rem 1rem; color: var(--fg-faint); font-size: 0.875rem; }
 
 /* ---- Footer ---- */
@@ -1718,6 +1753,19 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // the same thing in any project — so it's a durable cross-project
     // preference like `showArchived` above, not a session/prune value.
     hideEmptyColumns: localStorage.getItem("storyhook.hideEmptyColumns") === "true",
+    // SH-322: WCAG 2.2 SC 2.2.1's "Turn off" clause, which is the dashboard's
+    // conformance route for a self-clearing notice's time limit -- see
+    // `scheduleAutoDismiss` for why it is a turn-off rather than a pause.
+    // Durable and cross-project like `showArchived`/`hideEmptyColumns` above,
+    // and for a stronger reason than either: a reader who needs longer than
+    // three seconds needs longer than three seconds in every project, and
+    // being asked again per project would be its own barrier.
+    //
+    // Defaults OFF. The criterion constrains the mechanism's availability in
+    // advance, not its default state, and defaulting on would make every
+    // notice permanent for everyone -- gutting SH-304's corroboration split,
+    // which is settled and not this preference's to reopen.
+    keepNotices: localStorage.getItem("storyhook.keepNotices") === "true",
     // SH-235: the filter panel's own open/closed state, at every viewport
     // size -- not `hideEmptyColumns`'s sessionStorage-adjacent category,
     // but the exact same durable, cross-project, `sectionOpenDefault`
@@ -2611,20 +2659,48 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   /** Removes `node` after holding it `TOAST_LIFETIME_MS`, then fading it.
    *
-   * The clock is not a bare `setTimeout`, because three states must stop it
-   * (WCAG 2.2 SC 2.2.1, Timing Adjustable — a time limit is conformant when
-   * the user can pause it):
+   * The clock is not a bare `setTimeout`, because two states stop it:
    *
    *   - the pointer resting on the notice, which IS a request to keep
    *     reading, made in the only vocabulary a toast offers;
-   *   - focus inside it, the keyboard's equivalent of the same request;
    *   - the tab being hidden, the one state in which "three seconds of
    *     being visible" definitively did not happen. A notice exists because
    *     nobody may be watching; letting its clock run down in a background
    *     tab defeats the notice at exactly the moment it was needed.
    *
    * Pausing preserves what is left rather than restarting it, so a reader
-   * who hovers twice does not get a fresh three seconds each time. */
+   * who hovers twice does not get a fresh three seconds each time.
+   *
+   * **Both are courtesies, and neither is this dashboard's WCAG conformance
+   * story** — a distinction this comment got wrong until SH-322, in a way
+   * worth recording because it is easy to get wrong again. SC 2.2.1 (Timing
+   * Adjustable) offers exactly three mechanisms — **Turn off, Adjust,
+   * Extend** — plus three exceptions, none of which fits a 3s toast. *Pause*
+   * is SC 2.2.2's word and appears nowhere in 2.2.1's. So a pause, however
+   * many states trigger it, satisfies this criterion not at all. The route
+   * taken instead is the first one: `state.keepNotices` (technique G198), a
+   * persisted preference on the Settings screen that removes the clock
+   * entirely rather than lengthening it, set before any notice is
+   * encountered. `toast()` reads it; this function is never called when it
+   * is on.
+   *
+   * **A clocked notice deliberately contains nothing focusable, and the
+   * focus-pause listeners that used to be here were deleted rather than
+   * given something to fire on.** They were attached to a node whose only
+   * descendants are `div`s — the dismiss button belongs to the other branch
+   * of `toast()` — so `focusin` could never fire and
+   * `node.contains(document.activeElement)` could never be true. The obvious
+   * repair, `tabindex="0"` on the node, was rejected 3-0 by SH-322's council
+   * and should not be reached for again: it makes the listener *fireable*
+   * without making it *reachable*. Screen-reader users navigate a virtual
+   * buffer with arrow keys, which is not DOM focus, so `focusin` never fires
+   * while they read the notice — the population the criterion exists for is
+   * the one that branch cannot serve. What it would add is a tab stop that
+   * appears and vanishes every three seconds at the end of the document, and
+   * a notice that never departs at all once focus lands in it, with nothing
+   * telling the user their own focus is what is holding it.
+   * `.council/sh-322-self-clearing-notice-keyboard-pause/DECISION.md` has
+   * the full reasoning; `e2e/specs/notification-contract.spec.ts` fences it. */
   function scheduleAutoDismiss(node) {
     var remaining = TOAST_LIFETIME_MS;
     var startedAt = 0;
@@ -2641,7 +2717,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     function resume() {
       if (leaving || timer !== null) return;
       if (document.hidden) return;
-      if (node.matches(":hover") || node.contains(document.activeElement)) return;
+      if (node.matches(":hover")) return;
       startedAt = Date.now();
       timer = window.setTimeout(depart, remaining);
     }
@@ -2662,21 +2738,38 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
     node.addEventListener("mouseenter", pause);
     node.addEventListener("mouseleave", resume);
-    node.addEventListener("focusin", pause);
-    node.addEventListener("focusout", resume);
     document.addEventListener("visibilitychange", onVisibility);
     resume();
   }
 
-  /** Shows a notice. `variant` decides its fate: `error` is durable and
-   * carries a dismiss button, anything else clears itself. `detail` and
-   * `reason` (both optional) are the diagnosis lines a durable notice keeps
-   * beneath its headline -- in the DOM, inside `#toast-stack`'s existing
-   * `aria-live` region, never in a `title` attribute, which is unreachable
-   * by keyboard and by many screen readers. */
+  /** Whether a notice of `variant` stays until dismissed.
+   *
+   * Two independent reasons, and keeping them in one predicate is the point:
+   * an `error` is durable because SH-304's contract says an outcome visible
+   * nowhere else may not clear itself, and *anything* is durable when the
+   * reader has turned the time limit off (SH-322). Every consequence — the
+   * dismiss button, the absence of a clock — already follows from the answer,
+   * so there is one branch to keep true rather than two.
+   *
+   * **Read at construction time, deliberately.** The preference governs
+   * notices raised after it is toggled; it does not reach back and cancel a
+   * clock already running. Turning it on with a notice on screen therefore
+   * lets that one finish, which is the honest behaviour — the alternative is
+   * a running timer that silently changes its mind, and the next notice is
+   * three seconds away regardless. */
+  function noticeIsDurable(variant) {
+    return variant === "error" || state.keepNotices;
+  }
+
+  /** Shows a notice. Its fate is `noticeIsDurable`'s answer: a durable notice
+   * carries a dismiss button and no clock, anything else clears itself.
+   * `detail` and `reason` (both optional) are the diagnosis lines a durable
+   * notice keeps beneath its headline -- in the DOM, inside `#toast-stack`'s
+   * existing `aria-live` region, never in a `title` attribute, which is
+   * unreachable by keyboard and by many screen readers. */
   function toast(message, variant, detail, reason) {
     var stack = $("toast-stack");
-    var durable = variant === "error";
+    var durable = noticeIsDurable(variant);
     var node = el("div", { class: "toast " + (variant || "") }, [
       noticeBody(message, detail, reason),
       durable ? el("button", {
@@ -6190,6 +6283,35 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return row;
   }
 
+  /** The list view's own `.state-pill` -- SH-277. Reads
+   * `display_state || state`, same as the board's column placement
+   * (`renderBoard`), the drag-drop no-op guard, and `storyLight()`: an
+   * epic display-promoted by `compute_epic_display_state` (SH-165, an
+   * active child pulls it out of `todo`) must show the same word here as
+   * the column its own card sits in, or the list contradicts the board.
+   * `st.state` was the one place in this file still reading the literal
+   * state for *display* (the state *filter*, `filteredStories`, still
+   * does -- that's a different, deliberate rule). When the two disagree the
+   * pill carries a `title` naming both, so the table never silently says
+   * something `story show` doesn't. */
+  function buildStatePill(v) {
+    var st = v.story;
+    var slug = v.display_state || st.state;
+    var promoted = v.display_state && v.display_state !== st.state;
+    var pill = el("span", {
+      class: "state-pill",
+      title: promoted
+        ? slug + " (shown for an active child -- recorded state is " + st.state + ")"
+        : null
+    }, [el("span", { class: "dot" }, []), slug]);
+    // One write drives the pill's tint, its ring, and the dot's fill --
+    // the CSS custom-property idiom (`.state-pill`'s own comment), not the
+    // inline `style: "background:" + stateColor(slug)` string every
+    // single-declaration dot elsewhere in this file uses.
+    pill.style.setProperty("--state-color", stateColor(slug));
+    return pill;
+  }
+
   function populateListRow(row, v, ready, blocked) {
     var st = v.story;
     var updated = (st.updated_at || "").slice(0, 10);
@@ -6198,7 +6320,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var badge = buildTypeBadge(st.story_type);
     row.appendChild(el("td", { class: "col-id" }, badge ? [badge, " ", st.id] : [st.id]));
     row.appendChild(el("td", {}, [st.title]));
-    row.appendChild(el("td", {}, [el("span", { class: "state-pill" }, [st.state])]));
+    row.appendChild(el("td", {}, [buildStatePill(v)]));
     row.appendChild(el("td", {}, [priorityDot(st.priority)]));
     row.appendChild(el("td", {}, [labelChips(st.labels)]));
     row.appendChild(el("td", {}, [st.assignee ? memberName(st.assignee) : el("span", { style: "color:var(--fg-faint)" }, ["–"])]));
@@ -6249,7 +6371,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     switch (col) {
       case "id": return st.id;
       case "title": return (st.title || "").toLowerCase();
-      case "state": return st.state;
+      // `display_state || state` -- same reason buildStatePill() does:
+      // sorting the State column must sort by the word the column shows.
+      case "state": return v.display_state || st.state;
       case "priority": return PRIORITY_ORDER[st.priority] !== undefined ? PRIORITY_ORDER[st.priority] : 99;
       case "assignee": return memberName(st.assignee) || "￿";
       case "updated": return st.updated_at || "";
@@ -7456,6 +7580,43 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * The table itself carries no editable state, so it's safe to fully
    * rebuild on every refresh (`renderSettingsTable()`, called both here on
    * first build and directly from the refresh path). */
+  /** The "keep notices until I dismiss them" preference — WCAG 2.2 SC 2.2.1's
+   * own **Turn off** clause (technique G198), and this dashboard's conformance
+   * route for a self-clearing notice's time limit (SH-322). See
+   * `scheduleAutoDismiss` for why the route is a turn-off and not the pause
+   * that function's comment used to claim.
+   *
+   * Sited here, above the project registry, for the criterion's own reason:
+   * *before encountering it*. The topbar's Settings button is a tab stop on
+   * every screen, so this is reachable before any work that could raise a
+   * notice has started — where the board's filter panel, the only other place
+   * this dashboard keeps checkboxes, is board-scoped and reached only once a
+   * project is already open.
+   *
+   * Writes the preference; `noticeIsDurable` reads it. Nothing already on
+   * screen depends on the value, so no re-render is needed, and `goSettings()`
+   * clears `dataset.built`, so the box re-reads `state` on every entry. */
+  function buildNoticePrefs() {
+    return el("section", { class: "settings-prefs" }, [
+      el("h2", { class: "settings-section-head" }, ["Notices"]),
+      el("label", { class: "pref-toggle" }, [
+        el("input", {
+          type: "checkbox",
+          id: "toggle-keep-notices",
+          checked: state.keepNotices,
+          onChange: function() {
+            state.keepNotices = this.checked;
+            localStorage.setItem("storyhook.keepNotices", String(this.checked));
+          }
+        }),
+        " Keep notices until I dismiss them"
+      ]),
+      el("p", { class: "settings-hint" }, [
+        "A notice reporting a success clears itself after three seconds. Turn this on and every notice waits for you instead. Applies to every project on this machine."
+      ])
+    ]);
+  }
+
   function renderSettings() {
     // Guarded: this also runs on every repo-list refresh, and rebuilding
     // the editor under a half-typed description would discard it.
@@ -7463,6 +7624,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var container = $("settings-view");
     if (!container.dataset.built) {
       clear(container);
+      container.appendChild(buildNoticePrefs());
+      // This screen had no heading at any level until SH-322 added one above,
+      // which would have left that one an orphan (SC 1.3.1). Two siblings also
+      // give heading navigation a route to the preference.
+      container.appendChild(el("h2", { class: "settings-section-head" }, ["Projects"]));
       container.appendChild(buildInitForm());
       // Its own node, outside the table: the table is rebuilt on every repo
       // refresh, and a confirmation panel that vanished mid-typing because a

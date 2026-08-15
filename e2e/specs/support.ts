@@ -180,6 +180,30 @@ export async function activateBehindOverlay(locator: Locator): Promise<void> {
 }
 
 /**
+ * The browser's own resolved colour for a CSS custom property, read off a
+ * throwaway element rather than assumed -- the light/dark palette differs,
+ * and a spec using this should keep working under whichever colour scheme
+ * it actually runs in.
+ *
+ * Was two near-identical local copies (`story-status-light.spec.ts`,
+ * `card-blockers.spec.ts`), pulled out here ahead of a third (SH-277) --
+ * same shape `deleteStory`'s own comment on this file describes.
+ */
+export async function resolvedTokenColor(
+  page: Page,
+  token: string,
+): Promise<string> {
+  return page.evaluate((t) => {
+    const probe = document.createElement("div");
+    probe.style.background = `var(${t})`;
+    document.body.appendChild(probe);
+    const color = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    return color;
+  }, token);
+}
+
+/**
  * Opens the filter bar's disclosure panel (SH-235) if it isn't already
  * open, and waits for it to actually render. The panel defaults collapsed
  * -- a fresh Playwright context has no localStorage, same reasoning as

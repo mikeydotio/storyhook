@@ -17213,3 +17213,158 @@ own PR after the code PR merges; this entry rides in the same PR as a separate
 commit, following SH-298's precedent — the worktree is reaped right after merge,
 and a follow-up docs PR would strand a second branch. It also means the receipt
 the push gate checks attests the tree that actually ships.
+
+### SH-322 — done
+
+**Outcome:** merged (PR #430). A reader can turn a self-clearing notice's time
+limit off, and the dashboard has stopped claiming a conformance route it never
+had.
+
+**The story reported half the defect; the council found the other half.**
+SH-322 was filed because `scheduleAutoDismiss`'s `focusin`/`focusout` listeners
+could never fire — attached to a node built by the branch of `toast()` that
+renders no dismiss button, so a clocked notice is three nested `div`s with
+nothing focusable in it. True, and the smaller problem. Two seats independently
+found the larger one:
+
+> **SC 2.2.1's clauses are Turn off, Adjust, Extend, plus three exceptions.
+> There is no pause clause** — pause belongs to SC 2.2.2.
+
+So the doc comment ("a time limit is conformant when the user can pause it")
+was false twice: the focus branch could not fire, *and* the hover branch it
+presented as the conformance story is not a route through that criterion at
+all. Every candidate that merely made the dead listener fire would have left
+the second, larger claim standing — nominal conformance by construction. The
+same false premise was **repeated in the spec file**, on the hover test, and
+was corrected in the same commit: leaving it would have honoured "the doc
+comment must end up true" in the source and broken it in the test.
+
+**Council: yes, unanimous 3-0 at first preference, no deliberation round.**
+Audit trail in `.council/sh-322-self-clearing-notice-keyboard-pause/`. Two of
+three seats voted against their own proposal. What decided it, reached
+independently by all three: only one proposal's pin required the control to be
+**arrived at** rather than merely operated.
+
+**What shipped.** `storyhook.keepNotices` — "Keep notices until I dismiss
+them", a persisted preference in a new Notices section at the top of Settings.
+When on, `toast()` routes every variant down the durable branch it already
+has, so a kept success takes SH-304's existing durable shape (dismiss button,
+no clock) with no second code path. When off, behaviour is byte-identical.
+Defaults **off**: the criterion constrains the mechanism's availability in
+advance, not its default state.
+
+It does not reopen SH-304, and the framing that settles that is worth keeping:
+*the outcome contract decides the **default** routing; a preference exercises
+the latitude in "a success **may** clear itself", and changes exactly one
+boolean.*
+
+**Why `tabindex="0"` — the story's own suggested direction — was rejected 3-0.**
+It "makes the listener *fireable* without making it *reachable*". Screen-reader
+users navigate a virtual buffer with arrow keys, which is not DOM focus, so
+`focusin` never fires while they read; the population the criterion exists for
+is the one that branch cannot serve. Two seats also killed the chair's own
+guess, written into the brief, that the focus-loss hazard was self-cancelling:
+**a focused toast never departs**, with nothing telling the reader their focus
+is what holds it — tab to it, walk away, and a notice is pinned over the
+drawer header indefinitely.
+
+**Two hats, and the split is load-bearing rather than ceremonial.** The fence
+test is red with the dead listeners present and green after they are deleted —
+a *dispatched* `focusin` reaches a listener a person cannot — so it had to ride
+with the deletion, not with the feature. Commit 1 is the preference plus six
+pins; commit 2 is the deletion, both corrected doc comments, and the fence.
+
+**The red→green transition IS the mutation check, in both directions.** The
+fence failed before the deletion at exactly the right assertion
+(`runOutTheClock` never saw `.leaving`, because the dispatched event paused the
+clock) and passes after. Not luck: the challenger caught, against its own
+proposal, that the originally-specified version — `.focus()` on the toast — was
+**vacuous**, since `focus()` on a div with no tabindex is a no-op.
+
+**The gate earned its keep, and cost a full cycle.** `make test` went red on
+the first run, legitimately: `web_serve_root_html_keeps_text_controls_above_
+the_ios_zoom_threshold` (SH-256) asserts the `touch-action: manipulation`
+selector list as an **exact literal string**, and `.pref-toggle` had joined it
+— correctly, since the new checkbox is a tap target and its filter-panel twin
+`.filter-toggle` was already there. Fixed at the test end (its own invariants
+are untouched: tap targets still carry the declaration, still exactly one
+`touch-action` rule), then **both commits were rebuilt** so the fix rides in
+the commit that introduced the selector rather than leaving commit 1 red and
+bisect dishonest. Worth noting for whoever adds the next tap target: that
+literal fails on any *legitimate* addition to the set, which is a false
+positive rather than a mechanism failure. Not filed — it is SH-256's design and
+one line to update — but it is the second cost this cycle paid for a
+hand-maintained list, which is the pattern CLAUDE.md keeps deriving away from.
+
+**Evidence.** Red: 6 of 7 new pins failing (the seventh, "the preference is off
+until the user turns it on", passes at red by design — it guards a premise
+rather than discriminating a change). Green: 16/16 on the notification contract
+file, both real-clock canaries included; then the full gate, EXIT=0, 162 Rust
+suites and 224 e2e tests in 8.3m.
+
+**Chair rulings, recorded because two overrode a majority of seats.**
+
+1. **The `pointer-events` companion was dropped.** Seats 1 and 2 voted to graft
+   it; the challenger showed it does not do what it is sold as doing, and the
+   chair verified the geometry against the stylesheet before upholding that:
+   `.toast-stack` is `position: fixed` with `top`/`right` and no width, so it
+   shrink-wraps to its children, and a column flex container's default
+   `align-items: stretch` makes each toast fill it. `pointer-events: none`
+   would exempt the 0.5rem gaps and nothing else — `#drawer-close` is occluded
+   by the toast itself. **A two-line CSS change that does not fix the hazard it
+   is sold as fixing is worse than none, because the next reader believes the
+   hazard is handled.**
+2. **Focus restoration after dismiss was filed, not shipped** (SH-326). The
+   proposal marked it severable; two seats required it to name where focus goes
+   when the stack empties, and nobody settled that. It is also a defect on the
+   existing durable-error path, independent of this story.
+3. **The Tab bound is a termination guard, not a budget assertion.** The seats
+   split on asserting a press count; reachability is the property under test,
+   and a tight count would fence the Settings screen's control order.
+
+**Unanimous amendment against the winning proposal:** its `sr-only` +
+`aria-describedby` discoverability hint was dropped, 3-0 including its own
+author. The e2e suite cannot tell whether an AT folds a description into every
+polite announcement, and *"shipping an unverifiable accessibility claim inside
+an accessibility fix is precisely the failure this story exists to end."* Filed
+as SH-327 with a hand VoiceOver/NVDA check as its acceptance gate.
+
+**Six follow-up defects filed**, all `relates-to SH-322`. SH-323 (kept notices
+accumulate uncapped and occlude `#drawer-close` — filed *before* this merged,
+at the challenger's insistence) · SH-324 (the statuses editor re-arms its
+Delete confirmation after 6s with no turn-off — *a time limit on completing an
+action, 2.2.1's central case and a stronger exposure than any toast*) · SH-325
+(`visibilitychange` never fires for a window merely behind another application,
+so the "tab hidden" pause misses the commonest instance of the case its own
+comment describes) · SH-326 · SH-327 · SH-328 (project-registration inputs
+labelled by `placeholder` alone).
+
+**Deviations:** this entry lands as its own PR, per START HERE step 8 —
+SH-318's precedent of riding in the code PR was not available, because the code
+PR had already merged by the time the entry could be written (the gate failure
+and commit rebuild came between). The worktree is torn down after this merges,
+so no branch is stranded. Two small calls the council did not cover: the
+checkbox id follows the file's existing `toggle-*` convention rather than the
+proposal's `pref-*`, and `.pref-toggle` rides `.filter-toggle`'s rule while
+overriding colour and size, because on Settings the label *is* the control's
+name rather than a qualifier beside a board.
+
+**Costs of one-worktree-per-story, newly measured.** A fresh worktree has no
+`e2e/node_modules` — gitignored — so the first `make e2e` fails fast and
+`make e2e-install` costs an `npm ci` plus a Playwright browser check before any
+e2e can run. A second instance of the cold-build cost the rule already
+documents; expect it rather than rediscover it. No wedges, no stalls, no
+restarts. One self-inflicted slip: a stray `scripts/run-tests.sh` was
+backgrounded by accident while verifying the test fix, killed immediately, and
+`check-no-orphan-servers.sh` confirmed clean.
+
+**Not verified, stated rather than implied:** PR #429 merged between this
+branch's gate and its own merge, and both touched `tests/web_test.rs`. The
+merge was textually clean and the one shared invariant was checked by
+inspection (the literal survived; `touch-action` still appears exactly once),
+but the suite was **not** re-run against the merged tree. `target/` in the main
+checkout stands at 54G against 37Gi free, which is the condition this project
+has previously seen read as a spurious "TESTS FAILED".
+
+**`story next` behaved.** It handed back SH-322, which was genuinely ready, and
+nothing about the recommendation needed routing around.

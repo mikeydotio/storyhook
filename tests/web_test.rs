@@ -1124,6 +1124,19 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains("function blockedFlag"));
     assert!(body.contains("blockedFlag(st, !!blocked[st.id])"));
 
+    // SH-277: the list view's own `.state-pill` -- unlike every other
+    // renderer in the file (the board's column placement, the drag-drop
+    // no-op guard, storyLight()), it read the literal `st.state` until
+    // this landed. buildStatePill() reads display_state || state instead,
+    // same as the rest, and names both states in a title whenever they
+    // disagree; sortValue()'s own "state" case is kept in step with it so
+    // sorting the column sorts by the word it shows.
+    assert!(body.contains("function buildStatePill"));
+    assert!(body.contains("var slug = v.display_state || st.state;"));
+    assert!(body.contains(r#"class: "state-pill""#));
+    assert!(body.contains("recorded state is "));
+    assert!(body.contains(r#"case "state": return v.display_state || st.state;"#));
+
     // SH-217: the markdown renderer -- builds DOM nodes directly (never an
     // HTML string, see the sink-pin assertions above), and its link
     // scheme allowlist by name so a future edit that widens it is a
@@ -1782,7 +1795,7 @@ fn web_serve_root_html_keeps_text_controls_above_the_ios_zoom_threshold() {
     // double-tapping to zoom the board's own text is a gesture the reader
     // is entitled to.
     let touch_action_selector = "button, select, .card, .repo-card, tbody tr, .ctxmenu-item, \
-         .projsel-item, .fdd-option, .filter-toggle";
+         .projsel-item, .fdd-option, .filter-toggle, .pref-toggle";
     assert!(
         declarations(css, touch_action_selector).contains("touch-action: manipulation"),
         "the dashboard's tap targets should carry touch-action: manipulation"
@@ -2166,6 +2179,62 @@ fn web_serve_root_html_styles_the_status_light_and_card_blockers() {
         motion_block.contains(".blocker-cleared .story-light"),
         "the cleared-blocker pulse must be gated behind prefers-reduced-motion, \
          like every other card flash animation"
+    );
+}
+
+/// SH-277: the list view's `.state-pill` is coloured through the same
+/// `--state-color` custom property `.card`'s own `--card-accent` uses
+/// (`buildStatePill()` is the one write that drives the tint, the ring,
+/// and the dot's fill together) -- not the inline
+/// `style: "background:" + stateColor(slug)` string every single-
+/// declaration dot elsewhere in this file uses. The plain
+/// `background`/`border-color` fallback must come FIRST, and the
+/// `color-mix()` pair after it: that ordering is what makes the
+/// declaration a real progressive-enhancement pair rather than an
+/// assertion this test only pretends to make -- a browser without
+/// `color-mix()` support keeps the first declaration of each property and
+/// ignores the second, landing on today's uncoloured pill exactly.
+#[test]
+fn web_serve_root_html_colours_the_list_state_pill() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    let pill = declarations(css, ".state-pill");
+    assert!(
+        pill.contains("display: inline-flex"),
+        ".state-pill must lay its dot and word out inline, matching .story-ref"
+    );
+    assert!(
+        pill.contains("--state-color: var(--border)"),
+        ".state-pill must default --state-color so the rule is valid standalone"
+    );
+    let plain_bg = pill
+        .find("background: var(--bg-sunken)")
+        .expect(".state-pill must keep the plain background as a color-mix() fallback");
+    let mixed_bg = pill
+        .find("background: color-mix(in srgb, var(--state-color)")
+        .expect(".state-pill must mix --state-color into its background");
+    assert!(
+        plain_bg < mixed_bg,
+        "the plain background must come BEFORE the color-mix() one, or a browser \
+         without color-mix() support keeps the coloured declaration's fallback \
+         value instead of today's uncoloured pill"
+    );
+    assert!(
+        pill.contains("border-color: color-mix(in srgb, var(--state-color)"),
+        ".state-pill's ring must also track --state-color"
+    );
+    assert!(
+        declarations(css, ".state-pill .dot").contains("background: var(--state-color)"),
+        ".state-pill .dot must paint the same --state-color the pill itself mixes in"
     );
 }
 
