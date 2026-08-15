@@ -499,17 +499,28 @@ for (const width of SWEEP_WIDTHS) {
 }
 
 /**
- * SH-235 (D5): `.toast-stack` and `.dispatch-history` are both
- * `position: fixed; right: 1rem` with a bare `max-width` -- 22rem (352px)
- * and 26rem (416px). Neither box leaves room for its own matching 1rem on
- * the *left*, so on any viewport narrower than max-width + 2rem, the box
- * itself (whether or not it holds any content yet) runs off the left edge.
- * `min(<rem>, calc(100vw - 2rem))` is meant to cap it at the viewport
- * minus both margins instead -- this test proves the browser actually
- * resolves that `calc()`/`min()` pair to the expected pixel value, which a
- * text-level check of the CSS source (`web_test.rs`) cannot: a nesting or
- * rounding mistake in the expression would still read as correct source
- * text while resolving wrong.
+ * SH-235 (D5): a notice surface pinned to `right: 1rem` with a bare
+ * `max-width` leaves no room for its own matching 1rem on the *left*, so on
+ * any viewport narrower than max-width + 2rem the box itself (whether or not
+ * it holds any content yet) runs off the left edge. `min(<rem>, calc(100vw -
+ * 2rem))` caps it at the viewport minus both margins instead -- and this test
+ * proves the browser actually resolves that `calc()`/`min()` pair to the
+ * expected pixel value, which a text-level check of the CSS source
+ * (`web_test.rs`) cannot: a nesting or rounding mistake in the expression
+ * would still read as correct source text while resolving wrong.
+ *
+ * SH-323 moved which element owes that sum. `.toast-stack` and
+ * `.dispatch-history` are no longer positioned; both are children of
+ * `.notice-dock`, the single box that touches the viewport edge, and each is
+ * bounded by `100%` of whatever the dock resolved to. So the dock is what is
+ * measured here.
+ *
+ * The stacks are deliberately NOT measured the same way, and the reason is a
+ * property of `getComputedStyle` rather than a gap in coverage: a computed
+ * `max-width` of `min(22rem, 100%)` keeps its percentage unresolved, so
+ * `parseFloat` on it yields `NaN` -- a measurement that cannot fail loudly is
+ * worse than none. Their bound is pinned as source text in `web_test.rs`
+ * instead, and structurally: a child cannot exceed a parent it is `100%` of.
  */
 test("toast and dispatch-history overlays never exceed a narrow viewport", async ({
   page,
@@ -523,10 +534,7 @@ test("toast and dispatch-history overlays never exceed a narrow viewport", async
   );
   const expectedMaxWidth = width - 2 * remPx; // the two 1rem margins
 
-  for (const [selector, remCeiling] of [
-    [".toast-stack", 22],
-    [".dispatch-history", 26],
-  ] as const) {
+  for (const [selector, remCeiling] of [[".notice-dock", 26]] as const) {
     const computed = await page
       .locator(selector)
       .evaluate((el) => parseFloat(getComputedStyle(el).maxWidth));

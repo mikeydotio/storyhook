@@ -178,13 +178,15 @@ fn hooks_uninstall_idempotent() {
         .stdout(predicate::str::contains("prepare-commit-msg — not present"));
 }
 
-/// **Nothing under `src/` builds a hooks directory by hand** (SH-313, SH-314).
+/// **Nothing that runs builds a hooks directory by hand** (SH-313, SH-314,
+/// SH-320).
 ///
-/// The defect both stories share is one line: `<root>/.git/hooks`, assumed
+/// The defect all three stories share is one line: `<root>/.git/hooks`, assumed
 /// rather than asked. That assumption is wrong twice over — `core.hooksPath`
 /// replaces the directory wholesale, and a linked worktree's `.git` is a file —
 /// and in both cases it fails *silently*, writing executables git will never
-/// run and reporting success.
+/// run, or declining to run a sync git will never run either, and reporting
+/// success.
 ///
 /// Derived over `git ls-files` rather than a hand-maintained list, in the style
 /// of `tests/store_isolation.rs` and `tests/dead_public_surface.rs`. SH-136
@@ -193,17 +195,65 @@ fn hooks_uninstall_idempotent() {
 /// accumulating for the same reason: a list someone has to remember to update
 /// is the thing that goes stale.
 ///
+/// **The name and the derivation are one claim, and SH-320 is what happens when
+/// they disagree.** This was `no_source_file_…` over the pathspec `src/*.rs`,
+/// which made it right about its own set and wrong about its advertised class:
+/// `plugin/claude-code/hooks/post-git.sh` held the identical assumption for as
+/// long as the scan existed, and the scan could not see it. Widening the
+/// derivation without renaming would have shipped a test whose name contradicts
+/// its own scan — the same defect, held one commit longer.
+///
+/// What it covers, stated so a reader inherits an honest boundary rather than an
+/// overclaim: tracked Rust under `src/`, every tracked `*.sh`, and the
+/// extensionless `.githooks/*` chainers. A `*.sh` glob alone misses those four —
+/// they are hook scripts, which makes them the last place this class should be
+/// allowed to hide — and deriving from the executable bit instead would be worse
+/// in the other direction, since `plugin/claude-code/hooks/lib.sh` is mode
+/// 100644: sourced, never executed. A fourth mechanism (a Python driver, a
+/// Makefile recipe) needs its own glob arm added here; it is not covered by
+/// wishing.
+///
+/// Test code is excluded by directory role, not by name, and the exclusion is
+/// load-bearing rather than convenient: building `.git/hooks` in a fixture is
+/// the *legitimate* use of the literal — `tests/hook_execution.rs`,
+/// `tests/hook_silence.rs`, this file, and
+/// `plugin/claude-code/tests/test-post-git-hooks-path.sh` all do it — and a test
+/// that installs a hook in the wrong place fails its own assertions, which is a
+/// self-policing production code does not get. The escape hatch for a script
+/// that genuinely needs the literal is therefore to live under a `tests/`
+/// directory, **never** to add an exception here: an exception is the seed of
+/// the next stale list.
+///
 /// The rule is deliberately about *hooks* paths, not about `.git` generally.
 /// `service::project::is_repository_top_level` joins `.git` on purpose and
 /// wants a directory specifically — that is how it tells a main checkout from a
-/// linked worktree — so a blanket ban would have to carve an exception for it,
-/// and an exception is the seed of the next stale list.
+/// linked worktree — so a blanket ban would have to carve an exception for it.
+///
+/// Each language gets the spelling its own defect takes. Rust's is a hand-joined
+/// `.git` (`join(".git")` + `join("hooks")`). Shell has no `Path::join`, so that
+/// pattern has no analogue — but the defect class does, and its shell spelling is
+/// `$(git rev-parse --git-dir)/hooks` or the `$GIT_DIR/hooks` git exports into
+/// every hook process. Both are SH-314 spelled *correctly*: in a linked worktree
+/// `--git-dir` names that worktree's **private** directory, whose `hooks` git
+/// never consults, because hooks resolve from the common directory for every
+/// worktree. The pattern matches the *construction* rather than the flag, because
+/// `--git-dir` has legitimate uses this repository already makes — `install.sh`
+/// asks it whether a directory is a repository at all, and
+/// `scripts/gate-receipt.sh` wants the private directory deliberately, saying so.
 #[test]
-fn no_source_file_builds_a_hooks_directory_by_hand() {
+fn nothing_that_runs_builds_a_hooks_directory_by_hand() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let listed = std::process::Command::new("git")
         .current_dir(root)
-        .args(["ls-files", "-z", "--", "src/*.rs"])
+        .args([
+            "ls-files",
+            "-z",
+            "--",
+            "src/*.rs",
+            "*.sh",
+            ".githooks/*",
+            ":(exclude,glob)**/tests/**",
+        ])
         .output()
         .expect("listing tracked sources");
     assert!(
@@ -216,7 +266,7 @@ fn no_source_file_builds_a_hooks_directory_by_hand() {
         .filter(|p| !p.is_empty())
         .collect();
     assert!(
-        files.len() > 20,
+        files.len() > 140,
         "the scan found only {} source files — it is broken, not the tree",
         files.len()
     );
@@ -224,12 +274,13 @@ fn no_source_file_builds_a_hooks_directory_by_hand() {
     for file in files {
         let text = std::fs::read_to_string(root.join(file))
             .unwrap_or_else(|e| panic!("reading {file}: {e}"));
-        // Line comments only: this is about what the code does, and every
-        // mention of the old path in this tree is prose explaining why it was
-        // wrong.
+        // Comments only, in whichever syntax the file is written in: this is
+        // about what the code does, and every mention of the old path in this
+        // tree is prose explaining why it was wrong.
+        let marker = if file.ends_with(".rs") { "//" } else { "#" };
         let code: String = text
             .lines()
-            .filter(|line| !line.trim_start().starts_with("//"))
+            .filter(|line| !line.trim_start().starts_with(marker))
             .collect::<Vec<_>>()
             .join("\n");
 
@@ -245,5 +296,69 @@ fn no_source_file_builds_a_hooks_directory_by_hand() {
              instead — `hooks::HookDirs` already does, and two answers to one \
              question is how SH-313 and SH-314 both happened."
         );
+
+        // Quoting and parenthesis noise dropped so one test catches every
+        // spelling of the same construction — `$(… --git-dir)/hooks`,
+        // `"$(… --git-dir)"/hooks`, `${GIT_DIR}/hooks`. Newlines survive, so two
+        // unrelated lines cannot be spliced into a false match.
+        let squeezed: String = code
+            .chars()
+            .filter(|c| !matches!(c, '"' | '\'' | '(' | ')' | '{' | '}'))
+            .collect();
+        assert!(
+            !squeezed.contains("--git-dir/hooks") && !squeezed.contains("$GIT_DIR/hooks"),
+            "{file} builds a hooks directory from `--git-dir`/`$GIT_DIR`. In a \
+             linked worktree that is the worktree's *private* git directory, \
+             whose hooks git never runs — SH-314 spelled correctly. Ask for \
+             `--git-common-dir` (the directory storyhook owns) or \
+             `--git-path hooks` (the one git will consult)."
+        );
     }
+}
+
+/// **The plugin's copy of the hook marker still matches the one storyhook
+/// writes** (SH-320).
+///
+/// `post-git.sh` decides whether git will run the managed `post-commit` hook by
+/// grepping it for a marker line, and that literal is the one thing the shell
+/// guard still duplicates from `src/hooks.rs` — the location question it used to
+/// duplicate is now git's to answer. Edit `HOOK_MARKER` and nothing fails: the
+/// plugin simply never recognises a managed hook again and syncs on top of every
+/// one of them, forever, in silence.
+///
+/// That is the *mild* direction — a permanent double sync, idempotent since W6,
+/// not the silent miss SH-320 was filed about — which is exactly why it needs a
+/// test rather than a reader's vigilance.
+///
+/// Read as text in one direction rather than through the crate: `HOOK_MARKER` is
+/// private, and making a const `pub` so a test can reach it would trade a small
+/// duplication for the defect class `tests/dead_public_surface.rs` exists to hunt
+/// (SH-198). Asserting `src/hooks.rs` merely *contains* the grepped literal also
+/// keeps the plugin free to grep a prefix, which it does — the full marker ends
+/// `-- do not edit this line`.
+#[test]
+fn the_plugin_greps_for_a_marker_storyhook_still_writes() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let guard = std::fs::read_to_string(root.join("plugin/claude-code/hooks/post-git.sh"))
+        .expect("reading the plugin's post-git hook");
+
+    let grepped = guard
+        .split("grep -q \"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("post-git.sh no longer greps a quoted literal — has the guard changed shape?");
+    assert!(
+        grepped.contains("storyhook"),
+        "the literal extracted from post-git.sh is `{grepped}`, which does not \
+         look like the hook marker — this test is reading the wrong thing"
+    );
+
+    let hooks_rs =
+        std::fs::read_to_string(root.join("src/hooks.rs")).expect("reading src/hooks.rs");
+    assert!(
+        hooks_rs.contains(grepped),
+        "post-git.sh greps for `{grepped}`, which no longer appears in \
+         src/hooks.rs. The plugin would stop recognising every managed hook and \
+         sync on top of all of them, silently and forever."
+    );
 }

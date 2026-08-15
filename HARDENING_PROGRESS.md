@@ -17368,3 +17368,637 @@ has previously seen read as a spurious "TESTS FAILED".
 
 **`story next` behaved.** It handed back SH-322, which was genuinely ready, and
 nothing about the recommendation needed routing around.
+
+### SH-320 — done
+
+**Outcome:** merged (PR #436). The plugin's skip-guard asks git where hooks
+live, and the scan that fences that class can finally see the file that held it.
+
+**The story's own "Extent" section was wrong, and that is the finding.** SH-320
+says the guard fails *open* — a double sync, mild, idempotent since W6. It also
+fails **closed**, and this repository is a live instance. `core.hooksPath=.githooks`
+is set by `scripts/gate-receipt.sh preflight`; `.git/hooks/post-commit` still
+carries the managed marker from an earlier install; `.githooks/post-commit` is
+the SH-306 chainer and carries no marker of its own. Running the old guard's
+exact condition in the main checkout: **it skips.** That is harmless only because
+the chainer delegates back. Point `core.hooksPath` at a directory with no chainer
+and the guard skips while nothing ever syncs — a silent total miss, which is the
+opposite direction from the one the story was filed on. Two seats reached it
+independently; the chair verified it before either could influence the vote. Two
+of the seven new fixtures are that shape, and `core.hooksPath=/dev/null` turned
+out to be a third instance nobody had named.
+
+**Council: unanimous 3-0 at first preference, and again 3-0 in the ranked
+runoff.** Audit trail in `.council/sh-320-post-git-hooks-guard/`. **Two of three
+seats ranked their own proposal last.** All three agreed on the guard's core
+before seeing each other — `git rev-parse --git-path hooks`, `effective` never
+`managed`, marker grep kept, no toplevel join — so the whole contest was
+packaging, and the winner won on three additions neither peer had.
+
+**The process failure, recorded because the run's supervision rule is what caught
+it.** The architecture seat stalled ~16 minutes through two chair pulse checks
+that the other two answered within seconds. It was killed and restarted on a
+narrower brief per the kill-and-restart rule — and the restart returned *after* a
+two-seat ballot had already gone out. Both seats answered that ballot without
+ever having seen the third proposal. The chair withdrew it and re-ran the vote
+three ways rather than let arrival order decide, which is the only reason the
+winning package was on the ballot at all. Both withdrawn votes still did work:
+seat 3 chose seat 1 for "one test, both languages" then amended it to add
+`.githooks/*`; seat 1 chose seat 3 for `.githooks/*` then amended it to add an
+honest boundary in the doc. Their two amendments describe the architecture seat's
+proposal, which neither had read.
+
+**What shipped, and the one thing nobody expected to be arguing about.** The
+guard asks `--git-path hooks` (`HookDirs::effective` asked from bash) and tests
+it with **`-x`, not `-f`** — the addition that decided the vote. Git runs only an
+executable hook and **stores that bit in the index**, so a tracked hooks
+directory restored without mode 100755 (an archive extract, a `cp` without `-p`)
+holds a marker-bearing file git skips; `-f` reports it as installed, which is the
+fail-closed silent miss reintroduced through the one door the fix was closing.
+Neither of the other seats found it. Both then failed to construct a false-sync
+case against it: on a `noexec` mount `-x` is false for everything, but so is
+git's own check, which is agreement rather than a false positive.
+
+No `--show-toplevel` join, and the reason is worth keeping: `HookDirs` needs one
+because it *writes*, from the daemon, against an envelope root at any depth. The
+guard reads one file from its own cwd, and `--git-path hooks` answering
+cwd-relative is precisely what lets it skip that step. The duplicated knowledge
+is reduced to one flag name rather than eliminated — and eliminating it, via a
+`story hooks status` round trip, was rejected as "paying a query to decide
+whether to skip a query" inside a 10s hook already budgeted to `--deadline 8`.
+
+**The marker grep stays, and the distinction from `Installed`'s refusal is
+precise.** `src/hooks.rs` refuses to decide whether a *foreign* hook delegates —
+SH-239's "a process's NAME is not its identity". The guard asks something
+answerable instead: is the file git will run storyhook's *own* artifact, carrying
+a marker storyhook wrote? Its false negative is this repository's chainer, and it
+costs one idempotent sync.
+
+**The scan: widened, and renamed because the name was half the defect.** It was
+`no_source_file_…` over `src/*.rs` — right about its own set, wrong about its
+advertised class. It now derives over `src/*.rs`, `*.sh`, `.githooks/*` and
+`:(exclude,glob)**/tests/**`: 146 files, one hit before the fix and none after.
+`.githooks/*` is named explicitly because those four chainers have **no
+extension**, so a `*.sh` glob misses all of them — hook scripts being the last
+place this class should hide — and a mode-100755 derivation would fail the other
+way, since `lib.sh` is 100644: sourced, never executed. Widening without renaming
+would have shipped a test whose name contradicts its own scan, which is the same
+defect held one commit longer.
+
+**Shell got the spelling its own defect takes.** The challenger seat argued shell
+needs only the substring check, since it has no `Path::join`. The architecture
+seat answered with `$(git rev-parse --git-dir)/hooks` — SH-314 spelled
+*correctly*, because in a linked worktree `--git-dir` names that worktree's
+**private** directory, whose hooks git never consults — plus `$GIT_DIR/hooks`,
+which git exports into every hook process. The challenger conceded outright:
+"I was wrong that shell has no analogue… it has a different one". Seat 1's
+diagnosis of the error is the transferable part: it "conflates the SYNTAX of the
+Rust mistake (an API call) with its SHAPE (asking the wrong git question)".
+
+**A chair correction the verdict needed to be implementable.** The winning
+proposal stated that fence as "a file naming `--git-dir` and `hooks` fails".
+Measured against the 146-file set before writing it, co-occurrence is red on
+**five** production files, every one legitimate: `install.sh` asks `--git-dir`
+whether a directory is a repository at all, and `scripts/gate-receipt.sh` wants
+the private directory *deliberately* and says so. What shipped matches the
+**construction** — `--git-dir)/hooks`, `$GIT_DIR/hooks`, after dropping quote and
+paren noise so one check covers every spelling. The verdict named the right
+defect; only its wording would have fenced the wrong thing.
+
+**Mutation-checked in five directions**, each restored after: the old literal
+guard, a `--git-dir` construction in a tracked `*.sh`, the literal planted in an
+**extensionless** `.githooks/*` chainer (the coverage the losing glob would have
+missed), a `$GIT_DIR/hooks` spelling, and a one-character drift in the marker the
+plugin greps for. All five fail; the tree passes. The seven plugin-bash cases
+were red before the guard change and green after — the transition itself, not an
+assertion about it.
+
+**One duplication closed that no proposal started with.** The marker literal is
+the last thing the shell guard copies from `src/hooks.rs`. Editing `HOOK_MARKER`
+used to break nothing: the plugin would simply never recognise a managed hook
+again and sync on top of every one, forever, silently. It is read as text in one
+direction rather than through the crate — `HOOK_MARKER` is private, and making a
+const `pub` so a test can reach it is the exact shape `dead_public_surface.rs`
+hunts (SH-198). Its own author ranked it last in value and noted it catches the
+*mild* direction, which is why it needed a test rather than vigilance.
+
+**A slip, named rather than smoothed over.** The first application of the guard
+fix went into the **main checkout** by absolute path — the one thing the
+one-worktree-per-story rule exists to prevent. Caught within one command by the
+tests still failing in the worktree, reverted with `git checkout --`, and the
+checkout was verified clean before work continued. Nothing was committed there.
+The lesson is mechanical: the worktree is the cwd, so a *relative* path is the
+safe habit and an absolute one silently addresses the wrong tree.
+
+**Deferred and filed: SH-330** (`relates-to SH-320`). The guard is *verb-blind*.
+It credits `post-commit` for all three triggers, but `git push` runs no local
+hook at all, and `git merge` runs `post-merge`, which auto-closes stories from
+merge-commit bodies and **never calls `commit-sync`** — so commits arriving by
+merge are linked by nobody once the guard skips. Since squash and rebase are
+disabled org-wide, merge is how work lands here. Path-blind and verb-blind are
+different defects, and the split keeps bisect attribution honest. Fixing SH-320
+makes this one *easier* to reach, not harder: the guard now skips correctly, and
+therefore more often.
+
+**Costs, both already documented and both paid again:** a cold `target/` in a
+fresh worktree, and no `e2e/node_modules`, so `make e2e-install` ran before the
+gate could. No wedges, no stalls, no kills on any background command; the council
+seat was the only stall, and the log-growth heartbeat was clean throughout.
+
+**`story next` behaved.** It handed back SH-320, which was genuinely ready, and
+nothing about the recommendation needed routing around.
+
+### SH-323 — done
+
+**Outcome:** merged. Notices no longer cover the controls under them, the pile is
+bounded and every notice in it can be reached, and a reader who keeps notices can
+clear them in one action.
+
+**The story's own direction was overruled, unanimously and on its own evidence.**
+It proposed `max-height` + `overflow-y` on `.toast-stack` plus a "Dismiss all"
+control. All three council seats reached the same objection independently: that
+bounds the pile and **occludes exactly what it occluded before**. Occlusion is
+fixed by geometry or it is not fixed.
+
+**The extent was wider than the story reported, and measuring came first.** The
+story named `#drawer-close`. Hit-testing each control's own centre found that
+**one** ordinary notice also covers `#settings-btn`, `#new-story-btn`,
+`#drafts-btn` and `#conn-dot` — the topbar's whole right cluster. At 24 notices
+the stack stood 1717px tall in a 720px viewport; because it was `position:
+fixed`, the page could not scroll to them, so ~13 were unreadable and
+dismissable only blind. Three measurements were taken before any design work and
+all three changed the answer:
+
+| # | Measured | Consequence |
+|---|---|---|
+| F1 | `.topbar` bottom is 62 / 103.5 / 145 / 145 at 1280 / 768 / 390 / 320, against a token prediction of 48 | Every token-derived offset is dead — wrong by 14px at desktop, 97px on a phone |
+| F2 | `#settings-btn` keeps a 3.25px visible strip | A centre hit-test scores a sliver and total occlusion identically, so the pin had to be rect-intersection area |
+| F3 | 14 clocked notices → `dismissButtons: 0, focusable: 0`, bottom 701 in a 720px viewport | "Content-focusability is sufficient" is false; the scroller needs its own conditional tab stop |
+
+**F3's first run reported the exact opposite and looked entirely plausible.**
+Without clipboard permission granted to the browser context, the Copy-ID path
+takes `copyText`'s `.catch` branch and raises an **error** — durable, with a
+dismiss button — so the measurement said "14 notices, 14 focusable" and would
+have settled the design the wrong way. It took reading the variant off the node
+(`toast error`, "Write permission denied") to notice. That is the same shape as
+SH-263 and as this file's own SH-226 doctrine: the instrument agreed with a
+hypothesis it was not actually testing.
+
+**Council: yes** — 3 seats, blind round 1, one deliberation round, IRV runoff.
+Audit trail in `.council/sh-323-notice-stack-occlusion-and-growth/`; verdict and
+all three chair rulings recorded as a comment on SH-323. **Every seat voted
+against its own proposal**, and by the end both losing seats had conceded the
+winner's architecture in their own words — so the runoff was fought over
+amendments rather than architectures. The deciding argument came from the seat
+whose proposal it killed: two independently-capped docks can grow toward each
+other and meet in a short viewport, because neither ceiling knows what the other
+is holding.
+
+**Three chair rulings, all recorded with what they answer to.** (1)
+`#dispatch-history` converts from `column-reverse` to plain `column` rather than
+having its reverse-container `scrollTop` semantics pinned — decided on a ground
+neither seat argued, that this suite drives **only Blink** (`e2e/playwright.config.ts`
+has two projects, both chromium), so a cross-engine claim cannot be tested here at
+all and pinning one engine would read as a guarantee about all of them. The other
+seat's test was adopted verbatim as the instrument. (2) `max-height: 50%` does
+not ship — upheld on the skeptic's objection against its own proposal. (3) No
+bottom fallback constant before `#drawer-footer` was measured: 68.5px as a button
+row, **124.5px** as an archive-confirm panel, and its button *count* never
+mattered because that row cannot wrap.
+
+**A conformance claim in the story text was corrected rather than repeated.**
+"The notices block the pointer route to the preference that turns notices off" is
+true as fact and wrong as a WCAG claim — SC 2.2.1's Turn-off clause is scoped to
+*before* the limit is encountered, and the keyboard route to `#settings-btn` is
+untouched by any overlay. The real citations: **2.4.11 (AA)** for `#drawer-close`,
+whose rect is a strict subset of the stack's; **2.4.12 (AAA, untargeted)** for the
+topbar cluster, because 3.25px survives and "entirely" is the operative word;
+**2.4.7** for the below-fold pile. Had the verdict been built on the 2.2.1
+framing, SH-323 would have closed claiming a conformance fix it did not make.
+
+**Three commits, ordered so no intermediate state is worse than the start.**
+Prepend first (newest-first on both surfaces), then the dock, then Dismiss all.
+That order was unanimous and the reasoning is the ux seat's: if the cap lands
+first there is a real, mergeable, green commit where the stack is provably
+bounded *and* provably able to hide a new arrival below the fold.
+
+**A test that passed while its own instrumentation said otherwise.** The
+keyboard-scroll assertion went green while three consecutive reads of `scrollTop`
+after End, PageDown and ArrowDown all returned 0. Chromium **animates**
+keyboard-initiated scrolling, so every instantaneous read caught the animation at
+t≈0 and only the final read — three round-trips later — saw it land. Scrolling
+worked; the assertion was racing an animation and would have been flaky by
+construction. Replaced with a polled assertion.
+
+**Filed, not fixed: SH-333** (`relates-to SH-323`, `relates-to SH-322`).
+`role="status"` is implicitly `aria-atomic="true"`, so the stack re-announces
+*every* notice on *every* arrival — worse the larger the pile this story just made
+comfortable to keep. It needs its own test surface, and honestly: the suite drives
+no assistive technology, so nothing in `e2e/` can assert what was announced. That
+limitation is written into the story rather than discovered later.
+
+**Costs and supervision.** A cold `target/` and `make e2e-install` in a fresh
+worktree, both already documented. No wedges, no stalls, no kills; log-growth
+heartbeat clean throughout. Four throwaway spikes were written to measure F1–F3
+and the bottom band, and all four were deleted before the branch was pushed —
+their numbers live in the council artifact and in the code comments that depend
+on them.
+
+**`story next` behaved.** It handed back SH-323, which was genuinely ready.
+
+### SH-324 — done
+
+**Outcome:** merged (PR #440). The statuses editor's delete confirmation has no
+deadline of any kind, and the two things the six-second clock was quietly doing —
+one of them badly — are done explicitly instead.
+
+**The route: the clock is deleted, not made adjustable.** SH-322's shape was the
+obvious answer and is the wrong one here. That council chose G198 (Turn off)
+because the notice clock *had* to survive — a notice that never leaves regresses
+SH-304's corroboration contract — and nothing analogous forces this clock to
+survive. The lesson worth keeping: **read SH-322 as "the criterion's first
+clause, when the limit must stay", not as the house style for every timer.** A
+preference here would have been a checkbox governing a clock we could simply
+delete.
+
+**What the story asked for, and what was actually wrong.** SH-324 named one
+`setTimeout` and asked for a sweep of sibling `setTimeout`-driven deadlines. The
+sweep was run and reported "there is no third". **That conclusion was wrong on
+its own definition, and the skeptic seat caught it.** `SAFETY_POLL_INTERVAL_MS`
+is a poll by mechanism and a *deadline by effect*: the armed state lived in
+`button.dataset.confirming`, `renderStatuses()` clears and rebuilds every row, and
+at least **eight** paths reach that rebuild — including a second, independent 25s
+path through `fetchReposOnce() -> renderSettings()` that fires on an SSE
+`repo-changed` for *any* project, and both of `statusMutation()`'s callbacks,
+which consult no busy guard and **cannot be made to**, since repainting from the
+server's authoritative answer is their whole job.
+
+So deleting the `setTimeout` alone would have swapped a visible six-second limit
+for an invisible 0–25s one. On WebKit — which does not focus a `<button>` on
+click, so `statusEditorIsBusy()` reads false the instant a user arms — the
+deadline that actually bit was already the poll, not the timer. A reader who
+ticked a hypothetical turn-off preference would have observed **no change in
+behaviour at all**.
+
+**The durable rule this leaves:** *a grep for `setTimeout` cannot find a deadline
+whose expiry site is a `render*()` call.* A deadline is a property of what ends a
+user's action, not of which API scheduled it.
+
+**Second durable rule, from the same seat:** *focus-after-click is browser- and
+platform-dependent and is not a substrate to rest correctness on.* WebKit's
+behaviour was verified against this repo's own Playwright build
+(`document.activeElement` is `BODY`). The question this run wrote also claimed
+Firefox focuses it; the seat refused that — Playwright's *patched* Firefox does,
+which is not evidence about stock Firefox. The weaker claim is the useful one.
+
+**Council: yes** — `.council/sh324-delete-confirmation-time-limit/`. Unanimous
+3-0 for the skeptic's proposal, with **two seats voting against their own**. The
+vote turned on one distinction worth carrying forward: *suppress the render to
+protect the state* (the two panel proposals) versus *render correctly* (the
+winner). The accessibility seat's own words on why it abandoned its proposal:
+"nothing in my test plan fails when someone adds a render path without the guard,
+which is exactly how the defect under review arrived." **Default-safe beats
+default-unsafe for a failure mode that is invisible when it returns.**
+
+**Two riders every ballot reached independently, both carried.** (1) The hazard
+inversion: the old design armed on a click and confirmed on the next *at the same
+coordinates*, so a double-click armed and confirmed in one gesture — what a user
+with tremor or spasticity produces without meaning to, and what six seconds is
+exactly the wrong shape to stop. Cancel now occupies the trigger's position and
+the confirm sits on its own line beneath the row. Fixed by **layout, not a
+debounce** — a debounce is a new time limit. (2) The sibling,
+`promptForDestination`, filed rather than folded in (SH-334).
+
+**One deviation from the verdict, deliberate.** The verdict specified
+`aria-label: "Confirm deleting <slug>"` on a button reading "Delete?". That gives
+the control an accessible name **not containing its own visible label**, failing
+SC 2.5.3 (Label in Name) in the act of satisfying something else. The visible text
+carries the slug instead, so the accessible name changes without the two
+disagreeing.
+
+**One implementation choice reversed mid-build, and worth recording.** The first
+attempt put Cancel and the confirm side by side in the row's action cell. That
+makes "the destroying click is not where the arming click was" depend on grid
+arithmetic — `.status-row`'s fifth column is `1fr`, so widening the last cell
+drags it leftward by an amount that varies with viewport and content. A safety
+property that holds by arithmetic a later CSS edit can silently break is not a
+safety property. A separate line cannot coincide with the row's own line at any
+width. **The mutation check is what would have caught it either way** — moving the
+confirm back to the trigger's coordinates fails the double-click test.
+
+**Mutation-checked in three directions**, because a fence that cannot fail is not
+a fence: restoring the clock fails both the structural fence and the criterion
+pin; moving the confirm back to the trigger's coordinates fails the double-click
+test; and both function slices were verified bounded rather than assumed (an
+over-wide slice would have made the `contains` assertion pass vacuously).
+
+**Discovered — SH-335, and it decides how much this suite's green means.** The
+e2e suite is **Chromium-only**. Both Playwright projects are Blink and
+`make e2e-install` installs chromium alone, so **no test here can observe the
+WebKit behaviour that was half this defect**. A spec asserting "the armed state
+survives a poll" passes today *on unfixed code*, because Chrome holds focus and
+the poll is therefore skipped — a green checklist over a live deadline, which is
+the SH-226/SH-306 shape one layer further out. The spec written here reproduces
+the *state* by blurring and says so in its own body. Filed rather than fixed:
+adding a `webkit` project roughly doubles suite runtime, which is a CI-budget
+decision (see SH-306) and not a WCAG one.
+
+**Discovered — a correction to SH-329, which cost this cycle a full gate re-run.**
+The first `make test` came back 244 passed, 1 failed, the failure being
+`board-sort.spec.ts:239` — SH-329, already filed. Attribution was **established
+rather than assumed**: `src/web_dashboard.html` was reverted to its committed
+version and the spec failed again, so the failure is not this branch's. But the
+measurement contradicted SH-329's own diagnosis:
+
+| How it was run | Result |
+|---|---|
+| Full `make test` | 1 fail, then 245 passed on re-run |
+| `board-sort.spec.ts` whole file | 3 fails / 3 runs |
+| that test alone, `--repeat-each=5` | **5 passes / 5 runs** |
+
+It is **not** load-dependent — the machine was idle (load average 2.5) where the
+story cites 8–36. The trigger looks like *the preceding tests in the same file*,
+which makes it far cheaper to bisect than "a loaded machine": eight tests, ~3 runs
+of ~20s. Commented on SH-329 and raised to **high**, because `make test`
+fail-fasts, so a run that hits it writes no gate receipt and `.githooks/pre-push`
+then refuses the push — it blocks every story whose gate run happens to hit it.
+
+**A process error, recorded because the class matters more than this instance.**
+A `cd /Volumes/Code/mikeyward/storyhook` inside one `story new` invocation
+**persisted** — the Bash tool keeps its working directory between calls — so
+several later commands ran in the **main checkout** rather than the worktree,
+including a `git checkout HEAD -- src/web_dashboard.html` and a `cp` onto that
+same path. Both happened to be no-ops (main was clean and the `cp` restored main's
+own bytes to itself), main stayed clean, and the worktree was untouched; the
+attribution experiment was in fact *stronger* for having run against pristine
+`main`. But the near-miss is real and the rule is cheap: **inside a worktree
+cycle, never `cd` out of it in a compound command — use an absolute path, or run
+the command in a subshell.** A persisted `cd` is silent, and the next
+destructive-looking command is aimed at the wrong tree.
+
+**Gate:** green — 245 passed, on the second full run (the first was SH-329). Every
+background run supervised with a log-growth heartbeat and a 120s stall timeout.
+**No wedges this cycle**; total gate time ~9m and ~6.6m per run for the e2e leg.
+
+**Council delivery, one process note.** Two seats completed their proposals and
+did not deliver them, having treated their final message as delivery; both
+produced their JSON on an explicit instruction to call `SendMessage` with
+`to: "main"`. A fourth agent was re-dispatched into the silent seat and stood
+down when the original delivered mid-briefing — it was **not admitted and did not
+vote**, but it reached the double-click hazard independently, from a
+motor-accessibility direction none of the three seats took, and its `dblclick`
+regression test was adopted. Recorded as an appendix to the decision.
+
+**`story next` behaved.** It handed back SH-324, which was genuinely ready.
+
+### SH-329 — done
+
+**Outcome:** merged (PR #442). The board-sort flake that has been blocking gate
+runs since 2026-08-15 is diagnosed and fixed. It was never a race, never
+load-related, and nothing was ever wrong with the board.
+
+**Root cause: the store stamps at one-second precision, and the test's three
+writes fit inside one second.** `service::Clock::System` formats RFC3339 at
+second precision — "the format every storyhook timestamp has always used"
+(`src/service/mod.rs:120`). The spec creates two stories and bumps one's
+priority; warm, all three writes land in the same second. Equal `updated_at`
+strings hand `columnCardCompare` a tie, which it breaks on **story number
+ascending** — creation order, which is exactly the order the assertion exists to
+disprove.
+
+**The inversion that made three sessions read it backwards.** This story was
+filed as "intermittently fails under concurrent machine load", refined to a
+refetch race, then corrected to "the preceding tests in the same file". The
+truth is the opposite of the first and the mechanism behind the third: **the
+faster the run, the more likely the failure**, because three writes fit into one
+second more easily. The failing run's test 5 took 1.9s; a passing one took 3.4s.
+Run alone it passes because it is cold — page load, daemon warm-up, first
+round-trips — and after seven file-mates it fails because everything is hot.
+Every observation in the story is consistent with this; none of them pointed at
+it, because *slower* is the intuitive direction for a flake.
+
+**One hypothesis was refuted by argument before it was refuted by measurement,
+and that is the cheaper move.** The story's own refined diagnosis — the board
+sorting a stale snapshot that has not absorbed `touchPriority`'s write — cannot
+produce the observed failure at all: over a stale snapshot, `Modified ↓` still
+returns `[touched, untouched]` and the test still passes, since `touched` was
+created second and so already has the later `created_at`-equal-`updated_at`.
+Every route to the observed order requires a **tie**. Checking whether a
+hypothesis can even generate the symptom costs nothing and retired one of three.
+
+**Reproduction, instrumented rather than repeated.** The spec was temporarily
+made to print the store's own `created_at`/`updated_at` for both stories at four
+points, then run whole-file. Run 1 passed; run 2 failed with the smoking gun:
+
+```
+[after untouched]     AA-10 c=2026-08-15T13:31:33Z u=2026-08-15T13:31:33Z
+[after touched]       AA-11 c=2026-08-15T13:31:33Z u=2026-08-15T13:31:33Z
+[after touchPriority] AA-11 c=2026-08-15T13:31:33Z u=2026-08-15T13:31:33Z
+```
+
+That third line also *looks* like "the priority change never bumped
+`updated_at`" — a second, much larger defect if true. It was checked directly
+rather than reasoned about, against an isolated store: create, then prioritize,
+comment, label and move at two-second intervals, each one bumping `updated_at`.
+The write had landed; it had simply landed inside the same second.
+
+**The fix is a boundary, not a margin.** `waitUntilStoreClockPasses`
+(`e2e/specs/support.ts`) waits for the second the untouched story was written in
+to elapse, so the following bump is stamped strictly later. This is the
+distinction from the budgeted sleeps SH-245 and SH-318 removed from this suite:
+those are bets that an action finishes inside a guessed window, and a loaded
+machine wins them; a second boundary arrives on its own schedule whatever the
+load, and overshooting it only ever helps. It reads its **own tick length off a
+timestamp the store wrote** rather than hard-coding 1000ms — the hand-copied
+constant across a language boundary is precisely what SH-136 and SH-312 each
+cost this project — so a store that moved to milliseconds shortens the wait with
+no edit. The test then asserts the precondition **from the store's own answer**
+before asking the board anything, so a future regression fails naming both
+timestamps instead of as an unexplained ordering mismatch.
+
+**Evidence, in both directions.**
+
+| Check | Result |
+|---|---|
+| Instrumented reproduction, pre-fix | red, all three writes stamped `13:31:33Z` |
+| `board-sort.spec.ts` whole file, post-fix | 5/5 green |
+| Mutation: point the "modified" sort at `created_at` | **fails** — the test did not become vacuous |
+| `make test` | green, 245 browser tests, first run |
+
+**Sibling sweep, and why it is short.** No other e2e spec asserts an ordering
+derived from store timestamps (grepped for `updated_at`/`created_at`/the sort
+labels across all 44 spec files). The Rust side is immune **by construction**
+rather than by luck: `store::conformance::query_fixture` writes explicit
+minute-separated timestamps instead of relying on the system clock, which is why
+`stories_can_be_sorted_by_recency` has never flaked.
+
+**Filed, not fixed: SH-336** (`relates-to SH-329`, medium). The product-level
+limitation this exposed: *every* recency ordering storyhook has is blind inside
+one second — the dashboard's Modified/Added sorts, `StorySort::UpdatedAt`
+(`ORDER BY updated_at DESC, story_no`), and the TUI's recent-activity list. Touch
+two stories within a second and the board orders them by story number, not by
+what you just touched; under `↓` the tiebreak even runs ascending, so a tie reads
+oldest-first in a most-recent-first view. That matters more here than in most
+trackers, since this one's normal workload is agents mutating stories in bursts.
+It is filed rather than folded in because it is **not a format flip**: every
+comparison in the system is lexical — JS string compare, SQLite `ORDER BY`,
+`String::cmp` — and mixed resolutions break lexical ordering outright
+(`"…33.123Z" < "…33Z"`, since `.` is 0x2E and `Z` is 0x5A), so a millisecond row
+would sort *before* a whole-second row inside the same second. The story records
+the cheaper alternative too: the store already assigns a monotonic event
+sequence, so an exact recency order need not touch the timestamp format at all.
+This is the "deliberate tech debt gets logged" rule discharged — the flaw named,
+the patch's limits stated (only the test waits; no shipped surface changed), and
+the redesign trigger written down.
+
+**A process class recurred one cycle after being written down.** SH-324's entry
+records a persisted `cd` out of the worktree — the Bash tool keeps its working
+directory between calls — and its rule: never `cd` out in a compound command.
+It happened again here, via `cd /Volumes/…/storyhook && story comment …`, and
+every command after it ran in the main checkout: the branch push, `gh pr create`,
+and the merge. Nothing was harmed and two of those three are where the rules put
+them anyway (`gh pr merge` **must** run in the main checkout), but the push was
+in the wrong tree by accident rather than by intent, and that is the same near
+miss. **The rule as written did not work, because it asks a session to remember
+something at the moment it is thinking about something else.** The sharper
+version: a `story` CLI call never needs a `cd` at all — it talks to a daemon, not
+a directory — so the `cd` that caused this bought nothing on either occasion.
+
+**Costs and supervision.** A fresh worktree means a cold `target/` (28.8s) and
+`npm ci` plus a chromium install; both known and accepted. Every background run
+supervised with a log-growth heartbeat and a 120s stall bound, the watchdog
+confirming the running processes rather than inferring a wedge from silence.
+**No wedges, no stalls, no kills.** Gate ~9m, e2e leg 6.7m; nine e2e runs total
+across reproduction, verification and the mutation check.
+
+**`story next` behaved.** It handed back SH-329, which was genuinely ready, and
+correctly ranked it above the two medium bugs behind it.
+
+### SH-326 — done
+
+**Outcome:** merged (PR #444). Dismissing one notice no longer strands focus
+on `<body>`. The open question the story was filed to answer turned out to have
+been answered already, by the story next door.
+
+**The finding: `focusAfterNoticeRemoval` was never a rival policy.** SH-326
+asked where focus should go when the dismissed notice was the last one, and
+listed three candidates two SH-322 seats had deadlocked over. The council that
+settled it (unanimous 3-0, no deliberation round) found the question dissolved:
+SH-323 had already built that anchor for "Dismiss all", argued its own
+rejections in a doc comment, and pinned it as a *property* rather than an
+identity — and its final paragraph predicted this story would extend it. So
+there is one rule with three clauses, not two policies:
+
+> Capture `document.activeElement` before the mutation. After it: if focus was
+> not in this notice region, or focus still lives somewhere real, do nothing.
+> Otherwise focus the heir. If there is no heir, `focusAfterNoticeRemoval()`.
+
+**The gate is a state question, never a modality question.** This is the part a
+future author is most likely to "simplify", so it is written into the source.
+`event.detail === 0` is not a keyboard test — assistive technology dispatches
+synthesised clicks with `detail === 0`, so it fires for AT-driven pointer users
+and not for real ones, backwards on both halves. And this file already recorded
+the measurement that settles it: **WebKit focuses no `<button>` on click**
+(`armedDeleteSlug`'s comment, from SH-324), so "was this a keyboard activation"
+is unanswerable while "did focus survive" is directly observable. SH-226's
+doctrine one layer down — ask what a thing is, not what it is spelled.
+
+**Both rival seats voted against their own proposals, and each retracted a
+specific claim.** That is worth recording because it is what the deliberation
+round exists to produce and this council got it in round one:
+
+- The web-UX seat had argued a restore inside `renderDispatchHistory` would
+  "yank focus during a burst": *"that is wrong, and I should not have written
+  it. Restoring to the same row's key is preservation, not relocation."* The
+  challenger then located where the objection *does* bite — that seat's own
+  heir was index-keyed, and on a prepending arrival index 1 is a different row
+  before and after.
+- The challenger then withdrew its own "MUST" on the same point, conceding the
+  cost it had understated (a `.focus()` per arrival can cut short the polite
+  announcement of the row that just landed) and naming the true origin: the
+  wholesale rebuild itself. Severed to SH-337, where the real repair is an
+  incremental insert that preserves focus by construction.
+
+**A live defect in shipped code, found by one seat of three.**
+`dismissAllToasts`/`dismissAllDispatchHistory` called `focusAfterNoticeRemoval()`
+**unconditionally**, which is safe only for a keyboard press. A pointer press on
+WebKit focuses no button, so a reader typing in the drawer's description who
+clicked "Dismiss all" had focus and caret moved to `#drawer`. The chair checked
+the half that seat flagged as unverified and corrected it: the description's
+blur handler PATCHes, so the value is *committed*, not lost — the harm is an
+unrequested context change and a lost caret, not data loss. Its own commit,
+because it changes SH-323's shipped behaviour on a path that story's pin cannot
+see.
+
+**The mutation battery earned its keep: two of five mutations survived, and both
+were the pins' fault.**
+
+| Mutation | Result |
+|---|---|
+| heir never focused | 4 pins red — as designed |
+| heir direction reversed | **survived** |
+| region gate deleted | **survived** |
+| empty-stack fallback deleted | 3 pins red — as designed |
+| count `.toast` not `.toast .toast-dismiss` | 2 pins red — as designed |
+
+*The direction was not pinned.* The pin dismissed the **first** notice, where
+there is no previous sibling to prefer — so next-first and previous-first pick
+the same survivor and a reversed implementation passes. The mirror holds at the
+bottom of the stack. Only a notice with a neighbour on each side puts direction
+under test; the pin now dismisses the middle one, and that mutation reddens it
+alone.
+
+*The region gate was not pinned.* Deleting it reddened nothing, because in every
+existing scenario the second clause — "focus still lives somewhere real" —
+answered first and covered for it. The gate is load-bearing only when focus was
+outside the region **and** something else destroyed it in the same turn: a
+dismissal adopting a stranding it did not cause. The new pin drives exactly that
+and asserts focus is left on `<body>` — which reads like a test *for* the
+defect, so the comment says at length why it is not. Verified in both
+directions: green as written, red under the mutation, and under that mutation no
+other test moved.
+
+Worth stating plainly: without the battery, two of the six behaviours this story
+shipped would have had pins that could not fail.
+
+**Gate:** `make test` exits 0 on the pushed tree — 256 Playwright tests, full
+Rust suite, plugin harness, clippy clean, orphan postlude green.
+
+**Two later gate runs went red, and neither was this change.** A `daemon_lifecycle` test (a stale daemon
+not being replaced) and a `daemon_timeouts` test (a 250ms churn deadline) failed
+on two consecutive runs, each green in the run before. Both are millisecond- and
+second-deadline daemon tests; both passed 9/9 and 3/3 on targeted reruns
+immediately afterwards. The cause was measured rather than assumed:
+**`mediaanalysisd` was burning 260–344% CPU** (a macOS Photos library scan),
+with load average 14–17 on a 10-core machine. Nothing of this session's was
+orphaned — `check-no-orphan-servers.sh` was clean and disk had 48Gi free. This
+is the false-red condition CLAUDE.md already documents, arriving from a system
+indexer rather than from a second overlapping suite.
+
+**No bypass was used, and none was needed.** The push went through
+`.githooks/pre-push` on its merits: the tip tree carried a receipt from the green
+run, so the hook certified it and merely *named* the three intermediate commits
+as unreceipted — its documented "named, not blocked" behaviour. Recorded because
+the two previous entries in this file that met a red hook reached for
+`SKIP_PREPUSH_TESTS=1`; the receipt made that unnecessary here, which is the
+mechanism working as SH-306 designed it.
+
+**PR:** #444. Four commits, two-hats clean: the `canTakeFocus` extraction
+(pure refactor, no behaviour change), the heir policy on both surfaces, the bulk
+guard, and the pin repairs. Merged as `a5af789`.
+
+**Filed, not dropped — the council's scope ruling was conditional on all three:**
+SH-337 (`renderDispatchHistory` destroys focus on every rebuild, arrival path
+included), SH-338 (neither dismiss control has a `:focus-visible` rule, so every
+landing this story creates is drawn with the UA default ring at unmeasured
+contrast — SC 1.4.11), SH-339 (Enter auto-repeat on a heir can clear a pile of
+durable errors that are the only record of those failures; accepted as a weighed
+trade, because "the honest lever is not the focus policy").
+
+**`story next` behaved.** It handed back SH-326 — genuinely ready, no children,
+not blocked — and its two runners-up (SH-330, SH-333) were both workable. No
+defect in the recommender to file this cycle.
+
+**No version bump** — left for the next batched `/semver` pass.
+
+**Next:** run `story next` fresh.
