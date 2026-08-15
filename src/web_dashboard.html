@@ -2768,6 +2768,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         tokenModalCancelCallback = null;
         closeTokenModal();
         if (callback) callback();
+      } else if (xhr.status === 422) {
+        // SH-319 AC3: the daemon's own bearer token was recognized but
+        // cannot be exchanged (it rotates every restart) -- name what to
+        // paste instead rather than the generic "not accepted".
+        $("token-error").textContent =
+          "That's the daemon's own bearer token, not a named one. Run "
+          + "\"story token new <name>\" and paste what it prints instead.";
+      } else if (xhr.status === 403) {
+        $("token-error").textContent =
+          "The daemon refused this request's origin. Reload the dashboard and try again.";
       } else {
         $("token-error").textContent = "That token was not accepted. Check it and try again.";
       }
