@@ -88,6 +88,12 @@ test("the submenu omits the story's own state and shows every other configured o
   await expect(submenu.locator(".ctxmenu-item", { hasText: /^in-progress$/ })).toBeVisible();
   await expect(submenu.locator(".ctxmenu-item", { hasText: /^done$/ })).toBeVisible();
   await expect(submenu.locator(".ctxmenu-item .dot")).not.toHaveCount(0);
+  // Actions, not a radio group (SH-310): the story's own state is
+  // deliberately absent from this list (see statusMenuItems), so there is
+  // no current member to check -- and a `menuitemradio` with no
+  // `aria-checked` is an invalid one.
+  await expect(submenu.locator(".ctxmenu-item").first()).toHaveAttribute("role", "menuitem");
+  await expect(submenu.locator('[role="menuitemradio"]')).toHaveCount(0);
 
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");

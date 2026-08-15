@@ -4169,13 +4169,22 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   /** Builds a `.ctxmenu-sub` popover's DOM from a flat `items` array of
    * `{label, color, onSelect}` entries, under `ariaLabel` -- which the
    * caller's own model supplies rather than this function knowing it, the
-   * same way `renderMenuNode` takes one. */
+   * same way `renderMenuNode` takes one.
+   *
+   * `role="menuitem"` -- not `menuitemradio` (SH-310, fixing a defect
+   * SH-197 shipped): `menuitemradio` requires `aria-checked` (WCAG/ARIA's
+   * `aria-required-attr`), and Set Status's own items name a move ("go to
+   * in-progress"), deliberately omitting the story's current state (see
+   * `statusMenuItems`'s own comment) -- so there was never a checked
+   * member to announce, and a screen reader heard an invalid radio group
+   * whose current value it could never name. These are actions, not a
+   * group with a current member. */
   function renderStorySubmenuNode(ariaLabel, items) {
     var node = el("div", { class: "ctxmenu ctxmenu-sub", role: "menu", "aria-label": ariaLabel }, []);
     items.forEach(function(entry) {
       node.appendChild(el("div", {
         class: "ctxmenu-item",
-        role: "menuitemradio",
+        role: "menuitem",
         tabIndex: -1,
         onClick: function() {
           closeStoryMenu(false);
