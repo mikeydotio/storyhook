@@ -29,7 +29,8 @@ one of:
 
 - **`blocked`** — has an unmet dependency or an explicit `awaiting` reason (`detail`
   carries it)
-- **`stale`** — not updated within `STORY_STALE_THRESHOLD` (default `3d`)
+- **`stale`** — not updated within `STORY_STALE_THRESHOLD`; each finding's own `detail`
+  states the real window used (e.g. `"stale 3d+"`), never restated here
 - **`unprioritized`** — `priority: none`
 - **`cycle`** — sits on a `blocked-by` cycle — the CLI does not surface this itself, so
   the script detects it directly from every story's own relationships (Kahn's algorithm);
