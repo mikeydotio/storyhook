@@ -317,6 +317,77 @@ export async function onAFrozenClock(
 }
 
 /**
+ * The granularity of a timestamp the store itself wrote, in milliseconds,
+ * read off the value rather than assumed.
+ *
+ * `service::Clock::System` formats RFC3339 at **second** precision -- "the
+ * format every storyhook timestamp has always used" (`src/service/mod.rs`) --
+ * so today every sample lands in the no-fraction branch and this answers
+ * 1000. It is derived anyway because the number is shared with production
+ * code that is free to change it, and a hand-copied constant on the far side
+ * of a language boundary is precisely the drift SH-136 and SH-312 each cost
+ * this project (a dashboard deadline and a daemon ceiling, hand-copied, then
+ * silently disagreeing). A store that moved to milliseconds would report
+ * `.123Z` here and shorten {@link waitUntilStoreClockPasses}'s wait by three
+ * orders of magnitude with no edit.
+ *
+ * The derivation only reads *finer* than a second: a sample carries its own
+ * fractional digits, but nothing in a whole-second string distinguishes a
+ * one-second clock from a one-minute one. A clock coarser than a second
+ * would need this read from the daemon instead of inferred -- noted rather
+ * than built, since no such clock exists or is proposed.
+ */
+function timestampResolutionMs(at: string): number {
+  const fraction = /\.(\d+)/.exec(at);
+  if (!fraction) return 1000;
+  return Math.max(1, 10 ** (3 - fraction[1].length));
+}
+
+/**
+ * Waits until the wall clock has left the instant `at` names, so that any
+ * store write issued after this resolves is stamped **strictly later** than
+ * `at` -- not merely "probably later".
+ *
+ * This is the ordering-side companion to {@link latch} and
+ * {@link onAFrozenClock}, and it exists because a one-second clock makes
+ * "touched after" unrepresentable inside its own second (SH-329). The
+ * "Modified" board sort compares `updated_at` strings and breaks a tie on
+ * story number ascending, so two writes in one second sort by *creation*
+ * order -- which is exactly what the sort under test is supposed to
+ * disprove. `board-sort.spec.ts` created two stories and touched one in
+ * 1.9s of wall clock, all three writes stamped `13:31:33Z`, and the board
+ * dutifully returned creation order: red, on a correct board, roughly half
+ * the time. Warmer machines failed it *more* often, having fitted all three
+ * writes into one second more easily -- which is why three sessions read it
+ * as load-related and none of them reproduced it that way.
+ *
+ * Note what this is not. It is not a margin sized against the machine, the
+ * shape SH-245 and SH-318 removed from this suite: those sleeps are bets
+ * that an action finishes inside a guessed budget, and a loaded machine
+ * wins them. This waits for a boundary that arrives on its own schedule
+ * whatever the load, and waiting *longer* than needed is always harmless --
+ * it only ever makes the following write later. The cost is bounded by one
+ * resolution tick, under a second today.
+ *
+ * The wait runs on Node's clock, not the page's, so a spec that has
+ * installed Playwright's clock emulation cannot accidentally freeze it --
+ * and Node, the daemon and the store all read the same host clock, so
+ * there is no skew to budget for.
+ */
+export async function waitUntilStoreClockPasses(at: string): Promise<void> {
+  const instant = Date.parse(at);
+  if (Number.isNaN(instant)) {
+    throw new Error(
+      `waitUntilStoreClockPasses: "${at}" is not a timestamp Date.parse understands`,
+    );
+  }
+  const remaining = instant + timestampResolutionMs(at) - Date.now();
+  if (remaining > 0) {
+    await new Promise((resolve) => setTimeout(resolve, remaining));
+  }
+}
+
+/**
  * A one-shot latch: `held` stays pending until `release()` is called, and
  * every subsequent `await` on it resolves immediately.
  *
