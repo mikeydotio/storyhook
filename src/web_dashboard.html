@@ -1441,10 +1441,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
      parent arbitrates the split for free; two ceilings are two numbers somebody
      has to keep true, the failure class SH-136 cost this project three times.
 
-     `#toast-stack` and `#dispatch-history` keep their ids, roles and
-     `aria-live` exactly as they were, so every existing selector still resolves
-     and SH-322's fence still fences what it fenced. What is new around them is
-     a scroll container each and this wrapper.
+     `#toast-stack` and `#dispatch-history` keep their ids and roles exactly as
+     they were, so every existing selector still resolves and SH-322's fence
+     still fences what it fenced. What is new around them is a scroll container
+     each and this wrapper. `aria-live`/`aria-atomic` on the two surfaces
+     diverged in SH-333 -- see the comments on each element below -- because the
+     two regions turned out to re-announce their standing contents on every
+     arrival for two different reasons, one an ARIA attribute and one a render
+     strategy, and only the first is fixable in place.
 
      `pointer-events: none` on the dock, `auto` on the scrollers: the inverse of
      the case SH-322's chair correctly rejected on `.toast-stack`, where
@@ -1459,16 +1463,36 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     <div class="notice-region-bar" id="toast-bar" hidden>
       <button type="button" class="btn btn-ghost notice-dismiss-all" id="toast-dismiss-all">Dismiss all <span id="toast-count"></span></button>
     </div>
+    <!-- `aria-atomic="false"` overrides `role="status"`'s implicit `true` (WAI-ARIA
+         1.2), so a mutation announces only the node that changed, not the whole
+         standing pile (SH-333). Each `.toast` then declares `aria-atomic="true"`
+         on itself (see `toast()`), so the notice that actually arrived is still
+         announced whole rather than word-by-word. Council verdict:
+         `.council/sh-333-notice-stack-announcement-mechanism/DECISION.md`. This is
+         the surface where that fix is sufficient in place -- notices are
+         `insertBefore`d one at a time, so "the node that changed" is exactly "the
+         node that arrived". -->
     <div class="notice-scroll" id="toast-scroll" role="group" aria-label="Notices">
-      <div class="toast-stack" id="toast-stack" role="status" aria-live="polite"></div>
+      <div class="toast-stack" id="toast-stack" role="status" aria-live="polite" aria-atomic="false"></div>
     </div>
   </div>
   <div class="notice-region" id="dispatch-history-region">
     <div class="notice-region-bar" id="dispatch-history-bar" hidden>
       <button type="button" class="btn btn-ghost notice-dismiss-all" id="dispatch-history-dismiss-all">Dismiss all <span id="dispatch-history-count"></span></button>
     </div>
+    <!-- No `aria-live` here (SH-333): `renderDispatchHistory()` clears and
+         rebuilds this panel wholesale on every render, so every row -- not just
+         the arriving one -- is a fresh DOM addition on every mutation regardless
+         of `aria-atomic`. No live-region attribute combination fixes a wholesale
+         rebuild; `role="region"` stays for its landmark contribution, and
+         arrivals are announced instead through `#dispatch-history-status` below.
+         Deliberate tech debt, not a redesign: the flaw is the wholesale rebuild
+         itself, the limit is a hand-maintained announcer every call site must
+         remember to feed, and the trigger to retire this side-channel is SH-337
+         (the already-scoped incremental-insert rewrite of this function). Council
+         verdict: `.council/sh-333-notice-stack-announcement-mechanism/DECISION.md`. -->
     <div class="notice-scroll" id="dispatch-history-scroll" role="group" aria-label="Dispatch results">
-      <div class="dispatch-history" id="dispatch-history" role="region" aria-label="Autonomous dispatch results" aria-live="polite"></div>
+      <div class="dispatch-history" id="dispatch-history" role="region" aria-label="Autonomous dispatch results"></div>
     </div>
   </div>
   <!-- Outside both notice regions, so clearing the stack is announced without
@@ -1476,6 +1500,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
        "Dismiss all" and hears nothing, with focus now somewhere else, has been
        told nothing about what just happened. -->
   <span class="sr-only" id="notice-dock-status" role="status"></span>
+  <!-- A dedicated announcer for dispatch-history arrivals (SH-333), deliberately
+       not `#notice-dock-status`: that element also carries the armed-delete
+       confirmation prompt (`onDeleteStatus`), which the user must read and act
+       on, and a background dispatch result landing mid-confirmation would
+       silently overwrite it. See `addDispatchHistoryRow()`. -->
+  <span class="sr-only" id="dispatch-history-status" role="status"></span>
 </div>
 
 <script>
@@ -2199,7 +2229,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * a drawer open. They are therefore already symmetric, which is the whole
    * property this function exists to restore; inerting them would not fix an
    * asymmetry, it would create a new behaviour (unreachable by either device)
-   * and silence two `aria-live` regions while a modal is up. Restoring
+   * and silence the toast stack's live region and both `sr-only` announcers
+   * (`#notice-dock-status`, `#dispatch-history-status`) while a modal is up. Restoring
    * symmetry means covering exactly what is dimmed: the app shell, and the
    * overlays that are not on top.
    *
@@ -3166,16 +3197,40 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return found;
   }
 
-  /** Announces an outcome that is not itself a notice.
+  /** Writes `message` into the `role="status"` element `id`, forcing a genuine
+   * mutation even when the new text equals the old.
    *
-   * Cleared first so that dismissing twice in a row announces twice: a live
-   * region whose text is reassigned to the value it already holds is not a
-   * mutation, and several screen readers say nothing at all. */
-  function announceInNoticeDock(message) {
-    var status = $("notice-dock-status");
+   * Cleared first so that two announcements in a row with identical text both
+   * land: a live region whose text is reassigned to the value it already holds
+   * is not a mutation, and several screen readers say nothing at all. This
+   * guarantees a DOM mutation happens -- not that a real assistive
+   * technology's own speech queue will not itself coalesce two adjacent
+   * identical utterances, which is a hand-check question, never an e2e
+   * claim (the SH-322/SH-327 precedent). */
+  function setStatusText(id, message) {
+    var status = $(id);
     if (!status) return;
     status.textContent = "";
     status.textContent = message;
+  }
+
+  /** Announces an outcome that is not itself a notice. */
+  function announceInNoticeDock(message) {
+    setStatusText("notice-dock-status", message);
+  }
+
+  /** Announces an arriving dispatch-history row (SH-333). A dedicated element,
+   * not `#notice-dock-status`: see the markup comment on
+   * `#dispatch-history-status` for why sharing it would risk clobbering the
+   * armed-delete confirmation prompt. `#dispatch-history` itself carries no
+   * `aria-live` -- `renderDispatchHistory()` rebuilds it wholesale on every
+   * render, so nothing about the live region's own attributes can announce
+   * only the arriving row; this is the announcer instead. */
+  function announceDispatchHistoryArrival(headline, detail, reason) {
+    var message = [headline, detail, reason].filter(function(part) {
+      return part;
+    }).join(". ");
+    setStatusText("dispatch-history-status", message);
   }
 
   /** Clears every notice in the toast stack, clocked ones included.
@@ -3361,6 +3416,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * existing `aria-live` region, never in a `title` attribute, which is
    * unreachable by keyboard and by many screen readers.
    *
+   * **`aria-atomic="true"` on the node itself** (SH-333): the stack is
+   * `aria-atomic="false"`, so a mutation announces only what changed rather
+   * than every standing notice, and this is what makes "what changed" mean
+   * "this whole notice" instead of a bare text fragment -- headline, detail
+   * and reason together, exactly as `noticeBody` renders them.
+   *
    * **Newest first, so DOM order, visual order and scroll position all agree**
    * (SH-323). This was `appendChild` until the stack gained a height bound: with
    * nothing that scrolls, "where does the newest go" was free, and oldest-first
@@ -3382,7 +3443,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function toast(message, variant, detail, reason) {
     var stack = $("toast-stack");
     var durable = noticeIsDurable(variant);
-    var node = el("div", { class: "toast " + (variant || "") }, [
+    var node = el("div", { class: "toast " + (variant || ""), "aria-atomic": "true" }, [
       noticeBody(message, detail, reason),
       durable ? el("button", {
         class: "toast-dismiss",
@@ -3730,6 +3791,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       reason: reason || null
     });
     renderDispatchHistory();
+    // `#dispatch-history` carries no `aria-live` (SH-333): the panel below is
+    // about to be cleared and rebuilt wholesale, which would re-announce every
+    // standing row if the region were still live. This is the announcement
+    // instead, of the row that actually arrived.
+    announceDispatchHistoryArrival(headline, detail, reason);
   }
 
   /** The dismiss control of the row bearing `key`, or null.
