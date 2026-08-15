@@ -542,13 +542,24 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
    feature. */
 .story-ref { display: inline-flex; align-items: center; gap: 0.25rem; }
 .story-light.unknown { background: transparent; border: 1.5px solid var(--fg-faint); }
-.card-flags { display: flex; gap: 0.3125rem; margin-top: 0.375rem; }
+/* flex-wrap (SH-309): the blocked badge can now carry a whole sentence of
+   `.rel-id` refs, each pinned to `min-width: var(--tap-min)` -- 44px under
+   `pointer: coarse` -- so three refs alone are 132px of irreducible width.
+   `.card` clips nothing (no `overflow` rule of its own), so an unwrapped
+   row would run the badge off the card rather than merely looking tight,
+   on the narrow columns `responsive.mobile.spec.ts` pins at a 320px
+   viewport. */
+.card-flags { display: flex; flex-wrap: wrap; gap: 0.3125rem; margin-top: 0.375rem; }
 .flag-blocked { color: var(--danger); }
 .flag-archived { color: var(--fg-faint); }
 .flag { font-size: 0.6875rem; font-weight: 600; display: inline-flex; align-items: center; gap: 0.1875rem; }
-/* SH-203 consumer 2: the card's own blockers list -- see openBlockers()
-   and populateCard(). `.blocker-cleared`'s dwell/pulse are added in the
-   cleared-blocker-dwell change alongside this one. */
+/* SH-203 consumer 2's cleared-blocker dwell -- see dwellingBlockerIds()
+   and populateCard(). Every OPEN blocker moved into the blocked badge
+   (SH-309, blockedFlag()); this row is now the dwell's home alone, since
+   the badge disappears the instant the last blocker closes and the dwell
+   chip needs somewhere to keep being visible. `.blocker-cleared`'s
+   dwell/pulse are added in the cleared-blocker-dwell change alongside this
+   one. */
 .card-blockers { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; margin-top: 0.375rem; }
 
 /* ---- List ---- */
@@ -4806,7 +4817,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * given id (its identity-bound event listeners) live here; everything
    * that *can* change across renders lives in `populateCard`, called both
    * here (for the initial fill) and directly on reuse. */
-  /** The stories still blocking `st` -- SH-203's card blockers list.
+  /** The stories still blocking `st` -- SH-203's card blockers list, and
+   * SH-309's first cause fragment in the blocked badge.
    *
    * Mirrors the server's own `is_ready` rule (src/domain.rs): a
    * `blocked-by` relationship only blocks while its target resolves in
@@ -4814,9 +4826,18 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * written on both ends in one transaction (RelationService::relate), so
    * `st.relationships` already carries every `blocked-by` edge -- no
    * reverse index or second fetch is needed to answer "who blocks this
-   * one". A blocker the client can't resolve (another project, deleted, a
-   * draft) does not block, the same as the daemon's own blocked_ids
-   * computation already treats it. */
+   * one".
+   *
+   * A blocker the client can't resolve does not appear here -- but,
+   * corrected from an earlier version of this comment (SH-309): only
+   * "another project" genuinely agrees between client and server. A
+   * `blocked-by` target that is a **draft** or **soft-deleted** still
+   * blocks server-side (`is_ready` walks the daemon's whole `view_map`,
+   * unfiltered) while being invisible here (`src/api/rest.rs` routes
+   * drafts to a separate `drafts` array and excludes deleted stories from
+   * `stories` entirely) -- so those two causes are real, silent gaps this
+   * function cannot see, not agreement. `blockedFlag()` names that gap
+   * explicitly rather than repeating this claim. */
   function openBlockers(st) {
     return (st.relationships || []).filter(function(r) {
       if (r.relation !== "blocked-by") return false;
@@ -4825,26 +4846,142 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     });
   }
 
+  /** How many blocker/obviator refs the blocked badge names before folding
+   * the rest into a "+N" -- the `.card-labels`/`.card-blockers` overflow
+   * idiom, as inline text rather than a chip since the badge reads as one
+   * sentence. */
+  var BLOCKED_FLAG_REF_CAP = 3;
+
+  /** How many characters of a typed `awaiting` reason the badge quotes
+   * before truncating with an ellipsis and moving the full text to the
+   * badge's own `title` -- long enough for a short sentence ("waiting on
+   * SH-9", "blocked on legal sign-off"), short enough that three blocker
+   * refs plus a reason still has a chance of fitting `.card-flags`' wrap. */
+  var AWAITING_FLAG_TRUNCATE = 40;
+
+  /** Renders `ids` as a comma-joined run of `storyRef()`s for the blocked
+   * badge's parenthetical, capped at `BLOCKED_FLAG_REF_CAP`. Commas are
+   * real text nodes rather than `.flag`'s own `gap` -- a dropped separator
+   * has to be visible to a `toHaveText` assertion, not merely to `.flag`'s
+   * layout, or nothing would ever catch losing one. */
+  function refList(ids) {
+    var nodes = [];
+    ids.slice(0, BLOCKED_FLAG_REF_CAP).forEach(function(id, i) {
+      if (i > 0) nodes.push(", ");
+      nodes.push(storyRef(id));
+    });
+    if (ids.length > BLOCKED_FLAG_REF_CAP) {
+      nodes.push(", +" + (ids.length - BLOCKED_FLAG_REF_CAP));
+    }
+    return nodes;
+  }
+
   /** Every sentence the blocked badge can say, derived in one place (SH-309)
    * so a cause can't go untested the way this used to: the badge tested
    * only `awaiting`, while `blocked_ids` (server-side, `src/service/
    * query.rs`) is driven by `is_ready`'s multi-clause test (`src/
-   * domain.rs`) -- a story blocked by an open `blocked-by` edge got the
-   * same "(no reason)" label as one genuinely parked with none. Returns
-   * `{ children, title, ariaText }`: `children` feeds the badge's `el()`
-   * call directly (a mixed array of strings and nodes, exactly what
-   * `appendChildren()` already accepts), `title` is the badge's own hover
-   * text (or `null`), and `ariaText` is what the card's `aria-label`
-   * appends so the reason reaches assistive tech too -- which the badge
-   * alone never did. */
-  function blockedFlag(st) {
-    if (st.awaiting) {
-      return { children: ["● blocked"], title: null, ariaText: "blocked" };
+   * domain.rs`) -- a story blocked by an open `blocked-by` edge or an
+   * `obviated-by` one got the same "(no reason)" label as one genuinely
+   * parked with none. Returns `{ children, title, ariaText }`: `children`
+   * feeds the badge's `el()` call directly (a mixed array of strings and
+   * nodes, exactly what `appendChildren()` already accepts), `title` is
+   * the badge's own hover text (or `null`), and `ariaText` is what the
+   * card's `aria-label` appends so the reason reaches assistive tech too
+   * -- which the badge alone never did.
+   *
+   * The parenthetical is a comma-joined list of every cause this client
+   * can see, in this order: open `blocked-by` refs (`openBlockers()`),
+   * then `obviated-by` refs, then a quoted `awaiting` reason. Unlike
+   * `openBlockers()`, the `obviated-by` half does **not** filter by
+   * resolvability: `is_ready` treats *any* `obviated-by` edge as blocking,
+   * with no check on whether the target resolves or is still open (unlike
+   * its `blocked-by` clause, which requires both) -- so an edge this
+   * client can't resolve is still a real cause, rendered via `storyRef()`'s
+   * existing "unknown" ring rather than silently dropped, the same way the
+   * drawer's own relationships list already renders every relation
+   * unconditionally. Decided by council vote, unanimous in round 1:
+   * `.council/sh309-unresolvable-obviated-by-badge-ref/DECISION.md`.
+   *
+   * An empty cause list falls through to the pre-SH-309 two cases -- but
+   * only when the server-computed `isBlocked` (`blocked[st.id]`,
+   * `blocked_ids`) agrees there is something to report at all, returning
+   * `null` otherwise: the doctor's own "(no reason)" (`state === "blocked"`
+   * with no `awaiting`), or a bare "blocked" whose title says the cause is
+   * invisible to this client -- reachable via a `blocked-by` edge onto an
+   * open draft or soft-deleted story (see `openBlockers()`'s own comment).
+   * Today those cards lied; now they say less, and say on hover that they
+   * are saying less.
+   *
+   * `isBlocked` matters only for that empty-list fallback -- a non-empty
+   * cause list is shown regardless of it, on purpose. `blocked_ids` is a
+   * whole-project aggregate the server recomputes on its own `/data`
+   * fetch; a relate/block mutation's own response instead patches just the
+   * one story's `relationships`/`awaiting` in place (`handleMutationSuccess`)
+   * and can render before the next `/data` reply lands (or, worse, while
+   * one is deliberately held -- `stale-data-response.spec.ts`'s own
+   * scenario). `openBlockers()` already reads `st.relationships` directly
+   * for exactly this reason (`.card-blockers`'s pre-SH-309 behaviour); a
+   * `blockedFlag()` that trusted `isBlocked` alone would have gone stale
+   * where `.card-blockers` never was. Since every clause `causes` derives
+   * from is one `is_ready` (`src/domain.rs`) already tests, a non-empty
+   * `causes` implies the server *would* agree once its own aggregate
+   * catches up -- so trusting the fresher, locally-derived signal over a
+   * possibly-lagging one is strictly more correct, never less. */
+  function blockedFlag(st, isBlocked) {
+    var causes = [];
+    var ariaParts = [];
+
+    var blockerIds = openBlockers(st).map(function(r) { return r.other_id; });
+    if (blockerIds.length) {
+      causes.push(refList(blockerIds));
+      ariaParts.push("blocked by " + blockerIds.join(", "));
     }
+
+    var obviatorIds = (st.relationships || [])
+      .filter(function(r) { return r.relation === "obviated-by"; })
+      .map(function(r) { return r.other_id; });
+    if (obviatorIds.length) {
+      causes.push(["obviated by "].concat(refList(obviatorIds)));
+      ariaParts.push("obviated by " + obviatorIds.join(", "));
+    }
+
+    var reasonTitle = null;
+    if (st.awaiting) {
+      var truncated = st.awaiting.length > AWAITING_FLAG_TRUNCATE
+        ? st.awaiting.slice(0, AWAITING_FLAG_TRUNCATE - 1) + "…"
+        : st.awaiting;
+      causes.push(["\"" + truncated + "\""]);
+      ariaParts.push("reason: " + st.awaiting);
+      if (truncated !== st.awaiting) reasonTitle = st.awaiting;
+    }
+
+    if (!causes.length) {
+      if (!isBlocked) return null;
+      if (st.state === "blocked") {
+        return {
+          children: ["● blocked (no reason)"],
+          title: "No awaiting reason recorded — click the card to add one.",
+          ariaText: "blocked, no reason recorded"
+        };
+      }
+      return {
+        children: ["● blocked"],
+        title: "Blocked by something this board can't resolve — open the story for details.",
+        ariaText: "blocked, cause not shown"
+      };
+    }
+
+    var children = ["● blocked ("];
+    causes.forEach(function(cause, i) {
+      if (i > 0) children.push(", ");
+      children = children.concat(cause);
+    });
+    children.push(")");
+
     return {
-      children: ["● blocked (no reason)"],
-      title: "No awaiting reason recorded — click the card to add one.",
-      ariaText: "blocked, no reason recorded"
+      children: children,
+      title: reasonTitle,
+      ariaText: "blocked (" + ariaParts.join(", ") + ")"
     };
   }
 
@@ -4889,7 +5026,24 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     card.className = "card" + (state.pending[st.id] ? " pending" : "") + (draggable ? "" : " not-draggable");
     card.draggable = draggable;
     card.title = isClosed ? "Reopen from the detail view to move this card" : "";
-    card.setAttribute("aria-label", st.id + ": " + st.title);
+    // Computed before the flags block below so the label can be set here,
+    // once, alongside every other identity attribute -- `blockedFlag()`
+    // is otherwise pure and cheap enough to call twice, but one call keeps
+    // the label and the rendered badge from ever answering differently.
+    // `blocked[st.id]` (the server's whole-project `blocked_ids`) is passed
+    // through rather than gating the call outright -- see blockedFlag()'s
+    // own comment on why a locally-derivable cause must outrank it.
+    var flagDesc = blockedFlag(st, !!blocked[st.id]);
+    // SH-309: `card`'s subtree is presentational to assistive tech (see
+    // `.card-actions-btn`'s own comment below), so a blocked reason that
+    // reaches only the badge's `title` never reaches AT at all -- appending
+    // `ariaText` is what makes "blocked by SH-308" (or "no reason
+    // recorded") announced along with the rest of the card, not just shown
+    // to a sighted mouse user on hover.
+    card.setAttribute(
+      "aria-label",
+      st.id + ": " + st.title + (flagDesc ? " — " + flagDesc.ariaText : "")
+    );
     card.style.setProperty("--card-accent", priorityColor(st.priority));
 
     clear(card);
@@ -4930,8 +5084,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     card.appendChild(metaRow);
 
     var flags = el("div", { class: "card-flags" }, []);
-    if (blocked[st.id]) {
-      var flagDesc = blockedFlag(st);
+    if (flagDesc) {
       var flag = el("span", { class: "flag flag-blocked" }, flagDesc.children);
       if (flagDesc.title) flag.title = flagDesc.title;
       flags.appendChild(flag);
@@ -4944,24 +5097,19 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (st.hidden_at) flags.appendChild(el("span", { class: "flag flag-archived" }, ["🗄 archived"]));
     if (flags.childNodes.length) card.appendChild(flags);
 
-    // SH-203 consumer 2: every OPEN story still blocking this one, each
-    // with its own status light -- capped and overflow-chipped the same
-    // way .card-labels above is, so a heavily-blocked card doesn't grow
-    // without bound. Plus, uncapped, any blocker still inside its
-    // cleared-blocker dwell window (dwellingBlockerIds) -- it closed just
-    // now, openBlockers() itself no longer counts it, but the whole point
-    // of the dwell is that it stays visible -- lit its own CLOSED colour
-    // via storyLight(), marked `.blocker-cleared` for the pulse below --
-    // long enough for the reader to see *which* blocker cleared. The two
-    // sets never overlap: a dwelling entry's target is CLOSED by
-    // definition, so openBlockers() (which requires OPEN) can never also
-    // include it.
-    var blockers = openBlockers(st);
+    // SH-203's cleared-blocker dwell (SH-309 moved the live half of this
+    // row -- every OPEN blocker -- into the badge above, via `blockedFlag`;
+    // this row is now the dwell's home alone, since the badge disappears
+    // the instant the last blocker closes and the dwell chip needs
+    // somewhere to keep being visible). Any blocker still inside its dwell
+    // window (`dwellingBlockerIds`) -- it closed just now, `openBlockers()`
+    // no longer counts it, but the whole point of the dwell is that it
+    // stays visible -- lit its own CLOSED colour via `storyLight()`,
+    // marked `.blocker-cleared` for the pulse below -- long enough for the
+    // reader to see *which* blocker cleared.
     var dwelling = dwellingBlockerIds(st.id, Date.now());
-    if (blockers.length || dwelling.length) {
+    if (dwelling.length) {
       var blockersWrap = el("div", { class: "card-blockers" }, []);
-      blockers.slice(0, 3).forEach(function(r) { blockersWrap.appendChild(storyRef(r.other_id)); });
-      if (blockers.length > 3) blockersWrap.appendChild(el("span", { class: "chip" }, ["+" + (blockers.length - 3)]));
       dwelling.forEach(function(id) {
         var ref = storyRef(id);
         ref.classList.add("blocker-cleared");

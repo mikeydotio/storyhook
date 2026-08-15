@@ -115,9 +115,12 @@ test("a board snapshot taken before a relation must not un-render it when it arr
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
+  // The live blocker is named in the badge (SH-309, `blockedFlag`), not a
+  // separate `.card-blockers` row -- that now holds only the
+  // cleared-blocker dwell.
   const workerCard = page.locator(".card", { hasText: workerTitle });
-  const blockersRow = workerCard.locator(".card-blockers");
-  await expect(blockersRow.locator(".rel-id")).toHaveText(blockerId);
+  const badge = workerCard.locator(".flag-blocked");
+  await expect(badge.locator(".rel-id")).toHaveText(blockerId);
 
   await stale.seal();
   await stale.deliver();
@@ -126,7 +129,7 @@ test("a board snapshot taken before a relation must not un-render it when it arr
   // both -- so `populateCard` rebuilds it in place, synchronously, with
   // whatever relationships the applied snapshot carries. No exit animation
   // stands between this assertion and the truth.
-  await expect(blockersRow.locator(".rel-id")).toHaveText(blockerId);
+  await expect(badge.locator(".rel-id")).toHaveText(blockerId);
 });
 
 test("a board snapshot in flight when a write lands must not un-render that write, with no newer reply to repair it", async ({
@@ -183,13 +186,14 @@ test("a board snapshot in flight when a write lands must not un-render that writ
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
+  // Same badge move as the first test above (SH-309).
   const workerCard = page.locator(".card", { hasText: workerTitle });
-  const blockersRow = workerCard.locator(".card-blockers");
-  await expect(blockersRow.locator(".rel-id")).toHaveText(blockerId);
+  const badge = workerCard.locator(".flag-blocked");
+  await expect(badge.locator(".rel-id")).toHaveText(blockerId);
 
   await stale.deliver();
 
-  await expect(blockersRow.locator(".rel-id")).toHaveText(blockerId);
+  await expect(badge.locator(".rel-id")).toHaveText(blockerId);
 });
 
 test("a board snapshot taken before a story existed must not un-render that story when it arrives late", async ({
