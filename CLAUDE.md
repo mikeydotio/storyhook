@@ -185,6 +185,30 @@ Standing rules for every wave:
   and a target_os the matrix *does* build passes with no edit. Adding a platform for
   real means adding it to the matrix and proving the code by building it there; the test
   passing is the matrix's decision, not this file's.
+- **A hook that did not refuse is not evidence that a hook ran** (SH-306). A Claude Code
+  `PreToolUse` hook **fails open at its timeout**: the harness SIGTERMs it and then lets the
+  tool call proceed, silently. `~/.claude/hooks/pre-push-tests.sh` runs `make test` under a
+  900-second ceiling that this suite — nine minutes nominal, longer whenever two of the
+  three-to-four concurrent worktree sessions overlap — routinely exceeds. Six of the eight
+  hook logs left on this machine ended at exactly 900s across three days; each was a push
+  that shipped with no gate and no message saying so. The `pre-push-tests: running…` line is
+  therefore a statement of intent, never of completion, and its *absence* means nothing at
+  all (a backgrounded tool call never shows it even when the hook ran the full 900s). This is
+  the SH-226 doctrine one layer up: rendered output is not evidence a process ran, and now,
+  neither is a gate's silence. **The gate that counts is git's own** — `.githooks/pre-push`,
+  which has no deadline and no opinion about how the push was invoked. It verifies a receipt
+  naming the tree that went green rather than re-running the suite, because a hook that
+  re-ran it would inherit the same deadline and would start a second nine-minute suite while
+  the first was still running — already recorded here as the cause of a false red.
+  `scripts/gate-receipt.sh preflight` (the first line of `make test`) **enrols the clone**, so
+  running the gate is what installs the gate; the `postlude` phase is its **last** line, so
+  "no receipt unless every leg passed" holds by make's own fail-fast semantics. Two limits
+  are deliberate and neither is a bug: the receipt attests **the tip tree of each pushed
+  ref**, so unreceipted commits in a range are *named, not blocked* (a receipt per commit
+  would mean a nine-minute suite per commit, which is the pressure that caused SH-306); and
+  **forgery is not the threat model**, since anyone who can hand-write a receipt already has
+  `--no-verify`. `tests/push_gate.rs` provokes the bypass rather than asserting the hook
+  exists, and is mutation-checked in both directions.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
