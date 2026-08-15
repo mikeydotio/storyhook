@@ -16460,3 +16460,94 @@ The gate's own first real push demonstrated both halves of its contract
 unprompted: the tip was certified and allowed, and the intermediate commit
 `5bf9658` was **named and not blocked** — the deliberate limit, proving itself
 on the first live push rather than in a test.
+### SH-305 — done
+
+**Outcome:** merged. Every board column now has its own sort, chosen from a
+popup menu opened by a glyph at the column header's top-right corner —
+replacing SH-128's single board-wide Priority/Order pair in the filter panel.
+
+**This reverses a decision SH-128's council made deliberately, on new
+information.** That council voted 3-0 for one shared pair of buttons rather
+than repeating them per column, reasoning that "board sort is one value with
+no per-column identity" — and recorded the choice as a documented deviation
+from SH-128's own text, which had literally said "in the status column
+header." SH-305 asserts the opposite: a `todo` column and a `done` column can
+legitimately want different orders, and a board-wide toggle can never express
+that. Both verdicts were right for what they knew — SH-128 had no story yet
+asking for per-column identity; SH-305 is that story.
+
+**The option set changed too, in a way that touches the same ground SH-128's
+council already surveyed.** That council explicitly rejected `created_at` as
+a sort basis, on fixture evidence that it disagrees with numeric id order
+(SH-1 created after SH-2 but numbered lower — `domain.rs::
+ready_order_ignores_created_at_entirely` pins the disagreement) — and chose
+`story_number` instead, calling it "story order." SH-305's own text asks for
+"Added" and "Modified," which are exactly `created_at`/`updated_at`. Confirmed
+with the user before implementing: these are a different question than
+SH-128's "what order was this created in, id-wise" — "Added"/"Modified" ask
+when a *timestamp* landed, not where a story sits in the numbering, and both
+can coexist without contradiction. `story_number`'s own comparison stays
+alive as the tiebreak inside the comparator (ties at second precision are
+common — SH-63's own finding), it is simply no longer offered as a menu
+option in its own right.
+
+**Built.** `state.columnSort`, a sparse slug-keyed map (`{slug: {key, dir}}`),
+replaces `state.boardSort`'s single `{key, dir}` — renamed, not reshaped in
+place, so an older build's persisted blob can't be misread as a slug map (its
+literal `"key"`/`"dir"` strings would otherwise look like state slugs).
+`columnCardCompare(slug)` replaces the single `boardCardCompare`, keyed by
+`state.columnSort[slug]` (or the default, priority descending). Pruned in
+`pruneCarriedFilters()` alongside `hiddenColumns`, since it is state-slug
+vocabulary with the identical per-repo hazard. Not touched by Clear Filters,
+matching `hiddenColumns`/`sort`'s own precedent.
+
+The menu reuses the story context menu's `.ctxmenu` machinery rather than the
+filter bar's `.fdd-panel` — the latter is `position: absolute`, and a column
+header sits inside `.board`'s `overflow-x: auto`, so a panel could clip; the
+former is already `position: fixed` and viewport-clamped. Landed as two
+commits: a pure refactor first (`focusMenuItem`/`handleMenuKeydown`/
+`renderMenuNode` extracted from `storyMenuFocusItem`/`bindStoryMenuKeys`/
+`renderStoryMenuNode`, verified behavior-identical against the full suite
+before anything else changed), then the feature, which extends
+`renderMenuNode` with the `checked`/`role="menuitemradio"` shape the sort menu
+needs and the story menu doesn't use.
+
+The Archive button (CLOSED-superstate columns only) moved from beside the
+column count to between the title and the count/sort-button group, via a
+second `margin-left: auto` splitting the header's free space with the
+count's own — an approximation of centering rather than absolute
+positioning, deliberately: `.column` narrows to `min(18rem, 85vw)` under the
+mobile breakpoint, and auto margins can't overlap the way absolute
+positioning could at that width.
+
+**Tests.** `tests/web_test.rs`: `.board-sort-btn` dropped from the tap-target
+list, `.column-sort-btn` added to the glyph-only (`min-width`+`min-height`)
+one; new structural pins for the menu functions and all six option labels;
+negative pins confirming `#board-sort`/`#boardsort-priority`/
+`#boardsort-order` are gone, so the global control can't quietly come back.
+`e2e/specs/board-sort.spec.ts` fully rewritten, 8 cases against a real daemon
+and browser — including one that sets `todo`'s sort and asserts `in-progress`'s
+own sort and card order are untouched, the assertion SH-128's board-wide
+design could never have passed.
+
+**Gate: `make test` green, on the second of two full runs.** The first run (4
+failures — `description-edit-mode.spec.ts`, `markdown-rendering.spec.ts`, and
+two `notification-contract.spec.ts` timer-timeout cases) was investigated
+before assuming anything about this story's own diff: none of the four
+failing specs touch board sort, the shared `.ctxmenu` extraction, or column
+headers, and all four are timer/timeout-shaped tests (`Test timeout of
+15000ms exceeded`) — exactly what CPU contention breaks. `ps`/`uptime` at the
+time showed load averages of 5.5/13.4/18.7 with a second worktree's own
+`cargo test --workspace` running concurrently on the same machine (confirmed
+directly: both sessions were mid-`dead_public_surface.rs` at the same
+moment). Reran the four failing specs alone — 21/21 green, no changes — then
+ran the full gate a second time end to end rather than stitching partial runs
+together as evidence: 211/211 e2e, EXIT_CODE=0. Matches this file's own
+`playwright.config.ts` comment, which measured its 15s timeout budget against
+specific load averages and always expected a busy machine to be the failure
+mode, not this story's code.
+
+**Supervision:** log-growth heartbeat with a 120s stall bound on both full
+`make test` runs and the isolated rerun. No stalls, no wedges, no kills.
+
+**Deviations:** none.
