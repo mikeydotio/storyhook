@@ -2,51 +2,53 @@
 name: story-triage
 description: "Use when the project backlog needs review -- stories need prioritization, stale items need attention, or work needs reorganization. Reviews all open stories, identifies issues, and guides reprioritization."
 user-invocable: true
-allowed-tools: Bash(story *), Bash(command -v *), AskUserQuestion
+allowed-tools: Bash(story *), Bash(command -v *), Bash(bash ${CLAUDE_PLUGIN_ROOT}/bin/story.sh *), AskUserQuestion
 ---
 
 # Storyhook Triage
 
-Review and organize the project backlog.
+You are a **thin router** for gathering and presenting findings. Deterministic work — the
+four reads this used to run one at a time, and the classification of every story into an
+issue category — lives in `bash ${CLAUDE_PLUGIN_ROOT}/bin/story.sh triage`. **Route and
+render for that part — never call `story` yourself to gather or classify.** The
+*resolution* commands in step 3 are direct `story` calls, unchanged: each is already one
+unambiguous CLI invocation with nothing to parse.
 
 ## Steps
 
 ### 0. Ensure the storyhook CLI is available
 
-Before running any `story` command, confirm the CLI is installed by running `command -v story`. If it is missing, follow `${CLAUDE_PLUGIN_ROOT}/references/ensure-cli.md`: tell the user, ask permission to install (via `AskUserQuestion`), and if approved use the `story-install` skill before continuing. Do not run `story` commands until this check passes.
+Follow `${CLAUDE_PLUGIN_ROOT}/references/ensure-cli.md`. Do not continue until it passes.
 
-### 1. Gather project state
+### 1. Gather and classify
 
-Run these commands to get a complete picture:
+Run `bash ${CLAUDE_PLUGIN_ROOT}/bin/story.sh triage`. `ok:false` → show `display`, stop.
 
-- `story list --json` -- all open stories with full details
-- `story list --stale 3d --json` -- stories not updated in 3+ days
-- `story list --blocked --json` -- stories waiting on something
-- `story graph --json` -- dependency relationships
+`findings[]` is every issue found, each `{id, title, category, detail}` with `category`
+one of:
 
-Each story in `list`'s `.stories[]` array is double-nested: fields are at `.stories[].story.*` (e.g. `.stories[].story.priority`, `.stories[].story.awaiting`), not `.stories[].*` directly.
+- **`blocked`** — has an unmet dependency or an explicit `awaiting` reason (`detail`
+  carries it)
+- **`stale`** — not updated within `STORY_STALE_THRESHOLD` (default `3d`)
+- **`unprioritized`** — `priority: none`
+- **`cycle`** — sits on a `blocked-by` cycle — the CLI does not surface this itself, so
+  the script detects it directly from every story's own relationships (Kahn's algorithm);
+  this is no longer a manual "eyeball the graph" step
+- **`orphan`** — no relationships at all; may be missing a dependency or a parent
 
-### 2. Identify issues
+`counts` gives the total per category. A story can appear more than once (e.g., both
+`stale` and `unprioritized`).
 
-Analyze the gathered data and flag:
+### 2. Present findings
 
-- **Stale stories**: open stories with no activity in 3+ days. These may need to be reprioritized, unblocked, or closed.
-- **Blocked stories**: stories with a non-null `awaiting` field (set by `story block`). Check if the blocker is still valid or can be cleared with `story unblock`.
-- **Unprioritized stories**: stories with `priority: none`. Every open story should have a priority to ensure `story next` gives good recommendations.
-- **Orphan stories**: stories with no relationships that might be missing dependencies or could be grouped under a parent.
-- **Dependency cycles**: eyeball `story graph`'s output for `blocked-by` chains that loop back on themselves — the CLI does not automatically detect or flag cycles, so this is a manual check.
+Show `display` — it is already organized by severity (blocked, stale, unprioritized,
+cycle, orphan) with each finding's id, title, and detail. If `findings` is empty, `display`
+says the backlog looks clean; report that and stop.
 
-### 3. Present findings
+### 3. Interactive resolution
 
-Show the user a summary of all issues found, organized by severity:
-1. Blocked stories (may be stopping progress)
-2. Stale stories (may indicate forgotten work)
-3. Unprioritized stories (affects task selection)
-4. Structural issues (cycles, orphans)
-
-### 4. Interactive resolution
-
-For each issue, ask the user what to do and execute their decision:
+For each finding, ask the user what to do and execute their decision with the matching
+direct CLI command:
 
 - **Reprioritize**: `story prioritize <id> <critical|high|medium|low|none>`
 - **Add labels**: `story label <id> <labels-csv>`
@@ -57,6 +59,11 @@ For each issue, ask the user what to do and execute their decision:
 - **Add relationships**: `story relate <a> <relationship> <b>` — the only valid relationships are `blocks`, `blocked-by`, `parent-of`, `child-of`, `relates-to`, `duplicate-of`, `obviates`, `obviated-by` (use `blocks`/`blocked-by` for execution-order dependencies, not `relates-to`)
 - **Remove relationships**: `story unrelate <a> <relationship> <b>`
 
-### 5. Verify
+A `cycle` finding needs one of its `blocked-by` edges removed or redirected
+(`story unrelate`/`story relate`) — which edge is wrong is a judgment call the script does
+not make; ask the user.
 
-After all changes, run `story summary` to show the updated project state and confirm the backlog is in good shape.
+### 4. Verify
+
+After all changes, run `story summary` to show the updated project state and confirm the
+backlog is in good shape.

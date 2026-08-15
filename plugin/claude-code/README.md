@@ -31,7 +31,7 @@ human-readable `display`. The model routes and renders; it never drives `story`,
 `git`, or `tmux` itself. That is what keeps behavior testable: the bash suite
 exercises the real logic, and the prose can't quietly diverge from it.
 
-`bin/story.sh` accepts twelve subcommands:
+`bin/story.sh` accepts fourteen subcommands:
 
 | Subcommand | Verb it backs |
 |---|---|
@@ -47,11 +47,16 @@ exercises the real logic, and the prose can't quietly diverge from it.
 | `context [--full]` | `/story-context` |
 | `sync [--since <d>]` | `/story-sync` |
 | `handoff [--since <d>]` | `/story-handoff` |
+| `work [story-id]` | `/story-work` |
+| `triage` | `/story-triage` |
 
-The last four (SH-308) route not through this skill but through their own standalone
-skills (`skills/story-context`, `story-sync`, `story-handoff`), and through
-`references/ensure-cli.md`, which six of the nine standalone skills load — same
-one-JSON-object contract, same "route and render" rule, different door in.
+The last six (SH-308) route not through this skill but through their own standalone
+skills (`skills/story-context`, `story-sync`, `story-handoff`, `story-work`,
+`story-triage`), and through `references/ensure-cli.md`, which six of the nine standalone
+skills load — same one-JSON-object contract, same "route and render" rule, different door
+in. `triage` is read-only: it gathers and classifies findings, but the resolution commands
+(`prioritize`/`label`/`block`/…) stay direct `story` calls in the skill, since each is
+already one unambiguous CLI invocation with nothing to parse.
 
 ## Provenance
 
