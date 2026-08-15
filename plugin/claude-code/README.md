@@ -102,9 +102,20 @@ Worth knowing before changing anything here:
 - **The claim is a hard precondition, not a trailing best-effort.** Storyhook's
   `state` *is* the claim marker, so `dispatch` claims via `--if-state` CAS
   before any side effect, and rolls the claim back if a later step fails.
-- **`complete` never forces anything.** `git worktree remove` runs without
-  `--force`, and a branch is deleted only if merged into `origin/<default>` or
-  local `<default>`; an un-comparable branch counts as *not* merged.
+- **`complete` never forces anything by default**, and never touches tmux at
+  all unless it is about to remove a worktree. `git worktree remove` runs
+  without `--force` by default, and a branch is deleted only if merged into
+  `origin/<default>` or local `<default>`; an un-comparable branch counts as
+  *not* merged. **`--force` (SH-308) overrides `dirty`/`current` on the
+  worktree only** — never `locked`, never an unmerged/protected branch. When a
+  worktree is about to be removed (`removable` by default, or `dirty`/
+  `current` under `--force`) and its dispatched tmux window is still open,
+  `complete` closes that window FIRST — the opposite order from `reap`'s
+  "kill last," because `complete` is answering an operator reclaiming
+  *someone else's* worktree, not a session tearing down its own. The one
+  window `complete` never closes, `--force` or not, is the one the caller is
+  asking FROM — that stays `reap`'s job, which kills its own window last for
+  the reason above.
 - **`story doctor` exits 5 when it finds anything**, so `/story doctor` treats a
   non-zero exit as a finding, never as a failed probe. A healthy run answers
   `.findings[]` (empty) and `.advice[]`; a damaged one fails with the same
@@ -119,7 +130,7 @@ Worth knowing before changing anything here:
   (SH-208): reclaims the worktree and branch, then kills the tmux window it
   was running in. `reap` refuses outright unless the story is closed and the
   worktree/branch are both safe to discard — nothing partial, matching
-  `complete`'s own "never forces anything" rule above but all-or-nothing
+  `complete`'s own "never forces anything by default" rule above but all-or-nothing
   rather than best-effort, since nobody is watching to read a partial
   result. The attended path is unchanged: teardown there still stays a later
   `/story complete <id>` from the main checkout.

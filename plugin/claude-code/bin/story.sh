@@ -1679,6 +1679,32 @@ _complete_prepare() {
   CMP_WT_BRANCH="worktree-$CMP_WNAME"
   CMP_WT_STATUS=$(_story_worktree_status "$CMP_WT_PATH" "$caller_toplevel")
 
+  # Window classification (SH-308) — read-only, safe under `plan`. `complete`
+  # never touched tmux before this: it could remove a worktree out from under a
+  # live window, leaving a running Claude session pointed at a deleted
+  # directory. `pane_for_window` is the SAME name-equality lookup `reap` and
+  # `capture` already use (lib/session.sh) — CMP_WNAME is the one name dispatch,
+  # complete and reap all agree on (resolve_wname).
+  #
+  # `self` is distinct from `open` on purpose: `complete` renders an answer a
+  # human standing in THAT window reads, so killing it would destroy the
+  # session before it could show the result. `reap` exists for exactly the
+  # self-directed case and kills its own window LAST for that reason (see its
+  # header comment) — `complete` defers to it rather than re-deriving the same
+  # judgment call here.
+  CMP_WINDOW_STATUS="none"
+  CMP_WINDOW_PANE=""
+  if [ -n "${TMUX:-}" ]; then
+    CMP_WINDOW_PANE=$(pane_for_window "$CMP_WNAME") || CMP_WINDOW_PANE=""
+    if [ -n "$CMP_WINDOW_PANE" ]; then
+      if [ -n "${TMUX_PANE:-}" ] && [ "$CMP_WINDOW_PANE" = "$TMUX_PANE" ]; then
+        CMP_WINDOW_STATUS="self"
+      else
+        CMP_WINDOW_STATUS="open"
+      fi
+    fi
+  fi
+
   # Branch classification. An un-comparable branch is NEVER treated as merged
   # (branch_is_merged returns false when neither origin/<default> nor local
   # <default> exists), so it is preserved rather than deleted.
@@ -1715,6 +1741,17 @@ _complete_prepare() {
   [ "$CMP_WT_STATUS" = "removable" ] && CMP_ACTIONS=$((CMP_ACTIONS + 1))
   [ "$CMP_BR_STATUS" = "deletable" ] && CMP_ACTIONS=$((CMP_ACTIONS + 1))
   [ "$CMP_NEEDS_CLOSE" = true ] && CMP_ACTIONS=$((CMP_ACTIONS + 1))
+  # An `open` window is actionable ONLY when the worktree default `execute`
+  # (no `--force`) will actually remove — i.e. `removable`. A window sitting
+  # on a `dirty`/`current`/`locked` worktree is left alone by DEFAULT execute
+  # too (see cmd_complete_execute), so counting it here would claim an action
+  # this plan's own default run would not take; `--force` is an execute-only
+  # override the plan does not assume. `self` is never counted — `complete`
+  # cannot act on the window rendering its own answer; see the classification
+  # comment above.
+  if [ "$CMP_WINDOW_STATUS" = "open" ] && [ "$CMP_WT_STATUS" = "removable" ]; then
+    CMP_ACTIONS=$((CMP_ACTIONS + 1))
+  fi
   return 0
 }
 
@@ -1732,6 +1769,7 @@ cmd_complete_plan() {
     --arg default "$CMP_DEFAULT" --arg wtpath "$CMP_WT_PATH" \
     --arg wtstatus "$CMP_WT_STATUS" --arg branch "$CMP_WT_BRANCH" \
     --arg brstatus "$CMP_BR_STATUS" --argjson close "$CMP_NEEDS_CLOSE" \
+    --arg wname "$CMP_WNAME" --arg wstatus "$CMP_WINDOW_STATUS" \
     --argjson actions "$CMP_ACTIONS" \
     --arg note "$CMP_NOTE" '
     {
@@ -1740,16 +1778,23 @@ cmd_complete_plan() {
       plan: {
         close: (if $close then { to: $done_state } else null end),
         worktree: { path: $wtpath, status: $wtstatus },
-        branch:   { name: $branch, status: $brstatus }
+        branch:   { name: $branch, status: $brstatus },
+        window:   { name: $wname, status: $wstatus }
       },
       actions_count: $actions,
       display: (
         "[story] complete " + $id + " — plan (" + ($actions|tostring) + " action(s)):\n"
         + "  story:    " + $state + " (" + $super + ")"
           + (if $close then " -> would close as `" + $done_state + "`" else " -> already closed, nothing to do" end) + "\n"
+        + "  window:   `" + $wname + "` [" + $wstatus + "]"
+          + (if $wstatus == "open" and $wtstatus == "removable" then " -> would close before removing the worktree"
+             elif $wstatus == "open" then " -> would close only if `--force` removes the worktree below"
+             elif $wstatus == "self" then " -> PRESERVED (this is the window you are asking from — use `reap` for that)"
+             else " -> nothing to close" end) + "\n"
         + "  worktree: " + $wtpath + " [" + $wtstatus + "]"
           + (if $wtstatus == "removable" then " -> would remove"
              elif $wtstatus == "missing" then " -> nothing to remove"
+             elif ($wtstatus == "dirty" or $wtstatus == "current") then " -> PRESERVED (retry with `--force` to override)"
              else " -> PRESERVED" end) + "\n"
         + "  branch:   " + $branch + " [" + $brstatus + "]"
           + (if $brstatus == "deletable" then " -> would delete (merged into " + $default + ")"
@@ -1763,21 +1808,22 @@ cmd_complete_plan() {
 
 cmd_complete_execute() {
   local id="${1:-}"
-  [ -n "$id" ] || fail "usage: story.sh complete execute <story-id> [--no-close] [--no-clean]"
+  [ -n "$id" ] || fail "usage: story.sh complete execute <story-id> [--no-close] [--no-clean] [--force]"
   shift
-  local no_close="" no_clean=""
+  local no_close="" no_clean="" force=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --no-close) no_close=1; shift ;;
       --no-clean) no_clean=1; shift ;;
-      *) fail "unknown argument \`$1\` — usage: story.sh complete execute <story-id> [--no-close] [--no-clean]" ;;
+      --force)    force=1; shift ;;
+      *) fail "unknown argument \`$1\` — usage: story.sh complete execute <story-id> [--no-close] [--no-clean] [--force]" ;;
     esac
   done
   _complete_prepare "$id"
   id="$CMP_ID"
 
   local -a removed_wt=() removed_bl=() failed=() skipped=() commands=()
-  local closed=false close_note=""
+  local closed=false close_note="" closed_window=false
 
   # Close FIRST, and best-effort: a close failure is reported as a note, never
   # ok:false — the cleanup below is still worth doing and still succeeded.
@@ -1804,21 +1850,74 @@ cmd_complete_execute() {
   if [ -n "$no_clean" ]; then
     skipped+=("cleanup:$CMP_WNAME(--no-clean)")
   else
+    # Decide whether the worktree will actually be removed BEFORE touching
+    # either it or its window: `--force` overrides `dirty`/`current` (a `git
+    # worktree remove --force`, the same escalation dispatch's own rollback
+    # already uses at four sites in this file), but never `locked` — Claude
+    # Code's own worktree feature locks the ones it creates, and reclaiming
+    # those has never been this verb's business, forced or not.
+    local wt_action="skip"
     case "$CMP_WT_STATUS" in
-      removable)
+      removable) wt_action="remove" ;;
+      dirty|current) [ -n "$force" ] && wt_action="remove" ;;
+      missing) wt_action="missing" ;;
+      *) wt_action="skip" ;;  # locked, or anything future _story_worktree_status adds
+    esac
+
+    # Close an `open` window BEFORE removing the worktree it belongs to
+    # (SH-308) — a bystander window must never be left running inside a
+    # directory mid-deletion. Reuses the SAME pane `_complete_prepare` already
+    # resolved, so this can't disagree with what `plan` just reported. `self`
+    # is excluded here too (never killed by `complete`; see `reap`), and no
+    # window is closed when the worktree ends up NOT being removed (`skip` —
+    # e.g. `dirty` without `--force`), since nothing is actually being
+    # reclaimed out from under it.
+    if [ "$wt_action" = "remove" ] && [ "$CMP_WINDOW_STATUS" = "open" ]; then
+      if [ -n "$DRY_RUN" ]; then
+        commands+=("tmux kill-window -t <window of $CMP_WNAME>")
+      else
+        local window
+        window=$(tmux display-message -p -t "$CMP_WINDOW_PANE" '#{window_id}' 2>/dev/null || printf '')
+        if [ -n "$window" ]; then
+          tmux kill-window -t "$window" 2>/dev/null || true
+        else
+          tmux kill-window -t "$CMP_WINDOW_PANE" 2>/dev/null || true
+        fi
+      fi
+      closed_window=true
+    elif [ "$CMP_WINDOW_STATUS" = "self" ]; then
+      # Named explicitly, whether or not the worktree ends up touched: a
+      # human standing in this window reading `display` is the one fact
+      # `complete` can never destroy out from under itself. `reap` exists for
+      # exactly this self-directed case and kills its own window LAST.
+      skipped+=("window:$CMP_WNAME(self)")
+    fi
+
+    case "$wt_action" in
+      remove)
         if [ -n "$DRY_RUN" ]; then
-          commands+=("git worktree remove $CMP_WT_PATH" "git worktree prune")
-          removed_wt+=("$CMP_WT_PATH")
-        elif git worktree remove "$CMP_WT_PATH" >/dev/null 2>&1; then
-          # No --force: git itself refuses a dirty or current worktree, and
-          # that veto is a feature, not an obstacle to route around.
-          git worktree prune >/dev/null 2>&1 || true
+          # NOT `$([ -n "$force" ] && printf ...)`: under `set -e`, a failing
+          # LAST command inside a `$(...)` used in an assignment/append kills
+          # this whole script silently (the classic errexit-in-command-
+          # substitution gotcha) — `[ -n "$force" ]` failing when unset would
+          # do exactly that. Computed as a plain `if` beforehand instead.
+          local force_prefix=""
+          if [ -n "$force" ]; then force_prefix="--force "; fi
+          commands+=("git worktree remove ${force_prefix}$CMP_WT_PATH" "git worktree prune")
           removed_wt+=("$CMP_WT_PATH")
         else
-          failed+=("worktree:$CMP_WT_PATH")
+          local -a rm_args=(worktree remove)
+          [ -n "$force" ] && rm_args+=(--force)
+          rm_args+=("$CMP_WT_PATH")
+          if git "${rm_args[@]}" >/dev/null 2>&1; then
+            git worktree prune >/dev/null 2>&1 || true
+            removed_wt+=("$CMP_WT_PATH")
+          else
+            failed+=("worktree:$CMP_WT_PATH")
+          fi
         fi ;;
       missing) : ;;  # already gone — not an error.
-      *) skipped+=("worktree:$CMP_WT_PATH($CMP_WT_STATUS)") ;;
+      skip) skipped+=("worktree:$CMP_WT_PATH($CMP_WT_STATUS)") ;;
     esac
 
     case "$CMP_BR_STATUS" in
@@ -1848,21 +1947,25 @@ cmd_complete_execute() {
         --argjson failed "$fail_json" --argjson skipped "$skip_json" \
         --argjson cmds "$cmds_json" --argjson closed "$closed" \
         --arg done_state "$CMP_DONE_STATE" --arg note "$close_note" \
-        --arg wtnote "$CMP_NOTE" \
+        --arg wtnote "$CMP_NOTE" --argjson closed_window "$closed_window" \
+        --argjson forced "$([ -n "$force" ] && echo true || echo false)" \
         --argjson dry "$([ -n "$DRY_RUN" ] && echo true || echo false)" '
     {
       ok: true, id: $id, closed: $closed,
-      removed: { worktrees: $rwt, branches: $rbl }
+      removed: { worktrees: $rwt, branches: $rbl, window: $closed_window }
     }
     + (if $closed then {closed_as: $done_state} else {} end)
     + (if $dry then {dry_run:true, commands:$cmds} else {} end)
+    + (if $forced then {forced:true} else {} end)
     + (if ($failed|length) > 0 then {failed:$failed} else {} end)
     + (if ($skipped|length) > 0 then {skipped:$skipped} else {} end)
     + { display: (
         "[story] " + (if $dry then "DRY RUN for " else "" end) + "complete " + $id + ": "
         + (if $closed then (if $dry then "would close as `" else "closed as `" end) + $done_state + "`, " else "" end)
+        + (if $closed_window then (if $dry then "would close its tmux window, " else "closed its tmux window, " end) else "" end)
         + (if $dry then "would remove " else "removed " end) + ($rwt|length|tostring) + " worktree(s), "
         + ($rbl|length|tostring) + " branch(es)."
+        + (if $forced then " (--force)" else "" end)
         + (if ($failed|length) > 0 then " Could not: " + ($failed|join(", ")) + "." else "" end)
         + (if ($skipped|length) > 0 then " Preserved: " + ($skipped|join(", ")) + "." else "" end)
         + $note + $wtnote
