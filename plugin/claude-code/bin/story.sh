@@ -1324,6 +1324,126 @@ cmd_create() {
      display:("[story] created " + $id + " — " + $title)}'
 }
 
+# ---- subcommands: ensure-cli / context / sync / handoff ---------------------
+#
+# SH-308. The four read-only session-scaffolding verbs six skills used to
+# spell out in prose — each with its own hand-copied "is the CLI installed"
+# preamble, and each hand-copying a CLI default (`--since 2h`, `--since 7d`,
+# `--stale 3d`) that only the CLI itself is allowed to change. A hand-copied
+# default is a value with two owners; `04ac259` found `--since 2h` wrong by
+# 12x in exactly this shape (the plugin's own reference doc AND the CLI's help
+# text had drifted from `DEFAULT_HANDOFF_HOURS`), and `skills/story-handoff/
+# SKILL.md` still said `2h` after that fix landed, because the fix touched
+# neither the skill nor this script — this script did not exist yet. The rule
+# these four follow: never restate a CLI default, only ever pass one through
+# when the caller actually gave one. What the CLI defaults to is the CLI's
+# problem now, and it can only ever have one answer.
+
+# cmd_ensure_cli — the ONE verb that must NOT call require_story: its entire
+# job is to report whether the CLI is there, so `fail`ing on its absence would
+# make the one caller who needs to ask that question unable to. Always
+# ok:true — "not installed" is a successful check of a real fact, not a
+# failure of this verb.
+cmd_ensure_cli() {
+  [ "$#" -eq 0 ] || fail "usage: story.sh ensure-cli"
+  if ! command -v "$STORY" >/dev/null 2>&1; then
+    jq -n '{ok:true, installed:false, version:"",
+            display:"[story] the `story` CLI is not installed."}'
+    return 0
+  fi
+  local version
+  version=$("$STORY" --version 2>/dev/null | head -1) || version=""
+  jq -n --arg version "$version" '
+    {ok:true, installed:true, version:$version,
+     display:("[story] the CLI is installed (" + (if $version == "" then "version unknown" else $version end) + ").")}'
+}
+
+# cmd_context [--full] — `story load-context` already IS the "comprehensive
+# project overview" the skill used to assemble by hand from `story context`
+# plus a separate `story next --count 3 --json` call; it has covered both
+# since the CLI renamed `context` to `load-context` (see `story help
+# load-context`). `--full` appends the three deep-dive reads the skill used to
+# run itself, none of which take a hand-copyable default: `--critical-path`
+# and `--blocked` are flags, and STORY_STALE_THRESHOLD names the one number
+# here the CLI has no opinion on at all (`--stale` REQUIRES a value; there is
+# no default to drift from) rather than hard-coding it a second place.
+cmd_context() {
+  local full=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --full) full=1; shift ;;
+      *) fail "unknown argument \`$1\` — usage: story.sh context [--full]" ;;
+    esac
+  done
+  require_story
+
+  local body
+  body=$(story_cli load-context 2>/dev/null) || true
+  [ -n "$body" ] || fail "story load-context produced no output."
+
+  if [ -n "$full" ]; then
+    local stale="${STORY_STALE_THRESHOLD:-3d}" graph blocked stale_list
+    graph=$(story_cli graph --critical-path 2>/dev/null || printf '(unavailable)')
+    blocked=$(story_cli list --blocked 2>/dev/null || printf '(unavailable)')
+    stale_list=$(story_cli list --stale "$stale" 2>/dev/null || printf '(unavailable)')
+    body="$body"$'\n\n## Critical path\n\n'"$graph"$'\n\n## Blocked stories\n\n'"$blocked"$'\n\n## Stale ('"$stale"$'+) stories\n\n'"$stale_list"
+  fi
+
+  jq -n --arg display "$body" --argjson full "$([ -n "$full" ] && echo true || echo false)" '
+    {ok:true, full:$full, display:$display}'
+}
+
+# cmd_sync [--since <duration>] — wraps `story commit-sync`. Idempotent by the
+# CLI's own design ("safe to run repeatedly — skips already-synced commits"),
+# so unlike the destructive verbs elsewhere in this file this needs no
+# STORY_DRY_RUN handling: there is nothing here dry-run would protect against
+# that the CLI does not already protect against on every run.
+cmd_sync() {
+  local since=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --since) since="${2:-}"; shift 2 || fail "--since needs a value." ;;
+      *) fail "unknown argument \`$1\` — usage: story.sh sync [--since <duration>]" ;;
+    esac
+  done
+  require_story
+
+  local -a args=(commit-sync)
+  [ -n "$since" ] && args+=(--since "$since")
+  local body
+  body=$(story_cli "${args[@]}" 2>/dev/null) || true
+  [ -n "$body" ] || fail "story commit-sync produced no output."
+
+  jq -n --arg display "$body" '{ok:true, display:$display}'
+}
+
+# cmd_handoff [--since <duration>] — wraps `story handoff` plus `story summary
+# --json` for the current-state snapshot the skill's own step 2 asks for
+# separately. `--since`, passed through ONLY when given, never restated —
+# `story handoff` defaults to DEFAULT_HANDOFF_HOURS on its own, whatever that
+# constant is today.
+cmd_handoff() {
+  local since=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --since) since="${2:-}"; shift 2 || fail "--since needs a value." ;;
+      *) fail "unknown argument \`$1\` — usage: story.sh handoff [--since <duration>]" ;;
+    esac
+  done
+  require_story
+
+  local -a args=(handoff)
+  [ -n "$since" ] && args+=(--since "$since")
+  local body summary_json
+  body=$(story_cli "${args[@]}" 2>/dev/null) || true
+  [ -n "$body" ] || fail "story handoff produced no output."
+  summary_json=$(story_cli summary --json 2>/dev/null) || summary_json='{}'
+  printf '%s' "$summary_json" | jq -e . >/dev/null 2>&1 || summary_json='{}'
+
+  jq -n --arg display "$body" --argjson summary "$summary_json" '
+    {ok:true, display:$display, summary:$summary}'
+}
+
 # ---- subcommands: doctor / capture ------------------------------------------
 # FORKED from agentics' plugins/issue/bin/issue.sh (cmd_doctor / cmd_capture,
 # as of 2026-07-25, issue plugin v2.36.0).
@@ -2155,13 +2275,17 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "${1:-}" in
-  dispatch) shift; cmd_dispatch "$@" ;;
-  complete) shift; cmd_complete "$@" ;;
-  reap)     shift; cmd_reap "$@" ;;
-  view)     shift; cmd_view "$@" ;;
-  list)     shift; cmd_list "$@" ;;
-  create)   shift; cmd_create "$@" ;;
-  doctor)   shift; cmd_doctor "$@" ;;
-  capture)  shift; cmd_capture "$@" ;;
-  *)        fail "usage: story.sh <list | view <story-id> | dispatch <story-id> [--auto] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | doctor | capture <story-id>>" ;;
+  dispatch)   shift; cmd_dispatch "$@" ;;
+  complete)   shift; cmd_complete "$@" ;;
+  reap)       shift; cmd_reap "$@" ;;
+  view)       shift; cmd_view "$@" ;;
+  list)       shift; cmd_list "$@" ;;
+  create)     shift; cmd_create "$@" ;;
+  doctor)     shift; cmd_doctor "$@" ;;
+  capture)    shift; cmd_capture "$@" ;;
+  ensure-cli) shift; cmd_ensure_cli "$@" ;;
+  context)    shift; cmd_context "$@" ;;
+  sync)       shift; cmd_sync "$@" ;;
+  handoff)    shift; cmd_handoff "$@" ;;
+  *)          fail "usage: story.sh <list | view <story-id> | dispatch <story-id> [--auto] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | doctor | capture <story-id> | ensure-cli | context [--full] | sync [--since <d>] | handoff [--since <d>]>" ;;
 esac
