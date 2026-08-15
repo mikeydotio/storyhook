@@ -933,11 +933,30 @@ fn accept_loop<S: Store>(
     // accepted connection (and, within a kept-alive connection, called again
     // for each request it carries) — every capture here is `Clone`, so the
     // closure is too, without needing any of them to be `Sync`. `trusted_hosts`
-    // is read fresh on every call rather than snapshotted once: a late
-    // tailnet bind (SH-146) can update it for as long as this listener runs,
-    // and the very next request must see it.
+    // is read fresh on every call rather than snapshotted once at listener
+    // startup: a late tailnet bind (SH-146) can update it for as long as this
+    // listener runs, and the very next request must see it.
+    //
+    // The read lock is held only long enough to `.clone()` the small value
+    // out — never across `worker`'s call, which two of its branches can hold
+    // open far longer than a lock should ever be held: `GET /api/events`
+    // streams for as long as the client's tab is open, and a dispatch
+    // intercept runs "for tens of seconds" by its own doc comment. Before
+    // SH-186, `tailnet_reprobe`'s write lock (the only writer) almost never
+    // ran on a machine whose tailnet was already bound at startup, so this
+    // was latent; SH-186 makes that write run for nearly every daemon, which
+    // turned an occasional wait into a request that can no longer complete
+    // until the SSE tab closes — observed as `story daemon stop` timing out
+    // against a daemon serving an open dashboard tab. A cloned, owned value
+    // gives `worker` the same "fresh per request" guarantee (SH-146's own
+    // requirement — one snapshot per request, not one for the listener's
+    // whole life) without asking any reader to hold the lock for longer than
+    // a `Vec` copy takes.
     let handler = move |request: Request| {
-        let trusted_hosts = trusted_hosts.read().unwrap_or_else(PoisonError::into_inner);
+        let trusted_hosts = trusted_hosts
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         worker(
             request,
             loopback,

@@ -6318,6 +6318,135 @@ fn sse_heartbeat_ping_arrives_without_any_story_changes() {
         .success();
 }
 
+/// A directory holding a `tailscale` that sleeps briefly before answering
+/// with a real, bindable identity — long enough that a test can be sure an
+/// SSE connection made without any artificial delay is already open by the
+/// time the probe succeeds, short enough not to slow the suite down.
+fn slow_bindable_tailscale_shim(ip: std::net::IpAddr, fqdn: &str) -> tempfile::TempDir {
+    let dir = tempfile::Builder::new()
+        .prefix("storyhook-tailscale-slow-bindable-")
+        .tempdir_in("/private/tmp")
+        .expect("a scratch directory for the shim");
+    let script = format!(
+        "#!/bin/sh\n\
+         if [ \"$1\" = \"status\" ]; then\n\
+         \x20 sleep 0.5\n\
+         \x20 printf '%s' '{{\"Self\":{{\"DNSName\":\"{fqdn}.\",\"TailscaleIPs\":[\"{ip}\"]}}}}'\n\
+         \x20 exit 0\n\
+         fi\n\
+         exit 1\n",
+    );
+    let path = dir.path().join("tailscale");
+    std::fs::write(&path, script).expect("writing the shim");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("making the shim executable");
+    }
+    dir
+}
+
+/// A real, bindable, non-loopback IP on this machine — the same
+/// routing-lookup trick `tailnet_rebind.rs` uses. No live Tailscale required.
+fn a_bindable_non_loopback_ip() -> std::net::IpAddr {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").expect("binding an ephemeral UDP socket");
+    socket
+        .connect("8.8.8.8:80")
+        .expect("a route to pick a source address from, even with no real connectivity behind it");
+    socket.local_addr().expect("the socket's own address").ip()
+}
+
+/// Regression test for the lock-scoping defect SH-186 exposed: `worker`'s
+/// accept-loop closure used to hold `trusted_hosts`'s read lock for the
+/// *entire* duration of the request it was handling, not merely for the
+/// admission checks that actually need it. That was latent as long as
+/// `tailnet_reprobe`'s write (the lock's only writer) almost never ran on a
+/// machine whose tailnet was already bound at startup — SH-186 makes that
+/// write happen for nearly every daemon, on a background thread, shortly
+/// after startup. An `EventSource` held open (a browser tab, or this test's
+/// raw SSE connection) is exactly the "entire duration" `worker` never used
+/// to bound: with the old scoping, its read guard blocked the reprobe's
+/// write indefinitely, which in turn blocked every *other* reader — `story
+/// daemon stop`'s own admission check included — until the SSE connection
+/// closed. Observed as `story daemon stop` timing out against a daemon
+/// serving an open dashboard tab.
+///
+/// Red before the fix: `story daemon stop`, issued while the SSE connection
+/// below is still open and the tailnet bind has just landed, hung until
+/// `CONTROL_DEADLINE` (5s) and failed. Green after: the read lock is cloned
+/// out and released immediately, so an open SSE connection can no longer
+/// block anything.
+#[test]
+fn a_late_tailnet_bind_does_not_block_shutdown_behind_an_open_sse_connection() {
+    let _sse_guard = sse_test_lock();
+    let env = TestEnv::isolated();
+    let dir = scratch_dir();
+
+    // The fixture-ordering trap SH-146's test found: force a fresh spawn so
+    // the shimmed PATH below is actually observed.
+    env.stop_daemon();
+
+    let ip = a_bindable_non_loopback_ip();
+    let shim = slow_bindable_tailscale_shim(ip, "sh186-lock-scope.tail00000.ts.net");
+    let mut entries = vec![shim.path().to_path_buf()];
+    entries.extend(std::env::split_paths(&env.path_with_binary()));
+    let path = std::env::join_paths(entries).expect("joining PATH");
+
+    env.story(dir.path())
+        .env("PATH", &path)
+        .args(["web", "start"])
+        .assert()
+        .success();
+    let info = started(&env);
+    wait_for_server(info.port);
+
+    // Connecting blocks until the response head is fully received, which
+    // only happens once the server has admitted the request and entered
+    // `serve_sse` — the exact point at which the old, over-broad read guard
+    // would already be held for the rest of this connection's life. The
+    // shim's 0.5s delay means this always finishes well before the probe
+    // does, so the ordering below is not a race to get right.
+    let sse = connect_sse(info.port, &info.token);
+
+    // Confirm the premise: the bind must land while the SSE connection
+    // above is still open, or this test proves nothing about the ordering
+    // it exists to pin.
+    let bind_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if env.daemon().is_some_and(|i| i.tailnet.is_some()) {
+            break;
+        }
+        assert!(
+            Instant::now() < bind_deadline,
+            "the daemon never bound the shimmed tailnet identity within 5s"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // The connection is still open here — `sse` has not been read from or
+    // dropped since `connect_sse` returned. A read-requiring request must
+    // still complete promptly.
+    let started_at = Instant::now();
+    env.story(dir.path())
+        .args(["web", "stop"])
+        .assert()
+        .success();
+    let elapsed = started_at.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "`story daemon stop` took {elapsed:?} with an SSE connection open — an open, \
+         long-lived request must never hold the trusted-hosts lock across its whole \
+         lifetime, or every other reader (including this shutdown request's own \
+         admission check) queues behind it"
+    );
+
+    // Held open until here on purpose — dropping it any earlier would let
+    // the connection close before the assertion above, which is exactly the
+    // ordering this test exists to rule out.
+    drop(sse);
+}
+
 /// SH-145: a story created through the CLI's `/api/v1/invoke` transport
 /// must still reach an open dashboard tab live.
 ///
