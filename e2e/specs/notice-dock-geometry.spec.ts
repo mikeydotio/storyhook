@@ -78,6 +78,22 @@ async function raiseNotice(page: Page, title: string, which: number): Promise<vo
   await page.locator(".ctxmenu-item", { hasText: COPY_TARGETS[which] }).click();
 }
 
+/** Waits until no backdrop is still on screen.
+ *
+ * Closing an overlay is a 0.18s opacity transition, and `.backdrop` carries no
+ * `pointer-events: none` — so for those 180ms a full-viewport `position: fixed;
+ * inset: 0` element is still the thing under the cursor everywhere. A hit test
+ * taken in that window reports the backdrop and says nothing about the dock.
+ * Found by this file's own failure message naming `div#modal-backdrop.backdrop`,
+ * which is why `centreOwner` returns the occluder rather than a boolean. */
+async function awaitNoOverlay(page: Page): Promise<void> {
+  await page.waitForFunction(
+    () => document.querySelectorAll(".backdrop:not([hidden])").length === 0,
+    undefined,
+    { timeout: 5000 },
+  );
+}
+
 async function createStory(page: Page, title: string): Promise<string> {
   await page.locator("#new-story-btn").click();
   await expect(page.locator("#create-modal")).toHaveClass(/open/);
@@ -87,6 +103,7 @@ async function createStory(page: Page, title: string): Promise<string> {
   await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
   const card = page.locator('.column[data-state="todo"] .card', { hasText: title });
   await expect(card).toBeVisible();
+  await awaitNoOverlay(page);
   return (await card.getAttribute("data-id"))!;
 }
 
@@ -96,6 +113,79 @@ async function domOrderTops(page: Page, selector: string): Promise<number[]> {
     nodes.map((n) => (n as HTMLElement).getBoundingClientRect().top),
   );
 }
+
+/** The area, in px², where `#notice-dock` overlaps `selector`.
+ *
+ * The primary instrument, and a centre hit-test is deliberately not it. With one
+ * notice standing, `#settings-btn` spans y 12.75–48.25 against a stack starting
+ * at y 16 — so 3.25px of it stays visible, and `elementFromPoint` at its centre
+ * reports a toast either way. A probe that scores "a sliver survives" and
+ * "entirely buried" identically cannot tell a fix from a near-miss, and would
+ * equally bless a dock that cleared every centre while eating a button's lower
+ * third. Zero shared area is the property; the hit test is kept beside it as a
+ * cruder second statement. */
+async function overlapArea(page: Page, selector: string): Promise<number> {
+  return page.evaluate((sel) => {
+    const dock = document.getElementById("notice-dock");
+    const target = document.querySelector(sel);
+    if (!dock || !target) return -1;
+    const a = dock.getBoundingClientRect();
+    const b = target.getBoundingClientRect();
+    const w = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+    const h = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+    return w * h;
+  }, selector);
+}
+
+/** What `selector`'s own centre hit-tests to: `"self"`, or a description of
+ * whatever is on top of it.
+ *
+ * Returns the occluder rather than a boolean on purpose. A bare `false` sends
+ * the next reader hunting for what covered the control, which is the position
+ * this story's own investigation started from; naming it in the failure message
+ * is the difference between a five-minute diagnosis and a thirty-minute one. */
+async function centreOwner(page: Page, selector: string): Promise<string> {
+  return page.evaluate((sel) => {
+    const target = document.querySelector(sel) as HTMLElement | null;
+    if (!target) return "missing";
+    const b = target.getBoundingClientRect();
+    const hit = document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2) as HTMLElement | null;
+    if (!hit) return `nothing (rect ${JSON.stringify(b)})`;
+    if (hit === target || target.contains(hit)) return "self";
+    const id = hit.id ? `#${hit.id}` : "";
+    const cls = hit.className && typeof hit.className === "string" ? `.${hit.className.split(" ").join(".")}` : "";
+    return `${hit.tagName.toLowerCase()}${id}${cls}`;
+  }, selector);
+}
+
+/** Raises `count` further durable notices, asserting the running total after
+ * each one.
+ *
+ * Counted from whatever is already standing rather than from zero: a helper that
+ * assumed an empty stack would silently pass while measuring the wrong pile the
+ * first time a caller topped one up. Asserting after every raise is what keeps a
+ * geometry assertion from racing a stack that is still growing under it. */
+async function raiseDurableNotices(page: Page, title: string, count: number): Promise<void> {
+  const start = await page.locator("#toast-stack .toast").count();
+  for (let i = 0; i < count; i++) {
+    await raiseNotice(page, title, i % COPY_TARGETS.length);
+    await expect(page.locator("#toast-stack .toast")).toHaveCount(start + i + 1);
+  }
+}
+
+/** The topbar controls the dock must never overlap. `#conn-dot` is a `<span>`
+ * that takes no focus, so no criterion reaches it — it is here because it was
+ * measured covered, and a notice sitting on the connection indicator is a defect
+ * whether or not a criterion names it. */
+const TOPBAR_CONTROLS = [
+  "#settings-btn",
+  "#new-story-btn",
+  "#drafts-btn",
+  "#home-btn",
+  "#projsel-btn",
+  "#conn-dot",
+  "#filter-toggle-btn",
+];
 
 test("the newest notice is first in the DOM and first on the screen", async ({
   page,
@@ -187,4 +277,241 @@ test("the newest dispatch-history row is first in the DOM and first on the scree
   // pinned in the one browser this suite can drive.
   const tops = await domOrderTops(page, "#dispatch-history .dispatch-history-row");
   expect(tops).toEqual([...tops].sort((a, b) => a - b));
+});
+
+test("no topbar control is overlapped, at any notice count", async ({ page }) => {
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await keepNotices(page);
+  await openProject(page, "Alpha Project");
+
+  const title = "SH-323 — topbar clearance";
+  await createStory(page, title);
+
+  // N = 0 included on purpose: an empty dock is still a `position: fixed` box
+  // with a height, and "it only covers things once a notice arrives" would be a
+  // fix that depends on the stack being empty to be correct.
+  for (const n of [0, 1, 3, 12]) {
+    const standing = await page.locator("#toast-stack .toast").count();
+    if (n > standing) await raiseDurableNotices(page, title, n - standing);
+    await expect(page.locator("#toast-stack .toast")).toHaveCount(n);
+    for (const control of TOPBAR_CONTROLS) {
+      expect(await overlapArea(page, control), `${control} at ${n} notices`).toBe(0);
+      expect(await centreOwner(page, control), `${control} centre at ${n} notices`).toBe("self");
+    }
+  }
+});
+
+test("the drawer's Close and its footer buttons are not overlapped", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await keepNotices(page);
+  await openProject(page, "Alpha Project");
+
+  const title = "SH-323 — drawer clearance";
+  await createStory(page, title);
+  await raiseDurableNotices(page, title, 3);
+
+  await page.locator(".card", { hasText: title }).click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+  // Settled, not merely open. Measured 30ms after `.open` lands, `#drawer-close`
+  // reads x=1601 — off-screen, mid-transition — and a hit test there proves
+  // nothing at all. This is the wait, and it is a property rather than a delay.
+  await page.waitForFunction(
+    () =>
+      document.getElementById("drawer")!.getBoundingClientRect().right <=
+      window.innerWidth + 0.5,
+    undefined,
+    { timeout: 5000 },
+  );
+
+  expect(await overlapArea(page, "#drawer-close")).toBe(0);
+  expect(await centreOwner(page, "#drawer-close")).toBe("self");
+
+  const footerButtons = await page.locator("#drawer-footer button").count();
+  expect(footerButtons).toBeGreaterThan(0);
+  for (let i = 0; i < footerButtons; i++) {
+    const sel = `#drawer-footer button:nth-of-type(${i + 1})`;
+    expect(await overlapArea(page, sel), sel).toBe(0);
+  }
+});
+
+test("the band is measured, not a constant: the dock follows the chrome", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await keepNotices(page);
+  await openProject(page, "Alpha Project");
+
+  const title = "SH-323 — the band is measured";
+  await createStory(page, title);
+  await raiseDurableNotices(page, title, 2);
+
+  const dockTop = () =>
+    page.evaluate(() => document.getElementById("notice-dock")!.getBoundingClientRect().top);
+  const topbarBottom = () =>
+    page.evaluate(() => document.querySelector(".topbar")!.getBoundingClientRect().bottom);
+  const before = await dockTop();
+  const chromeBefore = await topbarBottom();
+
+  // The pin no hand-derived formula can pass — including one that is correct
+  // today. A token offset tuned to the four measured widths still fails here,
+  // because this changes the chrome's height without changing the viewport.
+  await page.evaluate(() => {
+    const spacer = document.createElement("div");
+    spacer.id = "sh323-spacer";
+    spacer.style.height = "120px";
+    spacer.style.width = "1px";
+    document.querySelector(".topbar-right")!.appendChild(spacer);
+  });
+  // The dock must move by exactly what the CHROME moved, which is not the
+  // spacer's own 120px: `.topbar` is `align-items: center` around a row that
+  // already had height, so a 120px child grows the bar by 120 less whatever the
+  // row already was. Asserting "moved by 120" would be asserting the fixture's
+  // arithmetic; asserting "moved by however much the topbar moved" is the
+  // property — the dock tracks the chrome, whatever the chrome does.
+  await expect.poll(topbarBottom, { timeout: 5000 }).toBeGreaterThan(chromeBefore + 1);
+  const chromeDelta = (await topbarBottom()) - chromeBefore;
+  expect(chromeDelta).toBeGreaterThan(50);
+  await expect.poll(dockTop, { timeout: 5000 }).toBeGreaterThan(before + chromeDelta - 2);
+  expect(await dockTop()).toBeLessThan(before + chromeDelta + 2);
+  for (const control of TOPBAR_CONTROLS) {
+    expect(await overlapArea(page, control), `${control} with a taller topbar`).toBe(0);
+  }
+
+  await page.evaluate(() => document.getElementById("sh323-spacer")!.remove());
+  await expect.poll(dockTop, { timeout: 5000 }).toBeLessThan(before + 1);
+});
+
+test("the pile is bounded, loses nothing, and every notice can be reached", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await keepNotices(page);
+  await openProject(page, "Alpha Project");
+
+  const title = "SH-323 — bounded and reachable";
+  await createStory(page, title);
+  await raiseDurableNotices(page, title, 24);
+
+  const dock = await page.evaluate(() => {
+    const d = document.getElementById("notice-dock")!.getBoundingClientRect();
+    const scroll = document.getElementById("toast-scroll")!;
+    return {
+      top: d.top,
+      bottom: d.bottom,
+      innerHeight: window.innerHeight,
+      scrollHeight: scroll.scrollHeight,
+      clientHeight: scroll.clientHeight,
+    };
+  });
+  // Bounded: the whole dock is inside the viewport, where 24 notices used to
+  // reach y1733 in a 720px window.
+  expect(dock.bottom).toBeLessThanOrEqual(dock.innerHeight);
+  expect(dock.top).toBeGreaterThanOrEqual(0);
+  // ...and genuinely scrollable, so the bound is doing something.
+  expect(dock.scrollHeight).toBeGreaterThan(dock.clientHeight);
+  // Nothing was silently deleted to achieve it. A count cap was the rejected
+  // alternative, and this is what says it was not quietly adopted.
+  await expect(page.locator("#toast-stack .toast")).toHaveCount(24);
+
+  // Reachable, not merely present: the property the story reported broken was
+  // that 13 of 24 were dismissable only blind. Each one is scrolled to and must
+  // then own its own dismiss button's centre.
+  for (let i = 0; i < 24; i++) {
+    const dismiss = page.locator("#toast-stack .toast .toast-dismiss").first();
+    await dismiss.scrollIntoViewIfNeeded();
+    const owns = await page.evaluate(() => {
+      const btn = document.querySelector("#toast-stack .toast .toast-dismiss") as HTMLElement;
+      const b = btn.getBoundingClientRect();
+      const hit = document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2);
+      return !!hit && (hit === btn || btn.contains(hit));
+    });
+    expect(owns, `notice ${i + 1} of 24 must own its dismiss button's centre`).toBe(true);
+    await dismiss.click();
+    await expect(page.locator("#toast-stack .toast")).toHaveCount(23 - i);
+  }
+});
+
+test("the scroller is a tab stop exactly while it can scroll", async ({ page }) => {
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await keepNotices(page);
+  await openProject(page, "Alpha Project");
+
+  const title = "SH-323 — conditional tab stop";
+  await createStory(page, title);
+
+  // One notice: nothing to scroll to, so no tab stop. A permanent tabindex here
+  // would be a stop that leads nowhere in the overwhelmingly common case.
+  await raiseDurableNotices(page, title, 1);
+  expect(await page.locator("#toast-scroll").getAttribute("tabindex")).toBeNull();
+
+  // Enough to overflow: the region becomes operable, and a keyboard really moves
+  // it. `End` is pressed once and the result is POLLED rather than read once,
+  // because Chromium animates keyboard-initiated scrolling: three consecutive
+  // instantaneous reads of this value, after End, PageDown and ArrowDown, all
+  // returned 0 while the scroll was in fact under way, and only a later read saw
+  // it land. A single read here would pass or fail on how quickly the browser
+  // answered a round trip, which is the definition of a flaky pin.
+  await raiseDurableNotices(page, title, 23);
+  expect(await page.locator("#toast-scroll").getAttribute("tabindex")).toBe("0");
+  await page.locator("#toast-scroll").focus();
+  expect(
+    await page.evaluate(() => document.activeElement === document.getElementById("toast-scroll")),
+    "the scroller must actually hold focus before a key press means anything",
+  ).toBe(true);
+  const before = await page.evaluate(() => document.getElementById("toast-scroll")!.scrollTop);
+  await page.keyboard.press("End");
+  await expect
+    .poll(
+      () => page.evaluate(() => document.getElementById("toast-scroll")!.scrollTop),
+      { timeout: 5000 },
+    )
+    .toBeGreaterThan(before);
+
+  // Both directions, so neither a dead tab stop nor an unreachable region can
+  // ship: dismissing back down to one removes the attribute again.
+  const dismissAll = page.locator("#toast-stack .toast .toast-dismiss");
+  while ((await page.locator("#toast-stack .toast").count()) > 1) {
+    await dismissAll.first().scrollIntoViewIfNeeded();
+    await dismissAll.first().click();
+  }
+  await expect(page.locator("#toast-stack .toast")).toHaveCount(1);
+  expect(await page.locator("#toast-scroll").getAttribute("tabindex")).toBeNull();
+});
+
+test("the empty band passes clicks through to what is under it", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await keepNotices(page);
+  await openProject(page, "Alpha Project");
+
+  const title = "SH-323 — the dock is not a shield";
+  await createStory(page, title);
+  await raiseDurableNotices(page, title, 1);
+
+  // `pointer-events: none` on the wrapper, asserted rather than assumed — the
+  // assertion the version SH-322 rejected never had. The dock spans the whole
+  // band, so without this the fix would trade occluding the topbar for
+  // occluding the board.
+  const hitInEmptyBand = await page.evaluate(() => {
+    const d = document.getElementById("notice-dock")!.getBoundingClientRect();
+    const stack = document.getElementById("toast-stack")!.getBoundingClientRect();
+    // Well below the single notice, still inside the dock's own box.
+    const y = Math.min(d.bottom - 4, stack.bottom + 40);
+    const hit = document.elementFromPoint(d.left + d.width / 2, y);
+    return {
+      insideDock: !!hit && !!hit.closest("#notice-dock"),
+      tag: hit ? hit.tagName : null,
+    };
+  });
+  expect(hitInEmptyBand.insideDock).toBe(false);
 });

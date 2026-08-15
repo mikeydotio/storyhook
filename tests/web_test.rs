@@ -1874,11 +1874,25 @@ fn web_serve_root_html_sizes_the_shell_to_the_dynamic_viewport() {
     );
 }
 
-/// SH-235: `.toast-stack` and `.dispatch-history` are `position: fixed;
-/// right: 1rem` -- a bare `max-width` (22rem / 26rem) leaves no room for
-/// the matching 1rem the box needs on its *left* too, so on a narrow
-/// enough viewport it runs off the left edge. Each must cap itself at the
-/// viewport minus both margins instead.
+/// SH-235: a notice surface is `position: fixed; right: 1rem` -- a bare
+/// `max-width` (22rem / 26rem) leaves no room for the matching 1rem the box
+/// needs on its *left* too, so on a narrow enough viewport it runs off the
+/// left edge. The box must cap itself at the viewport minus both margins.
+///
+/// SH-323 moved WHERE that cap lives without changing what it promises.
+/// `.toast-stack` and `.dispatch-history` are no longer positioned at all:
+/// both are children of `.notice-dock`, which is the single element that
+/// touches the viewport edge, so it is the one that owes the arithmetic. The
+/// stacks inside it are bounded by `100%` of whatever the dock resolved to,
+/// which cannot exceed the viewport by construction -- one element doing this
+/// sum rather than two is the same consolidation SH-323 applied to the height
+/// bound, and for the same reason: two boxes independently deciding how much
+/// room they may take is two numbers that can disagree.
+///
+/// The `26rem` ceiling is the dock's because the dispatch history is the wider
+/// of the two surfaces; the toast stack keeps its own narrower `22rem` inside
+/// it, which is the difference SH-235 chose deliberately and this test still
+/// pins below.
 ///
 /// This is the cheap, browser-free layer: it pins the source text of the
 /// `min()`/`calc()` expression so the mechanism can't be quietly reverted
@@ -1899,13 +1913,38 @@ fn web_serve_root_html_clamps_overlay_widths_to_the_viewport() {
     let body = resp.into_body().read_to_string().unwrap();
     let css = stylesheet(&body);
 
-    for (selector, rem_ceiling) in [(".toast-stack", "22rem"), (".dispatch-history", "26rem")] {
+    let dock = declarations(css, ".notice-dock");
+    assert!(
+        dock.contains("max-width: min(26rem, calc(100vw - 2rem));"),
+        "`.notice-dock` must set `max-width: min(26rem, calc(100vw - 2rem));` -- \
+         it is the element at the viewport edge now, so it owes the margin \
+         arithmetic both notice surfaces used to do separately"
+    );
+
+    // Inside the dock, each stack is bounded by the dock rather than by the
+    // viewport. `.toast-stack` keeps a narrower ceiling of its own; the history
+    // panel takes the dock's full width, which is why only one of them names a
+    // rem value here.
+    let toast = declarations(css, ".toast-stack");
+    assert!(
+        toast.contains("max-width: min(22rem, 100%);"),
+        "`.toast-stack` must stay narrower than the dock (22rem) while never \
+         exceeding it (100%)"
+    );
+    let history = declarations(css, ".dispatch-history");
+    assert!(
+        history.contains("max-width: 100%;"),
+        "`.dispatch-history` must be bounded by the dock it sits in"
+    );
+
+    // Neither stack may re-acquire a viewport-relative width: two elements
+    // computing this independently is what SH-323 consolidated.
+    for selector in [".toast-stack", ".dispatch-history"] {
         let decl = declarations(css, selector);
-        let expected = format!("max-width: min({rem_ceiling}, calc(100vw - 2rem));");
         assert!(
-            decl.contains(&expected),
-            "`{selector}` must set `{expected}`, so it never exceeds the \
-             viewport minus its own left+right margins"
+            !decl.contains("100vw"),
+            "`{selector}` must not measure itself against the viewport -- \
+             `.notice-dock` is the element that touches it"
         );
     }
 }
