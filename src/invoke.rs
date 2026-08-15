@@ -599,17 +599,41 @@ pub fn dispatch<S: Store>(
         }
         Invocation::Search { query: needle } => query(ctx, |service| service.search(&needle))
             .map(|views| Response::Stories(views, None)),
-        Invocation::Next { count, phase } => {
-            let mut ready = query(ctx, |service| service.next(count, phase.as_deref()))?;
-            // One story is answered as a story, not as a list of one: `story
-            // next` is a question with a singular answer, and its `--json`
-            // consumers read `.story`.
-            if ready.is_empty() {
-                Ok(Response::Message("no ready stories".to_string()))
-            } else if count == 1 {
-                Ok(Response::Story(Box::new(ready.remove(0))))
+        Invocation::Next {
+            count,
+            phase,
+            claim,
+        } => {
+            if claim {
+                // The CLI parser (and every other door onto `Invocation`)
+                // refuses `claim` together with a `count` other than 1
+                // before this arm ever runs — see `parse_next`'s own guard —
+                // so there is exactly one story to answer with or none.
+                match StoryService::new(ctx).claim_next(phase.as_deref())? {
+                    Some((before, _snapshot)) => match ctx.story_view(&before.id)? {
+                        // A fresh read, taken after `claim_next`'s own
+                        // transition hooks ran — same reasoning as every
+                        // other write arm's `ctx.story_view(&id)` call: a
+                        // hook may itself have written to the story.
+                        Response::Story(view) => Ok(Response::Claimed(view, before.state)),
+                        other => Err(AppError::Storage(format!(
+                            "internal: story view answered with {other:?}"
+                        ))),
+                    },
+                    None => Ok(Response::Message("no ready stories".to_string())),
+                }
             } else {
-                Ok(Response::Stories(ready, None))
+                let mut ready = query(ctx, |service| service.next(count, phase.as_deref()))?;
+                // One story is answered as a story, not as a list of one:
+                // `story next` is a question with a singular answer, and its
+                // `--json` consumers read `.story`.
+                if ready.is_empty() {
+                    Ok(Response::Message("no ready stories".to_string()))
+                } else if count == 1 {
+                    Ok(Response::Story(Box::new(ready.remove(0))))
+                } else {
+                    Ok(Response::Stories(ready, None))
+                }
             }
         }
         Invocation::Summary => query(ctx, |service| service.summary())

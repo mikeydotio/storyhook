@@ -1496,12 +1496,24 @@ pub fn served_deadline(command: &str, cwd: &Path) -> Duration {
 /// The one production caller ([`crate::api::rpc`]) already holds the parsed
 /// [`crate::cli::Invocation`] it can read `updates.len()` from — the number
 /// is not guessed, it is the exact list the command is about to attempt.
+///
+/// `next --claim` (SH-344) gets the same [`transition_pair_timeout`] widening
+/// as `set-state`/`set-fields` above, for the identical reason: a claim is a
+/// `StoryStateChanged` transition wearing a different verb, so it fires the
+/// same `on_state_change`/`on_close` pair those two commands do. Plain `next`
+/// (`claim: false`) is a read and keeps the general allowance below.
+///
+/// [`transition_pair_timeout`]: crate::event_hooks::transition_pair_timeout
 #[must_use]
 pub fn served_deadline_for(invocation: &crate::cli::Invocation, cwd: &Path) -> Duration {
     if let crate::cli::Invocation::BulkUpdate { updates } = invocation {
         let per_item = crate::event_hooks::transition_pair_timeout(cwd).unwrap_or(Duration::ZERO);
         let n = u32::try_from(updates.len().max(1)).unwrap_or(u32::MAX);
         return SERVED_DEADLINE + per_item * n;
+    }
+    if let crate::cli::Invocation::Next { claim: true, .. } = invocation {
+        let allowance = crate::event_hooks::transition_pair_timeout(cwd).unwrap_or(Duration::ZERO);
+        return SERVED_DEADLINE + allowance;
     }
     served_deadline(crate::invoke::invocation_name(invocation), cwd)
 }

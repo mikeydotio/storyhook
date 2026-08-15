@@ -607,6 +607,14 @@ pub enum Response {
     /// instead of having to parse a sentence.
     MessageWithWarnings(String, Vec<String>),
     Story(Box<StoryView>),
+    /// `story next --claim` (SH-344): the story claimed, and the state it was
+    /// claimed *from* — a fact only this command produces, since every other
+    /// writer already knows the state it started from without being told.
+    ///
+    /// Renders into the same `.story` key [`Story`](Self::Story) does, plus
+    /// one more envelope field (`claimed_from`), so every existing
+    /// `.story.story.id` consumer reads a claim exactly like a `next`.
+    Claimed(Box<StoryView>, String),
     Stories(Vec<StoryView>, Option<String>),
     Summary(Box<SummaryView>),
     Graph(Box<GraphView>),
@@ -711,6 +719,11 @@ struct JsonEnvelope<'a> {
     settings: Option<&'a [SettingView]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     project: Option<&'a ProjectView>,
+    /// `story next --claim` only (SH-344): the state the claimed story came
+    /// out of, so a caller that has to undo its own claim — the plugin's
+    /// dispatch rollback — knows what to move back to. Absent everywhere else.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    claimed_from: Option<&'a str>,
     #[serde(default, skip_serializing_if = "<[_]>::is_empty")]
     warnings: &'a [String],
     #[serde(default, skip_serializing_if = "<[_]>::is_empty")]
@@ -782,6 +795,7 @@ fn render_json(response: &Response) -> String {
     let rendered = match response {
         Response::Message(message) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
+            claimed_from: None,
             message: Some(message),
             story: None,
             stories: None,
@@ -799,6 +813,7 @@ fn render_json(response: &Response) -> String {
         Response::MessageWithWarnings(message, warnings) => {
             serde_json::to_string_pretty(&JsonEnvelope {
                 result: "ok",
+                claimed_from: None,
                 message: Some(message),
                 story: None,
                 stories: None,
@@ -816,6 +831,24 @@ fn render_json(response: &Response) -> String {
         }
         Response::Story(view) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
+            claimed_from: None,
+            message: None,
+            story: Some(view.as_ref()),
+            stories: None,
+            summary: None,
+            graph: None,
+            issues: None,
+            findings: None,
+            advice: None,
+            phases: None,
+            settings: None,
+            project: None,
+            warnings: &view.warnings,
+            flagged_reasons: &view.flagged_reasons,
+        }),
+        Response::Claimed(view, claimed_from) => serde_json::to_string_pretty(&JsonEnvelope {
+            result: "ok",
+            claimed_from: Some(claimed_from.as_str()),
             message: None,
             story: Some(view.as_ref()),
             stories: None,
@@ -832,6 +865,7 @@ fn render_json(response: &Response) -> String {
         }),
         Response::Stories(stories, msg) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
+            claimed_from: None,
             message: msg.as_deref(),
             story: None,
             stories: Some(stories),
@@ -848,6 +882,7 @@ fn render_json(response: &Response) -> String {
         }),
         Response::Summary(summary) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
+            claimed_from: None,
             message: None,
             story: None,
             stories: None,
@@ -864,6 +899,7 @@ fn render_json(response: &Response) -> String {
         }),
         Response::Graph(graph) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
+            claimed_from: None,
             message: None,
             story: None,
             stories: None,
@@ -880,6 +916,7 @@ fn render_json(response: &Response) -> String {
         }),
         Response::Issues(issues) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
+            claimed_from: None,
             message: None,
             story: None,
             stories: None,
@@ -905,6 +942,7 @@ fn render_json(response: &Response) -> String {
         }),
         Response::PhaseList(phase_views) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
+            claimed_from: None,
             message: None,
             story: None,
             stories: None,
@@ -921,6 +959,7 @@ fn render_json(response: &Response) -> String {
         }),
         Response::ProjectSettings(settings) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
+            claimed_from: None,
             message: None,
             story: None,
             stories: None,
@@ -937,6 +976,7 @@ fn render_json(response: &Response) -> String {
         }),
         Response::Project(view) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
+            claimed_from: None,
             message: None,
             story: None,
             stories: None,
@@ -995,6 +1035,14 @@ fn render_human(response: &Response) -> String {
             body
         }
         Response::Story(view) => render_story(view),
+        Response::Claimed(view, claimed_from) => {
+            format!(
+                "claimed {} — {claimed_from} -> {}\n{}",
+                view.story.id,
+                view.story.state,
+                render_story(view)
+            )
+        }
         Response::Stories(stories, msg) => {
             if stories.is_empty() {
                 return "no stories found\n".to_string();
