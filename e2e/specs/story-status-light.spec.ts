@@ -1,5 +1,11 @@
 import { test, expect } from "@playwright/test";
-import { cleanUpCreatedStories, deleteStory, openProject, seedToken } from "./support";
+import {
+  cleanUpCreatedStories,
+  deleteStory,
+  openProject,
+  resolvedTokenColor,
+  seedToken,
+} from "./support";
 
 /**
  * Exercises SH-203's status-light component: a coloured dot immediately
@@ -85,24 +91,6 @@ async function addRelation(
     .locator("#drawer-body .inline-add button", { hasText: "Add" })
     .click();
   await expect(page.locator(".rel-row", { hasText: otherId })).toBeVisible();
-}
-
-/** The browser's own resolved colour for a CSS custom property, read off a
- * throwaway element rather than assumed -- the light/dark palette differs,
- * and this suite should keep working under whichever colour scheme it
- * actually runs in. */
-async function resolvedTokenColor(
-  page: import("@playwright/test").Page,
-  token: string,
-): Promise<string> {
-  return page.evaluate((t) => {
-    const probe = document.createElement("div");
-    probe.style.background = `var(${t})`;
-    document.body.appendChild(probe);
-    const color = getComputedStyle(probe).backgroundColor;
-    probe.remove();
-    return color;
-  }, token);
 }
 
 test("a relation's status light matches the referenced story's column, not its position in the catalog", async ({
