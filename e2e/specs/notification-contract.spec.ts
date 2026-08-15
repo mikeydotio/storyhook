@@ -38,8 +38,8 @@ import {
  *
  * ## This file drives the clock; it does not outwait it (SH-318)
  *
- * Six of these tests fake the page's timers and advance them by hand. **Two
- * deliberately do not, and must not be changed to** — see the canary note
+ * All but two of these tests fake the page's timers and advance them by hand.
+ * **Two deliberately do not, and must not be changed to** — see the canary note
  * below, which is the load-bearing half of this arrangement.
  *
  * The two tests that hold a notice's clock open used to spend ~9.5 seconds each
@@ -68,7 +68,10 @@ import {
  * seconds. `support.ts`'s `latch()` gives the same reasoning for the network
  * side; this is its timer-side equivalent.
  *
- * ## The two canaries: `:141` and `:309` stay on the real clock
+ * ## The two canaries stay on the real clock
+ *
+ * Named below rather than cited by line number, which is what they were until
+ * SH-322 appended a section and moved both.
  *
  * `page.clock.install()` fakes `Date`, `setTimeout`, `setInterval`,
  * `requestAnimationFrame`, `requestIdleCallback` and `performance` all at once.
@@ -99,6 +102,12 @@ import {
  *
  * Full reasoning, both spikes and the rejected alternatives:
  * `.council/sh-318-notification-clock-e2e-timing/DECISION.md`.
+ *
+ * ## The turn-off (SH-322)
+ *
+ * The last six tests are a section of their own, with their own header above
+ * them: they pin `storyhook.keepNotices`, the preference that removes a
+ * self-clearing notice's time limit outright.
  */
 
 cleanUpCreatedStories("Alpha Project");
@@ -534,6 +543,260 @@ test("a fading notice still clears under prefers-reduced-motion, without animati
 
   await expect(page.locator("#toast-stack .toast")).toHaveCount(0, {
     timeout: GONE_TIMEOUT,
+  });
+
+  await cleanUp(page, title);
+});
+
+// ============================================================
+// SC 2.2.1, THE TURN-OFF (SH-322)
+// ============================================================
+//
+// The six tests below pin a conformance route this dashboard did not have.
+// WCAG 2.2 SC 2.2.1 (Timing Adjustable) offers exactly three mechanisms for a
+// time limit — **Turn off, Adjust, Extend** — plus three exceptions, none of
+// which fits a 3s toast. This takes the first: `storyhook.keepNotices`, a
+// persisted preference on the Settings screen that removes the clock entirely
+// rather than lengthening it, set before any notice is encountered.
+//
+// It defaults OFF, and that is the criterion's own shape rather than a
+// compromise: what has to exist in advance is the mechanism, not the choice.
+// Defaulting it on would make every one of ~26 `toast()` call sites permanent
+// and gut SH-304's corroboration premise, which is settled and not this
+// preference's to reopen.
+//
+// Reasoning, the alternatives rejected 3-0, and the five follow-up defects the
+// review turned up:
+// `.council/sh-322-self-clearing-notice-keyboard-pause/DECISION.md`.
+
+/** The most Tab presses {@link tabTo} will spend before it gives up.
+ *
+ * A termination guard, deliberately not a budget. The property under test is
+ * that the control can be *arrived at* from the keyboard at all — not that it
+ * can be arrived at in some particular number of presses, which is a fact about
+ * the Settings screen's control order that this story does not own and that
+ * would go red the day another control lands above it. Generous enough to
+ * survive that, small enough to fail in a second rather than hang. */
+const TAB_BOUND = 30;
+
+/** Tabs forward from wherever focus is until `selector` holds it.
+ *
+ * Deliberately does NOT use `locator.press()`, `locator.check()` or
+ * `locator.focus()` on the target: all three put focus on the element
+ * implicitly, so what they prove is "this control can be operated once you are
+ * on it". That was true of the dead `focusin` branch this story deletes, which
+ * is why proving it is not enough here — it is the same class of evidence that
+ * would have declared the rejected `tabindex="0"` repair working. Arriving is
+ * the assertion. */
+async function tabTo(page: Page, selector: string): Promise<void> {
+  const target = page.locator(selector);
+  await expect(target).toBeVisible();
+  for (let press = 0; press < TAB_BOUND; press++) {
+    await page.keyboard.press("Tab");
+    if (await target.evaluate((node) => node === document.activeElement)) return;
+  }
+  throw new Error(
+    `${selector} was not reachable by Tab within ${TAB_BOUND} presses. ` +
+      "Reachability is the property under test: a control that exists but " +
+      "cannot be arrived at from the keyboard does not satisfy SC 2.2.1's " +
+      "turn-off clause, however well it works once focused.",
+  );
+}
+
+/** Turns the notice clock off through the real Settings control, by pointer,
+ * and returns to Home.
+ *
+ * A pointer is fine *here*: that the same control is reachable by keyboard is
+ * pinned once, on its own, by the first test below. Repeating that traversal in
+ * every test that merely needs the preference set would pin nothing further
+ * while coupling four more tests to the Settings screen's control order.
+ *
+ * What every one of them does need is that the preference is set **through the
+ * page** rather than seeded into `localStorage` — "available before the limit is
+ * encountered" is half the conformance claim, and a seeded storage key would
+ * satisfy the other half while proving no mechanism exists at all. */
+async function keepNotices(page: Page): Promise<void> {
+  await page.locator("#settings-btn").click();
+  await expect(page.locator("#settings-view")).toBeVisible();
+  await page.locator("#toggle-keep-notices").click();
+  await expect(page.locator("#toggle-keep-notices")).toBeChecked();
+  await page.locator("#home-btn").click();
+}
+
+test("the notice clock can be turned off from the keyboard alone, before any notice", async ({
+  page,
+}) => {
+  await openClocked(page);
+
+  // A fixed origin, so what the traversal below measures is a property of the
+  // Settings screen rather than of wherever the previous assertion happened to
+  // leave focus. The origin is a topbar button present on every screen; the
+  // control under test is what has to be found from there.
+  await page.locator("#settings-btn").focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#settings-view")).toBeVisible();
+
+  await tabTo(page, "#toggle-keep-notices");
+  await expect(page.locator("#toggle-keep-notices")).not.toBeChecked();
+  await page.keyboard.press(" ");
+  await expect(page.locator("#toggle-keep-notices")).toBeChecked();
+
+  // The accessible name is part of the mechanism, not decoration: a checkbox
+  // announced as unlabelled is not one a user can knowingly turn a time limit
+  // off with.
+  await expect(
+    page.getByRole("checkbox", { name: "Keep notices until I dismiss them" }),
+  ).toBeChecked();
+});
+
+test("with the limit turned off, a success notice has no timer at all", async ({
+  page,
+}) => {
+  await openClocked(page);
+  await keepNotices(page);
+
+  const title = "SH-322 — the limit turned off";
+  const id = await openFreshStory(page, title);
+  await stubDispatch(page, id, false, "ok");
+
+  await onAFrozenClock(page, async () => {
+    await page.locator("#dispatch-btn").click();
+    const toast = page.locator("#toast-stack .toast.success");
+    await expect(toast).toBeVisible();
+    await expect(toast).toContainText(`${id} dispatched`);
+
+    await page.clock.runFor(NO_TIMER_HORIZON_MS);
+    await expect(toast).toBeVisible();
+    // Not merely "still there": it never even began to leave. That is what
+    // separates "no clock at all" from "a clock that something paused", and
+    // unlike a visibility assertion it survives a change to `TOAST_FADE_MS`.
+    await expect(toast).not.toHaveClass(/leaving/);
+
+    // SH-304's shape is preserved rather than widened. A kept success is still
+    // its headline plus the one control needed to close it -- that council's
+    // rule governs a notice that clears *itself*, and this one no longer does.
+    await expect(toast.locator(".toast-dismiss")).toHaveCount(1);
+    await expect(toast.locator(".notice-detail")).toHaveCount(0);
+    await expect(toast.locator(".notice-reason")).toHaveCount(0);
+
+    await toast.locator(".toast-dismiss").click();
+    await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
+  });
+
+  await cleanUp(page, title);
+});
+
+test("a kept notice is dismissed from the keyboard, which closes the loop without a pointer", async ({
+  page,
+}) => {
+  await openClocked(page);
+  await keepNotices(page);
+
+  const title = "SH-322 — kept notice dismissed by keyboard";
+  const id = await openFreshStory(page, title);
+  await stubDispatch(page, id, false, "ok");
+
+  await onAFrozenClock(page, async () => {
+    await page.locator("#dispatch-btn").click();
+    const toast = page.locator("#toast-stack .toast.success");
+    await expect(toast).toBeVisible();
+
+    // The half a turn-off would be hollow without: having stopped the clock,
+    // the user must be able to clear the notice again without reaching for a
+    // mouse. Arrived at by Tab and activated by Enter, both for real.
+    await tabTo(page, "#toast-stack .toast-dismiss");
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
+  });
+
+  await cleanUp(page, title);
+});
+
+test("the choice survives a reload, which is what 'before encountering it' means", async ({
+  page,
+}) => {
+  await openClocked(page);
+  await keepNotices(page);
+
+  await page.reload();
+  await page.locator("#settings-btn").click();
+  await expect(page.locator("#toggle-keep-notices")).toBeChecked();
+  // Pinned by name: the storage key is the part a refactor can rename in
+  // silence, and a user's answer to "stop taking my notices away" surviving
+  // exactly one page load would be a session toggle wearing a conformance
+  // claim.
+  expect(
+    await page.evaluate(() => localStorage.getItem("storyhook.keepNotices")),
+  ).toBe("true");
+  await page.locator("#home-btn").click();
+
+  // And it still governs a notice afterwards, not merely the checkbox.
+  const title = "SH-322 — the choice outlives the visit";
+  const id = await openFreshStory(page, title);
+  await stubDispatch(page, id, false, "ok");
+
+  await onAFrozenClock(page, async () => {
+    await page.locator("#dispatch-btn").click();
+    const toast = page.locator("#toast-stack .toast.success");
+    await expect(toast).toBeVisible();
+    await page.clock.runFor(NO_TIMER_HORIZON_MS);
+    await expect(toast).toBeVisible();
+    await expect(toast).not.toHaveClass(/leaving/);
+    await toast.locator(".toast-dismiss").click();
+  });
+
+  await cleanUp(page, title);
+});
+
+test("the preference is off until the user turns it on", async ({ page }) => {
+  await openClocked(page);
+
+  // The unanimous amendment to the council's own winning proposal, pinned as a
+  // property rather than left to the five tests above to imply: the mechanism
+  // must EXIST in advance, not be pre-engaged. Defaulting it on would make
+  // every notice permanent for everyone.
+  expect(
+    await page.evaluate(() => localStorage.getItem("storyhook.keepNotices")),
+  ).toBeNull();
+
+  const title = "SH-322 — untouched, the clock still runs";
+  const id = await openFreshStory(page, title);
+  await stubDispatch(page, id, false, "ok");
+
+  await onAFrozenClock(page, async () => {
+    await page.locator("#dispatch-btn").click();
+    await expect(page.locator("#toast-stack .toast.success")).toBeVisible();
+    await runOutTheClock(page, SUCCESS_VISIBLE_MS);
+  });
+
+  await cleanUp(page, title);
+});
+
+test("the preference does not change a durable notice, which never had a clock", async ({
+  page,
+}) => {
+  await openClocked(page);
+  await keepNotices(page);
+
+  const title = "SH-322 — a refusal is unaffected";
+  const id = await openFreshStory(page, title);
+  await stubDispatch(page, id, false, "refused");
+
+  await onAFrozenClock(page, async () => {
+    await page.locator("#dispatch-btn").click();
+    const toast = page.locator("#toast-stack .toast.error");
+    await expect(toast).toBeVisible();
+    // An error was already durable and already carried its diagnosis; the
+    // preference must be inert over it rather than quietly re-deriving it.
+    await expect(toast).toContainText(`${id} refused`);
+    await expect(toast.locator(".notice-detail")).toContainText("already in-progress");
+    await expect(toast.locator(".notice-reason")).toHaveText("claim-conflict");
+    await expect(toast.locator(".toast-dismiss")).toHaveCount(1);
+
+    await page.clock.runFor(NO_TIMER_HORIZON_MS);
+    await expect(toast).toBeVisible();
+    await toast.locator(".toast-dismiss").click();
+    await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
   });
 
   await cleanUp(page, title);
