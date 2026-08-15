@@ -1298,9 +1298,11 @@ fn verb_help_request(args: &[String]) -> Option<Invocation> {
 /// exist, so a typo is reported as an unknown *command* rather than being
 /// answered with usage text or a complaint about one of its flags.
 fn verb_is_recognized(verb: &str) -> bool {
-    // `tui` is dispatched in main.rs before parsing ever happens, so
-    // `dispatch` does not know it, but it is a verb like any other here.
+    // `tui` and `mcp` are both dispatched in main.rs before parsing ever
+    // happens, so `dispatch` does not know either, but they are verbs like
+    // any other here.
     verb == "tui"
+        || verb == "mcp"
         || !matches!(
             dispatch(&[verb.to_string()]),
             Err(AppError::Usage(ref message)) if message.starts_with("unknown command")
