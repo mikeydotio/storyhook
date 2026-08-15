@@ -17873,3 +17873,132 @@ across reproduction, verification and the mutation check.
 
 **`story next` behaved.** It handed back SH-329, which was genuinely ready, and
 correctly ranked it above the two medium bugs behind it.
+
+### SH-326 — done
+
+**Outcome:** merged (PR #444). Dismissing one notice no longer strands focus
+on `<body>`. The open question the story was filed to answer turned out to have
+been answered already, by the story next door.
+
+**The finding: `focusAfterNoticeRemoval` was never a rival policy.** SH-326
+asked where focus should go when the dismissed notice was the last one, and
+listed three candidates two SH-322 seats had deadlocked over. The council that
+settled it (unanimous 3-0, no deliberation round) found the question dissolved:
+SH-323 had already built that anchor for "Dismiss all", argued its own
+rejections in a doc comment, and pinned it as a *property* rather than an
+identity — and its final paragraph predicted this story would extend it. So
+there is one rule with three clauses, not two policies:
+
+> Capture `document.activeElement` before the mutation. After it: if focus was
+> not in this notice region, or focus still lives somewhere real, do nothing.
+> Otherwise focus the heir. If there is no heir, `focusAfterNoticeRemoval()`.
+
+**The gate is a state question, never a modality question.** This is the part a
+future author is most likely to "simplify", so it is written into the source.
+`event.detail === 0` is not a keyboard test — assistive technology dispatches
+synthesised clicks with `detail === 0`, so it fires for AT-driven pointer users
+and not for real ones, backwards on both halves. And this file already recorded
+the measurement that settles it: **WebKit focuses no `<button>` on click**
+(`armedDeleteSlug`'s comment, from SH-324), so "was this a keyboard activation"
+is unanswerable while "did focus survive" is directly observable. SH-226's
+doctrine one layer down — ask what a thing is, not what it is spelled.
+
+**Both rival seats voted against their own proposals, and each retracted a
+specific claim.** That is worth recording because it is what the deliberation
+round exists to produce and this council got it in round one:
+
+- The web-UX seat had argued a restore inside `renderDispatchHistory` would
+  "yank focus during a burst": *"that is wrong, and I should not have written
+  it. Restoring to the same row's key is preservation, not relocation."* The
+  challenger then located where the objection *does* bite — that seat's own
+  heir was index-keyed, and on a prepending arrival index 1 is a different row
+  before and after.
+- The challenger then withdrew its own "MUST" on the same point, conceding the
+  cost it had understated (a `.focus()` per arrival can cut short the polite
+  announcement of the row that just landed) and naming the true origin: the
+  wholesale rebuild itself. Severed to SH-337, where the real repair is an
+  incremental insert that preserves focus by construction.
+
+**A live defect in shipped code, found by one seat of three.**
+`dismissAllToasts`/`dismissAllDispatchHistory` called `focusAfterNoticeRemoval()`
+**unconditionally**, which is safe only for a keyboard press. A pointer press on
+WebKit focuses no button, so a reader typing in the drawer's description who
+clicked "Dismiss all" had focus and caret moved to `#drawer`. The chair checked
+the half that seat flagged as unverified and corrected it: the description's
+blur handler PATCHes, so the value is *committed*, not lost — the harm is an
+unrequested context change and a lost caret, not data loss. Its own commit,
+because it changes SH-323's shipped behaviour on a path that story's pin cannot
+see.
+
+**The mutation battery earned its keep: two of five mutations survived, and both
+were the pins' fault.**
+
+| Mutation | Result |
+|---|---|
+| heir never focused | 4 pins red — as designed |
+| heir direction reversed | **survived** |
+| region gate deleted | **survived** |
+| empty-stack fallback deleted | 3 pins red — as designed |
+| count `.toast` not `.toast .toast-dismiss` | 2 pins red — as designed |
+
+*The direction was not pinned.* The pin dismissed the **first** notice, where
+there is no previous sibling to prefer — so next-first and previous-first pick
+the same survivor and a reversed implementation passes. The mirror holds at the
+bottom of the stack. Only a notice with a neighbour on each side puts direction
+under test; the pin now dismisses the middle one, and that mutation reddens it
+alone.
+
+*The region gate was not pinned.* Deleting it reddened nothing, because in every
+existing scenario the second clause — "focus still lives somewhere real" —
+answered first and covered for it. The gate is load-bearing only when focus was
+outside the region **and** something else destroyed it in the same turn: a
+dismissal adopting a stranding it did not cause. The new pin drives exactly that
+and asserts focus is left on `<body>` — which reads like a test *for* the
+defect, so the comment says at length why it is not. Verified in both
+directions: green as written, red under the mutation, and under that mutation no
+other test moved.
+
+Worth stating plainly: without the battery, two of the six behaviours this story
+shipped would have had pins that could not fail.
+
+**Gate:** `make test` exits 0 on the pushed tree — 256 Playwright tests, full
+Rust suite, plugin harness, clippy clean, orphan postlude green.
+
+**Two later gate runs went red, and neither was this change.** A `daemon_lifecycle` test (a stale daemon
+not being replaced) and a `daemon_timeouts` test (a 250ms churn deadline) failed
+on two consecutive runs, each green in the run before. Both are millisecond- and
+second-deadline daemon tests; both passed 9/9 and 3/3 on targeted reruns
+immediately afterwards. The cause was measured rather than assumed:
+**`mediaanalysisd` was burning 260–344% CPU** (a macOS Photos library scan),
+with load average 14–17 on a 10-core machine. Nothing of this session's was
+orphaned — `check-no-orphan-servers.sh` was clean and disk had 48Gi free. This
+is the false-red condition CLAUDE.md already documents, arriving from a system
+indexer rather than from a second overlapping suite.
+
+**No bypass was used, and none was needed.** The push went through
+`.githooks/pre-push` on its merits: the tip tree carried a receipt from the green
+run, so the hook certified it and merely *named* the three intermediate commits
+as unreceipted — its documented "named, not blocked" behaviour. Recorded because
+the two previous entries in this file that met a red hook reached for
+`SKIP_PREPUSH_TESTS=1`; the receipt made that unnecessary here, which is the
+mechanism working as SH-306 designed it.
+
+**PR:** #444. Four commits, two-hats clean: the `canTakeFocus` extraction
+(pure refactor, no behaviour change), the heir policy on both surfaces, the bulk
+guard, and the pin repairs. Merged as `a5af789`.
+
+**Filed, not dropped — the council's scope ruling was conditional on all three:**
+SH-337 (`renderDispatchHistory` destroys focus on every rebuild, arrival path
+included), SH-338 (neither dismiss control has a `:focus-visible` rule, so every
+landing this story creates is drawn with the UA default ring at unmeasured
+contrast — SC 1.4.11), SH-339 (Enter auto-repeat on a heir can clear a pile of
+durable errors that are the only record of those failures; accepted as a weighed
+trade, because "the honest lever is not the focus policy").
+
+**`story next` behaved.** It handed back SH-326 — genuinely ready, no children,
+not blocked — and its two runners-up (SH-330, SH-333) were both workable. No
+defect in the recommender to file this cycle.
+
+**No version bump** — left for the next batched `/semver` pass.
+
+**Next:** run `story next` fresh.
