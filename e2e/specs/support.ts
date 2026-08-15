@@ -184,9 +184,11 @@ export async function activateBehindOverlay(locator: Locator): Promise<void> {
  * open, and waits for it to actually render. The panel defaults collapsed
  * -- a fresh Playwright context has no localStorage, same reasoning as
  * `seedToken`'s own comment above, so every spec that drives a control
- * inside it (a priority/assignee/type/state/columns dropdown, "Show
- * closed"/"Show archived"/"Hide empty columns", or the board-sort buttons)
- * needs this first. `#filter-count` and `#filter-clear` are in the
+ * inside it (a priority/assignee/type/state/columns dropdown, or "Show
+ * closed"/"Show archived"/"Hide empty columns") needs this first. Board
+ * sort moved out of this panel entirely in SH-305 -- it's per-column now,
+ * opened from each column header's own sort button, so a spec driving it
+ * doesn't need this at all. `#filter-count` and `#filter-clear` are in the
  * always-visible `.filter-summary` row, not the panel -- specs that touch
  * only those don't need this at all.
  */

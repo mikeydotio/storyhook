@@ -53,6 +53,7 @@ pub fn handle_start(port: Option<u16>) -> Result<String, AppError> {
     deprecation("web start", "daemon start");
     let env = environment()?;
     let info = commands::start(&env, port)?;
+    commands::note_tailnet_pending(&info);
     Ok(format!(
         "Web UI started at {} (PID {})",
         info.dashboard_url(),
