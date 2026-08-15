@@ -22,7 +22,10 @@ Follow `${CLAUDE_PLUGIN_ROOT}/references/ensure-cli.md`. Do not continue until i
 ### 1. Select and start the story
 
 Run `bash ${CLAUDE_PLUGIN_ROOT}/bin/story.sh work`, passing a story ID as the sole argument
-if one was given (e.g., `/story-work SH-3`). `ok:false` → show `display`, stop.
+if one was given (e.g., `/story-work SH-3`). `ok:false` → show `display`, stop. If
+`reason` is `"claim-conflict"`, another session claimed the story first (or, with no id
+given, kept losing the race to every ready story the helper tried) — this is not a
+transient error to retry, just show `display` and stop.
 
 `ok:true` with `picked:false` means nothing is ready — show `display` (it already suggests
 `/story-triage`) and stop.
