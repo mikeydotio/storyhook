@@ -3849,10 +3849,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function storyMenuModel(v) {
     var st = v.story;
     var description = (st.description || "").trim();
+    var isClosed = stateSuperstate(st.state) === "CLOSED";
     // The identical gate renderDrawerFooter's own Dispatch buttons use
     // (SH-50/SH-208) -- hides rather than disables, since nothing this menu
     // does can lift "closed" or "no checkout on this machine" on its own.
-    var dispatchHidden = stateSuperstate(st.state) === "CLOSED" || !currentRepoHasCheckout();
+    var dispatchHidden = isClosed || !currentRepoHasCheckout();
     var dispatchInFlight = !!state.dispatches[st.id];
     return compactSeparators([
       { label: "Copy ID", onSelect: function() { copyText(st.id, "ID"); } },
@@ -3884,6 +3885,25 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           submenu: { ariaLabel: "Set status", items: items }
         };
       })(),
+      // Hidden, not disabled, on a closed story: `set_priority` goes
+      // through `edit_story(..., Intent::Edit, ...)` -> `resolve_open_story`,
+      // which refuses every *edit* of a closed story, and the store enforces
+      // `archived = (closed_at IS NOT NULL)` -- so "closed" and "refuses
+      // edits" are one database fact, and nothing this item can do lifts it.
+      // Same rule and the same `isClosed` expression as the Dispatch group
+      // above. Set Status stays visible on a closed story precisely because
+      // it is the one item whose job is to lift this.
+      isClosed ? null : {
+        label: "Set Priority",
+        // Same gate as Set Status, and not merely for symmetry: a
+        // `POST /priority` landing while an optimistic `moveStory()` is
+        // still in flight returns the story's PRE-move snapshot, and
+        // `applyStory` writes it in whole and re-renders -- the card would
+        // visibly snap back to its old column. Lifts on its own once the
+        // move settles, so: disabled, not hidden.
+        disabled: !!state.pending[st.id],
+        submenu: { ariaLabel: "Set priority", items: priorityMenuItems(st) }
+      },
       { separator: true },
       // Never hidden or disabled: unlike Dispatch/Set Status there is no
       // in-flight or "cannot act yet" state to gate on -- the only thing
@@ -3943,6 +3963,61 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         moveStory(id, targetSlug, false);
       })
       .catch(toastError);
+  }
+
+  /** The priorities `st` can be set to from the Set Priority submenu: the
+   * daemon's whole vocabulary, in the order it serves it (`meta().priorities`
+   * -- `PRIORITIES`, `src/api/rest.rs`, the same list the drawer's own
+   * Priority select and the create modal are built from; deliberately NOT
+   * this file's own `PRIORITY_ORDER`, which is a sort index and would be a
+   * second, driftable copy of the vocabulary), with the story's current
+   * value marked `checked`.
+   *
+   * Unlike `statusMenuItems`, which omits the story's current state, this
+   * offers the current priority and marks it -- and the asymmetry is the
+   * point, not an oversight. The board already tells a reader which state a
+   * story is in: it is the column the card sits in. Nothing tells them a
+   * story's priority except a 3px accent stripe (`--card-accent`,
+   * `populateCard`), so a chooser that hid the current value would leave no
+   * way to learn it short of opening the drawer. That is also why these are
+   * `menuitemradio` (via `checked`) and Set Status's are plain `menuitem`:
+   * this is a group with a current member; that one is a list of moves. */
+  function priorityMenuItems(st) {
+    return meta().priorities.map(function(p) {
+      return {
+        label: p,
+        color: priorityColor(p),
+        checked: p === st.priority,
+        onSelect: function() { setStoryPriority(st.id, p); }
+      };
+    });
+  }
+
+  /** Applies a Set Priority choice: the drawer's own Priority `<select>`
+   * path (`runFieldMutation`, below) verbatim, so the two surfaces can
+   * never drift into two behaviors -- the same reason `setStoryState`
+   * above calls `moveStory()` verbatim rather than reimplementing a move.
+   *
+   * Re-picking the current value writes nothing, and that is not merely an
+   * optimisation. `StoryService::set_priority` (`src/service/story.rs`)
+   * always returns one event from `edit_story`'s build closure, so
+   * `edit_story`'s own empty-events short-circuit is never reached: a
+   * re-pick would append a second `StoryPrioritySet` carrying the value the
+   * story already had, and fire a `PriorityChange` hook for a change that
+   * did not happen -- a junk line in `story log` and someone's hook script
+   * run for nothing. The drawer's `<select>` never issues one because
+   * `change` does not fire when the same option is re-picked; this is a
+   * menu saying the same thing out loud, since a click on an already-
+   * checked radio item has no such native guard.
+   *
+   * `findStory`, not the model's captured `st`: the menu is built when it
+   * opens, and an SSE push (or another tab) can move the story on before
+   * the click lands -- the identical reasoning `setStoryState` states for
+   * doing the same. */
+  function setStoryPriority(id, priority) {
+    var story = findStory(id);
+    if (!story || story.story.priority === priority) return;
+    runFieldMutation(id, "POST", "priority", { priority: priority });
   }
 
   /** Drops a leading, trailing, or doubled-up separator -- what lets one
@@ -4167,33 +4242,41 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   /** Builds a `.ctxmenu-sub` popover's DOM from a flat `items` array of
-   * `{label, color, onSelect}` entries, under `ariaLabel` -- which the
-   * caller's own model supplies rather than this function knowing it, the
-   * same way `renderMenuNode` takes one.
+   * `{label, color, checked, onSelect}` entries, under `ariaLabel` --
+   * which the caller's own model supplies rather than this function
+   * knowing it, the same way `renderMenuNode` takes one.
    *
-   * `role="menuitem"` -- not `menuitemradio` (SH-310, fixing a defect
-   * SH-197 shipped): `menuitemradio` requires `aria-checked` (WCAG/ARIA's
-   * `aria-required-attr`), and Set Status's own items name a move ("go to
-   * in-progress"), deliberately omitting the story's current state (see
-   * `statusMenuItems`'s own comment) -- so there was never a checked
-   * member to announce, and a screen reader heard an invalid radio group
-   * whose current value it could never name. These are actions, not a
-   * group with a current member. */
+   * `checked` follows `renderMenuNode`'s own SH-305 convention exactly:
+   * absent means a plain `role="menuitem"` with no `aria-checked` and no
+   * `✓` -- a list of actions, which is what fixed Set Status's own defect
+   * (SH-310, `role="menuitemradio"` requires `aria-checked` per ARIA's
+   * `aria-required-attr`, and Set Status's items deliberately omit the
+   * story's current state -- see `statusMenuItems`'s own comment -- so
+   * there was never a checked member to announce). Present means
+   * `role="menuitemradio"` plus `aria-checked` plus a leading
+   * `.ctxmenu-check` -- a group with a current member, which is what Set
+   * Priority is: unlike Set Status it offers the story's own value too,
+   * marked, because nothing else in the app names a story's priority in
+   * one glance (see `priorityMenuItems`'s own comment). */
   function renderStorySubmenuNode(ariaLabel, items) {
     var node = el("div", { class: "ctxmenu ctxmenu-sub", role: "menu", "aria-label": ariaLabel }, []);
     items.forEach(function(entry) {
+      var checked = entry.checked;
+      var children = [
+        el("span", { class: "dot", style: "background:" + entry.color }, []),
+        entry.label
+      ];
+      if (checked !== undefined) children.unshift(el("span", { class: "ctxmenu-check" }, ["✓"]));
       node.appendChild(el("div", {
         class: "ctxmenu-item",
-        role: "menuitem",
+        role: checked === undefined ? "menuitem" : "menuitemradio",
+        "aria-checked": checked === undefined ? null : String(!!checked),
         tabIndex: -1,
         onClick: function() {
           closeStoryMenu(false);
           entry.onSelect();
         }
-      }, [
-        el("span", { class: "dot", style: "background:" + entry.color }, []),
-        entry.label
-      ]));
+      }, children));
     });
     return node;
   }
@@ -7842,9 +7925,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   /** Runs a mutation that isn't the board's optimistic move path (field
-   * edits from the drawer): fire the request, then reconcile from its
-   * response, or -- on failure -- describe the outcome honestly and
-   * reconcile from a refetch instead.
+   * edits from the drawer, and the context menu's Set Priority): fire the
+   * request, then reconcile from its response, or -- on failure --
+   * describe the outcome honestly and reconcile from a refetch instead.
    *
    * `describeMutationFailure`, not a bare `toastError` (SH-310): every
    * caller of this function shares `api()`'s ambiguity between "the daemon
@@ -7852,8 +7935,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * that function's own comment) -- `toastError` cannot tell those apart
    * and reported both as the same flat, sometimes-false "request timed
    * out". That was SH-312's defect for the create modal specifically;
-   * every field edit routed through here inherited the identical lie and
-   * had nothing to fix it until now. */
+   * every field edit and menu action routed through here inherited the
+   * identical lie and had nothing to fix it until now. */
   function runFieldMutation(id, method, action, body) {
     var path = apiBase() + "/story/" + encodeURIComponent(id) + (action ? "/" + action : "");
     api(method, path, body).then(handleMutationSuccess).catch(function(err) {
