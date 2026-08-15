@@ -867,6 +867,110 @@ the README's Network exposure section as well.
   `document.cookie`; a handed-off tab's Dispatch button is fully enabled, not held to a
   narrower scope that no longer exists.
 
+## As built — SH-319: the read gate's own residual, closed
+
+SH-255's "As built" section above named its own outstanding merge gate: *"Browser storage
+and `Sec-Fetch-Site` behavior are still unmeasured by any automated suite... whether
+`Sec-Fetch-Site` arrives as expected [is] asserted in this document... not by an automated
+test that could regress silently."* SH-319 is that gate closing — filed as "the dashboard
+re-prompts for a token," diagnosed by reproduction (not the story's own prime suspect,
+which predated SH-255's ship) as `named_token_ok`'s cookie-borne-read check requiring
+`Sec-Fetch-Site: same-origin` unconditionally.
+
+### What the residual actually was
+
+Per the Fetch Metadata spec, a browser appends `Sec-Fetch-*` headers only when the
+request's URL is a **potentially trustworthy URL** — https always, and http only on
+`localhost`/`127.0.0.1`. This daemon is designed to be reached over plain http on a
+Tailscale MagicDNS hostname or a LAN address — its two most common non-loopback
+deployments — neither of which qualifies. So the header this gate required simply never
+arrived there, and every cookie-borne read 401ed regardless of how valid the cookie was.
+Reproduced live: paste a valid named token, watch the exchange succeed (`204` +
+`Set-Cookie`), watch the very next `GET /api/repos` 401 anyway, forever. Loopback was
+unaffected — the header does arrive there — which is exactly why this residual survived
+past SH-255's own merge gate discussion without failing anything.
+
+### The replacement, and the council that picked it
+
+Two shapes were weighed by a `/council-vote` panel (security-researcher,
+software-architect, skeptic; full audit trail — gitignored —
+`.council/cookie-read-same-origin-check-without-sec-fetch/`):
+
+| Option | Verdict |
+|---|---|
+| `Sec-Fetch-Site` authoritative when present, `Referer`-vs-`Host` fallback when absent | Proposed by two of three members independently in round 1; both switched their own vote in the runoff |
+| **`X-Storyhook` required, the same marker `mutation_guard_ok` already requires for mutations** | **Taken, unanimous 3-0** |
+
+The reasoning that won: this daemon never answers a CORS preflight with
+`Access-Control-Allow-*` (verified directly, not assumed — nothing in `src/` sets one), so
+a cross-origin `fetch`/XHR that sets a custom header is blocked by the browser itself
+before the real request is ever sent. `Sec-Fetch-Site` alone only makes the *response*
+unreadable to attacker JS — the request still reaches the daemon, leaving XS-Leak-style
+side channels (timing, response size) open, a gap `X-Storyhook` closes by preventing the
+request at all. It also needs no new host/port comparison logic, which both `Sec-Fetch-Site`-fallback
+proposals' own risk sections flagged as their biggest implementation hazard.
+
+`same_origin_read` (`src/api/admission.rs`, `named_token_ok`'s old `same_origin_fetch`
+renamed and layered) now tries, in order:
+
+1. **`X-Storyhook` present** — sufficient on its own, for the reason above.
+2. **`Sec-Fetch-Site: same-origin`** — authoritative when the header arrives at all;
+   `cross-site` refuses outright and never falls through to (3).
+3. **`Referer`'s authority (host **and** port, verbatim — not [`normalized_host`]'s
+   port-stripped form, which would wrongly equate two daemons on one host at different
+   ports) matches the request's own `Host`** — checked only when `Sec-Fetch-Site` is
+   entirely absent. The one caller left needing this: `GET /api/events`'s native
+   `EventSource`, which cannot set custom headers and so never reaches (1).
+
+`Referrer-Policy: same-origin` ships alongside (`src/api/http.rs`, shared between `finish`
+and the SSE head the same way `CSP` already is), so the `EventSource` fallback's
+legitimate path does not depend on a browser's default referrer policy to keep sending one.
+
+Two of the dashboard's own read call sites — `fetchData()` and `fetchReposOnce()`
+(`src/web_dashboard.html`) — built a bare `XMLHttpRequest` and skipped the shared `api()`
+helper that already sends `X-Storyhook`, so neither carried it before this story. Both
+gained the one-line `xhr.setRequestHeader("X-Storyhook", "1")` `api()` already had;
+`pollDispatch()`'s own reads already went through `api()` and needed nothing.
+
+### The master token, named rather than silently refused (AC3)
+
+`story daemon token` prints the daemon's rotating bearer token; pasting it into the
+exchange modal got the same generic "not accepted" as any garbage string. `handle_exchange`
+now recognizes it specifically — via the same `token_ok` constant-time check the master
+token is checked with everywhere else — and answers `422` naming `story token new <name>`
+instead of the ordinary `401`. Still refused, deliberately: the master token rotates every
+restart, so a cookie minted from it would die at the very next one and defeat this story's
+own restart-survival goal, and it carries no expiry record for `Max-Age` to copy honestly.
+The existing "no wire-level distinction between wrong/expired/revoked" enumeration-oracle
+defense for *named* tokens is untouched — only the one value a caller could already prove
+they hold (by presenting it successfully at `/api/v1/*` elsewhere) gets a different answer.
+
+### Residual narrowed, not fully closed
+
+**The non-trustworthy-origin leg is proven at the socket level and by hand, not yet by an
+automated browser.** `tests/token_exchange.rs` (new) exercises the exact HTTP contract —
+exchange, replay with `X-Storyhook` and no `Sec-Fetch-Site` at all, replay via the
+`Referer` fallback, a fresh connection ("new tab"), a second server over the same store
+("daemon restart") — and a live Chromium session (via Playwright, against this machine's
+real bound tailnet address) reproduced the failure and confirmed the fix across reload,
+new tab, and daemon restart by hand. Automating that last leg in `e2e/` turned out to need
+a *second, isolated* daemon (the shared one's `STORYHOOK_WEB_TRUSTED_HOSTS` lever would
+silently break `handoff.spec.ts`'s coupon-arming, which depends on `local_request` seeing
+no proxy allowlist configured) — filed as **SH-321** rather than rushed.
+
+### Verification
+
+- `src/api/admission.rs` unit tests — `same_origin_read`'s full layered truth table:
+  `X-Storyhook` alone, `Sec-Fetch-Site` present and absent, a matching and a foreign
+  `Referer`, same host different port, `Sec-Fetch-Site: cross-site` refusing outright even
+  with a matching `Referer` (the precedence a collapsed "any one passes" check would get
+  wrong), a malformed `Referer` refused rather than panicking.
+- `src/api/tokens.rs` unit tests — the master token's distinguishable `422`, and that an
+  unknown value still gets the ordinary opaque `401`.
+- `tests/token_exchange.rs` (new) — the whole contract over a real socket, including the
+  restart and fresh-connection legs; each SH-319 case confirmed red against the pre-fix
+  `admission.rs` before the fix landed.
+
 ## As built — SH-186: the tailnet probe left the daemon's path to serving
 
 SH-186 was filed as a flaky-test report — `a_wedged_tailscale_cli_cannot_stop_the_dashboard_
