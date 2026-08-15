@@ -2215,6 +2215,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var askedFor = state.repoId;
     var xhr = new XMLHttpRequest();
     xhr.open("GET", apiBase() + "/data", true);
+    // SH-319: the daemon's cookie-borne-read gate accepts this marker on
+    // its own -- the same one api() already sends on every other request --
+    // instead of depending on Sec-Fetch-Site, which a plain-http tailnet
+    // origin never gets from the browser at all.
+    xhr.setRequestHeader("X-Storyhook", "1");
     xhr.timeout = 8000;
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
@@ -2446,6 +2451,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var ticket = ++reposFetchTicket;
     var xhr = new XMLHttpRequest();
     xhr.open("GET", "/api/repos", true);
+    // SH-319: see the identical comment in fetchData().
+    xhr.setRequestHeader("X-Storyhook", "1");
     xhr.timeout = 8000;
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
