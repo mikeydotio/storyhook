@@ -1874,11 +1874,25 @@ fn web_serve_root_html_sizes_the_shell_to_the_dynamic_viewport() {
     );
 }
 
-/// SH-235: `.toast-stack` and `.dispatch-history` are `position: fixed;
-/// right: 1rem` -- a bare `max-width` (22rem / 26rem) leaves no room for
-/// the matching 1rem the box needs on its *left* too, so on a narrow
-/// enough viewport it runs off the left edge. Each must cap itself at the
-/// viewport minus both margins instead.
+/// SH-235: a notice surface is `position: fixed; right: 1rem` -- a bare
+/// `max-width` (22rem / 26rem) leaves no room for the matching 1rem the box
+/// needs on its *left* too, so on a narrow enough viewport it runs off the
+/// left edge. The box must cap itself at the viewport minus both margins.
+///
+/// SH-323 moved WHERE that cap lives without changing what it promises.
+/// `.toast-stack` and `.dispatch-history` are no longer positioned at all:
+/// both are children of `.notice-dock`, which is the single element that
+/// touches the viewport edge, so it is the one that owes the arithmetic. The
+/// stacks inside it are bounded by `100%` of whatever the dock resolved to,
+/// which cannot exceed the viewport by construction -- one element doing this
+/// sum rather than two is the same consolidation SH-323 applied to the height
+/// bound, and for the same reason: two boxes independently deciding how much
+/// room they may take is two numbers that can disagree.
+///
+/// The `26rem` ceiling is the dock's because the dispatch history is the wider
+/// of the two surfaces; the toast stack keeps its own narrower `22rem` inside
+/// it, which is the difference SH-235 chose deliberately and this test still
+/// pins below.
 ///
 /// This is the cheap, browser-free layer: it pins the source text of the
 /// `min()`/`calc()` expression so the mechanism can't be quietly reverted
@@ -1899,13 +1913,38 @@ fn web_serve_root_html_clamps_overlay_widths_to_the_viewport() {
     let body = resp.into_body().read_to_string().unwrap();
     let css = stylesheet(&body);
 
-    for (selector, rem_ceiling) in [(".toast-stack", "22rem"), (".dispatch-history", "26rem")] {
+    let dock = declarations(css, ".notice-dock");
+    assert!(
+        dock.contains("max-width: min(26rem, calc(100vw - 2rem));"),
+        "`.notice-dock` must set `max-width: min(26rem, calc(100vw - 2rem));` -- \
+         it is the element at the viewport edge now, so it owes the margin \
+         arithmetic both notice surfaces used to do separately"
+    );
+
+    // Inside the dock, each stack is bounded by the dock rather than by the
+    // viewport. `.toast-stack` keeps a narrower ceiling of its own; the history
+    // panel takes the dock's full width, which is why only one of them names a
+    // rem value here.
+    let toast = declarations(css, ".toast-stack");
+    assert!(
+        toast.contains("max-width: min(22rem, 100%);"),
+        "`.toast-stack` must stay narrower than the dock (22rem) while never \
+         exceeding it (100%)"
+    );
+    let history = declarations(css, ".dispatch-history");
+    assert!(
+        history.contains("max-width: 100%;"),
+        "`.dispatch-history` must be bounded by the dock it sits in"
+    );
+
+    // Neither stack may re-acquire a viewport-relative width: two elements
+    // computing this independently is what SH-323 consolidated.
+    for selector in [".toast-stack", ".dispatch-history"] {
         let decl = declarations(css, selector);
-        let expected = format!("max-width: min({rem_ceiling}, calc(100vw - 2rem));");
         assert!(
-            decl.contains(&expected),
-            "`{selector}` must set `{expected}`, so it never exceeds the \
-             viewport minus its own left+right margins"
+            !decl.contains("100vw"),
+            "`{selector}` must not measure itself against the viewport -- \
+             `.notice-dock` is the element that touches it"
         );
     }
 }
@@ -7419,4 +7458,126 @@ fn a_project_with_no_checkout_refuses_writes_and_says_why() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_str(&data).unwrap();
     assert_eq!(json["summary"]["total_open"], 0);
+}
+
+/// The statuses editor's delete confirmation runs on no clock at all (SH-324).
+///
+/// `DELETE_CONFIRM_TIMEOUT_MS = 6000` disarmed it six seconds after arming,
+/// which is WCAG 2.2 SC 2.2.1's central case -- a time limit on *completing an
+/// action* -- with no turn-off, no adjust and no warn-and-extend. The council
+/// route was removal rather than any of the criterion's three clauses, so what
+/// this pins is an absence: there is no constant to configure and no timer to
+/// find.
+///
+/// Scoped to `onDeleteStatus`'s own body rather than grepping the whole file,
+/// which would fire on every animation cleanup, every poll and every debounce
+/// -- all of which are legitimate and none of which is a deadline on a user.
+#[test]
+fn the_status_delete_confirmation_runs_on_no_clock() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let script = script(&body);
+
+    assert!(
+        !script.contains("DELETE_CONFIRM_TIMEOUT_MS"),
+        "the deleted confirmation timeout is back. The route SH-324's council took was \
+         removal, not Adjust: a constant here means the limit exists again, and a limit \
+         that exists has to satisfy Turn off / Adjust / Extend, which nothing in this file \
+         does."
+    );
+
+    let signature = "function onDeleteStatus(status, row) {";
+    let fn_start = script
+        .find(signature)
+        .expect("onDeleteStatus(status, row) must exist with this exact signature");
+    let close = "\n  }\n";
+    let fn_end = fn_start
+        + script[fn_start..]
+            .find(close)
+            .expect("onDeleteStatus's closing brace")
+        + close.len();
+    let body_of_fn = &script[fn_start..fn_end];
+
+    assert!(
+        !body_of_fn.contains("setTimeout"),
+        "onDeleteStatus schedules something. Whatever it is, a confirmation that a timer \
+         can reach is a time limit on completing an action -- SH-324 removed the last one, \
+         and a debounce added here to guard the doubled click would be a new one rather \
+         than a fix (the layout guards that now; see buildDeleteConfirmPanel)."
+    );
+}
+
+/// The armed confirmation's state lives in `state`, not on the DOM node
+/// (SH-324) -- the class fence, in the style of `dead_public_surface.rs` and
+/// `release_targets.rs`.
+///
+/// This is the half a `setTimeout` scan cannot see. The flag used to live in
+/// `button.dataset.confirming`, and `renderStatuses()` clears and rebuilds every
+/// row -- so the armed state died on any of at least eight rebuild paths, two of
+/// which (`statusMutation()`'s callbacks) consult no busy guard and so discarded
+/// it on every browser. Deleting the six-second timer while leaving the flag on
+/// the node would have swapped a visible limit for an invisible 0-25s one set by
+/// the safety poll, which is worse for being undeclared.
+///
+/// So the fence is on the *substrate*, not on this one call site: a future
+/// confirmation reintroduced as per-node state is the same defect wearing a
+/// different name, and nothing else in the suite would catch it.
+///
+/// Comment lines (trimmed to start with `*` or `//`) are exempt -- the state
+/// field's own doc comment names `button.dataset.confirming` while explaining
+/// what replaced it, and is not a second source of the pattern.
+#[test]
+fn armed_confirmation_state_lives_in_state_not_on_the_node() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let script = script(&body);
+
+    for (at, _) in script.match_indices("dataset.confirming") {
+        let line_start = script[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let line = script[line_start..].lines().next().unwrap_or("");
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('*') || trimmed.starts_with("//") {
+            continue;
+        }
+        panic!(
+            "a confirmation's armed state is on a DOM node again, at script byte {at}: \
+             {line:?} -- renderStatuses() rebuilds every row from scratch, so a rebuild \
+             eats it, and the rebuild happens on a poll the user cannot see. Keep it in \
+             `state` and paint from it (SH-324)."
+        );
+    }
+
+    let signature = "function buildStatusRow(status, index) {";
+    let fn_start = script
+        .find(signature)
+        .expect("buildStatusRow(status, index) must exist with this exact signature");
+    let close = "\n  }\n";
+    let fn_end = fn_start
+        + script[fn_start..]
+            .find(close)
+            .expect("buildStatusRow's closing brace")
+        + close.len();
+
+    assert!(
+        script[fn_start..fn_end].contains("state.armedDeleteSlug"),
+        "buildStatusRow no longer reads state.armedDeleteSlug, so a rebuild stops \
+         repainting an armed confirmation and starts discarding it again. Painting from \
+         state on every render is what makes \"this dashboard sets no time limit here\" \
+         true structurally, rather than true only while every renderStatuses() caller \
+         remembers to consult a busy predicate -- and two callers already do not."
+    );
 }
