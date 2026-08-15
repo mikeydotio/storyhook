@@ -17507,3 +17507,101 @@ seat was the only stall, and the log-growth heartbeat was clean throughout.
 
 **`story next` behaved.** It handed back SH-320, which was genuinely ready, and
 nothing about the recommendation needed routing around.
+
+### SH-323 — done
+
+**Outcome:** merged. Notices no longer cover the controls under them, the pile is
+bounded and every notice in it can be reached, and a reader who keeps notices can
+clear them in one action.
+
+**The story's own direction was overruled, unanimously and on its own evidence.**
+It proposed `max-height` + `overflow-y` on `.toast-stack` plus a "Dismiss all"
+control. All three council seats reached the same objection independently: that
+bounds the pile and **occludes exactly what it occluded before**. Occlusion is
+fixed by geometry or it is not fixed.
+
+**The extent was wider than the story reported, and measuring came first.** The
+story named `#drawer-close`. Hit-testing each control's own centre found that
+**one** ordinary notice also covers `#settings-btn`, `#new-story-btn`,
+`#drafts-btn` and `#conn-dot` — the topbar's whole right cluster. At 24 notices
+the stack stood 1717px tall in a 720px viewport; because it was `position:
+fixed`, the page could not scroll to them, so ~13 were unreadable and
+dismissable only blind. Three measurements were taken before any design work and
+all three changed the answer:
+
+| # | Measured | Consequence |
+|---|---|---|
+| F1 | `.topbar` bottom is 62 / 103.5 / 145 / 145 at 1280 / 768 / 390 / 320, against a token prediction of 48 | Every token-derived offset is dead — wrong by 14px at desktop, 97px on a phone |
+| F2 | `#settings-btn` keeps a 3.25px visible strip | A centre hit-test scores a sliver and total occlusion identically, so the pin had to be rect-intersection area |
+| F3 | 14 clocked notices → `dismissButtons: 0, focusable: 0`, bottom 701 in a 720px viewport | "Content-focusability is sufficient" is false; the scroller needs its own conditional tab stop |
+
+**F3's first run reported the exact opposite and looked entirely plausible.**
+Without clipboard permission granted to the browser context, the Copy-ID path
+takes `copyText`'s `.catch` branch and raises an **error** — durable, with a
+dismiss button — so the measurement said "14 notices, 14 focusable" and would
+have settled the design the wrong way. It took reading the variant off the node
+(`toast error`, "Write permission denied") to notice. That is the same shape as
+SH-263 and as this file's own SH-226 doctrine: the instrument agreed with a
+hypothesis it was not actually testing.
+
+**Council: yes** — 3 seats, blind round 1, one deliberation round, IRV runoff.
+Audit trail in `.council/sh-323-notice-stack-occlusion-and-growth/`; verdict and
+all three chair rulings recorded as a comment on SH-323. **Every seat voted
+against its own proposal**, and by the end both losing seats had conceded the
+winner's architecture in their own words — so the runoff was fought over
+amendments rather than architectures. The deciding argument came from the seat
+whose proposal it killed: two independently-capped docks can grow toward each
+other and meet in a short viewport, because neither ceiling knows what the other
+is holding.
+
+**Three chair rulings, all recorded with what they answer to.** (1)
+`#dispatch-history` converts from `column-reverse` to plain `column` rather than
+having its reverse-container `scrollTop` semantics pinned — decided on a ground
+neither seat argued, that this suite drives **only Blink** (`e2e/playwright.config.ts`
+has two projects, both chromium), so a cross-engine claim cannot be tested here at
+all and pinning one engine would read as a guarantee about all of them. The other
+seat's test was adopted verbatim as the instrument. (2) `max-height: 50%` does
+not ship — upheld on the skeptic's objection against its own proposal. (3) No
+bottom fallback constant before `#drawer-footer` was measured: 68.5px as a button
+row, **124.5px** as an archive-confirm panel, and its button *count* never
+mattered because that row cannot wrap.
+
+**A conformance claim in the story text was corrected rather than repeated.**
+"The notices block the pointer route to the preference that turns notices off" is
+true as fact and wrong as a WCAG claim — SC 2.2.1's Turn-off clause is scoped to
+*before* the limit is encountered, and the keyboard route to `#settings-btn` is
+untouched by any overlay. The real citations: **2.4.11 (AA)** for `#drawer-close`,
+whose rect is a strict subset of the stack's; **2.4.12 (AAA, untargeted)** for the
+topbar cluster, because 3.25px survives and "entirely" is the operative word;
+**2.4.7** for the below-fold pile. Had the verdict been built on the 2.2.1
+framing, SH-323 would have closed claiming a conformance fix it did not make.
+
+**Three commits, ordered so no intermediate state is worse than the start.**
+Prepend first (newest-first on both surfaces), then the dock, then Dismiss all.
+That order was unanimous and the reasoning is the ux seat's: if the cap lands
+first there is a real, mergeable, green commit where the stack is provably
+bounded *and* provably able to hide a new arrival below the fold.
+
+**A test that passed while its own instrumentation said otherwise.** The
+keyboard-scroll assertion went green while three consecutive reads of `scrollTop`
+after End, PageDown and ArrowDown all returned 0. Chromium **animates**
+keyboard-initiated scrolling, so every instantaneous read caught the animation at
+t≈0 and only the final read — three round-trips later — saw it land. Scrolling
+worked; the assertion was racing an animation and would have been flaky by
+construction. Replaced with a polled assertion.
+
+**Filed, not fixed: SH-333** (`relates-to SH-323`, `relates-to SH-322`).
+`role="status"` is implicitly `aria-atomic="true"`, so the stack re-announces
+*every* notice on *every* arrival — worse the larger the pile this story just made
+comfortable to keep. It needs its own test surface, and honestly: the suite drives
+no assistive technology, so nothing in `e2e/` can assert what was announced. That
+limitation is written into the story rather than discovered later.
+
+**Costs and supervision.** A cold `target/` and `make e2e-install` in a fresh
+worktree, both already documented. No wedges, no stalls, no kills; log-growth
+heartbeat clean throughout. Four throwaway spikes were written to measure F1–F3
+and the bottom band, and all four were deleted before the branch was pushed —
+their numbers live in the council artifact and in the code comments that depend
+on them.
+
+**`story next` behaved.** It handed back SH-323, which was genuinely ready.
