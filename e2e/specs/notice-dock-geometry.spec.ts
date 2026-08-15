@@ -760,14 +760,21 @@ test("a dismissed notice hands focus to the notice that took its place", async (
   );
   expect(headlines).toEqual(["Description copied", "URL copied", "ID copied"]);
 
-  await page.locator("#toast-stack .toast .toast-dismiss").first().focus();
+  // The MIDDLE notice, and that is the point of this test rather than a detail
+  // of it. Dismissing the first or the last cannot tell next-first from
+  // previous-first apart — at the top there is no previous, at the bottom no
+  // next, so both rules pick the same survivor and a reversed implementation
+  // passes. Only a notice with a neighbour on each side puts the direction
+  // under test. (Found by mutation-checking this pin, which the first version
+  // survived.)
+  await page.locator("#toast-stack .toast .toast-dismiss").nth(1).focus();
   await page.keyboard.press("Enter");
   await expect(page.locator("#toast-stack .toast")).toHaveCount(2);
 
   // The NEXT sibling, not merely "a neighbour". Notices are prepended, so the
   // following sibling is the older notice that moves up into the vacated pixels
-  // — focus follows position, not age. A rule that reached backwards would land
-  // on nothing here and on the wrong notice everywhere else.
+  // — focus follows position, not age. "ID copied" was below the dismissed
+  // notice; "Description copied" was above it and must not win.
   const heir = await page.evaluate(() => {
     const el = document.activeElement as HTMLElement | null;
     return {
@@ -776,7 +783,7 @@ test("a dismissed notice hands focus to the notice that took its place", async (
     };
   });
   expect(heir.isDismiss, "focus must be on a dismiss button, not merely somewhere").toBe(true);
-  expect(heir.headline).toBe("URL copied");
+  expect(heir.headline).toBe("ID copied");
 
   // The ergonomic claim, asserted as behaviour rather than left in prose: the
   // pile clears with repeated Enter and no Tab in between. Before this fix each
@@ -986,4 +993,41 @@ test("a bulk clear that took no focus moves none either", async ({ page }) => {
   await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
 
   expect(await focusedIdentity(page)).toBe("#search-input");
+});
+
+test("a dismissal does not rehome focus that something else destroyed", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await keepNotices(page);
+  await openProject(page, "Alpha Project");
+
+  const title = "SH-326 — attribution";
+  await createStory(page, title);
+  await raiseDurableNotices(page, title, 2);
+
+  // **This test asserts that focus is left on `<body>`, which looks like it is
+  // asserting the defect. It is not.** The rule repairs the focus a notice
+  // dismissal destroyed — no more. Here something else destroys it in the same
+  // turn, and the dismissal must not claim the repair: focus movement
+  // attributable to the wrong cause is what produces a bug report nobody can
+  // reproduce a year later, because the gesture blamed for it is innocent.
+  //
+  // Written because the mutation battery found it missing. Deleting the region
+  // gate reddened nothing: in every other pin the second clause ("focus still
+  // lives somewhere real") answered first, so the gate looked load-bearing and
+  // was untested. Only a survivor that is destroyed by a third party in the
+  // same turn separates the two clauses.
+  await page.locator("#search-input").focus();
+  await page.evaluate(() => {
+    document.getElementById("search-input")!.remove();
+    (document.querySelector("#toast-stack .toast .toast-dismiss") as HTMLElement).click();
+  });
+  await expect(page.locator("#toast-stack .toast")).toHaveCount(1);
+
+  expect(
+    await page.evaluate(() => document.activeElement === document.body),
+    "a dismissal must not adopt a stranding it did not cause",
+  ).toBe(true);
 });
