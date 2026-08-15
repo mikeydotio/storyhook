@@ -3,7 +3,7 @@ name: story
 description: "Storyhook story lifecycle toolkit. `/story do <id>` dispatches a ready story to a fresh plan-mode Claude session in a new tmux window + per-story git worktree, refusing if the story isn't ready; `/story new <desc>` interrogates you then files a story; `/story view <id>` prints a story and stops; `/story complete <id>` closes it and safely cleans up merged branches + worktrees; `/story <id>` views it then offers to work on it; bare `/story` lists ready stories to pick from. `/story work [id]`, `/story context`, `/story setup`, `/story sync`, `/story handoff`, `/story triage`, `/story update`, `/story plan <spec>`, and `/story install` delegate to their own dedicated skills unchanged. Use whenever the user wants to file, view, start, or wrap up a storyhook story, or manage the storyhook plugin/project itself. Deterministic work lives in bin/story.sh; requires the story CLI (and tmux for `do`, `capture`, and `doctor`)."
 user-invocable: true
 allowed-tools: Bash(story *), Bash(command -v *), Bash(which *), Bash(cargo *), Bash(curl *), Bash(uname *), Bash(bash ${CLAUDE_PLUGIN_ROOT}/bin/story.sh *), Read, Write, Grep, Glob, AskUserQuestion
-argument-hint: "<do <id> [--auto] | new <desc> | view <id> | complete <id> | <id> | work [id] | context | setup | sync | handoff | triage | update | plan <spec> | install | doctor | capture <id>>"
+argument-hint: "<do <id> [--auto] | new <desc> | view <id> | complete <id> | <id> | work [id] | context [--full] | setup | sync | handoff | triage | update | plan <spec> | install | doctor | capture <id>>"
 ---
 
 # Story — storyhook story lifecycle router
@@ -36,7 +36,7 @@ its behavior from memory, and do not skip steps it defines.
 | `capture <id>` | Peek at a dispatched session | Run `story.sh capture <id>`, show `display`, stop. Read-only. |
 | `doctor` | Self-test | Run `story.sh doctor`, show `display`. Checks project data integrity **and** whether this Claude build's readiness/paste path is still recognised. |
 | `work [id]` | Start work in this session | Read `skills/story-work/SKILL.md` and follow it, passing `[id]` through. |
-| `context` | Show project state | Read `skills/story-context/SKILL.md` and follow it. |
+| `context [--full]` | Show project state | Read `skills/story-context/SKILL.md` and follow it, passing the flag through. |
 | `setup` | Initialize/configure | Read `skills/story-setup/SKILL.md` and follow it. |
 | `sync [--since <d>]` | Sync git history | Read `skills/story-sync/SKILL.md` and follow it, passing the flag through. |
 | `handoff [--since <d>]` | End-of-session handoff | Read `skills/story-handoff/SKILL.md` and follow it, passing the flag through. |

@@ -6,9 +6,11 @@ so a skill may run in a project where `story` is missing.
 
 Before doing CLI-dependent work, run this guard:
 
-1. Run `command -v story`.
-2. **If found**, proceed with the skill normally.
-3. **If not found**, the storyhook CLI is required and must be installed first:
+1. Run `bash ${CLAUDE_PLUGIN_ROOT}/bin/story.sh ensure-cli`. This is the one verb that
+   answers even when `story` itself is missing — it always returns `ok:true`; `installed`
+   is the fact you're checking.
+2. **`installed:true`**, proceed with the skill normally.
+3. **`installed:false`**, the storyhook CLI is required and must be installed first:
    - Tell the user the `story` CLI isn't installed and this skill needs it.
    - Ask for explicit permission to install it (use `AskUserQuestion`).
    - **If approved**, follow the `story-install` skill to install and verify the CLI,
