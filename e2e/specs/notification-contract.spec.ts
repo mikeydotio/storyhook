@@ -922,3 +922,130 @@ test("a backgrounded tab does not burn a notice's clock down unseen", async ({
 
   await cleanUp(page, title);
 });
+
+// ============================================================
+// SH-326 — the same focus policy, on the surface that rebuilds itself
+// ============================================================
+//
+// `#dispatch-history` is rendered from `state.dispatchHistory` and cleared and
+// rebuilt on every change, so a dismissal here destroys the focused button
+// unconditionally — the toast stack's defect without even the "other notices
+// remain" reprieve. The policy is identical (heir first, `focusAfterNoticeRemoval`
+// when there is none) because a user cannot see the rebuild and must not be
+// taught two behaviours for one gesture.
+//
+// What differs is only HOW the heir is named: from `state.dispatchHistory` by
+// key, never by DOM identity, because `clear(panel)` destroys identity. SH-283 is
+// the cautionary half of that prior art — it keyed a focus snapshot on
+// `data-field`, a name that repeats across contexts, and wrote one story's text
+// into another. `row.key` cannot do that: it is `"dh-" + (++dispatchHistorySeq)`,
+// minted once, never reused within a tab's session, never present on two rows,
+// and the lookup is scoped to the panel. And nothing is stored across calls —
+// the capture and the restore happen in one synchronous handler.
+
+/** Puts one refused `--auto` dispatch row in the history and returns its story
+ * id, which is the text that makes the row distinguishable from its siblings. */
+async function raiseHistoryRow(page: Page, title: string): Promise<string> {
+  const before = await page.locator("#dispatch-history .dispatch-history-row").count();
+  // `openFreshStory` starts from the project picker, so a second call has to be
+  // sent home first — otherwise it hunts for a `.repo-card-name` on the board.
+  await page.locator("#home-btn").click();
+  const id = await openFreshStory(page, title);
+  await stubDispatch(page, id, true, "refused");
+  await page.locator("#dispatch-auto-btn").click();
+  await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(before + 1);
+  await page.locator("#drawer-close").click();
+  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
+  return id;
+}
+
+test("a dismissed dispatch result hands focus to the row that took its place", async ({
+  page,
+}) => {
+  await openClocked(page);
+
+  const titleA = "SH-326 — history heir, older";
+  const titleB = "SH-326 — history heir, newer";
+  const idA = await raiseHistoryRow(page, titleA);
+  const idB = await raiseHistoryRow(page, titleB);
+
+  // Rows are unshifted, so B is on top and A below it — the same newest-first
+  // order the toast stack uses, and the same reason the heir is the NEXT row.
+  const rows = page.locator("#dispatch-history .dispatch-history-row");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0)).toContainText(idB);
+  await expect(rows.nth(1)).toContainText(idA);
+
+  await rows.nth(0).locator(".dispatch-history-dismiss").focus();
+  await page.keyboard.press("Enter");
+  await expect(rows).toHaveCount(1);
+
+  // Asserted through the row's own text rather than its index: after the
+  // rebuild, index 0 is a different node with the same coordinate, so an
+  // index-keyed implementation passes a naive version of this and is wrong.
+  const heir = await page.evaluate(() => {
+    const el = document.activeElement as HTMLElement | null;
+    return {
+      isDismiss: !!el?.classList.contains("dispatch-history-dismiss"),
+      text: el?.closest(".dispatch-history-row")?.textContent ?? null,
+    };
+  });
+  expect(heir.isDismiss, "focus must survive the panel's wholesale rebuild").toBe(true);
+  expect(heir.text).toContain(idA);
+
+  await deleteStory(page, titleA);
+  await deleteStory(page, titleB);
+});
+
+test("the last dispatch result standing lands focus outside the dock", async ({
+  page,
+}) => {
+  await openClocked(page);
+
+  const title = "SH-326 — the history anchor";
+  await raiseHistoryRow(page, title);
+
+  await page.locator("#dispatch-history .dispatch-history-dismiss").focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(0);
+
+  const landed = await page.evaluate(() => {
+    const el = document.activeElement as HTMLElement | null;
+    if (!el || el === document.body) return { ok: false, why: "body or nothing" };
+    if (el.closest("#notice-dock")) return { ok: false, why: "inside the notice dock" };
+    return { ok: true, why: "" };
+  });
+  expect(landed.ok, `focus after dismissing the last dispatch result: ${landed.why}`).toBe(true);
+
+  await expect(page.locator("#notice-dock-status")).toHaveText(
+    "Dispatch result dismissed. No dispatch results remaining.",
+  );
+
+  await deleteStory(page, title);
+});
+
+test("dismissing a dispatch result by pointer steals no focus from elsewhere", async ({
+  page,
+}) => {
+  await openClocked(page);
+
+  const title = "SH-326 — history steals nothing";
+  await raiseHistoryRow(page, title);
+
+  // `element.click()` moves focus in no engine, which is the state a real
+  // pointer click leaves on WebKit — this repo measured that and wrote it down
+  // (`src/web_dashboard.html`, the `armedDeleteSlug` comment). It EMULATES that
+  // state and does not prove it: `playwright.config.ts` installs chromium only,
+  // so the engine the guard exists for is not under test here (SH-335).
+  await page.locator("#search-input").focus();
+  await page.evaluate(() => {
+    (document.querySelector(".dispatch-history-dismiss") as HTMLElement).click();
+  });
+  await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(0);
+
+  expect(
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.id),
+  ).toBe("search-input");
+
+  await deleteStory(page, title);
+});

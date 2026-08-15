@@ -2257,22 +2257,40 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     restoreOverlayFocus(returnTo);
   }
 
-  /** Returns focus to `node` when it can still take it.
+  /** Whether `node` can still receive focus and be seen to have it.
    *
    * Every rejection here is a state the app reaches on an ordinary path, not
    * a hypothetical: a card removed by the `/data` arrival that closed the
    * drawer, a control hidden by the screen change that closed it
    * (`renderScreen()`), or one still inert under an overlay further down the
    * stack. Focusing any of those either drops the focus silently or scrolls
-   * the page to something the user cannot see, so it is skipped — leaving
-   * focus at the document, which is where the browser puts it anyway. */
+   * the page to something the user cannot see.
+   *
+   * Extracted from `restoreOverlayFocus`, which is still its first caller, so
+   * that the notice surfaces can ask the same question rather than a second
+   * approximation of it (SH-326). The approximation that was nearly written
+   * there checked `isConnected` and the `hidden` *attribute* and knew nothing
+   * about `[inert]` — accurate enough to pass today, because `syncNoticeBar`
+   * happens to use `bar.hidden`, and wrong the day either half changed. Two
+   * copies of one rule is the class SH-136 already cost this project three
+   * times.
+   *
+   * `document.body` is deliberately NOT rejected here: it satisfies every
+   * clause honestly (it is connected, it has rects, it has a `focus` method).
+   * "Body is not a place focus should live" is a different judgement, and it
+   * belongs to each caller — both of which make it. */
+  function canTakeFocus(node) {
+    if (!node || typeof node.focus !== "function") return false;
+    if (!document.body.contains(node)) return false;
+    if (node.closest("[inert]")) return false;
+    return !!node.getClientRects().length;
+  }
+
+  /** Returns focus to `node` when it can still take it, leaving focus at the
+   * document otherwise — which is where the browser puts it anyway. */
   function restoreOverlayFocus(node) {
     if (!node || node === document.body) return;
-    if (typeof node.focus !== "function") return;
-    if (!document.body.contains(node)) return;
-    if (node.closest("[inert]")) return;
-    if (!node.getClientRects().length) return;
-    node.focus();
+    if (canTakeFocus(node)) node.focus();
   }
 
   /** How long a backdrop stays in the document after `.open` comes off, so
@@ -2951,8 +2969,20 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // control that appeared and vanished on that rhythm would be a tab stop
     // flickering in and out under the user. Counting what the reader must act
     // on makes the bar's presence a consequence of a state only they can change.
-    syncNoticeBar("toast", $("toast-stack").querySelectorAll(".toast .toast-dismiss").length);
+    syncNoticeBar("toast", durableNoticeCount());
     syncNoticeBar("dispatch-history", state.dispatchHistory.length);
+  }
+
+  /** How many notices the reader must actually act on.
+   *
+   * One expression rather than two because two numbers are what drift: this is
+   * both the count in the visible "Dismiss all N" and the count spoken after a
+   * single dismissal, and a reader who saw one and heard the other would be
+   * looking at the SH-136 failure in an accessible name. Counting `.toast` would
+   * be the plausible wrong answer -- it includes self-clearing notices, which are
+   * gone in three seconds and carry no control to press. */
+  function durableNoticeCount() {
+    return $("toast-stack").querySelectorAll(".toast .toast-dismiss").length;
   }
 
   /** How many notices a region must hold before it offers to clear them all.
@@ -3001,16 +3031,128 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * and otherwise the visible `<main>` for the current screen. Both are real,
    * visible elements with the page's own content after them in tab order.
    *
-   * Called only from the two bulk-clear handlers. The per-notice
-   * `.toast-dismiss` handler is left exactly as it was, so SH-326 keeps its
-   * subject and its repro, and extends this helper to two more call sites
-   * rather than unpicking a policy it never agreed to. */
+   * **SH-326 extended it, as this comment predicted, and found something
+   * stronger than "two more call sites".** This is not one policy among several
+   * for "where does focus go after a notice leaves" -- it is the *last clause*
+   * of the only one. A dismissal rehomes focus to the heir when a heir exists,
+   * and lands here when none does, on both surfaces and for both the single and
+   * bulk gestures. That is why the question SH-326 was filed to answer -- where
+   * focus goes when the dismissed notice was the last one -- needed no new
+   * anchor: the answer was already written here, already argued, and already
+   * pinned as a property rather than an identity
+   * (`.council/sh326-notice-dismiss-focus-landing/DECISION.md`).
+   *
+   * **Every caller gates on `noticeFocusIn` first, the bulk pair included.**
+   * They called this unconditionally when SH-323 shipped them, which was safe
+   * only for a keyboard user: the bar button is focused by construction when it
+   * is pressed by Enter. A *pointer* press on WebKit focuses no `<button>` at
+   * all, so `document.activeElement` was still whatever the reader was typing
+   * in, and this function then moved focus and caret to the drawer. The value
+   * was committed rather than lost -- the description's blur handler PATCHes --
+   * so the harm was an unrequested context change, not data loss. The guard is
+   * one line at each site because the rule already existed. */
   function focusAfterNoticeRemoval() {
     var active = overlayStack.length ? overlayStack[overlayStack.length - 1] : null;
     var target = active ? $(active) : visibleMain();
     if (!target) return;
     if (!target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1");
     target.focus();
+  }
+
+  /** Whatever holds focus inside `region` right now, or `null`.
+   *
+   * Called **before** a notice is removed, and it is half of SH-326's gate:
+   * focus is only ever rehomed when it was ours to lose. Without it, wiring
+   * `focusAfterNoticeRemoval` to a per-notice handler would yank a reader out of
+   * the drawer field they are typing in every time a notice was dismissed by
+   * pointer -- a worse defect than the stranding being repaired, and the one
+   * objection SH-322's council raised against moving focus here at all.
+   *
+   * Scoped to the **region** rather than to the notice or the stack, which is
+   * what makes one rule cover three ways a single dismissal strands focus: the
+   * focused button is removed; `syncNoticeBar` hides the bar a focused "Dismiss
+   * all" was sitting in; or `syncNoticeDock` takes `tabindex` off a focused
+   * `#toast-scroll` that has stopped overflowing. Only the first is a removal,
+   * and a rule that asked about removals would miss the other two. */
+  function noticeFocusIn(region) {
+    var active = document.activeElement;
+    if (!active || active === document.body) return null;
+    return region && region.contains(active) ? active : null;
+  }
+
+  /** Rehomes focus after one notice is removed, and only when that removal is
+   * what took it.
+   *
+   * `before` is `noticeFocusIn`'s answer from before the mutation; `heir` is the
+   * control that should inherit, or null.
+   *
+   * **The second clause asks where focus IS, not whether `before` survived.**
+   * Those come apart on a real path: a hidden bar and a de-`tabindex`ed scroller
+   * both leave their node connected, visible and rect-bearing while the browser
+   * has already dropped focus to `<body>`. Asking after the element would report
+   * everything fine and leave the reader on the body -- the exact defect this
+   * function exists to end.
+   *
+   * And it is a **state** question, never a modality question. `event.detail
+   * === 0` is not a keyboard test: assistive technology dispatches synthesised
+   * clicks with `detail === 0`, so it fires for AT-driven pointer users and not
+   * for real ones. This file already records the measurement that settles it --
+   * WebKit focuses no `<button>` on click (see `armedDeleteSlug`), so "was this
+   * activated by keyboard" is unanswerable while "did focus survive" is
+   * observable. Ask what a thing is, not what it is spelled (SH-226).
+   *
+   * The fallthrough is SH-323's anchor, unmodified. That is SH-326's whole
+   * finding: `focusAfterNoticeRemoval` is not a competing policy for the empty
+   * stack, it is the last clause of this one. */
+  function settleNoticeFocus(before, heir) {
+    if (!before) return;
+    var now = document.activeElement;
+    if (now && now !== document.body && canTakeFocus(now)) return;
+    if (canTakeFocus(heir)) { heir.focus(); return; }
+    focusAfterNoticeRemoval();
+  }
+
+  /** The control that inherits focus from the one inside `node`: the next
+   * sibling's, else the previous sibling's.
+   *
+   * **Forward first, and the direction is load-bearing.** Notices are prepended
+   * (`toast()`, `addDispatchHistoryRow`), so the following sibling is the
+   * *older* notice -- the one that moves up into the vacated row. Focus follows
+   * position, not age, and a rule that reached backwards would land on the wrong
+   * notice everywhere except the bottom of the stack.
+   *
+   * Siblings are **scanned, not indexed**: a self-clearing notice carries no
+   * dismiss button at all (SH-322, 3-0), so "another notice remains" and "a
+   * dismiss target remains" are different questions and only the second one
+   * decides anything here. */
+  function adjacentNoticeControl(node, selector) {
+    var hop, found;
+    for (hop = node.nextElementSibling; hop; hop = hop.nextElementSibling) {
+      found = hop.querySelector(selector);
+      if (found) return found;
+    }
+    for (hop = node.previousElementSibling; hop; hop = hop.previousElementSibling) {
+      found = hop.querySelector(selector);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  /** Says a single dismissal happened, and how much is left.
+   *
+   * Announced on **every** dismissal, pointer included, and whether or not focus
+   * moved. Two reasons, and neither is politeness: a removal from an
+   * `aria-live="polite"` region is announced by nothing, because the default
+   * `aria-relevant` is `additions text`; and the heir's accessible name is
+   * character-for-character the destroyed button's ("Dismiss this message"), so
+   * without a count a successful dismissal is indistinguishable from a dead key.
+   *
+   * The mechanism is pinned by a test. What a screen reader actually utters is a
+   * hand check and is not claimed here -- the SH-322/SH-327 precedent. */
+  function announceNoticeDismissal(what, remaining, plural) {
+    announceInNoticeDock(remaining
+      ? what + ". " + remaining + " remaining."
+      : what + ". No " + plural + " remaining.");
   }
 
   /** The `<main>` the current screen is showing, or `null` if none is. */
@@ -3042,21 +3184,23 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * of the session -- the node is gone, so nothing else would ever release it. */
   function dismissAllToasts() {
     var stack = $("toast-stack");
+    var before = noticeFocusIn($("toast-region"));
     Array.prototype.slice.call(stack.children).forEach(function(node) {
       if (node.cancelNoticeClock) node.cancelNoticeClock();
       node.remove();
     });
     syncNoticeDock();
-    focusAfterNoticeRemoval();
+    settleNoticeFocus(before, null);
     announceInNoticeDock("All notices dismissed");
   }
 
   /** The same, for the dispatch history, which is rendered from state rather
    * than mutated node by node. */
   function dismissAllDispatchHistory() {
+    var before = noticeFocusIn($("dispatch-history-region"));
     state.dispatchHistory = [];
     renderDispatchHistory();
-    focusAfterNoticeRemoval();
+    settleNoticeFocus(before, null);
     announceInNoticeDock("All dispatch results dismissed");
   }
 
@@ -3243,7 +3387,20 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         class: "toast-dismiss",
         type: "button",
         "aria-label": "Dismiss this message",
-        onClick: function() { node.remove(); syncNoticeDock(); }
+        // Order is load-bearing (SH-326). The heir is read while `node` still
+        // has siblings; `syncNoticeDock()` runs before the focus decision so
+        // that decision reads a settled DOM rather than one mid-reconciliation;
+        // and focus moves before the announcement, matching `dismissAllToasts`,
+        // so a polite utterance is queued after the focus change rather than
+        // cut short by it.
+        onClick: function() {
+          var before = noticeFocusIn($("toast-region"));
+          var heir = adjacentNoticeControl(node, ".toast-dismiss");
+          node.remove();
+          syncNoticeDock();
+          settleNoticeFocus(before, heir);
+          announceNoticeDismissal("Notice dismissed", durableNoticeCount(), "notices");
+        }
       }, ["×"]) : null
     ]);
     stack.insertBefore(node, stack.firstChild);
@@ -3574,9 +3731,55 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     renderDispatchHistory();
   }
 
+  /** The dismiss control of the row bearing `key`, or null.
+   *
+   * Scans `dataset` rather than interpolating `key` into an attribute selector,
+   * following `focusInStatusRow`'s recorded rule: the key's shape is safe today
+   * and a selector would stop being safe the day it was not. */
+  function dispatchDismissForKey(panel, key) {
+    var rows = panel.querySelectorAll(".dispatch-history-row");
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].dataset.noticeKey === key) return rows[i].querySelector(".dispatch-history-dismiss");
+    }
+    return null;
+  }
+
+  /** Removes one row, and rehomes the focus that removal destroyed (SH-326).
+   *
+   * Same policy as a toast's `×` -- the user cannot see that this panel is
+   * rebuilt wholesale and must not be taught two behaviours for one gesture --
+   * but the heir has to be named differently, because `clear(panel)` destroys
+   * every node this function could have held a reference to. So it is named
+   * from `state.dispatchHistory`, whose order **is** DOM order, and re-found by
+   * key after the rebuild.
+   *
+   * **Why that is not SH-283's mistake.** That defect keyed a focus snapshot on
+   * `data-field`, a name that repeats across every story's drawer, and so
+   * restored one story's text into another. `row.key` cannot: it is
+   * `"dh-" + (++dispatchHistorySeq)`, minted once, never reused within a tab's
+   * session, never on two rows, and the lookup is scoped to the panel. Nor is
+   * anything stored across calls -- the capture and the restore happen inside
+   * one synchronous handler, so there is no snapshot for a later render to
+   * consume.
+   *
+   * The restore lives here and deliberately NOT inside `renderDispatchHistory`,
+   * which would also fire on the arrival path: filed as SH-337, where the real
+   * repair is an incremental insert that preserves focus by construction rather
+   * than a `.focus()` call on every arriving row. */
   function dismissDispatchHistoryRow(key) {
-    state.dispatchHistory = state.dispatchHistory.filter(function(row) { return row.key !== key; });
+    var panel = $("dispatch-history");
+    var before = noticeFocusIn($("dispatch-history-region"));
+    var rows = state.dispatchHistory;
+    var at = -1, i;
+    for (i = 0; i < rows.length; i++) {
+      if (rows[i].key === key) { at = i; break; }
+    }
+    var heir = at === -1 ? null : (rows[at + 1] || rows[at - 1] || null);
+    state.dispatchHistory = rows.filter(function(row) { return row.key !== key; });
     renderDispatchHistory();
+    settleNoticeFocus(before, heir ? dispatchDismissForKey(panel, heir.key) : null);
+    announceNoticeDismissal(
+      "Dispatch result dismissed", state.dispatchHistory.length, "dispatch results");
   }
 
   /** Every row here is a failure now (see `finishDispatch`), so the variant
@@ -3586,7 +3789,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var panel = $("dispatch-history");
     clear(panel);
     state.dispatchHistory.forEach(function(row) {
-      panel.appendChild(el("div", { class: "dispatch-history-row error" }, [
+      // `data-notice-key` is how a dismissal re-finds the heir it chose before
+      // this rebuild destroyed every node (SH-326). It is a focus-restoration
+      // key, not a general test hook.
+      panel.appendChild(el("div", {
+        class: "dispatch-history-row error",
+        dataset: { noticeKey: row.key }
+      }, [
         noticeBody(row.headline, row.detail, row.reason),
         el("button", {
           class: "dispatch-history-dismiss",

@@ -173,6 +173,78 @@ async function raiseDurableNotices(page: Page, title: string, count: number): Pr
   }
 }
 
+/** Asserts that focus landed somewhere a user can actually be, without naming
+ * which element.
+ *
+ * A PROPERTY, not an identity. SH-323 wrote this inline against "Dismiss all"
+ * and predicted the anchor would move; SH-326 made that true by giving every
+ * per-notice dismissal the same last-resort landing, so the block is a shared
+ * helper now and **both paths call it**. That is the point of sharing it rather
+ * than copying it: the single and bulk landings cannot drift apart unnoticed,
+ * because one assertion covers both.
+ *
+ * `!closest("#notice-dock")` is SH-326's addition and it is the clause that
+ * discriminates. Every rejected candidate in that council — `#toast-stack` given
+ * `tabindex="-1"`, `#toast-scroll`, the dock itself — satisfies "not body" while
+ * parking the user in a `pointer-events: none` region with no focus indicator,
+ * last in the document, whose next Tab leaves for the browser chrome. Without
+ * this line the test blesses the thing the decision rejected. */
+async function expectFocusLanded(page: Page, after: string): Promise<void> {
+  const landed = await page.evaluate(() => {
+    const el = document.activeElement as HTMLElement | null;
+    if (!el || el === document.body) return { ok: false, why: "body or nothing" };
+    if (el.closest("[inert]")) return { ok: false, why: "inside an inert subtree" };
+    if (el.closest("#notice-dock")) return { ok: false, why: "inside the notice dock" };
+    const r = el.getBoundingClientRect();
+    const onScreen = r.bottom > 0 && r.top < window.innerHeight && r.right > 0 && r.left < window.innerWidth;
+    return { ok: onScreen, why: onScreen ? "" : "off-screen", id: el.id };
+  });
+  expect(landed.ok, `focus after ${after}: ${landed.why}`).toBe(true);
+
+  // ...and Tab from there still reaches the page's own controls.
+  let reached = false;
+  for (let i = 0; i < 30 && !reached; i++) {
+    await page.keyboard.press("Tab");
+    reached = await page.evaluate(
+      () => !!document.activeElement?.closest(".topbar"),
+    );
+  }
+  expect(reached, `Tab from the anchor after ${after} must reach the topbar`).toBe(true);
+}
+
+/** The id of whatever holds focus, or a description of why nothing does.
+ *
+ * Used to assert that two different gestures land on the SAME element, which is
+ * the property that keeps one dismissal and a bulk clear from teaching a user
+ * two different places to expect focus. */
+async function focusedIdentity(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const el = document.activeElement as HTMLElement | null;
+    if (!el) return "nothing";
+    if (el === document.body) return "body";
+    return el.id ? `#${el.id}` : el.tagName.toLowerCase();
+  });
+}
+
+/** Dismisses a notice WITHOUT the browser focusing the button first.
+ *
+ * `element.click()` dispatches the activation and moves no focus in any engine,
+ * which is the state a real pointer click leaves behind **on WebKit** — this
+ * file's own source records the measurement (`src/web_dashboard.html`, the
+ * `armedDeleteSlug` comment: `document.activeElement` is `BODY` after a real
+ * click on a `<button>`).
+ *
+ * It **emulates** that state; it does not prove it. `playwright.config.ts`
+ * installs chromium and mobile-chromium and nothing else, so the engine this
+ * guard exists for is not under test here at all (SH-335). Said plainly rather
+ * than left to be inferred: a pin whose comment implies coverage it does not
+ * have is the SH-306 shape. */
+async function dismissWithoutFocusing(page: Page, selector: string): Promise<void> {
+  await page.evaluate((sel) => {
+    (document.querySelector(sel) as HTMLElement).click();
+  }, selector);
+}
+
 /** The topbar controls the dock must never overlap. `#conn-dot` is a `<span>`
  * that takes no focus, so no criterion reaches it — it is here because it was
  * measured covered, and a notice sitting on the connection indicator is a defect
@@ -589,29 +661,7 @@ test("Dismiss all works from the keyboard and does not strand focus", async ({
   await page.keyboard.press("Enter");
   await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
 
-  // Focus is asserted as a PROPERTY, not as an identity: the anchor may change
-  // (SH-326 will extend this helper), and a test naming one element would have
-  // to be rewritten rather than reused. What must stay true is that focus is
-  // somewhere real, visible, reachable and continuous.
-  const landed = await page.evaluate(() => {
-    const el = document.activeElement as HTMLElement | null;
-    if (!el || el === document.body) return { ok: false, why: "body or nothing" };
-    if (el.closest("[inert]")) return { ok: false, why: "inside an inert subtree" };
-    const r = el.getBoundingClientRect();
-    const onScreen = r.bottom > 0 && r.top < window.innerHeight && r.right > 0 && r.left < window.innerWidth;
-    return { ok: onScreen, why: onScreen ? "" : "off-screen", id: el.id };
-  });
-  expect(landed.ok, `focus after Dismiss all: ${landed.why}`).toBe(true);
-
-  // ...and Tab from there still reaches the page's own controls.
-  let reached = false;
-  for (let i = 0; i < 30 && !reached; i++) {
-    await page.keyboard.press("Tab");
-    reached = await page.evaluate(
-      () => !!document.activeElement?.closest(".topbar"),
-    );
-  }
-  expect(reached, "Tab from the post-dismissal anchor must reach the topbar").toBe(true);
+  await expectFocusLanded(page, "Dismiss all");
 });
 
 test("Dismiss all cancels the clocks of the notices it removes", async ({
@@ -666,4 +716,318 @@ test("Dismiss all cancels the clocks of the notices it removes", async ({
   });
 
   expect(errors, "a cancelled clock must not fire against a removed node").toEqual([]);
+});
+
+// ============================================================
+// SH-326 — where focus goes when ONE notice is dismissed
+// ============================================================
+//
+// The bulk case above is SH-323's. This is the per-notice one, and the council
+// that settled it (`.council/sh326-notice-dismiss-focus-landing/DECISION.md`,
+// unanimous 3-0) resolved the question the story was filed to answer — where
+// focus goes when the dismissed notice was the LAST one — by finding that it did
+// not need a new answer. `focusAfterNoticeRemoval()` is not a rival policy; it is
+// the last clause of one rule:
+//
+//   Capture `document.activeElement` before the mutation. After it: if focus was
+//   not in this notice region, or focus still lives somewhere real, do nothing.
+//   Otherwise focus the heir. If there is no heir, `focusAfterNoticeRemoval()`.
+//
+// The gate is a STATE question, never a modality question, and that is the part
+// a future author is most likely to "simplify". `event.detail === 0` is not a
+// keyboard test: assistive technology dispatches synthesised clicks with
+// `detail === 0`, so it fires for AT-driven pointer users and not for real ones.
+// And this file's own source records that WebKit focuses no `<button>` on click
+// at all, so "was this a keyboard activation" is unanswerable while "was the
+// focused element destroyed" is directly observable — SH-226's doctrine one
+// layer down.
+
+test("a dismissed notice hands focus to the notice that took its place", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await keepNotices(page);
+  await openProject(page, "Alpha Project");
+
+  const title = "SH-326 — the heir";
+  await createStory(page, title);
+  await raiseDurableNotices(page, title, 3);
+
+  // Prepended, so DOM order is newest first: Description, URL, ID.
+  const headlines = await page.$$eval("#toast-stack .toast .notice-headline", (ns) =>
+    ns.map((n) => n.textContent),
+  );
+  expect(headlines).toEqual(["Description copied", "URL copied", "ID copied"]);
+
+  // The MIDDLE notice, and that is the point of this test rather than a detail
+  // of it. Dismissing the first or the last cannot tell next-first from
+  // previous-first apart — at the top there is no previous, at the bottom no
+  // next, so both rules pick the same survivor and a reversed implementation
+  // passes. Only a notice with a neighbour on each side puts the direction
+  // under test. (Found by mutation-checking this pin, which the first version
+  // survived.)
+  await page.locator("#toast-stack .toast .toast-dismiss").nth(1).focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#toast-stack .toast")).toHaveCount(2);
+
+  // The NEXT sibling, not merely "a neighbour". Notices are prepended, so the
+  // following sibling is the older notice that moves up into the vacated pixels
+  // — focus follows position, not age. "ID copied" was below the dismissed
+  // notice; "Description copied" was above it and must not win.
+  const heir = await page.evaluate(() => {
+    const el = document.activeElement as HTMLElement | null;
+    return {
+      isDismiss: !!el?.classList.contains("toast-dismiss"),
+      headline: el?.closest(".toast")?.querySelector(".notice-headline")?.textContent ?? null,
+    };
+  });
+  expect(heir.isDismiss, "focus must be on a dismiss button, not merely somewhere").toBe(true);
+  expect(heir.headline).toBe("ID copied");
+
+  // The ergonomic claim, asserted as behaviour rather than left in prose: the
+  // pile clears with repeated Enter and no Tab in between. Before this fix each
+  // press cost a full traversal back from the top of the document, because the
+  // dock is last in the DOM.
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#toast-stack .toast")).toHaveCount(1);
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
+});
+
+test("the last notice in DOM order hands focus upward instead", async ({ page }) => {
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await keepNotices(page);
+  await openProject(page, "Alpha Project");
+
+  const title = "SH-326 — the heir, upward";
+  await createStory(page, title);
+  await raiseDurableNotices(page, title, 3);
+
+  // The oldest notice, at the bottom: there is no next sibling to inherit from.
+  await page.locator("#toast-stack .toast .toast-dismiss").last().focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#toast-stack .toast")).toHaveCount(2);
+
+  const headline = await page.evaluate(
+    () =>
+      (document.activeElement as HTMLElement | null)
+        ?.closest(".toast")
+        ?.querySelector(".notice-headline")?.textContent ?? null,
+  );
+  expect(headline, "the notice above must inherit when there is none below").toBe("URL copied");
+});
+
+test("the last notice standing lands focus exactly where a bulk clear does", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await keepNotices(page);
+  await openProject(page, "Alpha Project");
+
+  const title = "SH-326 — the anchor";
+  await createStory(page, title);
+
+  // One notice, dismissed by keyboard: the case the story was filed about.
+  await raiseDurableNotices(page, title, 1);
+  await page.locator("#toast-stack .toast .toast-dismiss").focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
+  // Sampled BEFORE the property check, which tabs up to thirty times to prove
+  // the anchor is not a dead end and therefore moves focus off it.
+  const afterSingle = await focusedIdentity(page);
+  await expectFocusLanded(page, "dismissing the last notice");
+
+  // ...and the same anchor the bulk path uses. Asserted as an EQUALITY between
+  // two gestures rather than as a named element, because the anchor is allowed
+  // to move — what may never happen is the two teaching a user two different
+  // places to expect focus for what is, to them, the same act.
+  await raiseDurableNotices(page, title, 3);
+  await page.locator("#toast-dismiss-all").focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
+  const afterBulk = await focusedIdentity(page);
+
+  expect(afterSingle, "one dismissal and a bulk clear must land on the same element").toBe(afterBulk);
+});
+
+test("a dismissal that took no focus moves none", async ({ page }) => {
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await keepNotices(page);
+  await openProject(page, "Alpha Project");
+
+  const title = "SH-326 — nothing is stolen";
+  await createStory(page, title);
+  await raiseDurableNotices(page, title, 2);
+
+  // The whole reason the gate exists. Without it, `focusAfterNoticeRemoval()`
+  // on a per-notice handler would yank a user out of the field they are typing
+  // in every time a notice was dismissed by pointer — a worse defect than the
+  // stranding this story repairs, and the one objection SH-322's council raised
+  // against moving focus here at all.
+  await page.locator("#search-input").focus();
+  await dismissWithoutFocusing(page, "#toast-stack .toast .toast-dismiss");
+  await expect(page.locator("#toast-stack .toast")).toHaveCount(1);
+
+  expect(await focusedIdentity(page)).toBe("#search-input");
+});
+
+test("focus is rescued when the control holding it is hidden rather than removed", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await keepNotices(page);
+  await openProject(page, "Alpha Project");
+
+  const title = "SH-326 — the vanishing bar";
+  await createStory(page, title);
+  await raiseDurableNotices(page, title, 2);
+  await expect(page.locator("#toast-bar")).toBeVisible();
+
+  // A second way one dismissal strands focus, which "was the focused node
+  // removed?" alone does not catch: `#toast-dismiss-all` is not removed, it is
+  // hidden with its bar when the durable count falls below two. The node is
+  // still connected and still has a `focus` method — but the browser has already
+  // dropped focus to `<body>`, so the rule has to ask where focus IS now, not
+  // whether the element it was on still exists.
+  await page.locator("#toast-dismiss-all").focus();
+  await dismissWithoutFocusing(page, "#toast-stack .toast .toast-dismiss");
+  await expect(page.locator("#toast-stack .toast")).toHaveCount(1);
+  await expect(page.locator("#toast-bar")).toBeHidden();
+
+  const rescued = await page.evaluate(() => {
+    const el = document.activeElement as HTMLElement | null;
+    return {
+      onBody: el === document.body || !el,
+      isDismiss: !!el?.classList.contains("toast-dismiss"),
+      inHidden: !!el?.closest("[hidden]"),
+    };
+  });
+  expect(rescued.onBody, "the vanishing bar must not strand focus on body").toBe(false);
+  expect(rescued.inHidden, "focus must not be left inside a hidden subtree").toBe(false);
+  expect(rescued.isDismiss).toBe(true);
+});
+
+test("each dismissal is announced, counting only the notices that need dismissing", async ({
+  page,
+}) => {
+  await page.clock.install();
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+
+  const title = "SH-326 — the announcement";
+  await createStory(page, title);
+
+  // A MIXED pile on purpose. Two durable notices plus one clocked one means the
+  // two plausible counts differ — three toasts, two dismiss buttons — so an
+  // implementation that counted `.toast` instead of the durable control would
+  // pass every other assertion here and fail only this one. The visible
+  // "Dismiss all N" already publishes the durable number; a spoken count that
+  // disagreed with it in front of one reader is the SH-136 shape.
+  await keepNotices(page);
+  await openProject(page, "Alpha Project");
+  await raiseDurableNotices(page, title, 2);
+
+  await page.locator("#settings-btn").click();
+  await page.locator("#toggle-keep-notices").click();
+  await expect(page.locator("#toggle-keep-notices")).not.toBeChecked();
+  await page.locator("#home-btn").click();
+  await openProject(page, "Alpha Project");
+
+  await onAFrozenClock(page, async () => {
+    await raiseNotice(page, title, 0);
+    await expect(page.locator("#toast-stack .toast")).toHaveCount(3);
+    await expect(page.locator("#toast-stack .toast .toast-dismiss")).toHaveCount(2);
+
+    await page.locator("#toast-stack .toast .toast-dismiss").first().click();
+    await expect(page.locator("#notice-dock-status")).toHaveText("Notice dismissed. 1 remaining.");
+
+    // A removal from an `aria-live="polite"` region is announced by nothing —
+    // default `aria-relevant` is `additions text` — and the heir's accessible
+    // name is character-for-character the destroyed button's. Without this line
+    // a successful dismissal is indistinguishable from a dead key.
+    await page.locator("#toast-stack .toast .toast-dismiss").first().click();
+    await expect(page.locator("#notice-dock-status")).toHaveText(
+      "Notice dismissed. No notices remaining.",
+    );
+
+    // What a screen reader actually utters is a hand check, not this test's
+    // claim (the SH-322/SH-327 precedent). What is pinned here is the mechanism:
+    // the text, the count, and that the announcement sits outside every live
+    // region so it is never itself announced as a notice.
+    const placement = await page.evaluate(() => {
+      const status = document.getElementById("notice-dock-status")!;
+      return {
+        insideToastStack: !!status.closest("#toast-stack"),
+        insideDispatchHistory: !!status.closest("#dispatch-history"),
+      };
+    });
+    expect(placement.insideToastStack).toBe(false);
+    expect(placement.insideDispatchHistory).toBe(false);
+  });
+});
+
+test("a bulk clear that took no focus moves none either", async ({ page }) => {
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await keepNotices(page);
+  await openProject(page, "Alpha Project");
+
+  const title = "SH-326 — the bulk guard";
+  await createStory(page, title);
+  await raiseDurableNotices(page, title, 2);
+  await expect(page.locator("#toast-bar")).toBeVisible();
+
+  // The defect SH-323 shipped and SH-326's council found: these two handlers
+  // called `focusAfterNoticeRemoval()` unconditionally, which is safe only when
+  // the bar button is focused by construction — i.e. only for a keyboard press.
+  // A pointer press on WebKit focuses no `<button>`, so `document.activeElement`
+  // was still the field the reader was typing in, and focus and caret went to
+  // the drawer. Emulated here, not proven: chromium-only suite (SH-335).
+  await page.locator("#search-input").focus();
+  await dismissWithoutFocusing(page, "#toast-dismiss-all");
+  await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
+
+  expect(await focusedIdentity(page)).toBe("#search-input");
+});
+
+test("a dismissal does not rehome focus that something else destroyed", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await keepNotices(page);
+  await openProject(page, "Alpha Project");
+
+  const title = "SH-326 — attribution";
+  await createStory(page, title);
+  await raiseDurableNotices(page, title, 2);
+
+  // **This test asserts that focus is left on `<body>`, which looks like it is
+  // asserting the defect. It is not.** The rule repairs the focus a notice
+  // dismissal destroyed — no more. Here something else destroys it in the same
+  // turn, and the dismissal must not claim the repair: focus movement
+  // attributable to the wrong cause is what produces a bug report nobody can
+  // reproduce a year later, because the gesture blamed for it is innocent.
+  //
+  // Written because the mutation battery found it missing. Deleting the region
+  // gate reddened nothing: in every other pin the second clause ("focus still
+  // lives somewhere real") answered first, so the gate looked load-bearing and
+  // was untested. Only a survivor that is destroyed by a third party in the
+  // same turn separates the two clauses.
+  await page.locator("#search-input").focus();
+  await page.evaluate(() => {
+    document.getElementById("search-input")!.remove();
+    (document.querySelector("#toast-stack .toast .toast-dismiss") as HTMLElement).click();
+  });
+  await expect(page.locator("#toast-stack .toast")).toHaveCount(1);
+
+  expect(
+    await page.evaluate(() => document.activeElement === document.body),
+    "a dismissal must not adopt a stranding it did not cause",
+  ).toBe(true);
 });
