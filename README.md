@@ -359,6 +359,7 @@ story daemon token
 story store new <path>
 story store backup [--label <text>]
 story tui
+story mcp
 story session-start
 ```
 
@@ -712,6 +713,17 @@ Three commands support AI coding agent workflows:
 - `story context` -- generates a project overview document (states, priorities, relationships, and ready work) suitable for the start of an AI session. Use `--format json` for structured output.
 - `story next` -- surfaces the highest-priority unblocked story so an agent can pick up work without manual triage. Use `--count <n>` to get multiple candidates.
 - `story handoff --since <duration>` -- generates a session handoff document summarizing what changed during a work session (e.g. `--since 2h`). Useful when passing context between agents or between an agent and a human.
+
+### MCP server
+
+`story mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io) server on
+stdin/stdout, exposing a curated set of sixteen tools (`story_list`, `story_next`,
+`story_new`, `story_move`, and so on — `story help mcp` lists them all) to an agent host that
+speaks the protocol, over the same `/api/v1/invoke` door every other client uses. A tool call
+is exactly as safe, and exactly as visible in a story's write history, as the equivalent typed
+command. Every tool names its own `project` explicitly, since a long-lived server process has
+no working directory of its own to infer one from. See `docs/spec/mcp-server.md` for the
+design, including why this is not the first time storyhook has shipped one.
 
 ## Integrity checks
 

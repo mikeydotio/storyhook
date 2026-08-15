@@ -15,6 +15,7 @@ pub mod help_topics;
 pub mod hooks;
 pub mod invoke;
 pub mod legacy;
+pub mod mcp;
 pub mod output;
 pub mod plugin;
 pub mod service;

@@ -138,6 +138,41 @@ fn main() {
         return;
     }
 
+    // `mcp` is dispatched here for the same reason `tui` is just above: it
+    // is a mode of this one binary, not an `Invocation` a daemon runs, so it
+    // never reaches `parse_invocation`. It cannot be a separate binary
+    // either — `daemon::lifecycle::DaemonInfo::is_this_binary` identifies a
+    // usable daemon by its executable's path *and* mtime, so a second
+    // binary would evict the daemon this one is using on every call, and be
+    // evicted back on the next (`src/mcp/mod.rs`'s own doc comment).
+    if filtered_args.first().is_some_and(|arg| arg == "mcp")
+        && !cli::is_help_request(&filtered_args)
+    {
+        let cwd = env::current_dir().unwrap_or_else(|e| {
+            eprintln!("error: failed to resolve current directory: {e}");
+            process::exit(1);
+        });
+        let environment =
+            match storyhook::env::Environment::from_process(flags.store_path.as_deref()) {
+                Ok(environment) => environment,
+                Err(error) => fail(&error, json),
+            };
+        // Resolved once, here, exactly as the ordinary command path below
+        // resolves it — never re-read per tool call. Unlike `$STORYHOOK_PROJECT`
+        // and `$STORYHOOK_ACTOR`, this is not something a tool call names
+        // explicitly, because it does not vary within one process's life any
+        // more than it does for a single ordinary command.
+        let depth = storyhook::event_hooks::depth_from_env();
+        let server = storyhook::mcp::McpServer::new(environment, cwd, depth);
+        let stdin = std::io::stdin();
+        let stdout = std::io::stdout();
+        if let Err(e) = server.run(stdin.lock(), stdout.lock()) {
+            eprintln!("error: story mcp: {e}");
+            process::exit(1);
+        }
+        return;
+    }
+
     let invocation = match cli::parse_invocation(&filtered_args) {
         Ok(invocation) => invocation,
         Err(error) => fail(&error, json),
