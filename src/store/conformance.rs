@@ -1182,6 +1182,99 @@ macro_rules! store_conformance_suite {
                 );
             }
 
+            // ===============================================================
+            // The commit-scan receipt — when this store last scanned a
+            // project's commits (SH-316)
+            //
+            // A record of an *event*, not of the filesystem: it says a
+            // `commit-sync` ran, and nothing about whether a git hook exists or
+            // where one was installed. Migration 0014's header is why that
+            // distinction is what makes the column admissible at all.
+            // ===============================================================
+
+            #[test]
+            fn a_project_starts_with_no_commit_scan() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                assert!(f.store().read(|tx| tx.commit_scan_at(project)).unwrap().is_none());
+            }
+
+            #[test]
+            fn recording_a_commit_scan_replaces_the_previous_one() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+
+                f.store().write(|tx| tx.record_commit_scan(project, "2026-01-01T00:00:00Z")).unwrap();
+                assert_eq!(
+                    f.store().read(|tx| tx.commit_scan_at(project)).unwrap().as_deref(),
+                    Some("2026-01-01T00:00:00Z")
+                );
+
+                // The receipt is the latest scan, not a log of scans.
+                f.store().write(|tx| tx.record_commit_scan(project, "2026-02-02T00:00:00Z")).unwrap();
+                assert_eq!(
+                    f.store().read(|tx| tx.commit_scan_at(project)).unwrap().as_deref(),
+                    Some("2026-02-02T00:00:00Z")
+                );
+            }
+
+            /// Arming is what gives a hook that never fired once a baseline;
+            /// re-arming would erase it. The conditional lives in the `UPDATE`
+            /// so the rule is the database's, and the second caller learns it
+            /// changed nothing from its own answer rather than from a read it
+            /// took before writing.
+            #[test]
+            fn arming_a_commit_scan_happens_once_and_never_again() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+
+                assert!(
+                    f.store().write(|tx| tx.arm_commit_scan(project, "2026-01-01T00:00:00Z")).unwrap(),
+                    "a project with no receipt is armed"
+                );
+                assert!(
+                    !f.store().write(|tx| tx.arm_commit_scan(project, "2026-03-03T00:00:00Z")).unwrap(),
+                    "a project that already has one is not re-armed"
+                );
+                assert_eq!(
+                    f.store().read(|tx| tx.commit_scan_at(project)).unwrap().as_deref(),
+                    Some("2026-01-01T00:00:00Z"),
+                    "the original receipt survives — overwriting it is the one \
+                     action that destroys the signal"
+                );
+            }
+
+            /// A scan recorded after arming advances the receipt: arming is a
+            /// floor, not a lock.
+            #[test]
+            fn recording_a_scan_advances_an_armed_receipt() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+
+                f.store().write(|tx| tx.arm_commit_scan(project, "2026-01-01T00:00:00Z")).unwrap();
+                f.store().write(|tx| tx.record_commit_scan(project, "2026-01-02T00:00:00Z")).unwrap();
+
+                assert_eq!(
+                    f.store().read(|tx| tx.commit_scan_at(project)).unwrap().as_deref(),
+                    Some("2026-01-02T00:00:00Z")
+                );
+            }
+
+            /// One receipt per project. Two projects in one repository — the
+            /// monorepo shape `two_projects_may_name_the_same_checkout` allows
+            /// — keep separate receipts, so scanning one says nothing about the
+            /// other.
+            #[test]
+            fn one_projects_commit_scan_is_not_anothers() {
+                let f = <$fixture>::create();
+                let alpha = seed(f.store(), "alpha", "SH");
+                let beta = seed(f.store(), "beta", "SH");
+
+                f.store().write(|tx| tx.record_commit_scan(alpha, "2026-01-01T00:00:00Z")).unwrap();
+
+                assert!(f.store().read(|tx| tx.commit_scan_at(beta)).unwrap().is_none());
+            }
+
             // `a_linked_checkout_is_not_a_recorded_path` used to sit here,
             // asserting that `set_checkout_path` wrote no `project_paths` row
             // and that `project_by_path` found nothing. Both halves are now

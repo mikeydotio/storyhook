@@ -715,6 +715,21 @@ fn unauthorized() -> Reply {
     text_reply(401, "storyhook daemon: missing or invalid token")
 }
 
+/// [`handle_exchange`]'s refusal for a value that is recognized as the
+/// daemon's own master token rather than being unknown outright. `422`
+/// (semantically: understood, wrong kind), never [`unauthorized`]'s `401` —
+/// the two must stay distinguishable on the wire for
+/// `submitTokenModal()` to show the right message (SH-319 AC3) instead of
+/// its generic "not accepted."
+fn master_token_offered() -> Reply {
+    text_reply(
+        422,
+        "storyhook daemon: that is the daemon's own bearer token (story daemon token), which \
+         rotates every restart and cannot be exchanged for a durable cookie -- run `story token \
+         new <name>` and paste what it prints instead",
+    )
+}
+
 /// Intercepts [`EXCHANGE_PATH`] before a `Job` is ever built — off the store
 /// thread, for [`intercept`]'s own reason: this needs nothing from the
 /// store, and every browser tab authenticating itself must never queue
@@ -726,6 +741,7 @@ pub fn intercept_exchange(
     headers: &[Header],
     trusted_hosts: &TrustedHosts,
     cookie_name: &str,
+    master_token: &str,
     registry: &TokenRegistry,
     wall_now: DateTime<Utc>,
     mono_now: Instant,
@@ -736,6 +752,7 @@ pub fn intercept_exchange(
             headers,
             trusted_hosts,
             cookie_name,
+            master_token,
             registry,
             wall_now,
             mono_now,
@@ -767,12 +784,20 @@ pub fn intercept_exchange(
 /// No wire-level distinction between "wrong," "expired" and "revoked" —
 /// [`unauthorized`]'s ordinary text — for [`crate::api::admission`]'s own
 /// reason: a 256-bit namespace gives an enumeration oracle nothing to
-/// search.
+/// search. The master token is the one exception (SH-319,
+/// [`master_token_offered`]): distinguishing it discloses nothing an
+/// unauthorized caller could not already have learned by presenting it
+/// successfully elsewhere, and it never earns a cookie regardless — it
+/// rotates every restart ([`crate::daemon::lifecycle::mint_token`]) and
+/// carries no expiry record for `max_age` to copy, either of which would
+/// make the cookie a false promise about how long it lasts.
+#[allow(clippy::too_many_arguments)]
 fn handle_exchange(
     method: &Method,
     headers: &[Header],
     trusted_hosts: &TrustedHosts,
     cookie_name: &str,
+    master_token: &str,
     registry: &TokenRegistry,
     wall_now: DateTime<Utc>,
     mono_now: Instant,
@@ -783,13 +808,16 @@ fn handle_exchange(
     let Some(offered) = header_value(headers, crate::api::rpc::TOKEN_HEADER) else {
         return unauthorized();
     };
-    let Some(validated) = registry.validate(offered, wall_now, mono_now) else {
-        return unauthorized();
-    };
-    let max_age = (validated.expires_at - wall_now).num_seconds().max(0);
-    text_reply(204, String::new())
-        .no_store()
-        .with_cookie(set_cookie_header(cookie_name, offered, max_age))
+    if let Some(validated) = registry.validate(offered, wall_now, mono_now) {
+        let max_age = (validated.expires_at - wall_now).num_seconds().max(0);
+        return text_reply(204, String::new())
+            .no_store()
+            .with_cookie(set_cookie_header(cookie_name, offered, max_age));
+    }
+    if token_ok(headers, master_token) {
+        return master_token_offered();
+    }
+    unauthorized()
 }
 
 fn mint_reply_body(minted: &MintedToken) -> String {
@@ -1384,6 +1412,7 @@ mod tests {
             &request_headers,
             &trusted_hosts(),
             "storyhook_test",
+            TOKEN,
             &registry,
             epoch(),
             Instant::now(),
@@ -1414,6 +1443,7 @@ mod tests {
             &request_headers,
             &trusted_hosts(),
             "storyhook_test",
+            TOKEN,
             &registry,
             epoch(),
             Instant::now(),
@@ -1432,12 +1462,66 @@ mod tests {
             &guard_headers(&[]),
             &trusted_hosts(),
             "storyhook_test",
+            TOKEN,
             &registry,
             epoch(),
             Instant::now(),
         )
         .expect("the exchange path is this module's");
         assert_eq!(reply.status, 401);
+    }
+
+    #[test]
+    fn the_master_token_is_refused_distinguishably_and_sets_no_cookie() {
+        // SH-319 AC3: "no silent 401" for the master token specifically —
+        // it is refused (it rotates every restart, so a cookie minted from
+        // it would die at the next one and defeat this story's own
+        // restart-survival goal), but the refusal must be distinguishable
+        // from an unknown value so the modal can say what to paste instead.
+        let registry = registry_at(epoch());
+        let request_headers = guard_headers(&[("X-Storyhook-Token", TOKEN)]);
+        let reply = intercept_exchange(
+            &["token"],
+            &Method::Post,
+            &request_headers,
+            &trusted_hosts(),
+            "storyhook_test",
+            TOKEN,
+            &registry,
+            epoch(),
+            Instant::now(),
+        )
+        .expect("the exchange path is this module's");
+        assert_eq!(reply.status, 422, "{}", reply.body());
+        assert!(reply.cookie().is_none());
+        assert!(
+            reply.body().contains("story token new"),
+            "the refusal must name what to paste instead: {}",
+            reply.body()
+        );
+    }
+
+    #[test]
+    fn an_unknown_value_still_gets_the_ordinary_opaque_refusal() {
+        // The master-token distinction above must not widen into a general
+        // enumeration oracle: anything that is neither a live named token
+        // nor the master token stays exactly as opaque as before.
+        let registry = registry_at(epoch());
+        let request_headers = guard_headers(&[("X-Storyhook-Token", "not-a-real-token")]);
+        let reply = intercept_exchange(
+            &["token"],
+            &Method::Post,
+            &request_headers,
+            &trusted_hosts(),
+            "storyhook_test",
+            TOKEN,
+            &registry,
+            epoch(),
+            Instant::now(),
+        )
+        .expect("the exchange path is this module's");
+        assert_eq!(reply.status, 401);
+        assert!(reply.cookie().is_none());
     }
 
     #[test]
@@ -1456,6 +1540,7 @@ mod tests {
             &request_headers,
             &trusted_hosts(),
             "storyhook_test",
+            TOKEN,
             &registry,
             epoch(),
             Instant::now(),
@@ -1478,6 +1563,7 @@ mod tests {
             &request_headers,
             &trusted_hosts(),
             "storyhook_test",
+            TOKEN,
             &registry,
             epoch(),
             Instant::now(),
@@ -1497,6 +1583,7 @@ mod tests {
                     &guard_headers(&[]),
                     &trusted_hosts(),
                     "storyhook_test",
+                    TOKEN,
                     &registry,
                     epoch(),
                     Instant::now(),
