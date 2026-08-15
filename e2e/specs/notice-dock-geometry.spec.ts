@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { cleanUpCreatedStories, openProject, seedToken } from "./support";
+import { cleanUpCreatedStories, onAFrozenClock, openProject, seedToken } from "./support";
 
 /**
  * SH-323 — the notice dock's *geometry*, as measured properties.
@@ -514,4 +514,156 @@ test("the empty band passes clicks through to what is under it", async ({
     };
   });
   expect(hitInEmptyBand.insideDock).toBe(false);
+});
+
+test("Dismiss all appears at two notices, counts them, and is not a notice", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await keepNotices(page);
+  await openProject(page, "Alpha Project");
+
+  const title = "SH-323 — dismiss all";
+  await createStory(page, title);
+  const bar = page.locator("#toast-bar");
+
+  // One notice already carries its own dismiss button, so a second control
+  // would be doing the first one's job.
+  await raiseDurableNotices(page, title, 1);
+  await expect(bar).toBeHidden();
+
+  await raiseDurableNotices(page, title, 1);
+  await expect(bar).toBeVisible();
+  await expect(page.locator("#toast-count")).toHaveText("2");
+
+  await raiseDurableNotices(page, title, 1);
+  await expect(page.locator("#toast-count")).toHaveText("3");
+
+  // The count is in the ACCESSIBLE NAME, not merely on screen. A visible
+  // "Dismiss all 3" announced as "Dismiss all" is an SC 2.5.3 failure, and so is
+  // a fixed aria-label that says something the user cannot read — speech-input
+  // users say what they see.
+  await expect(
+    page.getByRole("button", { name: "Dismiss all 3" }),
+  ).toBeVisible();
+
+  // And the control is outside every live region, so it is never announced as
+  // notice content. Asserted against the accessibility tree rather than the CSS.
+  const placement = await page.evaluate(() => {
+    const btn = document.getElementById("toast-dismiss-all")!;
+    const stack = document.getElementById("toast-stack")!;
+    return {
+      insideStack: stack.contains(btn),
+      insideAnyLiveRegion: !!btn.closest('[aria-live], [role="status"], [role="alert"]'),
+      // Nothing but notices may ever be inserted into the announced region.
+      stackHoldsOnlyToasts: Array.from(stack.children).every((n) =>
+        n.classList.contains("toast"),
+      ),
+    };
+  });
+  expect(placement.insideStack).toBe(false);
+  expect(placement.insideAnyLiveRegion).toBe(false);
+  expect(placement.stackHoldsOnlyToasts).toBe(true);
+
+  // Dismissing back below the threshold hides it again.
+  await page.locator("#toast-stack .toast .toast-dismiss").first().click();
+  await page.locator("#toast-stack .toast .toast-dismiss").first().click();
+  await expect(page.locator("#toast-stack .toast")).toHaveCount(1);
+  await expect(bar).toBeHidden();
+});
+
+test("Dismiss all works from the keyboard and does not strand focus", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await keepNotices(page);
+  await openProject(page, "Alpha Project");
+
+  const title = "SH-323 — dismiss all by keyboard";
+  await createStory(page, title);
+  await raiseDurableNotices(page, title, 3);
+
+  await page.locator("#toast-dismiss-all").focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
+
+  // Focus is asserted as a PROPERTY, not as an identity: the anchor may change
+  // (SH-326 will extend this helper), and a test naming one element would have
+  // to be rewritten rather than reused. What must stay true is that focus is
+  // somewhere real, visible, reachable and continuous.
+  const landed = await page.evaluate(() => {
+    const el = document.activeElement as HTMLElement | null;
+    if (!el || el === document.body) return { ok: false, why: "body or nothing" };
+    if (el.closest("[inert]")) return { ok: false, why: "inside an inert subtree" };
+    const r = el.getBoundingClientRect();
+    const onScreen = r.bottom > 0 && r.top < window.innerHeight && r.right > 0 && r.left < window.innerWidth;
+    return { ok: onScreen, why: onScreen ? "" : "off-screen", id: el.id };
+  });
+  expect(landed.ok, `focus after Dismiss all: ${landed.why}`).toBe(true);
+
+  // ...and Tab from there still reaches the page's own controls.
+  let reached = false;
+  for (let i = 0; i < 30 && !reached; i++) {
+    await page.keyboard.press("Tab");
+    reached = await page.evaluate(
+      () => !!document.activeElement?.closest(".topbar"),
+    );
+  }
+  expect(reached, "Tab from the post-dismissal anchor must reach the topbar").toBe(true);
+});
+
+test("Dismiss all cancels the clocks of the notices it removes", async ({
+  page,
+}) => {
+  await page.clock.install();
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+
+  const title = "SH-323 — bulk clear cancels clocks";
+  await createStory(page, title);
+
+  // A MIXED pile, which is the only way a bulk clear meets a running clock on a
+  // real path: the bar is keyed on durable notices, so a clocked-only stack
+  // never offers the control at all. Two durable ones make it appear; the
+  // preference is then turned off and a third notice arrives with a live timer.
+  await keepNotices(page);
+  await openProject(page, "Alpha Project");
+  await raiseDurableNotices(page, title, 2);
+  await expect(page.locator("#toast-bar")).toBeVisible();
+
+  await page.locator("#settings-btn").click();
+  await page.locator("#toggle-keep-notices").click();
+  await expect(page.locator("#toggle-keep-notices")).not.toBeChecked();
+  await page.locator("#home-btn").click();
+  await openProject(page, "Alpha Project");
+
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+
+  await onAFrozenClock(page, async () => {
+    await raiseNotice(page, title, 0);
+    await expect(page.locator("#toast-stack .toast")).toHaveCount(3);
+    // The third has a clock and no dismiss button of its own; the other two have
+    // buttons and no clock. The count names only the durable pair.
+    await expect(page.locator("#toast-stack .toast .toast-dismiss")).toHaveCount(2);
+    await expect(page.locator("#toast-count")).toHaveText("2");
+
+    await page.locator("#toast-dismiss-all").click();
+    await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
+
+    // Thirty seconds of fake time: a timer that survived its node would fire
+    // here, against an element that no longer exists.
+    await page.clock.runFor(30_000);
+    await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
+
+    // And the document-level listener went with it. A notice removed by a bulk
+    // clear never reaches `depart()`, so without an explicit teardown its
+    // `visibilitychange` listener would outlive the node for the whole session.
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
+  });
+
+  expect(errors, "a cancelled clock must not fire against a removed node").toEqual([]);
 });
