@@ -209,6 +209,31 @@ Standing rules for every wave:
   **forgery is not the threat model**, since anyone who can hand-write a receipt already has
   `--no-verify`. `tests/push_gate.rs` provokes the bypass rather than asserting the hook
   exists, and is mutation-checked in both directions.
+- **A timeout is not a rollback; a client that gave up is not a server that didn't** (SH-312).
+  `src/web_dashboard.html`'s `api()` gave every mutation a flat 10s before reporting
+  `"request timed out"` — a phrase read as "nothing happened" — against a daemon whose event
+  hooks are sanctioned to run synchronously, *after* the commit, for up to 60s
+  (`event_hooks::HOOK_TIMEOUT_CEILING_SECS`). A slow-but-successful create was reported as a
+  definite failure with the form still live, and the user's own retry filed a duplicate story
+  (SH-310/SH-311, 24s apart — the fourth such pair in this tracker's history, and the first
+  from the dashboard rather than a scripted CLI caller). `HttpInvoker` (`src/invoke.rs`) had
+  already drawn the correct line for the CLI door — it retries *only* a refused connection
+  (nothing delivered) and reports every other failure, including a timeout, as "may or may not
+  have run" — but the dashboard is a second client of the same daemon, in a second language,
+  and never inherited that doctrine (see `docs/rearch/hardening.md`'s "read before retry" rule,
+  written with the CLI in view). The fix: an in-flight guard on the create modal's mutating
+  actions (the class had none — every other surface, `dispatchButtons()` included, already
+  guards); a mutation's `.catch` now distinguishes a *definite* server answer from `status:0`
+  (network error or client timeout, provably unprovable) and reports the latter honestly,
+  refetching in the background rather than leaving a lie beside a primed resubmit button; and
+  the mutation deadline itself is raised, **derived from `HOOK_TIMEOUT_CEILING_SECS`** rather
+  than hand-copied a second time — `tests/dashboard_mutation_deadline.rs` fails if the two
+  numbers drift apart, the same class of failure SH-136 already cost this project three times.
+  Full RCA: `docs/rca/duplicate-story-from-the-dashboard.md`. **The rule for any client this
+  daemon has, present or future:** an ambiguous outcome (timeout, connection reset after the
+  request left the process, a daemon that stopped answering) is reported as ambiguous, never as
+  failure — a comforting, false "it didn't work" is worse than an honest "I don't know," because
+  the reader acts on the lie.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
