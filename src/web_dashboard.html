@@ -3040,7 +3040,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * focus goes when the dismissed notice was the last one -- needed no new
    * anchor: the answer was already written here, already argued, and already
    * pinned as a property rather than an identity
-   * (`.council/sh326-notice-dismiss-focus-landing/DECISION.md`). */
+   * (`.council/sh326-notice-dismiss-focus-landing/DECISION.md`).
+   *
+   * **Every caller gates on `noticeFocusIn` first, the bulk pair included.**
+   * They called this unconditionally when SH-323 shipped them, which was safe
+   * only for a keyboard user: the bar button is focused by construction when it
+   * is pressed by Enter. A *pointer* press on WebKit focuses no `<button>` at
+   * all, so `document.activeElement` was still whatever the reader was typing
+   * in, and this function then moved focus and caret to the drawer. The value
+   * was committed rather than lost -- the description's blur handler PATCHes --
+   * so the harm was an unrequested context change, not data loss. The guard is
+   * one line at each site because the rule already existed. */
   function focusAfterNoticeRemoval() {
     var active = overlayStack.length ? overlayStack[overlayStack.length - 1] : null;
     var target = active ? $(active) : visibleMain();
@@ -3174,21 +3184,23 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * of the session -- the node is gone, so nothing else would ever release it. */
   function dismissAllToasts() {
     var stack = $("toast-stack");
+    var before = noticeFocusIn($("toast-region"));
     Array.prototype.slice.call(stack.children).forEach(function(node) {
       if (node.cancelNoticeClock) node.cancelNoticeClock();
       node.remove();
     });
     syncNoticeDock();
-    focusAfterNoticeRemoval();
+    settleNoticeFocus(before, null);
     announceInNoticeDock("All notices dismissed");
   }
 
   /** The same, for the dispatch history, which is rendered from state rather
    * than mutated node by node. */
   function dismissAllDispatchHistory() {
+    var before = noticeFocusIn($("dispatch-history-region"));
     state.dispatchHistory = [];
     renderDispatchHistory();
-    focusAfterNoticeRemoval();
+    settleNoticeFocus(before, null);
     announceInNoticeDock("All dispatch results dismissed");
   }
 

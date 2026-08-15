@@ -963,3 +963,27 @@ test("each dismissal is announced, counting only the notices that need dismissin
     expect(placement.insideDispatchHistory).toBe(false);
   });
 });
+
+test("a bulk clear that took no focus moves none either", async ({ page }) => {
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await keepNotices(page);
+  await openProject(page, "Alpha Project");
+
+  const title = "SH-326 — the bulk guard";
+  await createStory(page, title);
+  await raiseDurableNotices(page, title, 2);
+  await expect(page.locator("#toast-bar")).toBeVisible();
+
+  // The defect SH-323 shipped and SH-326's council found: these two handlers
+  // called `focusAfterNoticeRemoval()` unconditionally, which is safe only when
+  // the bar button is focused by construction — i.e. only for a keyboard press.
+  // A pointer press on WebKit focuses no `<button>`, so `document.activeElement`
+  // was still the field the reader was typing in, and focus and caret went to
+  // the drawer. Emulated here, not proven: chromium-only suite (SH-335).
+  await page.locator("#search-input").focus();
+  await dismissWithoutFocusing(page, "#toast-dismiss-all");
+  await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
+
+  expect(await focusedIdentity(page)).toBe("#search-input");
+});
