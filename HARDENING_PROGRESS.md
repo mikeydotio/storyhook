@@ -17064,3 +17064,152 @@ about to retype it and over-scanning is free under W6's idempotency constraint,
 and the receipt is not surfaced in `story project show` — C′ dropped that as
 YAGNI on the ground that rendering a stored instant invites a reader to treat it
 as hook status.
+
+### SH-318 — done
+
+**Outcome:** merged. The two notification-clock specs no longer outwait the
+dashboard's timers; they drive them. `:282` went 12.6s → 2.4s, `:339` 12.3s →
+3.4s, and the file runs **nine** tests in 33.4s where it ran eight in 1.2m. Zero
+production change — `src/web_dashboard.html` is byte-identical to its parent.
+
+**The story's diagnosis was right and one measurement made it sharper.** It read
+the failure as contention: they fail whenever a second suite shares the machine.
+Before proposing anything, the chair ran the file alone at load average 8, with
+another worktree's Playwright suite genuinely live. All eight passed, and the
+durations are the whole story:
+
+| spec | duration | margin against the 15s budget |
+|---|---|---|
+| :141, :167, :192, :223, :255, :309 | 6.1–8.0s | 7.0–8.9s |
+| **:282 hover holds its clock** | **12.6s** | **2.4s** |
+| **:339 a hidden tab holds its clock** | **12.3s** | **2.7s** |
+
+So contention never made these two fragile. It only ever consumed the last 2.4
+seconds of a margin that was never there — every sibling in the same file, doing
+the same setup against the same daemon, had three times as much. That reframing
+is what killed the two cheapest fixes: `test.slow()` and any wider budget widen a
+margin against machine noise, which is the same instrument that had just failed.
+
+**A second defect was hiding inside the first, and it explains the filing.**
+`GONE_TIMEOUT` is 8000ms, and in these two tests the assertion that declares it
+begins ~8.0s in (2.5s setup + 5.5s hold), leaving 7.0s before the 15s ceiling.
+**The declared budget was unreachable by a full second, so the test timeout always
+fired first.** A genuine "the clock never resumed" regression therefore reported
+`Test timeout of 15000ms exceeded` — byte-identical to a loaded machine, with the
+assertion's own `expected 0, received 1` unable to print. One root cause surfacing
+twice: once as a timeout, once as a failure that could not name itself. It is
+reachable in the other six tests, which is why only these two ever looked like
+load. Nothing had to be edited to fix it: removing the waiting cured it, and its
+only remaining users are the two canaries, where it is reachable with margin.
+
+**Council: yes, and the chair's own error changed the outcome.** The question was
+put as three options — a `toastLifetimeMs` query knob mirroring the two SSE knobs
+(A), Playwright's `page.clock` (B), `test.slow()` (C). The chair's context claimed
+`clock.install()` starts *paused* and listed the dashboard's five other timers as
+things a frozen clock would stall. That is wrong: Playwright's own types say
+`install()` leaves timers running and `pauseAt` is what pauses. The correction was
+circulated mid-round to all three seats and it cut against the chair's own framing
+— the architect seat had rejected B on exactly the two mechanical grounds the
+correction dissolved, and switched. Both reporting seats converged on B
+independently.
+
+**Then the spike killed a proposal and retired a fallback.** Both seats flagged B
+as unrun, so the chair ran it: two throwaway spec files, eight probes, through the
+real harness against a real daemon. Spike 1 proved `runFor` walks the nested
+`depart()` → `remove` chain and that the hover hold costs 3.3s against 12.6s.
+Spike 2 found the architect's `freezeHere` helper **cannot work** —
+`pauseAt(await page.evaluate(() => Date.now()))` throws `Cannot fast-forward to
+the past`, because the clock ticks while the value round-trips, so `pauseAt` is a
+jump-then-pause primitive whose jump must be forward. A 2000ms lead fixed it and
+bought millisecond exactness. That is the spike earning its cost: the defect is
+invisible on the page and fatal at runtime.
+
+**The deliberation round settled two forks, and the challenger's argument won the
+first.** On frozen-vs-ticking, the architect first withdrew the freeze (a 1ms
+margin is theatre), then re-adopted it once told the re-run was green. The
+decisive reasoning came from the challenger and it concedes more than it claims:
+the freeze does **not** eliminate the drift margin, it *relocates* it — the 2000ms
+lead is a drift margin, which is why `pauseAt(now)` throws. Both options need one.
+What differs is that the frozen clock has **one** margin, at setup, before
+anything is asserted, failing as a named throw; the ticking clock has one **per
+assertion boundary**, failing as an intermittent red shaped exactly like SH-318.
+Given that this council's central finding is that this file's failures could not
+name their cause, the option whose margin fails loudly and early wins.
+
+**Two canaries, and the rule matters more than the count.** `install()` fakes
+`Date`, `setTimeout`, `setInterval`, `requestAnimationFrame`,
+`requestIdleCallback` and `performance` together, so an all-clocked file could go
+green against a simulation of itself. Both seats refused that independently and
+converged on: **a canary earns its place by covering a distinct escape route, not
+by being another instance of a covered one.** `:141` is the instrument canary.
+`:309` is the sharper one, and the chair verified it in the CSS: `.toast.leaving`'s
+animation lives *inside* `@media (prefers-reduced-motion: no-preference)`, so
+under reduced motion there is no animation and no `animationend` to fire. Were
+`depart()` ever refactored to gate removal on that event — plausible, since this
+codebase already pairs `animationend` with a `setTimeout` safety net elsewhere —
+`:141` would still pass, a *clocked* `:309` would pass vacuously, and only a
+real-clock `:309` would catch notices stranded permanently for the readers who
+asked for less motion. `:167` was rejected as a canary by both seats: it differs
+from `:141` only in which button was clicked.
+
+**A ninth test now pins what the file always claimed and never tested.**
+`scheduleAutoDismiss` promises pausing "preserves what is left rather than
+restarting it, so a reader who hovers twice does not get a fresh three seconds
+each time." Every existing test hovers *immediately*, when preserving and
+restarting are indistinguishable because nothing has been spent. The new test
+spends 1000ms first. Mutating `resume()` to restart is caught by it **and by
+nothing else** — all eight pre-existing tests pass under that mutation, including
+the hover test nominally about that very behaviour.
+
+**Mutation-checked in three directions**, against real production code, restored
+from a saved copy rather than by `git checkout`:
+
+| mutation | caught by |
+|---|---|
+| `resume()` restarts instead of preserving | the new test **alone** |
+| `pause()` forgets to clear its timer | all three pause tests |
+| `TOAST_LIFETIME_MS` 3000 → 3400 | all four clocked self-clearing tests — **and both canaries pass**, their 8000ms ceiling absorbing the drift |
+
+That last row is worth its own sentence: it is direct evidence the canaries and
+the clocked tests cover genuinely different things, rather than an argument that
+they do.
+
+**The class is fenced.** Two arms on `tests/e2e_fixture_hygiene.rs`'s existing
+`git ls-files`-derived scan: no `page.waitForTimeout` ≥1000ms in a spec that has
+not declared its own `test.setTimeout`, and no `clock.pauseAt` outside
+`support.ts`. The first carries a small evaluator rather than a literal regex,
+because the suite's real sleeps are written `SETTLE_MS` and
+`staleAfterMs + watchdogIntervalMs * 2 + 300`; an expression it cannot read
+**panics naming the file** rather than passing. The second exists because a pause
+with no guaranteed resume stops the timers teardown needs, turning one honest red
+into a hang plus a stranded fixture story (SH-245's bill). Both provoke rather
+than assert a shape exists, both were mutation-checked in both directions, and
+both refuse to clear a tree they never read.
+
+**Filed, not folded in — SH-322 (`high`).** The challenger seat, hunting for what
+else the file claimed but did not test, found that `scheduleAutoDismiss`'s
+**focus-pause branch is unreachable in production** — not merely untested. There
+is one call site, `if (!durable) scheduleAutoDismiss(node)`, and the dismiss
+button is attached only on the `durable` branch, so a node that *has* a clock is
+`div.toast > div.notice-body > div.notice-headline` and contains nothing
+focusable. `focusin` can never fire; `node.contains(document.activeElement)` can
+never be true. The two branches are exact complements. The chair verified it
+against the source before filing. The consequence is that the WCAG 2.2 SC 2.2.1
+pause mechanism is **pointer-only**: a keyboard-only or screen-reader user has no
+way to hold a notice open. A production accessibility fix has no business riding
+in a test-determinism story.
+
+**Gate: green, twice, the second under deliberate contention** — the check the
+story itself specified. 161 Rust targets, 32 plugin tests, 217 e2e specs, `EXIT=0`
+both times, same failure set both times: empty.
+
+**Supervision:** log-growth heartbeat on every background run, polled on the
+120-second bound. No stalls, no wedges, no kills. The two supervision loops that
+ended early hit the tool's own 10-minute ceiling, not a stall, and the log was
+growing at each one.
+
+**Deviations:** one, deliberate. START HERE step 8 says the log entry lands as its
+own PR after the code PR merges; this entry rides in the same PR as a separate
+commit, following SH-298's precedent — the worktree is reaped right after merge,
+and a follow-up docs PR would strand a second branch. It also means the receipt
+the push gate checks attests the tree that actually ships.
