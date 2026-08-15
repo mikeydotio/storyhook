@@ -15,6 +15,13 @@ import { cleanUpCreatedStories, openProject, seedToken } from "./support";
  * "Alpha Project" fixture, whose exact two-story shape other specs
  * (filter-persistence.spec.ts, column-visibility.spec.ts) assert on
  * byte-for-byte per run-e2e.sh's own comment.
+ *
+ * The "submitted" case's badge assertion now quotes the recorded reason
+ * (SH-309, `blockedFlag()` in `status-flags.spec.ts`'s own header comment)
+ * -- an awaiting reason is a cause like any other, so it no longer
+ * disappears into a bare "● blocked". The two "(no reason)" cases below
+ * are untouched: a card left in Blocked with no relationships and no
+ * `awaiting` genuinely has none to show.
  */
 
 cleanUpCreatedStories("Alpha Project");
@@ -89,7 +96,13 @@ test("submitting a reason on drop moves the card and records it", async ({
     hasText: title,
   });
   await expect(card).toBeVisible();
-  await expect(card.locator(".flag-blocked")).toHaveText("● blocked");
+  // SH-309: an awaiting reason is itself a cause, quoted in the badge's
+  // parenthetical -- plain text, not linkified (unlike the drawer's own
+  // `.banner-blocked`, asserted below), since a reason is free text a
+  // reader wrote, not a relationship record.
+  await expect(card.locator(".flag-blocked")).toHaveText(
+    '● blocked ("waiting on SH-9")',
+  );
 
   await card.click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
