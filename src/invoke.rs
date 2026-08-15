@@ -1996,8 +1996,15 @@ pub fn dispatch_unscoped_with_stdin<S: Store>(
         // an editor plugin, and the legacy path answered all of them in a
         // directory storyhook had never heard of.
         Invocation::Hooks { action } => match action {
-            HooksAction::Install => system::install_git_hooks(root)
-                .map(|r| Response::MessageWithWarnings(r.message(), r.warnings())),
+            HooksAction::Install => system::install_git_hooks(root).map(|r| {
+                let mut warnings = r.warnings();
+                // SH-316. Install stays project-less — this asks whether a
+                // project happens to answer for this directory, and shrugs if
+                // none does. See `commit_scan_receipt` for what the answer may
+                // and may not be read to mean.
+                warnings.extend(commit_scan_receipt(store, root, now));
+                Response::MessageWithWarnings(r.message(), warnings)
+            }),
             HooksAction::Uninstall => system::uninstall_git_hooks(root)
                 .map(|r| Response::MessageWithWarnings(r.message(), r.warnings())),
             HooksAction::List => Ok(Response::Message(system::list_event_hooks(root))),
@@ -3139,6 +3146,31 @@ impl<'a, S: Store> StoreInvoker<'a, S> {
     fn pointer_at_or_above(&self) -> Option<crate::service::project::ProjectPointer> {
         crate::service::project::pointer_at_or_above(&self.cwd)
     }
+}
+
+/// What `story hooks install` has to say about commits nothing has scanned
+/// (SH-316) — at most one line, and usually none.
+///
+/// **Curious, never refusing.** `hooks install` is project-less by construction
+/// (`is_project_less`), writes a *directory's* hook files, and has always
+/// worked in a directory storyhook has never heard of. Making it resolve a
+/// project would change that: `resolve_project` refuses a checkout claiming a
+/// project this store lacks and refuses SH-151's inherited-origin case, so
+/// install would start failing in a monorepo sub-checkout where it works today —
+/// and `--project` would become legal on a command that writes a different
+/// repository's hooks. So this collapses both refusals and "no project here" to
+/// the same silence, using [`project_at`] rather than a second copy of the rules
+/// — the copy is what would arm and read the *wrong* project's receipt.
+///
+/// Errors are swallowed for the same reason, with one consequence worth naming:
+/// a genuinely broken project identity produces silence here, and silence must
+/// not be read as "the hooks are fine". Nothing in this command's output claims
+/// they are.
+fn commit_scan_receipt<S: Store>(store: &S, root: &Path, now: &str) -> Option<String> {
+    let project = project_at(store, root).ok().flatten()?;
+    crate::service::git::commit_scan_notice(store, project, root, now)
+        .ok()
+        .flatten()
 }
 
 /// Which project a *directory* belongs to — steps 2 to 4 of

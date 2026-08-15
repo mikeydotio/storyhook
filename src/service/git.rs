@@ -598,6 +598,155 @@ fn already_linked(
         || tx.commit_linked(project, story, short_sha(sha))?)
 }
 
+/// Arms this project's receipt, or reports what git says about the commits
+/// since it (SH-316).
+///
+/// The two halves are one function because they are one rule with one
+/// precondition — a project has a receipt, or it is given one — and splitting
+/// them would let a caller do the second without ever having done the first.
+///
+/// A project with **no receipt** is armed to `now` and answers `None`. That
+/// arming is the whole reason a hook which never fired *once* is detectable:
+/// without it the column stays NULL forever, nothing ever advances it, and the
+/// most important failure this exists to catch would be the one case it could
+/// never report. A receipt that is already set is **never** re-armed — see
+/// [`WriteOps::arm_commit_scan`](crate::store::WriteOps::arm_commit_scan) — and
+/// that asymmetry is load-bearing: overwriting a stale receipt would erase the
+/// evidence the re-run exists to surface.
+///
+/// Nothing here decides whether a hook is installed, and no caller may report it
+/// as though it had.
+pub fn commit_scan_notice<S: Store>(
+    store: &S,
+    project: ProjectId,
+    root: &std::path::Path,
+    now: &str,
+) -> Result<Option<String>, AppError> {
+    let Some(scanned_at) = store.read(|tx| tx.commit_scan_at(project))? else {
+        store.write(|tx| tx.arm_commit_scan(project, now))?;
+        return Ok(None);
+    };
+    Ok(unscanned_commits(root, &scanned_at, now))
+}
+
+/// What git says about commits this store has no record of scanning (SH-316) —
+/// or `None`, which is the answer in every case but one.
+///
+/// `scanned_at` is the receipt: the instant a `commit-sync` last ran for this
+/// project. This asks git for the commits dated after it, and says so. It is
+/// deliberately **not** a hook check, and nothing here can tell whether a hook
+/// exists: the receipt records a scan, git records commits, and the only claim
+/// available from those two facts is that some commits have not been scanned.
+///
+/// # Silence is the default, and every uncertainty resolves to it
+///
+/// `None` — print nothing at all — for a repository git will not answer about
+/// (no git, no repository, no commits: [`git_env::output`] collapses all three,
+/// which is harmless here precisely because they share one verdict), and for a
+/// log that comes back empty. That is what keeps a record which disagrees with
+/// the disk from ever becoming a claim.
+///
+/// # The `--until` is not decoration — it answers the dissent
+///
+/// The bound is `scanned_at < committed <= now`, and the upper half is what
+/// makes the advisory **self-clearing**. A committer date in the future
+/// post-dates every receipt this store will write for as long as the clock takes
+/// to catch up, so without `--until` a single skewed commit would keep the
+/// warning alive *after* the user ran the remedy — an advisory escapable only by
+/// learning to ignore advisories, which is SH-306's own defect class, and the
+/// ground on which SH-316's council dissented from this comparator. With it, the
+/// remedy sets the receipt to now and nothing dated at-or-before now can remain
+/// unscanned, so the next run is silent by construction.
+///
+/// The cost is named rather than hidden: a future-dated commit is invisible to
+/// this detector. So is a backdated one, and for the same reason — the remedy
+/// itself scans by committer date, so a detector that reported what the remedy
+/// cannot fix would be reporting an unrunnable errand.
+fn unscanned_commits(root: &std::path::Path, scanned_at: &str, now: &str) -> Option<String> {
+    let log = crate::env::git_env::output(
+        root,
+        &[
+            "log",
+            "--format=%cI",
+            &format!("--since={}", first_unscanned_second(scanned_at)),
+            &format!("--until={now}"),
+        ],
+    )?;
+    let count = log.lines().filter(|line| !line.is_empty()).count();
+    if count == 0 {
+        return None;
+    }
+
+    let commits = if count == 1 {
+        "1 commit is".to_string()
+    } else {
+        format!("{count} commits are")
+    };
+    // The window has to reach back to the receipt, or the command storyhook
+    // prints does not cover the gap it just reported. Rounded up for the same
+    // reason, and rounding up is free: `commit-sync` is idempotent.
+    let window = window_reaching(scanned_at, now);
+    Some(format!(
+        "{commits} dated after this store last scanned this project's commits \
+         ({scanned_at}). A post-commit hook git no longer runs looks like this; \
+         so does a repository whose commits were scanned from another checkout, \
+         or by another store. Run `story commit-sync --since {window}` to scan \
+         them now."
+    ))
+}
+
+/// The first second a commit could be in and genuinely not have been scanned:
+/// one after the receipt.
+///
+/// **Measured on git 2.50.1: `--since` is inclusive.** `git log
+/// --since=<T>` returns a commit whose committer date is exactly `T`. Both
+/// quantities here have one-second resolution, so passing the receipt unshifted
+/// reports every commit made in the same second as the scan — and the scan
+/// itself covers that second, since `commit-sync` cuts off at `now` minus its
+/// window and is inclusive in the same way. Those commits were scanned. Worse
+/// than the wrong count, they are unclearable: running the remedy re-stamps the
+/// receipt at some second, and any commit sharing it stays "unscanned" forever,
+/// which is exactly the survives-its-own-remedy failure the council dissented
+/// about.
+///
+/// Falls back to the receipt verbatim if it will not parse, which can only
+/// over-report — and a receipt this store did not write is not a shape that
+/// exists.
+fn first_unscanned_second(scanned_at: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(scanned_at)
+        .ok()
+        .and_then(|at| at.checked_add_signed(chrono::Duration::seconds(1)))
+        .map_or_else(
+            || scanned_at.to_string(),
+            |at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        )
+}
+
+/// A `--since` argument that certainly reaches back to `scanned_at`.
+///
+/// Rounded **up**, and coarse on purpose: this is a duration a human is about to
+/// retype, so `19d` is worth more than an exact `18d7h13m`, and scanning further
+/// back than needed costs nothing (link idempotency is a database constraint
+/// since W6). Falls back to the widest of the three units when either instant is
+/// unparseable, because a window that is too wide still works and a window that
+/// is too narrow silently misses the commits this sentence just promised to
+/// cover.
+fn window_reaching(scanned_at: &str, now: &str) -> String {
+    let span = chrono::DateTime::parse_from_rfc3339(now)
+        .ok()
+        .zip(chrono::DateTime::parse_from_rfc3339(scanned_at).ok())
+        .map(|(now, then)| now.signed_duration_since(then));
+    let Some(span) = span else {
+        return "1w".to_string();
+    };
+    let minutes = span.num_seconds().div_euclid(60) + 1;
+    match minutes {
+        i64::MIN..=60 => format!("{minutes}m"),
+        61..=2880 => format!("{}h", minutes.div_euclid(60) + 1),
+        _ => format!("{}d", minutes.div_euclid(1440) + 1),
+    }
+}
+
 /// Fails unless `root` is inside a git repository.
 ///
 /// Reported as [`AppError::Validation`] with the same sentence the legacy path
