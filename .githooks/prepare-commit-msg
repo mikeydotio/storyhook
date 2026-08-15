@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+#
+# Chainer — SH-306. Runs the storyhook-managed hook of the same name.
+#
+# Setting `core.hooksPath` (which `scripts/gate-receipt.sh preflight` does, so
+# git enforces the push gate) makes git stop consulting `$GIT_DIR/hooks`
+# **wholesale** — not as a fallback, not at all. `story hooks install` writes
+# the managed post-commit/post-merge/prepare-commit-msg hooks there, and this
+# repo dogfoods them: the post-commit hook is why CLAUDE.md says story ids
+# belong in commit bodies. Enrolling the gate without this chainer would
+# silently switch the tracker's own hooks off — the fix causing exactly the
+# class of silent failure it was written to fix.
+#
+# Deliberately derives its name from `$0`, so all three chainers are
+# byte-identical and a fourth is a copy rather than an edit.
+# `tests/push_gate.rs` derives the required set from `src/hooks.rs`'s HOOKS
+# table, so a hook added there fails the suite instead of going dark.
+
+set -uo pipefail
+
+managed="$(git rev-parse --git-common-dir)/hooks/$(basename "$0")"
+[ -x "$managed" ] || exit 0
+exec "$managed" "$@"
