@@ -212,8 +212,13 @@ This file does not restate them.
 - **Project checkouts are assumed to live on the same machine as the daemon.**
   Checkouts on other machines are deferred, recorded here so the limitation is
   known rather than discovered.
-- **The dashboard credential is not per-user.** One token per daemon lifetime,
-  shared by every browser tab on the tailnet that has it. Named and accepted in
+- **The dashboard credential is not per-user, though it is per-device since
+  SH-255.** Stale as originally written here ("one token per daemon lifetime,
+  shared by every browser tab") — SH-255 replaced that master-token model with
+  named, individually-revocable, 30-day tokens (`story token new <name>`), one
+  per device or browser rather than one per daemon process. What the limitation
+  still names correctly: there is no per-*user* identity behind a token, only a
+  name an operator chose. Named and accepted in
   [`dashboard-authorization.md`](dashboard-authorization.md)'s residuals.
 - **`fire_hook` kills the `sh` leader, not the process group, on timeout.** SH-188
   asked whether this should change and declined: it reverses SH-141's recorded

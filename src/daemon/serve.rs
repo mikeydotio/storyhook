@@ -1132,6 +1132,7 @@ fn worker(
         &headers,
         trusted_hosts,
         cookie_name,
+        token,
         tokens,
         chrono::Utc::now(),
         std::time::Instant::now(),
