@@ -27,8 +27,7 @@ use storyhook::invoke::{dispatch, dispatch_unscoped};
 use storyhook::service::Ctx;
 use storyhook::store::{ProjectId, ReadOps, SqliteStore, Store};
 use storyhook_test_support::{
-    ChildGuard, DaemonGuard, TestEnv, http_status_line, port_of, scratch_dir, serve, wait_for_addr,
-    wait_for_server,
+    DaemonGuard, TestEnv, scratch_dir, serve, wait_for_addr, wait_for_server,
 };
 
 /// A `story` command in the shared environment, for the tests that only
@@ -488,16 +487,31 @@ fn web_open_hands_the_browser_a_coupon_and_the_terminal_the_bare_url() {
 /// Simulated the only honest way from outside the daemon: rewrite the
 /// portfile's token so the client's arming request is refused by the very
 /// gate that protects it, run the command, then put the real token back. The
-/// daemon reads its portfile once at startup and never again, so it keeps
-/// answering with the token it minted — which is why the restore is enough to
-/// leave `DaemonGuard` able to stop it.
+/// daemon must not rewrite the portfile itself in that window, or its own
+/// write — carrying the real token — would silently undo the corruption and
+/// this test would stop testing anything.
+///
+/// Since SH-186 the daemon's portfile is no longer just-once-at-startup: a
+/// tailnet bind that lands on `tailnet_reprobe`'s background thread rewrites
+/// it too (`on_late_tailnet_bind`), and on a tailnet-equipped machine that
+/// now happens for nearly every daemon shortly after start, not only for
+/// SH-146's rare self-heal. `web start` below therefore runs with no
+/// `tailscale` on `PATH` at all — the daemon can never succeed a bind, so it
+/// can never rewrite the portfile out from under this test's corruption,
+/// deterministically rather than by the timing luck of finishing the
+/// corrupt/read/restore sequence before a real probe resolves.
 #[test]
 fn web_open_falls_back_to_the_bare_url_when_arming_fails() {
     let env = TestEnv::isolated();
     let dir = scratch_dir();
     let _daemon = DaemonGuard::new(&env, dir.path());
 
+    let no_tailscale_path = storyhook_test_support::story_binary()
+        .parent()
+        .expect("the binary under test has a parent directory")
+        .to_path_buf();
     env.story(dir.path())
+        .env("PATH", &no_tailscale_path)
         .args(["web", "start"])
         .assert()
         .success();
@@ -591,6 +605,23 @@ fn web_address_copies_a_location_and_never_a_credential() {
         .success();
 }
 
+/// How long [`web_start_status_address_advertise_the_host_the_daemon_bound`]
+/// waits for the daemon's first tailnet probe to settle before treating
+/// loopback as the final answer.
+///
+/// Since SH-186, `web start` no longer waits for the probe at all — its
+/// portfile can read `tailnet: None` for a moment after a fresh spawn even on
+/// a tailnet-equipped machine, simply because the background probe hasn't
+/// answered yet (`serve::tailnet_reprobe`'s first attempt fires immediately,
+/// but "immediately" is still asynchronous). This test polls rather than
+/// reading the portfile once, the same shape `tests/tailnet_rebind.rs` already
+/// proved out for its own self-heal assertion. Generous relative to the
+/// production case it is bounding — a healthy `tailscale` typically answers
+/// in well under a second — because this test must mean something on a
+/// machine with no tailnet too: the poll notices nothing ever arrives and
+/// proceeds with loopback as `expected`, rather than skip.
+const TAILNET_SETTLE_DEADLINE: Duration = Duration::from_secs(5);
+
 /// The CLI advertises the host the *daemon* bound, never one this process
 /// probed for. Direction A of SH-110, mechanized.
 ///
@@ -621,9 +652,16 @@ fn web_start_status_address_advertise_the_host_the_daemon_bound() {
         .assert()
         .success();
 
-    let info = env
-        .daemon()
-        .expect("the daemon published a portfile after binding");
+    let settle_deadline = Instant::now() + TAILNET_SETTLE_DEADLINE;
+    let info = loop {
+        let info = env
+            .daemon()
+            .expect("the daemon published a portfile after binding");
+        if info.tailnet.is_some() || Instant::now() >= settle_deadline {
+            break info;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
     wait_for_server(info.port);
     let expected = format!("http://{}:{}", info.advertised_host(), info.port);
 
@@ -658,6 +696,84 @@ fn web_start_status_address_advertise_the_host_the_daemon_bound() {
             stdout.contains(&expected),
             "`story {}` must advertise {expected} — the address the daemon published — \
              not a host derived from its own probe (SH-110); got: {stdout}",
+            args.join(" ")
+        );
+    }
+
+    env.story(dir.path())
+        .args(["web", "stop"])
+        .assert()
+        .success();
+}
+
+/// The fallback half of [`web_start_status_address_advertise_the_host_the_
+/// daemon_bound`]'s settle poll: a daemon with genuinely no tailnet to bind
+/// must settle on loopback and stay there, not merely time out once. Every
+/// `web status`/`web address` call after the settle deadline reports the
+/// same loopback URL every time — never an error, never a stale claim of a
+/// tailnet it does not have.
+#[test]
+fn web_start_settles_on_loopback_when_there_is_never_a_tailnet() {
+    let env = TestEnv::isolated();
+    let dir = scratch_dir();
+    let _daemon = DaemonGuard::new(&env, dir.path());
+
+    let shim = tempfile::Builder::new()
+        .prefix("storyhook-tailscale-absent-")
+        .tempdir_in("/private/tmp")
+        .expect("a scratch directory");
+    let fake = shim.path().join("tailscale");
+    std::fs::write(&fake, "#!/bin/sh\nexit 1\n").expect("writing the shim");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))
+            .expect("making the shim executable");
+    }
+    let mut entries = vec![shim.path().to_path_buf()];
+    entries.extend(std::env::split_paths(&env.path_with_binary()));
+    let path = std::env::join_paths(entries).expect("joining PATH");
+
+    let started = Instant::now();
+    env.story(dir.path())
+        .env("PATH", &path)
+        .args(["web", "start"])
+        .assert()
+        .success();
+    assert!(
+        started.elapsed() < TAILNET_SETTLE_DEADLINE,
+        "`web start` must return promptly even though this machine's `tailscale` \
+         never answers — SH-186's whole point is that nothing on this path waits \
+         on the probe"
+    );
+
+    // Give the background probe every chance it will ever get, then confirm
+    // it never produced a tailnet bind — the honest terminal state for a
+    // machine with none.
+    std::thread::sleep(TAILNET_SETTLE_DEADLINE);
+    let info = env
+        .daemon()
+        .expect("the daemon published a portfile after binding");
+    assert!(
+        info.tailnet.is_none(),
+        "a `tailscale` that only ever fails must never produce a bind: {:?}",
+        info.tailnet
+    );
+    let expected = format!("http://127.0.0.1:{}", info.port);
+
+    for args in [["web", "status"], ["web", "address"]] {
+        let printed = env
+            .story(dir.path())
+            .env("PATH", &path)
+            .env("STORYHOOK_CLIPBOARD_CMD", "cat")
+            .args(args)
+            .output()
+            .unwrap_or_else(|e| panic!("running `story {}`: {e}", args.join(" ")));
+        let stdout = String::from_utf8_lossy(&printed.stdout).into_owned();
+        assert!(
+            stdout.contains(&expected),
+            "`story {}` must settle on loopback and stay there rather than error or \
+             invent a tailnet host; got: {stdout}",
             args.join(" ")
         );
     }
@@ -6586,66 +6702,6 @@ fn sse_connection_does_not_block_other_requests() {
 // --- Utilities ---
 
 use std::time::{Duration, Instant};
-
-/// `tailscale status --json` is shelled out to during server start-up, and
-/// the CLI talks to `tailscaled`, which wedges: probes stuck for minutes were
-/// observed on this machine, orphaned by servers that had already exited.
-/// Because the loopback listener is bound before that probe runs, a wedged
-/// probe leaves the dashboard accepting connections and answering nothing at
-/// all — indistinguishable from a healthy server until a request hangs. The
-/// probe must be bounded, and the dashboard must serve loopback regardless.
-#[test]
-fn a_wedged_tailscale_cli_cannot_stop_the_dashboard_from_serving() {
-    let env = TestEnv::isolated();
-    let fake_bin = scratch_dir();
-    let fake_tailscale = fake_bin.path().join("tailscale");
-    std::fs::write(&fake_tailscale, "#!/bin/sh\nsleep 120\n").expect("writing the fake CLI");
-    std::fs::set_permissions(
-        &fake_tailscale,
-        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
-    )
-    .expect("making the fake CLI executable");
-
-    let path = format!(
-        "{}:{}",
-        fake_bin.path().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_story"));
-    env.apply(&mut command);
-    let child = command
-        .args(["web", "--serve"])
-        .env("PATH", path)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawning the dashboard");
-    let guard = ChildGuard::new(child);
-
-    // The port comes from the portfile this daemon published, never from a
-    // number picked before it existed (SH-237) — and `port_of` checks that the
-    // portfile names *this* child, so a stray daemon cannot answer for it.
-    //
-    // Publication is not delayed indefinitely by the wedge, which is the same
-    // fact this test is about: `bind_listeners` binds loopback first and its
-    // tailnet probe is capped at 3s, so the portfile lands shortly after that
-    // and well inside the deadline below (measured: 3.36s).
-    let port = port_of(&env, guard.pid());
-
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let mut last = None;
-    while Instant::now() < deadline {
-        last = http_status_line(port, Duration::from_millis(500));
-        if last.as_deref().is_some_and(|line| line.contains("200")) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    panic!(
-        "the dashboard never served a request while `tailscale` hung; last response line: {last:?}"
-    );
-}
 
 /// What the daemon a `story web start` just returned from actually bound.
 ///

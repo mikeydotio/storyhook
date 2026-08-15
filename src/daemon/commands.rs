@@ -47,6 +47,32 @@ pub fn start(env: &Environment, port: Option<u16>) -> Result<DaemonInfo, AppErro
     lifecycle::ensure(&env)
 }
 
+/// Notes, on stderr, that `info`'s tailnet bind is not known yet.
+///
+/// SH-186 moved the tailnet probe off the daemon's startup path onto a
+/// background thread (`serve::tailnet_reprobe`), so a caller of [`start`]
+/// that just spawned a fresh daemon gets back a `DaemonInfo` whose `tailnet`
+/// is `None` regardless of whether this machine has one — the probe has not
+/// had a chance to answer yet. `info.dashboard_url()` is still correct in
+/// that instant (loopback is always true), but printing only that would let
+/// a stale answer read as a confirmed one on a tailnet-connected machine.
+/// `story daemon status`/`story daemon address`, run any time after, read
+/// the same portfile fresh and report the tailnet host once
+/// `tailnet_reprobe` lands it — this note exists only to say why the URL
+/// just printed might not be the final one, not to make the caller wait.
+///
+/// Silent when `info.tailnet` is already known: a daemon that was already
+/// running, and had already resolved its tailnet before this call, has
+/// nothing pending to note.
+pub fn note_tailnet_pending(info: &DaemonInfo) {
+    if info.tailnet.is_none() {
+        eprintln!(
+            "note: resolving the tailnet address in the background; `story daemon status` \
+             will show it once bound."
+        );
+    }
+}
+
 /// Stops the running daemon.
 ///
 /// `force` selects [`lifecycle::StopMode::Force`]: a short grace period,

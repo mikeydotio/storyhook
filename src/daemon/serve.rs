@@ -444,6 +444,18 @@ where
 /// process's memory and in `ready`'s argument: no portfile, no pidfile, none
 /// of production's ceremony, matching every other way this seam differs
 /// from [`super::lifecycle::run`].
+///
+/// Fifth departure from production, added by SH-186: this seam probes the
+/// tailnet *synchronously*, right here, before `ready` fires — production no
+/// longer does that anywhere. A caller of this seam needs the tailnet answer
+/// available the instant `ready` runs (`storyhook-test-support::try_serve_on`
+/// hands it straight back as `BoundAddress`, and a whole class of tests —
+/// `web_serve_binds_tailnet_ip_when_available` and its siblings in
+/// `tests/web_test.rs` — assert on it), and there is no analogue of
+/// `tailnet_reprobe`'s background settle to wait on inside a synchronous test
+/// helper without reintroducing a wait budget this seam has no reason to
+/// carry. The daemon's own self-heal path (`tailnet_reprobe`) is exercised
+/// separately and end-to-end by `tests/tailnet_rebind.rs`.
 #[cfg(feature = "test-seam")]
 pub fn bind_and_serve<S: Store, F>(
     store: &S,
@@ -454,7 +466,11 @@ pub fn bind_and_serve<S: Store, F>(
 where
     F: FnOnce(BoundAddress, String),
 {
-    let (listeners, bound) = bind_listeners(port)?;
+    let (mut listeners, mut bound) = bind_listeners(port)?;
+    if let Some((listener, bind)) = probe_and_bind_tailnet(bound.port()) {
+        bound.tailnet = Some(bind);
+        listeners.push(listener);
+    }
     eprintln!("Storyhook dashboard: http://127.0.0.1:{}", bound.port());
     let token = crate::daemon::lifecycle::mint_token();
     serve(
@@ -624,19 +640,20 @@ impl Listener {
     }
 }
 
-/// Binds loopback on `port`, then the tailnet interface on whatever port
-/// loopback actually got, and reports the hosts the tailnet bind earns trust
-/// for.
+/// Binds loopback on `port`. Nothing else — no tailnet probe, no tailnet
+/// bind attempt.
 ///
-/// A tailnet bind failure is a warning, never fatal: no tailnet is a degraded
-/// dashboard, and a dashboard that refuses to start is a broken one.
-///
-/// The `?` below is load-bearing beyond its own error: it is also what keeps
-/// [`super::lifecycle::bind_preferred`]'s retry from ever probing the tailnet
-/// identity twice (SH-147) — a port-taken failure returns here, before
-/// `probe_and_bind_tailnet` is reached, so the fallback call is the *only*
-/// one that pays the probe's cost. Move the probe ahead of this bind and that
-/// stops being true.
+/// Before SH-186 this also shelled out to `tailscale status --json` (capped
+/// at [`TAILNET_PROBE_TIMEOUT`](super::tailnet::TAILNET_PROBE_TIMEOUT))
+/// before returning, so for as long as that probe blocked — including a
+/// `tailscaled` wedge, observed stuck for minutes on this machine — the
+/// socket above accepted connections and answered nothing at all, and no
+/// portfile existed yet for any client to find. A production caller has
+/// exactly one path to a tailnet bind now: [`tailnet_reprobe`], spawned
+/// unconditionally by [`serve`] on a background thread, whose first attempt
+/// runs immediately rather than after its retry schedule's `initial` delay.
+/// This function's only job is to make the socket real; the tailnet question
+/// is answered later and never blocks it.
 pub fn bind_listeners(port: u16) -> Result<(Vec<Listener>, BoundAddress), AppError> {
     let socket = TcpListener::bind(("127.0.0.1", port)).map_err(|e| {
         if e.kind() == std::io::ErrorKind::AddrInUse {
@@ -650,19 +667,11 @@ pub fn bind_listeners(port: u16) -> Result<(Vec<Listener>, BoundAddress), AppErr
     let loopback = Listener::adopt(socket, Expected::Loopback)?;
     let bound = loopback.addr();
 
-    let mut listeners = vec![loopback];
-    let mut tailnet = None;
-
-    if let Some((listener, bind)) = probe_and_bind_tailnet(bound.port()) {
-        tailnet = Some(bind);
-        listeners.push(listener);
-    }
-
     Ok((
-        listeners,
+        vec![loopback],
         BoundAddress {
             loopback: bound,
-            tailnet,
+            tailnet: None,
         },
     ))
 }
@@ -1672,16 +1681,28 @@ fn sleep_chopped(total: Duration, stop: &AtomicBool) -> bool {
     !stop.load(Ordering::Relaxed)
 }
 
-/// Retries a tailnet bind [`serve`] did not already have when it started —
-/// SH-146. A login-time daemon start races `tailscaled` coming up, and
-/// before this nothing ever retried a miss: the daemon served loopback only
-/// until somebody restarted it by hand.
+/// Binds the tailnet interface [`serve`] did not already have when it
+/// started — SH-146's self-heal path, and since SH-186 the *only* path any
+/// tailnet bind takes, first attempt included. `bind_listeners` no longer
+/// probes at all, so nothing before `serve` waits on `tailscale`; this
+/// background thread is where that question gets answered, whenever it
+/// answers.
 ///
-/// Strictly timer-driven, never triggered by request arrival: a probe shells
-/// out to `tailscale`, and tying that to an unauthenticated request would let
-/// any peer that can reach loopback force repeated subprocess spawns — a
-/// self-inflicted local DoS vector for no benefit, since an idle daemon still
-/// needs to self-heal whether or not anyone is asking it anything.
+/// The first attempt runs immediately — probe, then sleep only on a miss —
+/// rather than waiting out `schedule.initial` first, which is what a login-
+/// time daemon or a `story web --serve` that has never had a tailnet bind
+/// needs: SH-146's original shape only ever ran this loop *after* a startup
+/// miss already happened, so paying `initial` before the first retry cost
+/// nothing extra. Now this loop's first attempt often *is* the only attempt
+/// on a healthy machine, and delaying it would trade the bug this story fixes
+/// for a flat regression on the common case.
+///
+/// Strictly timer-driven after that, never triggered by request arrival: a
+/// probe shells out to `tailscale`, and tying that to an unauthenticated
+/// request would let any peer that can reach loopback force repeated
+/// subprocess spawns — a self-inflicted local DoS vector for no benefit,
+/// since an idle daemon still needs to self-heal whether or not anyone is
+/// asking it anything.
 ///
 /// One-shot: the loop returns the instant a bind succeeds and never probes
 /// again for the rest of this process's life. `trusted_hosts` is written
@@ -1708,49 +1729,50 @@ fn tailnet_reprobe<'scope, S: Store, L>(
     let mut elapsed = Duration::ZERO;
     let mut attempt = 0u32;
     loop {
+        if let Some((listener, bind)) = probe_and_bind_tailnet(loopback_addr.port()) {
+            {
+                let mut hosts = serving
+                    .trusted_hosts
+                    .write()
+                    .unwrap_or_else(PoisonError::into_inner);
+                hosts.add_bound(bind.trusted_hosts());
+            }
+
+            let bound = BoundAddress {
+                loopback: loopback_addr,
+                tailnet: Some(bind),
+            };
+            on_late_tailnet_bind(&bound);
+
+            // `addr()` rather than the `false` `loopback` literal that used
+            // to be written here. A tailnet bind is never loopback, so the
+            // literal was right — but it was right by assertion, which is
+            // the whole of what SH-253 removes: this listener now answers
+            // from the address it bound, exactly as the two in `serve` do.
+            let bind_addr = listener.addr();
+            scope.spawn(move || {
+                accept_loop(
+                    serving,
+                    listener.listener,
+                    bind_addr,
+                    limits,
+                    slots,
+                    jobs_tx,
+                    nested_tx,
+                )
+            });
+            return;
+        }
+
+        // Backoff belongs to a failed attempt, never to the next one to try
+        // — which is what keeps this the same schedule SH-146 already
+        // proved out, just entered one probe earlier.
         let delay = next_reprobe_delay(&schedule, elapsed, attempt);
         if !sleep_chopped(delay, stop) {
             return;
         }
         elapsed += delay;
         attempt += 1;
-
-        let Some((listener, bind)) = probe_and_bind_tailnet(loopback_addr.port()) else {
-            continue;
-        };
-
-        {
-            let mut hosts = serving
-                .trusted_hosts
-                .write()
-                .unwrap_or_else(PoisonError::into_inner);
-            hosts.add_bound(bind.trusted_hosts());
-        }
-
-        let bound = BoundAddress {
-            loopback: loopback_addr,
-            tailnet: Some(bind),
-        };
-        on_late_tailnet_bind(&bound);
-
-        // `addr()` rather than the `false` `loopback` literal that used to be
-        // written here. A tailnet bind is never loopback, so the literal was
-        // right — but it was right by assertion, which is the whole of what
-        // SH-253 removes: this listener now answers from the address it
-        // bound, exactly as the two in `serve` do.
-        let bind_addr = listener.addr();
-        scope.spawn(move || {
-            accept_loop(
-                serving,
-                listener.listener,
-                bind_addr,
-                limits,
-                slots,
-                jobs_tx,
-                nested_tx,
-            )
-        });
-        return;
     }
 }
 
@@ -1796,6 +1818,36 @@ mod tests {
         assert!(
             Listener::adopt(wildcard, Expected::Loopback).is_err(),
             "a wildcard bind must never become a servable Listener"
+        );
+    }
+
+    // --- The tailnet probe never runs on the pre-serve path (SH-186) ---
+
+    /// `bind_listeners` must never itself produce a tailnet bind — every
+    /// tailnet bind happens on [`tailnet_reprobe`]'s background thread,
+    /// `bind_and_serve`'s test-seam probe, or nowhere at all. Deliberately a
+    /// pure return-value check rather than a `tailscale` shim on `PATH`:
+    /// mutating `PATH` for one unit test would leak into every other test
+    /// sharing this process, and the property under test does not need a
+    /// shim at all — `bind_listeners` contains no call to
+    /// `probe_and_bind_tailnet` any more, so this holds on a machine with a
+    /// real tailnet exactly as it does on one with none. Before SH-186 this
+    /// was false on any tailnet-equipped machine (this repo's own dev
+    /// machine included): `bind_listeners` probed synchronously and
+    /// `bound.tailnet` came back `Some(..)`.
+    #[test]
+    fn bind_listeners_never_itself_produces_a_tailnet_bind() {
+        let (listeners, bound) =
+            bind_listeners(0).expect("binding loopback on an OS-assigned port");
+        assert_eq!(
+            listeners.len(),
+            1,
+            "bind_listeners must return loopback and nothing else"
+        );
+        assert!(
+            bound.tailnet.is_none(),
+            "bind_listeners must never bind a tailnet interface itself, on any machine: got {:?}",
+            bound.tailnet
         );
     }
 
