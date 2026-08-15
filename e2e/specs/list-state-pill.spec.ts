@@ -3,6 +3,7 @@ import {
   cleanUpCreatedStories,
   deleteStory,
   openProject,
+  resolvedTokenColor,
   seedToken,
 } from "./support";
 
@@ -12,11 +13,14 @@ import {
  * the file already uses (the board's column placement, the drag-drop
  * no-op guard, and SH-203's own status light) -- and only that layer,
  * `renderBoard`'s comment on why, applies here too: the list pill must
- * never disagree with the column the same story's board card sits in.
+ * never disagree with the column the same story's board card sits in --
+ * and is coloured by the same semantic `stateColor()` the board's column
+ * dots and the status light already use, rather than staying plain text.
  *
- * `tests/web_test.rs` pins the source text; this is the layer that
- * proves a browser actually renders the promoted word, not the literal
- * one, for an epic `compute_epic_display_state` (SH-165) has promoted.
+ * `tests/web_test.rs` pins the source text and the CSS rules exist; this
+ * is the layer that proves a browser actually renders the promoted word
+ * for an epic `compute_epic_display_state` (SH-165) has promoted, and
+ * actually resolves a semantic colour rather than merely referencing one.
  *
  * This spec creates and deletes its own stories rather than touching the
  * "Alpha Project" fixture, whose exact two-story shape other specs
@@ -109,8 +113,23 @@ test("an epic's list pill shows the state its card actually sits in, not its own
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
+  // Not yet promoted -- the epic's own literal state is still `todo`, and
+  // its list pill/dot must read exactly like any other unpromoted todo
+  // story: stateColor()'s quiet default, no title, no disagreement to name.
+  const epicPillTodo = (await listRow(page, epicId)).locator(".state-pill");
+  await expect(epicPillTodo).toHaveText("todo");
+  await expect(epicPillTodo).not.toHaveAttribute("title", /.+/);
+  await expect(epicPillTodo.locator(".dot")).toHaveCSS(
+    "background-color",
+    await resolvedTokenColor(page, "--fg-faint"),
+  );
+  const todoTint = await epicPillTodo.evaluate(
+    (el) => getComputedStyle(el).backgroundColor,
+  );
+
   // Promotes the epic's display_state to in-progress (compute_epic_display_state,
   // SH-165) without touching its own literal `state`, which stays `todo`.
+  await page.locator('#view-toggle button[data-view="board"]').click();
   await moveToState(page, childTitle, "in-progress");
   await expect(
     page.locator('.column[data-state="in-progress"] .card', {
@@ -122,6 +141,21 @@ test("an epic's list pill shows the state its card actually sits in, not its own
   const pill = row.locator(".state-pill");
   await expect(pill).toHaveText("in-progress");
   await expect(pill).toHaveAttribute("title", /recorded state is todo/);
+  // `in-progress` carries stateColor()'s "active" anchor -> --accent,
+  // proving the semantic mapping (not the positional palette) drives the
+  // promoted pill exactly as it drives storyLight() and the column dot.
+  await expect(pill.locator(".dot")).toHaveCSS(
+    "background-color",
+    await resolvedTokenColor(page, "--accent"),
+  );
+  // The pill's own tint changes with the state it's colouring, proving
+  // buildStatePill() actually feeds stateColor() into --state-color rather
+  // than leaving today's fixed --bg-sunken in place -- without hardcoding
+  // the color-mix() percentage into this assertion.
+  const promotedTint = await pill.evaluate(
+    (el) => getComputedStyle(el).backgroundColor,
+  );
+  expect(promotedTint).not.toBe(todoTint);
 
   // A story with no display_state override shows and sorts by its own
   // literal state, unaffected by the epic's promotion.
@@ -129,6 +163,10 @@ test("an epic's list pill shows the state its card actually sits in, not its own
   const childPill = childRow.locator(".state-pill");
   await expect(childPill).toHaveText("in-progress");
   await expect(childPill).not.toHaveAttribute("title", /recorded state/);
+  await expect(childPill.locator(".dot")).toHaveCSS(
+    "background-color",
+    await resolvedTokenColor(page, "--accent"),
+  );
 
   // Moving the child back to todo un-promotes the epic (no active child
   // left), which returns its own card -- and so deleteStory's own

@@ -2182,6 +2182,62 @@ fn web_serve_root_html_styles_the_status_light_and_card_blockers() {
     );
 }
 
+/// SH-277: the list view's `.state-pill` is coloured through the same
+/// `--state-color` custom property `.card`'s own `--card-accent` uses
+/// (`buildStatePill()` is the one write that drives the tint, the ring,
+/// and the dot's fill together) -- not the inline
+/// `style: "background:" + stateColor(slug)` string every single-
+/// declaration dot elsewhere in this file uses. The plain
+/// `background`/`border-color` fallback must come FIRST, and the
+/// `color-mix()` pair after it: that ordering is what makes the
+/// declaration a real progressive-enhancement pair rather than an
+/// assertion this test only pretends to make -- a browser without
+/// `color-mix()` support keeps the first declaration of each property and
+/// ignores the second, landing on today's uncoloured pill exactly.
+#[test]
+fn web_serve_root_html_colours_the_list_state_pill() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    let pill = declarations(css, ".state-pill");
+    assert!(
+        pill.contains("display: inline-flex"),
+        ".state-pill must lay its dot and word out inline, matching .story-ref"
+    );
+    assert!(
+        pill.contains("--state-color: var(--border)"),
+        ".state-pill must default --state-color so the rule is valid standalone"
+    );
+    let plain_bg = pill
+        .find("background: var(--bg-sunken)")
+        .expect(".state-pill must keep the plain background as a color-mix() fallback");
+    let mixed_bg = pill
+        .find("background: color-mix(in srgb, var(--state-color)")
+        .expect(".state-pill must mix --state-color into its background");
+    assert!(
+        plain_bg < mixed_bg,
+        "the plain background must come BEFORE the color-mix() one, or a browser \
+         without color-mix() support keeps the coloured declaration's fallback \
+         value instead of today's uncoloured pill"
+    );
+    assert!(
+        pill.contains("border-color: color-mix(in srgb, var(--state-color)"),
+        ".state-pill's ring must also track --state-color"
+    );
+    assert!(
+        declarations(css, ".state-pill .dot").contains("background: var(--state-color)"),
+        ".state-pill .dot must paint the same --state-color the pill itself mixes in"
+    );
+}
+
 /// SH-217: three CSS rules ARE the description's read/edit mechanism --
 /// the field is `display: none` by default, shown only under `.editing`,
 /// while the read view flips the opposite way. A selector rename here
