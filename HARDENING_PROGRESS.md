@@ -17605,3 +17605,148 @@ their numbers live in the council artifact and in the code comments that depend
 on them.
 
 **`story next` behaved.** It handed back SH-323, which was genuinely ready.
+
+### SH-324 — done
+
+**Outcome:** merged (PR #440). The statuses editor's delete confirmation has no
+deadline of any kind, and the two things the six-second clock was quietly doing —
+one of them badly — are done explicitly instead.
+
+**The route: the clock is deleted, not made adjustable.** SH-322's shape was the
+obvious answer and is the wrong one here. That council chose G198 (Turn off)
+because the notice clock *had* to survive — a notice that never leaves regresses
+SH-304's corroboration contract — and nothing analogous forces this clock to
+survive. The lesson worth keeping: **read SH-322 as "the criterion's first
+clause, when the limit must stay", not as the house style for every timer.** A
+preference here would have been a checkbox governing a clock we could simply
+delete.
+
+**What the story asked for, and what was actually wrong.** SH-324 named one
+`setTimeout` and asked for a sweep of sibling `setTimeout`-driven deadlines. The
+sweep was run and reported "there is no third". **That conclusion was wrong on
+its own definition, and the skeptic seat caught it.** `SAFETY_POLL_INTERVAL_MS`
+is a poll by mechanism and a *deadline by effect*: the armed state lived in
+`button.dataset.confirming`, `renderStatuses()` clears and rebuilds every row, and
+at least **eight** paths reach that rebuild — including a second, independent 25s
+path through `fetchReposOnce() -> renderSettings()` that fires on an SSE
+`repo-changed` for *any* project, and both of `statusMutation()`'s callbacks,
+which consult no busy guard and **cannot be made to**, since repainting from the
+server's authoritative answer is their whole job.
+
+So deleting the `setTimeout` alone would have swapped a visible six-second limit
+for an invisible 0–25s one. On WebKit — which does not focus a `<button>` on
+click, so `statusEditorIsBusy()` reads false the instant a user arms — the
+deadline that actually bit was already the poll, not the timer. A reader who
+ticked a hypothetical turn-off preference would have observed **no change in
+behaviour at all**.
+
+**The durable rule this leaves:** *a grep for `setTimeout` cannot find a deadline
+whose expiry site is a `render*()` call.* A deadline is a property of what ends a
+user's action, not of which API scheduled it.
+
+**Second durable rule, from the same seat:** *focus-after-click is browser- and
+platform-dependent and is not a substrate to rest correctness on.* WebKit's
+behaviour was verified against this repo's own Playwright build
+(`document.activeElement` is `BODY`). The question this run wrote also claimed
+Firefox focuses it; the seat refused that — Playwright's *patched* Firefox does,
+which is not evidence about stock Firefox. The weaker claim is the useful one.
+
+**Council: yes** — `.council/sh324-delete-confirmation-time-limit/`. Unanimous
+3-0 for the skeptic's proposal, with **two seats voting against their own**. The
+vote turned on one distinction worth carrying forward: *suppress the render to
+protect the state* (the two panel proposals) versus *render correctly* (the
+winner). The accessibility seat's own words on why it abandoned its proposal:
+"nothing in my test plan fails when someone adds a render path without the guard,
+which is exactly how the defect under review arrived." **Default-safe beats
+default-unsafe for a failure mode that is invisible when it returns.**
+
+**Two riders every ballot reached independently, both carried.** (1) The hazard
+inversion: the old design armed on a click and confirmed on the next *at the same
+coordinates*, so a double-click armed and confirmed in one gesture — what a user
+with tremor or spasticity produces without meaning to, and what six seconds is
+exactly the wrong shape to stop. Cancel now occupies the trigger's position and
+the confirm sits on its own line beneath the row. Fixed by **layout, not a
+debounce** — a debounce is a new time limit. (2) The sibling,
+`promptForDestination`, filed rather than folded in (SH-334).
+
+**One deviation from the verdict, deliberate.** The verdict specified
+`aria-label: "Confirm deleting <slug>"` on a button reading "Delete?". That gives
+the control an accessible name **not containing its own visible label**, failing
+SC 2.5.3 (Label in Name) in the act of satisfying something else. The visible text
+carries the slug instead, so the accessible name changes without the two
+disagreeing.
+
+**One implementation choice reversed mid-build, and worth recording.** The first
+attempt put Cancel and the confirm side by side in the row's action cell. That
+makes "the destroying click is not where the arming click was" depend on grid
+arithmetic — `.status-row`'s fifth column is `1fr`, so widening the last cell
+drags it leftward by an amount that varies with viewport and content. A safety
+property that holds by arithmetic a later CSS edit can silently break is not a
+safety property. A separate line cannot coincide with the row's own line at any
+width. **The mutation check is what would have caught it either way** — moving the
+confirm back to the trigger's coordinates fails the double-click test.
+
+**Mutation-checked in three directions**, because a fence that cannot fail is not
+a fence: restoring the clock fails both the structural fence and the criterion
+pin; moving the confirm back to the trigger's coordinates fails the double-click
+test; and both function slices were verified bounded rather than assumed (an
+over-wide slice would have made the `contains` assertion pass vacuously).
+
+**Discovered — SH-335, and it decides how much this suite's green means.** The
+e2e suite is **Chromium-only**. Both Playwright projects are Blink and
+`make e2e-install` installs chromium alone, so **no test here can observe the
+WebKit behaviour that was half this defect**. A spec asserting "the armed state
+survives a poll" passes today *on unfixed code*, because Chrome holds focus and
+the poll is therefore skipped — a green checklist over a live deadline, which is
+the SH-226/SH-306 shape one layer further out. The spec written here reproduces
+the *state* by blurring and says so in its own body. Filed rather than fixed:
+adding a `webkit` project roughly doubles suite runtime, which is a CI-budget
+decision (see SH-306) and not a WCAG one.
+
+**Discovered — a correction to SH-329, which cost this cycle a full gate re-run.**
+The first `make test` came back 244 passed, 1 failed, the failure being
+`board-sort.spec.ts:239` — SH-329, already filed. Attribution was **established
+rather than assumed**: `src/web_dashboard.html` was reverted to its committed
+version and the spec failed again, so the failure is not this branch's. But the
+measurement contradicted SH-329's own diagnosis:
+
+| How it was run | Result |
+|---|---|
+| Full `make test` | 1 fail, then 245 passed on re-run |
+| `board-sort.spec.ts` whole file | 3 fails / 3 runs |
+| that test alone, `--repeat-each=5` | **5 passes / 5 runs** |
+
+It is **not** load-dependent — the machine was idle (load average 2.5) where the
+story cites 8–36. The trigger looks like *the preceding tests in the same file*,
+which makes it far cheaper to bisect than "a loaded machine": eight tests, ~3 runs
+of ~20s. Commented on SH-329 and raised to **high**, because `make test`
+fail-fasts, so a run that hits it writes no gate receipt and `.githooks/pre-push`
+then refuses the push — it blocks every story whose gate run happens to hit it.
+
+**A process error, recorded because the class matters more than this instance.**
+A `cd /Volumes/Code/mikeyward/storyhook` inside one `story new` invocation
+**persisted** — the Bash tool keeps its working directory between calls — so
+several later commands ran in the **main checkout** rather than the worktree,
+including a `git checkout HEAD -- src/web_dashboard.html` and a `cp` onto that
+same path. Both happened to be no-ops (main was clean and the `cp` restored main's
+own bytes to itself), main stayed clean, and the worktree was untouched; the
+attribution experiment was in fact *stronger* for having run against pristine
+`main`. But the near-miss is real and the rule is cheap: **inside a worktree
+cycle, never `cd` out of it in a compound command — use an absolute path, or run
+the command in a subshell.** A persisted `cd` is silent, and the next
+destructive-looking command is aimed at the wrong tree.
+
+**Gate:** green — 245 passed, on the second full run (the first was SH-329). Every
+background run supervised with a log-growth heartbeat and a 120s stall timeout.
+**No wedges this cycle**; total gate time ~9m and ~6.6m per run for the e2e leg.
+
+**Council delivery, one process note.** Two seats completed their proposals and
+did not deliver them, having treated their final message as delivery; both
+produced their JSON on an explicit instruction to call `SendMessage` with
+`to: "main"`. A fourth agent was re-dispatched into the silent seat and stood
+down when the original delivered mid-briefing — it was **not admitted and did not
+vote**, but it reached the double-click hazard independently, from a
+motor-accessibility direction none of the three seats took, and its `dblclick`
+regression test was adopted. Recorded as an appendix to the decision.
+
+**`story next` behaved.** It handed back SH-324, which was genuinely ready.
