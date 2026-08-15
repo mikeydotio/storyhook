@@ -931,8 +931,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    so the label doesn't shift left/right as the checked item changes. */
 .ctxmenu-check { width: 0.875rem; flex-shrink: 0; color: var(--accent); visibility: hidden; }
 .ctxmenu-item[aria-checked="true"] .ctxmenu-check { visibility: visible; }
-/* Set Status's own popover (SH-197): same look as .ctxmenu, positioned to
-   the parent item's own right (or left, flipped, if that would overflow —
+/* A story submenu's own popover (SH-197, Set Status; generalised for any
+   story submenu by SH-310): same look as .ctxmenu, positioned to the
+   parent item's own right (or left, flipped, if that would overflow —
    see openStorySubmenu()) rather than below a button like .fdd-panel. */
 .ctxmenu-sub .ctxmenu-item .dot { flex-shrink: 0; }
 
@@ -3824,12 +3825,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   var storyMenuNode = null;
   var storyMenuInvoker = null;
   var storyMenuFocusIndex = -1;
-  // Set Status's own popover (SH-197): a second, independent node -- a
-  // sibling of storyMenuNode in the DOM, not a child, so a keydown inside
-  // it is scoped to ITS OWN handler (bindStorySubmenuKeys) rather than
-  // also reaching the main menu's. That's what makes Escape "close the
-  // submenu, not the whole menu" and Tab "close everything" both fall out
-  // of ordinary event routing instead of needing special-casing.
+  // A story submenu's own popover (SH-197, Set Status; generalised for any
+  // story submenu -- Set Priority included -- by SH-310, one slot shared
+  // and mutually exclusive by construction, since openStorySubmenu closes
+  // whichever one is already open before opening another): a second,
+  // independent node -- a sibling of storyMenuNode in the DOM, not a
+  // child, so a keydown inside it is scoped to ITS OWN handler
+  // (bindStorySubmenuKeys) rather than also reaching the main menu's.
+  // That's what makes Escape "close the submenu, not the whole menu" and
+  // Tab "close everything" both fall out of ordinary event routing instead
+  // of needing special-casing.
   var storySubmenuNode = null;
   var storySubmenuFocusIndex = -1;
   var storySubmenuParentItem = null;
@@ -3873,7 +3878,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       { separator: true },
       (function() {
         var items = statusMenuItems(st);
-        return { label: "Set Status", disabled: !!state.pending[st.id] || !items.length, submenu: items };
+        return {
+          label: "Set Status",
+          disabled: !!state.pending[st.id] || !items.length,
+          submenu: { ariaLabel: "Set status", items: items }
+        };
       })(),
       { separator: true },
       // Never hidden or disabled: unlike Dispatch/Set Status there is no
@@ -4039,10 +4048,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * with an `aria-checked` state and a leading `✓` instead of a plain
    * `role="menuitem"` -- the per-column sort menu's shape, one radio item
    * per Added/Modified/Priority x ascending/descending choice; the story
-   * menu never sets it, so its own items are unaffected. `openSubmenu`
-   * fires for a `submenu` entry's click (only the story menu's "Set Status"
-   * row has one); `closeMenu` is the owning menu's own close function, run
-   * before an ordinary item's `onSelect`. */
+   * menu never sets it, so its own items are unaffected. `submenu`, when
+   * present, is an opaque `{ariaLabel, items}` -- this function never reads
+   * either field, only forwards the whole object to `openSubmenu` on click
+   * (only the story menu's "Set Status" row has one); `closeMenu` is the
+   * owning menu's own close function, run before an ordinary item's
+   * `onSelect`. */
   function renderMenuNode(model, ariaLabel, closeMenu, openSubmenu) {
     var node = el("div", { class: "ctxmenu", role: "menu", "aria-label": ariaLabel }, []);
     model.forEach(function(entry) {
@@ -4121,9 +4132,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * `restoreFocus` mirrors `closeProjectMenu`'s: Escape returns focus to
    * whatever card/row opened the menu (the user is still "at" that story,
    * just backing out of its menu); every other dismissal lets focus go
-   * wherever the triggering action already sent it. Always takes the Set
-   * Status submenu down too, if one is open -- it can't meaningfully
-   * outlive the menu that owns its one entry point. */
+   * wherever the triggering action already sent it. Always takes whichever
+   * story submenu is open down too, if any -- it can't meaningfully outlive
+   * the menu that owns its one entry point. */
   function closeStoryMenu(restoreFocus) {
     closeStorySubmenu();
     var invoker = storyMenuInvoker;
@@ -4155,8 +4166,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     storySubmenuFocusIndex = index;
   }
 
-  function renderStorySubmenuNode(items) {
-    var node = el("div", { class: "ctxmenu ctxmenu-sub", role: "menu", "aria-label": "Set status" }, []);
+  /** Builds a `.ctxmenu-sub` popover's DOM from a flat `items` array of
+   * `{label, color, onSelect}` entries, under `ariaLabel` -- which the
+   * caller's own model supplies rather than this function knowing it, the
+   * same way `renderMenuNode` takes one. */
+  function renderStorySubmenuNode(ariaLabel, items) {
+    var node = el("div", { class: "ctxmenu ctxmenu-sub", role: "menu", "aria-label": ariaLabel }, []);
     items.forEach(function(entry) {
       node.appendChild(el("div", {
         class: "ctxmenu-item",
@@ -4174,15 +4189,18 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return node;
   }
 
-  /** Opens the Set Status submenu anchored to `parentItem` (the "Set
-   * Status" row in the main menu): placed to its right, flipped to the
-   * left if that would overflow the viewport -- `placeMenu()`'s own clamp
-   * still runs afterward, for the vertical axis and the rare case where
-   * even the flipped position also overflows on a narrow viewport. */
-  function openStorySubmenu(parentItem, items) {
+  /** Opens a story submenu (Set Status, Set Priority) anchored to
+   * `parentItem` (its own row in the main menu): placed to its right,
+   * flipped to the left if that would overflow the viewport --
+   * `placeMenu()`'s own clamp still runs afterward, for the vertical axis
+   * and the rare case where even the flipped position also overflows on a
+   * narrow viewport. `submenu` is the opaque `{ariaLabel, items}` object
+   * `renderMenuNode` forwarded from the model, unread by anything in
+   * between. */
+  function openStorySubmenu(parentItem, submenu) {
     closeStorySubmenu();
     storySubmenuParentItem = parentItem;
-    storySubmenuNode = renderStorySubmenuNode(items);
+    storySubmenuNode = renderStorySubmenuNode(submenu.ariaLabel, submenu.items);
     storySubmenuNode.tabIndex = -1;
     storySubmenuNode.addEventListener("click", function(evt) { evt.stopPropagation(); });
     storySubmenuNode.addEventListener("keydown", bindStorySubmenuKeys);
