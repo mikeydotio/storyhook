@@ -17750,3 +17750,126 @@ motor-accessibility direction none of the three seats took, and its `dblclick`
 regression test was adopted. Recorded as an appendix to the decision.
 
 **`story next` behaved.** It handed back SH-324, which was genuinely ready.
+
+### SH-329 — done
+
+**Outcome:** merged (PR #442). The board-sort flake that has been blocking gate
+runs since 2026-08-15 is diagnosed and fixed. It was never a race, never
+load-related, and nothing was ever wrong with the board.
+
+**Root cause: the store stamps at one-second precision, and the test's three
+writes fit inside one second.** `service::Clock::System` formats RFC3339 at
+second precision — "the format every storyhook timestamp has always used"
+(`src/service/mod.rs:120`). The spec creates two stories and bumps one's
+priority; warm, all three writes land in the same second. Equal `updated_at`
+strings hand `columnCardCompare` a tie, which it breaks on **story number
+ascending** — creation order, which is exactly the order the assertion exists to
+disprove.
+
+**The inversion that made three sessions read it backwards.** This story was
+filed as "intermittently fails under concurrent machine load", refined to a
+refetch race, then corrected to "the preceding tests in the same file". The
+truth is the opposite of the first and the mechanism behind the third: **the
+faster the run, the more likely the failure**, because three writes fit into one
+second more easily. The failing run's test 5 took 1.9s; a passing one took 3.4s.
+Run alone it passes because it is cold — page load, daemon warm-up, first
+round-trips — and after seven file-mates it fails because everything is hot.
+Every observation in the story is consistent with this; none of them pointed at
+it, because *slower* is the intuitive direction for a flake.
+
+**One hypothesis was refuted by argument before it was refuted by measurement,
+and that is the cheaper move.** The story's own refined diagnosis — the board
+sorting a stale snapshot that has not absorbed `touchPriority`'s write — cannot
+produce the observed failure at all: over a stale snapshot, `Modified ↓` still
+returns `[touched, untouched]` and the test still passes, since `touched` was
+created second and so already has the later `created_at`-equal-`updated_at`.
+Every route to the observed order requires a **tie**. Checking whether a
+hypothesis can even generate the symptom costs nothing and retired one of three.
+
+**Reproduction, instrumented rather than repeated.** The spec was temporarily
+made to print the store's own `created_at`/`updated_at` for both stories at four
+points, then run whole-file. Run 1 passed; run 2 failed with the smoking gun:
+
+```
+[after untouched]     AA-10 c=2026-08-15T13:31:33Z u=2026-08-15T13:31:33Z
+[after touched]       AA-11 c=2026-08-15T13:31:33Z u=2026-08-15T13:31:33Z
+[after touchPriority] AA-11 c=2026-08-15T13:31:33Z u=2026-08-15T13:31:33Z
+```
+
+That third line also *looks* like "the priority change never bumped
+`updated_at`" — a second, much larger defect if true. It was checked directly
+rather than reasoned about, against an isolated store: create, then prioritize,
+comment, label and move at two-second intervals, each one bumping `updated_at`.
+The write had landed; it had simply landed inside the same second.
+
+**The fix is a boundary, not a margin.** `waitUntilStoreClockPasses`
+(`e2e/specs/support.ts`) waits for the second the untouched story was written in
+to elapse, so the following bump is stamped strictly later. This is the
+distinction from the budgeted sleeps SH-245 and SH-318 removed from this suite:
+those are bets that an action finishes inside a guessed window, and a loaded
+machine wins them; a second boundary arrives on its own schedule whatever the
+load, and overshooting it only ever helps. It reads its **own tick length off a
+timestamp the store wrote** rather than hard-coding 1000ms — the hand-copied
+constant across a language boundary is precisely what SH-136 and SH-312 each
+cost this project — so a store that moved to milliseconds shortens the wait with
+no edit. The test then asserts the precondition **from the store's own answer**
+before asking the board anything, so a future regression fails naming both
+timestamps instead of as an unexplained ordering mismatch.
+
+**Evidence, in both directions.**
+
+| Check | Result |
+|---|---|
+| Instrumented reproduction, pre-fix | red, all three writes stamped `13:31:33Z` |
+| `board-sort.spec.ts` whole file, post-fix | 5/5 green |
+| Mutation: point the "modified" sort at `created_at` | **fails** — the test did not become vacuous |
+| `make test` | green, 245 browser tests, first run |
+
+**Sibling sweep, and why it is short.** No other e2e spec asserts an ordering
+derived from store timestamps (grepped for `updated_at`/`created_at`/the sort
+labels across all 44 spec files). The Rust side is immune **by construction**
+rather than by luck: `store::conformance::query_fixture` writes explicit
+minute-separated timestamps instead of relying on the system clock, which is why
+`stories_can_be_sorted_by_recency` has never flaked.
+
+**Filed, not fixed: SH-336** (`relates-to SH-329`, medium). The product-level
+limitation this exposed: *every* recency ordering storyhook has is blind inside
+one second — the dashboard's Modified/Added sorts, `StorySort::UpdatedAt`
+(`ORDER BY updated_at DESC, story_no`), and the TUI's recent-activity list. Touch
+two stories within a second and the board orders them by story number, not by
+what you just touched; under `↓` the tiebreak even runs ascending, so a tie reads
+oldest-first in a most-recent-first view. That matters more here than in most
+trackers, since this one's normal workload is agents mutating stories in bursts.
+It is filed rather than folded in because it is **not a format flip**: every
+comparison in the system is lexical — JS string compare, SQLite `ORDER BY`,
+`String::cmp` — and mixed resolutions break lexical ordering outright
+(`"…33.123Z" < "…33Z"`, since `.` is 0x2E and `Z` is 0x5A), so a millisecond row
+would sort *before* a whole-second row inside the same second. The story records
+the cheaper alternative too: the store already assigns a monotonic event
+sequence, so an exact recency order need not touch the timestamp format at all.
+This is the "deliberate tech debt gets logged" rule discharged — the flaw named,
+the patch's limits stated (only the test waits; no shipped surface changed), and
+the redesign trigger written down.
+
+**A process class recurred one cycle after being written down.** SH-324's entry
+records a persisted `cd` out of the worktree — the Bash tool keeps its working
+directory between calls — and its rule: never `cd` out in a compound command.
+It happened again here, via `cd /Volumes/…/storyhook && story comment …`, and
+every command after it ran in the main checkout: the branch push, `gh pr create`,
+and the merge. Nothing was harmed and two of those three are where the rules put
+them anyway (`gh pr merge` **must** run in the main checkout), but the push was
+in the wrong tree by accident rather than by intent, and that is the same near
+miss. **The rule as written did not work, because it asks a session to remember
+something at the moment it is thinking about something else.** The sharper
+version: a `story` CLI call never needs a `cd` at all — it talks to a daemon, not
+a directory — so the `cd` that caused this bought nothing on either occasion.
+
+**Costs and supervision.** A fresh worktree means a cold `target/` (28.8s) and
+`npm ci` plus a chromium install; both known and accepted. Every background run
+supervised with a log-growth heartbeat and a 120s stall bound, the watchdog
+confirming the running processes rather than inferring a wedge from silence.
+**No wedges, no stalls, no kills.** Gate ~9m, e2e leg 6.7m; nine e2e runs total
+across reproduction, verification and the mutation check.
+
+**`story next` behaved.** It handed back SH-329, which was genuinely ready, and
+correctly ranked it above the two medium bugs behind it.
