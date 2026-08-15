@@ -8,13 +8,21 @@ import {
 } from "./support";
 
 /**
- * Exercises SH-203 consumer 2: a story card lists every OPEN story still
- * blocking it, each with its own status light. When a blocker closes, its
- * light turns green (stateColor()'s CLOSED anchor -- see
- * story-status-light.spec.ts for the semantic-vs-positional palette
- * proof) and the entry dwells on the card for a few seconds before being
- * removed -- the point of the dwell being that the reader sees *which*
- * blocker cleared, not merely that the list got shorter.
+ * Exercises SH-203 consumer 2's cleared-blocker dwell: when a blocker
+ * closes, its light turns green (stateColor()'s CLOSED anchor -- see
+ * story-status-light.spec.ts for the semantic-vs-positional palette proof)
+ * and the entry dwells on the card for a few seconds before being removed
+ * -- the point of the dwell being that the reader sees *which* blocker
+ * cleared, not merely that the list got shorter.
+ *
+ * SH-309 moved the *live* half of "every OPEN story still blocking this
+ * one" out of `.card-blockers` and into the blocked badge
+ * (`.flag-blocked`, `status-flags.spec.ts`'s own file) -- the two used to
+ * print the same blocking story's id on the same card twice. This file's
+ * scope narrowed to match: it now owns only the dwell, the moment after a
+ * blocker closes where the badge has already vanished (the story left
+ * `blocked_ids` the instant its last blocker cleared) but the cleared
+ * entry still needs somewhere to keep being visible.
  *
  * The blocker is closed through the API, not a UI click in this page --
  * the same reasoning card-keyboard.spec.ts's "survives a live update"
@@ -95,7 +103,7 @@ async function resolvedTokenColor(
   }, token);
 }
 
-test("a card lists its open blocker with a light; closing the blocker turns it green then, after a dwell, drops the entry", async ({
+test("a card names its open blocker in the badge; closing the blocker turns the badge into a green dwell chip, then drops it", async ({
   page,
   request,
 }) => {
@@ -130,11 +138,15 @@ test("a card lists its open blocker with a light; closing the blocker turns it g
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
   const workerCard = page.locator(".card", { hasText: workerTitle });
-  const blockersRow = workerCard.locator(".card-blockers");
-  await expect(blockersRow.locator(".rel-id")).toHaveText(blockerId);
+  // SH-309: the live blocker is named in the badge now, not a separate
+  // .card-blockers row (status-flags.spec.ts owns the badge's text in
+  // full; this spec only needs enough of it to set up the dwell below).
+  const badge = workerCard.locator(".flag-blocked");
+  await expect(badge).toHaveText("● blocked (" + blockerId + ")");
+  await expect(workerCard.locator(".card-blockers")).toHaveCount(0);
   // The blocker is still in "todo" -- an OPEN, non-active, non-blocked
   // state, stateColor()'s deliberately quiet default.
-  await expect(blockersRow.locator(".story-light")).toHaveCSS(
+  await expect(badge.locator(".story-light")).toHaveCSS(
     "background-color",
     await resolvedTokenColor(page, "--fg-faint"),
   );
@@ -156,12 +168,18 @@ test("a card lists its open blocker with a light; closing the blocker turns it g
   );
   expect(resp.ok()).toBe(true);
 
-  // Still listed, still lit -- but green now, and marked cleared: the
-  // dwell's whole point is that the reader sees *this* blocker turn
-  // green, not merely that the list eventually shrinks.
-  await expect(blockersRow.locator(".rel-id")).toHaveText(blockerId, {
+  // The handoff SH-309 introduces: the worker has no other cause, so the
+  // instant its last blocker clears it leaves blocked_ids and the badge
+  // disappears entirely -- while .card-blockers, which now exists purely
+  // to keep the cleared entry visible for its dwell, appears in the same
+  // render carrying it, still lit and marked cleared. Still lit, still
+  // green -- the dwell's whole point is that the reader sees *this*
+  // blocker turn green, not merely that the badge vanished.
+  await expect(workerCard.locator(".flag-blocked")).toHaveCount(0, {
     timeout: 8000,
   });
+  const blockersRow = workerCard.locator(".card-blockers");
+  await expect(blockersRow.locator(".rel-id")).toHaveText(blockerId);
   await expect(blockersRow.locator(".story-ref.blocker-cleared")).toHaveCount(
     1,
   );
@@ -172,7 +190,7 @@ test("a card lists its open blocker with a light; closing the blocker turns it g
 
   // After the dwell (BLOCKER_CLEARED_DWELL_MS, 4s) the whole blockers row
   // is gone -- populateCard() only appends .card-blockers at all when
-  // there's something (open or still-dwelling) to show.
+  // there's still a dwelling entry to show.
   await expect(workerCard.locator(".card-blockers")).toHaveCount(0, {
     timeout: 8000,
   });
