@@ -223,6 +223,76 @@ export async function deleteStory(page: Page, title: string): Promise<void> {
 }
 
 /**
+ * How far ahead of the page's own clock {@link freezeClock} aims.
+ *
+ * A lead is not a choice, it is forced by the API: `clock.pauseAt` is a
+ * jump-then-pause primitive whose jump must be forward, and the clock keeps
+ * ticking while `Date.now()` round-trips to this process — so
+ * `pauseAt(pageNow)` fails with `Cannot fast-forward to the past` every time.
+ * Measured, not reasoned about: it failed on all four probes of SH-318's spike
+ * before the lead was added.
+ *
+ * The value satisfies an inequality rather than modelling anything, which is
+ * why it is a bound and not a fudge factor. It must exceed one test-to-page
+ * round trip (single-digit to tens of milliseconds, even loaded) and stay well
+ * under the shortest interval the jump would otherwise fire — the dashboard's
+ * 15s SSE watchdog, and far below its 50s staleness threshold. Two orders of
+ * magnitude of headroom at each end. The only timer this jump does fire is the
+ * 1s footer tick, once.
+ *
+ * Nothing asserts on it. A caller freezes *before* the behaviour under test
+ * exists, so the lead is spent on an empty page and no margin anywhere depends
+ * on its value.
+ */
+const FREEZE_LEAD_MS = 2000;
+
+/**
+ * Pauses the page's clock, so that from here on time advances only when a test
+ * says so with `page.clock.runFor()`.
+ *
+ * Requires `page.clock.install()` to have run before the page was navigated.
+ * Prefer {@link onAFrozenClock}, which cannot leave the clock paused.
+ */
+async function freezeClock(page: Page): Promise<void> {
+  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + FREEZE_LEAD_MS);
+}
+
+/**
+ * Runs `body` with the page's clock frozen, and resumes it afterwards whatever
+ * happens.
+ *
+ * This is the suite's timer-side equivalent of {@link latch} and
+ * {@link holdFetch}: a boundary the *test* decides, in place of a wall-clock
+ * wait it can only hope to out-race. `latch`'s own comment gives the reasoning
+ * those helpers were built on, and it applies identically to timers — a spec
+ * that sleeps `SUCCESS_VISIBLE_MS + FADE_MS + 1500` is out-racing the machine,
+ * and loses that race on a machine running three or four worktree sessions
+ * (SH-318). Inside a frozen window the arithmetic is not merely robust to load,
+ * it is independent of it: fake time advances only on `runFor`, so there is no
+ * drift to size a margin against and no tail for a loaded machine to hide in.
+ *
+ * **The `finally` is load-bearing, not tidiness.** `install()` is per-
+ * BrowserContext and covers the whole page, so a frozen clock left frozen
+ * stalls every timer the teardown needs — the drawer close, the board
+ * re-render, the delete flow. A failing assertion inside an unscoped frozen
+ * window would therefore turn one honest red into a hang plus a stranded
+ * fixture story in a shared project: a false second symptom on top of the true
+ * one, and `cleanUpCreatedStories` exists because that is expensive here
+ * (SH-245).
+ */
+export async function onAFrozenClock(
+  page: Page,
+  body: () => Promise<void>,
+): Promise<void> {
+  await freezeClock(page);
+  try {
+    await body();
+  } finally {
+    await page.clock.resume();
+  }
+}
+
+/**
  * A one-shot latch: `held` stays pending until `release()` is called, and
  * every subsequent `await` on it resolves immediately.
  *
