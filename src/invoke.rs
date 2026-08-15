@@ -1996,8 +1996,15 @@ pub fn dispatch_unscoped_with_stdin<S: Store>(
         // an editor plugin, and the legacy path answered all of them in a
         // directory storyhook had never heard of.
         Invocation::Hooks { action } => match action {
-            HooksAction::Install => system::install_git_hooks(root)
-                .map(|r| Response::MessageWithWarnings(r.message(), r.warnings())),
+            HooksAction::Install => system::install_git_hooks(root).map(|r| {
+                let mut warnings = r.warnings();
+                // SH-316. Install stays project-less — this asks whether a
+                // project happens to answer for this directory, and shrugs if
+                // none does. See `commit_scan_receipt` for what the answer may
+                // and may not be read to mean.
+                warnings.extend(commit_scan_receipt(store, root, now));
+                Response::MessageWithWarnings(r.message(), warnings)
+            }),
             HooksAction::Uninstall => system::uninstall_git_hooks(root)
                 .map(|r| Response::MessageWithWarnings(r.message(), r.warnings())),
             HooksAction::List => Ok(Response::Message(system::list_event_hooks(root))),
@@ -3125,55 +3132,7 @@ impl<'a, S: Store> StoreInvoker<'a, S> {
             return Ok(Some(found.id));
         }
 
-        // The nearest directory that *claims* a project this store does not
-        // have. It is not an answer, but it outranks every farther one: see
-        // `unresolvable_pointer_refusal`.
-        let mut claimed: Option<String> = None;
-        for dir in crate::service::project::ancestors(&self.cwd) {
-            if let Some(project) = resolve_at(self.store, &dir)? {
-                if let Some(uuid) = &claimed {
-                    return Err(unresolvable_pointer_refusal(uuid));
-                }
-                return Ok(Some(project));
-            }
-            // Read only once the directory has failed to resolve, which is what
-            // keeps `a_pointer_naming_an_unknown_project_does_not_shadow_a_valid_path_row`
-            // true: a stale pointer beside a working path row in the *same*
-            // directory still resolves there, because `resolve_at` answered.
-            if claimed.is_none()
-                && let Ok(Some(pointer)) = crate::service::project::read_pointer(&dir)
-            {
-                claimed = Some(pointer.uuid);
-            }
-        }
-
-        if let Some(remote) = crate::service::project::origin_of(&self.cwd)
-            && let Some(found) = self.store.read(|tx| tx.project_by_remote(&remote))?
-        {
-            // SH-151. An origin answers for the *whole* repository, so it will
-            // happily answer for a sub-checkout that claims a project this
-            // store does not have — with the enclosing project, silently. That
-            // is the fresh-clone-of-a-monorepo shape: `service-b`'s identity
-            // travelled in the commit, this machine has never seen it, and the
-            // root project's origin is right there to be resolved by mistake.
-            //
-            // The ownership probe is asked only in that already-rare case, and
-            // only to tell this apart from the legitimate one: a checkout at
-            // the *top level* whose committed pointer came from somebody else's
-            // store, where adopting by the origin the user registered
-            // themselves is exactly right.
-            if let Some(uuid) = &claimed
-                && matches!(
-                    crate::service::project::origin_at(&self.cwd),
-                    crate::domain::remote::RepoOrigin::Inherited { .. }
-                )
-            {
-                return Err(unresolvable_pointer_refusal(uuid));
-            }
-            return Ok(Some(found.id));
-        }
-
-        Ok(None)
+        project_at(self.store, &self.cwd)
     }
 
     /// The nearest pointer file at or above the working directory, whatever it
@@ -3187,6 +3146,101 @@ impl<'a, S: Store> StoreInvoker<'a, S> {
     fn pointer_at_or_above(&self) -> Option<crate::service::project::ProjectPointer> {
         crate::service::project::pointer_at_or_above(&self.cwd)
     }
+}
+
+/// What `story hooks install` has to say about commits nothing has scanned
+/// (SH-316) — at most one line, and usually none.
+///
+/// **Curious, never refusing.** `hooks install` is project-less by construction
+/// (`is_project_less`), writes a *directory's* hook files, and has always
+/// worked in a directory storyhook has never heard of. Making it resolve a
+/// project would change that: `resolve_project` refuses a checkout claiming a
+/// project this store lacks and refuses SH-151's inherited-origin case, so
+/// install would start failing in a monorepo sub-checkout where it works today —
+/// and `--project` would become legal on a command that writes a different
+/// repository's hooks. So this collapses both refusals and "no project here" to
+/// the same silence, using [`project_at`] rather than a second copy of the rules
+/// — the copy is what would arm and read the *wrong* project's receipt.
+///
+/// Errors are swallowed for the same reason, with one consequence worth naming:
+/// a genuinely broken project identity produces silence here, and silence must
+/// not be read as "the hooks are fine". Nothing in this command's output claims
+/// they are.
+fn commit_scan_receipt<S: Store>(store: &S, root: &Path, now: &str) -> Option<String> {
+    let project = project_at(store, root).ok().flatten()?;
+    crate::service::git::commit_scan_notice(store, project, root, now)
+        .ok()
+        .flatten()
+}
+
+/// Which project a *directory* belongs to — steps 2 to 4 of
+/// [`Invoke::resolve_project`], without the selector.
+///
+/// Free-standing because two callers need this exact walk and disagree only
+/// about what its refusals mean. [`Invoke::resolve_project`] propagates them: a
+/// command that cannot say which project it is about must not proceed. A
+/// project-less command that is merely *curious* — `hooks install`, reading the
+/// receipt for a directory it is about to write hooks into — collapses both
+/// `Err` and `Ok(None)` to "no project", because refusing would be a regression
+/// in a command that has always worked in a directory storyhook has never heard
+/// of.
+///
+/// The one thing that must not happen is a second copy of these rules: the
+/// curious caller has to answer `None` in **exactly** the cases the refusing one
+/// refuses — a checkout claiming a project this store lacks, and SH-151's
+/// inherited-origin probe — or it arms and reads the wrong project's receipt in
+/// a monorepo sub-checkout. Two answers to one question is how SH-313 and SH-314
+/// both happened.
+fn project_at<S: Store>(store: &S, cwd: &Path) -> Result<Option<ProjectId>, AppError> {
+    // The nearest directory that *claims* a project this store does not
+    // have. It is not an answer, but it outranks every farther one: see
+    // `unresolvable_pointer_refusal`.
+    let mut claimed: Option<String> = None;
+    for dir in crate::service::project::ancestors(cwd) {
+        if let Some(project) = resolve_at(store, &dir)? {
+            if let Some(uuid) = &claimed {
+                return Err(unresolvable_pointer_refusal(uuid));
+            }
+            return Ok(Some(project));
+        }
+        // Read only once the directory has failed to resolve, which is what
+        // keeps `a_pointer_naming_an_unknown_project_does_not_shadow_a_valid_path_row`
+        // true: a stale pointer beside a working path row in the *same*
+        // directory still resolves there, because `resolve_at` answered.
+        if claimed.is_none()
+            && let Ok(Some(pointer)) = crate::service::project::read_pointer(&dir)
+        {
+            claimed = Some(pointer.uuid);
+        }
+    }
+
+    if let Some(remote) = crate::service::project::origin_of(cwd)
+        && let Some(found) = store.read(|tx| tx.project_by_remote(&remote))?
+    {
+        // SH-151. An origin answers for the *whole* repository, so it will
+        // happily answer for a sub-checkout that claims a project this
+        // store does not have — with the enclosing project, silently. That
+        // is the fresh-clone-of-a-monorepo shape: `service-b`'s identity
+        // travelled in the commit, this machine has never seen it, and the
+        // root project's origin is right there to be resolved by mistake.
+        //
+        // The ownership probe is asked only in that already-rare case, and
+        // only to tell this apart from the legitimate one: a checkout at
+        // the *top level* whose committed pointer came from somebody else's
+        // store, where adopting by the origin the user registered
+        // themselves is exactly right.
+        if let Some(uuid) = &claimed
+            && matches!(
+                crate::service::project::origin_at(cwd),
+                crate::domain::remote::RepoOrigin::Inherited { .. }
+            )
+        {
+            return Err(unresolvable_pointer_refusal(uuid));
+        }
+        return Ok(Some(found.id));
+    }
+
+    Ok(None)
 }
 
 /// What to tell a checkout that names a project this store does not have.

@@ -148,17 +148,18 @@ pub fn admission(
 ///   does not distinguish this daemon's own tab from every other tailnet
 ///   peer's dashboard (cookies ignore port, and every peer under one
 ///   tailnet's registrable domain is same-site with every other), so a
-///   **read** additionally requires `Sec-Fetch-Site: same-origin` — a
-///   forbidden header name no page can forge or suppress, sent by every
-///   browser request including `EventSource`. A **mutation** needs no extra
-///   check here: it has already passed [`mutation_guard_ok`] above, in
-///   [`admission`], which is what makes the cookie sufficient on its own.
+///   **read** additionally needs [`same_origin_read`]'s proof. A
+///   **mutation** needs no extra check here: it has already passed
+///   [`mutation_guard_ok`] above, in [`admission`], which is what makes the
+///   cookie sufficient on its own.
 ///
 /// `pub(crate)`: [`crate::api::dispatch::intercept`] is a second, narrower
 /// gate on the exact same route family (its own module doc calls it a
 /// "harmless, deliberate redundancy" with this one), and it must recognize
 /// every credential this gate does — a request `admission` already admitted
 /// must never be refused a second time by dispatch's own copy of the check.
+/// It imports this function directly rather than a copy of it, so
+/// [`same_origin_read`]'s rule applies to both call sites by construction.
 pub(crate) fn named_token_ok(
     headers: &[Header],
     method: &Method,
@@ -178,14 +179,97 @@ pub(crate) fn named_token_ok(
     if tokens.validate(offered, wall_now, mono_now).is_none() {
         return false;
     }
-    mutating(method) || same_origin_fetch(headers)
+    mutating(method) || same_origin_read(headers)
 }
 
-/// Whether `headers` carries the browser-supplied, unforgeable
-/// `Sec-Fetch-Site: same-origin`. See [`named_token_ok`] for why this is
-/// what a cookie-authenticated read is held to.
-fn same_origin_fetch(headers: &[Header]) -> bool {
-    header_value(headers, "Sec-Fetch-Site") == Some("same-origin")
+/// Whether a cookie-authenticated **read** proves it came from this
+/// dashboard's own tab, tried in order of strength (SH-319):
+///
+/// 1. **`X-Storyhook` present.** The same marker [`mutation_guard_ok`]
+///    requires for mutations, and already sent on every `fetch`/XHR read the
+///    dashboard issues. Setting any custom header makes a cross-origin
+///    request non-"simple," which forces a CORS preflight this daemon never
+///    answers with `Access-Control-Allow-*` (`mutation_guard_ok`'s own doc);
+///    the browser refuses to ever send the real request, so an offered
+///    header proves same-origin as strongly as the token header case above
+///    does, and for the identical reason. Stronger than either check below:
+///    those let a cross-site request *reach* the daemon and rely on the
+///    response being unreadable, which still leaves XS-Leak-style
+///    side-channels (timing, response size) open; this one stops the
+///    request from being sent at all. Deliberately no accompanying `Host`
+///    check the way `mutation_guard_ok` has one: `mutation_guard_ok`'s
+///    second check exists for DNS-rebinding, where the caller's page
+///    becomes same-origin with the real target and so *can* set the header
+///    itself — but this cookie is host-only (no `Domain`), so it is never
+///    attached to a request whose target hostname is the rebound name
+///    rather than this daemon's own; rebinding cannot make the browser
+///    attach a cookie scoped to a hostname the request isn't addressed to.
+/// 2. **`Sec-Fetch-Site: same-origin`.** A forbidden header name no page can
+///    forge or suppress a false value into, sent by every browser request
+///    including `EventSource` — but per the Fetch Metadata spec, only on a
+///    *potentially trustworthy* URL (https, or http on `localhost`/
+///    `127.0.0.1`). A plain-http tailnet or LAN origin — this daemon's usual
+///    deployment off loopback — never gets it at all, which is what SH-319
+///    reproduced: every such read 401s forever, forcing the token modal
+///    open in a loop no amount of re-pasting the same valid token escapes.
+/// 3. **`Referer`'s host matches this request's own `Host`, checked only
+///    when `Sec-Fetch-Site` is absent.** The one caller left needing this:
+///    `EventSource` (`GET /api/events`) cannot set custom headers, so check
+///    1 is never available to it, and on a non-trustworthy origin neither is
+///    check 2. `Referer` is, like `Sec-Fetch-Site`, a forbidden header name;
+///    a page can suppress it (via its own `Referrer-Policy`) but never make
+///    it name a false origin, so its *absence* is the only failure mode,
+///    handled by refusing rather than by trusting nothing. Host **and**
+///    port are compared, verbatim — reusing `crate::api::http::normalized_host`'s
+///    port-stripping here (built for `host_is_trusted`'s allowlist
+///    semantics) would wrongly equate two daemons on one host at different
+///    ports, since this cookie's own name is derived from the store, not
+///    the port, and cookies ignore port entirely (RFC 6265).
+///
+/// Order matters for correctness, not just clarity: a present
+/// `Sec-Fetch-Site: cross-site` must refuse outright rather than ever
+/// falling through to `Referer` — collapsing the three into an unordered
+/// "any one passes" check would silently readmit the cross-site read
+/// `Sec-Fetch-Site` exists to block.
+fn same_origin_read(headers: &[Header]) -> bool {
+    if header_value(headers, "X-Storyhook").is_some() {
+        return true;
+    }
+    match header_value(headers, "Sec-Fetch-Site") {
+        Some(value) => value == "same-origin",
+        None => referer_matches_host(headers),
+    }
+}
+
+/// The `Referer` fallback [`same_origin_read`] uses when `Sec-Fetch-Site` is
+/// absent entirely. Compares the `Referer` URL's authority (host and port,
+/// verbatim) against this request's own `Host` header — not
+/// `crate::api::http::normalized_host`, whose port-stripping exists for a different
+/// question ("is this an allowlisted host at all") than the one asked here
+/// ("is this literally the same origin the request was sent to").
+fn referer_matches_host(headers: &[Header]) -> bool {
+    let (Some(referer), Some(host)) = (
+        header_value(headers, "Referer"),
+        header_value(headers, "Host"),
+    ) else {
+        return false;
+    };
+    referer_authority(referer).is_some_and(|authority| authority.eq_ignore_ascii_case(host))
+}
+
+/// The `host[:port]` authority of a `Referer` URL, or `None` if it does not
+/// look like one (no `scheme://` prefix) — never panics on a malformed or
+/// hostile value, which a `Referer` header, page-suppressible but otherwise
+/// browser-controlled, is not expected to be, but this function does not
+/// rely on that not happening.
+fn referer_authority(referer: &str) -> Option<&str> {
+    let after_scheme = referer.split_once("://")?.1;
+    Some(
+        after_scheme
+            .split(['/', '?', '#'])
+            .next()
+            .unwrap_or(after_scheme),
+    )
 }
 
 #[cfg(test)]
@@ -527,6 +611,106 @@ mod tests {
         ]);
         let reply = admits_with_tokens(&["api", "repos"], &Method::Get, &headers, &tokens)
             .expect("a cookie under a different name must never be parsed as a credential");
+        assert_eq!(reply.status, 401);
+    }
+
+    // --- SH-319: same_origin_read's X-Storyhook and Referer fallbacks ---
+    //
+    // `Sec-Fetch-Site` never arrives at all on a non-potentially-trustworthy
+    // origin (a plain-http tailnet or LAN host, per the Fetch Metadata
+    // spec) -- these pin the layered replacement, independent of the tests
+    // above which stay exactly as they were for the loopback/Sec-Fetch-Site
+    // case.
+
+    #[test]
+    fn x_storyhook_alone_admits_a_cookie_borne_read_with_no_sec_fetch_site_at_all() {
+        let (tokens, secret) = minted_tokens();
+        let headers = headers(&[
+            ("X-Storyhook", "1"),
+            ("Host", "psamathe.tail983f02.ts.net"),
+            ("Cookie", &format!("{COOKIE_NAME}={secret}")),
+        ]);
+        assert!(
+            admits_with_tokens(&["api", "repos"], &Method::Get, &headers, &tokens).is_none(),
+            "X-Storyhook must admit a cookie-borne read on its own, the way it already does for a mutation"
+        );
+    }
+
+    #[test]
+    fn a_matching_referer_admits_a_read_when_sec_fetch_site_is_entirely_absent() {
+        let (tokens, secret) = minted_tokens();
+        let headers = headers(&[
+            ("Host", "psamathe.tail983f02.ts.net:3456"),
+            ("Cookie", &format!("{COOKIE_NAME}={secret}")),
+            ("Referer", "http://psamathe.tail983f02.ts.net:3456/"),
+        ]);
+        assert!(
+            admits_with_tokens(&["api", "events"], &Method::Get, &headers, &tokens).is_none(),
+            "a Referer whose authority matches Host must admit a read when Sec-Fetch-Site never arrived (EventSource, non-trustworthy origin)"
+        );
+    }
+
+    #[test]
+    fn a_referer_naming_a_different_host_is_refused() {
+        let (tokens, secret) = minted_tokens();
+        let headers = headers(&[
+            ("Host", "psamathe.tail983f02.ts.net:3456"),
+            ("Cookie", &format!("{COOKIE_NAME}={secret}")),
+            ("Referer", "http://evil.example:3456/"),
+        ]);
+        let reply = admits_with_tokens(&["api", "events"], &Method::Get, &headers, &tokens)
+            .expect("a foreign Referer must never admit a read");
+        assert_eq!(reply.status, 401);
+    }
+
+    #[test]
+    fn a_referer_naming_the_same_host_on_a_different_port_is_refused() {
+        // The cookie's own name is keyed by store, not port, and cookies
+        // ignore port entirely (RFC 6265) -- a different port is a different
+        // daemon, and this check must not equate them the way
+        // `host_is_trusted`'s port-stripped comparison would.
+        let (tokens, secret) = minted_tokens();
+        let headers = headers(&[
+            ("Host", "psamathe.tail983f02.ts.net:3456"),
+            ("Cookie", &format!("{COOKIE_NAME}={secret}")),
+            ("Referer", "http://psamathe.tail983f02.ts.net:9999/"),
+        ]);
+        let reply = admits_with_tokens(&["api", "events"], &Method::Get, &headers, &tokens)
+            .expect("a Referer naming the same host but a different port must never admit a read");
+        assert_eq!(reply.status, 401);
+    }
+
+    #[test]
+    fn sec_fetch_site_cross_site_refuses_outright_even_with_a_matching_referer() {
+        // Precedence: a present Sec-Fetch-Site is authoritative and must
+        // never fall through to the Referer fallback, or a genuinely
+        // cross-site read (one a real browser labels as such) would be
+        // readmitted by a Referer that -- unlike Sec-Fetch-Site -- a
+        // same-site-but-cross-origin attacker page can still cause to be
+        // sent, since Referer only proves *page origin*, not *fetch-site
+        // classification*.
+        let (tokens, secret) = minted_tokens();
+        let headers = headers(&[
+            ("Host", "psamathe.tail983f02.ts.net:3456"),
+            ("Cookie", &format!("{COOKIE_NAME}={secret}")),
+            ("Sec-Fetch-Site", "cross-site"),
+            ("Referer", "http://psamathe.tail983f02.ts.net:3456/"),
+        ]);
+        let reply = admits_with_tokens(&["api", "events"], &Method::Get, &headers, &tokens)
+            .expect("Sec-Fetch-Site: cross-site must refuse even when Referer matches Host");
+        assert_eq!(reply.status, 401);
+    }
+
+    #[test]
+    fn a_malformed_referer_is_refused_rather_than_panicking() {
+        let (tokens, secret) = minted_tokens();
+        let headers = headers(&[
+            ("Host", "psamathe.tail983f02.ts.net:3456"),
+            ("Cookie", &format!("{COOKIE_NAME}={secret}")),
+            ("Referer", "not-a-url"),
+        ]);
+        let reply = admits_with_tokens(&["api", "events"], &Method::Get, &headers, &tokens)
+            .expect("a Referer with no scheme must be refused, not panic");
         assert_eq!(reply.status, 401);
     }
 

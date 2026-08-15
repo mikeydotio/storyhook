@@ -179,6 +179,16 @@ pub const MIGRATIONS: &[Migration] = &[
         // triggers are untouched: adding a column is not an UPDATE of a row.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 14,
+        name: "commit_scan",
+        sql: include_str!("schema/0014_commit_scan.sql"),
+        // One `ALTER TABLE ... ADD COLUMN` on `projects`, NULL-able and not
+        // backfilled — see the migration's own header for why the NULL is the
+        // point and why the column is not a setting. Nothing is rebuilt, so
+        // migration 5's `events_reject_delete` warning does not apply.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

@@ -16864,3 +16864,352 @@ implementation — this worktree reaps itself immediately after the merge, and a
 second branch would be stranded with nothing left to land it. No
 `SKIP_PREPUSH_TESTS`, no `--no-verify`, no force-push, no version bump, no
 deploy.
+
+### SH-309 — the blocked badge asserted a cause it never tested
+
+**Outcome:** merged. A blocked card's badge now names what is actually
+blocking it, every story id a live link, instead of claiming "(no reason)"
+for causes it was never checking.
+
+**The filing, confirmed live before writing a line of code.** SH-307's card
+read "● blocked (no reason)" with an SH-308 chip sitting directly beneath it
+in `.card-blockers` — SH-308 confirmed OPEN/todo/non-draft/non-deleted, so
+fully resolvable client-side. The badge (`populateCard`,
+`src/web_dashboard.html`) tested a single clause, `st.awaiting`, while the
+server's `blocked_ids` (`src/service/query.rs`) is driven by `is_ready`'s
+five-clause test (`src/domain.rs`): an open `blocked-by` edge and an
+`obviated-by` edge both land a story in `blocked_ids` and both got the same
+"(no reason)" label as a story genuinely parked with none. One defect, two
+live instances; SH-307/SH-308 was the `blocked-by` one.
+
+**`blockedFlag(st, isBlocked)`** is now the single owner of every badge
+sentence — a comma-joined cause list (open `blocked-by` refs, then
+`obviated-by` refs, then a quoted `awaiting` reason), falling back to the
+doctor's own "(no reason)" only when the list is empty and
+`state === "blocked"`, and to a bare "blocked" with an explanatory title
+when even that doesn't apply (a `blocked-by` edge onto an open draft or
+soft-deleted story — real, server-side causes invisible to this client).
+The live half of `.card-blockers` moved into the badge (it was printing the
+same blocking story's id twice on one card); the row is now the
+cleared-blocker dwell's home alone, which must survive since the badge
+disappears the instant the last blocker clears.
+
+**A real staleness bug, caught by the existing e2e suite rather than
+written for it.** A first pass gated the whole badge behind
+`blocked[st.id]` (the server's whole-project `blocked_ids` aggregate). That
+went red on `stale-data-response.spec.ts`'s in-flight-write case: a
+`/relate` mutation's own response patches the story's `relationships` in
+place and can render before the next `/data` reply recomputes
+`blocked_ids` — normally invisible (SSE closes the gap in well under a
+second) but this spec deliberately seals the board fetch to prove exactly
+this ordering. `openBlockers()`/`.card-blockers` never had this problem
+pre-SH-309 because they read `st.relationships` directly, independent of
+`blocked_ids`. Fix: `isBlocked` now gates only the two *fallback* branches;
+a non-empty cause list is shown regardless, since every clause it derives
+from is one `is_ready` already tests — a locally-derived cause is never
+less correct than a possibly-lagging aggregate, only fresher.
+
+**Council: convened once, unanimous 3–0 in round 1** —
+`.council/sh309-unresolvable-obviated-by-badge-ref/`, verdict recorded as a
+comment on the story. Question: should an `obviated-by` target this client
+can't resolve (draft, soft-deleted, another project) be silently skipped
+(mirroring `openBlockers()`'s own skip for `blocked-by`) or shown via
+`storyRef()`'s existing "unknown" ring? All three seats
+(`ux-designer-web`, `software-architect`, `skeptic`), researching blind,
+landed on **show, unconditionally** — `is_ready`'s `obviated-by` clause has
+no resolvability check at all (unlike its `blocked-by` clause), so skipping
+would under-report a real, server-verified cause; and the drawer's own
+relationships list already renders every relation, `obviated-by` included,
+unconditionally through the same component, so skipping in the badge would
+put it in visible disagreement with the drawer one click away for the
+identical edge.
+
+**Two hats.** `refactor(web)`: extracted `blockedFlag()` reproducing the
+pre-fix two cases exactly, plus the defect-class fence
+(`every_blocked_badge_sentence_comes_from_the_one_deriver`, modelled on
+`every_loading_line_comes_from_the_one_generator`) pinning "(no reason)"
+and "● blocked" to inside that one function — established and proved
+*before* any behaviour moved. `fix(web)`: the cause list, the `isBlocked`
+staleness fix, `ariaText` appended to the card's `aria-label` (the badge's
+reason previously reached only a sighted mouse hover, never assistive
+tech), `.card-flags { flex-wrap: wrap }` (three tap-target-floored refs
+overflow a 320px card with no overflow clip), the corrected `openBlockers()`
+comment (it claimed client/server agreement on drafts and soft-deleted
+blockers not blocking; only "another project" genuinely does), and every
+e2e edit below. `docs(spec)`: `story-status-light.md`'s Consumer 2 section,
+As-built, and guards table.
+
+**e2e:** new cases in `status-flags.spec.ts` (which now owns the badge's
+rendered text) for the filed bug, click-through to the blocker's own
+drawer, two-blocker comma-join, an awaiting reason alongside a blocker, and
+`obviated-by`; `card-blockers.spec.ts` narrowed to own only the dwell, with
+a new assertion pinning the badge-to-row handoff at the instant a blocker
+clears; three probe sites in `drawer-detail-race.spec.ts` and
+`stale-data-response.spec.ts` swapped from `.card-blockers` to
+`.flag-blocked`, unchanged in intent. `blocked-drop-reason.spec.ts`'s two
+genuine "(no reason)" cases (skip, Escape) are untouched; its "submitted a
+reason" case now expects the reason quoted in the badge, since a typed
+reason is a cause like any other.
+
+**Gate:** `make test` green — `cargo fmt --check`, `cargo clippy --workspace
+--all-targets -- -D warnings`, full Rust suite (189/189 in `web_test.rs`,
+whole suite green), plugin suite, e2e (212/212 passed, including the one
+that caught the staleness bug above before it shipped).
+
+**Supervision:** each `cargo`/e2e run watched to completion in the
+foreground; no stalls, no wedges.
+
+**Deviations:** none.
+
+### SH-316 — ask whether the hook left evidence, not whether it was installed — 2026-08-15
+
+The tech debt SH-313's council filed against its own verdict, and the one story
+in this run whose acceptance criterion was allowed to be **"close it as
+won't-fix"**. It was not, but only after a seat argued for it.
+
+**The defect is a statement's shelf life.** SH-313 made `story hooks install`
+write where git actually looks and report what git will run. Every word of that
+report is true when printed and none of it stays true: husky regenerates the
+directory, `git clean -fd` sweeps it, `core.hooksPath` gets re-pointed, the
+delegating occupant is deleted, `story` falls off PATH. SH-306's doctrine
+displaced in **time** — an install-time statement is not evidence of
+commit-time execution.
+
+**Council, and what it settled.** Five sub-questions, three seats
+(software-architect, data-engineer, skeptic), one deliberation round. Round 1
+split 2-1-0 for A, with the **skeptic voting against its own won't-fix
+proposal** because the alternative it had built — a detector derived from
+`story_commit_links` — is structurally blind to the case that matters most, a
+hook that never fired once. Deliberation then converged the panel unanimously on
+four of the five questions and produced two retractions *on evidence*: Seat 2
+withdrew its own Q2 answer after verifying in the tree that `resolve_project`
+propagates its `Err` through the `?` **before** any fallback branch runs — so
+`scaffold` is not the precedent it looks like, and routing install through it
+would make install start *failing* in a monorepo sub-checkout where it works
+today. Seat 3 withdrew Proposal C entirely. In the runoff every seat ranked
+somebody else's bundle first except the seat whose bundle won, which ranked its
+own second: C′ took a first-round IRV majority, and **B was ranked third by all
+three seats including its author**. Trail:
+`.council/sh316-hook-outcome-receipt/`, verdict recorded as a comment on SH-316.
+
+**The Q4 clause is the whole licence to build this**, and it is quoted verbatim
+in migration 0014's header: the rejected state file asserted a proposition about
+the *filesystem*, which the filesystem can silently falsify while the record goes
+on stating it confidently; a receipt asserts only that this store scanned this
+project's commits at an instant — a past event nothing can un-happen — and the
+sentence storyhook prints is never the receipt itself but a comparison re-derived
+from git at check time. Every disagreement between record and disk resolves to
+**silence**, never to a claim. That is why the column is also excluded from
+export: a receipt arriving from another machine's store *is* the rejected state
+file, a record of a scan that never happened here.
+
+**Shipped**: four commits, two-hats clean — a behaviour-preserving extraction of
+the project walk (so the curious caller and the refusing one cannot drift into
+two answers to one question, "how SH-313 and SH-314 both happened"), migration
+0014 with three store ops, the writer inside `commit_sync`, and the reader inside
+the still-project-less install arm. `is_project_less` is untouched; `--project`
+is still refused; `tests/hooks.rs`'s byte-exact stdout assertions never moved.
+
+**A measurement changed the design mid-implementation.** The first control to go
+red said the hook's own sync had not landed. It had. **`git log --since` is
+inclusive** (verified on git 2.50.1), so a commit made in the same second as the
+scan that covered it reads as unscanned — and since running the remedy re-stamps
+the receipt at some second, any commit sharing that second stays unscanned
+*forever*. That is precisely the survives-its-own-remedy failure the council's
+dissenting seat predicted for a timestamp comparator, arriving by a route nobody
+had named: not clock skew, one-second resolution. `first_unscanned_second` shifts
+the lower bound and `--until=now` closes the same hole from the future-dated end.
+The test's own precondition had the identical bug a layer up and had to be
+re-asked in UTC — `%cI` carries the committer's offset, so comparing it lexically
+against a `Z` timestamp is wrong for anyone not on UTC.
+
+**Twelve tests, mutation-checked in four directions** — disarm the read, drop
+`--until`, unshift `--since`, re-arm on every install; each reddens exactly the
+tests it should. The headline one **provokes**: install, re-point `core.hooksPath`
+at foreign non-delegating hooks, commit twice, re-run install, read the warning.
+Three limits ship **named and pinned by the silence they cause** — a sync from
+anywhere else, the window hole, backdated commits — so a later reader meets them
+as decisions rather than surprises and does not "fix" one into a false alarm. And
+`assert_claims_nothing_it_cannot_know` fails the suite if the printed line ever
+starts saying the hook is dark, missing or broken, which the receipt cannot know.
+
+**Filed, not folded in — SH-320.** Hunting for ways a dark hook still reads as
+healthy, the skeptic seat found that storyhook ships a **second syncer**:
+`plugin/claude-code/hooks/post-git.sh` runs `commit-sync` after every
+Claude-driven commit, and its skip-guard tests `.git/hooks/post-commit` — the
+exact assumption SH-313 and SH-314 removed from `src/`, surviving because
+`tests/hooks.rs`'s derived scan uses the pathspec `src/*.rs`, so a shell file is
+invisible to it. Verified in the tree by the chair before the vote. The guard is
+false in every linked worktree and beside every unmarked occupant, so it declines
+to skip *exactly* where git will not run the managed hook. A sibling of the story
+this run had just closed, hiding one pathspec away from the scan built to catch
+its family.
+
+**Gate: green on the second full run.** Run 1 died at the e2e leg on
+`e2e/node_modules` missing — a fresh worktree's own cost, already recorded here
+by SH-313's entry; `make e2e-install`, then 161 Rust targets and 212 e2e specs,
+`EXIT=0`.
+
+**Supervision:** log-growth heartbeat on both `make test` runs, polled on the
+115-second bound. No stalls, no wedges, no kills. One operator error worth
+recording: a `cd /private/tmp` inside a diagnostic left the shell in the **main
+checkout**, where the next two commands ran before the reset was noticed. Nothing
+was modified there — `git status` confirmed clean — but the rule that made it
+harmless is worth restating: absolute paths, always, when a worktree and its
+checkout share a machine.
+
+**Deviations:** none from the verdict. Two calls it did not cover: the remedy's
+`--since` window is rendered coarsely (`19d`, not `18d7h13m`) because a human is
+about to retype it and over-scanning is free under W6's idempotency constraint,
+and the receipt is not surfaced in `story project show` — C′ dropped that as
+YAGNI on the ground that rendering a stored instant invites a reader to treat it
+as hook status.
+
+### SH-318 — done
+
+**Outcome:** merged. The two notification-clock specs no longer outwait the
+dashboard's timers; they drive them. `:282` went 12.6s → 2.4s, `:339` 12.3s →
+3.4s, and the file runs **nine** tests in 33.4s where it ran eight in 1.2m. Zero
+production change — `src/web_dashboard.html` is byte-identical to its parent.
+
+**The story's diagnosis was right and one measurement made it sharper.** It read
+the failure as contention: they fail whenever a second suite shares the machine.
+Before proposing anything, the chair ran the file alone at load average 8, with
+another worktree's Playwright suite genuinely live. All eight passed, and the
+durations are the whole story:
+
+| spec | duration | margin against the 15s budget |
+|---|---|---|
+| :141, :167, :192, :223, :255, :309 | 6.1–8.0s | 7.0–8.9s |
+| **:282 hover holds its clock** | **12.6s** | **2.4s** |
+| **:339 a hidden tab holds its clock** | **12.3s** | **2.7s** |
+
+So contention never made these two fragile. It only ever consumed the last 2.4
+seconds of a margin that was never there — every sibling in the same file, doing
+the same setup against the same daemon, had three times as much. That reframing
+is what killed the two cheapest fixes: `test.slow()` and any wider budget widen a
+margin against machine noise, which is the same instrument that had just failed.
+
+**A second defect was hiding inside the first, and it explains the filing.**
+`GONE_TIMEOUT` is 8000ms, and in these two tests the assertion that declares it
+begins ~8.0s in (2.5s setup + 5.5s hold), leaving 7.0s before the 15s ceiling.
+**The declared budget was unreachable by a full second, so the test timeout always
+fired first.** A genuine "the clock never resumed" regression therefore reported
+`Test timeout of 15000ms exceeded` — byte-identical to a loaded machine, with the
+assertion's own `expected 0, received 1` unable to print. One root cause surfacing
+twice: once as a timeout, once as a failure that could not name itself. It is
+reachable in the other six tests, which is why only these two ever looked like
+load. Nothing had to be edited to fix it: removing the waiting cured it, and its
+only remaining users are the two canaries, where it is reachable with margin.
+
+**Council: yes, and the chair's own error changed the outcome.** The question was
+put as three options — a `toastLifetimeMs` query knob mirroring the two SSE knobs
+(A), Playwright's `page.clock` (B), `test.slow()` (C). The chair's context claimed
+`clock.install()` starts *paused* and listed the dashboard's five other timers as
+things a frozen clock would stall. That is wrong: Playwright's own types say
+`install()` leaves timers running and `pauseAt` is what pauses. The correction was
+circulated mid-round to all three seats and it cut against the chair's own framing
+— the architect seat had rejected B on exactly the two mechanical grounds the
+correction dissolved, and switched. Both reporting seats converged on B
+independently.
+
+**Then the spike killed a proposal and retired a fallback.** Both seats flagged B
+as unrun, so the chair ran it: two throwaway spec files, eight probes, through the
+real harness against a real daemon. Spike 1 proved `runFor` walks the nested
+`depart()` → `remove` chain and that the hover hold costs 3.3s against 12.6s.
+Spike 2 found the architect's `freezeHere` helper **cannot work** —
+`pauseAt(await page.evaluate(() => Date.now()))` throws `Cannot fast-forward to
+the past`, because the clock ticks while the value round-trips, so `pauseAt` is a
+jump-then-pause primitive whose jump must be forward. A 2000ms lead fixed it and
+bought millisecond exactness. That is the spike earning its cost: the defect is
+invisible on the page and fatal at runtime.
+
+**The deliberation round settled two forks, and the challenger's argument won the
+first.** On frozen-vs-ticking, the architect first withdrew the freeze (a 1ms
+margin is theatre), then re-adopted it once told the re-run was green. The
+decisive reasoning came from the challenger and it concedes more than it claims:
+the freeze does **not** eliminate the drift margin, it *relocates* it — the 2000ms
+lead is a drift margin, which is why `pauseAt(now)` throws. Both options need one.
+What differs is that the frozen clock has **one** margin, at setup, before
+anything is asserted, failing as a named throw; the ticking clock has one **per
+assertion boundary**, failing as an intermittent red shaped exactly like SH-318.
+Given that this council's central finding is that this file's failures could not
+name their cause, the option whose margin fails loudly and early wins.
+
+**Two canaries, and the rule matters more than the count.** `install()` fakes
+`Date`, `setTimeout`, `setInterval`, `requestAnimationFrame`,
+`requestIdleCallback` and `performance` together, so an all-clocked file could go
+green against a simulation of itself. Both seats refused that independently and
+converged on: **a canary earns its place by covering a distinct escape route, not
+by being another instance of a covered one.** `:141` is the instrument canary.
+`:309` is the sharper one, and the chair verified it in the CSS: `.toast.leaving`'s
+animation lives *inside* `@media (prefers-reduced-motion: no-preference)`, so
+under reduced motion there is no animation and no `animationend` to fire. Were
+`depart()` ever refactored to gate removal on that event — plausible, since this
+codebase already pairs `animationend` with a `setTimeout` safety net elsewhere —
+`:141` would still pass, a *clocked* `:309` would pass vacuously, and only a
+real-clock `:309` would catch notices stranded permanently for the readers who
+asked for less motion. `:167` was rejected as a canary by both seats: it differs
+from `:141` only in which button was clicked.
+
+**A ninth test now pins what the file always claimed and never tested.**
+`scheduleAutoDismiss` promises pausing "preserves what is left rather than
+restarting it, so a reader who hovers twice does not get a fresh three seconds
+each time." Every existing test hovers *immediately*, when preserving and
+restarting are indistinguishable because nothing has been spent. The new test
+spends 1000ms first. Mutating `resume()` to restart is caught by it **and by
+nothing else** — all eight pre-existing tests pass under that mutation, including
+the hover test nominally about that very behaviour.
+
+**Mutation-checked in three directions**, against real production code, restored
+from a saved copy rather than by `git checkout`:
+
+| mutation | caught by |
+|---|---|
+| `resume()` restarts instead of preserving | the new test **alone** |
+| `pause()` forgets to clear its timer | all three pause tests |
+| `TOAST_LIFETIME_MS` 3000 → 3400 | all four clocked self-clearing tests — **and both canaries pass**, their 8000ms ceiling absorbing the drift |
+
+That last row is worth its own sentence: it is direct evidence the canaries and
+the clocked tests cover genuinely different things, rather than an argument that
+they do.
+
+**The class is fenced.** Two arms on `tests/e2e_fixture_hygiene.rs`'s existing
+`git ls-files`-derived scan: no `page.waitForTimeout` ≥1000ms in a spec that has
+not declared its own `test.setTimeout`, and no `clock.pauseAt` outside
+`support.ts`. The first carries a small evaluator rather than a literal regex,
+because the suite's real sleeps are written `SETTLE_MS` and
+`staleAfterMs + watchdogIntervalMs * 2 + 300`; an expression it cannot read
+**panics naming the file** rather than passing. The second exists because a pause
+with no guaranteed resume stops the timers teardown needs, turning one honest red
+into a hang plus a stranded fixture story (SH-245's bill). Both provoke rather
+than assert a shape exists, both were mutation-checked in both directions, and
+both refuse to clear a tree they never read.
+
+**Filed, not folded in — SH-322 (`high`).** The challenger seat, hunting for what
+else the file claimed but did not test, found that `scheduleAutoDismiss`'s
+**focus-pause branch is unreachable in production** — not merely untested. There
+is one call site, `if (!durable) scheduleAutoDismiss(node)`, and the dismiss
+button is attached only on the `durable` branch, so a node that *has* a clock is
+`div.toast > div.notice-body > div.notice-headline` and contains nothing
+focusable. `focusin` can never fire; `node.contains(document.activeElement)` can
+never be true. The two branches are exact complements. The chair verified it
+against the source before filing. The consequence is that the WCAG 2.2 SC 2.2.1
+pause mechanism is **pointer-only**: a keyboard-only or screen-reader user has no
+way to hold a notice open. A production accessibility fix has no business riding
+in a test-determinism story.
+
+**Gate: green, twice, the second under deliberate contention** — the check the
+story itself specified. 161 Rust targets, 32 plugin tests, 217 e2e specs, `EXIT=0`
+both times, same failure set both times: empty.
+
+**Supervision:** log-growth heartbeat on every background run, polled on the
+120-second bound. No stalls, no wedges, no kills. The two supervision loops that
+ended early hit the tool's own 10-minute ceiling, not a stall, and the log was
+growing at each one.
+
+**Deviations:** one, deliberate. START HERE step 8 says the log entry lands as its
+own PR after the code PR merges; this entry rides in the same PR as a separate
+commit, following SH-298's precedent — the worktree is reaped right after merge,
+and a follow-up docs PR would strand a second branch. It also means the receipt
+the push gate checks attests the tree that actually ships.

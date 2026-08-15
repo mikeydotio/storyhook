@@ -1,6 +1,12 @@
 import { test, expect } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { cleanUpCreatedStories, deleteStory, openProject, seedToken } from "./support";
+import {
+  cleanUpCreatedStories,
+  deleteStory,
+  onAFrozenClock,
+  openProject,
+  seedToken,
+} from "./support";
 
 /**
  * The notification contract SH-304's council settled
@@ -29,6 +35,70 @@ import { cleanUpCreatedStories, deleteStory, openProject, seedToken } from "./su
  *
  * Fixtures, from `scripts/run-e2e.sh`: "Alpha Project" (a checkout, so the
  * drawer's dispatch buttons render at all).
+ *
+ * ## This file drives the clock; it does not outwait it (SH-318)
+ *
+ * Six of these tests fake the page's timers and advance them by hand. **Two
+ * deliberately do not, and must not be changed to** — see the canary note
+ * below, which is the load-bearing half of this arrangement.
+ *
+ * The two tests that hold a notice's clock open used to spend ~9.5 seconds each
+ * of real waiting inside a 15-second budget: 5.5s proving the clock was held,
+ * then ~4s proving it resumed. Measured at 12.6s and 12.3s on a machine at load
+ * average 8, against siblings at 6.1-8.0s. They had 2.4 seconds of margin, on a
+ * machine whose documented normal state is three or four concurrent worktree
+ * sessions, so contention did not make them fragile — it only ever consumed the
+ * last 2.4s of a margin that was never there.
+ *
+ * A wider budget was the wrong answer twice over. `page.waitForTimeout` on a
+ * loaded machine is not the duration it names, so the elastic part of these
+ * tests *is* the waiting; and the file's own `GONE_TIMEOUT` was already dead in
+ * exactly those two tests (2.5s setup + 5.5s hold + its 8000ms ceiling = 16.0s
+ * against 15.0s), so the test timeout always fired first and a genuine "the
+ * clock never resumed" regression reported `Test timeout of 15000ms exceeded` —
+ * byte-identical to a loaded machine. One root cause surfacing twice: once as a
+ * timeout, once as a failure that could not name itself.
+ *
+ * So the durations under test are unchanged at 3000/1000 and the *waiting* is
+ * gone. `onAFrozenClock` pauses the page's clock, and `page.clock.runFor()`
+ * advances it. Inside a frozen window the arithmetic is not merely robust to
+ * machine load, it is independent of it — fake time moves only when a line here
+ * says so — which is why the assertions below can pin a departure to the
+ * millisecond where an 8000ms ceiling once accepted anything under eight
+ * seconds. `support.ts`'s `latch()` gives the same reasoning for the network
+ * side; this is its timer-side equivalent.
+ *
+ * ## The two canaries: `:141` and `:309` stay on the real clock
+ *
+ * `page.clock.install()` fakes `Date`, `setTimeout`, `setInterval`,
+ * `requestAnimationFrame`, `requestIdleCallback` and `performance` all at once.
+ * A file that faked all of them everywhere could go green against a simulation
+ * of itself, so two tests keep real timers. **A canary earns its place by
+ * covering a distinct escape route, not by being another instance of a covered
+ * one** — which is why there are two and not one or three.
+ *
+ *   - **"a successful attended dispatch ... fades on its own"** is the
+ *     instrument canary: it proves a toast leaves a real browser on a real
+ *     timer, through a real animation and real SSE/poll interleaving. If the
+ *     apparatus below is measuring itself, this is what says so.
+ *   - **"a fading notice still clears under prefers-reduced-motion"** covers a
+ *     second, narrower route. `.toast.leaving`'s animation lives *inside*
+ *     `@media (prefers-reduced-motion: no-preference)` (`web_dashboard.html`),
+ *     so under reduced motion there is no animation and no `animationend` to
+ *     fire. Were `depart()` ever refactored to gate removal on that event
+ *     instead of its bare `setTimeout` — a plausible edit, since this codebase
+ *     already pairs `animationend` with a `setTimeout` safety net elsewhere —
+ *     the instrument canary would still pass (its animation runs) and a
+ *     *clocked* version of this test would pass vacuously (`runFor` fires the
+ *     JS timer regardless). Only this test, on a real clock, would catch
+ *     notices stranded permanently for the readers who asked for less motion.
+ *
+ * The auto-success test is NOT a canary: it differs from the instrument canary
+ * only in which button was clicked and the headline text, so it witnesses an
+ * already-covered route. It runs clocked, as an ordinary member.
+ *
+ * Full reasoning, both spikes and the rejected alternatives:
+ * `.council/sh-318-notification-clock-e2e-timing/DECISION.md`.
  */
 
 cleanUpCreatedStories("Alpha Project");
@@ -41,20 +111,44 @@ const SUCCESS_VISIBLE_MS = 3000;
 const FADE_MS = 1000;
 
 /** Generous enough that a loaded machine's timer jitter cannot fail a test
- * whose subject is "this eventually goes away", while still well under the
- * durability probe below — the two must not overlap or neither assertion
- * means anything. */
+ * whose subject is "this eventually goes away".
+ *
+ * Used only by the two real-clock canaries now, and reachable in both: each
+ * begins its wait ~2.7s in, leaving 12.3s of the budget for an 8s ceiling. It
+ * was NOT reachable in the two tests this story fixed, which is the defect
+ * described in this file's header — a clocked test needs no ceiling at all,
+ * because `runFor` returns with the DOM already settled. */
 const GONE_TIMEOUT = SUCCESS_VISIBLE_MS + FADE_MS + 4000;
 
-/** How long a durable notice must survive to prove it has no timer at all.
- * Comfortably past both the old 4.5s/9s lifetimes this work deleted and the
- * new 3s+1s one, so a regression to ANY of the three fails here. */
-const DURABILITY_PROBE_MS = 5500;
+/** How far a frozen clock is advanced to prove a notice has no timer at all.
+ *
+ * Thirty seconds, where the wall-clock version of this probe could only afford
+ * 5.5. It costs nothing now, and it is comfortably past every lifetime this
+ * dashboard has ever had — the deleted 4.5s and 9s ones and the current 3s+1s
+ * alike — so a regression to any of them fails here. */
+const NO_TIMER_HORIZON_MS = 30_000;
 
 test.beforeEach(async ({ page }) => {
   await seedToken(page);
-  await page.goto("/");
 });
+
+/** Opens the dashboard with the page's timers faked but still running.
+ *
+ * `install()` must precede navigation, and it does not freeze anything on its
+ * own — timers run normally, which is what lets the whole of `openFreshStory`,
+ * the SSE bootstrap and the board's own re-renders proceed as usual. Freezing
+ * is `onAFrozenClock`'s job, and happens later, around the behaviour under
+ * test. */
+async function openClocked(page: Page): Promise<void> {
+  await page.clock.install();
+  await page.goto("/");
+}
+
+/** Opens the dashboard with nothing faked. The two canaries, and only those —
+ * see this file's header before moving a third test onto this. */
+async function openOnRealTime(page: Page): Promise<void> {
+  await page.goto("/");
+}
 
 /** A stubbed dispatch envelope in a terminal state (`DispatchEnvelope`,
  * `src/api/dispatch.rs`). The client always follows its POST with a GET poll
@@ -112,7 +206,11 @@ async function stubDispatch(
  * backdrop intercepts -- so the close is not tidiness, it is what makes the
  * cleanup reach the card at all. Every other spec that calls `deleteStory`
  * has already dismissed whatever it opened by this point; these tests
- * dispatch straight from the drawer footer and are still in it. */
+ * dispatch straight from the drawer footer and are still in it.
+ *
+ * Always called with the clock running: it drives real requests and real
+ * re-renders, and `onAFrozenClock` resumes in a `finally` precisely so this
+ * still works after a failed assertion. */
 async function cleanUp(page: Page, title: string): Promise<void> {
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
@@ -138,9 +236,41 @@ async function openFreshStory(page: Page, title: string): Promise<string> {
   return id!;
 }
 
+/**
+ * Advances a frozen clock through the whole remaining life of a self-clearing
+ * notice, asserting at each boundary, and leaves the stack empty.
+ *
+ * `owed` is what the notice still has to run — the full lifetime for one that
+ * has never been paused, less whatever was burned before a pause for one that
+ * has. Splitting the advance in three is what pins the two production
+ * durations *separately*: a change to either the hold or the fade fails here,
+ * where a single "is it gone yet" ceiling would absorb both.
+ */
+async function runOutTheClock(page: Page, owed: number): Promise<void> {
+  const toast = page.locator("#toast-stack .toast");
+
+  // One millisecond short of departure: nothing has begun to leave.
+  await page.clock.runFor(owed - 1);
+  await expect(toast).toHaveCount(1);
+  await expect(toast).not.toHaveClass(/leaving/);
+
+  // The hold elapses and the fade begins -- the node is still in the DOM.
+  await page.clock.runFor(1);
+  await expect(toast).toHaveClass(/leaving/);
+
+  // One millisecond short of the fade's end, and then past it.
+  await page.clock.runFor(FADE_MS - 1);
+  await expect(toast).toHaveCount(1);
+  await page.clock.runFor(1);
+  await expect(toast).toHaveCount(0);
+}
+
 test("a successful attended dispatch is a short toast that fades on its own", async ({
   page,
 }) => {
+  // CANARY -- real timers on purpose. See this file's header before changing.
+  await openOnRealTime(page);
+
   const title = "SH-304 — attended success fades";
   const id = await openFreshStory(page, title);
   await stubDispatch(page, id, false, "ok");
@@ -157,6 +287,8 @@ test("a successful attended dispatch is a short toast that fades on its own", as
   // No durable row for a success, whatever else is true.
   await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(0);
 
+  // Real elapsed seconds, in a real browser, on the real `setTimeout`. This is
+  // the assertion the whole clocked apparatus below is checked against.
   await expect(page.locator("#toast-stack .toast")).toHaveCount(0, {
     timeout: GONE_TIMEOUT,
   });
@@ -167,23 +299,25 @@ test("a successful attended dispatch is a short toast that fades on its own", as
 test("a successful --auto dispatch also fades, and names itself autonomous", async ({
   page,
 }) => {
+  await openClocked(page);
+
   const title = "SH-304 — auto success fades";
   const id = await openFreshStory(page, title);
   await stubDispatch(page, id, true, "ok");
 
-  await page.locator("#dispatch-auto-btn").click();
+  await onAFrozenClock(page, async () => {
+    await page.locator("#dispatch-auto-btn").click();
 
-  // SH-232 sent this to a durable row because "nobody is necessarily
-  // watching". SH-304's council reversed that for SUCCESS specifically: the
-  // story moving on the board and the tmux window both corroborate it, so
-  // the notice is a courtesy and may clear itself.
-  const toast = page.locator("#toast-stack .toast.success");
-  await expect(toast).toBeVisible();
-  await expect(toast).toHaveText(`${id} dispatched (auto)`);
-  await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(0);
+    // SH-232 sent this to a durable row because "nobody is necessarily
+    // watching". SH-304's council reversed that for SUCCESS specifically: the
+    // story moving on the board and the tmux window both corroborate it, so
+    // the notice is a courtesy and may clear itself.
+    const toast = page.locator("#toast-stack .toast.success");
+    await expect(toast).toBeVisible();
+    await expect(toast).toHaveText(`${id} dispatched (auto)`);
+    await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(0);
 
-  await expect(page.locator("#toast-stack .toast")).toHaveCount(0, {
-    timeout: GONE_TIMEOUT,
+    await runOutTheClock(page, SUCCESS_VISIBLE_MS);
   });
 
   await cleanUp(page, title);
@@ -192,30 +326,34 @@ test("a successful --auto dispatch also fades, and names itself autonomous", asy
 test("a refused attended dispatch is durable, keeps its diagnosis, and dismisses only by click", async ({
   page,
 }) => {
+  await openClocked(page);
+
   const title = "SH-304 — attended refusal is durable";
   const id = await openFreshStory(page, title);
   await stubDispatch(page, id, false, "refused");
 
-  await page.locator("#dispatch-btn").click();
+  await onAFrozenClock(page, async () => {
+    await page.locator("#dispatch-btn").click();
 
-  const toast = page.locator("#toast-stack .toast.error");
-  await expect(toast).toBeVisible();
-  await expect(toast).toContainText(`${id} refused`);
-  // SH-196's diagnosis-and-remedy text is not dropped, just demoted beneath
-  // the headline -- and it stays in the DOM (never a `title` tooltip), so an
-  // `aria-live` announcement and a screen reader can both still reach it.
-  await expect(toast.locator(".notice-detail")).toContainText("already in-progress");
-  // The typed reason (SH-232's taxonomy) keeps its own line, on both
-  // surfaces, rather than being concatenated into the prose it qualifies.
-  await expect(toast.locator(".notice-reason")).toHaveText("claim-conflict");
+    const toast = page.locator("#toast-stack .toast.error");
+    await expect(toast).toBeVisible();
+    await expect(toast).toContainText(`${id} refused`);
+    // SH-196's diagnosis-and-remedy text is not dropped, just demoted beneath
+    // the headline -- and it stays in the DOM (never a `title` tooltip), so an
+    // `aria-live` announcement and a screen reader can both still reach it.
+    await expect(toast.locator(".notice-detail")).toContainText("already in-progress");
+    // The typed reason (SH-232's taxonomy) keeps its own line, on both
+    // surfaces, rather than being concatenated into the prose it qualifies.
+    await expect(toast.locator(".notice-reason")).toHaveText("claim-conflict");
 
-  // The whole point: no timer at all. This outlives the deleted 4.5s and 9s
-  // lifetimes and the new 3s+1s one alike.
-  await page.waitForTimeout(DURABILITY_PROBE_MS);
-  await expect(toast).toBeVisible();
+    // The whole point: no timer at all. Thirty seconds of it, which outlives
+    // the deleted 4.5s and 9s lifetimes and the current 3s+1s alike.
+    await page.clock.runFor(NO_TIMER_HORIZON_MS);
+    await expect(toast).toBeVisible();
 
-  await toast.locator(".toast-dismiss").click();
-  await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
+    await toast.locator(".toast-dismiss").click();
+    await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
+  });
 
   await cleanUp(page, title);
 });
@@ -223,58 +361,67 @@ test("a refused attended dispatch is durable, keeps its diagnosis, and dismisses
 test("a failed attended dispatch is durable too, and reads differently from a refusal", async ({
   page,
 }) => {
+  await openClocked(page);
+
   const title = "SH-304 — attended failure is durable";
   const id = await openFreshStory(page, title);
   await stubDispatch(page, id, false, "failed");
 
-  await page.locator("#dispatch-btn").click();
+  await onAFrozenClock(page, async () => {
+    await page.locator("#dispatch-btn").click();
 
-  const toast = page.locator("#toast-stack .toast.error");
-  await expect(toast).toBeVisible();
-  // `failed` (the script itself never produced a result) and `refused` (a
-  // well-formed business refusal) are different words, not one red box --
-  // SH-196's distinction, preserved in the composed headline.
-  await expect(toast).toContainText(`${id} failed`);
-  await expect(toast).not.toContainText("refused");
-  await expect(toast.locator(".notice-detail")).toContainText("without printing a result");
-  // A `failed` record carries no typed reason -- `classify()` reads one from
-  // `story.sh`'s own result, and a script that never printed one had none to
-  // give. A real, meaningful absence, not a gap to paper over.
-  await expect(toast.locator(".notice-reason")).toHaveCount(0);
+    const toast = page.locator("#toast-stack .toast.error");
+    await expect(toast).toBeVisible();
+    // `failed` (the script itself never produced a result) and `refused` (a
+    // well-formed business refusal) are different words, not one red box --
+    // SH-196's distinction, preserved in the composed headline.
+    await expect(toast).toContainText(`${id} failed`);
+    await expect(toast).not.toContainText("refused");
+    await expect(toast.locator(".notice-detail")).toContainText("without printing a result");
+    // A `failed` record carries no typed reason -- `classify()` reads one from
+    // `story.sh`'s own result, and a script that never printed one had none to
+    // give. A real, meaningful absence, not a gap to paper over.
+    await expect(toast.locator(".notice-reason")).toHaveCount(0);
 
-  await page.waitForTimeout(DURABILITY_PROBE_MS);
-  await expect(toast).toBeVisible();
+    await page.clock.runFor(NO_TIMER_HORIZON_MS);
+    await expect(toast).toBeVisible();
 
-  // Dismissed before cleanup, and not only for tidiness: the toast stack is
-  // top-right at `z-index: 60`, which is over the drawer's own header, so a
-  // durable notice left standing intercepts the click on `#drawer-close`.
-  await toast.locator(".toast-dismiss").click();
+    // Dismissed before cleanup, and not only for tidiness: the toast stack is
+    // top-right at `z-index: 60`, which is over the drawer's own header, so a
+    // durable notice left standing intercepts the click on `#drawer-close`.
+    await toast.locator(".toast-dismiss").click();
+  });
+
   await cleanUp(page, title);
 });
 
 test("a refused --auto dispatch stays a durable history row (SH-232's surviving half)", async ({
   page,
 }) => {
+  await openClocked(page);
+
   const title = "SH-304 — auto refusal is durable";
   const id = await openFreshStory(page, title);
   await stubDispatch(page, id, true, "refused");
 
-  await page.locator("#dispatch-auto-btn").click();
+  await onAFrozenClock(page, async () => {
+    await page.locator("#dispatch-auto-btn").click();
 
-  // The case SH-227's incident review was actually about: an unattended run
-  // whose only report is this row. Geography is unchanged for failures --
-  // an auto failure still lands bottom-right, where SH-232 put it.
-  const row = page.locator("#dispatch-history .dispatch-history-row.error");
-  await expect(row).toBeVisible();
-  await expect(row).toContainText(`${id} refused (auto)`);
-  await expect(row.locator(".notice-detail")).toContainText("already in-progress");
-  await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
+    // The case SH-227's incident review was actually about: an unattended run
+    // whose only report is this row. Geography is unchanged for failures --
+    // an auto failure still lands bottom-right, where SH-232 put it.
+    const row = page.locator("#dispatch-history .dispatch-history-row.error");
+    await expect(row).toBeVisible();
+    await expect(row).toContainText(`${id} refused (auto)`);
+    await expect(row.locator(".notice-detail")).toContainText("already in-progress");
+    await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
 
-  await page.waitForTimeout(DURABILITY_PROBE_MS);
-  await expect(row).toBeVisible();
+    await page.clock.runFor(NO_TIMER_HORIZON_MS);
+    await expect(row).toBeVisible();
 
-  await row.locator(".dispatch-history-dismiss").click();
-  await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(0);
+    await row.locator(".dispatch-history-dismiss").click();
+    await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(0);
+  });
 
   await cleanUp(page, title);
 });
@@ -282,25 +429,76 @@ test("a refused --auto dispatch stays a durable history row (SH-232's surviving 
 test("hovering a fading notice holds its clock, and leaving resumes it (SC 2.2.1)", async ({
   page,
 }) => {
+  await openClocked(page);
+
   const title = "SH-304 — hover pauses the clock";
   const id = await openFreshStory(page, title);
   await stubDispatch(page, id, false, "ok");
 
-  await page.locator("#dispatch-btn").click();
-  const toast = page.locator("#toast-stack .toast.success");
-  await expect(toast).toBeVisible();
+  await onAFrozenClock(page, async () => {
+    await page.locator("#dispatch-btn").click();
+    const toast = page.locator("#toast-stack .toast.success");
+    await expect(toast).toBeVisible();
 
-  // WCAG 2.2 SC 2.2.1 (Timing Adjustable) is satisfied by letting the user
-  // pause the limit; a pointer resting on the notice IS that request. Held
-  // well past the full 3s+1s, the notice must still be there.
-  await toast.hover();
-  await page.waitForTimeout(SUCCESS_VISIBLE_MS + FADE_MS + 1500);
-  await expect(toast).toBeVisible();
+    // WCAG 2.2 SC 2.2.1 (Timing Adjustable) is satisfied by letting the user
+    // pause the limit; a pointer resting on the notice IS that request. Held
+    // for thirty seconds — ten times the lifetime — the notice must still be
+    // there. The wall-clock version of this could only afford 5.5s.
+    await toast.hover();
+    await page.clock.runFor(NO_TIMER_HORIZON_MS);
+    await expect(toast).toBeVisible();
 
-  // And the pause is a pause, not a cancellation: moving away resumes it.
-  await page.mouse.move(0, 0);
-  await expect(page.locator("#toast-stack .toast")).toHaveCount(0, {
-    timeout: GONE_TIMEOUT,
+    // And the pause is a pause, not a cancellation: moving away resumes it.
+    // The full lifetime is still owed, because no fake time elapsed between
+    // the notice appearing and the hover — which is a property of the frozen
+    // clock, and is what lets the assertion be exact rather than a ceiling.
+    await page.mouse.move(0, 0);
+    await runOutTheClock(page, SUCCESS_VISIBLE_MS);
+  });
+
+  await cleanUp(page, title);
+});
+
+test("pausing preserves what is left of the clock rather than restarting it", async ({
+  page,
+}) => {
+  await openClocked(page);
+
+  // The load-bearing half of the SC 2.2.1 claim, and the half nothing tested
+  // until SH-318. `scheduleAutoDismiss`'s own doc comment promises that
+  // "pausing preserves what is left rather than restarting it, so a reader who
+  // hovers twice does not get a fresh three seconds each time" — but every
+  // other test here hovers immediately, when preserving and restarting are
+  // indistinguishable because nothing has been spent yet. Spend some first and
+  // the two come apart: a `resume()` that reset `remaining` to the full
+  // lifetime would owe 4000ms from the mouseleave below, and would still be on
+  // screen at the last assertion.
+  //
+  // This is the one assertion in the file that a real clock cannot make
+  // honestly — the discrimination is a 1ms window on a 2000ms difference, and
+  // only fake time is that exact.
+  const title = "SH-304 — a second hover grants no fresh lifetime";
+  const id = await openFreshStory(page, title);
+  await stubDispatch(page, id, false, "ok");
+
+  const BURNED_MS = 1000;
+
+  await onAFrozenClock(page, async () => {
+    await page.locator("#dispatch-btn").click();
+    const toast = page.locator("#toast-stack .toast.success");
+    await expect(toast).toBeVisible();
+
+    // Spend a third of the lifetime before pausing.
+    await page.clock.runFor(BURNED_MS);
+    await expect(toast).toBeVisible();
+
+    await toast.hover();
+    await page.clock.runFor(NO_TIMER_HORIZON_MS);
+    await expect(toast).toBeVisible();
+
+    // Only the unspent remainder is owed.
+    await page.mouse.move(0, 0);
+    await runOutTheClock(page, SUCCESS_VISIBLE_MS - BURNED_MS);
   });
 
   await cleanUp(page, title);
@@ -309,7 +507,12 @@ test("hovering a fading notice holds its clock, and leaving resumes it (SC 2.2.1
 test("a fading notice still clears under prefers-reduced-motion, without animating", async ({
   page,
 }) => {
+  // CANARY -- real timers on purpose, and this one is not merely a second
+  // opinion. Under reduced motion `.toast.leaving` has no animation at all, so
+  // a removal ever gated on `animationend` would strand notices permanently
+  // here and nowhere else. See this file's header.
   await page.emulateMedia({ reducedMotion: "reduce" });
+  await openOnRealTime(page);
 
   const title = "SH-304 — reduced motion still dismisses";
   const id = await openFreshStory(page, title);
@@ -340,13 +543,11 @@ test("a backgrounded tab does not burn a notice's clock down unseen", async ({
   page,
   context,
 }) => {
+  await openClocked(page);
+
   const title = "SH-304 — hidden tab holds the clock";
   const id = await openFreshStory(page, title);
   await stubDispatch(page, id, false, "ok");
-
-  await page.locator("#dispatch-btn").click();
-  const toast = page.locator("#toast-stack .toast.success");
-  await expect(toast).toBeVisible();
 
   // Backgrounding the tab for real does NOT express this, and the test says
   // so rather than leaving the next reader to rediscover it: headless
@@ -355,6 +556,10 @@ test("a backgrounded tab does not burn a notice's clock down unseen", async ({
   // This assertion is the evidence for that claim -- if a future Playwright
   // or browser starts reporting it honestly, this line fails and whoever
   // sees it can delete the override below in favour of the real thing.
+  //
+  // Taken before the clock is frozen: a second page is a second real browser
+  // context to open and close, and it has nothing to do with the timer under
+  // test.
   const other = await context.newPage();
   await other.goto("about:blank");
   await other.bringToFront();
@@ -365,29 +570,33 @@ test("a backgrounded tab does not burn a notice's clock down unseen", async ({
   await other.close();
   await page.bringToFront();
 
-  // So the browser's own signal is simulated, exactly as `emulateMedia`
-  // simulates the reduced-motion one above. What is NOT simulated is the
-  // code under test: `scheduleAutoDismiss`'s real `visibilitychange`
-  // handler runs, reads `document.hidden`, and pauses its real clock.
-  await page.evaluate(() => {
-    Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
-    document.dispatchEvent(new Event("visibilitychange"));
-  });
+  await onAFrozenClock(page, async () => {
+    await page.locator("#dispatch-btn").click();
+    const toast = page.locator("#toast-stack .toast.success");
+    await expect(toast).toBeVisible();
 
-  // The perverse case a bare `setTimeout` gets wrong: the notice exists
-  // because the user may not be looking, and a hidden tab is the one state
-  // where "3 seconds of being visible" definitively did not happen.
-  await page.waitForTimeout(SUCCESS_VISIBLE_MS + FADE_MS + 1500);
-  await expect(toast).toBeVisible();
+    // So the browser's own signal is simulated, exactly as `emulateMedia`
+    // simulates the reduced-motion one above. What is NOT simulated is the
+    // code under test: `scheduleAutoDismiss`'s real `visibilitychange`
+    // handler runs, reads `document.hidden`, and pauses its real clock.
+    await page.evaluate(() => {
+      Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
 
-  // Coming back resumes it rather than restarting it -- and the notice does
-  // eventually leave, which is what makes this a pause and not a leak.
-  await page.evaluate(() => {
-    Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
-    document.dispatchEvent(new Event("visibilitychange"));
-  });
-  await expect(page.locator("#toast-stack .toast")).toHaveCount(0, {
-    timeout: GONE_TIMEOUT,
+    // The perverse case a bare `setTimeout` gets wrong: the notice exists
+    // because the user may not be looking, and a hidden tab is the one state
+    // where "3 seconds of being visible" definitively did not happen.
+    await page.clock.runFor(NO_TIMER_HORIZON_MS);
+    await expect(toast).toBeVisible();
+
+    // Coming back resumes it rather than restarting it -- and the notice does
+    // eventually leave, which is what makes this a pause and not a leak.
+    await page.evaluate(() => {
+      Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await runOutTheClock(page, SUCCESS_VISIBLE_MS);
   });
 
   await cleanUp(page, title);

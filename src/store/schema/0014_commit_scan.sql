@@ -1,0 +1,65 @@
+-- storyhook store — schema version 14: when this store last scanned a
+-- project's commits. SH-316's outcome receipt.
+--
+-- # What this column is, and the narrow thing it may claim
+--
+-- One nullable timestamp, written by `story commit-sync` on every invocation,
+-- whoever ran it. It records that **this store scanned this project's commits
+-- at an instant** — nothing else. In particular it does not record that a git
+-- hook ran, that a hook is installed, or where one was installed to, and no
+-- reader may infer any of those from it.
+--
+-- That distinction is the whole reason this column is allowed to exist. SH-313's
+-- council rejected a state file recording *where install wrote*, on the ground
+-- that new persistent state can disagree with the disk and a record that
+-- disagrees with reality is worse than no record. It was right about that file:
+-- it asserted a proposition about the filesystem, which the filesystem can
+-- silently falsify — a tool regenerating its hooks directory, `git clean -fd`,
+-- `core.hooksPath` being re-pointed — while the record went on stating it
+-- confidently.
+--
+-- A receipt is different in kind, and SH-316's council put the difference on
+-- record: it asserts only that a scan happened, a past event nothing can
+-- un-happen, and the sentence storyhook prints is never the receipt itself but a
+-- comparison re-derived from git at check time. Every claim is corroborated by
+-- git at the moment it is made, and every disagreement between the record and
+-- the disk resolves to silence rather than to a claim.
+--
+-- # Why it is on `projects` and not in `project_settings`
+--
+-- An observed event is not a user setting. `project_settings` is reached by
+-- `story project settings`, whose registry vocabulary — `managed_by`,
+-- `settable` — is about who may *choose* a value, and there is nothing here to
+-- choose. The mechanical reason is sharper: `put_settings` rewrites every column
+-- unconditionally by design (see `store::types::ProjectSettings` and SH-129,
+-- which that rewrite cost a whole field), so riding on it would put a
+-- read-modify-write hazard on a path taken once per commit. This column is
+-- written by a targeted `UPDATE` of one column instead, the shape
+-- `checkout_path` (migration 0007) already uses for a narrow operational fact
+-- about a project.
+--
+-- # NULL is load-bearing, and so is what does *not* backfill it
+--
+-- NULL means this store has never recorded a scan for this project, which is
+-- unknowable rather than absent — the same reading migration 0013's provenance
+-- columns give their own NULLs. Nothing is backfilled. `story hooks install`
+-- **arms** a NULL receipt to the moment of install and stays silent that run,
+-- which is what gives a hook that has never fired once a baseline to be measured
+-- against; it never re-arms a receipt that is already set, because overwriting a
+-- stale one is the single action that destroys the signal.
+--
+-- The column is deliberately **not** carried by export/import. A receipt that
+-- arrived from another machine's store is the one shape that genuinely is the
+-- state file SH-313 rejected: a record of a scan that never happened here. An
+-- imported project starts honestly unset, exactly as `events.command`/`actor`
+-- do.
+--
+-- Rebuilds nothing: one `ALTER TABLE … ADD COLUMN` on a table with no dependent
+-- trigger to re-parse, so foreign-key enforcement stays on and migration 5's
+-- `events_reject_delete` warning does not apply. No CHECK — SQLite's `ADD
+-- COLUMN` cannot add one that refers to another column, and the invariant that
+-- matters (an RFC 3339 instant) is enforced where this codebase puts invariants
+-- a schema cannot see: at the edge that writes it, which is the daemon's own
+-- clock rather than anything a caller supplies.
+
+ALTER TABLE projects ADD COLUMN commit_scan_at TEXT;

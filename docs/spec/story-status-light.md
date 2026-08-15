@@ -95,14 +95,23 @@ split the drawer doesn't otherwise have (filed as SH-278; that story was later
 superseded by SH-217, which built the split as part of rendering the description as
 markdown — see [`markdown-in-the-dashboard.md`](markdown-in-the-dashboard.md)).
 
-### Consumer 2 — the card blockers list
+### Consumer 2 — the card blockers list, then the blocked badge (SH-309)
 
-`populateCard()` gains a `.card-blockers` row: every story still blocking this one,
-each with its own light. `openBlockers()` mirrors the server's own `is_ready` rule
-(`src/domain.rs`) client-side — a `blocked-by` relationship only counts while its
-target resolves in the loaded project and is still OPEN — reading `st.relationships`
-directly, since relations are written on both ends and no reverse index or second
-fetch is needed. Capped at 3 with a `+N` overflow chip, mirroring `.card-labels`.
+`populateCard()` originally gained a `.card-blockers` row here: every story still
+blocking this one, each with its own light, capped at 3 with a `+N` overflow chip
+(mirroring `.card-labels`). SH-309 moved the *live* half of that row into the blocked
+badge instead (`.flag-blocked`, `blockedFlag()`) — see its As-built entry below for why
+and what `.card-blockers` is left holding.
+
+`openBlockers()` still mirrors the server's own `is_ready` rule (`src/domain.rs`)
+client-side for the `blocked-by` half — a relationship only counts while its target
+resolves in the loaded project and is still OPEN — reading `st.relationships` directly,
+since relations are written on both ends and no reverse index or second fetch is
+needed. `blockedFlag()` adds a second, deliberately *unfiltered* half for `obviated-by`:
+`is_ready` blocks on any such edge regardless of resolvability, so an edge this client
+can't resolve is still a real cause, rendered via `storyRef()`'s "unknown" ring rather
+than dropped (council decision, unanimous in round 1:
+`.council/sh309-unresolvable-obviated-by-badge-ref/DECISION.md`).
 
 ### The cleared-blocker dwell
 
@@ -117,11 +126,10 @@ in the DOM. It's a module-level ledger instead:
   not itself have changed) for one that crossed OPEN → CLOSED between the previous and
   fresh `/data` snapshot, called from `fetchData()` alongside the existing
   `diffSnapshots()` call, before the previous snapshot is discarded.
-- `dwellingBlockerIds(storyId, now)` is what `populateCard()` reads to add the
-  still-dwelling entries alongside `openBlockers()`'s live ones. The two sets never
-  overlap (a dwelling entry's target is CLOSED by definition; `openBlockers()` requires
-  OPEN). An expired entry is pruned lazily, at the next ask, rather than swept on a
-  timer.
+- `dwellingBlockerIds(storyId, now)` is what `populateCard()` reads to fill
+  `.card-blockers` (SH-309: this is now the row's *only* content — the live blockers
+  `openBlockers()` finds render in the badge instead, never here). An expired entry is
+  pruned lazily, at the next ask, rather than swept on a timer.
 - Nothing else was guaranteed to trigger a re-render exactly as the dwell ends, so
   `fetchData()` arms one `setTimeout(renderView, ...)` whenever a clearance was found.
 - The pulse (`.blocker-cleared .story-light`, reusing `pulse-success`) is gated behind
@@ -167,6 +175,44 @@ this (reopen a CLOSED stray, then delete); the spec now leaves its blocker CLOSE
 purpose — that's the thing being tested — and lets that shared sweep clean it up
 rather than duplicating the reopen dance.
 
+### The blocked badge had to test every cause `is_ready` tests, not just `awaiting` (SH-309)
+
+Filed as "SH-307 shows 'Blocked (no reason)' but SH-308 is the reason." The badge
+(`populateCard`, pre-SH-309) tested only `st.awaiting`; `blocked_ids` (`src/service/
+query.rs`) is driven by `is_ready`'s five-clause test (`src/domain.rs`), so a story
+blocked by an open `blocked-by` edge or an `obviated-by` one got the same
+"(no reason)" label as one genuinely parked with none — even while the blocking
+story's own chip sat one row below it in `.card-blockers`, printed twice.
+
+`blockedFlag(st, isBlocked)` is now the single owner of every badge sentence: a
+comma-joined cause list (open `blocked-by` refs, then `obviated-by` refs — deliberately
+unfiltered by resolvability, see the council decision above — then a quoted `awaiting`
+reason), falling back to the doctor's own "(no reason)" only when the list is empty and
+`state === "blocked"`, and to a bare "blocked" with an explanatory title when even that
+doesn't apply (a `blocked-by` edge onto an open draft or soft-deleted story — both block
+server-side and are invisible to this client, `src/api/rest.rs` routing drafts to a
+separate array and excluding deleted stories from `stories` entirely).
+
+The live half of `.card-blockers` moved into the badge to stop the double-print; the
+row is now the cleared-blocker dwell's home alone (see above). `.card-flags` gained
+`flex-wrap: wrap` as a consequence — three `.rel-id` refs alone are 132px of
+irreducible width (`--tap-min`, 44px under `pointer: coarse`) inside a 320px-viewport
+card that clips nothing.
+
+`isBlocked` (`blocked[st.id]`, the server's whole-project `blocked_ids`) is threaded
+through but deliberately does **not** gate the cause list itself, only the two
+fallback branches: `blocked_ids` is a project-wide aggregate the server recomputes on
+its own `/data` fetch, while a relate/block mutation's own response patches just the
+one story's `relationships`/`awaiting` in place and can render before the next `/data`
+reply lands — `stale-data-response.spec.ts`'s own scenario, and how this was caught: a
+first pass that gated the whole badge on `isBlocked` went red there, because a sealed
+board fetch left `blocked_ids` stale while the mutation had already landed. Since every
+clause the cause list derives from is one `is_ready` already tests, a non-empty list
+implies the server would agree once its own aggregate catches up, so trusting the
+fresher, locally-derived signal is strictly more correct than waiting on the aggregate
+— exactly the property `.card-blockers`/`openBlockers()` already had, and would have
+silently lost if the badge had swallowed it behind a single `blocked[st.id]` gate.
+
 ## What guards each piece
 
 | Piece | Structural test (`tests/web_test.rs`) | Behavioral test (`e2e/specs/`) |
@@ -176,7 +222,10 @@ rather than duplicating the reopen dance.
 | A relation's light matches its target's real colour | — | `story-status-light.spec.ts`: "a relation's status light matches..." |
 | Semantic vs. positional palette | — | `story-status-light.spec.ts`: "the Done column's own dot is green..." |
 | Comment-body linkification (real / unknown / self) | — | `story-status-light.spec.ts`: "a comment naming a real story renders a lit link..." |
-| Card blockers list + cleared-blocker dwell | — | `card-blockers.spec.ts` |
+| Cleared-blocker dwell | — | `card-blockers.spec.ts` |
+| Blocked badge derives from one function, never a hand-written cause | `every_blocked_badge_sentence_comes_from_the_one_deriver` (SH-309 fence, models `every_loading_line_comes_from_the_one_generator`) | — |
+| `.card-flags` wraps | `web_serve_root_html_styles_the_status_light_and_card_blockers` | — |
+| Badge names blockers/two-blocker comma-join/awaiting+blocker/obviated-by, and its ref click-throughs to the *blocker's* drawer | — | `status-flags.spec.ts` (SH-309 cases) |
 
 Computed colour, click behavior, and the dwell's timing are all things only a real
 browser can prove — the Rust layer is what catches a rename or deletion in seconds,
