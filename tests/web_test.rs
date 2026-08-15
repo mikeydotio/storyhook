@@ -1117,6 +1117,13 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(".blocker-cleared"));
     assert!(body.contains("BLOCKER_CLEARED_DWELL_MS"));
 
+    // SH-309: blockedFlag() is the one place that decides what the blocked
+    // badge says, so a hand-written sentence can't assert a cause it never
+    // tested (see `every_blocked_badge_sentence_comes_from_the_one_deriver`
+    // for the fence this only names the existence of).
+    assert!(body.contains("function blockedFlag"));
+    assert!(body.contains("blockedFlag(st)"));
+
     // SH-217: the markdown renderer -- builds DOM nodes directly (never an
     // HTML string, see the sink-pin assertions above), and its link
     // scheme allowlist by name so a future edit that widens it is a
@@ -1518,6 +1525,64 @@ fn every_loading_line_comes_from_the_one_generator() {
                 "a bare {needle:?} literal outside readinessNote() at script byte {at}: {line:?} \
                  -- every readiness sentence must be generated, not hand-written, so \"not yet\" \
                  and \"not at all\" cannot drift apart on one fetch while staying fixed on another"
+            );
+        }
+    }
+}
+
+/// Every blocked-badge sentence in the dashboard's script comes from
+/// `blockedFlag()`, never a hand-written literal (SH-309).
+///
+/// The badge used to test only `st.awaiting`, so a story blocked by an open
+/// `blocked-by` relationship or an `obviated-by` edge got the same
+/// "(no reason)" label as one genuinely parked with no reason at all --
+/// `blockedFlag()` exists to test every cause `is_ready` (`src/domain.rs`)
+/// tests, in one place, so a future branch cannot claim "(no reason)" (or
+/// even the bare "● blocked" fallback) without having tested for a cause
+/// first. This pins that "one place" the same way
+/// `every_loading_line_comes_from_the_one_generator` pins `readinessNote()`:
+/// find the function's own bounds, then insist every occurrence of the
+/// literals it owns falls inside them.
+///
+/// Comment lines (trimmed to start with `*` or `//`) are exempt -- this
+/// function's own doc comment, and `openBlockers()`'s, both *name* these
+/// sentences while explaining the badge, and are not a second source of
+/// them.
+#[test]
+fn every_blocked_badge_sentence_comes_from_the_one_deriver() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let script = script(&body);
+
+    let fn_start = script
+        .find("function blockedFlag(st) {")
+        .expect("blockedFlag(st) must exist with this exact signature");
+    let close = "\n  }\n";
+    let fn_end = fn_start
+        + script[fn_start..]
+            .find(close)
+            .expect("blockedFlag's closing brace")
+        + close.len();
+
+    for needle in ["(no reason)", "● blocked"] {
+        for (at, _) in script.match_indices(needle) {
+            let line_start = script[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let line = script[line_start..].lines().next().unwrap_or("");
+            if line.trim_start().starts_with('*') || line.trim_start().starts_with("//") {
+                continue;
+            }
+            assert!(
+                at >= fn_start && at < fn_end,
+                "a bare {needle:?} literal outside blockedFlag() at script byte {at}: {line:?} \
+                 -- every blocked-badge sentence must be derived from the cause list, not \
+                 hand-written, so a rendered label cannot assert a cause it never tested"
             );
         }
     }
