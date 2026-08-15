@@ -4,6 +4,7 @@ import {
   openProject,
   projectSlug,
   requiredEnv,
+  resolvedTokenColor,
   seedToken,
 } from "./support";
 
@@ -87,20 +88,6 @@ async function deleteStory(
   await page.locator("#delete-reason").fill("e2e cleanup");
   await page.locator("#delete-modal-submit").click();
   await expect(card).not.toBeVisible();
-}
-
-async function resolvedTokenColor(
-  page: import("@playwright/test").Page,
-  token: string,
-): Promise<string> {
-  return page.evaluate((t) => {
-    const probe = document.createElement("div");
-    probe.style.background = `var(${t})`;
-    document.body.appendChild(probe);
-    const color = getComputedStyle(probe).backgroundColor;
-    probe.remove();
-    return color;
-  }, token);
 }
 
 test("a card names its open blocker in the badge; closing the blocker turns the badge into a green dwell chip, then drops it", async ({
