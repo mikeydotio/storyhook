@@ -25,8 +25,9 @@ this skill with `--full` or asked for detailed context. `ok:false` → show `dis
 
 `display` is the CLI's own comprehensive project-state document (`story load-context`) —
 open stories, states, priorities, relationships, ready work, and (with `--full`) the
-critical path, every blocked story, and stories stale past `STORY_STALE_THRESHOLD`
-(default `3d`).
+critical path, every blocked story, and stories stale past `STORY_STALE_THRESHOLD` — the
+window itself is stated in `display`'s own "Stale (…+) stories" heading, never restated
+here, so this file can't drift from whatever the script's own default is.
 
 ### 2. Present it
 
