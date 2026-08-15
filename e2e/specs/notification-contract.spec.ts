@@ -103,11 +103,14 @@ import {
  * Full reasoning, both spikes and the rejected alternatives:
  * `.council/sh-318-notification-clock-e2e-timing/DECISION.md`.
  *
- * ## The turn-off (SH-322)
+ * ## What SC 2.2.1 actually asks for (SH-322)
  *
- * The last six tests are a section of their own, with their own header above
- * them: they pin `storyhook.keepNotices`, the preference that removes a
- * self-clearing notice's time limit outright.
+ * The last seven tests are a section of their own, with their own header above
+ * them. They exist because this file and `scheduleAutoDismiss` both used to
+ * assert that pausing a time limit is what makes it conformant. It is not:
+ * SC 2.2.1's clauses are Turn off, Adjust and Extend, and pause is SC 2.2.2's
+ * word. The dashboard now takes the turn-off, the pause survives as the
+ * courtesy it always was, and the unreachable focus-pause branch is deleted.
  */
 
 cleanUpCreatedStories("Alpha Project");
@@ -435,7 +438,7 @@ test("a refused --auto dispatch stays a durable history row (SH-232's surviving 
   await cleanUp(page, title);
 });
 
-test("hovering a fading notice holds its clock, and leaving resumes it (SC 2.2.1)", async ({
+test("hovering a fading notice holds its clock, and leaving resumes it", async ({
   page,
 }) => {
   await openClocked(page);
@@ -449,10 +452,13 @@ test("hovering a fading notice holds its clock, and leaving resumes it (SC 2.2.1
     const toast = page.locator("#toast-stack .toast.success");
     await expect(toast).toBeVisible();
 
-    // WCAG 2.2 SC 2.2.1 (Timing Adjustable) is satisfied by letting the user
-    // pause the limit; a pointer resting on the notice IS that request. Held
-    // for thirty seconds — ten times the lifetime — the notice must still be
-    // there. The wall-clock version of this could only afford 5.5s.
+    // A courtesy to the reader who has a pointer, and NOT this dashboard's
+    // WCAG conformance story — this comment used to claim it was, in the same
+    // words `scheduleAutoDismiss` used, and both were wrong (SH-322). SC 2.2.1
+    // offers Turn off, Adjust and Extend; pause is SC 2.2.2's vocabulary and
+    // appears nowhere in 2.2.1's. The turn-off is `storyhook.keepNotices`,
+    // pinned below. Held for thirty seconds — ten times the lifetime — the
+    // notice must still be there. The wall-clock version could afford 5.5s.
     await toast.hover();
     await page.clock.runFor(NO_TIMER_HORIZON_MS);
     await expect(toast).toBeVisible();
@@ -552,21 +558,35 @@ test("a fading notice still clears under prefers-reduced-motion, without animati
 // SC 2.2.1, THE TURN-OFF (SH-322)
 // ============================================================
 //
-// The six tests below pin a conformance route this dashboard did not have.
-// WCAG 2.2 SC 2.2.1 (Timing Adjustable) offers exactly three mechanisms for a
-// time limit — **Turn off, Adjust, Extend** — plus three exceptions, none of
-// which fits a 3s toast. This takes the first: `storyhook.keepNotices`, a
-// persisted preference on the Settings screen that removes the clock entirely
-// rather than lengthening it, set before any notice is encountered.
+// The seven tests below pin the conformance route itself, which until SH-322
+// this dashboard did not have. `scheduleAutoDismiss` claimed one — a doc
+// comment naming three states that pause the clock, presented as the SC 2.2.1
+// story — and it was false twice over. The middle state, focus inside the
+// notice, could never happen: the listeners were attached to a node whose only
+// descendants are `div`s, on the exact branch of `toast()` that renders no
+// button, so `focusin` could not fire and `node.contains(document.activeElement)`
+// could not be true. And the pointer state it did reach is not a route through
+// this criterion at all — SC 2.2.1's clauses are **Turn off, Adjust, Extend**
+// plus three exceptions, and pause belongs to SC 2.2.2. A fix that only made
+// the dead listener fire would have left the second, larger claim standing.
 //
-// It defaults OFF, and that is the criterion's own shape rather than a
-// compromise: what has to exist in advance is the mechanism, not the choice.
-// Defaulting it on would make every one of ~26 `toast()` call sites permanent
-// and gut SH-304's corroboration premise, which is settled and not this
-// preference's to reopen.
+// So the listeners are deleted rather than revived, and the criterion is met by
+// its own first clause: `storyhook.keepNotices`, a persisted preference on the
+// Settings screen that removes the clock entirely rather than lengthening it,
+// set before any notice is encountered. It defaults OFF — the criterion
+// constrains the mechanism's availability in advance, not its default state,
+// and defaulting on would make every one of ~26 `toast()` call sites permanent
+// and gut SH-304's corroboration premise.
 //
-// Reasoning, the alternatives rejected 3-0, and the five follow-up defects the
-// review turned up:
+// Why `tabindex="0"` on the notice was rejected 3-0, since it is the obvious
+// repair and someone will reach for it again: it makes the listener *fireable*
+// without making it *reachable*. Screen-reader users navigate a virtual buffer
+// with arrow keys, which is not DOM focus, so `focusin` never fires while they
+// read — the population this criterion exists for is precisely the one that
+// branch cannot serve. And the affordance would have to be won in a race
+// against the clock it stops, frequently from inside the drawer's description
+// textarea, where Tab abandons the field. Full reasoning, the panel's own
+// rejections, and the five follow-up defects it turned up:
 // `.council/sh-322-self-clearing-notice-keyboard-pause/DECISION.md`.
 
 /** The most Tab presses {@link tabTo} will spend before it gives up.
@@ -766,6 +786,44 @@ test("the preference is off until the user turns it on", async ({ page }) => {
   await onAFrozenClock(page, async () => {
     await page.locator("#dispatch-btn").click();
     await expect(page.locator("#toast-stack .toast.success")).toBeVisible();
+    await runOutTheClock(page, SUCCESS_VISIBLE_MS);
+  });
+
+  await cleanUp(page, title);
+});
+
+test("a self-clearing notice is not a tab stop, and no focus event holds its clock", async ({
+  page,
+}) => {
+  await openClocked(page);
+
+  const title = "SH-322 — a clocked notice takes no focus";
+  const id = await openFreshStory(page, title);
+  await stubDispatch(page, id, false, "ok");
+
+  await onAFrozenClock(page, async () => {
+    await page.locator("#dispatch-btn").click();
+    const toast = page.locator("#toast-stack .toast.success");
+    await expect(toast).toBeVisible();
+
+    // The fence, and the reason it is two assertions rather than one. First:
+    // the node is not a tab stop and contains nothing that is, so re-adding
+    // `tabindex="0"` or a dismiss button to the clocked branch fails here and
+    // sends whoever did it to the council decision.
+    expect(await toast.evaluate((node) => (node as HTMLElement).tabIndex)).toBe(-1);
+    await expect(
+      toast.locator("a[href], button, input, select, textarea, [tabindex], [contenteditable]"),
+    ).toHaveCount(0);
+
+    // Second: no listener pauses the clock on focus. This has to be a
+    // *dispatched* event, not `.focus()` — calling `focus()` on a div with no
+    // tabindex is a no-op, so a test written that way would assert nothing the
+    // line above has not already covered, and would keep passing if the
+    // listeners came back. Dispatched on the headline and bubbling, exactly as
+    // a real focus would arrive.
+    await toast.locator(".notice-headline").evaluate((node) => {
+      node.dispatchEvent(new Event("focusin", { bubbles: true }));
+    });
     await runOutTheClock(page, SUCCESS_VISIBLE_MS);
   });
 

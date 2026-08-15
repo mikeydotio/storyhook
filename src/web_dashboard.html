@@ -2635,20 +2635,48 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   /** Removes `node` after holding it `TOAST_LIFETIME_MS`, then fading it.
    *
-   * The clock is not a bare `setTimeout`, because three states must stop it
-   * (WCAG 2.2 SC 2.2.1, Timing Adjustable — a time limit is conformant when
-   * the user can pause it):
+   * The clock is not a bare `setTimeout`, because two states stop it:
    *
    *   - the pointer resting on the notice, which IS a request to keep
    *     reading, made in the only vocabulary a toast offers;
-   *   - focus inside it, the keyboard's equivalent of the same request;
    *   - the tab being hidden, the one state in which "three seconds of
    *     being visible" definitively did not happen. A notice exists because
    *     nobody may be watching; letting its clock run down in a background
    *     tab defeats the notice at exactly the moment it was needed.
    *
    * Pausing preserves what is left rather than restarting it, so a reader
-   * who hovers twice does not get a fresh three seconds each time. */
+   * who hovers twice does not get a fresh three seconds each time.
+   *
+   * **Both are courtesies, and neither is this dashboard's WCAG conformance
+   * story** — a distinction this comment got wrong until SH-322, in a way
+   * worth recording because it is easy to get wrong again. SC 2.2.1 (Timing
+   * Adjustable) offers exactly three mechanisms — **Turn off, Adjust,
+   * Extend** — plus three exceptions, none of which fits a 3s toast. *Pause*
+   * is SC 2.2.2's word and appears nowhere in 2.2.1's. So a pause, however
+   * many states trigger it, satisfies this criterion not at all. The route
+   * taken instead is the first one: `state.keepNotices` (technique G198), a
+   * persisted preference on the Settings screen that removes the clock
+   * entirely rather than lengthening it, set before any notice is
+   * encountered. `toast()` reads it; this function is never called when it
+   * is on.
+   *
+   * **A clocked notice deliberately contains nothing focusable, and the
+   * focus-pause listeners that used to be here were deleted rather than
+   * given something to fire on.** They were attached to a node whose only
+   * descendants are `div`s — the dismiss button belongs to the other branch
+   * of `toast()` — so `focusin` could never fire and
+   * `node.contains(document.activeElement)` could never be true. The obvious
+   * repair, `tabindex="0"` on the node, was rejected 3-0 by SH-322's council
+   * and should not be reached for again: it makes the listener *fireable*
+   * without making it *reachable*. Screen-reader users navigate a virtual
+   * buffer with arrow keys, which is not DOM focus, so `focusin` never fires
+   * while they read the notice — the population the criterion exists for is
+   * the one that branch cannot serve. What it would add is a tab stop that
+   * appears and vanishes every three seconds at the end of the document, and
+   * a notice that never departs at all once focus lands in it, with nothing
+   * telling the user their own focus is what is holding it.
+   * `.council/sh-322-self-clearing-notice-keyboard-pause/DECISION.md` has
+   * the full reasoning; `e2e/specs/notification-contract.spec.ts` fences it. */
   function scheduleAutoDismiss(node) {
     var remaining = TOAST_LIFETIME_MS;
     var startedAt = 0;
@@ -2665,7 +2693,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     function resume() {
       if (leaving || timer !== null) return;
       if (document.hidden) return;
-      if (node.matches(":hover") || node.contains(document.activeElement)) return;
+      if (node.matches(":hover")) return;
       startedAt = Date.now();
       timer = window.setTimeout(depart, remaining);
     }
@@ -2686,8 +2714,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
     node.addEventListener("mouseenter", pause);
     node.addEventListener("mouseleave", resume);
-    node.addEventListener("focusin", pause);
-    node.addEventListener("focusout", resume);
     document.addEventListener("visibilitychange", onVisibility);
     resume();
   }
