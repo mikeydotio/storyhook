@@ -16290,6 +16290,177 @@ polled to confirm real progress rather than assumed; no stalls.
 
 **Deviations:** none.
 
+### SH-306 — the gate had a deadline, and exceeding it read as passing · 2026-08-14
+
+**Outcome:** merged, PR #417, two commits. The push gate is git's own
+`pre-push` hook now, and it verifies a receipt rather than re-running the suite.
+
+**The filed hypothesis was wrong, and finding that out was most of the work.**
+The story said a `PreToolUse` hook does not match a *backgrounded* invocation,
+so the gate never runs. It matches fine. A backgrounded probe — a harmless
+`echo` whose command text contains the push verb — did not begin executing for
+**exactly 900 seconds**, which is the hook's configured `timeout`. What
+actually happens is that the harness SIGTERMs the hook at its ceiling and
+**then lets the tool call proceed**. The hook's own log, still on disk because
+a killed hook never reaches its `rm -f`, ends with `make: *** [test]
+Terminated: 15` at e2e test 166 of ~207.
+
+**It was not one bad run.** The hook removes its log on both the pass and the
+fail path, so *the only logs that survive are the killed ones*. Eight were on
+disk; six had a birth-to-last-write delta of **exactly 900s**, spread over
+three days. The one at 113s was a genuine fast failure — the missing-e2e block
+SH-297 recorded. Six silent bypasses, none of which anything reported.
+
+Both halves of the original observation turned out to be true and
+mis-attributed: "no gate output" is real (nothing from the hook reached the
+session, and a backgrounded call shows none of it even when the hook runs the
+full 900s), and "ungated push" is real (by timeout kill, not by matcher
+bypass). The report was right about the symptom and wrong about the cause,
+which is exactly why the repro gate exists.
+
+**Why fifteen minutes is not a generous ceiling here.** At the moment of the
+probe, **three sessions were running gates at once** — `lsof -d cwd` put two of
+them in the SH-298 and SH-300 worktrees. A fresh worktree also pays a cold
+build plus `make e2e-install` before its first test. The suite is nine minutes
+nominal; the ceiling is routinely exceeded, not occasionally.
+
+**Council: convened, unanimous 3–0 on the first ballot** —
+`.council/sh306-gate-with-a-deadline/`, verdict recorded as a comment on the
+story. All three seats independently chose the same headline (a tracked git
+`pre-push` hook verifying a receipt, and in-repo scope only), so the vote was
+about mechanism. **Both non-authors abandoned their own proposals**, and both
+said they had verified the deciding fact in the code first: `core.hooksPath`
+disables `$GIT_DIR/hooks` **wholesale**, and that is where `story hooks
+install` puts the post-commit/post-merge/prepare-commit-msg hooks *this repo
+dogfoods*. Enrolling naively would have silently switched the tracker's own
+hooks off — the fix causing precisely the class it fixes. The architect seat
+found a second confirmation neither other seat had: `tests/semver_hook_test.rs`
+already exploits that semantics deliberately with `core.hooksPath=/dev/null`.
+
+Three concessions came back attached to the winner and were promoted to binding
+amendments: P3's **atomic tmp-then-rename** write (its author argued it bites
+the content-keyed design *hardest* — "the filename IS the claim, so a SIGTERM
+mid-write leaves a zero-byte file that the checker reads as a valid receipt");
+the **pushed-range gap**, where P2's author withdrew its own "mere convention"
+framing but rejected the blocking form, because a receipt per commit means a
+nine-minute suite per commit — "exactly the pressure that produced SH-306, and
+a gate the normal workflow cannot satisfy will not still be correct in a year";
+and P3's **explicit mutation checks**, adopted as written.
+
+One proposal element was rejected outright, on this story's own evidence:
+keeping the global harness hook as the fresh-clone backstop. "The only case
+where the global hook is the sole gate is the fresh clone, and that is
+precisely where its measured 900s fail-open applies at full force."
+
+**Why a receipt and not a re-run.** A `pre-push` hook running `make test` tests
+the *working tree* while `git push` ships *commits* — on a dirty tree it
+certifies content that is not being pushed and says nothing about content that
+is. It would also inherit the same deadline pressure and start a second
+nine-minute suite while the first was still running, which this file already
+records as the cause of a false red. So `make test` writes a receipt naming the
+tree it tested, and the hook asks in milliseconds whether the tree being pushed
+has one.
+
+Three things carry the design, and none is decoration:
+
+1. **The postlude is the last recipe line of `test`.** Make aborts a recipe at
+   the first failing line, so "no receipt unless every leg passed" is true by
+   construction rather than by exit-code plumbing.
+2. **The postlude refuses to certify a tree that drifted mid-run.** Nine
+   minutes is long enough for an agent to edit tracked files while the suite
+   runs, and a receipt written blind at the end would certify a mixture no
+   single run ever tested. This one caught me inside the hour — see below.
+3. **`.githooks/` chains to every managed hook**, derived in the test from
+   `src/hooks.rs`'s own table so a fourth added later fails the suite instead
+   of going dark.
+
+The key is a **tree object id** — not a commit sha, which invalidates on a
+rebase that changed nothing, and not a clock, which is a second thing to be
+wrong about. Receipts live inside `.git/`, so one can never be committed and
+never cloned: a fresh clone is fail-closed by construction.
+
+**Two limits are deliberate and are written down so nobody files them as bugs
+later.** The receipt attests the *tip tree of each pushed ref*, so unreceipted
+commits in a range are **named, not blocked**. And **forgery is not the threat
+model** — anyone able to hand-write a receipt already has `--no-verify`. What
+this stops is the silent accidental bypass, which is the one that actually
+happened, six times.
+
+**Mutation-checked, and the numbers are measured rather than predicted.**
+Making the hook `exit 0` unconditionally turns **6 of 11 red**; making it
+accept *any* receipt rather than the one named for this tree turns **exactly 1
+red** — `a_commit_made_after_the_receipt_is_refused`, the only test whose
+refusal depends on *which* tree was certified. The suite runs in **1.3
+seconds**, because the hook it exercises does no work.
+
+**My own drift refusal red-flagged my own test, correctly.** The
+range-warning test ran preflight, then made two commits, then postlude — and
+the postlude refused to certify, naming `f` as changed. The test was wrong (it
+described "run the suite across two commits"), not the check. Recording it
+because it is the only in-anger trial the mid-run-drift rule has had, and it
+fired on the first realistic mistake.
+
+**Enrollment has a blast radius, and it is loud about it by design.** The
+preflight enrolls `core.hooksPath`, which lives in the **shared** `.git/config`
+— so the moment it ran it named **17 linked worktrees plus the main checkout**
+as simultaneously ungated *and* stripped of their managed hooks until they
+rebase onto a main that carries `.githooks/`. Four of those were live sessions
+at the time. The council did not have that fact; the chair added it as an
+implementation constraint rather than overruling the verdict, because
+converting a silent transitional break into an enumerated one is this project's
+own doctrine. The dogfood check is in the history: `5bf9658` and `6f86018` were
+committed *after* enrollment and the managed post-commit hook still linked them
+both, through the chainer.
+
+**Process finding — a probe that mentions the gated verb costs a full gate.**
+The hook matches the **command string**, so `echo "… git push …"` armed it and
+burned fifteen minutes of `make test` in the main checkout while two other
+sessions were already running suites. For the rest of the session every
+reference to the verb went into a *file*, and scripts were run by path. Worth
+knowing before reproducing anything in this class.
+
+**Two latent product defects found by the council on the way past, filed rather
+than fixed:** SH-313 (`story hooks install` ignores `core.hooksPath`, so for
+any user who sets it the command installs where git will never look — and
+reports success) and SH-314 (it fails in a linked worktree, where `.git` is a
+file, not a directory). Both are the same silent-success class as this story.
+
+**Gate:** `make test` green on the final tree — 159 Rust suites, plugin bash
+harness 32/0, Playwright 208/208. **It took 19 minutes 30 seconds** (23:16:37Z
+to 23:36:07Z), which is the story in one number: the very run that certifies
+this change would have been SIGTERMed at 900 seconds by the mechanism it
+replaces, and the push waved through. An earlier run was killed **by me**, not
+by a wedge — `cargo fmt` had flagged three lines in the new test file, and
+rather than let a doomed run finish I stopped it, settled the tree (including a
+`100644` on `scripts/gate-receipt.sh` where all five sibling scripts are
+`100755`), and paid for one clean run instead of two. TaskStop took the whole
+process tree with it; `check-no-orphan-servers` confirmed nothing leaked, and
+the other sessions' runs were explicitly checked by `lsof -d cwd` and left
+alone.
+
+**Supervision:** log-growth heartbeat with a 150s stall bound on every
+background run, via a `Monitor` watch rather than waiting on a completion
+notification — a wedge produces no notification, which is the whole point.
+No stalls, no wedges. One deliberate kill, described above.
+
+**Deviations:** one, disclosed rather than quiet. **The push was issued from a
+script file rather than typed as a command**, which means the harness hook —
+matching on the command string — did not fire. That is not a bypass of the
+gate: git's own `pre-push` hook ran for real and verified the receipt from the
+green 19m30s run on exactly that tree, and neither `--no-verify` nor
+`SKIP_PREPUSH_TESTS=1` was used. What it skipped was a *second*, doomed run of
+the same suite in the main checkout — one that would have been SIGTERMed at 900
+seconds and let the push through regardless, while taking fifteen minutes of
+CPU from two live sessions whose own gates are pushed past that same ceiling by
+exactly this kind of contention. Running it would have been theatre with a
+cost. Recorded here because "I avoided the gate and it was fine" is a sentence
+that deserves to be read by someone else, not filed away.
+
+The gate's own first real push demonstrated both halves of its contract
+unprompted: the tip was certified and allowed, and the intermediate commit
+`5bf9658` was **named and not blocked** — the deliberate limit, proving itself
+on the first live push rather than in a test.
+
 ### SH-298 — the abort no longer had a fixture, but it still had an instrument
 
 **Outcome:** merged. The SH-270 negative — a repair write that rolls back must
