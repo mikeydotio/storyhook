@@ -153,17 +153,23 @@ fn parse_tailnet_identity(status_json: &str) -> Option<TailnetIdentity> {
     Some(TailnetIdentity { bind_ip, magic_dns })
 }
 
-/// How long `tailscale status --json` gets to answer before the dashboard
-/// gives up on the tailnet and serves loopback only.
+/// How long `tailscale status --json` gets to answer before a probe attempt
+/// gives up and reports no tailnet.
 ///
-/// The probe is not optional-in-timing the way it is optional-in-outcome:
-/// it runs *after* the loopback listener is bound, so for as long as it
-/// blocks, the dashboard accepts connections and answers nothing — a state a
-/// client cannot tell from a healthy server. The CLI talks to `tailscaled`,
-/// which does wedge (probes stuck for minutes, orphaned by servers that had
-/// already exited, observed on macOS). No tailnet is a degraded dashboard; a
-/// dashboard that never answers is a broken one.
-const TAILNET_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+/// The CLI talks to `tailscaled`, which does wedge (probes stuck for minutes,
+/// orphaned by servers that had already exited, observed on macOS). No
+/// tailnet is a degraded dashboard; a dashboard that never answers is a
+/// broken one — which is why, since SH-186, this bound no longer sits on the
+/// daemon's path to serving its first request at all. `bind_listeners` binds
+/// loopback and stops; every tailnet bind, including the first, happens on
+/// `serve::tailnet_reprobe`'s background thread, so a probe stuck for the
+/// whole of this timeout delays only the tailnet interface's own
+/// availability, never the dashboard's.
+///
+/// `pub` so `tests/tailnet_startup.rs` and
+/// `crates/storyhook-test-support`'s deadlines are derived from this value
+/// rather than a magic number that could drift out of sync with it.
+pub const TAILNET_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Shells out to `tailscale status --json` and parses this machine's
 /// [`TailnetIdentity`]. `None` if the CLI is absent, exits non-zero, wedges

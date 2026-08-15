@@ -17,22 +17,74 @@
 //! loopback-bind-before-probe has been true since the first version of
 //! `bind_listeners` — there is no earlier ordering this ever regressed from.
 //!
-//! This test pins that structural guarantee with a counting shim rather than
-//! trusting the reading above, and stands as the regression guard for the
-//! defect the story actually described: if a future change reorders
-//! `bind_listeners` so the probe runs before the loopback bind can fail, this
-//! goes red.
+//! # SH-186 strengthened the premise from "at most once" to "never"
+//!
+//! SH-186 removed the tailnet probe from `bind_listeners`/`bind_preferred`'s
+//! synchronous path entirely — a fresh, race-free unit test,
+//! `daemon::serve::tests::bind_listeners_never_itself_produces_a_tailnet_bind`,
+//! pins that directly by asserting `bind_listeners`'s own return value rather
+//! than counting shim invocations. What used to be structural-but-latent
+//! ("the probe is reached at most once, because a successful loopback bind
+//! never retries") is now trivially true by construction: there is no call
+//! to the probe on this path at all to double.
+//!
+//! What remains worth measuring end-to-end, and what this file still pins:
+//! the *one* probe a fresh daemon does eventually make — on
+//! `serve::tailnet_reprobe`'s background thread, first attempt included —
+//! never happens more than once per daemon lifetime, even across the
+//! port-fallback scenario SH-147 was filed against. That thread is one-shot
+//! by design (`tailnet_reprobe` returns the instant a bind succeeds), and
+//! this test is its regression guard.
+//!
+//! # Why the assertion polls rather than reads once
+//!
+//! The probe that satisfies the invariant above no longer runs on
+//! `web start`'s own synchronous path — it runs asynchronously, and its
+//! first attempt fires immediately rather than after a delay, so there is a
+//! genuine race between "the client observes the daemon as healthy" and
+//! "the background thread's first probe has already run." Reading the
+//! counter once, immediately after `web start` returns, flakes between 0 and
+//! 1 depending on which side of that race won.
+//!
+//! The first fix attempted here read the counter until it stopped changing
+//! for a quiet window — and was itself racy under load: under
+//! `--test-threads=4` contention, a counter that legitimately had not been
+//! written to *yet* was indistinguishable from one that would never be
+//! written to again, so the quiet window elapsed while the probe was still
+//! merely slow to start, and the assertion read a confirmed 0. The fix is
+//! [`probes_after_bind_confirmed`]: wait for the daemon's own portfile to
+//! report the bind, which is authoritative rather than a proxy — the
+//! callback that writes it runs synchronously inside `tailnet_reprobe`,
+//! strictly before that one-shot loop returns and stops probing forever, so
+//! observing the bind proves the count is already final.
 
 use std::ffi::OsString;
-use std::net::TcpListener;
+use std::net::{IpAddr, TcpListener, UdpSocket};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use storyhook_test_support::{DaemonGuard, TestEnv, reserve_port, slug_at};
 
+/// A real, bindable, non-loopback IP on this machine — the same
+/// routing-lookup trick `tailnet_rebind.rs` uses, and for the same reason:
+/// since SH-186 a probe that reports an identity but never actually *binds*
+/// makes `tailnet_reprobe` retry forever rather than stop, so this file's
+/// "exactly one probe" invariant needs the shim's identity to be one the
+/// bind can genuinely succeed against. No live Tailscale required.
+fn a_bindable_non_loopback_ip() -> IpAddr {
+    let socket = UdpSocket::bind("0.0.0.0:0").expect("binding an ephemeral UDP socket");
+    socket
+        .connect("8.8.8.8:80")
+        .expect("a route to pick a source address from, even with no real connectivity behind it");
+    socket.local_addr().expect("the socket's own address").ip()
+}
+
 /// A directory holding a `tailscale` that counts every `status --json`
 /// invocation into `counter_path` (one appended byte each) and always answers
-/// with a fixed, bindable identity — fast and unconditional, so nothing here
-/// depends on the 3s probe deadline.
+/// with a fixed identity — fast and unconditional, so nothing here depends
+/// on the 3s probe deadline. `ip` must be one this machine can actually bind
+/// ([`a_bindable_non_loopback_ip`]) or `tailnet_reprobe` retries forever
+/// instead of stopping after one attempt.
 fn counting_tailscale_shim(counter_path: &Path, ip: &str, fqdn: &str) -> tempfile::TempDir {
     let dir = tempfile::Builder::new()
         .prefix("storyhook-tailscale-counting-shim-")
@@ -67,8 +119,47 @@ fn path_with_shim(env: &TestEnv, shim: &Path) -> OsString {
     std::env::join_paths(entries).expect("joining PATH")
 }
 
+/// How long this test waits for the daemon to confirm a tailnet bind before
+/// giving up. Generous relative to what it is bounding — the shim answers
+/// instantly — because a false "it's done" reading here would silently hide
+/// a probe that simply hadn't run yet under load.
+const SETTLE_DEADLINE: Duration = Duration::from_secs(5);
+
+/// Waits for the daemon to report a confirmed tailnet bind, then reads the
+/// probe counter — race-free, unlike watching the counter file for a quiet
+/// period (tried first, and wrong: under `--test-threads=4` contention a
+/// counter that legitimately has not been written to *yet* is
+/// indistinguishable from one that will never be written to again, so a
+/// window-based "it stopped changing" reading raced the probe and read 0).
+///
+/// `info.tailnet.is_some()` is authoritative rather than a proxy: `serve.rs`'s
+/// `on_late_tailnet_bind` callback — which writes this portfile field — runs
+/// synchronously inside `tailnet_reprobe`, strictly *before* that one-shot
+/// loop returns and stops probing forever. Observing the bind therefore
+/// proves the probe count is already final; nothing waits for it to "settle"
+/// because there is nothing left that could still change it.
+fn probes_after_bind_confirmed(env: &TestEnv, counter_path: &Path) -> usize {
+    let deadline = Instant::now() + SETTLE_DEADLINE;
+    loop {
+        if let Some(info) = env.daemon()
+            && info.tailnet.is_some()
+        {
+            return std::fs::read(counter_path)
+                .map(|bytes| bytes.len())
+                .unwrap_or(0);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the daemon never reported a tailnet bind within {SETTLE_DEADLINE:?} — the \
+             counting shim always succeeds immediately, so this means tailnet_reprobe never \
+             ran or never bound at all, not merely that it was slow"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 #[test]
-fn bind_preferred_probes_the_tailnet_at_most_once_when_it_falls_back_off_a_taken_port() {
+fn a_daemon_never_probes_the_tailnet_more_than_once_across_a_port_fallback() {
     let env = TestEnv::isolated();
     let project = env.project().build();
     let _slug = slug_at(&env, project.path());
@@ -81,15 +172,17 @@ fn bind_preferred_probes_the_tailnet_at_most_once_when_it_falls_back_off_a_taken
 
     // Occupy the preferred port with a plain listener held for the rest of
     // this test, so `bind_preferred`'s first `bind_listeners` call fails on
-    // its loopback bind before it can reach the probe at all.
+    // its loopback bind and must fall back to port 0 — the exact scenario
+    // SH-147 was filed against.
     let occupied = reserve_port();
     let _hog = TcpListener::bind(("127.0.0.1", occupied))
         .expect("occupying the preferred port so bind_preferred must fall back");
 
     let counter = project.path().join("tailscale-probe-count");
+    let ip = a_bindable_non_loopback_ip();
     let shim = counting_tailscale_shim(
         &counter,
-        "100.64.9.9",
+        &ip.to_string(),
         "sh147-probe-budget.tail00000.ts.net",
     );
     let path = path_with_shim(&env, shim.path());
@@ -109,15 +202,12 @@ fn bind_preferred_probes_the_tailnet_at_most_once_when_it_falls_back_off_a_taken
         "the daemon must have fallen back off the occupied preferred port"
     );
 
-    let probes = std::fs::read(&counter)
-        .map(|bytes| bytes.len())
-        .unwrap_or(0);
+    let probes = probes_after_bind_confirmed(&env, &counter);
     assert_eq!(
         probes, 1,
-        "SH-147: bind_preferred's fallback path probed the tailnet identity {probes} times \
-         for one spawn; bind_listeners must reach the probe only after its own loopback bind \
-         has already succeeded, so the occupied-preferred-port failure short-circuits before \
-         any probe runs — a regression here means that ordering broke and the fallback path \
-         can once again spend 2 * TAILNET_PROBE_TIMEOUT inside SPAWN_DEADLINE"
+        "one spawn probed the tailnet identity {probes} times through a port fallback; \
+         tailnet_reprobe must stop the instant it binds successfully, or a daemon on this \
+         path could spend an unbounded number of `tailscale status --json` calls rather \
+         than the one this test expects"
     );
 }
