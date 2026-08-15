@@ -2,6 +2,7 @@ import { test, expect } from "@playwright/test";
 import {
   cleanUpCreatedStories,
   deleteStory,
+  focusMenuItemByLabel,
   openProject,
   seedToken,
 } from "./support";
@@ -87,6 +88,12 @@ test("the submenu omits the story's own state and shows every other configured o
   await expect(submenu.locator(".ctxmenu-item", { hasText: /^in-progress$/ })).toBeVisible();
   await expect(submenu.locator(".ctxmenu-item", { hasText: /^done$/ })).toBeVisible();
   await expect(submenu.locator(".ctxmenu-item .dot")).not.toHaveCount(0);
+  // Actions, not a radio group (SH-310): the story's own state is
+  // deliberately absent from this list (see statusMenuItems), so there is
+  // no current member to check -- and a `menuitemradio` with no
+  // `aria-checked` is an invalid one.
+  await expect(submenu.locator(".ctxmenu-item").first()).toHaveAttribute("role", "menuitem");
+  await expect(submenu.locator('[role="menuitemradio"]')).toHaveCount(0);
 
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
@@ -121,15 +128,7 @@ test("keyboard: ArrowRight opens the submenu and focuses its first item, Enter s
   const card = await createStory(page, title);
 
   await card.click({ button: "right" });
-  // End then ArrowUp, not a raw .focus() on the item: only real arrow/
-  // Home/End navigation updates the menu's own roving-focus bookkeeping
-  // (storyMenuFocusIndex), which is what ArrowRight below reads to know
-  // which item is "current". Set Status sits directly above Delete, the
-  // model's actual last entry -- ArrowUp once from the end reaches it
-  // regardless of what (if anything) comes after it.
-  await page.keyboard.press("End");
-  await page.keyboard.press("ArrowUp");
-  const setStatus = page.locator(".ctxmenu-item", { hasText: "Set Status" });
+  const setStatus = await focusMenuItemByLabel(page, "Set Status");
   await expect(setStatus).toBeFocused();
   await page.keyboard.press("ArrowRight");
 
@@ -162,11 +161,7 @@ test("ArrowLeft closes just the submenu and returns focus to Set Status, without
   const card = await createStory(page, title);
 
   await card.click({ button: "right" });
-  // See the previous test's identical comment: ArrowUp once from the end
-  // reaches Set Status regardless of what comes after it (Delete, today).
-  await page.keyboard.press("End");
-  await page.keyboard.press("ArrowUp");
-  const setStatus = page.locator(".ctxmenu-item", { hasText: "Set Status" });
+  const setStatus = await focusMenuItemByLabel(page, "Set Status");
   await expect(setStatus).toBeFocused();
   await page.keyboard.press("ArrowRight");
   await expect(page.locator(".ctxmenu-sub")).toBeVisible();

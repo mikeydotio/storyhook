@@ -247,6 +247,50 @@ export async function deleteStory(page: Page, title: string): Promise<void> {
 }
 
 /**
+ * Moves keyboard focus onto the open story context menu's item labelled
+ * `label`, using only the keys a user has -- Home, then ArrowDown until it
+ * lands.
+ *
+ * Only real arrow/Home/End navigation updates the menu's own roving-focus
+ * bookkeeping (`storyMenuFocusIndex`), which is what ArrowRight then reads
+ * to know which item's submenu to open -- so a raw `.focus()` on the
+ * element would leave the menu believing focus is still elsewhere. The
+ * call sites this replaces reached "Set Status" as "End, then ArrowUp
+ * once", under a comment claiming that held regardless of what came after
+ * it -- true only while Delete was the menu's last item, and false the
+ * moment a second submenu (SH-310) was inserted between them. A spec
+ * should name the item it means, not count from an end that can move.
+ *
+ * Scoped to the main menu, not `.ctxmenu` bare: `.ctxmenu-sub` carries that
+ * same class, so an unscoped locator is a strict-mode violation whenever a
+ * submenu is already open.
+ */
+export async function focusMenuItemByLabel(
+  page: Page,
+  label: string,
+): Promise<Locator> {
+  const menu = page.locator(".ctxmenu:not(.ctxmenu-sub)");
+  await expect(menu).toHaveCount(1);
+  const items = menu.locator(".ctxmenu-item");
+  const target = items.filter({ hasText: label });
+  await expect(target).toHaveCount(1);
+
+  const count = await items.count();
+  await page.keyboard.press("Home");
+  for (let i = 0; i < count; i += 1) {
+    if (await target.evaluate((node) => node === document.activeElement)) {
+      return target;
+    }
+    await page.keyboard.press("ArrowDown");
+  }
+  throw new Error(
+    `focusMenuItemByLabel: "${label}" never took focus after ${count} ` +
+      "ArrowDown presses -- the menu's roving focus is not moving, or the " +
+      "label matches a separator",
+  );
+}
+
+/**
  * How far ahead of the page's own clock {@link freezeClock} aims.
  *
  * A lead is not a choice, it is forced by the API: `clock.pauseAt` is a

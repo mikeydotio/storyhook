@@ -931,8 +931,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    so the label doesn't shift left/right as the checked item changes. */
 .ctxmenu-check { width: 0.875rem; flex-shrink: 0; color: var(--accent); visibility: hidden; }
 .ctxmenu-item[aria-checked="true"] .ctxmenu-check { visibility: visible; }
-/* Set Status's own popover (SH-197): same look as .ctxmenu, positioned to
-   the parent item's own right (or left, flipped, if that would overflow —
+/* A story submenu's own popover (SH-197, Set Status; generalised for any
+   story submenu by SH-310): same look as .ctxmenu, positioned to the
+   parent item's own right (or left, flipped, if that would overflow —
    see openStorySubmenu()) rather than below a button like .fdd-panel. */
 .ctxmenu-sub .ctxmenu-item .dot { flex-shrink: 0; }
 
@@ -3824,12 +3825,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   var storyMenuNode = null;
   var storyMenuInvoker = null;
   var storyMenuFocusIndex = -1;
-  // Set Status's own popover (SH-197): a second, independent node -- a
-  // sibling of storyMenuNode in the DOM, not a child, so a keydown inside
-  // it is scoped to ITS OWN handler (bindStorySubmenuKeys) rather than
-  // also reaching the main menu's. That's what makes Escape "close the
-  // submenu, not the whole menu" and Tab "close everything" both fall out
-  // of ordinary event routing instead of needing special-casing.
+  // A story submenu's own popover (SH-197, Set Status; generalised for any
+  // story submenu -- Set Priority included -- by SH-310, one slot shared
+  // and mutually exclusive by construction, since openStorySubmenu closes
+  // whichever one is already open before opening another): a second,
+  // independent node -- a sibling of storyMenuNode in the DOM, not a
+  // child, so a keydown inside it is scoped to ITS OWN handler
+  // (bindStorySubmenuKeys) rather than also reaching the main menu's.
+  // That's what makes Escape "close the submenu, not the whole menu" and
+  // Tab "close everything" both fall out of ordinary event routing instead
+  // of needing special-casing.
   var storySubmenuNode = null;
   var storySubmenuFocusIndex = -1;
   var storySubmenuParentItem = null;
@@ -3844,10 +3849,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function storyMenuModel(v) {
     var st = v.story;
     var description = (st.description || "").trim();
+    var isClosed = stateSuperstate(st.state) === "CLOSED";
     // The identical gate renderDrawerFooter's own Dispatch buttons use
     // (SH-50/SH-208) -- hides rather than disables, since nothing this menu
     // does can lift "closed" or "no checkout on this machine" on its own.
-    var dispatchHidden = stateSuperstate(st.state) === "CLOSED" || !currentRepoHasCheckout();
+    var dispatchHidden = isClosed || !currentRepoHasCheckout();
     var dispatchInFlight = !!state.dispatches[st.id];
     return compactSeparators([
       { label: "Copy ID", onSelect: function() { copyText(st.id, "ID"); } },
@@ -3873,8 +3879,31 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       { separator: true },
       (function() {
         var items = statusMenuItems(st);
-        return { label: "Set Status", disabled: !!state.pending[st.id] || !items.length, submenu: items };
+        return {
+          label: "Set Status",
+          disabled: !!state.pending[st.id] || !items.length,
+          submenu: { ariaLabel: "Set status", items: items }
+        };
       })(),
+      // Hidden, not disabled, on a closed story: `set_priority` goes
+      // through `edit_story(..., Intent::Edit, ...)` -> `resolve_open_story`,
+      // which refuses every *edit* of a closed story, and the store enforces
+      // `archived = (closed_at IS NOT NULL)` -- so "closed" and "refuses
+      // edits" are one database fact, and nothing this item can do lifts it.
+      // Same rule and the same `isClosed` expression as the Dispatch group
+      // above. Set Status stays visible on a closed story precisely because
+      // it is the one item whose job is to lift this.
+      isClosed ? null : {
+        label: "Set Priority",
+        // Same gate as Set Status, and not merely for symmetry: a
+        // `POST /priority` landing while an optimistic `moveStory()` is
+        // still in flight returns the story's PRE-move snapshot, and
+        // `applyStory` writes it in whole and re-renders -- the card would
+        // visibly snap back to its old column. Lifts on its own once the
+        // move settles, so: disabled, not hidden.
+        disabled: !!state.pending[st.id],
+        submenu: { ariaLabel: "Set priority", items: priorityMenuItems(st) }
+      },
       { separator: true },
       // Never hidden or disabled: unlike Dispatch/Set Status there is no
       // in-flight or "cannot act yet" state to gate on -- the only thing
@@ -3934,6 +3963,61 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         moveStory(id, targetSlug, false);
       })
       .catch(toastError);
+  }
+
+  /** The priorities `st` can be set to from the Set Priority submenu: the
+   * daemon's whole vocabulary, in the order it serves it (`meta().priorities`
+   * -- `PRIORITIES`, `src/api/rest.rs`, the same list the drawer's own
+   * Priority select and the create modal are built from; deliberately NOT
+   * this file's own `PRIORITY_ORDER`, which is a sort index and would be a
+   * second, driftable copy of the vocabulary), with the story's current
+   * value marked `checked`.
+   *
+   * Unlike `statusMenuItems`, which omits the story's current state, this
+   * offers the current priority and marks it -- and the asymmetry is the
+   * point, not an oversight. The board already tells a reader which state a
+   * story is in: it is the column the card sits in. Nothing tells them a
+   * story's priority except a 3px accent stripe (`--card-accent`,
+   * `populateCard`), so a chooser that hid the current value would leave no
+   * way to learn it short of opening the drawer. That is also why these are
+   * `menuitemradio` (via `checked`) and Set Status's are plain `menuitem`:
+   * this is a group with a current member; that one is a list of moves. */
+  function priorityMenuItems(st) {
+    return meta().priorities.map(function(p) {
+      return {
+        label: p,
+        color: priorityColor(p),
+        checked: p === st.priority,
+        onSelect: function() { setStoryPriority(st.id, p); }
+      };
+    });
+  }
+
+  /** Applies a Set Priority choice: the drawer's own Priority `<select>`
+   * path (`runFieldMutation`, below) verbatim, so the two surfaces can
+   * never drift into two behaviors -- the same reason `setStoryState`
+   * above calls `moveStory()` verbatim rather than reimplementing a move.
+   *
+   * Re-picking the current value writes nothing, and that is not merely an
+   * optimisation. `StoryService::set_priority` (`src/service/story.rs`)
+   * always returns one event from `edit_story`'s build closure, so
+   * `edit_story`'s own empty-events short-circuit is never reached: a
+   * re-pick would append a second `StoryPrioritySet` carrying the value the
+   * story already had, and fire a `PriorityChange` hook for a change that
+   * did not happen -- a junk line in `story log` and someone's hook script
+   * run for nothing. The drawer's `<select>` never issues one because
+   * `change` does not fire when the same option is re-picked; this is a
+   * menu saying the same thing out loud, since a click on an already-
+   * checked radio item has no such native guard.
+   *
+   * `findStory`, not the model's captured `st`: the menu is built when it
+   * opens, and an SSE push (or another tab) can move the story on before
+   * the click lands -- the identical reasoning `setStoryState` states for
+   * doing the same. */
+  function setStoryPriority(id, priority) {
+    var story = findStory(id);
+    if (!story || story.story.priority === priority) return;
+    runFieldMutation(id, "POST", "priority", { priority: priority });
   }
 
   /** Drops a leading, trailing, or doubled-up separator -- what lets one
@@ -4039,10 +4123,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * with an `aria-checked` state and a leading `✓` instead of a plain
    * `role="menuitem"` -- the per-column sort menu's shape, one radio item
    * per Added/Modified/Priority x ascending/descending choice; the story
-   * menu never sets it, so its own items are unaffected. `openSubmenu`
-   * fires for a `submenu` entry's click (only the story menu's "Set Status"
-   * row has one); `closeMenu` is the owning menu's own close function, run
-   * before an ordinary item's `onSelect`. */
+   * menu never sets it, so its own items are unaffected. `submenu`, when
+   * present, is an opaque `{ariaLabel, items}` -- this function never reads
+   * either field, only forwards the whole object to `openSubmenu` on click
+   * (only the story menu's "Set Status" row has one); `closeMenu` is the
+   * owning menu's own close function, run before an ordinary item's
+   * `onSelect`. */
   function renderMenuNode(model, ariaLabel, closeMenu, openSubmenu) {
     var node = el("div", { class: "ctxmenu", role: "menu", "aria-label": ariaLabel }, []);
     model.forEach(function(entry) {
@@ -4121,9 +4207,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * `restoreFocus` mirrors `closeProjectMenu`'s: Escape returns focus to
    * whatever card/row opened the menu (the user is still "at" that story,
    * just backing out of its menu); every other dismissal lets focus go
-   * wherever the triggering action already sent it. Always takes the Set
-   * Status submenu down too, if one is open -- it can't meaningfully
-   * outlive the menu that owns its one entry point. */
+   * wherever the triggering action already sent it. Always takes whichever
+   * story submenu is open down too, if any -- it can't meaningfully outlive
+   * the menu that owns its one entry point. */
   function closeStoryMenu(restoreFocus) {
     closeStorySubmenu();
     var invoker = storyMenuInvoker;
@@ -4155,34 +4241,58 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     storySubmenuFocusIndex = index;
   }
 
-  function renderStorySubmenuNode(items) {
-    var node = el("div", { class: "ctxmenu ctxmenu-sub", role: "menu", "aria-label": "Set status" }, []);
+  /** Builds a `.ctxmenu-sub` popover's DOM from a flat `items` array of
+   * `{label, color, checked, onSelect}` entries, under `ariaLabel` --
+   * which the caller's own model supplies rather than this function
+   * knowing it, the same way `renderMenuNode` takes one.
+   *
+   * `checked` follows `renderMenuNode`'s own SH-305 convention exactly:
+   * absent means a plain `role="menuitem"` with no `aria-checked` and no
+   * `✓` -- a list of actions, which is what fixed Set Status's own defect
+   * (SH-310, `role="menuitemradio"` requires `aria-checked` per ARIA's
+   * `aria-required-attr`, and Set Status's items deliberately omit the
+   * story's current state -- see `statusMenuItems`'s own comment -- so
+   * there was never a checked member to announce). Present means
+   * `role="menuitemradio"` plus `aria-checked` plus a leading
+   * `.ctxmenu-check` -- a group with a current member, which is what Set
+   * Priority is: unlike Set Status it offers the story's own value too,
+   * marked, because nothing else in the app names a story's priority in
+   * one glance (see `priorityMenuItems`'s own comment). */
+  function renderStorySubmenuNode(ariaLabel, items) {
+    var node = el("div", { class: "ctxmenu ctxmenu-sub", role: "menu", "aria-label": ariaLabel }, []);
     items.forEach(function(entry) {
+      var checked = entry.checked;
+      var children = [
+        el("span", { class: "dot", style: "background:" + entry.color }, []),
+        entry.label
+      ];
+      if (checked !== undefined) children.unshift(el("span", { class: "ctxmenu-check" }, ["✓"]));
       node.appendChild(el("div", {
         class: "ctxmenu-item",
-        role: "menuitemradio",
+        role: checked === undefined ? "menuitem" : "menuitemradio",
+        "aria-checked": checked === undefined ? null : String(!!checked),
         tabIndex: -1,
         onClick: function() {
           closeStoryMenu(false);
           entry.onSelect();
         }
-      }, [
-        el("span", { class: "dot", style: "background:" + entry.color }, []),
-        entry.label
-      ]));
+      }, children));
     });
     return node;
   }
 
-  /** Opens the Set Status submenu anchored to `parentItem` (the "Set
-   * Status" row in the main menu): placed to its right, flipped to the
-   * left if that would overflow the viewport -- `placeMenu()`'s own clamp
-   * still runs afterward, for the vertical axis and the rare case where
-   * even the flipped position also overflows on a narrow viewport. */
-  function openStorySubmenu(parentItem, items) {
+  /** Opens a story submenu (Set Status, Set Priority) anchored to
+   * `parentItem` (its own row in the main menu): placed to its right,
+   * flipped to the left if that would overflow the viewport --
+   * `placeMenu()`'s own clamp still runs afterward, for the vertical axis
+   * and the rare case where even the flipped position also overflows on a
+   * narrow viewport. `submenu` is the opaque `{ariaLabel, items}` object
+   * `renderMenuNode` forwarded from the model, unread by anything in
+   * between. */
+  function openStorySubmenu(parentItem, submenu) {
     closeStorySubmenu();
     storySubmenuParentItem = parentItem;
-    storySubmenuNode = renderStorySubmenuNode(items);
+    storySubmenuNode = renderStorySubmenuNode(submenu.ariaLabel, submenu.items);
     storySubmenuNode.tabIndex = -1;
     storySubmenuNode.addEventListener("click", function(evt) { evt.stopPropagation(); });
     storySubmenuNode.addEventListener("keydown", bindStorySubmenuKeys);
@@ -7815,11 +7925,23 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   /** Runs a mutation that isn't the board's optimistic move path (field
-   * edits from the drawer): fire the request, then reconcile from its
-   * response (or the next poll on failure). */
+   * edits from the drawer, and the context menu's Set Priority): fire the
+   * request, then reconcile from its response, or -- on failure --
+   * describe the outcome honestly and reconcile from a refetch instead.
+   *
+   * `describeMutationFailure`, not a bare `toastError` (SH-310): every
+   * caller of this function shares `api()`'s ambiguity between "the daemon
+   * refused this" and "the client gave up waiting, and has no idea" (see
+   * that function's own comment) -- `toastError` cannot tell those apart
+   * and reported both as the same flat, sometimes-false "request timed
+   * out". That was SH-312's defect for the create modal specifically;
+   * every field edit and menu action routed through here inherited the
+   * identical lie and had nothing to fix it until now. */
   function runFieldMutation(id, method, action, body) {
     var path = apiBase() + "/story/" + encodeURIComponent(id) + (action ? "/" + action : "");
-    api(method, path, body).then(handleMutationSuccess).catch(toastError);
+    api(method, path, body).then(handleMutationSuccess).catch(function(err) {
+      toast(describeMutationFailure(err), "error");
+    });
   }
 
   function handleMutationSuccess(resp) {
@@ -9144,23 +9266,25 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return Promise.all(calls);
   }
 
-  /** How a create-modal mutation's `.catch` describes an outcome the client
-   * cannot prove either way (SH-312). `status === 0` is `api()`'s signal
-   * that no reply ever arrived — `onerror` (a network failure) or
-   * `ontimeout` (the client gave up waiting) — and neither means the daemon
-   * did not act: a mutation's deadline ({@link MUTATION_TIMEOUT_MS}) is set
-   * to the server's own documented worst case, not to "the daemon is
-   * definitely gone," so a timeout can fire while the write is still
-   * committing or has already committed. Reporting that as a definite
-   * failure is what turned a slow-but-successful create into a duplicate
-   * one: the user believed it, and resubmitted. This mirrors
-   * `HttpInvoker`'s own "may or may not have run" wording in `src/invoke.rs`
-   * — the CLI's answer to the identical ambiguity — and refetches in the
-   * background either way, so the board behind the still-open modal already
-   * shows the truth by the time the user reads the message. Any other
-   * status is the daemon itself answering with a definite outcome
-   * (400/403/422/500/…), which is not ambiguous and keeps its own message
-   * unchanged. */
+  /** How a mutation's `.catch` describes an outcome the client cannot prove
+   * either way (SH-312, generalised from the create modal to every caller
+   * of {@link runFieldMutation} below — a drawer field edit or a context-
+   * menu action fails the identical way and used to say the identical
+   * lie). `status === 0` is `api()`'s signal that no reply ever arrived —
+   * `onerror` (a network failure) or `ontimeout` (the client gave up
+   * waiting) — and neither means the daemon did not act: a mutation's
+   * deadline ({@link MUTATION_TIMEOUT_MS}) is set to the server's own
+   * documented worst case, not to "the daemon is definitely gone," so a
+   * timeout can fire while the write is still committing or has already
+   * committed. Reporting that as a definite failure is what turned a
+   * slow-but-successful create into a duplicate one: the user believed it,
+   * and resubmitted. This mirrors `HttpInvoker`'s own "may or may not have
+   * run" wording in `src/invoke.rs` — the CLI's answer to the identical
+   * ambiguity — and refetches in the background either way, so whatever is
+   * on screen behind the toast or the still-open modal already shows the
+   * truth by the time the user reads the message. Any other status is the
+   * daemon itself answering with a definite outcome (400/403/422/500/…),
+   * which is not ambiguous and keeps its own message unchanged. */
   function describeMutationFailure(err) {
     fetchData();
     if (err.status === 0) {
