@@ -16960,3 +16960,107 @@ that caught the staleness bug above before it shipped).
 foreground; no stalls, no wedges.
 
 **Deviations:** none.
+
+### SH-316 — ask whether the hook left evidence, not whether it was installed — 2026-08-15
+
+The tech debt SH-313's council filed against its own verdict, and the one story
+in this run whose acceptance criterion was allowed to be **"close it as
+won't-fix"**. It was not, but only after a seat argued for it.
+
+**The defect is a statement's shelf life.** SH-313 made `story hooks install`
+write where git actually looks and report what git will run. Every word of that
+report is true when printed and none of it stays true: husky regenerates the
+directory, `git clean -fd` sweeps it, `core.hooksPath` gets re-pointed, the
+delegating occupant is deleted, `story` falls off PATH. SH-306's doctrine
+displaced in **time** — an install-time statement is not evidence of
+commit-time execution.
+
+**Council, and what it settled.** Five sub-questions, three seats
+(software-architect, data-engineer, skeptic), one deliberation round. Round 1
+split 2-1-0 for A, with the **skeptic voting against its own won't-fix
+proposal** because the alternative it had built — a detector derived from
+`story_commit_links` — is structurally blind to the case that matters most, a
+hook that never fired once. Deliberation then converged the panel unanimously on
+four of the five questions and produced two retractions *on evidence*: Seat 2
+withdrew its own Q2 answer after verifying in the tree that `resolve_project`
+propagates its `Err` through the `?` **before** any fallback branch runs — so
+`scaffold` is not the precedent it looks like, and routing install through it
+would make install start *failing* in a monorepo sub-checkout where it works
+today. Seat 3 withdrew Proposal C entirely. In the runoff every seat ranked
+somebody else's bundle first except the seat whose bundle won, which ranked its
+own second: C′ took a first-round IRV majority, and **B was ranked third by all
+three seats including its author**. Trail:
+`.council/sh316-hook-outcome-receipt/`, verdict recorded as a comment on SH-316.
+
+**The Q4 clause is the whole licence to build this**, and it is quoted verbatim
+in migration 0014's header: the rejected state file asserted a proposition about
+the *filesystem*, which the filesystem can silently falsify while the record goes
+on stating it confidently; a receipt asserts only that this store scanned this
+project's commits at an instant — a past event nothing can un-happen — and the
+sentence storyhook prints is never the receipt itself but a comparison re-derived
+from git at check time. Every disagreement between record and disk resolves to
+**silence**, never to a claim. That is why the column is also excluded from
+export: a receipt arriving from another machine's store *is* the rejected state
+file, a record of a scan that never happened here.
+
+**Shipped**: four commits, two-hats clean — a behaviour-preserving extraction of
+the project walk (so the curious caller and the refusing one cannot drift into
+two answers to one question, "how SH-313 and SH-314 both happened"), migration
+0014 with three store ops, the writer inside `commit_sync`, and the reader inside
+the still-project-less install arm. `is_project_less` is untouched; `--project`
+is still refused; `tests/hooks.rs`'s byte-exact stdout assertions never moved.
+
+**A measurement changed the design mid-implementation.** The first control to go
+red said the hook's own sync had not landed. It had. **`git log --since` is
+inclusive** (verified on git 2.50.1), so a commit made in the same second as the
+scan that covered it reads as unscanned — and since running the remedy re-stamps
+the receipt at some second, any commit sharing that second stays unscanned
+*forever*. That is precisely the survives-its-own-remedy failure the council's
+dissenting seat predicted for a timestamp comparator, arriving by a route nobody
+had named: not clock skew, one-second resolution. `first_unscanned_second` shifts
+the lower bound and `--until=now` closes the same hole from the future-dated end.
+The test's own precondition had the identical bug a layer up and had to be
+re-asked in UTC — `%cI` carries the committer's offset, so comparing it lexically
+against a `Z` timestamp is wrong for anyone not on UTC.
+
+**Twelve tests, mutation-checked in four directions** — disarm the read, drop
+`--until`, unshift `--since`, re-arm on every install; each reddens exactly the
+tests it should. The headline one **provokes**: install, re-point `core.hooksPath`
+at foreign non-delegating hooks, commit twice, re-run install, read the warning.
+Three limits ship **named and pinned by the silence they cause** — a sync from
+anywhere else, the window hole, backdated commits — so a later reader meets them
+as decisions rather than surprises and does not "fix" one into a false alarm. And
+`assert_claims_nothing_it_cannot_know` fails the suite if the printed line ever
+starts saying the hook is dark, missing or broken, which the receipt cannot know.
+
+**Filed, not folded in — SH-320.** Hunting for ways a dark hook still reads as
+healthy, the skeptic seat found that storyhook ships a **second syncer**:
+`plugin/claude-code/hooks/post-git.sh` runs `commit-sync` after every
+Claude-driven commit, and its skip-guard tests `.git/hooks/post-commit` — the
+exact assumption SH-313 and SH-314 removed from `src/`, surviving because
+`tests/hooks.rs`'s derived scan uses the pathspec `src/*.rs`, so a shell file is
+invisible to it. Verified in the tree by the chair before the vote. The guard is
+false in every linked worktree and beside every unmarked occupant, so it declines
+to skip *exactly* where git will not run the managed hook. A sibling of the story
+this run had just closed, hiding one pathspec away from the scan built to catch
+its family.
+
+**Gate: green on the second full run.** Run 1 died at the e2e leg on
+`e2e/node_modules` missing — a fresh worktree's own cost, already recorded here
+by SH-313's entry; `make e2e-install`, then 161 Rust targets and 212 e2e specs,
+`EXIT=0`.
+
+**Supervision:** log-growth heartbeat on both `make test` runs, polled on the
+115-second bound. No stalls, no wedges, no kills. One operator error worth
+recording: a `cd /private/tmp` inside a diagnostic left the shell in the **main
+checkout**, where the next two commands ran before the reset was noticed. Nothing
+was modified there — `git status` confirmed clean — but the rule that made it
+harmless is worth restating: absolute paths, always, when a worktree and its
+checkout share a machine.
+
+**Deviations:** none from the verdict. Two calls it did not cover: the remedy's
+`--since` window is rendered coarsely (`19d`, not `18d7h13m`) because a human is
+about to retype it and over-scanning is free under W6's idempotency constraint,
+and the receipt is not surfaced in `story project show` — C′ dropped that as
+YAGNI on the ground that rendering a stored instant invites a reader to treat it
+as hook status.
