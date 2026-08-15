@@ -1,6 +1,17 @@
 import { test, expect } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { cleanUpCreatedStories, onAFrozenClock, openProject, seedToken } from "./support";
+import {
+  cleanUpCreatedStories,
+  COPY_HEADLINES,
+  COPY_TARGETS,
+  createStory,
+  keepNotices,
+  onAFrozenClock,
+  openProject,
+  raiseDurableNotices,
+  raiseNotice,
+  seedToken,
+} from "./support";
 
 /**
  * SH-323 — the notice dock's *geometry*, as measured properties.
@@ -48,64 +59,6 @@ test.beforeEach(async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await seedToken(page);
 });
-
-/** Turns durable notices on through the real Settings control.
- *
- * Through the page rather than by seeding `localStorage`: SH-322 shipped this as
- * a mechanism the user can reach, and a seeded key would satisfy the storage
- * half of that claim while proving no mechanism exists at all. */
-async function keepNotices(page: Page): Promise<void> {
-  await page.locator("#settings-btn").click();
-  await expect(page.locator("#settings-view")).toBeVisible();
-  await page.locator("#toggle-keep-notices").click();
-  await expect(page.locator("#toggle-keep-notices")).toBeChecked();
-  await page.locator("#home-btn").click();
-}
-
-/** Raises one durable notice per call through the story context menu, using a
- * different copy target each time so the notices are distinguishable by text.
- *
- * The three labels are the whole reason this path is used rather than three
- * Copy-IDs: `copyText` names the target in its headline, so "ID copied", "URL
- * copied" and "Description copied" are three notices an order assertion can tell
- * apart. Three identical "ID copied" notices could not pin an order at all. */
-const COPY_TARGETS = ["Copy ID", "Copy URL", "Copy Description"] as const;
-const COPY_HEADLINES = ["ID copied", "URL copied", "Description copied"] as const;
-
-async function raiseNotice(page: Page, title: string, which: number): Promise<void> {
-  const card = page.locator('.column[data-state="todo"] .card', { hasText: title });
-  await card.click({ button: "right" });
-  await page.locator(".ctxmenu-item", { hasText: COPY_TARGETS[which] }).click();
-}
-
-/** Waits until no backdrop is still on screen.
- *
- * Closing an overlay is a 0.18s opacity transition, and `.backdrop` carries no
- * `pointer-events: none` — so for those 180ms a full-viewport `position: fixed;
- * inset: 0` element is still the thing under the cursor everywhere. A hit test
- * taken in that window reports the backdrop and says nothing about the dock.
- * Found by this file's own failure message naming `div#modal-backdrop.backdrop`,
- * which is why `centreOwner` returns the occluder rather than a boolean. */
-async function awaitNoOverlay(page: Page): Promise<void> {
-  await page.waitForFunction(
-    () => document.querySelectorAll(".backdrop:not([hidden])").length === 0,
-    undefined,
-    { timeout: 5000 },
-  );
-}
-
-async function createStory(page: Page, title: string): Promise<string> {
-  await page.locator("#new-story-btn").click();
-  await expect(page.locator("#create-modal")).toHaveClass(/open/);
-  await page.locator("#create-title").fill(title);
-  await page.locator("#create-description").fill("a description, so Copy Description has something to copy");
-  await page.locator("#create-submit").click();
-  await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
-  const card = page.locator('.column[data-state="todo"] .card', { hasText: title });
-  await expect(card).toBeVisible();
-  await awaitNoOverlay(page);
-  return (await card.getAttribute("data-id"))!;
-}
 
 /** The top edge of every element matching `selector`, in DOM order. */
 async function domOrderTops(page: Page, selector: string): Promise<number[]> {
@@ -156,21 +109,6 @@ async function centreOwner(page: Page, selector: string): Promise<string> {
     const cls = hit.className && typeof hit.className === "string" ? `.${hit.className.split(" ").join(".")}` : "";
     return `${hit.tagName.toLowerCase()}${id}${cls}`;
   }, selector);
-}
-
-/** Raises `count` further durable notices, asserting the running total after
- * each one.
- *
- * Counted from whatever is already standing rather than from zero: a helper that
- * assumed an empty stack would silently pass while measuring the wrong pile the
- * first time a caller topped one up. Asserting after every raise is what keeps a
- * geometry assertion from racing a stack that is still growing under it. */
-async function raiseDurableNotices(page: Page, title: string, count: number): Promise<void> {
-  const start = await page.locator("#toast-stack .toast").count();
-  for (let i = 0; i < count; i++) {
-    await raiseNotice(page, title, i % COPY_TARGETS.length);
-    await expect(page.locator("#toast-stack .toast")).toHaveCount(start + i + 1);
-  }
 }
 
 /** Asserts that focus landed somewhere a user can actually be, without naming
