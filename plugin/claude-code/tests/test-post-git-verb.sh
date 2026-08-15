@@ -110,6 +110,19 @@ write_managed_hook "$repo/.git/hooks/post-commit"
 out=$(run_verb "$repo" "git push origin main")
 assert_eq "$(reached)" "yes" "git has no post-push hook to credit — sync"
 
+# --- a pull is watched at all, and never skips ------------------------------
+#
+# The verb this hook did not watch. Measured: a `git pull` fast-forward fires
+# post-merge and NO post-commit — so a pull is the single event that introduces
+# commits no local post-commit has ever run over, and it was the one verb the
+# pre-filter did not match. This project's own landing path is `gh pr merge`
+# (server-side, no local hook at all) followed by `git pull --ff-only`, so the
+# commits it cared most about arrived through the gap.
+repo=$(mk_repo)
+write_managed_hook "$repo/.git/hooks/post-commit"
+out=$(run_verb "$repo" "git pull --ff-only")
+assert_eq "$(reached)" "yes" "a pull runs post-merge, never post-commit — sync"
+
 # --- a compound command falls open ------------------------------------------
 #
 # The case a naive "does it contain `git commit`?" rewrite gets wrong. Both

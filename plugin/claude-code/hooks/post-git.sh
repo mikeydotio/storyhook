@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Claude Code PostToolUse hook for storyhook.
-# After git commit/merge/push operations, syncs commit history with stories.
+# After git commit/merge/push/pull operations, syncs commit history with stories.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -24,8 +24,13 @@ fi
 # a literal substring check here has no false negatives for the patterns we
 # care about. This hook only needs to actually parse tool_input (below) for
 # the rare call that plausibly touches git.
+# `git pull` is watched because it is the verb that introduces commits no local
+# hook has ever seen (SH-330): measured, a pull fast-forward fires `post-merge`
+# and no `post-commit`, and this project's own landing path — `gh pr merge`,
+# which runs no local hook at all, then `git pull --ff-only` — arrives entirely
+# through it. It was missing from this list while merge and push were in it.
 case "$stdin_json" in
-  *"git commit"*|*"git merge"*|*"git push"*) ;;
+  *"git commit"*|*"git merge"*|*"git push"*|*"git pull"*) ;;
   *)
     printf '{}'
     exit 0
@@ -45,8 +50,9 @@ else:
 
 # Confirm the match wasn't a false positive from the cheap pre-filter (e.g.
 # the literal text appearing somewhere other than the actual command, or
-# JSON parsing failing) before treating this as a real git commit/merge/push.
-if [[ "$command_str" != *"git commit"* && "$command_str" != *"git merge"* && "$command_str" != *"git push"* ]]; then
+# JSON parsing failing) before treating this as a real git commit/merge/push/pull.
+if [[ "$command_str" != *"git commit"* && "$command_str" != *"git merge"* &&
+  "$command_str" != *"git push"* && "$command_str" != *"git pull"* ]]; then
   printf '{}'
   exit 0
 fi
@@ -104,8 +110,8 @@ fi
 #   * `git push` runs no post-push hook — git has none, and neither does
 #     `src/hooks.rs`'s HOOKS table. The guard skipped on a hook that cannot
 #     have fired.
-#   * `git merge` runs `post-merge`, not `post-commit` (measured, for both a
-#     --no-ff merge and a fast-forward). Since SH-330 `post-merge` syncs too,
+#   * `git merge` and `git pull` run `post-merge`, not `post-commit` (measured,
+#     for a --no-ff merge, a fast-forward, and a pull). Since SH-330 `post-merge` syncs too,
 #     which makes the plugin's sync here redundant rather than necessary — but
 #     redundant is the cheap direction and it is not a reason to skip: every
 #     repository installed before that change keeps the old body until
@@ -120,7 +126,8 @@ fi
 # A compound command falls open: `git commit -m x && git merge side` ran both,
 # only one is covered, so the command as a whole is not. Substring matching is
 # the same imprecision the pre-filter above already accepts.
-if [[ "$command_str" != *"git merge"* && "$command_str" != *"git push"* ]]; then
+if [[ "$command_str" != *"git merge"* && "$command_str" != *"git push"* &&
+  "$command_str" != *"git pull"* ]]; then
   git_hooks_dir=$(git rev-parse --git-path hooks 2>/dev/null) || git_hooks_dir=""
   if [[ -n "$git_hooks_dir" && -x "$git_hooks_dir/post-commit" ]] &&
     grep -q "# storyhook managed hook" "$git_hooks_dir/post-commit" 2>/dev/null; then
