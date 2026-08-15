@@ -115,7 +115,7 @@ use crate::domain::{
     short_sha,
 };
 use crate::error::AppError;
-use crate::store::{ExpectedSeq, ProjectId, ReadOps, Store, StoreError, StoryNo};
+use crate::store::{ExpectedSeq, ProjectId, ReadOps, Store, StoreError, StoryNo, WriteOps};
 
 use super::story::state_transition_events;
 use super::{Ctx, Intent, append_and_fold, project_prefix};
@@ -343,6 +343,19 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
         let commits = read_log(self.ctx.cwd(), &cutoff)?;
 
         let project = self.ctx.project();
+        // The receipt (SH-316), written before anything is decided about what
+        // the log contained and **unconditionally** — not gated on commits
+        // found, links made or stories touched. A project whose commits name no
+        // story is the ordinary case, and a receipt that only advanced when a
+        // link happened would leave every such project looking permanently
+        // unscanned. What it attests is exactly this: a scan of this project's
+        // commits ran here, at this instant. See migration 0014's header for
+        // what may not be inferred from it.
+        let scanned_at = self.ctx.now();
+        self.ctx
+            .store()
+            .write(|tx| tx.record_commit_scan(project, &scanned_at))?;
+
         let (prefix, active, default_open, auto_transition) = self.ctx.store().read(|tx| {
             let states = tx.states(project)?;
             Ok((
