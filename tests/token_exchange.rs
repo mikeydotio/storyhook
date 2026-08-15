@@ -346,14 +346,31 @@ fn the_cookie_survives_a_daemon_restart() {
 }
 
 #[test]
-fn exchanging_the_master_token_is_refused_and_sets_no_cookie() {
+fn exchanging_the_master_token_is_refused_distinguishably_and_sets_no_cookie() {
     let (_env, _store, server) = served();
     let refused = exchange(server.port(), &server.token);
-    assert_eq!(refused.status, 401, "{}", refused.body);
+    assert_eq!(
+        refused.status, 422,
+        "the master token must be refused distinguishably from an unknown value: {}",
+        refused.body
+    );
     assert!(
         refused.header("set-cookie").is_none(),
         "a refused exchange must never set a cookie"
     );
+    assert!(
+        refused.body.contains("story token new"),
+        "the refusal must name what to paste instead: {}",
+        refused.body
+    );
+}
+
+#[test]
+fn exchanging_an_unknown_value_still_gets_the_ordinary_401() {
+    let (_env, _store, server) = served();
+    let refused = exchange(server.port(), "not-a-real-token-at-all");
+    assert_eq!(refused.status, 401, "{}", refused.body);
+    assert!(refused.header("set-cookie").is_none());
 }
 
 #[test]
