@@ -2,60 +2,45 @@
 name: story-work
 description: "Use when starting work on a specific story or picking the next available task. Transitions the story to in-progress, shows full context, and sets up the working session. Call with a story ID to work on a specific story, or with no arguments to auto-pick the next ready story."
 user-invocable: true
-allowed-tools: Bash(story *), Bash(command -v *), AskUserQuestion
+allowed-tools: Bash(story *), Bash(command -v *), Bash(bash ${CLAUDE_PLUGIN_ROOT}/bin/story.sh *), AskUserQuestion
 argument-hint: "[STORY-ID]"
 ---
 
 # Storyhook Work
 
-Start working on a story.
+You are a **thin router**. Deterministic work — story selection, `[plugin].tracking`
+resolution, the active-role state transition, and the start comment — lives in
+`bash ${CLAUDE_PLUGIN_ROOT}/bin/story.sh work [story-id]`. **Route and render — never call
+`story` yourself for the steps below.**
 
 ## Steps
 
 ### 0. Ensure the storyhook CLI is available
 
-Before running any `story` command, confirm the CLI is installed by running `command -v story`. If it is missing, follow `${CLAUDE_PLUGIN_ROOT}/references/ensure-cli.md`: tell the user, ask permission to install (via `AskUserQuestion`), and if approved use the `story-install` skill before continuing. Do not run `story` commands until this check passes.
+Follow `${CLAUDE_PLUGIN_ROOT}/references/ensure-cli.md`. Do not continue until it passes.
 
-### 1. Select a story
+### 1. Select and start the story
 
-- **If a story ID was provided** (e.g., `/story-work SH-3`), use that story
-- **If no story ID**, run `story next --json` to automatically pick the highest-priority ready story. The response is double-nested: a single ready story is at `.story.story.id` (NOT `.story.id`). If nothing is ready, there is no `.story` key at all — check `.message` for `"no ready stories"`.
-- If nothing is ready, inform the user that all stories are either done or blocked, and suggest running `/story-triage`
+Run `bash ${CLAUDE_PLUGIN_ROOT}/bin/story.sh work`, passing a story ID as the sole argument
+if one was given (e.g., `/story-work SH-3`). `ok:false` → show `display`, stop.
 
-### 2. Show story details
+`ok:true` with `picked:false` means nothing is ready — show `display` (it already suggests
+`/story-triage`) and stop.
 
-Run `story show <id> --json` to get the full story details including:
-- Title, priority, labels
-- Current state and any blocked status
-- Comments and history
-- Relationships (blockers, parent/child, related stories)
+`ok:true` with `picked:true` means the helper has already: resolved the story (the one
+named, or the highest-priority ready one), read the `[plugin].tracking` setting from the
+committed `.storyhook.toml`, moved the story into whichever state carries the project's
+`active` role (`in-progress` unless the project defines a different one), and — unless
+tracking is `quiet` — posted a "Starting work on this story" comment. `moved`/`commented`
+report what actually happened; if `moved` is `false`, a `note` on `display` explains why
+(the state transition itself failed) — surface it, the story was NOT claimed.
 
-The story fields are under `.story.story` (e.g. `.story.story.state`), not `.story` directly.
+### 2. Present working context
 
-Present this information clearly so the context is understood before starting work.
+Show `display` — it is the story's own full rendering (title, priority, labels, state,
+comments, relationships). Then summarize what the story is about and what needs to be
+done. If the story has child stories, list them. If it has dependencies that are already
+done, note what was completed. The agent should now proceed with the actual implementation
+work.
 
-### 3. Read tracking mode
-
-Check the `[plugin]` table in `.storyhook.toml` (the committed pointer file at the repo
-root) for the `tracking` setting:
-- `quiet` -- skip progress comments, only update state
-- `normal` -- add a start comment and update state
-- `verbose` -- add detailed progress comments throughout
-
-Default to `normal` if the config file does not exist or the key is missing.
-
-### 4. Transition to in-progress
-
-Run `story move <id> in-progress` to mark the story as active.
-
-If the project uses custom states (run `story state list` and look for the one carrying the `active` role), use that state slug instead of `in-progress`. If there is no active-role state and `in-progress` does not exist, inform the user and ask which state to use.
-
-### 5. Add start comment
-
-If tracking mode is `normal` or `verbose`:
-
-Run `story comment <id> "Starting work on this story"` to log the session start.
-
-### 6. Present working context
-
-Summarize what the story is about and what needs to be done. If the story has child stories, list them. If it has dependencies that are already done, note what was completed. The agent should now proceed with the actual implementation work.
+This synthesis is yours to write — the facts it is drawn from all came from step 1.

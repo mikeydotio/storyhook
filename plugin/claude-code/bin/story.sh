@@ -109,6 +109,14 @@ DISPATCH_PROTOCOL=1
 # shellcheck source=../lib/session.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/session.sh"
 
+# storyhook_pointer / read_plugin_config (the `[plugin]` table reader
+# hook_is_enabled already relies on) live in ../hooks/lib.sh. `cmd_work`
+# (SH-308) reuses read_plugin_config for the `tracking` key rather than a
+# second hand-rolled TOML reader — this one is already quote-agnostic and
+# table-aware (SH-47), which a fresh one would have to relearn from scratch.
+# shellcheck source=../hooks/lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../hooks/lib.sh"
+
 # This script's own absolute path, resolved ONCE here — before dispatch or
 # reap ever `cd`s anywhere — because `${BASH_SOURCE[0]}` alone can be
 # relative to whatever cwd this process started in, and every later
@@ -1385,7 +1393,14 @@ cmd_context() {
     local stale="${STORY_STALE_THRESHOLD:-3d}" graph blocked stale_list
     graph=$(story_cli graph --critical-path 2>/dev/null || printf '(unavailable)')
     blocked=$(story_cli list --blocked 2>/dev/null || printf '(unavailable)')
-    stale_list=$(story_cli list --stale "$stale" 2>/dev/null || printf '(unavailable)')
+    # NOT soft-degraded like graph/blocked above: those are flags that cannot
+    # be misconfigured, but STORY_STALE_THRESHOLD is a user-editable value
+    # that CAN be malformed, and the CLI already names the mistake clearly --
+    # swallowing it into "(unavailable)" would hide exactly the error a
+    # caller most needs to see (same fix as cmd_triage's own stale fetch).
+    stale_list=$(story_cli list --stale "$stale" 2>&1) || {
+      fail "story list --stale $stale: $stale_list"
+    }
     body="$body"$'\n\n## Critical path\n\n'"$graph"$'\n\n## Blocked stories\n\n'"$blocked"$'\n\n## Stale ('"$stale"$'+) stories\n\n'"$stale_list"
   fi
 
@@ -1442,6 +1457,344 @@ cmd_handoff() {
 
   jq -n --arg display "$body" --argjson summary "$summary_json" '
     {ok:true, display:$display, summary:$summary}'
+}
+
+# ---- subcommand: work --------------------------------------------------------
+#
+# cmd_work [story-id] — SH-308. Everything skills/story-work/SKILL.md used to
+# spell out as five ordered, mutable-state-dependent steps: pick a story
+# (explicit id, or `story next` when none given), read the `[plugin].tracking`
+# key via read_plugin_config (../hooks/lib.sh — already quote-agnostic and
+# table-aware, SH-47; not a second hand-rolled TOML reader), resolve the
+# active-role state via story_active_state (the SAME resolver `list` already
+# uses to exclude an already-claimed story from readiness), move the story
+# into it, and comment "Starting work on this story" unless tracking is
+# `quiet`. The skill's own step 6 (present working context) stays prose on
+# purpose — summarizing what a story's children and completed dependencies
+# MEAN is judgment, not a fact this script could assert instead.
+cmd_work() {
+  local id="${1:-}"
+  [ "$#" -le 1 ] || fail "usage: story.sh work [story-id]"
+  require_story
+
+  if [ -z "$id" ]; then
+    local next_json next_result next_id
+    next_json=$(story_cli next --json 2>/dev/null) || true
+    next_result=$(printf '%s' "$next_json" | jq -r '.result // ""' 2>/dev/null || printf '')
+    if [ "$next_result" != "ok" ]; then
+      fail "$(printf '%s' "$next_json" | jq -r '.error // "story next emitted no result"' 2>/dev/null)"
+    fi
+    next_id=$(printf '%s' "$next_json" | jq -r '.story.story.id // ""')
+    if [ -z "$next_id" ]; then
+      # `result:"ok"` with no `.story` key is "nothing ready" — a real
+      # answer, not a failure (mirrors _load_ready_stories' own contract).
+      jq -n --arg msg "$(printf '%s' "$next_json" | jq -r '.message // "no ready stories"')" '
+        {ok:true, id:"", picked:false,
+         display:("[story] " + $msg + " -- try `/story-triage`.")}'
+      return 0
+    fi
+    id="$next_id"
+  fi
+
+  valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
+
+  local show_json result
+  show_json=$(story_cli show "$id" --json 2>/dev/null) || true
+  result=$(printf '%s' "$show_json" | jq -r '.result // ""' 2>/dev/null || printf '')
+  if [ "$result" != "ok" ]; then
+    fail "$(printf '%s' "$show_json" | jq -r --arg id "$id" '.error // ("story `" + $id + "` not found")' 2>/dev/null)"
+  fi
+  id=$(canonical_story_id "$show_json" "$id")
+
+  local body
+  body=$(story_cli show "$id" 2>/dev/null || printf '')
+
+  local tracking active_state
+  tracking=$(read_plugin_config tracking normal)
+  active_state=$(story_active_state)
+
+  local moved=false commented=false move_note=""
+  if [ -n "$DRY_RUN" ]; then
+    local -a commands=("story move $id $active_state")
+    [ "$tracking" != "quiet" ] && commands+=("story comment $id \"Starting work on this story\"")
+    local cmds_json
+    cmds_json=$(printf '%s\n' "${commands[@]}" | jq -R -s 'split("\n")|map(select(length>0))')
+    jq -n --arg id "$id" --arg state "$active_state" --arg tracking "$tracking" \
+          --argjson cmds "$cmds_json" --arg body "$body" '
+      {ok:true, dry_run:true, id:$id, picked:true, state:$state, tracking:$tracking,
+       commands:$cmds, display:$body}'
+    return 0
+  fi
+
+  local mv_json mv_result
+  mv_json=$(story_cli move "$id" "$active_state" --json 2>/dev/null) || true
+  mv_result=$(printf '%s' "$mv_json" | jq -r '.result // ""' 2>/dev/null || printf '')
+  if [ "$mv_result" = "ok" ]; then
+    moved=true
+  else
+    move_note=" Could not move $id to \`$active_state\`: $(printf '%s' "$mv_json" | jq -r '.error // "story move emitted no result"' 2>/dev/null)"
+  fi
+
+  if [ "$moved" = true ] && [ "$tracking" != "quiet" ]; then
+    story_cli comment "$id" "Starting work on this story" >/dev/null 2>&1 && commented=true
+  fi
+
+  jq -n --arg id "$id" --arg state "$active_state" --arg tracking "$tracking" \
+        --argjson moved "$moved" --argjson commented "$commented" \
+        --arg body "$body" --arg note "$move_note" '
+    {
+      ok:true, id:$id, picked:true, state:$state, tracking:$tracking,
+      moved:$moved, commented:$commented,
+      display: ($body + (if $note == "" then "" else "\n\n" + $note end))
+    }'
+}
+
+# ---- subcommand: triage -------------------------------------------------------
+#
+# _find_blocking_cycles — READ-ONLY. stdin is `<blocker-id>\t<blocked-id>`
+# edges, one per line (blocker must close before blocked is ready); echoes
+# every story id that sits on a cycle, one per line, empty when there is
+# none. Kahn's algorithm: repeatedly strip a node with no remaining
+# unresolved blocker, decrementing its neighbors' counts; whatever is left
+# once nothing more can be stripped cannot be explained by anything BUT a
+# cycle, because every acyclic path bottoms out at a node with in-degree
+# zero. This is what skills/story-triage/SKILL.md used to hand to the model
+# as "eyeball `story graph`'s output ... this is a manual check" — the CLI
+# does not expose raw edges via `story graph`, but `story list --json`
+# already carries every story's own `blocked-by` relationships, which is
+# all a cycle check needs.
+_find_blocking_cycles() {
+  awk -F'\t' '
+    NF == 2 { blocker[NR]=$1; blocked[NR]=$2; nodes[$1]=1; nodes[$2]=1; n=NR }
+    END {
+      for (i=1;i<=n;i++) {
+        indeg[blocked[i]]++
+        adj[blocker[i]] = adj[blocker[i]] (adj[blocker[i]] == "" ? "" : "\x1f") blocked[i]
+      }
+      qn=0
+      for (id in nodes) if (indeg[id]+0 == 0) { queue[qn++]=id; queued[id]=1 }
+      qi=0
+      while (qi<qn) {
+        cur=queue[qi++]
+        removed[cur]=1
+        split(adj[cur], parts, "\x1f")
+        for (k in parts) {
+          nb=parts[k]
+          if (nb == "") continue
+          indeg[nb]--
+          if (indeg[nb] == 0 && !(nb in queued)) { queue[qn++]=nb; queued[nb]=1 }
+        }
+      }
+      for (id in nodes) if (!(id in removed)) print id
+    }'
+}
+
+# cmd_triage — SH-308. Gathers the four reads story-triage's own step 1 used
+# to run one at a time (list, --stale, --blocked, and the cycle check above)
+# and returns them pre-classified into findings[], so the skill's job
+# narrows to presenting them and asking what to do — the actual RESOLUTION
+# commands (prioritize/label/block/unblock/relate/…) stay direct `story`
+# calls in the skill, exactly as they always were: each is already a single,
+# unambiguous CLI invocation with nothing to parse, and re-wrapping an
+# already-trivial call here would be complexity this story does not buy
+# anything with.
+cmd_triage() {
+  [ "$#" -eq 0 ] || fail "usage: story.sh triage"
+  require_story
+
+  local stale="${STORY_STALE_THRESHOLD:-3d}"
+  local list_json stale_json blocked_json
+  list_json=$(story_cli list --json 2>/dev/null) || true
+  [ -n "$list_json" ] || fail "story list produced no output."
+
+  # NOT defaulted to empty on failure: `--blocked` is a boolean flag that
+  # cannot itself be malformed, but `--stale` takes a value
+  # (STORY_STALE_THRESHOLD is env-overridable), and a bad one is a real,
+  # user-facing error the CLI already names clearly -- swallowing it into
+  # "no stale stories" would silently hide exactly the mistake a caller most
+  # needs to see. Mirrors _load_ready_stories' own "never a default" rule.
+  stale_json=$(story_cli list --stale "$stale" --json 2>/dev/null) || true
+  if [ "$(printf '%s' "$stale_json" | jq -r '.result // ""' 2>/dev/null)" != "ok" ]; then
+    fail "$(printf '%s' "$stale_json" | jq -r --arg stale "$stale" '.error // ("story list --stale " + $stale + " emitted no result")' 2>/dev/null)"
+  fi
+  blocked_json=$(story_cli list --blocked --json 2>/dev/null) || blocked_json='{"stories":[]}'
+
+  local edges cycle_ids cycle_json
+  edges=$(printf '%s' "$list_json" | jq -r '
+    .stories[]? | .story as $s
+    | ($s.relationships[]? | select(.relation == "blocked-by") | [.other_id, $s.id] | @tsv)
+  ')
+  cycle_ids=$(printf '%s\n' "$edges" | _find_blocking_cycles)
+  cycle_json=$(printf '%s\n' "$cycle_ids" | jq -R -s 'split("\n") | map(select(length > 0))')
+
+  # A full-project `list --json` is too big for --argjson: it goes on jq's own
+  # argv, and a large backlog (this project's own has 300+ stories) blows past
+  # the OS's ARG_MAX. --slurpfile reads a FILE's content instead, with no such
+  # ceiling — the tradeoff is each blob arrives wrapped in a 1-element array
+  # ($all[0], not $all), which the `as` binding below unwraps once.
+  local tmpdir
+  tmpdir=$(mktemp -d /tmp/story-triage.XXXXXX) || fail "could not create a scratch directory for triage."
+  printf '%s' "$list_json"    >"$tmpdir/all.json"
+  printf '%s' "$stale_json"   >"$tmpdir/stale.json"
+  printf '%s' "$blocked_json" >"$tmpdir/blocked.json"
+  printf '%s' "$cycle_json"   >"$tmpdir/cycles.json"
+
+  jq -n --slurpfile all_f "$tmpdir/all.json" --slurpfile stale_f "$tmpdir/stale.json" \
+        --slurpfile blocked_f "$tmpdir/blocked.json" --slurpfile cycles_f "$tmpdir/cycles.json" \
+        --arg stale_window "$stale" '
+    def rows($j): [ $j.stories[]? | .story ];
+    ($all_f[0])     as $all
+    | ($stale_f[0])   as $stale
+    | ($blocked_f[0]) as $blocked
+    | ($cycles_f[0])  as $cycles
+    | (rows($all))       as $all_rows
+    | (rows($stale))   as $stale_rows
+    | (rows($blocked)) as $blocked_rows
+    | ([ $all_rows[] | select(.priority == "none") ])                       as $unprioritized
+    | ([ $all_rows[] | select((.relationships // []) | length == 0) ])      as $orphans
+    | ([ $all_rows[] | select(.id as $id | $cycles | index($id) != null) ]) as $cyc_rows
+    | (
+        [ $blocked_rows[]    | {id, title, category:"blocked",       detail: (.awaiting // "blocked")} ]
+        + [ $stale_rows[]    | {id, title, category:"stale",         detail: ("stale " + $stale_window + "+")} ]
+        + [ $unprioritized[] | {id, title, category:"unprioritized", detail: "priority: none"} ]
+        + [ $cyc_rows[]      | {id, title, category:"cycle",         detail: "on a blocking cycle"} ]
+        + [ $orphans[]       | {id, title, category:"orphan",        detail: "no relationships"} ]
+      ) as $findings
+    | {
+        ok: true,
+        findings: $findings,
+        counts: {
+          blocked: ($blocked_rows|length), stale: ($stale_rows|length),
+          unprioritized: ($unprioritized|length), cycle: ($cyc_rows|length),
+          orphan: ($orphans|length)
+        },
+        display: (
+          "[story] triage — " + ($findings|length|tostring) + " finding(s):\n"
+          + (if ($blocked_rows|length) > 0 then
+               "\nBlocked (" + ($blocked_rows|length|tostring) + "):\n"
+               + ([ $blocked_rows[] | "  " + .id + " -- " + (.title // "(no title)") + (if .awaiting then " (" + .awaiting + ")" else "" end) ] | join("\n"))
+             else "" end)
+          + (if ($stale_rows|length) > 0 then
+               "\nStale (" + $stale_window + "+, " + ($stale_rows|length|tostring) + "):\n"
+               + ([ $stale_rows[] | "  " + .id + " -- " + (.title // "(no title)") ] | join("\n"))
+             else "" end)
+          + (if ($unprioritized|length) > 0 then
+               "\nUnprioritized (" + ($unprioritized|length|tostring) + "):\n"
+               + ([ $unprioritized[] | "  " + .id + " -- " + (.title // "(no title)") ] | join("\n"))
+             else "" end)
+          + (if ($cyc_rows|length) > 0 then
+               "\nBlocking cycle (" + ($cyc_rows|length|tostring) + "):\n"
+               + ([ $cyc_rows[] | "  " + .id + " -- " + (.title // "(no title)") ] | join("\n"))
+             else "" end)
+          + (if ($orphans|length) > 0 then
+               "\nOrphans (" + ($orphans|length|tostring) + "):\n"
+               + ([ $orphans[] | "  " + .id + " -- " + (.title // "(no title)") ] | join("\n"))
+             else "" end)
+          + (if ($findings|length) == 0 then "\nBacklog looks clean." else "" end)
+        )
+      }'
+  rm -rf "$tmpdir"
+}
+
+# ---- subcommand: scaffold-claude-md ------------------------------------------
+#
+# cmd_scaffold_claude_md [--path <file>] — SH-308. Sentinel-delimited
+# insert-or-replace of `story scaffold claude-md`'s output into a CLAUDE.md
+# file, replacing skills/story-setup/SKILL.md's step 4 hand-rolled text
+# surgery ("wrap the output in sentinel markers... if CLAUDE.md already
+# contains the begin marker, replace the existing block"). A model doing
+# this by hand risks exactly the bug this class of change tends to produce —
+# a near-miss on the sentinel string, or a replace that eats a line it
+# shouldn't — for a mechanical operation with one right answer. NOT awk: BSD
+# awk (this project's target, per lib/session.sh's own header) refuses a raw
+# newline inside a `-v` value ("newline in string"), so the multi-line
+# replacement block is threaded through a plain bash read loop instead.
+cmd_scaffold_claude_md() {
+  local path="CLAUDE.md"
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --path) path="${2:-}"; shift 2 || fail "--path needs a value." ;;
+      *) fail "unknown argument \`$1\` — usage: story.sh scaffold-claude-md [--path <file>]" ;;
+    esac
+  done
+  [ -n "$path" ] || fail "--path was given no value."
+  require_story
+
+  local content
+  content=$(story_cli scaffold claude-md 2>/dev/null) || true
+  [ -n "$content" ] || fail "story scaffold claude-md produced no output."
+
+  local begin='<!-- BEGIN STORYHOOK -->' end='<!-- END STORYHOOK -->'
+  local action
+  if [ -f "$path" ]; then
+    if grep -qF "$begin" "$path"; then action="replaced"; else action="appended"; fi
+  else
+    action="created"
+  fi
+
+  if [ -n "$DRY_RUN" ]; then
+    jq -n --arg path "$path" --arg action "$action" '
+      # $action is the PAST-tense form the real run reports (created/replaced/
+      # appended) — kept as one vocabulary across both modes rather than a
+      # second set of verbs, so a caller comparing a dry-run preview against
+      # the real result is comparing the same word. Only this one display
+      # string needs the present tense, so it maps locally instead.
+      ({created:"create", replaced:"replace", appended:"append"}[$action]) as $verb
+      | {ok:true, dry_run:true, path:$path, action:$action,
+         display:("[story] DRY RUN scaffold-claude-md: would " + $verb + " the storyhook block in `" + $path + "`.")}'
+    return 0
+  fi
+
+  local content_file
+  content_file=$(mktemp /tmp/story-scaffold.XXXXXX) || fail "could not create a scratch file."
+  printf '%s\n' "$content" >"$content_file"
+
+  case "$action" in
+    replaced)
+      # A plain bash line-reader, not sed/awk: it never has to know the
+      # block's own contents in advance (sed's -e would need the WHOLE
+      # replacement pre-escaped into its own script text), and it edits
+      # nothing outside the sentinel pair — everything else in the file
+      # passes through byte-for-byte.
+      local tmp in_block=0 line
+      tmp=$(mktemp "${path}.XXXXXX") || fail "could not create a scratch file next to $path."
+      while IFS= read -r line || [ -n "$line" ]; do
+        if [ "$line" = "$begin" ]; then
+          printf '%s\n' "$begin"
+          cat "$content_file"
+          printf '%s\n' "$end"
+          in_block=1
+          continue
+        fi
+        if [ "$in_block" = 1 ]; then
+          [ "$line" = "$end" ] && in_block=0
+          continue
+        fi
+        printf '%s\n' "$line"
+      done <"$path" >"$tmp"
+      mv "$tmp" "$path"
+      ;;
+    appended)
+      {
+        [ -s "$path" ] && printf '\n'
+        printf '%s\n' "$begin"
+        cat "$content_file"
+        printf '%s\n' "$end"
+      } >>"$path"
+      ;;
+    created)
+      {
+        printf '%s\n' "$begin"
+        cat "$content_file"
+        printf '%s\n' "$end"
+      } >"$path"
+      ;;
+  esac
+  rm -f "$content_file"
+
+  jq -n --arg path "$path" --arg action "$action" '
+    {ok:true, path:$path, action:$action,
+     display:("[story] scaffold-claude-md: " + $action + " the storyhook block in `" + $path + "`.")}'
 }
 
 # ---- subcommands: doctor / capture ------------------------------------------
@@ -2287,5 +2640,8 @@ case "${1:-}" in
   context)    shift; cmd_context "$@" ;;
   sync)       shift; cmd_sync "$@" ;;
   handoff)    shift; cmd_handoff "$@" ;;
-  *)          fail "usage: story.sh <list | view <story-id> | dispatch <story-id> [--auto] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | doctor | capture <story-id> | ensure-cli | context [--full] | sync [--since <d>] | handoff [--since <d>]>" ;;
+  work)       shift; cmd_work "$@" ;;
+  triage)     shift; cmd_triage "$@" ;;
+  scaffold-claude-md) shift; cmd_scaffold_claude_md "$@" ;;
+  *)          fail "usage: story.sh <list | view <story-id> | dispatch <story-id> [--auto] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | doctor | capture <story-id> | ensure-cli | context [--full] | sync [--since <d>] | handoff [--since <d>] | work [story-id] | triage | scaffold-claude-md [--path <file>]>" ;;
 esac
