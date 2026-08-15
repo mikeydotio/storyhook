@@ -7712,3 +7712,201 @@ fn status_prompt_state_lives_in_state_not_on_the_node() {
          remembers to consult a busy predicate -- and two callers already do not."
     );
 }
+
+/// `promptForDestination` is gone, and no clock reaches its replacement
+/// (SH-334).
+///
+/// `promptForDestination` appended its panel straight into a live `.status-row`
+/// node and held the editor's refreshes off with nothing but `select.focus()`
+/// -- the exact substrate SH-324's own council rejected for the sibling
+/// confirmation, and the reason a click on the page background or a Tab away
+/// let the 25s safety poll discard a destination choice the user had made but
+/// not applied. A future reintroduction of a function by this name, appended
+/// into a row the same way, is the identical defect wearing its original name;
+/// pinning its absence is cheaper than trusting nobody brings it back.
+///
+/// `setTimeout` is checked in both of its replacement's arm/build sites --
+/// `openStatusMove` (where a debounce guarding a doubled click would be a new
+/// time limit, not a fix; the row's Cancel and the panel's own Apply-only
+/// shape guard that instead) and `buildDestinationPanel` (the render itself).
+#[test]
+fn the_destination_prompt_runs_on_no_clock() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let script = script(&body);
+
+    assert!(
+        !script.contains("function promptForDestination"),
+        "promptForDestination is back. It held the editor's refreshes off with nothing but \
+         select.focus() -- the exact mechanism SH-324's council rejected -- and a click on \
+         the page background or a Tab away let the safety poll discard a destination choice \
+         the user had made but not applied (SH-334). Paint from state.statusPrompt instead."
+    );
+
+    for signature in [
+        "function openStatusMove(status, intent, superState) {",
+        "function buildDestinationPanel(status, row, prompt) {",
+    ] {
+        let fn_start = script
+            .find(signature)
+            .unwrap_or_else(|| panic!("{signature} must exist with this exact signature"));
+        let close = "\n  }\n";
+        let fn_end = fn_start
+            + script[fn_start..]
+                .find(close)
+                .unwrap_or_else(|| panic!("{signature}'s closing brace"))
+            + close.len();
+        assert!(
+            !script[fn_start..fn_end].contains("setTimeout"),
+            "{signature} schedules something. Whatever it is, a question a timer can reach \
+             is a time limit on completing an action -- SH-334 removed the last one here, \
+             and a debounce added to guard a doubled click would be a new one rather than a \
+             fix (the row's Cancel and the panel's Apply-only shape guard that instead)."
+        );
+    }
+}
+
+/// The destination question's *answer* survives a repaint, not just the
+/// question itself (SH-334).
+///
+/// This is the half a `statusPrompt`-only fence would miss. `buildStatusRow`
+/// painting `state.statusPrompt` (pinned above) proves the question is not
+/// discarded; it says nothing about whether the choice inside it is. Two
+/// further paints have to read from `state` for that to hold:
+/// `buildStatusRow`'s own superstate `<select>` must show a pending
+/// `superState` while a reclassify question is open beneath it, or the
+/// control and the sentence disagree from the first repaint onward with no
+/// second render to notice; and `buildDestinationPanel`'s own `<select>` must
+/// show a pending `destination`, or a repaint resets it to "nothing chosen"
+/// and Apply either sends stories nobody picked or (as this dashboard does
+/// instead) refuses until the user re-answers a question they already
+/// answered once.
+#[test]
+fn the_destination_prompts_answer_is_painted_from_state_too() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let script = script(&body);
+
+    let slice_of = |signature: &str| {
+        let fn_start = script
+            .find(signature)
+            .unwrap_or_else(|| panic!("{signature} must exist with this exact signature"));
+        let close = "\n  }\n";
+        let fn_end = fn_start
+            + script[fn_start..]
+                .find(close)
+                .unwrap_or_else(|| panic!("{signature}'s closing brace"))
+            + close.len();
+        script[fn_start..fn_end].to_string()
+    };
+
+    assert!(
+        // The exact expression the superstate `<select>`'s `selected:` reads,
+        // not just the substring "prompt.superState" -- which the earlier
+        // reconciliation block (the "already applied elsewhere" clear) also
+        // contains, and would let a mutation that deletes ONLY the paint site
+        // pass this fence while the real regression -- the select snapping
+        // back to the server's stale value mid-question -- still reproduces,
+        // as confirmed against status-destination-prompt.spec.ts.
+        slice_of("function buildStatusRow(status, index) {")
+            .contains("prompt.intent === \"reclassify\" ? prompt.superState"),
+        "buildStatusRow's superstate select no longer paints prompt.superState, so a repaint \
+         mid-question snaps it back to the server's stale value while the panel beneath it \
+         still describes the pending change -- the control and the sentence would disagree, \
+         and there is no second render to notice."
+    );
+    let destination_panel = slice_of("function buildDestinationPanel(status, row, prompt) {");
+    assert!(
+        destination_panel.contains("!prompt.destination"),
+        "buildDestinationPanel's placeholder option no longer reads prompt.destination, so \
+         \"nothing chosen\" (SH-334 Q3) stops being paintable and Apply can no longer tell a \
+         fresh open from an answered one."
+    );
+    assert!(
+        // The exact comparison inside the mapped `<option>`s, not just the
+        // substring "prompt.destination" -- which the placeholder option
+        // above also contains, and would let a mutation that deletes ONLY
+        // the mapped options' `selected:` (leaving the placeholder's own
+        // check intact) pass this fence while the real regression -- every
+        // repaint resetting a chosen destination to the placeholder -- still
+        // reproduces, as confirmed against status-destination-prompt.spec.ts.
+        destination_panel.contains("other.slug === prompt.destination"),
+        "buildDestinationPanel's mapped options no longer mark the CHOSEN destination as \
+         selected, so a repaint resets it to the placeholder -- surviving the QUESTION is not \
+         the same fact as surviving the ANSWER, and this is the half that fence would miss."
+    );
+}
+
+/// `statusEditorIsBusy()` is not taught a new question (SH-324's council,
+/// applied to SH-334).
+///
+/// SH-324's council rejected widening this predicate to cover the confirmation
+/// it was fixing, because `statusMutation()`'s two callbacks consult no busy
+/// guard and cannot be made to -- repainting from the server's authoritative
+/// answer is their whole job, so a widened predicate would still be bypassed
+/// by exactly the paths that mattered. The same reasoning applies to SH-334's
+/// destination question without needing to be re-litigated; this fence pins
+/// that the repair was not reached for a second time.
+///
+/// It is not the only thing that would notice: mutating this predicate to
+/// `|| !!state.statusPrompt` also turns
+/// `status-destination-prompt.spec.ts`'s "cleared, not withdrawn" spec red --
+/// `refreshStatusesIfIdle()` and `renderSettings()`'s own guard both consult
+/// this predicate, so a permanently-true reading (a prompt being open is true
+/// for the whole time it is open, blur or no blur -- unlike the real
+/// focus-based reading) blocks every poll from ever refreshing `state.statuses`
+/// at all, and a destination that vanished on the server is never noticed
+/// client-side. But this fence still earns its keep: it pins the doctrine
+/// directly, at the one call site the repair would touch, rather than by way
+/// of a downstream symptom in one e2e spec -- and it fails in milliseconds
+/// rather than the ~60s of frozen-clock time that spec spends proving it.
+#[test]
+fn status_editor_is_busy_is_not_taught_about_the_destination_prompt() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let script = script(&body);
+
+    let signature = "function statusEditorIsBusy() {";
+    let fn_start = script
+        .find(signature)
+        .expect("statusEditorIsBusy() must exist with this exact signature");
+    let close = "\n  }\n";
+    let fn_end = fn_start
+        + script[fn_start..]
+            .find(close)
+            .expect("statusEditorIsBusy's closing brace")
+        + close.len();
+    let body_of_fn = &script[fn_start..fn_end];
+
+    for needle in ["statusPrompt", "status-destination"] {
+        assert!(
+            !body_of_fn.contains(needle),
+            "statusEditorIsBusy() now mentions {needle:?}. SH-324's council rejected \
+             widening this predicate to cover an open question, because statusMutation()'s \
+             two callbacks consult no busy guard and cannot be made to -- repainting from \
+             the server's authoritative answer is their whole job. Paint the question from \
+             state.statusPrompt on every render instead (see buildStatusRow)."
+        );
+    }
+}
