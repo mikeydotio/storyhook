@@ -16194,6 +16194,110 @@ resumed rather than restarting the run.
 **Deviations:** the log entry you are reading rides in its own worktree and its
 own PR, per step 8 and the new rule together.
 
+### SH-186 — a wedged tailscale must cost the dashboard nothing · 2026-08-15
+
+**Outcome:** the reported symptom (an isolated-run test failure) was already
+gone — the story's own baseline reproduction depended on a pre-SH-237 test
+design (`--port <reserve_port()>`) this repo had already replaced with
+portfile discovery. Reassessed rather than closed as unreproducible: the same
+code path carried a live defect the original test's 20s bound was too loose
+to catch. `bind_listeners` shelled out to `tailscale status --json` (capped
+at 3s) *between* binding the loopback socket and starting to serve it.
+Measured, wedged `tailscale`: `story web start` took 3.28s of its 5s
+`SPAWN_DEADLINE`; a direct `story web --serve` had a 2.96s window where the
+socket accepted connections and answered nothing.
+
+**Council: yes** — `.council/sh-186-tailnet-advertise/`, 3 seats
+(security-researcher, software-architect, qa-engineer), round 1 split 1-0-2
+(the architect's own tri-state-portfile proposal got zero votes including
+their own), one deliberation round converged all three on the same
+mechanism, ranked-choice runoff 2-1. Decided against a new `Pending | Absent
+| Bound` portfile field: trust is bind-derived, not advertisement-derived,
+and `probe_and_bind_tailnet`'s own doc comment already declares its `None`
+result deliberately undifferentiated across three causes — a tri-state would
+contradict a precedent one function away, for a security benefit nobody
+could name. `story web start` prints loopback immediately, plus a stderr
+note when the tailnet is not yet known.
+
+**The fix.** `bind_listeners` binds loopback and stops, on every machine —
+no probe, no tailnet bind attempt. `serve::tailnet_reprobe` (SH-146's
+self-heal thread) becomes the only path a tailnet interface is ever bound,
+first attempt included; its loop inverted from sleep-then-probe to
+probe-then-sleep so the first attempt fires immediately rather than after a
+2s default backoff delay — the one implementation hazard the council
+surfaced and fixed before it could ship as a flat regression on the healthy
+case. The test seam (`bind_and_serve`, `test-seam` feature only) keeps its
+own synchronous probe, since it's the one caller whose contract needs the
+tailnet answer at `ready()` time — production has no such caller anymore.
+
+**A sibling defect the frequency shift exposed, found by chasing a flake
+rather than by inspection.** `worker`'s per-connection closure held
+`trusted_hosts`'s `RwLock` read guard for the *entire* request it was
+handling — latent as long as `tailnet_reprobe`'s write (the lock's only
+writer) almost never ran on a tailnet-equipped machine's daemon (the sync
+probe had already succeeded before `serve` started). Making that write run
+for nearly every daemon turned it into a five-second `story daemon stop`
+timeout against any daemon serving an open SSE connection — a browser tab,
+or this repo's own heartbeat test, which flaked 5/8 under load and 0/8 on
+the unmodified baseline under identical load, ruling out "just the machine
+is busy" before writing a line of fix. Root-caused by manual reproduction
+outside `cargo test` (curl against a real daemon, in a tight loop, saving
+the daemon's own log on failure) once the in-suite flake resisted three
+different theories. Fixed at the origin: the closure clones the small
+`TrustedHosts` value out and drops the lock immediately, rather than holding
+it across a request that can run for as long as a browser tab stays open.
+
+**Test-fixture fallout.** One existing test
+(`web_open_falls_back_to_the_bare_url_when_arming_fails`) corrupted a live
+daemon's portfile token on the documented assumption that "the daemon reads
+its portfile once at startup and never again" — true before this story,
+false after, on a tailnet-equipped machine. Fixed by starting that one
+daemon with no `tailscale` on `PATH`, so it can never rewrite the portfile a
+second time — deterministic, not a race against timing luck. Swept for
+siblings across every other test that mutates the portfile directly
+(`tests/daemon_lifecycle.rs`, `tests/daemon_git_env.rs`); one other
+(`a_daemon_from_another_build_is_replaced_rather_than_reused`) has the same
+theoretical shape but did not reproduce in 8/8 stress runs — its
+corrupt-then-read window is orders of magnitude narrower. Left as a named,
+unfixed residual rather than patched speculatively.
+
+**Measured, before → after** (`TAILNET_PROBE_TIMEOUT` = 3s, `SPAWN_DEADLINE`
+= 5s): `web start` under a wedged `tailscale`, 3.28s → ~0.1s; accepting-but-
+silent window, 2.96s → 0.00s; `web start` with no `tailscale` on `PATH` at
+all, 0.08s → 0.08–1.3s (system-load noise, confirmed not a regression by
+direct comparison against the unmodified baseline under the same load).
+
+**Tests:** new `tests/tailnet_startup.rs` (4 tests, bounds derived from
+`TAILNET_PROBE_TIMEOUT` rather than a magic number), one new unit test
+(`bind_listeners_never_itself_produces_a_tailnet_bind`), one new lock-
+scoping regression test, `tests/tailnet_probe_budget.rs` restated to a
+stronger premise with a race-free assertion (waits for the daemon's own
+confirmed bind rather than a counter-quiet-window heuristic — the first
+version of that fix was itself racy under `--test-threads=4` and had to be
+rewritten once already). `tests/tailnet_rebind.rs` and
+`tests/tailnet_advertise.rs` unchanged and green. The six tailnet-listener
+tests in `web_test.rs` keep exercising a real bind via the test seam, not
+skipped — checked directly (zero `skipping: the test server bound no
+tailnet interface` lines in the gate run), the single highest-risk way this
+story could have shipped looking complete while quietly deleting that
+coverage.
+
+**Gate:** `make test` red three times before green — each a different real
+defect, not the same one retried: (1) the mutation itself, caught before any
+commit; (2) the SSE lock-scoping sibling, caught by the flaky-test
+investigation above; (3) the portfile-corruption test-fixture race, caught
+by the same class of investigation applied a second time. Green on the
+fourth full run: 3506+ Rust tests, plugin harness 32/32, Playwright 207/207,
+fmt and clippy clean. Mutation-checked: reinstating the synchronous probe
+inside `bind_listeners` turns all four `tailnet_startup.rs` assertions red;
+reverting the `trusted_hosts` clone turns the new lock-scoping test red.
+Both reverted after confirming.
+
+**Deviations:** none from the approved plan. The council's advertised-host
+decision and the two sibling defects were not anticipated in the plan; both
+are documented above and in `docs/spec/dashboard-authorization.md`'s new "As
+built — SH-186" section.
+
 ### SH-300 — a deep-linked drawer can open over Settings · PR #415
 
 **Outcome:** merged (PR #415). A deep-linked story that resolves after the

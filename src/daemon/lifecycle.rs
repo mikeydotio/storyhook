@@ -676,15 +676,15 @@ pub fn info_for(
 /// daemon actually is, so nothing downstream needs the preferred port to have
 /// been available.
 ///
-/// The tailnet probe inside [`super::serve::bind_listeners`] runs **at most
-/// once** here, never twice (SH-147, filed speculatively against a `2 *
-/// TAILNET_PROBE_TIMEOUT` inside [`SPAWN_DEADLINE`] and not reproduced): the
-/// fallback below only runs when the first call's loopback bind already
-/// failed, and `bind_listeners` returns before it ever reaches the probe on
-/// that path. That ordering is load-bearing — reorder `bind_listeners` so the
-/// probe can run before its loopback bind is known to have succeeded, and a
-/// taken preferred port starts spending two probes inside one spawn window.
-/// `tests/tailnet_probe_budget.rs` pins it.
+/// SH-147 was filed speculatively — worried this could call the tailnet
+/// probe inside [`super::serve::bind_listeners`] twice, spending `2 *
+/// TAILNET_PROBE_TIMEOUT` inside [`SPAWN_DEADLINE`] on a fallback — and was
+/// never reproduced, because `bind_listeners` binds loopback before it
+/// probes, so a port-taken failure returns before the probe is ever reached.
+/// SH-186 removed the concern at its root rather than merely confirming that
+/// ordering: `bind_listeners` no longer probes the tailnet at all, on either
+/// call here, so there is no probe on this path to double.
+/// `tests/tailnet_probe_budget.rs` now pins the stronger claim.
 pub fn bind_preferred(
     env: &Environment,
 ) -> Result<(Vec<super::serve::Listener>, super::serve::BoundAddress), AppError> {
@@ -702,8 +702,11 @@ pub fn bind_preferred(
 /// does from here on can panic unrecorded), take the lifetime lock (so a
 /// second daemon cannot start), harvest whatever residue that lock's previous
 /// holder left (SH-287 — the portfile still names *them*, and `write_info`
-/// below is about to overwrite it), bind (so the port is real), publish the
-/// portfile (so a client can find it), then serve.
+/// below is about to overwrite it), bind loopback (so the port is real),
+/// publish the portfile (so a client can find it), then serve — and only
+/// from a background thread inside `serve`, after all of that, does anything
+/// ever probe the tailnet (SH-186). No step before `serve` waits on
+/// `tailscale` in any way.
 pub fn run<S: crate::store::Store>(store: &S, env: &Environment) -> Result<(), AppError> {
     crate::daemon::crash::install_panic_hook(env);
     let _pidfile = claim_pidfile(env)?;
@@ -740,11 +743,13 @@ pub fn run<S: crate::store::Store>(store: &S, env: &Environment) -> Result<(), A
         bus,
         info.token.clone(),
         || {},
-        // Fires at most once (SH-146), from the background thread that binds
-        // a tailnet interface this daemon missed at startup. Without this the
-        // portfile would keep reading `tailnet: None` forever after a silent
-        // self-heal, so `story daemon status`/`address` — reading the same
-        // file — would still report the daemon as loopback-only.
+        // Fires at most once, from the background thread that binds the
+        // tailnet interface (SH-146's self-heal path, and since SH-186 the
+        // *only* path — every tailnet bind is "late" relative to `serve`
+        // starting, including the first). Without this the portfile would
+        // keep reading `tailnet: None` forever after a bind that happened
+        // off this thread, so `story daemon status`/`address` — reading the
+        // same file — would still report the daemon as loopback-only.
         move |bound: &super::serve::BoundAddress| {
             let mut info = info_for_late_bind.clone();
             info.tailnet = bound.tailnet.clone();

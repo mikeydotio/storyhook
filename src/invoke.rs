@@ -1356,6 +1356,7 @@ fn dispatch_daemon(action: DaemonAction) -> Result<Response, AppError> {
     match action {
         DaemonAction::Start { port } => {
             let info = crate::daemon::commands::start(&env, port)?;
+            crate::daemon::commands::note_tailnet_pending(&info);
             Ok(Response::Message(format!(
                 "storyhook daemon {} running at {} (PID {})",
                 info.version,
