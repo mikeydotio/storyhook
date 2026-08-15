@@ -22,10 +22,11 @@ use std::path::Path;
 use std::sync::Arc;
 use storyhook::cli::parse_invocation;
 use storyhook::daemon::serve::BoundAddress;
+use storyhook::domain::provenance::Provenance;
 use storyhook::env::Environment;
 use storyhook::invoke::{dispatch, dispatch_unscoped};
 use storyhook::service::Ctx;
-use storyhook::store::{ProjectId, ReadOps, SqliteStore, Store};
+use storyhook::store::{ProjectId, ReadOps, SqliteStore, Store, StoryNo};
 use storyhook_test_support::{
     DaemonGuard, TestEnv, scratch_dir, serve, wait_for_addr, wait_for_server,
 };
@@ -3440,6 +3441,85 @@ fn web_create_story_invalid_priority_is_422() {
     let data_json: serde_json::Value =
         serde_json::from_str(&data.into_body().read_to_string().unwrap()).unwrap();
     assert_eq!(data_json["summary"]["total_open"], 0);
+}
+
+/// SH-312: before this, `route_create_story`'s `Ctx` carried no provenance at
+/// all, so a web-created story's `StoryCreated` event read back as
+/// [`Provenance::unrecorded`] — indistinguishable from a pre-SH-246 row or a
+/// test fixture, which is what made diagnosing SH-310/SH-311 (two identical
+/// stories filed 24 seconds apart from the dashboard) require a raw store
+/// dump instead of a `story log`.
+#[test]
+fn web_create_story_is_attributable_to_the_web_door() {
+    let fixture = served();
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    post_json(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
+        r#"{"title":"Attributable via web"}"#,
+    )
+    .unwrap();
+
+    let events = Store::read(&*fixture.store, |tx| {
+        tx.events_for(fixture.project, StoryNo::new(1))
+    })
+    .unwrap();
+    let created = events
+        .iter()
+        .find(|e| e.kind == "StoryCreated")
+        .expect("a StoryCreated event");
+    assert!(
+        !created.provenance.is_unrecorded(),
+        "a web-door write must not fold to Provenance::unrecorded"
+    );
+    assert_eq!(created.provenance, Provenance::command("web:new"));
+}
+
+/// SH-312's council verdict (`.council/sh312-dashboard-create-idempotency/`):
+/// truth-telling plus a client-side in-flight guard, not a server-side
+/// idempotency key. This pins that decision as *current, intentional*
+/// behavior at the layer this test can see — two independent REST creates
+/// with identical bodies are two distinct stories, exactly as `story new`
+/// typed twice at a terminal would be. If a future incident or a
+/// non-interactive REST consumer trips either flip trigger recorded in the
+/// council decision, this test is the one that must change alongside the fix.
+#[test]
+fn web_create_story_twice_with_identical_bodies_files_two_stories() {
+    let fixture = served();
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story");
+    let body =
+        r#"{"title":"Add a priority chooser to the story card right click menu","labels":["web"]}"#;
+
+    let first = post_json(&fixture, &url, body).unwrap();
+    let second = post_json(&fixture, &url, body).unwrap();
+    assert_eq!(first.status(), 201);
+    assert_eq!(second.status(), 201);
+
+    let first_json: serde_json::Value =
+        serde_json::from_str(&first.into_body().read_to_string().unwrap()).unwrap();
+    let second_json: serde_json::Value =
+        serde_json::from_str(&second.into_body().read_to_string().unwrap()).unwrap();
+    assert_ne!(
+        story_field(&first_json, "id"),
+        story_field(&second_json, "id")
+    );
+    assert_eq!(
+        story_field(&first_json, "title"),
+        story_field(&second_json, "title")
+    );
+
+    let data = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap();
+    let data_json: serde_json::Value =
+        serde_json::from_str(&data.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(data_json["summary"]["total_open"], 2);
 }
 
 #[test]

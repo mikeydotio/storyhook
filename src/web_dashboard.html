@@ -1409,6 +1409,22 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // never force-reconnected.
   var SSE_STALE_AFTER_MS = intFromQuery("sseStaleAfterMs", 50000);
 
+  // `api()`'s default timeout for a mutation (any method but GET) — SH-312's
+  // council-decided fix. 75s = the daemon's own documented worst case for a
+  // write, `event_hooks::HOOK_TIMEOUT_CEILING_SECS` (60s of synchronous
+  // post-commit hooks, run *after* the commit), plus a 15s margin for the
+  // zero-capacity dispatcher rendezvous a request queues behind
+  // (`daemon/serve.rs`) and the process-wide write lock. Before this, the
+  // default was a flat 10s against a server that could legitimately take far
+  // longer: the client gave up, reported "request timed out" as if the write
+  // had failed, and the user's natural next click filed a duplicate story
+  // against a create that had in fact already committed (the SH-310/SH-311
+  // incident this story investigates). `tests/dashboard_mutation_deadline.rs`
+  // fails if this drifts out of formula with `HOOK_TIMEOUT_CEILING_SECS`, so
+  // raising the server's ceiling without raising this is caught rather than
+  // silently reopening the same race.
+  var MUTATION_TIMEOUT_MS = intFromQuery("mutationTimeoutMs", 75000);
+
   var PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3, none: 4 };
 
   // ============================================================
@@ -2176,12 +2192,26 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   /** Issues an authenticated request. Always sets the CSRF header, JSON
    * content type, and the daemon's bearer token; resolves with the parsed
    * body on 2xx, rejects with {status, message} otherwise. `opts.headers`
-   * adds extra headers; `opts.timeoutMs` overrides the default 10s.
+   * adds extra headers; `opts.timeoutMs` overrides the default.
+   *
+   * The default itself is method-derived (SH-312): a GET keeps the original
+   * 10s (reads have no server-side write to wait out, and every hot read
+   * path — `fetchData()`, `fetchReposOnce()` — already bypasses this helper
+   * with its own 8s budget; the handful of GETs that do come through here,
+   * e.g. a dispatch poll, are cheap and idempotent, so a short timeout costs
+   * nothing but an extra poll). Any other method is a mutation and gets
+   * {@link MUTATION_TIMEOUT_MS} — see its own comment for why a flat 10s was
+   * the defect, not the fix.
    *
    * A 401 means the stored token (see AUTHENTICATION, above) is missing or
    * stale. Handled here once, for every caller: clear it, open the modal,
    * and -- if the user saves a fresh one -- retry this exact request
-   * transparently, so a 401 costs a caller nothing but latency. If the
+   * transparently, so a 401 costs a caller nothing but latency. This is
+   * safe to retry even for a mutation and is not the blind replay SH-312's
+   * RCA warns against: admission decides a 401 *before* any handler reads
+   * the body (`api::admission`), so the first attempt is provably
+   * `Transport`-equivalent to "nothing was delivered" — the one case
+   * `HttpInvoker` (`src/invoke.rs`) also retries without hesitation. If the
    * user dismisses the modal instead, the promise rejects with status 401
    * like any other failure. */
   function api(method, path, body, opts) {
@@ -2197,7 +2227,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
             xhr.setRequestHeader(name, opts.headers[name]);
           });
         }
-        xhr.timeout = opts.timeoutMs || 10000;
+        xhr.timeout = opts.timeoutMs || (method === "GET" ? 10000 : MUTATION_TIMEOUT_MS);
         xhr.onreadystatechange = function() {
           if (xhr.readyState !== 4) return;
           var parsed = null;
@@ -8165,6 +8195,29 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * fresh on every `openCreateModal()` call, read back on save/publish. */
   var createLabelCombobox = null;
 
+  /** Whether one of the create modal's three mutating actions (Create/Publish,
+   * Save Draft, Discard Draft) has a request outstanding (SH-312). Without
+   * this, `submitCreate()` had no in-flight guard at all: the button was
+   * never disabled, so a second click — or a second Enter in `#create-title`
+   * — while the first request was still running fired a second, byte-identical
+   * `POST .../story` and filed a duplicate story. All three actions share one
+   * flag and disable together, the same way `dispatchButtons()` disables both
+   * of its buttons for one in-flight dispatch: only one of the three can ever
+   * be a live request at a time, so letting the others stay clickable would
+   * invite a click that either races the in-flight one or discards its
+   * result. */
+  var createModalInFlight = false;
+
+  /** Sets {@link createModalInFlight} and reflects it onto the three buttons
+   * it guards. Centralized so `openCreateModal()` can reset it defensively
+   * without duplicating the three ids it touches. */
+  function setCreateModalInFlight(value) {
+    createModalInFlight = value;
+    $("create-submit").disabled = value;
+    $("create-save-draft").disabled = value;
+    $("create-discard").disabled = value;
+  }
+
   /** The draft being edited, or `null` when the modal is in ordinary "New
    * story" mode — a `StoryView`-shaped object from `state.data.drafts`
    * (SH-175). Set by `openCreateModal(draft)`, read by `discardDraft()`,
@@ -8189,6 +8242,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function openCreateModal(draft) {
     if (!state.data) return;
     editingDraft = draft || null;
+    // Defensive reset (SH-312): the modal is a singleton reused across opens,
+    // so a stuck flag from an unreachable error path would otherwise leave
+    // every future open permanently disabled.
+    setCreateModalInFlight(false);
     var story = editingDraft ? editingDraft.story : null;
     $("create-modal-header").textContent = story ? "Edit draft" : "New story";
     $("create-submit").textContent = story ? "Publish" : "Create Story";
@@ -8274,6 +8331,31 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return Promise.all(calls);
   }
 
+  /** How a create-modal mutation's `.catch` describes an outcome the client
+   * cannot prove either way (SH-312). `status === 0` is `api()`'s signal
+   * that no reply ever arrived — `onerror` (a network failure) or
+   * `ontimeout` (the client gave up waiting) — and neither means the daemon
+   * did not act: a mutation's deadline ({@link MUTATION_TIMEOUT_MS}) is set
+   * to the server's own documented worst case, not to "the daemon is
+   * definitely gone," so a timeout can fire while the write is still
+   * committing or has already committed. Reporting that as a definite
+   * failure is what turned a slow-but-successful create into a duplicate
+   * one: the user believed it, and resubmitted. This mirrors
+   * `HttpInvoker`'s own "may or may not have run" wording in `src/invoke.rs`
+   * — the CLI's answer to the identical ambiguity — and refetches in the
+   * background either way, so the board behind the still-open modal already
+   * shows the truth by the time the user reads the message. Any other
+   * status is the daemon itself answering with a definite outcome
+   * (400/403/422/500/…), which is not ambiguous and keeps its own message
+   * unchanged. */
+  function describeMutationFailure(err) {
+    fetchData();
+    if (err.status === 0) {
+      return "storyhook could not confirm whether this reached the daemon — it may or may not have gone through. Check the board, then try again if it didn't.";
+    }
+    return err.message;
+  }
+
   /** Discard Draft (SH-175). Editing an existing draft: deletes it outright
    * — "discard" on an already-persisted draft means it goes away, matching
    * the button's red, destructive styling. Creating a new one: nothing has
@@ -8281,10 +8363,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * behavior the old Cancel button always had. */
   function discardDraft() {
     if (!editingDraft) { closeCreateModal(); return; }
+    if (createModalInFlight) return;
+    setCreateModalInFlight(true);
     var id = editingDraft.story.id;
     api("DELETE", apiBase() + "/story/" + encodeURIComponent(id), { reason: "Discarded draft" })
-      .then(function() { closeCreateModal(); fetchData(); })
-      .catch(function(err) { $("create-error").textContent = err.message; });
+      .then(function() { setCreateModalInFlight(false); closeCreateModal(); fetchData(); })
+      .catch(function(err) { setCreateModalInFlight(false); $("create-error").textContent = describeMutationFailure(err); });
   }
 
   /** Save Draft (SH-175): writes the form's fields but never changes draft
@@ -8293,8 +8377,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * modal at all — see `renderDraftsList()`, the only place that opens it
    * in edit mode). */
   function saveDraft() {
+    if (createModalInFlight) return;
     var body = createFormFields();
     if (!body.title) { $("create-error").textContent = "Title is required."; return; }
+    setCreateModalInFlight(true);
     var request;
     if (editingDraft) {
       var id = editingDraft.story.id;
@@ -8307,8 +8393,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       request = api("POST", apiBase() + "/story", body);
     }
     request
-      .then(function() { closeCreateModal(); fetchData(); })
-      .catch(function(err) { $("create-error").textContent = err.message; });
+      .then(function() { setCreateModalInFlight(false); closeCreateModal(); fetchData(); })
+      .catch(function(err) { setCreateModalInFlight(false); $("create-error").textContent = describeMutationFailure(err); });
   }
 
   /** Create Story / Publish (SH-175) — the button `submitCreate` always
@@ -8316,10 +8402,18 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * story: POSTs live (no `draft` field — `story new`'s own default).
    * Editing a draft: saves the field edits, then publishes — one click
    * does both, since a click on the modal's one remaining primary action
-   * is the only chance to say "and now make it live" this form offers. */
+   * is the only chance to say "and now make it live" this form offers.
+   *
+   * Guarded by {@link createModalInFlight} (SH-312): without it, this ran
+   * unguarded from two independent entry points — the button's `click` and
+   * Enter in `#create-title` — and neither disabled anything while the
+   * request was outstanding, so two submissions of an unchanged form filed
+   * two byte-identical stories. */
   function submitCreate() {
+    if (createModalInFlight) return;
     var body = createFormFields();
     if (!body.title) { $("create-error").textContent = "Title is required."; return; }
+    setCreateModalInFlight(true);
     var request;
     if (editingDraft) {
       var id = editingDraft.story.id;
@@ -8333,6 +8427,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     }
     request
       .then(function() {
+        setCreateModalInFlight(false);
         closeCreateModal();
         // SH-127: no success toast here -- the new card's own "entering"
         // animation (reconcileColumnCards, driven by diffSnapshots'
@@ -8342,7 +8437,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         // disambiguate (council: .council/sh127-status-flash-scope/).
         fetchData();
       })
-      .catch(function(err) { $("create-error").textContent = err.message; });
+      .catch(function(err) { setCreateModalInFlight(false); $("create-error").textContent = describeMutationFailure(err); });
   }
 
   // ============================================================
