@@ -866,3 +866,101 @@ the README's Network exposure section as well.
   fresh tab is refused until it presents a token; a redeemed coupon's cookie is invisible to
   `document.cookie`; a handed-off tab's Dispatch button is fully enabled, not held to a
   narrower scope that no longer exists.
+
+## As built — SH-186: the tailnet probe left the daemon's path to serving
+
+SH-186 was filed as a flaky-test report — `a_wedged_tailscale_cli_cannot_stop_the_dashboard_
+from_serving` failed in isolation, passed under the full gate. Reassessed: the failure mode
+the story described (a client polling a pre-reserved port that a fallback bind had already
+abandoned — the SH-51 shape) no longer exists; SH-237 replaced it with portfile-and-pid
+discovery on 2026-08-12. What remained was a live defect on the same path the old test
+happened to be probing.
+
+**The defect.** `bind_listeners` bound the loopback socket and *then* shelled out to
+`tailscale status --json` (capped at `TAILNET_PROBE_TIMEOUT`, 3s) before returning — so for as
+long as that probe blocked, the socket accepted connections and answered nothing, and no
+portfile existed for any client to find. Measured on a wedged `tailscale` (a shim that sleeps
+120s): `story web start` took 3.28s of its 5s `SPAWN_DEADLINE`; a direct `story web --serve`
+had a 2.96s window where the socket was open and silent.
+
+**The fix.** `bind_listeners` binds loopback and stops — no probe, no tailnet bind attempt, on
+any machine. `serve::tailnet_reprobe` (SH-146's self-heal thread) becomes the *only* path a
+tailnet interface is ever bound, first attempt included: its loop was inverted from
+sleep-then-probe to probe-then-sleep, so the first attempt runs immediately rather than after
+its retry schedule's `initial` delay (2s by default) — a fix that trades an unbounded worst
+case for a bounded one only if the common case does not regress by that same `initial` delay.
+`peer_admitted` and `tailnet_reprobe`'s own "never triggered by request arrival" invariant
+(cited earlier in this document, and by `peer_admitted`'s doc comment) are unchanged; the
+trust window SH-255's council already reasoned about ("unreachable by construction" while no
+tailnet listener exists) is now merely open for a background thread's first attempt instead of
+a rarer self-heal — longer in the common case, not different in kind.
+
+**The advertised-host decision.** With the probe asynchronous, a freshly spawned daemon's
+portfile reads `tailnet: None` at the instant a client sees it healthy — the probe has not
+answered yet. A 3-seat council (security-researcher, software-architect, qa-engineer;
+`.council/sh-186-tailnet-advertise/`, gitignored, so the verdict is recorded as a comment on
+SH-186) decided against a `Pending | Absent | Bound` tri-state on `DaemonInfo`: trust is
+bind-derived, never advertisement-derived (`TailnetIdentity::into_bound` is `pub(crate)`,
+consuming, reachable only after a successful bind), so a tri-state would buy no security
+benefit for real schema growth on a portfile that already carries a live bearer token at mode
+0600 — and `probe_and_bind_tailnet`'s own doc comment already declares `None` deliberately
+undifferentiated across "no tailnet," "missed deadline," and "failed bind," a precedent a
+tri-state would contradict one function away. Instead: `story daemon start`/`web start` print
+the loopback URL immediately, plus a stderr note (`commands::note_tailnet_pending`) whenever
+the tailnet is not yet known; `daemon status`/`address`/`open` re-read the portfile fresh, same
+as SH-146's late-bind case always behaved.
+
+**A sibling defect the frequency shift exposed.** `worker`'s per-connection closure held
+`trusted_hosts`'s `RwLock` read guard for the *entire* duration of the request it was
+handling, not merely for the admission checks that need it — latent as long as
+`tailnet_reprobe`'s write (the lock's only writer) almost never ran on a machine whose
+tailnet was already bound synchronously at startup. Making that write run for nearly every
+daemon turned the latent bug into a reproducible one: an open `GET /api/events` connection (a
+browser tab, or a raw test connection) held the guard for as long as it stayed open, which
+blocked the reprobe's write, which — because a writer waiting on `std::sync::RwLock` can
+block new readers behind it — blocked every *other* reader, `story daemon stop`'s own
+admission check included, until the SSE connection closed. Fixed at the origin: the closure
+now clones the small (`Vec<String>` × 2) `TrustedHosts` value out and releases the lock
+immediately, preserving the "fresh per request" guarantee SH-146 needs without asking any
+reader to hold the lock for longer than a clone takes. The same over-broad hold applied to a
+live agent dispatch (also "answered here… for tens of seconds," per `worker`'s own doc
+comment) — fixed by the same change, not separately.
+
+**Test-fixture fallout.** One test (`web_open_falls_back_to_the_bare_url_when_arming_fails`)
+corrupted a running daemon's portfile token and depended on the daemon never rewriting it
+during the test's brief window — true before SH-186 (a synchronous probe already resolved
+before `web start` returned) and false after, on a tailnet-equipped machine, since
+`tailnet_reprobe`'s own legitimate write could now land in that window and silently restore
+the real token. Fixed by starting that one daemon with no `tailscale` on `PATH`, so it can
+never succeed a bind and never rewrites the portfile a second time — deterministic rather than
+a race won by timing luck.
+
+**Measured, before → after** (this machine, `TAILNET_PROBE_TIMEOUT` = 3s, `SPAWN_DEADLINE` =
+5s):
+
+| | before | after |
+|---|---|---|
+| `story web start`, wedged `tailscale` | 3.28s | ~0.1s |
+| `story web start`, healthy `tailscale` | 0.20s | ~0.1s (prints loopback + a resolving note) |
+| `story web start`, no `tailscale` on PATH | 0.08s | ~0.1s–1.3s (system-load noise; no regression) |
+| accepting-but-silent window, wedged `tailscale` | 2.96s | 0.00s |
+
+**Tests.** `tests/tailnet_startup.rs` (new) pins the silent-window and client-facing-latency
+claims against bounds derived from `TAILNET_PROBE_TIMEOUT` (now `pub`) rather than a wall-clock
+number six times looser than the mechanism it was meant to bound. `tests/tailnet_probe_budget.rs`
+(SH-147) is restated from "probes at most once" (true by construction now — verified directly
+by a new unit test, `daemon::serve::tests::bind_listeners_never_itself_produces_a_tailnet_
+bind`) to "one spawn never probes the tailnet more than once across a port fallback," with its
+own assertion race-fixed the same way the sibling defect above was found: waiting for the
+daemon's own confirmed bind rather than a counter-quiet-window heuristic, which itself raced
+under `--test-threads=4` contention. `tests/tailnet_rebind.rs` (SH-146) and
+`tests/tailnet_advertise.rs` (SH-110) are unchanged and green — the former is now the only
+end-to-end exercise of a real tailnet bind in production code; the latter's unbindable-IP
+fixture makes `tailnet: None` true regardless of timing either way. `tests/web_test.rs`'s six
+tailnet-listener seam tests keep passing unmodified because the test seam (`bind_and_serve`,
+`#[cfg(feature = "test-seam")]` only) keeps its own synchronous probe — production has none,
+but a synchronous test helper needs its answer at `ready()` time, not asynchronously.
+
+Mutation-checked: reinstating the synchronous probe inside `bind_listeners` turns all four
+`tailnet_startup.rs` assertions red; reverting the `trusted_hosts` clone turns the new
+lock-scoping regression test red. Both reverted after confirming.
