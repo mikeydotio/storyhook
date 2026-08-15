@@ -1,7 +1,8 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use crate::env::git_env;
 use crate::error::AppError;
 
 const HOOK_MARKER: &str = "# storyhook managed hook -- do not edit this line";
@@ -72,15 +73,87 @@ fn is_storyhook_hook(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-pub fn install_hooks(root: &Path) -> Result<String, AppError> {
-    let git_dir = root.join(".git");
-    if !git_dir.exists() {
-        return Err(AppError::Validation(
-            "not a git repository (no .git directory)".to_string(),
-        ));
+/// The hook directory storyhook owns, resolved by **asking git** rather than by
+/// assuming a layout.
+///
+/// `<root>/.git/hooks` was wrong in two ways, and this type exists to stop
+/// both. In a *linked* worktree `.git` is a file holding a `gitdir:` pointer,
+/// not a directory, so joining `hooks` onto it could not be created at all
+/// (SH-314) — and a worktree is where this project does most of its work.
+/// Worse, the obvious repair is also wrong: git resolves hooks for **every**
+/// worktree in the *common* directory, so an implementation that wrote into
+/// the worktree's private git directory would install hooks git never runs,
+/// which is the silent class SH-313 is about, one directory over.
+///
+/// Resolution is two steps, and both are load-bearing:
+///
+/// 1. `--show-toplevel` names the directory git runs hooks from. Asking for it
+///    first makes step 2 independent of the caller's working directory — which
+///    matters because since SH-114 this runs *in the daemon*, against the
+///    envelope's root rather than any shell's cwd. It also refuses a bare
+///    repository for free (`fatal: this operation must be run in a work tree`),
+///    preserving the refusal the hand-built path gave by accident.
+/// 2. `--git-common-dir` is asked **from that top-level**. It answers
+///    *relatively* in an ordinary checkout (`.git`) and *absolutely* in a linked
+///    worktree, so joining it onto the top-level is not defensive coding — it is
+///    the documented shape of the answer, and `Path::join` discards the
+///    left-hand side when the right is absolute, which is exactly the behaviour
+///    both cases need.
+///
+/// Every spawn goes through [`git_env::command`], the one place in `src/` that
+/// constructs a `git` (`tests/spawn_inventory.rs` fails on a second one).
+/// Nothing here is cached: the daemon outlives the shell that started it, and
+/// `GIT_CONFIG_GLOBAL` and its siblings reach git through that inherited
+/// environment, so an answer memoised once could outlive the configuration that
+/// produced it.
+#[derive(Debug, Clone)]
+struct HookDirs {
+    /// `--git-common-dir/hooks`: shared by every worktree, and the only
+    /// directory storyhook writes a managed hook into.
+    managed: PathBuf,
+}
+
+impl HookDirs {
+    /// Resolves the hook directories for the repository containing `cwd`.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::Validation`] when `cwd` is not inside a git working tree, or
+    /// when `git` cannot be run to ask. The message keeps the phrase
+    /// `not a git repository`, which is the contract two test files pin.
+    fn resolve(cwd: &Path) -> Result<Self, AppError> {
+        let toplevel = Self::ask(cwd, "--show-toplevel")?;
+        let common = Self::ask(&toplevel, "--git-common-dir")?;
+        Ok(Self {
+            managed: toplevel.join(common).join("hooks"),
+        })
     }
-    let hooks_dir = git_dir.join("hooks");
-    fs::create_dir_all(&hooks_dir)?;
+
+    /// One `git rev-parse <flag>`, refusing an empty answer as loudly as a
+    /// failed one — a blank line here would otherwise become the current
+    /// directory and send three executables somewhere nobody asked for.
+    fn ask(cwd: &Path, flag: &str) -> Result<PathBuf, AppError> {
+        git_env::output(cwd, &["rev-parse", flag])
+            .filter(|line| !line.is_empty())
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "not a git repository: `git rev-parse {flag}` had no answer for {}",
+                    cwd.display()
+                ))
+            })
+    }
+
+    /// The directory storyhook owns and writes into.
+    fn managed(&self) -> &Path {
+        &self.managed
+    }
+}
+
+pub fn install_hooks(root: &Path) -> Result<String, AppError> {
+    let dirs = HookDirs::resolve(root)?;
+    let hooks_dir = dirs.managed();
+    fs::create_dir_all(hooks_dir)?;
 
     let mut results = Vec::new();
     for (name, content) in HOOKS {
@@ -97,13 +170,8 @@ pub fn install_hooks(root: &Path) -> Result<String, AppError> {
 }
 
 pub fn uninstall_hooks(root: &Path) -> Result<String, AppError> {
-    let git_dir = root.join(".git");
-    if !git_dir.exists() {
-        return Err(AppError::Validation(
-            "not a git repository (no .git directory)".to_string(),
-        ));
-    }
-    let hooks_dir = git_dir.join("hooks");
+    let dirs = HookDirs::resolve(root)?;
+    let hooks_dir = dirs.managed();
 
     let mut results = Vec::new();
     for (name, _) in HOOKS {

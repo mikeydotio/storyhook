@@ -13,15 +13,15 @@
 //! is what makes "which commands can write outside the store?" a question with
 //! a short, checkable answer.
 //!
-//! # The linked-worktree caveat
+//! # Where the git hooks go
 //!
-//! `story hooks install` writes into `<root>/.git/hooks`. In a *linked*
-//! worktree `.git` is a file pointing at the real git directory, not a
-//! directory, so the install fails there — and it fails with the filesystem's
-//! own error rather than a diagnosis. The behaviour is replicated as-is:
-//! fixing it means resolving `--git-common-dir`, which is the same resolution
-//! the wave that ends worktree divergence has to build anyway, and doing it
-//! twice would leave two answers to one question.
+//! `story hooks install` asks git, and does not assume a layout. It used to
+//! write `<root>/.git/hooks`, which fails outright in a *linked* worktree —
+//! there `.git` is a file holding a `gitdir:` pointer, so `hooks` cannot be
+//! joined onto it (SH-314) — and a worktree is where this project does most of
+//! its work. `hooks::HookDirs` resolves `--git-common-dir` instead, which is
+//! the directory git consults for **every** worktree, so the answer is one
+//! answer rather than one per checkout.
 
 use crate::error::AppError;
 use crate::store::Store;

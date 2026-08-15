@@ -17,12 +17,38 @@ use storyhook_test_support::ServiceFixture;
 
 // --- helpers ---------------------------------------------------------------
 
-/// Turns the fixture's working directory into something `story hooks install`
-/// will accept, and hands back its `.git/hooks` path.
+/// `git <args>` in `cwd`, asserting it succeeded.
+fn git(cwd: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .current_dir(cwd)
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("running `git {}`: {e}", args.join(" ")));
+    assert!(
+        out.status.success(),
+        "`git {}` in {} failed: {}",
+        args.join(" "),
+        cwd.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Turns the fixture's working directory into a **real** repository, and hands
+/// back its `.git/hooks` path.
+///
+/// This used to `mkdir .git` and call it a repository, which worked only
+/// because the installer hand-built `<root>/.git/hooks` and never asked git
+/// anything. Now that it resolves `--git-common-dir` (SH-314), a directory
+/// named `.git` with nothing in it is what git says it is: not a repository.
+/// Initialising one for real is the honest fixture, and it is what lets the
+/// worktree test below exist at all.
 fn git_repo(fixture: &ServiceFixture) -> PathBuf {
-    let git = fixture.cwd().join(".git");
-    std::fs::create_dir_all(&git).expect("creating .git");
-    git.join("hooks")
+    let root = fixture.cwd();
+    git(root, &["init", "-q", "-b", "main"]);
+    git(root, &["config", "user.email", "t@t"]);
+    git(root, &["config", "user.name", "t"]);
+    root.join(".git").join("hooks")
 }
 
 fn read(path: &Path) -> String {
@@ -232,28 +258,78 @@ fn installing_outside_a_git_repository_is_rejected() {
     assert!(message(error).contains("not a git repository"));
 }
 
+/// SH-314. In a linked worktree `.git` is a **file** holding a `gitdir:`
+/// pointer, so the old `<root>/.git/hooks` could not be created at all and the
+/// install failed with the filesystem's own error.
+///
+/// This test replaces one that seeded a *fabricated* `.git` file pointing at
+/// `/elsewhere` and asserted only that some error came back. Under git-based
+/// resolution that fixture is simply "not a git repository", so the old test
+/// would have stayed green whether this case were fixed or catastrophically
+/// broken — a pass for a reason unrelated to its own name, the shape SH-258 and
+/// SH-295 both record. A real `git worktree add` is the only fixture that can
+/// tell the difference.
+///
+/// The assertion that matters is *where* it installs. The obvious repair —
+/// write into the worktree's private git directory — would compile, pass a
+/// weaker test, and install hooks git never runs, because git resolves hooks
+/// for every worktree in the **common** directory.
 #[test]
-fn installing_from_a_linked_worktree_fails_loudly_rather_than_silently() {
-    // In a linked worktree `.git` is a *file*, so `.git/hooks` cannot be
-    // created. The behaviour is inherited as-is and pinned here so that the
-    // wave which resolves `--git-common-dir` can see exactly what it changes:
-    // the install must never quietly report success having written nothing.
+fn installing_from_a_linked_worktree_writes_to_the_shared_common_directory() {
     let fixture = ServiceFixture::new();
-    std::fs::write(
-        fixture.cwd().join(".git"),
-        "gitdir: /elsewhere/.git/worktrees/a\n",
-    )
-    .expect("seeding a worktree pointer");
+    let root = fixture.cwd();
+    git(root, &["init", "-q", "-b", "main"]);
+    git(root, &["config", "user.email", "t@t"]);
+    git(root, &["config", "user.name", "t"]);
+    std::fs::write(root.join("f"), "a\n").expect("seeding a tracked file");
+    git(root, &["add", "f"]);
+    git(root, &["commit", "-qm", "init"]);
 
-    let ctx = fixture.ctx();
-    let error = SystemService::new(&ctx)
-        .install_git_hooks()
-        .expect_err("a worktree has no .git directory to write into");
+    let worktree = root.join("wt");
+    git(root, &["worktree", "add", "-q", "wt", "-b", "probe"]);
     assert!(
-        !fixture.cwd().join(".git").is_dir(),
+        worktree.join(".git").is_file(),
+        "fixture: a linked worktree's .git must be a file, or this proves nothing"
+    );
+
+    // The free function, not the service method: this asks about a *directory*
+    // rather than about a project, which is exactly why `system.rs` exposes the
+    // project-less half as free functions.
+    let summary = storyhook::service::system::install_git_hooks(&worktree)
+        .expect("a linked worktree installs into the common directory");
+
+    // Where git actually looks, asked of git rather than assumed.
+    let common = PathBuf::from(git(&worktree, &["rev-parse", "--git-common-dir"]));
+    let common = worktree.join(common).join("hooks");
+    for name in MANAGED {
+        assert!(
+            common.join(name).is_file(),
+            "{name} is not in the common hooks directory ({}), so git will never run it",
+            common.display()
+        );
+        assert!(
+            summary.contains(&format!("{name} — installed")),
+            "{summary}"
+        );
+    }
+
+    // The private git directory is not a hook directory. Writing there would
+    // pass a test that only asked "did a file appear somewhere".
+    let private = PathBuf::from(git(&worktree, &["rev-parse", "--git-dir"]));
+    let private = worktree.join(private);
+    assert_ne!(
+        private, common,
+        "fixture: the worktree has no private gitdir"
+    );
+    assert!(
+        !private.join("hooks").join("post-commit").is_file(),
+        "the installer wrote into the worktree's private git directory, where \
+         git does not look for hooks"
+    );
+    assert!(
+        worktree.join(".git").is_file(),
         "the installer replaced the worktree pointer"
     );
-    assert!(!message(error).is_empty());
 }
 
 // --- event hooks -----------------------------------------------------------
