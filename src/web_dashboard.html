@@ -6190,6 +6190,29 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return row;
   }
 
+  /** The list view's own `.state-pill` -- SH-277. Reads
+   * `display_state || state`, same as the board's column placement
+   * (`renderBoard`), the drag-drop no-op guard, and `storyLight()`: an
+   * epic display-promoted by `compute_epic_display_state` (SH-165, an
+   * active child pulls it out of `todo`) must show the same word here as
+   * the column its own card sits in, or the list contradicts the board.
+   * `st.state` was the one place in this file still reading the literal
+   * state for *display* (the state *filter*, `filteredStories`, still
+   * does -- that's a different, deliberate rule). When the two disagree the
+   * pill carries a `title` naming both, so the table never silently says
+   * something `story show` doesn't. */
+  function buildStatePill(v) {
+    var st = v.story;
+    var slug = v.display_state || st.state;
+    var promoted = v.display_state && v.display_state !== st.state;
+    return el("span", {
+      class: "state-pill",
+      title: promoted
+        ? slug + " (shown for an active child -- recorded state is " + st.state + ")"
+        : null
+    }, [slug]);
+  }
+
   function populateListRow(row, v, ready, blocked) {
     var st = v.story;
     var updated = (st.updated_at || "").slice(0, 10);
@@ -6198,7 +6221,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var badge = buildTypeBadge(st.story_type);
     row.appendChild(el("td", { class: "col-id" }, badge ? [badge, " ", st.id] : [st.id]));
     row.appendChild(el("td", {}, [st.title]));
-    row.appendChild(el("td", {}, [el("span", { class: "state-pill" }, [st.state])]));
+    row.appendChild(el("td", {}, [buildStatePill(v)]));
     row.appendChild(el("td", {}, [priorityDot(st.priority)]));
     row.appendChild(el("td", {}, [labelChips(st.labels)]));
     row.appendChild(el("td", {}, [st.assignee ? memberName(st.assignee) : el("span", { style: "color:var(--fg-faint)" }, ["–"])]));
@@ -6249,7 +6272,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     switch (col) {
       case "id": return st.id;
       case "title": return (st.title || "").toLowerCase();
-      case "state": return st.state;
+      // `display_state || state` -- same reason buildStatePill() does:
+      // sorting the State column must sort by the word the column shows.
+      case "state": return v.display_state || st.state;
       case "priority": return PRIORITY_ORDER[st.priority] !== undefined ? PRIORITY_ORDER[st.priority] : 99;
       case "assignee": return memberName(st.assignee) || "￿";
       case "updated": return st.updated_at || "";

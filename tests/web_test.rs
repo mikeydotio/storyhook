@@ -1124,6 +1124,19 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains("function blockedFlag"));
     assert!(body.contains("blockedFlag(st, !!blocked[st.id])"));
 
+    // SH-277: the list view's own `.state-pill` -- unlike every other
+    // renderer in the file (the board's column placement, the drag-drop
+    // no-op guard, storyLight()), it read the literal `st.state` until
+    // this landed. buildStatePill() reads display_state || state instead,
+    // same as the rest, and names both states in a title whenever they
+    // disagree; sortValue()'s own "state" case is kept in step with it so
+    // sorting the column sorts by the word it shows.
+    assert!(body.contains("function buildStatePill"));
+    assert!(body.contains("var slug = v.display_state || st.state;"));
+    assert!(body.contains(r#"class: "state-pill""#));
+    assert!(body.contains("recorded state is "));
+    assert!(body.contains(r#"case "state": return v.display_state || st.state;"#));
+
     // SH-217: the markdown renderer -- builds DOM nodes directly (never an
     // HTML string, see the sink-pin assertions above), and its link
     // scheme allowlist by name so a future edit that widens it is a
