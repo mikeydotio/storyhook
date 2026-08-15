@@ -16655,3 +16655,128 @@ mode, not this story's code.
 `make test` runs and the isolated rerun. No stalls, no wedges, no kills.
 
 **Deviations:** none.
+
+### SH-313 + SH-314 — where hooks go, asked rather than assumed — 2026-08-14
+
+Two sibling defects, one line apart, both filed by the SH-306 council's
+architecture seat while it read `src/hooks.rs` for a different reason.
+`install_hooks` and `uninstall_hooks` built their target as
+`<root>/.git/hooks`. Neither had ever asked git.
+
+- **SH-314**: in a linked worktree `.git` is a *file* holding a `gitdir:`
+  pointer, so `hooks` could not be joined onto it. Install failed outright in
+  the place this project does most of its work.
+- **SH-313**: `core.hooksPath` **replaces** the hook directory wholesale —
+  `$GIT_DIR/hooks` is not consulted at all, not as a fallback, not at all. For
+  any repo using husky, lefthook, pre-commit or a tracked `.githooks/`, install
+  wrote three files git would never execute and reported success. **This repo is
+  one of them**: SH-306's gate sets `core.hooksPath=.githooks`, and the three
+  tracked chainers there exist precisely to work around this bug.
+
+Both were claimed and closed together, because the fix is one resolver and
+`src/service/system.rs` had already written down why it must be: doing it twice
+"would leave two answers to one question".
+
+**The council, and why it was needed.** Both directions SH-313 itself suggested
+— *install into the effective dir* and *refuse loudly* — **regress this very
+repository**. The first finds the chainers holding all three names, skips them,
+writes nothing, and storyhook's own dogfooded hooks go dark; the second makes
+this repo permanently un-installable. That is a decision with no obviously
+correct answer, so: council.
+
+Round 1 came back a **perfect Condorcet cycle** — C=1, D=1, E=1, with *every
+seat abandoning its own draft* and nobody self-voting. Rather than run the
+tiebreaker, the chair decomposed the bundle by sub-question, at which point the
+seats turned out to agree on every individual question and to be arguing only
+about which bundle to name. The merged position (C′) then won all three seats
+outright in the single deliberation round. Two seats independently produced the
+same blocking condition — *case 2 must not report a bare "installed"* — and E's
+own author repudiated E's ownership marker on the grounds that it **asks who
+wrote the occupant when the question is whether git reaches ours**, so it would
+refuse to install behind a user-authored chainer: SH-239's lesson inverted
+inside the proposal. Trail: `.council/hooks-install-under-core-hookspath/`,
+verdict recorded as a `story comment` on SH-313.
+
+Two things the council could not check, the chair **measured** before accepting
+(git 2.50.1): a relative `core.hooksPath` answers relative to the *child's* cwd
+(`../.githooks` from a subdirectory), so the architect's feared
+`sub/.githooks/post-commit` write cannot occur; and in a linked worktree
+`--git-path hooks` **already** returns the common dir, so no-hooksPath means
+effective == managed by construction. The architect had marked its own amendment
+"load-bearing but unverified — measure before implementation, not inferred". It
+was right to.
+
+**Shipped**: three commits, two-hats clean and individually green — a pure move
+of `git_output` beside `git_env::command`; SH-314's resolver; SH-313's placement
+and reporting. Cases 3 and 4 are **deliberately not distinguished**, because
+separating them means deciding whether a stranger's script delegates, which
+cannot be read off the file. Storyhook states the condition and exits 0. The
+caveats are per hook, which an exit code cannot carry, so they ride
+`Response::MessageWithWarnings` — already in the tree, already on the envelope's
+`warnings` array, and byte-identical to `Message` when empty, which is what
+keeps the ordinary case unchanged.
+
+**A test that could not fail, replaced.**
+`installing_from_a_linked_worktree_fails_loudly_rather_than_silently` seeded a
+*fabricated* `.git` file pointing at `/elsewhere` and asserted only that some
+error came back. Under git-based resolution that fixture is simply "not a git
+repository", so it would have stayed green whether the case were fixed or
+catastrophically broken — the SH-258/SH-295 shape, and it was sitting in the
+file the fix had to touch. Rebuilt on a real `git worktree add`, asserting
+*where* the hooks landed, which is the half that catches the plausible-but-wrong
+repair (the worktree's private gitdir). `git_repo` now runs `git init` rather
+than `mkdir .git`; that fixture only ever worked because nothing asked git.
+
+**The fixture lied to the test, again.** The new control case — *a
+non-delegating occupant means the story does not move* — failed on first run
+saying `done`. Not the code: occupying one hook name left the other two free,
+storyhook installed those directly, and `post-commit` moved the story through
+`commit-sync` instead. The fixture now occupies all three, which is also what
+husky actually generates. Worth recording because it is SH-263's shape (a fake
+that isn't faithful is a test that measures nothing) and because **only the
+control caught it** — the two positive assertions were green throughout.
+
+Mutation-checked in three directions rather than asserted: `--git-dir` instead
+of `--git-common-dir` reddens the worktree test; restoring `root.join(".git")`
+reddens it; a hand-built hooks path anywhere under `src/` reddens the new
+derived scan.
+
+**Gate: green on the fourth full run, and the first three are the point.** Run 1
+died on `e2e/node_modules` missing — a fresh worktree's own cost, per this
+file's one-worktree-per-story note. Runs 2 and 3 failed 4 and then **2** e2e
+specs: a *moving* failure set on identical code, every one a `Test timeout of
+15000ms exceeded` in wall-clock notification tests, while `pgrep` showed
+worktree SH-186 running its own Playwright suite and two `make test` processes
+live. They passed in isolation (10/10). Waited for the machine to clear, reran:
+**208/208, zero failures**, including both. Filed as **SH-318** rather than
+worked around — and this file already records the identical diagnosis from an
+earlier story, which is what turns "flake" into a filed defect: a gate that
+cannot gate on a machine whose documented normal state is three-to-four
+concurrent sessions trains exactly the habit SH-306 exists to stop.
+
+**Supervision note.** The 120s stall bound in this file's own rule cries wolf
+during `make test`'s test-binary link phase, which is legitimately silent for
+~3 minutes. Log growth resumed on its own and the run was healthy. The bound is
+right for the *test* phase; measure it from there, not from `make`'s first line.
+
+**Filed, not folded in** — three follow-ons, each because folding it in would
+have widened a bug fix:
+
+- **SH-316** — the limit C′ accepts rather than solves: install-time placement
+  cannot verify commit-time reachability. A case-2 write can later be dropped by
+  a regenerating tool, `git clean -fd`, or `core.hooksPath` being re-pointed,
+  and the install report was true when printed — SH-306's shape displaced in
+  *time*. Carries the challenger's proposed closure (an outcome receipt off the
+  `commit-sync` the post-commit body already runs) and the reasons the three
+  install-time closures were rejected. Required by CLAUDE.md's
+  deliberate-tech-debt rule: flaw, patch's limit, redesign trigger.
+- **SH-317** — Mikey's note appended to SH-314's description, proposing
+  *worktree-scoped* hooks discovered by the shared ones. Kept whole and filed
+  separately: SH-314 is a bug whose fix makes hooks correctly **shared** across
+  worktrees, and worktree-scoped hooks are the opposite capability, so folding
+  it in would have mixed a feature into a defect repair.
+- **SH-318** — the two flaky notification-clock specs above.
+
+Closed by the merge of #421 — and closed **by the post-merge hook itself**,
+which is the neatest available proof that the managed hook now runs through this
+repo's `.githooks` chainer.
