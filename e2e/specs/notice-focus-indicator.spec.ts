@@ -3,14 +3,13 @@ import type { Page } from "@playwright/test";
 import {
   cleanUpCreatedStories,
   createStory,
-  expectMeasuredFocusRing,
   fullKeyboardAccess,
   keepNotices,
+  measureFocusIndicator,
   openProject,
   raiseDurableNotices,
   seedToken,
   tabOnto,
-  THEMES,
 } from "./support";
 
 /**
@@ -168,12 +167,9 @@ test("a keyboard-reached toast dismiss draws a measured ring in every theme", as
   // Two, so `#toast-dismiss-all` is above the threshold and can seed the walk.
   await raiseDurableNotices(page, title, 2);
 
-  await tabOnto(page, "#toast-dismiss-all", ".toast-dismiss");
-
-  for (const theme of THEMES) {
-    await theme.apply(page);
-    await expectMeasuredFocusRing(page, ".toast-dismiss:focus", `a toast's × under ${theme.name}`);
-  }
+  await measureFocusIndicator(page, ".toast-dismiss:focus", "a toast's ×", () =>
+    tabOnto(page, "#toast-dismiss-all", ".toast-dismiss"),
+  );
 });
 
 test("the heir of a keyboard dismissal draws the same ring", async ({ page, browserName }) => {
@@ -192,24 +188,20 @@ test("the heir of a keyboard dismissal draws the same ring", async ({ page, brow
   await createStory(page, title);
   await raiseDurableNotices(page, title, 3);
 
-  await tabOnto(page, "#toast-dismiss-all", ".toast-dismiss");
-  await page.keyboard.press("Enter");
-  await expect(page.locator("#toast-stack .toast")).toHaveCount(2);
-
   // Named as ":focus", not as an identity. SH-326 chooses the heir at dismissal
   // time and `notice-dock-geometry.spec.ts` already pins *which* control that
   // is; what this file adds is that wherever focus landed, it is visible. The
   // guard against a vacuous pass is the class check: a landing on `<body>` or on
   // the anchor would not match `.toast-dismiss`.
-  const landed = await page.evaluate(
-    () => !!(document.activeElement as HTMLElement | null)?.classList.contains("toast-dismiss"),
-  );
-  expect(landed, "the heir of a keyboard dismissal must be another toast's ×").toBe(true);
-
-  for (const theme of THEMES) {
-    await theme.apply(page);
-    await expectMeasuredFocusRing(page, ".toast-dismiss:focus", `the heir under ${theme.name}`);
-  }
+  await measureFocusIndicator(page, ".toast-dismiss:focus", "the heir", async () => {
+    await tabOnto(page, "#toast-dismiss-all", ".toast-dismiss");
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#toast-stack .toast")).toHaveCount(2);
+    const landed = await page.evaluate(
+      () => !!(document.activeElement as HTMLElement | null)?.classList.contains("toast-dismiss"),
+    );
+    expect(landed, "the heir of a keyboard dismissal must be another toast's ×").toBe(true);
+  });
 });
 
 test("a dispatch-history dismiss draws a measured ring, reached and inherited", async ({
@@ -231,31 +223,25 @@ test("a dispatch-history dismiss draws a measured ring, reached and inherited", 
   await raiseDispatchHistoryRows(page, [first, second]);
   await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(2);
 
-  await tabOnto(page, "#dispatch-history-dismiss-all", ".dispatch-history-dismiss");
-  for (const theme of THEMES) {
-    await theme.apply(page);
-    await expectMeasuredFocusRing(
-      page,
-      ".dispatch-history-dismiss:focus",
-      `a history row's × under ${theme.name}`,
-    );
-  }
+  await measureFocusIndicator(page, ".dispatch-history-dismiss:focus", "a history row's ×", () =>
+    tabOnto(page, "#dispatch-history-dismiss-all", ".dispatch-history-dismiss"),
+  );
 
   // The same inheritance SH-326 wired on this surface. Measured here too rather
   // than assumed from the toast test: the two controls share one CSS rule today,
-  // and this is the assertion that fails if someone ever splits it.
-  await page.keyboard.press("Enter");
-  await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(1);
-  const landed = await page.evaluate(
-    () =>
-      !!(document.activeElement as HTMLElement | null)?.classList.contains(
-        "dispatch-history-dismiss",
-      ),
-  );
-  expect(landed, "the heir of a keyboard dismissal must be another row's ×").toBe(true);
-  await expectMeasuredFocusRing(
-    page,
-    ".dispatch-history-dismiss:focus",
-    "the history heir",
-  );
+  // and this is the assertion that fails if someone ever splits it. Full
+  // four-theme coverage on the heir too -- SH-338 spot-checked it under a
+  // single theme; measureFocusIndicator's unification closes that gap for
+  // free rather than reintroducing a bespoke single-theme check here.
+  await measureFocusIndicator(page, ".dispatch-history-dismiss:focus", "the history heir", async () => {
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(1);
+    const landed = await page.evaluate(
+      () =>
+        !!(document.activeElement as HTMLElement | null)?.classList.contains(
+          "dispatch-history-dismiss",
+        ),
+    );
+    expect(landed, "the heir of a keyboard dismissal must be another row's ×").toBe(true);
+  });
 });

@@ -1027,6 +1027,10 @@ export type IndicatorProbe = {
   outlineWidth: string;
   outlineColor: string;
   outlineOffset: string;
+  /** `border-top-color`, taken as representative of the whole border: every
+   * control this probe measures declares a uniform `border:` shorthand, so
+   * the four sides never differ. */
+  borderColor: string;
   /** `background-color` from the element outward to `<html>`, in that order. */
   backgrounds: string[];
   /** For failure messages: what the probe actually landed on. */
@@ -1044,21 +1048,71 @@ export async function probeIndicator(page: Page, selector: string): Promise<Indi
   return page.evaluate((sel) => {
     const el = document.querySelector(sel) as HTMLElement | null;
     if (!el) return null;
-    const cs = getComputedStyle(el);
-    const backgrounds: string[] = [];
-    for (let n: Element | null = el; n; n = n.parentElement) {
-      backgrounds.push(getComputedStyle(n).backgroundColor);
-    }
-    const cls = typeof el.className === "string" && el.className ? `.${el.className.split(" ").join(".")}` : "";
-    return {
-      focusVisible: el.matches(":focus-visible"),
-      outlineStyle: cs.outlineStyle,
-      outlineWidth: cs.outlineWidth,
-      outlineColor: cs.outlineColor,
-      outlineOffset: cs.outlineOffset,
-      backgrounds,
-      what: `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ""}${cls}`,
+
+    // Waits for any CSS transition touching a colour this probe reads to
+    // settle before measuring (SH-360). `.search-input`/`.drawer-title`/
+    // `.description-field` transition `border-color`/`background` over
+    // 0.15s, and `.column` (a `.card` ring's PARENT backdrop since the
+    // outline-offset fix above) transitions `background` the same way.
+    // Switching this page's theme WHILE a control holds focus re-triggers
+    // that transition -- the custom property a transitioning declaration
+    // resolves to changes value mid-animation -- so reading computed style
+    // immediately after `THEMES[n].apply()` can catch an interpolated,
+    // half-transparent colour rather than the theme's real one (caught by a
+    // probe run that printed alphas like 0.035 on a border that should have
+    // been fully opaque). Polled via `requestAnimationFrame` rather than a
+    // fixed sleep -- this suite's own doctrine against a magic-number wait
+    // (`notice-dock-geometry.spec.ts`'s scroll-position polling makes the
+    // identical argument) -- with a ceiling generous enough to clear every
+    // transition duration in this sheet (max observed: 0.2s) many times
+    // over, so a signature that never actually settles still resolves with
+    // its last sample rather than hanging the test forever.
+    const sample = () => {
+      const cs = getComputedStyle(el);
+      const backgrounds: string[] = [];
+      for (let n: Element | null = el; n; n = n.parentElement) {
+        backgrounds.push(getComputedStyle(n).backgroundColor);
+      }
+      return { cs, backgrounds };
     };
+    const signatureOf = (cs: CSSStyleDeclaration, backgrounds: string[]) =>
+      [cs.outlineStyle, cs.outlineWidth, cs.outlineColor, cs.outlineOffset, cs.borderTopColor, backgrounds.join(",")].join("|");
+
+    const MAX_ATTEMPTS = 120; // ~2s at 60fps -- 10x the sheet's slowest colour transition
+    const STABLE_FRAMES_NEEDED = 3;
+
+    return new Promise<IndicatorProbe>((resolve) => {
+      let lastSignature = "";
+      let stableFrames = 0;
+      let attempts = 0;
+      const tick = () => {
+        attempts++;
+        const { cs, backgrounds } = sample();
+        const signature = signatureOf(cs, backgrounds);
+        if (signature === lastSignature) {
+          stableFrames++;
+        } else {
+          stableFrames = 0;
+          lastSignature = signature;
+        }
+        if (stableFrames >= STABLE_FRAMES_NEEDED || attempts >= MAX_ATTEMPTS) {
+          const cls = typeof el.className === "string" && el.className ? `.${el.className.split(" ").join(".")}` : "";
+          resolve({
+            focusVisible: el.matches(":focus-visible"),
+            outlineStyle: cs.outlineStyle,
+            outlineWidth: cs.outlineWidth,
+            outlineColor: cs.outlineColor,
+            outlineOffset: cs.outlineOffset,
+            borderColor: cs.borderTopColor,
+            backgrounds,
+            what: `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ""}${cls}`,
+          });
+          return;
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
   }, selector);
 }
 
@@ -1158,72 +1212,6 @@ export function ringBackdrops(p: IndicatorProbe): { label: string; backdrop: Rgb
   return candidates;
 }
 
-/** The whole assertion: `selector` is focus-visible, draws an author-declared
- * ring at least `MIN_OUTLINE_PX` thick, and that ring clears `MIN_CONTRAST`
- * against the backdrop the page actually painted behind it.
- *
- * **Soft, and that is the point of calling it in a loop.** A hard assertion
- * stops at the first theme that fails, so a ring broken in three of the four
- * palettes reports as one failure, gets "fixed", and fails again on the next
- * run -- twice. The four measurements are independent questions about
- * independent copies of the same token, so all four are asked and all four
- * are reported; Playwright still fails the test at the end. Only the null
- * check is hard, because there is nothing to measure past it. */
-export async function expectMeasuredFocusRing(page: Page, selector: string, where: string): Promise<void> {
-  const probe = await probeIndicator(page, selector);
-  expect(probe, `${where}: nothing matches ${selector}`).not.toBeNull();
-  const p = probe!;
-
-  expect.soft(
-    p.focusVisible,
-    `${where}: ${p.what} holds focus but does not match :focus-visible, so no ring is drawn at all`,
-  ).toBe(true);
-
-  expect.soft(
-    ["none", "hidden", "auto"],
-    `${where}: ${p.what} draws outline-style: ${p.outlineStyle}. ` +
-      `"auto" is the user agent's own ring, which declares no colour this page can measure -- ` +
-      `its contrast is unknown rather than merely unstated, which is the defect SH-338 was filed for. ` +
-      `"none"/"hidden" is no ring. Declare one, as .notice-scroll does.`,
-  ).not.toContain(p.outlineStyle);
-
-  const width = parseFloat(p.outlineWidth);
-  expect.soft(
-    width,
-    `${where}: ${p.what}'s ring is ${p.outlineWidth}; SC 2.4.13 wants at least ${MIN_OUTLINE_PX} CSS px`,
-  ).toBeGreaterThanOrEqual(MIN_OUTLINE_PX);
-
-  // Skipped when there is no author colour to composite: `outline-style: auto`
-  // has already been reported above, and scoring the user agent's placeholder
-  // colour would add a second, misleading number to that report.
-  if (p.outlineStyle === "auto") return;
-
-  // The ring may paint over its own background, its parent's, or (rarely)
-  // both -- ringBackdrops() derives which from outline-offset/-width rather
-  // than assuming "the element's own" for every ring. When both apply, the
-  // worse-clearing one is what gets reported: the ring must be visible
-  // against whichever side clears it least.
-  let worstRatio = Infinity;
-  let worstInk = { r: 0, g: 0, b: 0, a: 1 };
-  let worstBackdrop = { r: 0, g: 0, b: 0, a: 1 };
-  let worstLabel = "its own";
-  for (const candidate of ringBackdrops(p)) {
-    const ink = over(parseColor(p.outlineColor), candidate.backdrop);
-    const ratio = contrastRatio(ink, candidate.backdrop);
-    if (ratio < worstRatio) {
-      worstRatio = ratio;
-      worstInk = ink;
-      worstBackdrop = candidate.backdrop;
-      worstLabel = candidate.label;
-    }
-  }
-  expect.soft(
-    worstRatio,
-    `${where}: ${p.what}'s ring is ${show(worstInk)} on ${show(worstBackdrop)} (${worstLabel} background) -- ` +
-      `${worstRatio.toFixed(2)}:1, below SC 1.4.11's ${MIN_CONTRAST}:1`,
-  ).toBeGreaterThanOrEqual(MIN_CONTRAST);
-}
-
 /** The four ways this page can resolve its palette.
  *
  * The `[data-theme]` pair deliberately sets the media query to the *opposite*
@@ -1283,4 +1271,176 @@ export async function tabOnto(page: Page, from: string, selector: string): Promi
     return el ? `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ""}` : "nothing";
   });
   throw new Error(`20 Tabs from ${from} never reached ${selector}; focus is on ${stuck}`);
+}
+
+/**
+ * Measures a control's focus indicator, classifying it from the FOCUSED
+ * probe's own `outline-style` rather than assuming every focus rule is an
+ * outline (SH-360): three of the nine focus rules in `web_dashboard.html`
+ * declare `outline: none` and swap `border-color` (a 1px border) instead.
+ * One call name means a control that later changes kind needs no spec edit
+ * -- the coverage fence (`tests/dashboard_focus_coverage.rs`) stays
+ * per-control, not per-kind.
+ *
+ * `selector` must end in `:focus` or `:focus-visible` and name the FOCUSED
+ * element -- SH-338's own convention (`":focus"` is deliberate: it asks the
+ * page "whatever holds focus" rather than restating an implementation's own
+ * identity, which matters for the inheritance tests in
+ * `notice-focus-indicator.spec.ts`). It must also be a STRING LITERAL:
+ * `tests/dashboard_focus_coverage.rs` reads this argument statically, at
+ * every call site across `e2e/specs/*.spec.ts`, to prove every declared
+ * focus rule in the sheet has a call site naming it -- a loop variable would
+ * be invisible to that scan, silently exempting whatever it iterated over.
+ *
+ * `reach` performs the real interaction (Tab presses, or an Enter that opens
+ * an editor) that focuses the control -- called exactly ONCE, not once per
+ * theme. `.drawer-title` and `.description-field` both commit their value ON
+ * BLUR, so a blur-probe-refocus cycle per theme would fire a save per theme
+ * and corrupt the very state under test. The REST probe is therefore taken
+ * in every theme BEFORE `reach()`, and the FOCUSED probe in every theme
+ * after, both from the same held focus -- themes are re-reads, not
+ * re-reaches, the same insight that makes SH-338's four-theme loop cheap.
+ *
+ * `.description-field`'s rest probe is taken while it is `display: none`
+ * (the read/edit swap keeps both nodes in the DOM, toggling which is
+ * shown) -- `getComputedStyle` still resolves colours for a hidden element,
+ * so this works, but it is worth knowing before wondering why.
+ */
+export async function measureFocusIndicator(
+  page: Page,
+  selector: string,
+  where: string,
+  reach: () => Promise<void>,
+): Promise<void> {
+  const baseSelector = selector.replace(/:focus(-visible)?$/, "");
+  if (baseSelector === selector) {
+    throw new Error(
+      `measureFocusIndicator: "${selector}" does not end in :focus or :focus-visible -- ` +
+        "it must name the FOCUSED element, the convention every call site in this suite uses",
+    );
+  }
+
+  const rest = new Map<string, IndicatorProbe>();
+  for (const theme of THEMES) {
+    await theme.apply(page);
+    const probe = await probeIndicator(page, baseSelector);
+    expect(probe, `${where}: nothing matches ${baseSelector} before focus, under ${theme.name}`).not.toBeNull();
+    rest.set(theme.name, probe!);
+  }
+
+  await reach();
+
+  for (const theme of THEMES) {
+    await theme.apply(page);
+    const focused = await probeIndicator(page, selector);
+    expect(focused, `${where}: nothing matches ${selector} under ${theme.name}`).not.toBeNull();
+    const f = focused!;
+
+    expect.soft(
+      f.focusVisible,
+      `${where}: ${f.what} holds focus under ${theme.name} but does not match :focus-visible, ` +
+        "so no indicator is drawn at all",
+    ).toBe(true);
+
+    if (f.outlineStyle !== "none" && f.outlineStyle !== "hidden") {
+      // Outline kind -- SH-338's original assertion set, unchanged: an
+      // author-declared ring at least MIN_OUTLINE_PX thick, clearing
+      // MIN_CONTRAST against the backdrop it actually paints over.
+      expect.soft(
+        ["none", "hidden", "auto"],
+        `${where}: ${f.what} draws outline-style: ${f.outlineStyle} under ${theme.name}. ` +
+          `"auto" is the user agent's own ring, which declares no colour this page can measure -- ` +
+          `its contrast is unknown rather than merely unstated, which is the defect SH-338 was filed for. ` +
+          `"none"/"hidden" is no ring. Declare one, as .notice-scroll does.`,
+      ).not.toContain(f.outlineStyle);
+
+      const width = parseFloat(f.outlineWidth);
+      expect.soft(
+        width,
+        `${where}: ${f.what}'s ring is ${f.outlineWidth} under ${theme.name}; ` +
+          `SC 2.4.13 wants at least ${MIN_OUTLINE_PX} CSS px`,
+      ).toBeGreaterThanOrEqual(MIN_OUTLINE_PX);
+
+      // Skipped when there is no author colour to composite: "auto" is
+      // already reported above, and scoring the user agent's placeholder
+      // colour would add a second, misleading number to that report.
+      if (f.outlineStyle === "auto") continue;
+
+      let worstRatio = Infinity;
+      let worstInk: Rgba = { r: 0, g: 0, b: 0, a: 1 };
+      let worstBackdrop: Rgba = { r: 0, g: 0, b: 0, a: 1 };
+      let worstLabel = "its own";
+      for (const candidate of ringBackdrops(f)) {
+        const ink = over(parseColor(f.outlineColor), candidate.backdrop);
+        const ratio = contrastRatio(ink, candidate.backdrop);
+        if (ratio < worstRatio) {
+          worstRatio = ratio;
+          worstInk = ink;
+          worstBackdrop = candidate.backdrop;
+          worstLabel = candidate.label;
+        }
+      }
+      expect.soft(
+        worstRatio,
+        `${where}: ${f.what}'s ring is ${show(worstInk)} on ${show(worstBackdrop)} (${worstLabel} background) ` +
+          `under ${theme.name} -- ${worstRatio.toFixed(2)}:1, below SC 1.4.11's ${MIN_CONTRAST}:1`,
+      ).toBeGreaterThanOrEqual(MIN_CONTRAST);
+      continue;
+    }
+
+    // Border-swap kind: the indicator is whatever CHANGED between rest and
+    // focus (border-color or background-color), not a ring.
+    const r = rest.get(theme.name)!;
+    const restBorder = parseColor(r.borderColor);
+    const focusBorder = parseColor(f.borderColor);
+    const restBg = parseColor(r.backgrounds[0]);
+    const focusBg = parseColor(f.backgrounds[0]);
+    const borderChangeRatio = contrastRatio(focusBorder, restBorder);
+    const bgChangeRatio = contrastRatio(focusBg, restBg);
+
+    // SC 2.4.13's change-ratio clause, RECORDED rather than asserted --
+    // weakened to "something changed" (ratio > 1) purely as a guard against
+    // a vacuous pass (a control whose border is already --accent at rest,
+    // say). The story explicitly declines to gate this trio's THICKNESS
+    // clause (also SC 2.4.13, AAA); gating the change-ratio clause on the
+    // same rows while declining the thickness one would be incoherent, so
+    // the real floor is asserted only on the SC 1.4.11 basis below.
+    expect.soft(
+      Math.max(borderChangeRatio, bgChangeRatio),
+      `${where}: ${f.what} focused vs rest under ${theme.name} -- ` +
+        `border ${show(restBorder)} -> ${show(focusBorder)} (${borderChangeRatio.toFixed(2)}:1), ` +
+        `background ${show(restBg)} -> ${show(focusBg)} (${bgChangeRatio.toFixed(2)}:1). ` +
+        "Neither changed: focus changes nothing this instrument can see.",
+    ).toBeGreaterThan(1);
+
+    // SC 1.4.11, ASSERTED: whichever property changed more IS the
+    // indicator (today, always the border -- deltas of 3-5:1 against
+    // background deltas of ~1:1 in this sheet, so this is measured, not
+    // assumed). A border indicator is judged against both adjacent
+    // surfaces -- its own (now-focused) interior fill and its parent
+    // chain's exterior -- because a border sits between the two. A
+    // background indicator is judged against what it changed FROM at the
+    // same location, which is exactly the change ratio already computed
+    // above; a fresh "inside vs outside" split would be self-referential
+    // for a fill that touches nothing but itself.
+    if (borderChangeRatio >= bgChangeRatio) {
+      const parentBackdrop = backdropOf(f.backgrounds.slice(1));
+      const insideRatio = contrastRatio(focusBorder, focusBg);
+      const outsideRatio = contrastRatio(focusBorder, parentBackdrop);
+      const worst = Math.min(insideRatio, outsideRatio);
+      expect.soft(
+        worst,
+        `${where}: ${f.what}'s border indicator is ${show(focusBorder)} under ${theme.name} -- ` +
+          `${insideRatio.toFixed(2)}:1 against its own background ${show(focusBg)}, ` +
+          `${outsideRatio.toFixed(2)}:1 against its parent's ${show(parentBackdrop)} -- ` +
+          `below SC 1.4.11's ${MIN_CONTRAST}:1`,
+      ).toBeGreaterThanOrEqual(MIN_CONTRAST);
+    } else {
+      expect.soft(
+        bgChangeRatio,
+        `${where}: ${f.what}'s background indicator changed from ${show(restBg)} to ${show(focusBg)} ` +
+          `under ${theme.name} -- ${bgChangeRatio.toFixed(2)}:1, below SC 1.4.11's ${MIN_CONTRAST}:1`,
+      ).toBeGreaterThanOrEqual(MIN_CONTRAST);
+    }
+  }
 }
