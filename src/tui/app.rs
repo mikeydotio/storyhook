@@ -551,6 +551,12 @@ fn push_undo(
 /// Extracted from the `Action::CreateStory` dispatch arm so it can be
 /// exercised by tests without a real terminal (`dispatch` takes one and
 /// can't be unit-tested directly).
+///
+/// Returns the created story's id alongside its `warnings` (SH-358) — not
+/// [`story_of`], which discards them, because `Action::CreateStory` is the one
+/// caller of this function that needs to say something about them: `dispatch`
+/// runs inside the daemon with no terminal to ask at, and the TUI's own
+/// notification banner is the only surface this door has.
 fn create_story_mutation(
     invoker: &dyn Invoker,
     title: &str,
@@ -558,7 +564,7 @@ fn create_story_mutation(
     labels: &[String],
     assignee: Option<&str>,
     description: Option<&str>,
-) -> Result<String, AppError> {
+) -> Result<(String, Vec<String>), AppError> {
     let response = invoke(
         invoker,
         Invocation::New {
@@ -574,7 +580,28 @@ fn create_story_mutation(
             draft: false,
         },
     )?;
-    Ok(story_of(response)?.id)
+    match response {
+        Response::Story(view) => Ok((view.story.id, view.warnings)),
+        other => Err(AppError::Storage(format!(
+            "internal: expected a story, got {other:?}"
+        ))),
+    }
+}
+
+/// The status bar's one-line message for a story just created (SH-358).
+///
+/// A pure string join, extracted the same way [`create_story_mutation`] was:
+/// `dispatch` takes a real terminal and can't be unit-tested directly, so the
+/// logic worth pinning lives outside it. The status bar has exactly one
+/// notification slot (`status_bar.rs`), so a warning folds into the same
+/// message rather than competing for a second one.
+fn creation_notification(id: &str, warnings: &[String]) -> String {
+    let mut message = format!("Created {id}");
+    for warning in warnings {
+        message.push_str(" — ");
+        message.push_str(warning);
+    }
+    message
 }
 
 /// Assign an existing story to a member, through the seam.
@@ -839,14 +866,15 @@ fn dispatch(
                 description.as_deref(),
             );
             match result {
-                Ok(id) => {
+                Ok((id, warnings)) => {
                     // Story didn't exist before creation: events_before is empty
                     push_undo(state, desc, id.clone(), Vec::new());
                     state.data =
                         DataStore::load(invoker).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
-                    state.notification = Some((format!("Created {id}"), Instant::now()));
+                    state.notification =
+                        Some((creation_notification(&id, &warnings), Instant::now()));
                     // Close create form modal
                     if let Some(Modal::CreateForm) = state.focus.top_modal() {
                         state.focus.pop_modal();
@@ -1558,7 +1586,9 @@ mod tests {
     }
 
     fn seed_story(invoker: &dyn Invoker, title: &str) -> String {
-        create_story_mutation(invoker, title, None, &[], None, None).unwrap()
+        create_story_mutation(invoker, title, None, &[], None, None)
+            .unwrap()
+            .0
     }
 
     #[test]
@@ -1584,7 +1614,7 @@ mod tests {
         let invoker = fixture.invoker();
         add_test_member(&invoker, "Mikey-Ward");
 
-        let id = create_story_mutation(
+        let (id, _warnings) = create_story_mutation(
             &invoker,
             "Assigned story",
             None,
@@ -1600,6 +1630,46 @@ mod tests {
             story.assignee.as_deref(),
             Some("mikey-ward"),
             "github handle should normalize to the canonical member id"
+        );
+    }
+
+    #[test]
+    fn creating_a_story_with_no_priority_carries_the_unassessed_warning() {
+        let fixture = TuiFixture::new();
+        let invoker = fixture.invoker();
+
+        let (id, warnings) =
+            create_story_mutation(&invoker, "Unassessed story", None, &[], None, None)
+                .expect("creating with no priority still succeeds");
+
+        assert_eq!(warnings.len(), 1, "exactly one warning: {warnings:?}");
+        assert!(warnings[0].contains(&id));
+        assert!(warnings[0].contains("story next"));
+
+        let notification = creation_notification(&id, &warnings);
+        assert!(notification.starts_with(&format!("Created {id}")));
+        assert!(notification.contains(&warnings[0]));
+    }
+
+    #[test]
+    fn creating_a_story_with_a_stated_priority_carries_no_warning() {
+        let fixture = TuiFixture::new();
+        let invoker = fixture.invoker();
+
+        let (id, warnings) = create_story_mutation(
+            &invoker,
+            "Assessed story",
+            Some(crate::domain::Priority::High),
+            &[],
+            None,
+            None,
+        )
+        .expect("creating with a stated priority succeeds");
+
+        assert!(warnings.is_empty(), "no warning expected: {warnings:?}");
+        assert_eq!(
+            creation_notification(&id, &warnings),
+            format!("Created {id}")
         );
     }
 
