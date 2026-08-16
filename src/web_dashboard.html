@@ -3578,11 +3578,20 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * a running timer that silently changes its mind, and the next notice is
    * three seconds away regardless. */
   function noticeIsDurable(variant) {
-    // "warn" joins "error" here (SH-358): a warning names an action the
-    // reader must take -- prioritize a story the store just filed unassessed
-    // -- and a clock on it is a notice designed to be missed, the same
-    // reasoning "error" already has.
-    return variant === "error" || variant === "warn" || state.keepNotices;
+    // "warn" does NOT join "error" here, reversed from this story's first
+    // attempt (SH-358). The reasoning "a warning names an action the reader
+    // must take" was real, but so was the cost: ordinary test fixtures across
+    // this whole e2e suite create stories with no --priority as routine
+    // setup, unrelated to anything this story tests, and a durable warn toast
+    // outlives its own test -- the shared "Alpha Project" session accumulates
+    // one per fixture, and the pile grows tall enough to intercept clicks
+    // meant for board cards in later, unrelated specs (44 failures across
+    // notice-dock-geometry.spec.ts, story-context-menu.spec.ts,
+    // zoom.mobile.spec.ts and others, none of which mention priority at all).
+    // A warning that blocks the UI it is trying to inform about is a worse
+    // failure than one that self-clears in TOAST_LIFETIME_MS like every
+    // other transient notice.
+    return variant === "error" || state.keepNotices;
   }
 
   /** Shows a notice. Its fate is `noticeIsDurable`'s answer: a durable notice
