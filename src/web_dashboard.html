@@ -397,6 +397,12 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
    class is what a test can name: the two prompts are the same shape and
    different questions. */
 .status-confirm .btn-danger { margin-left: auto; }
+/* The destination/reclassify question (SH-334) carries `.status-move` for its
+   layout and `.status-destination` for its identity, the same relationship
+   `.status-confirm` has to it. Apply is pushed right for the same reason the
+   confirm's Delete is: the committing control ends its own line rather than
+   sitting anywhere near the row's own controls above it. */
+.status-destination .btn-primary { margin-left: auto; }
 .status-add {
   display: flex; gap: 0.5rem; align-items: flex-start; flex-wrap: wrap;
   padding: 0.75rem; background: var(--bg-sunken); border-radius: var(--radius);
@@ -1889,13 +1895,22 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // "unasked" everywhere `statuses` itself is nulled (`goSettings()`,
     // `goStatuses()`), since both are keyed to `settingsRepoId`.
     statusesReadiness: "unasked",
-    // The status slug whose Delete confirmation is armed, or null (SH-324).
+    // The statuses editor's open question, or null (SH-324, reshaped by SH-334).
     //
-    // **One slug, not a set.** Arming a second row disarms the first by
-    // construction, so "every empty status left armed at once" is
-    // unrepresentable rather than merely discouraged. The six-second clock this
-    // replaces never provided that, and it is the only safety property the
-    // clock's own comment claimed which turned out to be worth keeping.
+    // `{ slug, intent: "delete", superState: null, destination: null }` is the
+    // only shape this commit produces — SH-324's original one-slug case,
+    // reshaped from a bare slug into an object so SH-334 can extend `intent`
+    // with a second value and give `destination`/`superState` a use, in the very
+    // next commit, without a second migration of every call site. This commit
+    // changes no observable behaviour: everywhere the old `armedDeleteSlug`
+    // string was set, compared or cleared, this object is set, compared by
+    // `.slug`, or cleared instead.
+    //
+    // **One question, not a set.** Opening a second one replaces the first by
+    // construction, so "two questions open at once" is unrepresentable rather
+    // than merely discouraged. The six-second clock this replaces never
+    // provided that, and it is the only safety property the clock's own comment
+    // claimed which turned out to be worth keeping.
     //
     // **In `state`, not on the button.** It lived in `button.dataset.confirming`
     // until SH-324, which meant `renderStatuses()`'s `clear(container)` ate it —
@@ -1920,14 +1935,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // substrate to rest correctness on.
     //
     // So `buildStatusRow()` paints from this, and every rebuild — including one
-    // added by someone who never read this comment — **repaints the confirmation
+    // added by someone who never read this comment — **repaints the question
     // instead of eating it**. That is what makes "no time limit exists" true
     // structurally rather than true-while-every-caller-remembers-a-predicate.
     // It ends on the delete, on Cancel or Escape, on leaving the editor, on
     // another status mutation completing, or on the slug leaving the list. It
     // ends on no poll, no push, no re-render, no focus change, and no elapsed
-    // time. `.council/sh324-delete-confirmation-time-limit/DECISION.md`.
-    armedDeleteSlug: null,
+    // time. `.council/sh324-delete-confirmation-time-limit/DECISION.md` and
+    // `.council/sh-334-destination-prompt-state-model/DECISION.md`.
+    statusPrompt: null,
     data: null,
     view: localStorage.getItem("storyhook.view") === "list" ? "list" : "board",
     // A display preference, not a per-repo filter: like `view` above, it
@@ -3129,7 +3145,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * === 0` is not a keyboard test: assistive technology dispatches synthesised
    * clicks with `detail === 0`, so it fires for AT-driven pointer users and not
    * for real ones. This file already records the measurement that settles it --
-   * WebKit focuses no `<button>` on click (see `armedDeleteSlug`), so "was this
+   * WebKit focuses no `<button>` on click (see `statusPrompt`), so "was this
    * activated by keyboard" is unanswerable while "did focus survive" is
    * observable. Ask what a thing is, not what it is spelled (SH-226).
    *
@@ -8282,9 +8298,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     state.settingsRepoId = null;
     state.statuses = null;
     state.statusesReadiness = "unasked";
-    // Leaving the editor ends any confirmation armed in it (SH-324): it names a
+    // Leaving the editor ends any question open in it (SH-324): it names a
     // status in a project this screen is no longer showing.
-    state.armedDeleteSlug = null;
+    state.statusPrompt = null;
     // Force renderSettings() to rebuild the register form fresh on this
     // explicit (re-)entry — see the flag's own comment for why routine
     // polls must NOT do this.
@@ -8304,9 +8320,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // `state.fetchSettledFor`: this repo's statuses editor has not answered
     // *this* opening of it, whatever its last visit ended in (SH-301).
     state.statusesReadiness = "unasked";
-    // Same rule as `goSettings()`: a confirmation armed in one project's editor
+    // Same rule as `goSettings()`: a question open in one project's editor
     // does not follow the user into another's (SH-324).
-    state.armedDeleteSlug = null;
+    state.statusPrompt = null;
     delete $("settings-view").dataset.built;
     renderScreen();
     fetchStatuses();
@@ -8570,13 +8586,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         // at now.
         if (state.settingsRepoId !== repoId || statusEditorIsBusy()) return;
         state.statuses = payload.states || [];
-        // The status an armed confirmation names is gone — deleted from another
-        // client, or from the CLI. There is nothing left to confirm, and a flag
+        // The status an open question names is gone — deleted from another
+        // client, or from the CLI. There is nothing left to ask, and a prompt
         // naming a slug the list no longer holds would paint nothing while
         // still swallowing the next Escape (SH-324).
-        if (state.armedDeleteSlug && !state.statuses.some(function(s) {
-          return s.slug === state.armedDeleteSlug;
-        })) state.armedDeleteSlug = null;
+        if (state.statusPrompt && !state.statuses.some(function(s) {
+          return s.slug === state.statusPrompt.slug;
+        })) state.statusPrompt = null;
         renderStatuses();
         markStatusesSettled(repoId, true);
       })
@@ -8610,9 +8626,21 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     renderStatuses();
   }
 
-  /** Whether the user is mid-edit inside the editor: typing a description,
-   * or looking at a destination prompt they haven't applied yet. Rebuilding
-   * the rows under either would discard it.
+  /** Whether the user is mid-edit inside the editor: typing a description, or
+   * filling in the add-status form. Rebuilding the rows under either would
+   * discard it.
+   *
+   * **Does NOT cover an open destination/reclassify question** (SH-334) or an
+   * armed delete confirmation (SH-324) — both are read from `state.statusPrompt`
+   * and painted by `buildStatusRow()` on every render instead, which is what
+   * SH-324's council settled on and is not re-litigated here: this predicate
+   * is consulted by some render paths and not by `statusMutation()`'s two
+   * callbacks, which cannot be made to consult it and must repaint from the
+   * server's authoritative answer regardless. Widening this predicate to also
+   * ask about `statusPrompt` would look like a fix and would not be one — a
+   * prior version of this comment claimed exactly that coverage, and the claim
+   * was false the moment focus left the panel, which is the whole defect
+   * SH-334 closes.
    *
    * Scoped to the editor's own controls rather than the whole settings
    * view, so arriving from the repo table (where the "Statuses" button that
@@ -8692,6 +8720,41 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function buildStatusRow(status, index) {
     var row = el("div", { class: "status-row", dataset: { slug: status.slug } }, []);
 
+    // Reconciled before any control is built, because the superstate select
+    // below now paints a pending value that depends on the answer (SH-334).
+    var blocked = deleteBlockReason(status);
+    var prompt = state.statusPrompt && state.statusPrompt.slug === status.slug
+      ? state.statusPrompt : null;
+    if (prompt) {
+      // Each rule below is a predicate over the list's CONTENTS or over an
+      // action the user took — never over elapsed time, which is the whole
+      // conformance claim (SH-324, extended by SH-334).
+      if (prompt.intent === "delete" && blocked) {
+        // A status that stopped being deletable while its question sat open
+        // withdraws it: a story landed in it, or the project lost the last
+        // other status of some superstate.
+        state.statusPrompt = null; prompt = null;
+      } else if (prompt.intent === "reclassify" && (
+        status.open_count === 0 || prompt.superState === status.super_state
+      )) {
+        // Nothing left to move (the stories left by some other route), or the
+        // change already landed from another client or the CLI — either way
+        // there is nothing left to ask.
+        state.statusPrompt = null; prompt = null;
+      } else if (prompt.destination && !state.statuses.some(function(s) {
+        return s.slug === prompt.destination;
+      })) {
+        // The destination the user chose is gone (SH-334 Q3). Cleared to
+        // `null`, not re-pointed at whatever remains and not withdrawn:
+        // `destination` is the user's own answer, and silently substituting a
+        // different one is the same defect this story removes, wearing a
+        // helpful face. `null` is a representable "nothing chosen yet" — see
+        // `buildDestinationPanel` — so the question, and the user's place in
+        // it, both survive; only the stale answer does not.
+        prompt.destination = null;
+      }
+    }
+
     var up = el("button", {
       type: "button", disabled: index === 0,
       title: "Move " + status.slug + " earlier", "aria-label": "Move " + status.slug + " earlier",
@@ -8706,13 +8769,29 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
     row.appendChild(el("div", { class: "status-slug" }, [status.slug]));
 
+    // The select shows the value the open QUESTION is about, not the one the
+    // server last confirmed (SH-334): painting `status.super_state` while a
+    // reclassify question sits open beneath it would leave the control and
+    // the sentence disagreeing from the first repaint onward, with no second
+    // render to notice. It stays enabled while its OWN question is open, so a
+    // user who changes their mind can change it back where they changed it —
+    // `onSuperStateChange` answers that arrival. It is disabled under a
+    // *delete* question on the same row, so "one question per row" is visible
+    // rather than merely enforced, and the transition that would otherwise
+    // discard a chosen destination without asking is not reachable at all.
+    var superValue = prompt && prompt.intent === "reclassify" ? prompt.superState : status.super_state;
+    var superLocked = !!prompt && prompt.intent === "delete";
     var superSelect = el("select", {
-      title: "Open statuses hold live work; closing a story archives it",
+      class: "status-super",
+      title: superLocked
+        ? "Answer the question below " + status.slug + " first"
+        : "Open statuses hold live work; closing a story archives it",
+      disabled: superLocked,
       "aria-label": status.slug + " superstate",
       onChange: function() { onSuperStateChange(status, this.value, row); }
     }, [
-      el("option", { value: "OPEN", selected: status.super_state === "OPEN" }, ["Open"]),
-      el("option", { value: "CLOSED", selected: status.super_state === "CLOSED" }, ["Closed"])
+      el("option", { value: "OPEN", selected: superValue === "OPEN" }, ["Open"]),
+      el("option", { value: "CLOSED", selected: superValue === "CLOSED" }, ["Closed"])
     ]);
     row.appendChild(superSelect);
 
@@ -8747,22 +8826,25 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         : null
     ]));
 
-    var blocked = deleteBlockReason(status);
-    // A status that stopped being deletable while its confirmation sat armed
-    // withdraws the question: a story landed in it, or the project lost the
-    // last other status of some superstate. Cleared here rather than in a
-    // watcher because this is the one place that recomputes `blocked`.
-    if (blocked && state.armedDeleteSlug === status.slug) state.armedDeleteSlug = null;
-
-    var armed = state.armedDeleteSlug === status.slug;
+    var armed = !!prompt;
     row.appendChild(armed
-      ? el("button", { class: "btn btn-ghost", onClick: function() { disarmDelete(); } }, ["Cancel"])
+      ? el("button", { class: "btn btn-ghost", onClick: function() { cancelStatusMove(); } }, ["Cancel"])
       : el("button", {
           class: "btn btn-danger", disabled: !!blocked,
           title: blocked || ("Remove " + status.slug),
           onClick: function() { onDeleteStatus(status, row); }
         }, ["Delete"]));
-    if (armed) row.appendChild(buildDeleteConfirmPanel(status, row, blocked));
+    // Delete-with-no-stories-to-move keeps SH-324's original confirm shape;
+    // everything else that needs an answer (deleting an occupied status, or
+    // reclassifying one) gets the destination panel (SH-334). `open_count` is
+    // read live rather than cached on `prompt`, so a delete question opened
+    // against an occupied status downgrades to the simple confirm on its own
+    // if every story leaves by some other route while the question sits open.
+    if (prompt && prompt.intent === "delete" && status.open_count === 0) {
+      row.appendChild(buildDeleteConfirmPanel(status, row, blocked));
+    } else if (prompt) {
+      row.appendChild(buildDestinationPanel(status, row, prompt));
+    }
 
     return row;
   }
@@ -8808,7 +8890,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       el("button", {
         class: "btn btn-danger", disabled: !!blocked,
         onClick: function() {
-          state.armedDeleteSlug = null;
+          state.statusPrompt = null;
           deleteStatus(status.slug, null, row);
         }
       }, ["Delete " + status.slug])
@@ -8825,9 +8907,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * today, and would stop being safe the day it did not.
    *
    * That this also makes `statusEditorIsBusy()` true is a side effect and
-   * explicitly not the mechanism. The armed state survives a rebuild because
+   * explicitly not the mechanism. The open question survives a rebuild because
    * `buildStatusRow()` repaints it from `state`; if focus leaves for any
-   * reason the refreshes resume and the confirmation is still there. */
+   * reason the refreshes resume and the question is still there. */
   function focusInStatusRow(slug, selector) {
     var rows = document.querySelectorAll("#settings-view .status-row");
     for (var i = 0; i < rows.length; i++) {
@@ -8838,37 +8920,60 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     }
   }
 
-  /** Withdraws an armed confirmation. The single exit, used by Cancel and by
-   * Escape — the reconciliation rules elsewhere clear `state.armedDeleteSlug`
+  /** Withdraws the editor's open question. The single exit, used by Cancel and
+   * by Escape — the reconciliation rules elsewhere clear `state.statusPrompt`
    * directly, because they are already re-rendering and are not announcing a
-   * user's own action back to them. A no-op when nothing is armed, which is
+   * user's own action back to them. A no-op when nothing is open, which is
    * what lets the shared Escape handler call it unconditionally. */
-  function disarmDelete() {
-    if (!state.armedDeleteSlug) return;
-    var slug = state.armedDeleteSlug;
-    state.armedDeleteSlug = null;
+  function cancelStatusMove() {
+    if (!state.statusPrompt) return;
+    var prompt = state.statusPrompt;
+    state.statusPrompt = null;
     renderStatuses();
-    focusInStatusRow(slug, ".btn-danger");
-    announceInNoticeDock(slug + " kept.");
+    // Focus and wording both depend on which question was open (SH-334): a
+    // reclassify cancel returned to `.btn-danger` would strand the user on a
+    // destructive control they never touched, and "kept" is meaningless for a
+    // change that was never a deletion.
+    if (prompt.intent === "delete") {
+      focusInStatusRow(prompt.slug, ".btn-danger");
+      announceInNoticeDock(prompt.slug + " kept.");
+    } else {
+      focusInStatusRow(prompt.slug, ".status-super");
+      var status = state.statuses.filter(function(s) { return s.slug === prompt.slug; })[0];
+      var stillIs = status && status.super_state === "CLOSED" ? "closed" : "open";
+      announceInNoticeDock(prompt.slug + " is still " + stillIs + ".");
+    }
   }
 
   /** Changing a status's superstate reclassifies every story sitting in it,
    * so an occupied status asks where those stories go before sending
    * anything. An empty one just applies. */
   function onSuperStateChange(status, nextValue, row) {
-    if (nextValue === status.super_state) return;
+    var open = state.statusPrompt && state.statusPrompt.slug === status.slug
+      && state.statusPrompt.intent === "reclassify";
+    if (nextValue === status.super_state) {
+      // Reselecting the server's own value is how a keyboard user cancels
+      // using the control that opened the question (SH-334) — the select
+      // stays live while its own question is open (`buildStatusRow`), so this
+      // is the only other value it can produce.
+      if (open) cancelStatusMove();
+      return;
+    }
     if (status.open_count === 0) {
       patchStatus(status.slug, { super_state: nextValue }, row);
       return;
     }
-    promptForDestination(
-      status, row,
-      "Moving " + status.open_count + " " + (status.open_count === 1 ? "story" : "stories") + " out of "
-        + status.slug + " first — send " + (status.open_count === 1 ? "it" : "them") + " to",
-      function(destination) {
-        patchStatus(status.slug, { super_state: nextValue, move_stories_to: destination }, row);
-      }
-    );
+    if (open) {
+      // Revise in place rather than reopen: reopening would reset the
+      // destination the user already chose back to "nothing chosen yet",
+      // which is the same silent-substitution defect this story removes,
+      // just aimed at the answer instead of the question.
+      state.statusPrompt.superState = nextValue;
+      renderStatuses();
+      focusInStatusRow(status.slug, ".status-super");
+      return;
+    }
+    openStatusMove(status, "reclassify", nextValue);
   }
 
   /** Deleting an occupied status asks for a destination; deleting an empty
@@ -8898,29 +9003,30 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * And deleting the `setTimeout` alone would not have been enough: it would
    * have swapped a visible six-second limit for an invisible 0–25s one set by
    * the poll, which is still a limit and is worse for being undeclared. See
-   * `state.armedDeleteSlug` for the eight rebuild paths that made that true and
-   * for why the armed state now lives in `state`.
+   * `state.statusPrompt` for the eight rebuild paths that made that true and
+   * for why the open question now lives in `state`.
    *
    * `.council/sh324-delete-confirmation-time-limit/DECISION.md` has the full
    * reasoning, the vote (unanimous, with two seats voting against their own
-   * proposals), and the alternatives with their rejections. */
+   * proposals), and the alternatives with their rejections.
+   *
+   * **The occupied-status branch carries the identical undeclared deadline**
+   * (SH-334): `openStatusMove()` is the sibling this comment's own reasoning
+   * required, filed separately because a destination is a second behaviour
+   * change with its own state model — a select value plus a pending intent,
+   * not one slug. `.council/sh-334-destination-prompt-state-model/DECISION.md`
+   * has that council's own verdict. */
   function onDeleteStatus(status, row) {
     if (status.open_count > 0) {
-      promptForDestination(
-        status, row,
-        "Move " + status.open_count + " " + (status.open_count === 1 ? "story" : "stories") + " to",
-        function(destination) {
-          deleteStatus(status.slug, destination, row);
-        }
-      );
+      openStatusMove(status, "delete", null);
       return;
     }
-    state.armedDeleteSlug = status.slug;
+    state.statusPrompt = { slug: status.slug, intent: "delete", superState: null, destination: null };
     renderStatuses();
     // Focus lands on Cancel, the least destructive control (WAI-ARIA APG), so a
     // buffered Enter or a key repeat arriving just after the arming keystroke
     // cancels rather than deletes -- the keyboard form of the doubled click
-    // `buildStatusDeleteControl` describes.
+    // `buildDeleteConfirmPanel` describes.
     focusInStatusRow(status.slug, ".btn-ghost");
     // The armed state changed a control's meaning. Without this the only signal
     // is a button's own label, which a screen reader has no reason to re-read --
@@ -8931,28 +9037,135 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     );
   }
 
-  /** Shows the inline "move these stories to ..." prompt inside `row`, and
-   * calls `onApply` with the chosen slug. Cancel re-renders from the last
-   * server response, which also resets any select the user just changed. */
-  function promptForDestination(status, row, text, onApply) {
-    var existing = row.querySelector(".status-move");
-    if (existing) existing.remove();
-
-    var select = el("select", { "aria-label": "Destination status" },
-      otherStatuses(status.slug).map(function(other) {
-        return el("option", { value: other.slug }, [
-          other.slug + (other.super_state === "CLOSED" ? " (closes them)" : "")
-        ]);
-      })
-    );
-    var prompt = el("div", { class: "status-move" }, [
-      el("span", { class: "status-move-text" }, [text]),
-      select,
-      el("button", { class: "btn btn-primary", onClick: function() { onApply(select.value); } }, ["Apply"]),
-      el("button", { class: "btn btn-ghost", onClick: renderStatuses }, ["Cancel"])
+  /** The "move these stories to …" question, on its own full-width line
+   * beneath the row it belongs to — the same slot and layout as the delete
+   * confirmation (SH-324), and painted from `state.statusPrompt` the same way,
+   * which is what replaces `promptForDestination` (SH-334): that builder took
+   * its sentence and its apply-action as closure arguments and appended one
+   * node into `row`, then called `select.focus()`. Focus was the only thing
+   * holding the editor's refreshes off — `statusEditorIsBusy()` asks
+   * `document.activeElement` — so a click on the page background, a Tab away,
+   * or WebKit's refusal to focus a `<button>` at all handed the next
+   * `renderStatuses()` a `clear(container)` over a choice the user had made
+   * and not applied. That is WCAG 2.2 SC 2.2.1's central case, a limit on
+   * *completing an action*, and it was undeclared: no constant, no
+   * `setTimeout` — the expiry site was a render.
+   *
+   * So the subject, the intent, and the answer all live in `state` instead,
+   * and the sentence is derived at paint time (`destinationPromptText`) rather
+   * than captured, because the render that repaints this panel is not the
+   * interaction that opened it and has no closure to read.
+   *
+   * **The `<select>` writes back on every change and is painted from what it
+   * wrote**, so the choice survives whichever render happens next, whoever
+   * causes it. A leading, disabled placeholder makes "nothing chosen yet"
+   * representable (SH-334 Q3) — the same representation a chosen destination
+   * vanishing out from under the user repairs into, rather than either
+   * silently sending it somewhere else or discarding the whole question and
+   * the user's place in it.
+   *
+   * **No Cancel of its own.** The row's own trigger becomes Cancel while any
+   * question is open (`buildStatusRow`), so a second Cancel here would carry
+   * the same accessible name in the same row — precisely the ambiguity SH-324
+   * avoided by naming its confirm "Delete <slug>" rather than "Delete". This
+   * panel is Apply-only, mirroring `buildDeleteConfirmPanel`'s affirmative-only
+   * shape. */
+  function buildDestinationPanel(status, row, prompt) {
+    return el("div", { class: "status-move status-destination", role: "group" }, [
+      el("span", { class: "status-move-text" }, [destinationPromptText(status, prompt)]),
+      el("select", {
+        class: "status-destination-select",
+        "aria-label": "Destination for " + status.slug,
+        onChange: function() {
+          // No re-render: the control already shows the user's own choice,
+          // and repainting under a pointer still on it would move it. This is
+          // what makes the choice survive the NEXT render, whoever causes it.
+          if (state.statusPrompt && state.statusPrompt.slug === status.slug) {
+            state.statusPrompt.destination = this.value || null;
+          }
+        }
+      }, [
+        el("option", { value: "", disabled: true, selected: !prompt.destination }, ["Choose one…"])
+      ].concat(otherStatuses(status.slug).map(function(other) {
+        return el("option", {
+          value: other.slug,
+          selected: other.slug === prompt.destination
+        }, [other.slug + (other.super_state === "CLOSED" ? " (closes them)" : "")]);
+      }))),
+      el("button", {
+        class: "btn btn-primary",
+        onClick: function() { applyStatusMove(status, row); }
+      }, ["Apply"])
     ]);
-    row.appendChild(prompt);
-    select.focus();
+  }
+
+  /** The sentence above the destination select — differs by intent, since a
+   * delete moves stories out of a status that is about to disappear and a
+   * reclassify moves them out of one that is about to mean something else.
+   * Derived here rather than passed in: the render that repaints the panel is
+   * not the interaction that opened it, so there is no closure to read it
+   * from (SH-334). */
+  function destinationPromptText(status, prompt) {
+    var noun = status.open_count === 1 ? "story" : "stories";
+    if (prompt.intent === "delete") {
+      return "Move " + status.open_count + " " + noun + " to";
+    }
+    return "Moving " + status.open_count + " " + noun + " out of " + status.slug
+      + " first — send " + (status.open_count === 1 ? "it" : "them") + " to";
+  }
+
+  /** Opens the destination question on `status`'s row, replacing whatever
+   * question the editor was asking before — on this row or any other, empty-
+   * status delete confirmations included. One question at a time, editor-wide,
+   * by construction: there is exactly one `state.statusPrompt` (SH-334). */
+  function openStatusMove(status, intent, superState) {
+    var destinations = otherStatuses(status.slug);
+    // Nothing to move them to. The server would refuse the edit anyway, and a
+    // question with no possible answers is worse than no question — the
+    // re-render is what rolls a superstate select back to the server's value.
+    if (!destinations.length) {
+      renderStatuses();
+      toast("There is nowhere to move " + status.slug + "'s stories.", "error");
+      return;
+    }
+    state.statusPrompt = {
+      slug: status.slug,
+      intent: intent,
+      superState: superState || null,
+      destination: null
+    };
+    renderStatuses();
+    // After a USER-INITIATED re-render only. The reconciliation rules never
+    // call this: stealing focus on a poll would be its own violation.
+    focusInStatusRow(status.slug, ".status-destination select");
+    var count = status.open_count + " " + (status.open_count === 1 ? "story" : "stories");
+    announceInNoticeDock((intent === "delete"
+      ? "Delete " + status.slug + "? Moves " + count + ". "
+      : "Making " + status.slug + " " + (superState === "CLOSED" ? "closed" : "open")
+          + " moves " + count + ". ")
+      + "Choose a destination, then apply, or cancel.");
+  }
+
+  /** Sends the edit the open question describes. Reads `state`, never a
+   * closure or the DOM: the panel on screen may be the third one painted
+   * since the user chose, and only `state` has been through all three. */
+  function applyStatusMove(status, row) {
+    var prompt = state.statusPrompt;
+    if (!prompt || prompt.slug !== status.slug) return;
+    if (!prompt.destination) {
+      // Nothing chosen — a fresh open, or the previous choice vanished
+      // (SH-334 Q3). Refuse rather than guess, where the user is already
+      // looking, instead of silently picking one on their behalf.
+      announceInNoticeDock("Choose a destination first.");
+      focusInStatusRow(status.slug, ".status-destination select");
+      return;
+    }
+    state.statusPrompt = null;
+    if (prompt.intent === "delete") {
+      deleteStatus(status.slug, prompt.destination, row);
+    } else {
+      patchStatus(status.slug, { super_state: prompt.superState, move_stories_to: prompt.destination }, row);
+    }
   }
 
   function buildStatusAddForm() {
@@ -9018,14 +9231,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (row) row.classList.add("pending");
     api(method, path, body)
       .then(function(payload) {
-        // The list an armed confirmation was asked about has just changed, so
-        // the question is withdrawn rather than carried over onto a new one
+        // The list the open question was asked about has just changed, so the
+        // question is withdrawn rather than carried over onto a new one
         // (SH-324). This is a rule with a reason, not the incidental
         // consequence of a rebuild that it used to be: these two callbacks
         // consult no busy guard, and cannot -- repainting from the server's
         // authoritative answer is their whole job. Withdrawal here is triggered
         // by the user's own edit, never by elapsed time, so it is not a limit.
-        state.armedDeleteSlug = null;
+        state.statusPrompt = null;
         state.statuses = payload.states || [];
         renderStatuses();
         if (payload.message) toast(payload.message, "success");
@@ -9037,9 +9250,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         // Withdrawn on the failure path too, and for the same reason as the
         // success path above: this redraws from the last known-good list, which
         // is a list the user has now seen change under them. Leaving a
-        // confirmation armed across a redraw they did not ask for would make
+        // question open across a redraw they did not ask for would make
         // the next click mean something they did not aim at.
-        state.armedDeleteSlug = null;
+        state.statusPrompt = null;
         toastError(err);
         renderStatuses();
       });
@@ -9766,17 +9979,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       // SH-175: `create-modal` is deliberately absent here — see the
       // comment above its own listener bindings.
       if (e.key === "Escape") {
-        // Read BEFORE the closers run, not after (SH-324). An armed delete
-        // confirmation yields to any open overlay — Escape belongs to the
+        // Read BEFORE the closers run, not after (SH-324). An open editor
+        // question yields to any open overlay — Escape belongs to the
         // topmost surface, and an overlay is always above the editor behind it
         // — but the closers are about to empty the stack, so asking afterwards
-        // would find it empty and disarm in the same keystroke that closed the
-        // token modal. `disarmDelete()` is itself a no-op when nothing is
-        // armed, which is what lets it be called unconditionally here, the way
+        // would find it empty and withdraw in the same keystroke that closed the
+        // token modal. `cancelStatusMove()` is itself a no-op when nothing is
+        // open, which is what lets it be called unconditionally here, the way
         // every closer beside it already is.
         var armedYieldsToNothing = overlayStack.length === 0;
         closeDrawer(); closeDraftsModal(); cancelTokenModal(); closeArchiveModal(); skipDropBlockedReasonModal(); closeDeleteModal();
-        if (armedYieldsToNothing) disarmDelete();
+        if (armedYieldsToNothing) cancelStatusMove();
       }
     });
   }
