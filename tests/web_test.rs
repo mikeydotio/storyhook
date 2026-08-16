@@ -2205,30 +2205,27 @@ fn web_serve_root_html_gates_notification_motion_but_never_its_dismissal() {
     );
 }
 
-/// SH-333: `#toast-stack`'s `role="status"` carries an implicit
-/// `aria-atomic="true"` (WAI-ARIA 1.2), so every mutation re-announced the
-/// region's *entire* standing pile rather than the node that changed --
-/// worse the larger SH-322's `keepNotices` preference let that pile grow.
-/// `#dispatch-history` had the identical user-facing symptom by an
-/// unrelated mechanism: `renderDispatchHistory()` clears and rebuilds the
-/// panel wholesale on every render, so no live-region attribute can stop it
-/// re-announcing every row.
+/// SH-333 gave `#toast-stack` `aria-atomic="false"` (overriding
+/// `role="status"`'s implicit `true`, WAI-ARIA 1.2) plus `aria-atomic="true"`
+/// on each incrementally-inserted `.toast`, so a mutation announces exactly
+/// the notice that arrived rather than the whole standing pile. It could not
+/// give `#dispatch-history` the same treatment at the time:
+/// `renderDispatchHistory()` cleared and rebuilt the panel wholesale on every
+/// render, so no live-region attribute stopped it re-announcing every row --
+/// the reason that surface was demoted out of `aria-live` entirely and given
+/// a side-channel `sr-only` announcer instead, logged as deliberate tech
+/// debt naming SH-337 as the trigger to retire it.
 ///
-/// The council that settled the mechanism
-/// (`.council/sh-333-notice-stack-announcement-mechanism/DECISION.md`) split
-/// the fix by architecture: `aria-atomic="false"` on the stack plus
-/// `aria-atomic="true"` on each incrementally-inserted `.toast` is a
-/// spec-native fit for the first; the second lost `aria-live` outright and
-/// gained a dedicated `sr-only role="status"` announcer,
-/// `#dispatch-history-status`, fed directly by `addDispatchHistoryRow()` --
-/// deliberate tech debt tied to SH-337 (`renderDispatchHistory`'s
-/// already-scoped incremental-insert rewrite) as the trigger to retire it.
+/// SH-337 ended the rebuild, so `#dispatch-history` now carries the identical
+/// shape `#toast-stack` has: `aria-live="polite" aria-atomic="false""` on the
+/// region, `aria-atomic="true""` on each row, inserted one at a time. The
+/// side-channel announcer is gone.
 ///
 /// `e2e/specs/notice-announcement.spec.ts` proves the announced *text* in a
 /// real browser; this is the cheap layer that fails in seconds if the
 /// attributes themselves are moved back, without needing a browser at all.
 #[test]
-fn web_serve_root_html_scopes_toast_stack_atomicity_and_demotes_dispatch_history() {
+fn web_serve_root_html_gives_both_notice_surfaces_the_same_atomic_live_region_shape() {
     let fixture = served();
     let port = fixture.port;
 
@@ -2258,34 +2255,64 @@ fn web_serve_root_html_scopes_toast_stack_atomicity_and_demotes_dispatch_history
         "#dispatch-history must keep its role=\"region\" landmark. Found: {dispatch_history}"
     );
     assert!(
-        !dispatch_history.contains("aria-live"),
-        "#dispatch-history must carry no aria-live: renderDispatchHistory() \
-         clears and rebuilds it wholesale on every render, so no aria-live \
-         value stops it re-announcing every row on every arrival -- the \
-         announcement is #dispatch-history-status's job instead. Found: \
-         {dispatch_history}"
+        dispatch_history.contains(r#"aria-live="polite""#),
+        "#dispatch-history must be aria-live=\"polite\" (SH-337): the panel no \
+         longer rebuilds wholesale, so a live region can safely announce just \
+         the row that arrived. Found: {dispatch_history}"
+    );
+    assert!(
+        dispatch_history.contains(r#"aria-atomic="false""#),
+        "#dispatch-history must override role=\"region\"'s absence of implicit \
+         atomicity explicitly, matching #toast-stack's shape rather than \
+         leaving it to each browser's default. Found: {dispatch_history}"
     );
 
-    for id in ["notice-dock-status", "dispatch-history-status"] {
-        let announcer = opening_tag_for_id(&body, id);
+    let announcer = opening_tag_for_id(&body, "notice-dock-status");
+    assert!(
+        announcer.contains(r#"role="status""#),
+        "#notice-dock-status must be role=\"status\" -- it is the element a \
+         test (and an assistive technology) reads a dismissal's announced \
+         text from. Found: {announcer}"
+    );
+    assert!(
+        !body.contains(r#"id="dispatch-history-status""#),
+        "#dispatch-history-status was SH-333's stopgap side channel, fed by \
+         hand from addDispatchHistoryRow() because the panel rebuilt \
+         wholesale and no live-region attribute could announce just the \
+         arriving row. SH-337 ended the rebuild, so #dispatch-history \
+         announces its own arrivals now (aria-live=\"polite\" \
+         aria-atomic=\"false\" on the region, aria-atomic=\"true\" per row) \
+         and the side channel is retired rather than left standing beside a \
+         fix that no longer needs it."
+    );
+
+    // Both `.toast` and `.dispatch-history-row` set their own
+    // aria-atomic="true" from JS (`el()`'s props in `toast()` and
+    // `buildDispatchHistoryRow()`), not the static markup, so each is pinned
+    // as source text scoped to its own function rather than a tag scan.
+    let script = script(&body);
+    for signature in [
+        "function toast(message, variant, detail, reason) {",
+        "function buildDispatchHistoryRow(entry) {",
+    ] {
+        let fn_start = script
+            .find(signature)
+            .unwrap_or_else(|| panic!("{signature} must exist with this exact signature"));
+        let close = "\n  }\n";
+        let fn_end = fn_start
+            + script[fn_start..]
+                .find(close)
+                .unwrap_or_else(|| panic!("{signature}'s closing brace"))
+            + close.len();
+        let body_of_fn = &script[fn_start..fn_end];
         assert!(
-            announcer.contains(r#"role="status""#),
-            "#{id} must be role=\"status\" -- it is the element a test (and an \
-             assistive technology) reads an arrival's announced text from. \
-             Found: {announcer}"
+            body_of_fn.contains(r#""aria-atomic": "true""#),
+            "{signature} must give its own node aria-atomic=\"true\" -- \
+             without it, the container's aria-atomic=\"false\" would narrow \
+             every mutation to nothing rather than to the notice that just \
+             arrived"
         );
     }
-
-    // `.toast`'s own aria-atomic="true" is set from JS (`el()`'s props in
-    // `toast()`), not the static markup, so it is pinned as source text
-    // rather than a tag scan.
-    let script = script(&body);
-    assert!(
-        script.contains(r#""aria-atomic": "true""#),
-        "toast() must give each .toast node its own aria-atomic=\"true\" -- \
-         without it, #toast-stack's aria-atomic=\"false\" would narrow every \
-         mutation to nothing rather than to the notice that just arrived"
-    );
 }
 
 /// SH-203: the status light itself never carries the `unknown` colour --
