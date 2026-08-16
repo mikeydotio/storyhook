@@ -418,6 +418,107 @@ impl<'de> serde::Deserialize<'de> for ExportedEvent {
 /// across the flip, which is what the golden corpus pins.
 const EXPORT_SCHEMA: u32 = 1;
 
+/// Parses `raw` as the batch importer's input — a JSON array of
+/// [`ImportStory`] descriptions — and, if that fails, checks whether it looks
+/// like a [`ProjectExport`] document instead (SH-215).
+///
+/// `story import` and `story import-project` read two different shapes and
+/// have never round-tripped with each other: this one bulk-creates fresh
+/// stories from bare descriptions, that one restores a whole project's event
+/// history, ids included. A user who backs up with `story export` and tries
+/// to restore with `story import` — the mistake `story help export` itself
+/// invited before this story — used to see only serde's own error, which
+/// names neither the command that wrote the file nor the one that reads it:
+///
+/// ```text
+/// error: invalid type: map, expected a sequence at line 1 column 0
+/// ```
+///
+/// The sniff is deliberately narrow and runs only after the real parse has
+/// already failed, so it can never mask one array shape as another or change
+/// what a valid document parses to. A document that satisfies neither shape —
+/// truncated JSON, a typo, anything genuinely malformed — surfaces serde's
+/// own error unchanged, line and column included; this function invents
+/// nothing for that case.
+pub fn parse_import_documents(raw: &str) -> Result<Vec<ImportStory>, AppError> {
+    match serde_json::from_str(raw) {
+        Ok(stories) => Ok(stories),
+        Err(error) => {
+            if looks_like_export_document(raw) {
+                Err(AppError::Usage(
+                    "this looks like a `story export` document, which `story import` cannot \
+                     read.\n\n`story import` bulk-creates stories from a JSON array of \
+                     descriptions, each needing at minimum a \"title\". An export document is \
+                     a whole project — ids, event histories, states, types and members — and \
+                     its restore verb is:\n\n  story import-project <file>\n\nIt restores into \
+                     an empty project."
+                        .to_string(),
+                ))
+            } else {
+                Err(error.into())
+            }
+        }
+    }
+}
+
+/// Parses `raw` as a [`ProjectExport`] restore document and, if that fails,
+/// checks whether it looks like the batch importer's array shape instead
+/// (SH-215) — the mirror of [`parse_import_documents`], for the same reason:
+/// `story import-project` handed a `story import`-shaped array used to fail
+/// with serde's own "invalid type: sequence, expected a map", naming neither
+/// command.
+///
+/// Same discipline: the sniff runs only after the real parse fails, and a
+/// document that satisfies neither shape surfaces serde's own error
+/// unchanged.
+pub fn parse_export_document(raw: &str) -> Result<ProjectExport, AppError> {
+    match serde_json::from_str(raw) {
+        Ok(export) => Ok(export),
+        Err(error) => {
+            if looks_like_import_array(raw) {
+                Err(AppError::Usage(
+                    "this looks like a `story import` document — a JSON array of story \
+                     descriptions — which `story import-project` cannot read.\n\n\
+                     `story import-project` restores a whole project from a `story export` \
+                     document, ids and event histories included. A bare array of descriptions \
+                     is what `story import` bulk-creates stories from:\n\n  story import \
+                     <file>"
+                        .to_string(),
+                ))
+            } else {
+                Err(error.into())
+            }
+        }
+    }
+}
+
+/// Whether `raw` parses as JSON and its top level is an object carrying both
+/// `schema` and `stories` — the two keys every [`ProjectExport`] has
+/// unconditionally, and neither of which an [`ImportStory`] ever carries.
+/// Anything that fails to parse as JSON at all is not sniffed as either shape
+/// — the caller's own parse error already says why.
+fn looks_like_export_document(raw: &str) -> bool {
+    matches!(
+        serde_json::from_str::<serde_json::Value>(raw),
+        Ok(serde_json::Value::Object(ref map))
+            if map.contains_key("schema") && map.contains_key("stories")
+    )
+}
+
+/// Whether `raw` parses as JSON and its top level is an array whose first
+/// element is an object carrying `title` — the one field every
+/// [`ImportStory`] requires and a [`ProjectExport`] never has at its top
+/// level. An empty array is not sniffed as either shape: `story import`
+/// already accepts it (`"no stories to import"`), so it is never the
+/// ambiguous case this function exists to catch.
+fn looks_like_import_array(raw: &str) -> bool {
+    matches!(
+        serde_json::from_str::<serde_json::Value>(raw),
+        Ok(serde_json::Value::Array(ref items))
+            if matches!(items.first(), Some(serde_json::Value::Object(map)) if map.contains_key("title"))
+    )
+}
+
 /// What one `story import` or `story decompose` call produced.
 #[derive(Debug)]
 pub struct ImportBatch {

@@ -463,6 +463,49 @@ fn export_import_export_is_byte_identical() {
     );
 }
 
+/// SH-215: `story export`'s own output, handed to `story import`, used to
+/// fail with serde's own "invalid type: map, expected a sequence" — naming
+/// neither the command that wrote the file nor the one that reads it. It now
+/// names the restore verb instead.
+#[test]
+fn import_refuses_an_export_document_and_names_import_project() {
+    let env = TestEnv::shared();
+    let source = env.project().build();
+    story(source.path())
+        .args(["new", "A story worth backing up"])
+        .assert()
+        .success();
+
+    let dir = scratch_dir();
+    let backup = dir.path().join("backup.json");
+    std::fs::write(&backup, export_of(source.path())).expect("writing the export document");
+
+    story(source.path())
+        .args(["import", backup.to_str().unwrap()])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("story import-project"))
+        .stderr(predicate::str::contains("story export"));
+}
+
+/// The mirror mistake: a `story import`-shaped array handed to
+/// `story import-project`, which restores a whole project and cannot read a
+/// bare list of descriptions.
+#[test]
+fn import_project_refuses_an_import_array_and_names_import() {
+    let dir = scratch_dir();
+    let stories = dir.path().join("stories.json");
+    std::fs::write(&stories, r#"[{"title": "Build API"}]"#).expect("writing the import array");
+
+    story(dir.path())
+        .args(["import-project", stories.to_str().unwrap()])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("story import <file>"));
+}
+
 /// Imports `document` into a brand-new project and exports it again.
 fn reimport(document: &str) -> String {
     let dir = scratch_dir();
