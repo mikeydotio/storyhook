@@ -569,21 +569,26 @@ fn an_empty_merge_range_links_nothing_and_exits_clean() {
     );
 }
 
-/// **The conflicted-merge hole (SH-341).** A merge that conflicts is concluded
-/// by `git commit`, so it fires `post-commit` and **never** `post-merge` — so
-/// neither this hook's sync nor SH-56's trailer auto-close runs for it at all.
+/// **A named limit of git, not of storyhook (SH-341 fixed the hole this used
+/// to pin; this mechanism is unchanged).** A merge that conflicts is
+/// concluded by `git commit`, so git itself fires `post-commit` and **never**
+/// `post-merge` — that was true before SH-341 and remains true after it,
+/// because nothing about git's own hook dispatch can be changed from here.
 ///
-/// This is a named limit, not a defect in what SH-330 built: `post-merge` is
-/// the hook the arrival runs, and for a conflicted merge git does not run it.
-/// Closing it means teaching `post-commit` to recognise that it is concluding a
-/// merge — a commit with two or more parents is the cheap and honest question —
-/// which is its own change with its own blast radius, filed as SH-341.
+/// What SH-341 changed is what `post-commit` does about it: it now asks
+/// whether the commit it is running for has two or more parents, and if so
+/// runs the same merge-arrival shell `post-merge` runs, over `HEAD^1..HEAD`
+/// (`storyhook_merge_arrival` in `src/hooks.rs`) — see the SH-341 section
+/// below for that coverage.
 ///
-/// Pinned rather than left silent so the next reader does not meet it as a
-/// mystery and "fix" it into a false alarm. The assertion is deliberately about
-/// the **mechanism** (which hook ran), not the outcome: `post-commit` still
-/// links the commit through its own flat `--since 1h`, so a story-level
-/// assertion would pass and hide the hole.
+/// Kept rather than deleted, and unchanged in what it measures: the reason the
+/// fix was needed is exactly that `post-merge` truly never runs here, so
+/// there was nothing to fall back to except `post-commit` recognising the
+/// shape for itself. The assertion stays deliberately about the **mechanism**
+/// (which hook ran), not the outcome — `post-commit` links and closes through
+/// its own guard now, which is what
+/// `a_conflicted_merge_links_a_commit_no_post_commit_ever_saw` and
+/// `a_conflicted_merge_closes_the_story_its_body_names` verify.
 #[test]
 fn a_conflicted_merge_never_runs_the_merge_hook_at_all() {
     let repo = HookRepo::new();
