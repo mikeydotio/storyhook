@@ -82,6 +82,10 @@ pub struct ListFilters {
     /// shown inline in the default `list` output — this never *hides*
     /// anything the way it would if it were a default exclusion.
     pub drafts: bool,
+    /// `--unassessed` (SH-359): narrows to stories whose priority nobody has
+    /// ever chosen. Not the same as `--priority none`, which also returns every
+    /// story deliberately parked there — the distinction this flag exists for.
+    pub unassessed: bool,
 }
 
 /// Answers every read-only question about a project.
@@ -245,6 +249,9 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
         }
         if filters.drafts {
             views.retain(|view| view.story.draft);
+        }
+        if filters.unassessed {
+            views.retain(|view| !view.story.priority_assessed);
         }
         if let Some(phase) = &filters.phase {
             let label = format!("phase:{phase}");

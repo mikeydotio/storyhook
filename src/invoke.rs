@@ -349,15 +349,24 @@ pub fn create_store(cwd: &Path, requested: &str) -> Result<Response, AppError> {
 /// be *true*: `none` sorts last in `story next`, it is not excluded from it. A
 /// warning about a false statement has no business making one.
 ///
+/// **That last sentence is why this text changed in SH-359.** It used to say the
+/// story "is filed at `none`, which means \"deliberately parked\"" — which was
+/// the conflation SH-354 had just warned about, asserted by the warning itself.
+/// Nobody parked the story; nobody said anything. The store can now tell those
+/// apart ([`StorySnapshot::priority_assessed`]), so the warning stops claiming a
+/// decision was made and describes the *consequence* the two share: sorting
+/// last. Which is what the reader needs either way.
+///
 /// It says nothing about the story's type. `bug` is only a default type slug —
 /// a project may rename or drop it — so a check keyed on the word would stop
 /// firing for exactly the projects that renamed it, which is a guard that stops
 /// guarding without saying so.
 fn unstated_priority_warning(id: &str) -> String {
     format!(
-        "priority not set: {id} is filed at `none`, which means \"deliberately parked\" \
-         and sorts last in `story next`. If that is not what you meant, run \
-         `story help priority-rubric` and then `story prioritize {id} <level>`."
+        "priority not set: nobody has assessed {id}, so it sorts last in \
+         `story next` — alongside stories deliberately parked at `none`. If that \
+         is not what you meant, run `story help priority-rubric` and then \
+         `story prioritize {id} <level>`."
     )
 }
 
@@ -406,13 +415,14 @@ pub fn dispatch<S: Store>(
             assignee,
             draft,
         } => {
-            // Read *before* the move into `NewStoryInput`, because this
-            // `Option` is the last place the two cases are distinguishable
-            // (SH-354). Downstream, an omitted flag and an explicit
-            // `--priority none` are the same `Priority::None`, and they mean
-            // opposite things: one is a decision to park the story, the other
-            // is nobody having decided anything.
-            let priority_unstated = priority.is_none();
+            // No peek at `priority` before the move any more (SH-359). This
+            // arm used to capture `priority.is_none()` into a local, under a
+            // comment explaining that the `Option` was "the last place the two
+            // cases are distinguishable" — an omitted flag and an explicit
+            // `--priority none` folding to the same `Priority::None` while
+            // meaning opposite things. That is no longer true: the fold carries
+            // the distinction on the snapshot, so the answer is read back off
+            // the created story below, where every other door can reach it too.
             let input = NewStoryInput {
                 title,
                 state,
@@ -425,7 +435,9 @@ pub fn dispatch<S: Store>(
             };
             let story = StoryService::new(ctx).create(&input)?;
             let mut response = ctx.story_view(&story.id)?;
-            if priority_unstated && let Response::Story(view) = &mut response {
+            if let Response::Story(view) = &mut response
+                && !view.story.priority_assessed
+            {
                 view.warnings.push(unstated_priority_warning(&story.id));
             }
             Ok(response)
@@ -608,6 +620,7 @@ pub fn dispatch<S: Store>(
             phase,
             story_type,
             drafts,
+            unassessed,
         } => {
             let filters = ListFilters {
                 state,
@@ -623,6 +636,7 @@ pub fn dispatch<S: Store>(
                 phase,
                 story_type,
                 drafts,
+                unassessed,
             };
             query(ctx, |service| service.list(&filters)).map(|views| Response::Stories(views, None))
         }
