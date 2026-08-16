@@ -1391,12 +1391,30 @@ export async function measureFocusIndicator(
     // Border-swap kind: the indicator is whatever CHANGED between rest and
     // focus (border-color or background-color), not a ring.
     const r = rest.get(theme.name)!;
-    const restBorder = parseColor(r.borderColor);
-    const focusBorder = parseColor(f.borderColor);
-    const restBg = parseColor(r.backgrounds[0]);
-    const focusBg = parseColor(f.backgrounds[0]);
-    const borderChangeRatio = contrastRatio(focusBorder, restBorder);
-    const bgChangeRatio = contrastRatio(focusBg, restBg);
+
+    // The element's own background, COMPOSITED over its parent chain --
+    // `.search-input`/`.drawer-title` rest at `background: transparent` (and
+    // `.drawer-title`/`.search-input` also rest at `border: 1px solid
+    // transparent`), so comparing raw parsed colours directly would score a
+    // transparent rest value as literal opaque BLACK (relativeLuminance()
+    // ignores alpha entirely) -- caught by a probe run that printed an
+    // 18.07:1 "background change" for `.drawer-title`, an order of
+    // magnitude past every real number in this sheet, and enough on its own
+    // to make an all-but-invisible background swap outrank the real,
+    // opaque-to-opaque `--accent` border change it sits beside. A border
+    // painted over a transparent background is likewise composited onto
+    // that same effective fill (`background-clip`'s default is
+    // `border-box`, so the element's own background already extends under
+    // the border band) before it is compared.
+    const effectiveFill = (p: IndicatorProbe): Rgba =>
+      over(parseColor(p.backgrounds[0]), backdropOf(p.backgrounds.slice(1)));
+
+    const restBgDisplayed = effectiveFill(r);
+    const focusBgDisplayed = effectiveFill(f);
+    const restBorderDisplayed = over(parseColor(r.borderColor), restBgDisplayed);
+    const focusBorderDisplayed = over(parseColor(f.borderColor), focusBgDisplayed);
+    const borderChangeRatio = contrastRatio(focusBorderDisplayed, restBorderDisplayed);
+    const bgChangeRatio = contrastRatio(focusBgDisplayed, restBgDisplayed);
 
     // SC 2.4.13's change-ratio clause, RECORDED rather than asserted --
     // weakened to "something changed" (ratio > 1) purely as a guard against
@@ -1408,8 +1426,8 @@ export async function measureFocusIndicator(
     expect.soft(
       Math.max(borderChangeRatio, bgChangeRatio),
       `${where}: ${f.what} focused vs rest under ${theme.name} -- ` +
-        `border ${show(restBorder)} -> ${show(focusBorder)} (${borderChangeRatio.toFixed(2)}:1), ` +
-        `background ${show(restBg)} -> ${show(focusBg)} (${bgChangeRatio.toFixed(2)}:1). ` +
+        `border ${show(restBorderDisplayed)} -> ${show(focusBorderDisplayed)} (${borderChangeRatio.toFixed(2)}:1), ` +
+        `background ${show(restBgDisplayed)} -> ${show(focusBgDisplayed)} (${bgChangeRatio.toFixed(2)}:1). ` +
         "Neither changed: focus changes nothing this instrument can see.",
     ).toBeGreaterThan(1);
 
@@ -1425,20 +1443,20 @@ export async function measureFocusIndicator(
     // for a fill that touches nothing but itself.
     if (borderChangeRatio >= bgChangeRatio) {
       const parentBackdrop = backdropOf(f.backgrounds.slice(1));
-      const insideRatio = contrastRatio(focusBorder, focusBg);
-      const outsideRatio = contrastRatio(focusBorder, parentBackdrop);
+      const insideRatio = contrastRatio(focusBorderDisplayed, focusBgDisplayed);
+      const outsideRatio = contrastRatio(focusBorderDisplayed, parentBackdrop);
       const worst = Math.min(insideRatio, outsideRatio);
       expect.soft(
         worst,
-        `${where}: ${f.what}'s border indicator is ${show(focusBorder)} under ${theme.name} -- ` +
-          `${insideRatio.toFixed(2)}:1 against its own background ${show(focusBg)}, ` +
+        `${where}: ${f.what}'s border indicator is ${show(focusBorderDisplayed)} under ${theme.name} -- ` +
+          `${insideRatio.toFixed(2)}:1 against its own background ${show(focusBgDisplayed)}, ` +
           `${outsideRatio.toFixed(2)}:1 against its parent's ${show(parentBackdrop)} -- ` +
           `below SC 1.4.11's ${MIN_CONTRAST}:1`,
       ).toBeGreaterThanOrEqual(MIN_CONTRAST);
     } else {
       expect.soft(
         bgChangeRatio,
-        `${where}: ${f.what}'s background indicator changed from ${show(restBg)} to ${show(focusBg)} ` +
+        `${where}: ${f.what}'s background indicator changed from ${show(restBgDisplayed)} to ${show(focusBgDisplayed)} ` +
           `under ${theme.name} -- ${bgChangeRatio.toFixed(2)}:1, below SC 1.4.11's ${MIN_CONTRAST}:1`,
       ).toBeGreaterThanOrEqual(MIN_CONTRAST);
     }
