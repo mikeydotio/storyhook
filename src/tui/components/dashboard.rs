@@ -88,7 +88,7 @@ impl Dashboard {
 
         // Recent activity
         self.items.push(DashboardItem::Header); // "Recent Activity"
-        let recent = recent_stories(&state.data.stories);
+        let recent = recent_stories(&state.data);
         if recent.is_empty() {
             self.items.push(DashboardItem::Header); // "(none)"
         } else {
@@ -256,7 +256,7 @@ impl Component for Dashboard {
             "  Recent Activity",
             theme.section_header,
         )));
-        let recent = recent_stories(&state.data.stories);
+        let recent = recent_stories(&state.data);
         if recent.is_empty() {
             lines.push(Line::from(Span::styled("    (none)", theme.section_count)));
         } else {
@@ -309,7 +309,7 @@ impl Dashboard {
 
     /// Check if the recent story at index `i` is currently selected by the cursor.
     fn is_recent_story_selected(&self, state: &AppState, story_idx: usize) -> bool {
-        let recent = recent_stories(&state.data.stories);
+        let recent = recent_stories(&state.data);
         if story_idx >= recent.len() {
             return false;
         }
@@ -474,9 +474,33 @@ pub fn ready_stories(data: &DataStore) -> Vec<&StorySnapshot> {
 }
 
 /// Get the most recently updated stories, sorted by updated_at descending.
-pub fn recent_stories(stories: &[StorySnapshot]) -> Vec<&StorySnapshot> {
-    let mut recent: Vec<&StorySnapshot> = stories.iter().collect();
-    recent.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+///
+/// Takes the whole [`DataStore`] rather than a story list, for the same
+/// reason [`ready_stories`] does: the tiebreak below needs
+/// [`DataStore::head_global_seqs`], which must come from the same project's
+/// read as `stories` — passing them as two separate arguments is an invalid
+/// state this signature cannot express.
+///
+/// `updated_at` is RFC3339 at one-second precision, so two stories written
+/// inside one second tie; before SH-336 that tie fell through to whichever
+/// order `stories` happened to arrive in (Rust's `sort_by` is stable), which
+/// let a tie decide not just the *order* of the top 5 but *which* five
+/// appeared at all. `head_global_seq` is the change-feed position of the
+/// event each story's row was folded from — exact, because writes are
+/// serialized behind one process-wide write mutex. A story missing from the
+/// map (an older daemon) compares as `None`, which Rust orders before every
+/// `Some`, so it sorts last within a tied group; when *both* sides are
+/// unknown the comparison is `Equal` and the stable sort preserves the
+/// incoming order — today's exact behaviour, kept as the honest degradation.
+pub fn recent_stories(data: &DataStore) -> Vec<&StorySnapshot> {
+    let mut recent: Vec<&StorySnapshot> = data.stories.iter().collect();
+    recent.sort_by(|a, b| {
+        b.updated_at.cmp(&a.updated_at).then_with(|| {
+            data.head_global_seqs
+                .get(&b.id)
+                .cmp(&data.head_global_seqs.get(&a.id))
+        })
+    });
     recent.truncate(5);
     recent
 }
@@ -485,6 +509,7 @@ pub fn recent_stories(stories: &[StorySnapshot]) -> Vec<&StorySnapshot> {
 mod tests {
     use super::*;
     use crate::domain::{Priority, StateDef, StoryRelation, StorySnapshot, SuperState};
+    use crate::store::GlobalSeq;
 
     fn test_states() -> Vec<StateDef> {
         vec![
@@ -1055,7 +1080,8 @@ mod tests {
                 "2026-01-02T00:00:00Z",
             ),
         ];
-        let recent = recent_stories(&stories);
+        let data = project(stories);
+        let recent = recent_stories(&data);
         assert_eq!(recent.len(), 3);
         assert_eq!(recent[0].id, "SH-2"); // most recent
         assert_eq!(recent[1].id, "SH-3");
@@ -1075,8 +1101,135 @@ mod tests {
                 &format!("2026-01-{i:02}T00:00:00Z"),
             ));
         }
-        let recent = recent_stories(&stories);
+        let data = project(stories);
+        let recent = recent_stories(&data);
         assert_eq!(recent.len(), 5);
+    }
+
+    /// SH-336: every storyhook timestamp is RFC3339 at one-second precision,
+    /// so a tie is routine, not exotic — the two tests above never exercise
+    /// one (each fixture uses day-apart timestamps). Before `head_global_seq`
+    /// this function had no tiebreak at all; `sort_by` is stable, so a tied
+    /// group fell back to whichever order `data.stories` happened to arrive
+    /// in — here, ascending story number, the opposite of what "most recent"
+    /// means for two stories written in the same second in *reverse* story
+    /// order.
+    #[test]
+    fn recent_activity_ranks_a_same_second_tie_by_which_story_was_written_last() {
+        let stories = vec![
+            make_snapshot(
+                "SH-1",
+                "todo",
+                "A",
+                Priority::None,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+            make_snapshot(
+                "SH-2",
+                "todo",
+                "B",
+                Priority::None,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+            make_snapshot(
+                "SH-3",
+                "todo",
+                "C",
+                Priority::None,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+        ];
+        // Write order is the *reverse* of both story number and the incoming
+        // vec order (SH-1, SH-2, SH-3): SH-3 was actually written last. A
+        // stable sort with no tiebreak would fall through to the incoming
+        // order on this full tie and return [SH-1, SH-2, SH-3] unchanged —
+        // this is what makes the test discriminate the fix from its absence.
+        let data = project(stories).with_head_global_seqs(std::collections::BTreeMap::from([
+            ("SH-1".to_string(), GlobalSeq::new(10)),
+            ("SH-2".to_string(), GlobalSeq::new(20)),
+            ("SH-3".to_string(), GlobalSeq::new(30)),
+        ]));
+        let recent = recent_stories(&data);
+        assert_eq!(
+            recent.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            ["SH-3", "SH-2", "SH-1"],
+            "written-last-first, not the incoming order"
+        );
+    }
+
+    /// The membership half of the same defect: before `head_global_seq`, a
+    /// tie did not just misorder the top 5, it decided *which* five appeared
+    /// at all when there are more than 5 tied candidates.
+    #[test]
+    fn a_story_written_last_in_a_second_is_not_dropped_from_recent_activity() {
+        let mut stories = Vec::new();
+        let mut seqs = std::collections::BTreeMap::new();
+        for i in 1..=6 {
+            let id = format!("SH-{i}");
+            stories.push(make_snapshot(
+                &id,
+                "todo",
+                &format!("Story {i}"),
+                Priority::None,
+                None,
+                "2026-01-01T00:00:00Z",
+            ));
+            // Written in story-number order, so SH-6 has the highest seq —
+            // the stable-sort fallback (today's incoming order, which
+            // `project` also builds in story-number order) would instead
+            // keep SH-1..SH-5 and drop SH-6, the one actually written most
+            // recently.
+            seqs.insert(id, GlobalSeq::new(i));
+        }
+        let data = project(stories).with_head_global_seqs(seqs);
+        let recent = recent_stories(&data);
+        let ids: Vec<&str> = recent.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids.len(), 5);
+        assert!(
+            ids.contains(&"SH-6"),
+            "SH-6 was written last and must not be dropped by a tie: {ids:?}"
+        );
+        assert_eq!(ids, ["SH-6", "SH-5", "SH-4", "SH-3", "SH-2"]);
+    }
+
+    /// The honest degradation for an older daemon that has never populated
+    /// `head_global_seqs`: no ordinal is known for anyone, so every
+    /// comparison in the tiebreak is `Equal` and the stable sort keeps
+    /// today's incoming order — exactly what this function did before
+    /// SH-336, rather than an invented one.
+    #[test]
+    fn recent_activity_falls_back_to_the_incoming_order_when_no_ordinals_are_known() {
+        let stories = vec![
+            make_snapshot(
+                "SH-1",
+                "todo",
+                "A",
+                Priority::None,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+            make_snapshot(
+                "SH-2",
+                "todo",
+                "B",
+                Priority::None,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+        ];
+        let data = project(stories);
+        assert!(
+            data.head_global_seqs.is_empty(),
+            "the fixture's own premise"
+        );
+        let recent = recent_stories(&data);
+        assert_eq!(
+            recent.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            ["SH-1", "SH-2"]
+        );
     }
 
     // =======================================================================
@@ -1133,10 +1286,10 @@ mod tests {
     #[test]
     fn empty_ready_and_recent_lists() {
         let stories: Vec<StorySnapshot> = vec![];
-        let data = project(stories.clone());
+        let data = project(stories);
         let ready = ready_stories(&data);
         assert!(ready.is_empty());
-        let recent = recent_stories(&stories);
+        let recent = recent_stories(&data);
         assert!(recent.is_empty());
     }
 
