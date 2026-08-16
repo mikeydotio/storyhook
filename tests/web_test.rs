@@ -1064,6 +1064,13 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     // is unchanged, so re-picking the current one must not leave this page.
     assert!(body.contains("story.story.priority === priority"));
 
+    // SH-358: the create modal renders the envelope's `warnings` — before
+    // this, `api()` resolved the parsed envelope (warnings included) and
+    // nothing in this file read the field at all.
+    assert!(body.contains("function toastEnvelopeWarnings"));
+    assert!(body.contains("payload.warnings"));
+    assert!(body.contains("toastEnvelopeWarnings(payload)"));
+
     // SH-197: the context menu's Delete item, reaching the same shared
     // modal (commit 3) the drawer footer's own Delete button opens.
     assert!(body.contains("\"Delete\", danger: true"));
@@ -3624,6 +3631,58 @@ fn web_create_story_returns_201_and_story() {
     let data_json: serde_json::Value =
         serde_json::from_str(&data.into_body().read_to_string().unwrap()).unwrap();
     assert_eq!(data_json["summary"]["total_open"], 1);
+}
+
+/// The dashboard's create route (`Invocation::New`) reaches the same
+/// unassessed-priority warning `story new` does (SH-354/SH-359/SH-358): the
+/// envelope's `warnings` field, not a new one, is what makes the browser able
+/// to read it without any server-side dashboard-specific code.
+#[test]
+fn web_create_story_with_no_priority_carries_the_unassessed_warning() {
+    let fixture = served();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let resp = post_json(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
+        r#"{"title":"No priority named"}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 201);
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    let warnings = json["warnings"]
+        .as_array()
+        .expect("the envelope must carry `warnings` when the story is unassessed");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().is_some_and(|w| w.contains("priority not set"))),
+        "{json}"
+    );
+}
+
+/// The load-bearing pairing with the test above: a stated priority raises no
+/// warning at all, so the dashboard never has to reason about `warnings`
+/// being present-but-empty versus genuinely absent.
+#[test]
+fn web_create_story_with_a_stated_priority_carries_no_warning() {
+    let fixture = served();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let resp = post_json(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
+        r#"{"title":"Assessed already","priority":"high"}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 201);
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    assert!(
+        json.get("warnings").is_none(),
+        "an assessed story must carry no `warnings` key: {json}"
+    );
 }
 
 #[test]
