@@ -900,6 +900,25 @@ export async function raiseNotice(page: Page, title: string, which: number): Pro
   await page.locator(".ctxmenu-item", { hasText: COPY_TARGETS[which] }).click();
 }
 
+/** Holds `key` down: one deliberate press, then `repeats` auto-repeats, then
+ * release.
+ *
+ * Playwright reports the first `down` with `repeat: false` and every subsequent
+ * one with `repeat: true`, which is the sequence a held key produces and the
+ * only part of it this harness can speak to. What a test built on this proves
+ * is what the page does with a repeat-flagged event; that a *physically* held
+ * key sets the flag rests on the UI Events spec and on a hand check, and is not
+ * evidence this suite can produce (the SH-322/SH-327 precedent).
+ *
+ * Lived in `notice-autorepeat.spec.ts` (SH-339) until `modal-enter-autorepeat
+ * .spec.ts` (SH-362) needed the identical primitive — the same journey
+ * `deleteStory` and `resolvedTokenColor` above already made. */
+export async function holdKey(page: Page, key: string, repeats: number): Promise<void> {
+  await page.keyboard.down(key);
+  for (let i = 0; i < repeats; i++) await page.keyboard.down(key);
+  await page.keyboard.up(key);
+}
+
 /** Waits until no backdrop is still on screen.
  *
  * Closing an overlay is a 0.18s opacity transition, and `.backdrop` carries no
