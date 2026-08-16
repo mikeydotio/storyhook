@@ -212,16 +212,32 @@ storyhook_merge_arrival "$ORIG_HEAD" 5
 /// Abandoning it degrades to "no hint appended", the same shape SH-182 already
 /// sanctioned for a caller that cannot wait regardless of whether storyhook
 /// could — not a failure, since this hook's entire contract is best-effort.
+///
+/// # This is also the only one of the three git's verdict listens to (SH-355)
+///
+/// `githooks(5)`: a nonzero `post-commit`/`post-merge` "cannot affect the
+/// outcome of `git commit`", but a nonzero `prepare-commit-msg` **aborts the
+/// commit**. Every exit path here ends in an explicit `exit 0` for exactly
+/// that reason — including the append itself, an `if` rather than the
+/// `[ -n "$STORY_ID" ] && { ... }` this shipped with, whose status *was* the
+/// script's own final command. An empty backlog answers `story next` with
+/// `{"result":"ok","message":"no ready stories"}` at exit 0 (a real answer,
+/// not a refusal — see `src/invoke.rs`'s `Next` arm), so `grep` finding no
+/// `"id"` was never the failure a `\|\| exit 0` upstream could catch; only the
+/// trailing conditional's own status decided the commit, silently, for as
+/// long as this hook has existed. `tests/hook_execution.rs`'s empty-backlog
+/// section pins this; `tests/hooks.rs` fences the class across all three hooks.
 const PREPARE_COMMIT_MSG_HOOK: &str = r#"#!/bin/sh
 # storyhook managed hook -- do not edit this line
 command -v story >/dev/null 2>&1 || exit 0
 case "$2" in message|merge|squash) exit 0 ;; esac
 NEXT="$(story --deadline 10 next --count 1 --json 2>/dev/null)" || exit 0
 STORY_ID="$(echo "$NEXT" | grep -o '"id": *"[^"]*"' | head -1 | cut -d'"' -f4)"
-[ -n "$STORY_ID" ] && {
+if [ -n "$STORY_ID" ]; then
   TITLE="$(echo "$NEXT" | grep -o '"title": *"[^"]*"' | head -1 | cut -d'"' -f4)"
   printf '\n# Top story: %s — %s\n' "$STORY_ID" "$TITLE" >> "$1"
-}
+fi
+exit 0
 "#;
 
 const HOOKS: &[(&str, &str)] = &[
