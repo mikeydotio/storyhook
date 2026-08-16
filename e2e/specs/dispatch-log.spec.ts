@@ -253,8 +253,12 @@ test("a failed fetch reports inline and does not raise the notice it would then 
   await page.goto("/");
   await openSettings(page);
 
+  // The sentence comes from `readinessNote`, the page's one readiness
+  // generator (SH-291/SH-301, fenced by `web_test.rs`), so it also carries
+  // that generator's "Retrying…" promise -- which this section keeps with a
+  // failure-only retry rather than claiming and not doing.
   await expect(page.locator("#dispatch-log-body .modal-error")).toContainText(
-    "Couldn't load the dispatch log",
+    "Couldn't load the dispatch log. Retrying…",
   );
   await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
 });
