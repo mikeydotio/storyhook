@@ -1965,16 +1965,63 @@ fn seed_a_v14_project(path: &Path) {
                               priority, priority_rank, created_at, updated_at, snapshot)
              VALUES (1, 1, 2, 'Alpha', 'todo', 'OPEN', 'none', 4,
                      '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '{}');
-         INSERT INTO events (project_id, story_no, seq, global_seq, kind, at, payload)
-             VALUES (1, 1, 1, 37, 'story_created', '2026-01-01T00:00:00Z', '{}'),
-                    (1, 1, 2, 42, 'story_priority_set', '2026-01-01T00:00:00Z', '{}'),
-                    (1, 1, 3, 50, 'story_priority_set', '2026-01-01T00:00:01Z', '{}');
          INSERT INTO stories (project_id, story_no, head_seq, title, state, superstate,
                               priority, priority_rank, created_at, updated_at, snapshot)
              VALUES (1, 2, 0, 'Bravo', 'todo', 'OPEN', 'none', 4,
                      '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '{}');",
     )
     .unwrap();
+
+    // Alpha's log, with `seq` and `global_seq` chosen so the three readings a
+    // backfill could take are all different: `head_seq` names seq 2, whose
+    // `global_seq` is 42, where the story's highest is 50 and `seq ==
+    // global_seq` would give 2.
+    //
+    // Written event by event rather than as one `VALUES` list so that `kind`
+    // and `payload` come from the production encoder. Typing them out is how
+    // this fixture spent fourteen migrations seeding `'story_created'` and
+    // `'story_priority_set'`, spellings no writer emits (SH-364).
+    for (seq, global_seq, event) in [
+        (
+            1,
+            37,
+            StoryEvent::StoryCreated {
+                at: "2026-01-01T00:00:00Z".to_string(),
+                title: "Alpha".to_string(),
+                state: "todo".to_string(),
+            },
+        ),
+        (
+            2,
+            42,
+            StoryEvent::StoryPrioritySet {
+                at: "2026-01-01T00:00:00Z".to_string(),
+                priority: storyhook::domain::Priority::None,
+            },
+        ),
+        (
+            3,
+            50,
+            StoryEvent::StoryPrioritySet {
+                at: "2026-01-01T00:00:01Z".to_string(),
+                priority: storyhook::domain::Priority::None,
+            },
+        ),
+    ] {
+        let payload = serde_json::to_value(&event).unwrap();
+        conn.execute(
+            "INSERT INTO events (project_id, story_no, seq, global_seq, kind, at, payload) \
+             VALUES (1, 1, ?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                seq,
+                global_seq,
+                kind_of(&event),
+                payload["at"].as_str().unwrap(),
+                serde_json::to_string(&payload).unwrap(),
+            ],
+        )
+        .unwrap();
+    }
 }
 
 fn head_global_seq_of(store: &SqliteStore, story_no: i64) -> i64 {
@@ -2088,22 +2135,29 @@ fn migration_fifteen_leaves_the_recency_index_covering_its_sort() {
 // Migration 16 — `snapshot.priority_assessed` (SH-359)
 // ---------------------------------------------------------------------------
 
-/// The event-kind strings this migration's predicate matches, taken from the
+/// The `kind` string a seeded event goes into the store under, taken from the
 /// **production** encoder rather than typed out here.
 ///
-/// This is not fussiness. `seed_a_v14_project` above seeds `'story_created'`
-/// and `'story_priority_set'` — snake_case spellings that no storyhook writer
-/// has ever put in that column (`domain::event_kind` emits PascalCase, and
-/// `write.rs` inserts its return value verbatim). Migration 15's backfill joins
-/// on `seq = head_seq` and never reads `kind`, so that fixture's invented
-/// vocabulary was harmless there.
+/// This is not fussiness. `seed_a_v14_project` seeded `'story_created'` and
+/// `'story_priority_set'` for fourteen migrations — snake_case spellings that
+/// no storyhook writer has ever put in that column (`domain::event_kind` emits
+/// PascalCase, and `write.rs` inserts its return value verbatim). Migration
+/// 15's backfill joins on `seq = head_seq` and never reads `kind`, so that
+/// fixture's invented vocabulary was harmless exactly as long as nothing
+/// consulted it.
 ///
-/// Migration 16 makes `kind` the *entire* predicate. A test that seeded the
-/// snake_case spelling and a migration that matched the snake_case spelling
-/// would agree with each other, pass, and match **zero rows** against a real
-/// store — every story in the tracker silently backfilling to "never assessed",
-/// which is a worse defect than the one SH-359 fixes. Deriving the string is
-/// what makes that disagreement impossible rather than merely unlikely.
+/// Migration 16 makes `kind` the *entire* predicate, and a seat on SH-359's
+/// council read the fixture as precedent and proposed the snake_case spelling
+/// for the migration too. A test that seeds a spelling and a migration that
+/// matches the same spelling agree with each other, pass, and match **zero
+/// rows** against a real store — every story in the tracker silently
+/// backfilling to "never assessed", which is a worse defect than the one
+/// SH-359 fixes. Deriving the string is what makes that disagreement
+/// impossible rather than merely unlikely.
+///
+/// SH-364 corrected the older fixture and pointed it here, and
+/// `tests/event_kind_vocabulary.rs` now fails on any hand-typed `events.kind`
+/// literal the binary does not emit.
 fn kind_of(event: &StoryEvent) -> &'static str {
     storyhook::domain::event_kind(event)
 }
