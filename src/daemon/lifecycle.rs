@@ -1845,7 +1845,16 @@ struct ListedNamedTokens {
     tokens: Vec<crate::api::tokens::TokenSummary>,
 }
 
-/// Asks a daemon to shut down, and waits for it to let go of its pidfile.
+/// Asks a daemon to shut down. Returns as soon as the request is accepted —
+/// it does not wait for the daemon to actually exit.
+///
+/// The daemon answers a shutdown request *before* it drains and exits
+/// (`serve.rs`'s `Verdict::Shutdown` handling), so `Ok(())` here means
+/// "accepted," never "gone." Every caller that needs "gone" waits for it
+/// separately, over [`is_live`]: [`stop`] (`wait_forever`/`wait_until`) and
+/// [`spawn_locked`]'s and [`stand_down_legacy_daemon`]'s own bounded
+/// `wait_until` calls. This function was previously documented as waiting,
+/// which it never did (SH-345).
 pub fn request_shutdown(info: &DaemonInfo) -> Result<(), AppError> {
     let url = format!("http://127.0.0.1:{}/api/v1/shutdown", info.port);
     control_agent()
