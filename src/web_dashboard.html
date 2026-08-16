@@ -2049,7 +2049,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // stays until dismissed (SH-304) -- see `finishDispatch`.
     dispatches: {},
     // Durable rows for --auto dispatches that did NOT succeed, newest first
-    // -- see `addDispatchHistoryRow`/`renderDispatchHistory`. Not persisted
+    // -- see `addDispatchHistoryRow`/`buildDispatchHistoryRow`. Not persisted
     // across a reload: it exists to survive a self-clearing notice's own
     // timer, not a page close.
     dispatchHistory: []
@@ -3266,12 +3266,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     announceInNoticeDock("All notices dismissed");
   }
 
-  /** The same, for the dispatch history, which is rendered from state rather
-   * than mutated node by node. */
+  /** The same, for the dispatch history (SH-337: mutated node by node too,
+   * same as the toast stack, since neither surface rebuilds from state any
+   * more). */
   function dismissAllDispatchHistory() {
     var before = noticeFocusIn($("dispatch-history-region"));
+    clear($("dispatch-history"));
     state.dispatchHistory = [];
-    renderDispatchHistory();
+    syncNoticeDock();
     settleNoticeFocus(before, null);
     announceInNoticeDock("All dispatch results dismissed");
   }
@@ -3795,11 +3797,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * rather than carried per-entry -- a success no longer reaches this panel
    * at all.
    *
-   * `data-notice-key` is how a dismissal re-finds the heir it chose before
-   * this rebuild destroyed every node (SH-326). It is a focus-restoration
-   * key, not a general test hook. */
+   * `data-notice-key` carries `entry.key` as the row's identity -- a stable
+   * hook a test can assert against across a DOM reorder that an index
+   * cannot survive, since two failed dispatches of the same story render
+   * byte-identical text. It is not what the dismiss handler uses to find
+   * itself (SH-337 retired that lookup; see `dismissDispatchHistoryRow`). */
   function buildDispatchHistoryRow(entry) {
-    return el("div", {
+    var node = el("div", {
       class: "dispatch-history-row error",
       dataset: { noticeKey: entry.key }
     }, [
@@ -3808,9 +3812,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         class: "dispatch-history-dismiss",
         type: "button",
         "aria-label": "Dismiss this dispatch result",
-        onClick: function() { dismissDispatchHistoryRow(entry.key); }
+        onClick: function() { dismissDispatchHistoryRow(node, entry.key); }
       }, ["×"])
     ]);
+    return node;
   }
 
   /** Adds a durable row for a `--auto` dispatch that did NOT succeed, and
@@ -3858,64 +3863,29 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     announceDispatchHistoryArrival(headline, detail, reason);
   }
 
-  /** The dismiss control of the row bearing `key`, or null.
-   *
-   * Scans `dataset` rather than interpolating `key` into an attribute selector,
-   * following `focusInStatusRow`'s recorded rule: the key's shape is safe today
-   * and a selector would stop being safe the day it was not. */
-  function dispatchDismissForKey(panel, key) {
-    var rows = panel.querySelectorAll(".dispatch-history-row");
-    for (var i = 0; i < rows.length; i++) {
-      if (rows[i].dataset.noticeKey === key) return rows[i].querySelector(".dispatch-history-dismiss");
-    }
-    return null;
-  }
-
   /** Removes one row, and rehomes the focus that removal destroyed (SH-326).
    *
-   * Same policy as a toast's `×` -- the user cannot see that this panel is
-   * rebuilt wholesale and must not be taught two behaviours for one gesture --
-   * but the heir has to be named differently, because `clear(panel)` destroys
-   * every node this function could have held a reference to. So it is named
-   * from `state.dispatchHistory`, whose order **is** DOM order, and re-found by
-   * key after the rebuild.
-   *
-   * **Why that is not SH-283's mistake.** That defect keyed a focus snapshot on
-   * `data-field`, a name that repeats across every story's drawer, and so
-   * restored one story's text into another. `row.key` cannot: it is
-   * `"dh-" + (++dispatchHistorySeq)`, minted once, never reused within a tab's
-   * session, never on two rows, and the lookup is scoped to the panel. Nor is
-   * anything stored across calls -- the capture and the restore happen inside
-   * one synchronous handler, so there is no snapshot for a later render to
-   * consume.
-   *
-   * The restore lives here and deliberately NOT inside `renderDispatchHistory`,
-   * which would also fire on the arrival path: filed as SH-337, where the real
-   * repair is an incremental insert that preserves focus by construction rather
-   * than a `.focus()` call on every arriving row. */
-  function dismissDispatchHistoryRow(key) {
-    var panel = $("dispatch-history");
+   * Same shape as a toast's `×` now (SH-337): the heir is read from `node`'s
+   * own siblings while they still exist, `node` is removed, then the dock is
+   * resynced before the focus decision runs (so it reads a settled DOM), and
+   * focus moves before the announcement so a polite utterance is not cut
+   * short by it. `node` is the row this dismissal's own button closed over
+   * (`buildDispatchHistoryRow`), so this function never re-finds a row by
+   * scanning the DOM the way `dispatchDismissForKey` used to -- that lookup
+   * existed only because a wholesale rebuild had destroyed every reference,
+   * and SH-337 ended the rebuild. `key` identifies the record to drop from
+   * `state.dispatchHistory`; it plays no part in finding the node. */
+  function dismissDispatchHistoryRow(node, key) {
     var before = noticeFocusIn($("dispatch-history-region"));
-    var rows = state.dispatchHistory;
-    var at = -1, i;
-    for (i = 0; i < rows.length; i++) {
-      if (rows[i].key === key) { at = i; break; }
-    }
-    var heir = at === -1 ? null : (rows[at + 1] || rows[at - 1] || null);
-    state.dispatchHistory = rows.filter(function(row) { return row.key !== key; });
-    renderDispatchHistory();
-    settleNoticeFocus(before, heir ? dispatchDismissForKey(panel, heir.key) : null);
-    announceNoticeDismissal(
-      "Dispatch result dismissed", state.dispatchHistory.length, "dispatch results");
-  }
-
-  function renderDispatchHistory() {
-    var panel = $("dispatch-history");
-    clear(panel);
-    state.dispatchHistory.forEach(function(entry) {
-      panel.appendChild(buildDispatchHistoryRow(entry));
+    var heir = adjacentNoticeControl(node, ".dispatch-history-dismiss");
+    node.remove();
+    state.dispatchHistory = state.dispatchHistory.filter(function(entry) {
+      return entry.key !== key;
     });
     syncNoticeDock();
+    settleNoticeFocus(before, heir);
+    announceNoticeDismissal(
+      "Dispatch result dismissed", state.dispatchHistory.length, "dispatch results");
   }
 
   // ============================================================

@@ -924,24 +924,23 @@ test("a backgrounded tab does not burn a notice's clock down unseen", async ({
 });
 
 // ============================================================
-// SH-326 — the same focus policy, on the surface that rebuilds itself
+// SH-326 — the same focus policy, on the dispatch-history surface
 // ============================================================
 //
-// `#dispatch-history` is rendered from `state.dispatchHistory` and cleared and
-// rebuilt on every change, so a dismissal here destroys the focused button
-// unconditionally — the toast stack's defect without even the "other notices
-// remain" reprieve. The policy is identical (heir first, `focusAfterNoticeRemoval`
-// when there is none) because a user cannot see the rebuild and must not be
-// taught two behaviours for one gesture.
+// `#dispatch-history` used to be rendered from `state.dispatchHistory` and
+// cleared and rebuilt on every change, so a dismissal here destroyed the
+// focused button unconditionally — the toast stack's defect without even the
+// "other notices remain" reprieve, and the reason `dismissDispatchHistoryRow`
+// originally had to name its heir from the array by key rather than by DOM
+// identity, since `clear(panel)` destroyed identity every time.
 //
-// What differs is only HOW the heir is named: from `state.dispatchHistory` by
-// key, never by DOM identity, because `clear(panel)` destroys identity. SH-283 is
-// the cautionary half of that prior art — it keyed a focus snapshot on
-// `data-field`, a name that repeats across contexts, and wrote one story's text
-// into another. `row.key` cannot do that: it is `"dh-" + (++dispatchHistorySeq)`,
-// minted once, never reused within a tab's session, never present on two rows,
-// and the lookup is scoped to the panel. And nothing is stored across calls —
-// the capture and the restore happen in one synchronous handler.
+// SH-337 ended the rebuild: the panel is now mutated node by node, exactly
+// like the toast stack, so `dismissDispatchHistoryRow` finds its heir the
+// same way `toast()`'s dismiss handler does — `adjacentNoticeControl` on the
+// node it already holds, no key lookup involved. The policy itself is
+// unchanged (heir first, `focusAfterNoticeRemoval` when there is none):
+// what SH-337 removed was only the reason this surface ever needed a second
+// mechanism for finding the same thing.
 
 /** Puts one refused `--auto` dispatch row in the history and returns its story
  * id, which is the text that makes the row distinguishable from its siblings. */
