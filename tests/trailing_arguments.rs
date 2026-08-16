@@ -8,7 +8,7 @@
 //! the specific wrong belief "I minted a scoped, revocable token" on a
 //! credential-printing command, and carried a wrong hypothesis into SH-319.
 //!
-//! This file pins the **class**, not the four arms that were found. It is
+//! This file pins the **class**, not the four arms that were filed. It is
 //! derived, in the style of `tests/dead_public_surface.rs` and
 //! `tests/store_isolation.rs`'s scans, rather than listing today's
 //! subcommands by hand — a hand-maintained list is exactly what lets the next
@@ -38,11 +38,28 @@
 //! provoke `story daemon install` and `story purge` without installing or
 //! purging anything.
 //!
-//! **Deliberate scope.** Only positional words are enumerated; anything
-//! starting with `-` is skipped. Flags have their own guard
-//! (`reject_unknown_flags`, which runs before dispatch), and `--help` is
-//! answerable at any depth by design, so including them would report
-//! `story daemon --help extra` as a violation of a rule it does not break.
+//! **Known blind spots, and why each fails safe** — this scan is silent about
+//! them rather than wrong about them:
+//!
+//! - **Flags are not enumerated**; anything starting with `-` is dropped from
+//!   the vocabulary. An *undeclared* flag already has a guard that runs ahead
+//!   of dispatch (`reject_unknown_flags`, SH-52/SH-62), and `--help` is
+//!   answerable at any depth by design, so enumerating them would report
+//!   `story daemon --help extra` as breaking a rule it does not. What stays
+//!   uncovered is the narrow case of a flag a verb *declares* but a
+//!   subcommand ignores — `story daemon status --force` was one, and
+//!   `expect_no_more` fixes it, since it is given the whole rest of the slice
+//!   and does not care whether a word is flag-shaped. The fix covers this;
+//!   only the detection does not.
+//! - **The vocabulary is a superset read crudely** — every quoted word to the
+//!   left of a `=>`, whether or not it is a command. A word no verb means
+//!   simply fails to parse and is skipped, so over-collection costs a few
+//!   thousand microseconds and never a false alarm. Under-collection is the
+//!   direction that would hide something, which is why the reader takes the
+//!   whole file rather than a list of parse functions.
+//! - **A word reached only past four positions** is not explored
+//!   ([`MAX_PREFIX_WORDS`]). No command this CLI has is that deep today, and
+//!   one that becomes so is invisible here rather than misreported.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
