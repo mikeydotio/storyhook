@@ -107,16 +107,29 @@ test: check-no-orphan-servers
 	@bash scripts/check-no-orphan-servers.sh postlude
 	@bash scripts/gate-receipt.sh postlude
 
-# Installs the e2e/ Node toolchain and Playwright's chromium browser. Not part
-# of `test` itself -- it is a one-time (per-machine, per-Playwright-version)
-# bootstrap step, not something every run should repeat -- but `test`'s e2e
-# leg fails loudly, naming this target, if it was never run.
+# Installs the e2e/ Node toolchain and the browsers e2e/playwright.config.ts
+# names (chromium, webkit -- SH-335). Not part of `test` itself -- it is a
+# one-time (per-machine, per-Playwright-version) bootstrap step, not
+# something every run should repeat -- but `test`'s e2e leg fails loudly,
+# naming this target, if it was never run.
+#
+# One further, OPTIONAL per-machine step this target documents rather than
+# performs: WebKit's Tab order skips buttons and links unless macOS's Full
+# Keyboard Access is on -- real Safari's own out-of-box default, not a bug
+# `scripts/run-e2e.sh` can fix for you. It measures the setting and gates the
+# handful of assertions that need it rather than silently mutating your
+# System Settings (SH-335 -- story show SH-335 carries the verdict)
+# -- for those to run under `webkit` instead of reporting skipped, once:
+#   defaults write -g AppleKeyboardUIMode -int 2
 e2e-install:
 	cd e2e && npm ci
-	cd e2e && npx playwright install --with-deps chromium
+	cd e2e && npx playwright install --with-deps chromium webkit
 
-# Runs just the dashboard's browser suite, against an isolated daemon this
-# starts and stops. Pass Playwright CLI flags through, e.g. `make e2e ARGS=--headed`.
+# Runs just the dashboard's browser suite. Bare, this loops once per project
+# `e2e/playwright.config.ts` names (chromium, webkit, mobile-chromium),
+# each against its own isolated daemon and seed (SH-335). Pass Playwright CLI
+# flags through, e.g. `make e2e ARGS=--headed` (applies to every project in
+# the loop) or `make e2e ARGS=--project=webkit` (runs that one project only).
 e2e:
 	bash scripts/run-e2e.sh $(ARGS)
 
