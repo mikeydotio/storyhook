@@ -580,6 +580,12 @@ inserting incrementally, `#dispatch-history` becomes an `aria-atomic` candidate 
 the side-channel announcer should retire rather than persist alongside a fix that no
 longer needs it.
 
+*Correction (SH-337, retrofitted here — the trigger this paragraph named has fired): the
+panel now inserts one row at a time, `#dispatch-history` carries `aria-live="polite"
+aria-atomic="false"` with `aria-atomic="true"` on each row, and `#dispatch-history-status`
+plus `announceDispatchHistoryArrival()` are deleted. The debt is discharged, not re-filed —
+see the As-built section below.*
+
 **A second, dedicated announcer, deliberately not `#notice-dock-status`.** That element
 (SH-326) also carries the armed-delete confirmation prompt the user must read and act on;
 routing a background dispatch-history arrival through it would risk a notice silently
@@ -602,7 +608,7 @@ none survived:
 | `aria-atomic="true"` removed from `.toast` in `toast()` | same two, red |
 | `announceDispatchHistoryArrival()` call dropped from `addDispatchHistoryRow()` | 4 e2e pins red |
 | Dispatch-history arrivals routed into `#notice-dock-status` instead of their own announcer | the same 4, red — including the rider-1 clobber pin, which caught the dismissal message being overwritten mid-read |
-| `setStatusText`'s clear-then-set idiom collapsed to a single assignment | the identical-arrivals pin red (3 DOM mutations expected across two announcements, 2 observed) — this is the one mutation whose outcome was not obvious in advance: `textContent` reassigned to its own existing value still fires a `childList` `MutationRecord` per the DOM spec, so the concern going in was that this pin might not discriminate at all. It does: the clear step measurably changes the mutation count, confirming rider 2 is load-bearing rather than a belt-and-braces no-op |
+| `setStatusText`'s clear-then-set idiom collapsed to a single assignment | the identical-arrivals pin red (3 DOM mutations expected across two announcements, 2 observed) — this is the one mutation whose outcome was not obvious in advance: `textContent` reassigned to its own existing value still fires a `childList` `MutationRecord` per the DOM spec, so the concern going in was that this pin might not discriminate at all. It does: the clear step measurably changes the mutation count, confirming rider 2 is load-bearing rather than a belt-and-braces no-op — *retargeted to `#notice-dock-status`'s dismissal announcements by SH-337, the surviving surface where this idiom is load-bearing; see below* |
 
 Worth stating plainly, in this file's own established idiom: without the battery, the
 "identical arrivals" pin's actual discriminating power was not obvious even to the person
@@ -614,6 +620,101 @@ the first ballot — both members who separately proposed a single blanket mecha
 both surfaces switched their own vote to the split once the two surfaces' distinct failure
 mechanisms were on the table). `DECISION.md` records the full rationale and the three
 riders (announcer ownership, duplicate-arrival distinguishability, and the SH-337 tie-back).
+
+## As built — SH-337 (the panel that rebuilt itself under the reader's hands)
+
+**`renderDispatchHistory()` was `clear(panel)` plus a full rebuild, reached from three call
+sites.** One of them, `addDispatchHistoryRow()`, fires on the *arrival* path — a `--auto`
+dispatch failing in the background, with no gesture from the reader involved at all. A
+keyboard user resting on an existing row's `.dispatch-history-dismiss` had that button
+destroyed under them by a notice they never interacted with, and landed on `<body>` — WCAG
+SC 2.4.3. Never worked; the panel has had this shape since it existed.
+
+**The repair is an insert, not a restore, and the distinction is the whole story.**
+SH-326's council considered fixing this inside the render — capture the focused row's key
+before `clear()`, re-focus the same row's button after — and converged on rejecting it: a
+`.focus()` call per arrival is not free. It can cut short the polite announcement of the
+row that just landed, and it scrolls the panel to keep the restored row visible while new
+rows stack above it — both costs worst in exactly the burst case the fix exists to serve.
+`addDispatchHistoryRow` already `unshift`s onto `state.dispatchHistory`, so the panel's DOM
+order and the array's order are the same coordinate; `insertBefore(node,
+panel.firstChild)` prepends one node with nothing else to keep true. `toast()` has inserted
+this way since SH-323 and has never had this defect — SH-337 is the other surface adopting
+a pattern already proven in this file, not a new invention.
+
+**Why index-keyed restore is the naive-but-wrong shape, made concrete.** A restore that
+captures the focused row's *index* before a rebuild and re-focuses whatever is now at that
+index passes a two-row test (nothing else stands between "no fix" and "fixed" at that
+scale) but fails the moment a new row displaces the old one from index 0 to index 1 — the
+restore lands on the *arriving* row instead of the one the reader was actually on. This is
+why the story's own pin insists on identity (the row's own text or key), never index, and
+why the e2e suite proves it with an actual index-keyed mutant rather than only arguing it
+in prose.
+
+**The two dismissal call sites converged onto the same shape.** `dismissDispatchHistoryRow`
+used to name its heir from `state.dispatchHistory` by key and re-find it by
+`data-notice-key` after the rebuild — the array-keyed lookup SH-326 had to invent because
+`clear(panel)` destroyed every node reference. With the rebuild gone, it converges onto
+exactly `toast()`'s own dismiss handler: the click closure holds its own row node, reads
+`adjacentNoticeControl(node, ".dispatch-history-dismiss")` as the heir before removing it,
+then `node.remove()`. Verified behaviour-identical rather than only argued: rows are
+`unshift`ed (array index *is* DOM order) and every history row carries an unconditional
+dismiss button (no clocked rows to skip, unlike the toast stack), so "next sibling with a
+dismiss control" collapses to exactly the array's `rows[at+1]`/`rows[at-1]` it replaces.
+SH-326's three existing dismissal pins pass unmodified against the rewrite.
+`renderDispatchHistory()` and the key-lookup helper `dispatchDismissForKey()` are deleted,
+having lost every caller.
+
+**SH-333's debt is discharged, not merely re-filed.** `#dispatch-history` now carries the
+identical shape `#toast-stack` has had since SH-333 — `aria-live="polite"
+aria-atomic="false"` on the region, `aria-atomic="true"` on each row, inserted one at a
+time — because the condition SH-333's verdict attached to that shape (an incremental
+insert, so "the node that changed" is exactly "the node that arrived") is now true here
+too. `#dispatch-history-status` and `announceDispatchHistoryArrival()` are deleted rather
+than left standing beside a fix that no longer needs them. Default `aria-relevant` is
+`additions text`, so a removal (a dismissal, a bulk clear) still announces nothing from
+this region — both keep their own `#notice-dock-status` announcement via
+`announceNoticeDismissal`, unchanged.
+
+**What is claimed, and what isn't — same boundary as SH-322/SH-327/SH-333, restated
+because a second surface now depends on it.** Which elements carry which ARIA attributes,
+and that an arriving row is the live region's one addition, whole, are pinned directly
+(`tests/web_test.rs`'s cheap-layer scan; `e2e/specs/notice-announcement.spec.ts`'s
+`MutationObserver`-based proof that exactly one node is added per arrival). What a real
+assistive technology actually *utters* is not: no AT is driven by this suite (Chromium
+only). The "identical arrivals don't collapse" pin retargeted to `#notice-dock-status`'s
+dismissal announcements, the surviving surface where `setStatusText`'s clear-then-set
+idiom is load-bearing — a dispatch-history arrival is now a distinct DOM node insertion
+per notice, which cannot regress into a same-value-reassignment collapse the way a shared
+text element can, so the risk that idiom guards against no longer exists on this path.
+
+**Incidental, unspecified, and named rather than left to be discovered:** standing rows no
+longer re-run the `toast-in` entrance animation on a sibling's arrival or dismissal, since
+they are no longer destroyed and recreated by a rebuild — visible only under `prefers-
+reduced-motion: no-preference` (the animation rule's own scope).
+
+**Mutation battery, run and recorded:**
+
+| Mutation | Result |
+|---|---|
+| Arrival calls `renderDispatchHistory()` again (revert to the prior defect) | the SH-337 focus pin red (`document.activeElement` is `body`) |
+| Index-keyed restore-on-render: capture the focused row's index, rebuild, focus whatever is now at that index | the SH-337 focus pin red — lands on the *arriving* row's button instead of the resting row's, exactly the naive-but-wrong shape the story's Pin section calls out |
+| `syncNoticeDock()` dropped from the arrival path | survived until a dedicated pin was written (nothing previously asserted on `#dispatch-history-bar`/`-count`); now red |
+| `adjacentNoticeControl`'s direction reversed in the dismissal handler | the *existing* 2-row heir pin stays green (dismissing the top row leaves no previous sibling, so forward-first and reversed pick the same survivor) — survived until a 3-row, middle-row dismissal pin was written (the same reason the toast stack's own heir pin uses three notices); now red |
+| `aria-live` removed from `#dispatch-history` / `aria-atomic="true"` removed from a row | the retargeted `web_test.rs` scan and e2e inventory pins, red |
+| `#dispatch-history-status` resurrected and fed | the retargeted inventory pin red (set equality) |
+
+Two survivors recorded rather than silently patched over: an *identity*-keyed restore-on-
+render (capture the focused row's key, rebuild, re-focus by key) is functionally
+indistinguishable from the insert this story ships, in a Chromium suite with no AT — the
+costs SH-326's council named (a cut-short announcement, a scroll jump) are not observable
+here. The mechanism is defended by the code comment and the council record, not by a test,
+and this section says so rather than implying the pin covers it. And what a screen reader
+actually utters remains, as throughout this file, a hand-check question rather than an
+e2e claim.
+
+Refers to SH-337, which relates to SH-326 (the dismissal-path sibling this story completes)
+and SH-333 (whose named debt this story retires).
 
 ## Verification
 
