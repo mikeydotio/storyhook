@@ -28,7 +28,7 @@ It keeps every project's stories in one local SQLite store as an append-only eve
 - Derive read-only `ancestor-of` and `descendent-of` family relationships on show output
 - Archive stories immediately when they move into a `CLOSED` state
 - Reopen archived stories
-- Import/export stories (JSON bulk operations)
+- Bulk-create stories from a JSON array (`story import`), or back up and restore a whole project as one JSON document (`story export` / `story import-project`)
 - Generate AI context documents (`story context`)
 - Session handoff documents (`story handoff`)
 - Dependency graph analysis (critical path, blocked chains, parallel groups)
