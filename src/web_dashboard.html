@@ -3814,27 +3814,47 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   /** Adds a durable row for a `--auto` dispatch that did NOT succeed, and
-   * re-renders the panel. Newest first, unbounded within this tab's own
-   * session -- a user who lets several failed autonomous dispatches pile up
-   * unread can dismiss them individually. There is no server-side cap to
-   * mirror: this list is not the daemon's persisted history, just this tab's
-   * memory of what it has seen. Nor is that history a fallback for a row
-   * dismissed too early -- no route exposes it, this page never reads it,
+   * inserts it at the top of the panel. Newest first, unbounded within this
+   * tab's own session -- a user who lets several failed autonomous dispatches
+   * pile up unread can dismiss them individually. There is no server-side cap
+   * to mirror: this list is not the daemon's persisted history, just this
+   * tab's memory of what it has seen. Nor is that history a fallback for a
+   * row dismissed too early -- no route exposes it, this page never reads it,
    * and it evicts after 30 minutes or 32 records (`RETAIN_FOR`,
-   * `RETAIN_FINISHED`, `src/api/dispatch.rs`). This row is the record. */
+   * `RETAIN_FINISHED`, `src/api/dispatch.rs`). This row is the record.
+   *
+   * `insertBefore`, never a rebuild (SH-337). `unshift` on the array and
+   * `insertBefore(node, panel.firstChild)` on the panel are the same
+   * coordinate, so a keyboard user resting on an existing row's dismiss
+   * button keeps it under their finger when a new one arrives -- no
+   * `.focus()` call needed, because nothing was ever destroyed. A
+   * restore-on-render was considered and rejected: SH-326's council found it
+   * would fire on this very path, cutting short the polite announcement of
+   * the row that just landed and scrolling the panel while new rows stack
+   * above it -- both worst in exactly the burst case it would exist to
+   * serve. `toast()` has inserted this way since SH-323 and has never had
+   * this defect. */
   function addDispatchHistoryRow(storyId, headline, detail, reason) {
-    state.dispatchHistory.unshift({
+    var entry = {
       key: "dh-" + (++dispatchHistorySeq),
       storyId: storyId,
       headline: headline,
       detail: detail || null,
       reason: reason || null
-    });
-    renderDispatchHistory();
-    // `#dispatch-history` carries no `aria-live` (SH-333): the panel below is
-    // about to be cleared and rebuilt wholesale, which would re-announce every
-    // standing row if the region were still live. This is the announcement
-    // instead, of the row that actually arrived.
+    };
+    state.dispatchHistory.unshift(entry);
+    var panel = $("dispatch-history");
+    panel.insertBefore(buildDispatchHistoryRow(entry), panel.firstChild);
+    // Still owed on this path even though the panel no longer rebuilds: the
+    // "Dismiss all N" bar's threshold and the scroller's conditional tab stop
+    // are consequences of the count, not of the render.
+    syncNoticeDock();
+    // `#dispatch-history` carries no `aria-live` (SH-333): the panel used to
+    // be cleared and rebuilt wholesale on every arrival, which would have
+    // re-announced every standing row if the region were still live. This is
+    // the announcement instead, of the row that actually arrived. SH-337 made
+    // the insert incremental, which is what SH-333's own As-built section
+    // names as the trigger to retire this side channel.
     announceDispatchHistoryArrival(headline, detail, reason);
   }
 
