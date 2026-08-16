@@ -365,6 +365,48 @@ fn the_merge_arrival_fragment_is_shared_not_duplicated() {
     }
 }
 
+/// **The class fence for SH-355.** `prepare-commit-msg` used to end on
+/// `[ -n "$STORY_ID" ] && { ... }` with nothing after it — an empty backlog
+/// left that conditional's own exit status (1) as the script's last command,
+/// and `prepare-commit-msg` is the one managed hook whose exit status git
+/// actually obeys (`githooks(5)`), so the commit was silently aborted.
+/// `post-commit`/`post-merge` were never reachable by that exact mechanism —
+/// git ignores their exit codes — but the invariant is stated and checked for
+/// all three, so a fourth managed hook, or an edit appended after this line
+/// in any of them, cannot reintroduce the trap silently.
+///
+/// Reads the **installed artifact**, not the Rust source: what git will
+/// actually execute is what must be checked. The hook set comes from
+/// `story hooks install`'s own output rather than a hand-maintained list, so
+/// a fourth managed hook is covered by construction.
+#[test]
+fn no_managed_hook_lets_its_own_last_statement_decide_gits_verdict() {
+    let dir = tempdir().unwrap();
+    init_git(dir.path());
+
+    story(dir.path())
+        .args(["hooks", "install"])
+        .assert()
+        .success();
+
+    for name in ["post-commit", "post-merge", "prepare-commit-msg"] {
+        let path = dir.path().join(".git/hooks").join(name);
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("reading the installed {name} hook: {e}"));
+        let last = body
+            .lines()
+            .map(str::trim)
+            .rfind(|line| !line.is_empty())
+            .unwrap_or_else(|| panic!("the installed {name} hook is empty"));
+        assert_eq!(
+            last, "exit 0",
+            "{name}'s last non-blank line must be an unconditional `exit 0`, \
+             so nothing appended above it can leak its own status into git's \
+             verdict — got {last:?}"
+        );
+    }
+}
+
 /// **The plugin's copy of the hook marker still matches the one storyhook
 /// writes** (SH-320).
 ///

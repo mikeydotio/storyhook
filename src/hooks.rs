@@ -172,6 +172,15 @@ macro_rules! merge_arrival_fn {
 /// `--deadline 10` (SH-343) on the ordinary-commit fallback below, for the
 /// same reason `merge_arrival_fn!`'s own calls carry it: this hook runs
 /// *inside* `git commit`, which imposes no timeout of its own.
+///
+/// # The trailing `exit 0` (SH-355)
+///
+/// Behaviour-neutral here — `githooks(5)` says a nonzero `post-commit` cannot
+/// affect `git commit`'s outcome — but stated anyway so every managed hook
+/// shares one invariant a test can check mechanically instead of a comment a
+/// future edit can silently violate: nothing appended after this line may
+/// leak its own exit status into the hook's. `tests/hooks.rs` fences it
+/// across all three hooks by reading the installed files back.
 const POST_COMMIT_HOOK: &str = concat!(
     "#!/bin/sh\n",
     "# storyhook managed hook -- do not edit this line\n",
@@ -183,6 +192,7 @@ const POST_COMMIT_HOOK: &str = concat!(
   exit 0
 fi
 story --deadline 10 commit-sync --since 1h --quiet 2>/dev/null || true
+exit 0
 "#
 );
 
@@ -191,6 +201,9 @@ story --deadline 10 commit-sync --since 1h --quiet 2>/dev/null || true
 /// because a fast-forward merge has no second parent for `HEAD^1` to name;
 /// `5` is `merge_arrival_fn!`'s slack floor with nothing added on top, since
 /// this hook has never promised more than what it can derive.
+///
+/// The trailing `exit 0` is the same class fence `POST_COMMIT_HOOK` states —
+/// see its doc comment.
 const POST_MERGE_HOOK: &str = concat!(
     "#!/bin/sh\n",
     "# storyhook managed hook -- do not edit this line\n",
@@ -198,6 +211,7 @@ const POST_MERGE_HOOK: &str = concat!(
     merge_arrival_fn!(),
     r#"ORIG_HEAD="$(git rev-parse ORIG_HEAD 2>/dev/null)" || exit 0
 storyhook_merge_arrival "$ORIG_HEAD" 5
+exit 0
 "#
 );
 
