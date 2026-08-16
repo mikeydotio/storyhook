@@ -3,6 +3,7 @@ import type { Page } from "@playwright/test";
 import {
   cleanUpCreatedStories,
   deleteStory,
+  fullKeyboardAccess,
   onAFrozenClock,
   openProject,
   seedToken,
@@ -651,7 +652,18 @@ async function keepNotices(page: Page): Promise<void> {
 
 test("the notice clock can be turned off from the keyboard alone, before any notice", async ({
   page,
+  browserName,
 }) => {
+  // `tabTo()` needs real Tab traversal to reach a `<button>`/checkbox, which
+  // WebKit skips unless this machine has Full Keyboard Access on
+  // (`AppleKeyboardUIMode >= 2`) -- real Safari's own out-of-box behavior
+  // (SH-335 -- story show SH-335 carries the verdict). Fully
+  // load-bearing on `chromium`, and on a `webkit` this machine has
+  // configured for full keyboard access.
+  test.skip(
+    browserName === "webkit" && !fullKeyboardAccess(),
+    "WebKit's Tab order skips buttons/links unless AppleKeyboardUIMode>=2 (SH-335)",
+  );
   await openClocked(page);
 
   // A fixed origin, so what the traversal below measures is a property of the
@@ -714,7 +726,15 @@ test("with the limit turned off, a success notice has no timer at all", async ({
 
 test("a kept notice is dismissed from the keyboard, which closes the loop without a pointer", async ({
   page,
+  browserName,
 }) => {
+  // Same gate as the keyboard-off test above: `tabTo()` needs WebKit to put
+  // buttons in the Tab order, which only happens with Full Keyboard Access
+  // on (SH-335 -- story show SH-335 carries the verdict).
+  test.skip(
+    browserName === "webkit" && !fullKeyboardAccess(),
+    "WebKit's Tab order skips buttons/links unless AppleKeyboardUIMode>=2 (SH-335)",
+  );
   await openClocked(page);
   await keepNotices(page);
 
@@ -1040,8 +1060,10 @@ test("dismissing a dispatch result by pointer steals no focus from elsewhere", a
   // `element.click()` moves focus in no engine, which is the state a real
   // pointer click leaves on WebKit — this repo measured that and wrote it down
   // (`src/web_dashboard.html`, the `armedDeleteSlug` comment). It EMULATES that
-  // state and does not prove it: `playwright.config.ts` installs chromium only,
-  // so the engine the guard exists for is not under test here (SH-335).
+  // state on every engine this file runs under, `webkit` included (SH-335,
+  // story show SH-335 carries the verdict) — deliberately, so the
+  // same test body pins the property on both engines rather than proving only
+  // that a `webkit`-specific branch handles it.
   await page.locator("#search-input").focus();
   await page.evaluate(() => {
     (document.querySelector(".dispatch-history-dismiss") as HTMLElement).click();
