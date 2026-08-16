@@ -169,6 +169,21 @@ pub enum Route<'a> {
     /// router; named here because the gate in front of the accept loop
     /// classifies it like everything else.
     Events,
+    /// `GET /api/dispatch-log` — the finished dispatch records this daemon
+    /// still retains, with the policy bounding them (SH-361).
+    ///
+    /// Daemon-scoped rather than project-scoped because the registry and its
+    /// retention bound are: see
+    /// [`crate::api::dispatch::is_dispatch_log_path`], which this variant is
+    /// cross-checked against below for the same reason
+    /// [`ProjectRoute::Dispatch`] is — two gates disagreeing about which
+    /// paths this daemon serves is the failure that guards against.
+    ///
+    /// Claimed by [`crate::api::dispatch::intercept`] in the accept loop, so
+    /// it never reaches the router in production; named here anyway, because
+    /// this table is a complete statement about the surface this daemon
+    /// serves rather than a statement about the part somebody remembered.
+    DispatchLog,
     /// Anything under `/api/v1/…` — the daemon's control surface.
     ///
     /// [`crate::api::rpc::admission`] owns it entirely and
@@ -196,6 +211,10 @@ pub fn classify<'a>(segments: &[&'a str], method: &Method) -> Route<'a> {
             _ => Route::MethodNotAllowed,
         },
         ["api", "v1", ..] => Route::ControlSurface,
+        ["api", "dispatch-log"] => match method {
+            Method::Get => Route::DispatchLog,
+            _ => Route::MethodNotAllowed,
+        },
         ["api", "events"] => match method {
             Method::Get => Route::Events,
             _ => Route::MethodNotAllowed,
@@ -293,6 +312,7 @@ impl Route<'_> {
             Route::RepoDelete { .. } => "RepoDelete",
             Route::Project { .. } => "Project",
             Route::Events => "Events",
+            Route::DispatchLog => "DispatchLog",
             Route::ControlSurface => "ControlSurface",
             Route::MethodNotAllowed => "MethodNotAllowed",
             Route::NotFound => "NotFound",
@@ -468,6 +488,39 @@ mod tests {
                 crate::api::dispatch::is_dispatch_path(&parts),
                 is_dispatch_family,
                 "{path}: the dispatch endpoint's two spellings disagree"
+            );
+        }
+    }
+
+    #[test]
+    fn the_dispatch_log_route_is_spelled_the_same_here_as_in_the_gate_that_claims_it() {
+        // The twin of the test above, for SH-361's second interception
+        // predicate. It is a *separate* predicate rather than a widening of
+        // `is_dispatch_path`, precisely so that test's claim -- that predicate
+        // means the `Dispatch | DispatchPoll` family and nothing else --
+        // stays true. Widening it would have made this module's two
+        // assertions contradict each other.
+        //
+        // `Get` is the probe method because that is the only one this path
+        // serves; the near-misses below are what make the assertion mean
+        // something, since `["api", "dispatch-log"]` matching too much is the
+        // failure a bare positive case cannot see.
+        for path in [
+            "/api/dispatch-log",
+            "/api/dispatch-log/extra",
+            "/api/dispatch-histor",
+            "/api/dispatch",
+            "/api/repos/p/dispatch-log",
+            "/api/repos/p/story/SH-1/dispatch",
+            "/api/events",
+            "/api/repos",
+            "/",
+        ] {
+            let parts = segments(path);
+            assert_eq!(
+                crate::api::dispatch::is_dispatch_log_path(&parts),
+                at(path, &Method::Get) == Route::DispatchLog,
+                "{path}: the dispatch log's two spellings disagree"
             );
         }
     }
