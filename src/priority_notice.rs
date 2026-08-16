@@ -47,6 +47,58 @@ pub(crate) fn unassessed_warning(id: &str) -> String {
     )
 }
 
+/// What a batch creator (`story import`, `story decompose`) says when some of
+/// what it just filed landed unassessed.
+///
+/// One line regardless of batch size — the story's own constraint, so that a
+/// spec of forty stories does not emit forty lines. Names up to ten ids and
+/// then a count of the rest; exact attribution for a larger batch lives on
+/// each affected [`StoryView`](crate::output::StoryView)'s own `warnings`,
+/// which [`unassessed_warning`] populates per story.
+///
+/// The remedy this one names is `story list --unassessed` rather than a
+/// `story prioritize` per id — SH-359 shipped that filter for exactly this
+/// question, and naming forty commands would be worse than naming none.
+pub(crate) fn unassessed_batch_warning(ids: &[String], total: usize) -> String {
+    const NAMED: usize = 10;
+    let mut named: String = ids
+        .iter()
+        .take(NAMED)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if ids.len() > NAMED {
+        named.push_str(&format!(" (and {} more)", ids.len() - NAMED));
+    }
+    format!(
+        "priority not set on {} of {total} {}: {named}. Each sorts last in \
+         `story next` until it is. Run `story list --unassessed` to see them all, \
+         then `story prioritize <id> <level>` — the criteria are at \
+         `story help priority-rubric`.",
+        ids.len(),
+        if total == 1 { "story" } else { "stories" },
+    )
+}
+
+/// What a batch importer says when an entry named a priority the domain
+/// cannot parse, rather than silently dropping it.
+///
+/// The story is still imported — that leniency predates this warning
+/// (`service::transfer::import_events`'s own doc names it) and this module
+/// does not reverse it. What ends is the silence: before this, an unparseable
+/// slug and an omitted one produced the identical, indistinguishable result.
+pub(crate) fn unparseable_priority_warning(rejected: &[(String, String)]) -> String {
+    let named = rejected
+        .iter()
+        .map(|(id, raw)| format!("{id} (`{raw}`)"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "priority not recognised and dropped, filed unassessed instead: {named}. Valid levels: \
+         critical, high, medium, low, none — see `story help priority-rubric`."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -60,5 +112,33 @@ mod tests {
         assert!(text.contains("story prioritize SH-1 <level>"));
         // It must not claim a decision was made (SH-359's own correction).
         assert!(!text.contains("is filed at `none`, which means \"deliberately parked\""));
+    }
+
+    #[test]
+    fn the_batch_warning_names_a_count_never_every_id_past_ten() {
+        let ids: Vec<String> = (1..=12).map(|n| format!("SH-{n}")).collect();
+        let text = unassessed_batch_warning(&ids, 20);
+        assert!(text.contains("12 of 20"));
+        assert!(text.contains("SH-1,"));
+        assert!(text.contains("SH-10"));
+        assert!(!text.contains("SH-11"));
+        assert!(text.contains("and 2 more"));
+        assert!(text.contains("story list --unassessed"));
+    }
+
+    #[test]
+    fn a_small_batch_names_every_id_with_no_and_more_clause() {
+        let ids = vec!["SH-1".to_string(), "SH-2".to_string()];
+        let text = unassessed_batch_warning(&ids, 5);
+        assert!(text.contains("SH-1, SH-2"));
+        assert!(!text.contains("more"));
+    }
+
+    #[test]
+    fn the_unparseable_warning_names_the_rejected_words() {
+        let text = unparseable_priority_warning(&[("SH-2".to_string(), "urgent".to_string())]);
+        assert!(text.contains("SH-2"));
+        assert!(text.contains("`urgent`"));
+        assert!(text.contains("filed unassessed"));
     }
 }
