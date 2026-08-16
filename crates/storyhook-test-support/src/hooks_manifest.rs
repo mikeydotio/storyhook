@@ -93,3 +93,90 @@ pub fn declared_timeout(event: &str, command_substring: &str) -> std::time::Dura
 pub fn hook_script(name: &str) -> PathBuf {
     manifest_dir().join("plugin/claude-code/hooks").join(name)
 }
+
+/// One hook entry read out of the manifest: the event it fires on, the script
+/// basename its command runs, and the timeout Claude Code kills it at.
+#[derive(Debug, Clone)]
+pub struct DeclaredHook {
+    pub event: String,
+    pub script: String,
+    pub timeout: std::time::Duration,
+}
+
+/// Every hook `hooks.json` declares, across every event — read fresh each
+/// call rather than hand-copied into a test file's own list (SH-343).
+///
+/// `tests/hook_budgets.rs` used to keep its own `const HOOKS: &[(&str, &str)]`
+/// naming the three entries that existed when it was written, despite its own
+/// module doc claiming to catch "a fresh hook added to the manifest with no
+/// `--deadline`" — a guarantee a hand-maintained list cannot give, since a
+/// fourth manifest entry is simply never iterated. This is the same
+/// derived-over-hand-maintained doctrine as the `git ls-files`-based scans in
+/// `tests/store_isolation.rs` and `tests/release_targets.rs`, applied to a
+/// JSON manifest instead of a file tree.
+///
+/// # Panics
+///
+/// If the manifest is missing, is not JSON, its `hooks` field is not an
+/// object, an event's matchers are not an array, or any hook entry's
+/// `command` names no script under `hooks/` — every one of those is a
+/// manifest shape this parser does not understand, not a case worth
+/// degrading gracefully for. A hook entry with no `timeout` is *not* a panic
+/// here (unlike [`declared_timeout`]): enumeration is a structural read, and
+/// a caller that requires a timeout should say so itself, the way
+/// `tests/hook_budgets.rs` does.
+#[must_use]
+pub fn all_declared_hooks() -> Vec<DeclaredHook> {
+    let raw = std::fs::read_to_string(manifest_dir().join(HOOKS_MANIFEST))
+        .expect("the plugin's hooks manifest must be readable");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&raw).expect("the plugin's hooks manifest must be JSON");
+
+    let events = parsed["hooks"]
+        .as_object()
+        .expect("hooks.json's `hooks` field must be an object of event names");
+
+    let mut declared = Vec::new();
+    for (event, matchers) in events {
+        let matchers = matchers
+            .as_array()
+            .unwrap_or_else(|| panic!("hooks.json's {event} entry must be an array of matchers"));
+        for matcher in matchers {
+            let hooks = matcher["hooks"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            for hook in hooks {
+                let command = hook["command"].as_str().unwrap_or_else(|| {
+                    panic!("hooks.json's {event} entry must declare a string `command`")
+                });
+                let script = script_name_from_command(command).unwrap_or_else(|| {
+                    panic!("hooks.json's {event} command names no script under hooks/: {command}")
+                });
+                let timeout = hook["timeout"]
+                    .as_u64()
+                    .map(std::time::Duration::from_secs)
+                    .unwrap_or_else(|| {
+                        panic!("hooks.json's {event} entry running {script} must declare a timeout")
+                    });
+                declared.push(DeclaredHook {
+                    event: event.clone(),
+                    script,
+                    timeout,
+                });
+            }
+        }
+    }
+    declared
+}
+
+/// The `<name>.sh` basename out of a `command` string shaped like
+/// `bash "${CLAUDE_PLUGIN_ROOT}/hooks/<name>.sh"`.
+fn script_name_from_command(command: &str) -> Option<String> {
+    let after = command.split("hooks/").nth(1)?;
+    let name: String = after
+        .chars()
+        .take_while(|c| !c.is_whitespace() && *c != '"')
+        .collect();
+    (!name.is_empty()).then_some(name)
+}

@@ -24,18 +24,7 @@
 
 use std::time::Duration;
 
-/// Every hook `hooks.json` declares, and the script it runs.
-///
-/// `command_substring` is how `hook_budgets::declared_timeout` and this
-/// file's own `deadline_flag` both locate one entry among several — matching
-/// `tests/session_start_hook.rs`'s existing rule that a manifest gaining a
-/// new hook under the same event must not quietly hand a test somebody
-/// else's number.
-const HOOKS: &[(&str, &str)] = &[
-    ("SessionStart", "session-start.sh"),
-    ("PostToolUse", "post-git.sh"),
-    ("Stop", "stop-handoff.sh"),
-];
+use storyhook_test_support::DeclaredHook;
 
 /// How much of the manifest's `timeout` a hook script's own `--deadline` must
 /// leave unclaimed.
@@ -82,17 +71,26 @@ fn deadline_flag(script: &str) -> Option<Duration> {
 /// least as large) is a hook whose budget is once again set by whichever
 /// number Claude Code enforces from outside, with nothing inside storyhook
 /// bounding the daemon wait first.
+///
+/// The hook set itself is read fresh from `hooks.json` every run
+/// ([`DeclaredHook`], SH-343) rather than kept as a list in this file — a
+/// fourth manifest entry is checked the moment it exists, not the moment
+/// someone remembers to add it here too.
 #[test]
 fn every_hook_declares_a_deadline_inside_its_manifest_timeout() {
-    for (event, command_substring) in HOOKS {
-        let timeout = storyhook_test_support::declared_timeout(event, command_substring);
-        let script_path = storyhook_test_support::hook_script(command_substring);
-        let script = std::fs::read_to_string(&script_path)
+    for hook in storyhook_test_support::all_declared_hooks() {
+        let DeclaredHook {
+            event,
+            script,
+            timeout,
+        } = hook;
+        let script_path = storyhook_test_support::hook_script(&script);
+        let source = std::fs::read_to_string(&script_path)
             .unwrap_or_else(|e| panic!("{} should be readable: {e}", script_path.display()));
 
-        let deadline = deadline_flag(&script).unwrap_or_else(|| {
+        let deadline = deadline_flag(&source).unwrap_or_else(|| {
             panic!(
-                "{command_substring} declares no --deadline, but {} gives it a {}s \
+                "{script} declares no --deadline, but {} gives it a {}s \
                  timeout. Without --deadline the script's `story` call is bounded only \
                  by SPAWN_LOCK_DEADLINE + SERVED_DEADLINE (150s) — this is the exact \
                  shape of SH-182.",
@@ -103,7 +101,7 @@ fn every_hook_declares_a_deadline_inside_its_manifest_timeout() {
 
         assert!(
             deadline < timeout,
-            "{command_substring} declares --deadline {}s against a manifest timeout of \
+            "{script} declares --deadline {}s against a manifest timeout of \
              {}s for {event}. The deadline must leave room for the wrapper around it \
              (bash startup, the stdin read, exec'ing story, rendering) to finish before \
              Claude Code kills the whole hook.",
@@ -114,7 +112,7 @@ fn every_hook_declares_a_deadline_inside_its_manifest_timeout() {
         let margin = timeout - deadline;
         assert!(
             margin >= MIN_WRAPPER_MARGIN,
-            "{command_substring} leaves only {margin:?} between its --deadline ({}s) and \
+            "{script} leaves only {margin:?} between its --deadline ({}s) and \
              {event}'s manifest timeout ({}s) — under the {MIN_WRAPPER_MARGIN:?} this test \
              treats as meaningful wrapper headroom.",
             deadline.as_secs(),
@@ -123,32 +121,52 @@ fn every_hook_declares_a_deadline_inside_its_manifest_timeout() {
     }
 }
 
-/// The manifest names a real script for every hook this file checks, and
-/// that script declares the flag by its long form.
+/// The manifest names a real script for every hook it declares, and that
+/// script declares the flag by its long form.
 ///
-/// A narrower guard against a typo passing the test above by accident: if
-/// `command_substring` stopped matching anything in `hooks.json` (a rename,
-/// a moved file), `declared_timeout` already panics loudly — this instead
-/// catches the quieter mistake of a script whose `--deadline` is misspelled
-/// or spelled as an environment variable, which `deadline_flag` would read as
-/// "no deadline" and the test above would still catch, but with a less
-/// specific message than this one gives.
+/// A narrower guard against a typo passing the test above by accident: if a
+/// script were renamed or moved without updating `hooks.json`, the source
+/// read above already panics loudly — this instead catches the quieter
+/// mistake of a script whose `--deadline` is misspelled or spelled as an
+/// environment variable, which `deadline_flag` would read as "no deadline"
+/// and the test above would still catch, but with a less specific message
+/// than this one gives.
 #[test]
-fn every_checked_hook_script_exists_and_spells_deadline_as_a_flag() {
-    for (_, command_substring) in HOOKS {
-        let script_path = storyhook_test_support::hook_script(command_substring);
+fn every_declared_hook_script_exists_and_spells_deadline_as_a_flag() {
+    for hook in storyhook_test_support::all_declared_hooks() {
+        let script_path = storyhook_test_support::hook_script(&hook.script);
         assert!(
             script_path.is_file(),
-            "{} does not exist, but hook_budgets.rs checks it",
-            script_path.display()
+            "{} does not exist, but hooks.json's {} entry names it",
+            script_path.display(),
+            hook.event,
         );
-        let script = std::fs::read_to_string(&script_path).unwrap();
+        let source = std::fs::read_to_string(&script_path).unwrap();
         assert!(
-            script.contains("--deadline "),
+            source.contains("--deadline "),
             "{} must spell the flag as `--deadline <seconds>`, space-separated \
              (not `--deadline=`, which this file's parser does not read): {}",
-            command_substring,
+            hook.script,
             script_path.display()
         );
     }
+}
+
+/// The set of scripts `hooks.json` currently names, pinned so a change to the
+/// manifest is a visible diff in this test rather than silent — the same
+/// property the hand-maintained list used to give, minus the failure mode
+/// where the list and the manifest could disagree.
+#[test]
+fn the_manifest_currently_declares_exactly_these_three_scripts() {
+    let mut scripts: Vec<String> = storyhook_test_support::all_declared_hooks()
+        .into_iter()
+        .map(|hook| hook.script)
+        .collect();
+    scripts.sort();
+    assert_eq!(
+        scripts,
+        vec!["post-git.sh", "session-start.sh", "stop-handoff.sh"],
+        "hooks.json's declared scripts have changed — if this is a real new hook, \
+         the tests above already cover it automatically; update this list to match."
+    );
 }
