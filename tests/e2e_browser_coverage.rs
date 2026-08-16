@@ -16,9 +16,10 @@
 //!    -- `every_browser_the_config_names_is_installed_by_make_e2e_install`.
 //! 2. A quarantine (`test.skip` gated on `browserName === "webkit"`) lands
 //!    with no story naming why -- `every_webkit_quarantine_names_a_story`.
-//! 3. The two desktop projects stop selecting their spec files identically,
-//!    quietly narrowing WebKit coverage relative to Chromium's --
-//!    `both_desktop_projects_select_their_specs_the_same_way`.
+//! 3. Either engine pair's two projects stop selecting their spec files
+//!    identically, quietly narrowing WebKit coverage relative to Chromium's,
+//!    or the two pairs stop sharing `MOBILE_SPECS` under opposite selector
+//!    kinds -- `the_two_projects_in_each_engine_pair_select_their_specs_the_same_way`.
 
 use std::path::{Path, PathBuf};
 
@@ -116,6 +117,28 @@ fn every_browser_the_config_names_is_installed_by_make_e2e_install() {
          -- either the config lost a project, or the `use: {{ ...devices[\"...\"] }}` pattern \
          this scan looks for has drifted from the file's actual shape",
         devices.len()
+    );
+
+    // `configured_devices()` only recognises the single-line `use: { \
+    // ...devices["..."] }` shape every project in this file happens to use
+    // today -- a project that spreads its descriptor across a MULTI-LINE
+    // `use: {` block instead (to add an option beside it, say) is invisible
+    // to that scan, and `devices.len() >= 2` above would keep passing while
+    // vouching for one fewer project than the config actually has. Cross-
+    // checking against `project_blocks()` -- a second, independent parser
+    // anchored on the project's own `name:` line rather than its `use:`
+    // line -- turns that silent blind spot into a loud one (SH-348).
+    let blocks = project_blocks(&config_text);
+    assert_eq!(
+        devices.len(),
+        blocks.len(),
+        "e2e/playwright.config.ts declares {} project(s) ({:?}) but configured_devices() found \
+         {} device spread(s) ({devices:?}) -- one project's `use: {{ ...devices[\"...\"] }}` is \
+         not on a single line, and this scan cannot see it. Keep every project's device spread \
+         on one line, or teach configured_devices() the new shape.",
+        blocks.len(),
+        blocks.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+        devices.len(),
     );
 
     let mut required_engines: Vec<&'static str> = devices
@@ -350,7 +373,7 @@ test("a ready card carries no flag badge on the board", async ({ page }) => {
 }
 
 // ---------------------------------------------------------------------------
-// 3. The two desktop projects select their specs the same way
+// 3. Each engine pair selects its specs the same way
 // ---------------------------------------------------------------------------
 
 /// A Playwright project's declared name, paired with the text of its own
@@ -399,8 +422,22 @@ fn selector(block: &str) -> Option<(&'static str, String)> {
     None
 }
 
+/// The config's two engine pairs, as `(pair label, first project, second
+/// project, expected selector kind)`. Within a pair, both members must
+/// select identically, or one engine's coverage can be narrowed without
+/// either project's own file saying so (SH-335 established this for the
+/// desktop pair; SH-348 extends it to the mobile pair). Across the pairs,
+/// the two selector KINDS must be opposite -- `MOBILE_SPECS`'s own doc
+/// comment claims the pattern makes all four projects exhaustive and
+/// disjoint, which is only true if the desktop pair excludes it and the
+/// mobile pair matches it.
+const ENGINE_PAIRS: [(&str, &str, &str, &str); 2] = [
+    ("desktop", "chromium", "webkit", "testIgnore"),
+    ("mobile", "mobile-chromium", "mobile-webkit", "testMatch"),
+];
+
 #[test]
-fn both_desktop_projects_select_their_specs_the_same_way() {
+fn the_two_projects_in_each_engine_pair_select_their_specs_the_same_way() {
     let config_text = read("e2e/playwright.config.ts");
     let blocks = project_blocks(&config_text);
 
@@ -419,31 +456,42 @@ fn both_desktop_projects_select_their_specs_the_same_way() {
             .as_str()
     };
 
-    let chromium_selector = selector(by_name("chromium")).unwrap_or_else(|| {
-        panic!("the \"chromium\" project declares neither testIgnore nor testMatch")
-    });
-    let webkit_selector = selector(by_name("webkit")).unwrap_or_else(|| {
-        panic!("the \"webkit\" project declares neither testIgnore nor testMatch")
-    });
+    let mut pair_selectors = Vec::new();
+    for (label, first, second, expected_kind) in ENGINE_PAIRS {
+        let first_selector = selector(by_name(first)).unwrap_or_else(|| {
+            panic!("the \"{first}\" project declares neither testIgnore nor testMatch")
+        });
+        let second_selector = selector(by_name(second)).unwrap_or_else(|| {
+            panic!("the \"{second}\" project declares neither testIgnore nor testMatch")
+        });
 
-    assert_eq!(
-        chromium_selector, webkit_selector,
-        "\"chromium\" selects its specs with {chromium_selector:?} and \"webkit\" with \
-         {webkit_selector:?} -- these two projects are supposed to run the identical desktop \
-         spec set (SH-335: every desktop spec runs on both engines, nothing hand-listed per \
-         engine), so a divergence here silently narrows WebKit's coverage relative to \
-         Chromium's without either project's own file saying so. Point both at the same \
-         testIgnore/testMatch expression."
-    );
+        assert_eq!(
+            first_selector, second_selector,
+            "\"{first}\" selects its specs with {first_selector:?} and \"{second}\" with \
+             {second_selector:?} -- these two projects are supposed to run the identical {label} \
+             spec set (every {label} spec runs on both engines, nothing hand-listed per engine), \
+             so a divergence here silently narrows one engine's coverage relative to the other's \
+             without either project's own file saying so. Point both at the same \
+             testIgnore/testMatch expression."
+        );
+        assert_eq!(
+            first_selector.0, expected_kind,
+            "the {label} pair (\"{first}\"/\"{second}\") selects with {:?}, not {expected_kind:?}",
+            first_selector.0
+        );
+        pair_selectors.push((label, first_selector));
+    }
 
-    let mobile_selector = selector(by_name("mobile-chromium")).unwrap_or_else(|| {
-        panic!("the \"mobile-chromium\" project declares neither testIgnore nor testMatch")
-    });
+    let (desktop_label, desktop_selector) = &pair_selectors[0];
+    let (mobile_label, mobile_selector) = &pair_selectors[1];
     assert_eq!(
-        mobile_selector.0, "testMatch",
-        "\"mobile-chromium\" selects its specs with {mobile_selector:?}, not testMatch -- it is \
-         supposed to run only the `.mobile.spec.ts$` files, the complement of what the desktop \
-         pair run"
+        desktop_selector.1, mobile_selector.1,
+        "the {desktop_label} pair selects on {:?} and the {mobile_label} pair on {:?} -- both \
+         are supposed to name the SAME constant (MOBILE_SPECS) under opposite selector kinds. \
+         That is the only reason all four projects are exhaustive and disjoint by construction; \
+         two independently maintained expressions would drift the way SH-136's counts did, one \
+         constant used four times cannot.",
+        desktop_selector.1, mobile_selector.1
     );
 }
 
