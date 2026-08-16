@@ -22,7 +22,15 @@ import {
  *   - a REFUSED/FAILED outcome (attended or auto) is DURABLE, dismissed only
  *     by the user, because once its notification clears there is no trace of
  *     it anywhere in the UI. The daemon's persisted `DispatchRecord` is not
- *     that trace: no route exposes it, this page never reads it, and it
+ *     that trace. Since SH-361 the daemon is a PARTIAL fallback where it was
+ *     none at all: `GET /api/dispatch-log` exposes its finished records and
+ *     the Settings screen's "Dispatch log" reads them
+ *     (`e2e/specs/dispatch-log.spec.ts`). Two limits, both disclosed on that
+ *     surface: it evicts, and it only ever knew about DISPATCHES — an
+ *     ordinary error from any other path is still gone with its notice. What
+ *     this file's contract asserts is unchanged; what changed is that the
+ *     sentence below was once absolute and is now bounded. It used to read:
+ *     no route exposes it, this page never reads it, and it
  *     evicts after 30 minutes or 32 records (`RETAIN_FOR`/`RETAIN_FINISHED`,
  *     `src/api/dispatch.rs`).
  *
@@ -203,7 +211,7 @@ async function stubDispatch(
   auto: boolean,
   state: "ok" | "refused" | "failed",
 ): Promise<void> {
-  await page.route("**/dispatch**", async (route) => {
+  await page.route("**/story/*/dispatch**", async (route) => {
     await route.fulfill({
       status: route.request().method() === "POST" ? 202 : 200,
       contentType: "application/json",
@@ -1082,7 +1090,7 @@ test("an arriving dispatch result does not disturb focus already resting on anot
   const dispatchHeld = new Promise<void>((resolve) => {
     releaseDispatch = resolve;
   });
-  await page.route("**/dispatch**", async (route) => {
+  await page.route("**/story/*/dispatch**", async (route) => {
     await dispatchHeld;
     await route.fulfill({
       status: route.request().method() === "POST" ? 202 : 200,
