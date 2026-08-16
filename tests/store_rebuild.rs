@@ -505,19 +505,40 @@ fn a_story_whose_events_do_not_fold_is_reported_not_propagated() {
 // Unknown event kinds (SH-54)
 // ---------------------------------------------------------------------------
 
+/// A `kind` this binary must **not** be able to decode — the position an older
+/// storyhook is in when it opens a store a newer one has written (SH-54).
+///
+/// Named, and asserted below rather than typed into the SQL, for two reasons.
+/// It is the one `events.kind` string in the tree that is *supposed* to be a
+/// stranger, so `tests/event_kind_vocabulary.rs` — which fails on any hand-typed
+/// kind literal the binary does not emit — must not see a literal here
+/// (SH-364). And if some future storyhook ever adds this very variant, the
+/// assertion fails loudly instead of the test below quietly decoding what it
+/// exists to leave undecoded.
+const UNDECODABLE_KIND: &str = "StoryTeleported";
+
 #[test]
 fn an_unknown_event_kind_is_retained_reported_and_not_a_divergence() {
+    assert!(
+        !storyhook::domain::is_known_event_kind(UNDECODABLE_KIND),
+        "{UNDECODABLE_KIND} is a decodable event now, so this test no longer \
+         exercises the unknown-kind path at all — pick a kind that is still a \
+         stranger"
+    );
+
     let (_dir, store) = new_store();
     let project = seed_project(&store, "alpha", "SH");
     let one = create_story(&store, project, "First", "2026-01-01T00:00:00Z");
     // Written directly because this binary cannot construct an event it does
     // not have a variant for — which is precisely the situation a *newer*
     // storyhook puts this one in.
+    let payload = format!(
+        "{{\"kind\":\"{UNDECODABLE_KIND}\",\"at\":\"2026-01-01T00:05:00Z\",\"to\":\"mars\"}}"
+    );
     raw(&store)
         .execute(
             "INSERT INTO events (project_id, story_no, seq, global_seq, kind, at, payload) \
-             SELECT ?1, ?2, 2, 99, 'StoryTeleported', '2026-01-01T00:05:00Z', \
-                 '{\"kind\":\"StoryTeleported\",\"at\":\"2026-01-01T00:05:00Z\",\"to\":\"mars\"}'",
+             SELECT ?1, ?2, 2, 99, ?3, '2026-01-01T00:05:00Z', ?4",
             rusqlite::params![
                 store
                     .read(|tx| tx.project_by_slug("alpha"))
@@ -525,14 +546,16 @@ fn an_unknown_event_kind_is_retained_reported_and_not_a_divergence() {
                     .unwrap()
                     .id
                     .get(),
-                one.get()
+                one.get(),
+                UNDECODABLE_KIND,
+                payload
             ],
         )
         .unwrap();
 
     let events = store.read(|tx| tx.events_for(project, one)).unwrap();
     assert_eq!(events.len(), 2, "the unknown event must still be readable");
-    assert_eq!(events[1].kind, "StoryTeleported");
+    assert_eq!(events[1].kind, UNDECODABLE_KIND);
     assert!(
         matches!(
             &events[1].payload,
@@ -544,7 +567,7 @@ fn an_unknown_event_kind_is_retained_reported_and_not_a_divergence() {
     let diff = diff_read_model(&store, project).unwrap();
 
     assert_eq!(diff.unknown_events.len(), 1);
-    assert_eq!(diff.unknown_events[0].kind, "StoryTeleported");
+    assert_eq!(diff.unknown_events[0].kind, UNDECODABLE_KIND);
     assert_eq!(diff.unknown_events[0].seq, EventSeq::new(2));
     // Reported, but not damage: retaining an event this binary does not
     // understand is correct behaviour. `head_seq` and `head_global_seq`
