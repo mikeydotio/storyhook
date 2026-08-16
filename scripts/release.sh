@@ -224,31 +224,53 @@ fi
 
 next_version="$current_version"
 
+# The bump is owned by `semver-cli`, which ships inside the Claude Code plugin
+# cache rather than on PATH. Resolve it explicitly instead of assuming a bare
+# `semver` exists: on this machine it does not, and a script that discovered
+# that only after cutting a release branch would strand one.
+SEMVER_CLI="${SEMVER_CLI:-}"
+if [ -z "$SEMVER_CLI" ]; then
+  if command -v semver-cli >/dev/null 2>&1; then
+    SEMVER_CLI="$(command -v semver-cli)"
+  elif command -v semver >/dev/null 2>&1; then
+    SEMVER_CLI="$(command -v semver)"
+  else
+    # Newest cached plugin version wins; `sort -V` so 3.7.4 beats 2.39.1.
+    SEMVER_CLI="$(ls -d "$HOME"/.claude/plugins/cache/agentics/semver/*/bin/semver-cli 2>/dev/null \
+      | sort -V | tail -1)"
+  fi
+fi
+
 if [ -n "$bump" ]; then
-  command -v semver >/dev/null 2>&1 || die "--bump needs the \`semver\` CLI on PATH"
+  { [ -n "$SEMVER_CLI" ] && [ -x "$SEMVER_CLI" ]; } \
+    || die "--bump needs semver-cli. Set SEMVER_CLI=/path/to/semver-cli, or install the semver plugin."
+  note "semver-cli   $SEMVER_CLI"
 fi
 
 if [ "$local_only" = 0 ]; then
   # Compute what the bump will produce, so the changelog and tag checks below
-  # can refuse BEFORE anything is written. `semver` owns the arithmetic; this
-  # only asks it what the answer would be.
-  if semver next "$bump" >/dev/null 2>&1; then
-    next_version="$(semver next "$bump" | tr -d '[:space:]')"
-  else
-    # Older `semver` builds have no `next`; fall back to doing the sums here
-    # and say so, rather than silently guessing a different scheme.
-    base="${current_version#v}"
-    IFS='.' read -r major minor patch <<EOF
+  # can refuse BEFORE anything is written. `semver-cli` has no "what would the
+  # next version be" query -- `recommend` answers a different question (which
+  # LEVEL to bump) -- so the arithmetic happens here, against the prefix
+  # `semver-cli current` reports rather than a hardcoded "v".
+  prefix="$("$SEMVER_CLI" current 2>/dev/null \
+    | sed -n 's/.*"version_prefix"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+  [ -n "$prefix" ] || prefix="v"
+
+  base="${current_version#"$prefix"}"
+  case "$base" in
+    [0-9]*.[0-9]*.[0-9]*) ;;
+    *) die "VERSION reads \`$current_version\`, which is not <prefix>MAJOR.MINOR.PATCH. Refusing to guess." ;;
+  esac
+  IFS='.' read -r major minor patch <<EOF
 $base
 EOF
-    case "$bump" in
-      major) major=$((major + 1)); minor=0; patch=0 ;;
-      minor) minor=$((minor + 1)); patch=0 ;;
-      patch) patch=$((patch + 1)) ;;
-    esac
-    next_version="v${major}.${minor}.${patch}"
-    note "\`semver next\` unavailable; computed $next_version locally"
-  fi
+  case "$bump" in
+    major) major=$((major + 1)); minor=0; patch=0 ;;
+    minor) minor=$((minor + 1)); patch=0 ;;
+    patch) patch=$((patch + 1)) ;;
+  esac
+  next_version="${prefix}${major}.${minor}.${patch}"
 
   info "releasing    $current_version -> $next_version"
 
@@ -293,7 +315,11 @@ if [ "$local_only" = 1 ]; then
     step "Bumping version (local only — this WILL modify VERSION and CHANGELOG.md)"
     warn "you asked for --bump with --local-only; the bump is committed locally and never pushed"
     confirm "Bump $current_version by $bump without publishing?"
-    run semver bump "$bump"
+    # --skip-tag: a tag is a claim about a published release. Minting one for a
+    # build that never leaves this machine would put a tag in the repository
+    # that no GitHub release corresponds to, which is the dangling-tag state
+    # release.yml's own notes step exists to avoid.
+    run "$SEMVER_CLI" bump run "$bump" --skip-tag --non-interactive
     current_version="$(tr -d '[:space:]' < VERSION)"
   fi
 
@@ -384,7 +410,12 @@ step "Bumping the version on a release branch"
 # Never on main directly: the org's `protect-main` ruleset forbids it, and the
 # bump has to arrive through a PR like everything else.
 run git switch -c "$release_branch"
-run semver bump "$bump"
+# --skip-tag is load-bearing, not tidiness. `semver-cli bump run` tags by
+# default, and it would tag THIS branch's commit -- but the tag has to name the
+# merge commit that actually lands on `main`, or `install.sh` resolves a
+# release built from a commit that is not on the released branch. The tag is
+# created further down, after the merge.
+run "$SEMVER_CLI" bump run "$bump" --skip-tag --non-interactive
 
 if [ "$dry_run" = 0 ]; then
   actual="$(tr -d '[:space:]' < VERSION)"
