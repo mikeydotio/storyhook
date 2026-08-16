@@ -239,12 +239,17 @@ async function cleanUp(page: Page, title: string): Promise<void> {
 
 /** Creates a story, opens its drawer, and returns its id — every test here
  * needs a story of its own, since a dispatch (even a stubbed one) is keyed
- * per-story in `state.dispatches` and two tests sharing one would collide. */
+ * per-story in `state.dispatches` and two tests sharing one would collide.
+ *
+ * Sets a priority (SH-358): this file owns notice semantics and timing --
+ * exactly the assertions an unrelated, timer-driven unassessed-priority
+ * warning toast would corrupt if `Default priority` were left as-is. */
 async function openFreshStory(page: Page, title: string): Promise<string> {
   await openProject(page, "Alpha Project");
   await page.locator("#new-story-btn").click();
   await expect(page.locator("#create-modal")).toHaveClass(/open/);
   await page.locator("#create-title").fill(title);
+  await page.locator("#create-priority").selectOption("medium");
   await page.locator("#create-submit").click();
   await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
 

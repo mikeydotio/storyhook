@@ -964,12 +964,23 @@ export async function awaitNoOverlay(page: Page): Promise<void> {
 }
 
 /** Creates a story with both a title and a description (so Copy Description has
- * something to copy) and returns its id. */
+ * something to copy) and returns its id.
+ *
+ * Sets a priority (SH-358): this helper is a general-purpose fixture used by
+ * 25+ unrelated specs across this suite, none of which test priority. Left at
+ * "Default priority" it silently raises the unassessed-priority warning toast
+ * on every call -- a side effect no caller here is testing for, and one that
+ * broke a dozen specs whose own notice-count and focus-geometry assertions
+ * didn't expect an extra, timer-driven toast in the stack. A story actually
+ * testing priority behaviour (story-context-menu-priority.spec.ts) has its
+ * own local `createStory` with an optional priority argument and is
+ * unaffected by this one. */
 export async function createStory(page: Page, title: string): Promise<string> {
   await page.locator("#new-story-btn").click();
   await expect(page.locator("#create-modal")).toHaveClass(/open/);
   await page.locator("#create-title").fill(title);
   await page.locator("#create-description").fill("a description, so Copy Description has something to copy");
+  await page.locator("#create-priority").selectOption("medium");
   await page.locator("#create-submit").click();
   await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
   const card = page.locator('.column[data-state="todo"] .card', { hasText: title });

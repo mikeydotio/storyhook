@@ -47,13 +47,14 @@ test("creating a story with no priority shows a warning toast naming the remedy"
   await expect(toast).toContainText("priority not set");
   await expect(toast).toContainText("story help priority-rubric");
 
-  // A warning toast is durable (`noticeIsDurable`, SH-358) -- the same
-  // reasoning "error" already has: this names an action the reader must
-  // take, and a clock on it is a notice designed to be missed. Confirmed
-  // here rather than assumed, since a self-clearing one would make this
-  // whole test a race against `scheduleAutoDismiss`.
-  const dismiss = toast.locator(".toast-dismiss");
-  await expect(dismiss).toBeVisible();
+  // Self-clearing, not durable (`noticeIsDurable`, SH-358's second attempt).
+  // The first attempt made "warn" durable like "error" -- reasonable in
+  // isolation, wrong in this suite: ordinary test fixtures across many
+  // unrelated specs create stories with no --priority as routine setup, and
+  // a durable warn toast outlived its own test in the shared "Alpha Project"
+  // session, piling up until it intercepted clicks meant for board cards in
+  // later specs. No assertion on the dismiss control here; the toast fades
+  // on its own within TOAST_LIFETIME_MS like every other transient notice.
 
   await deleteStory(page, title);
 });
