@@ -333,6 +333,33 @@ Standing rules for every wave:
   fold — a non-fold field there reports every story as divergent. A recency order that does
   not end in `head_global_seq` is not a total order. `docs/spec/recency-ordering.md` names
   the comparator and the test on each surface.
+- **A fixture derives the vocabulary it writes into a column production writes** (SH-364).
+  `seed_a_v14_project` seeded `events.kind` values `'story_created'` and
+  `'story_priority_set'` for fourteen migrations — snake_case spellings no writer emits
+  (`domain::event_kind` returns PascalCase, `write.rs` inserts it verbatim, and
+  `is_known_event_kind` is case-sensitive on purpose). Harmless only because migration 15's
+  backfill joins on `seq = head_seq` and never reads `kind`. SH-359's migration made `kind`
+  the **entire** predicate, and a seat on its council read that fixture as the nearest
+  precedent — correctly, it was — and proposed the same snake_case spelling for the
+  migration. A test that seeds a spelling and a migration that matches the same spelling
+  agree with each other, pass, and match **zero rows** in every real store, silently
+  backfilling every story to "never assessed". Review caught it; the suite structurally
+  could not. This is SH-263 one layer over: *the gate was right; the fixture lied to it.*
+  **The hazard is confined to this one column by construction, and that is why it needs a
+  test rather than a constraint** — `superstate`, `priority` and `priority_rank` all carry
+  schema `CHECK`s, so a fixture cannot lie there at all, while `events.kind` deliberately
+  cannot have one, because SH-54 requires a store written by a *newer* storyhook to stay
+  readable by this one. `tests/event_kind_vocabulary.rs` is the CHECK that column cannot
+  have: derived over `git ls-files` in the SH-198/SH-260 style, covering production SQL as
+  well as fixtures (migration 9 hand-writes a kind, and a wrong one there outlives every
+  test), and carrying a positive control so a parser that stopped recognising statements
+  fails instead of reporting a clean tree. It reads SQL only, so the **typed** door —
+  `RawEvent { kind: "…" }` through `inject_raw_events`/`append_raw_events` — is fenced
+  differently on purpose: no static rule can judge it, since a fixture there legitimately
+  wants a known kind (*damage*) or an unknown one (*data from the future*), and that choice
+  is the entire subject of the tests using it. Each spelling is a named constant with a
+  test asserting which of the two it is. Measured rather than assumed: misspelling
+  `store_inject.rs`'s constant leaves all eight of that file's other tests green.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
