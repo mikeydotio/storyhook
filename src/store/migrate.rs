@@ -200,6 +200,18 @@ pub const MIGRATIONS: &[Migration] = &[
         // `events` is only read, never written, by this migration.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 16,
+        name: "priority_assessed",
+        sql: include_str!("schema/0016_priority_assessed.sql"),
+        // The first migration here with **no DDL at all** — one `UPDATE` that
+        // reads `events` and patches the embedded `snapshot` documents. SH-359
+        // adds no column, because nothing filters, sorts or joins on the fact
+        // it records; the document is therefore the whole of the repair. No
+        // table is rebuilt and `events` is only read, so migration 5's
+        // `events_reject_delete` warning does not apply.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

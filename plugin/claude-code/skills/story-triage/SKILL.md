@@ -31,10 +31,11 @@ one of:
   carries it)
 - **`stale`** — not updated within `STORY_STALE_THRESHOLD`; each finding's own `detail`
   states the real window used (e.g. `"stale 3d+"`), never restated here
-- **`unprioritized`** — `priority: none`. Read this as a *question*, not a verdict:
-  `none` is a real level meaning **deliberately parked**, so a story here is either
-  parked on purpose or was never assessed, and the store cannot tell the two apart.
-  Resolve each one — a defect must never sit at `none`
+- **`unprioritized`** — nobody has ever chosen this story's priority. Since SH-359
+  the store records that as its own fact, so this category no longer catches a
+  story **deliberately parked** at `none` — parking is a decision, and this
+  category is for the absence of one. Every story here is a triage failure rather
+  than a judgement call, and a defect must never be left in it
 - **`cycle`** — sits on a `blocked-by` cycle — the CLI does not surface this itself, so
   the script detects it directly from every story's own relationships (Kahn's algorithm);
   this is no longer a manual "eyeball the graph" step

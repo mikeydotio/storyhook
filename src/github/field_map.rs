@@ -498,6 +498,7 @@ mod tests {
                 },
             ],
             priority: Priority::High,
+            priority_assessed: true,
             labels: vec!["bug".to_string(), "frontend".to_string()],
             story_type: None,
             description: None,

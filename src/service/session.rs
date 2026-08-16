@@ -438,6 +438,7 @@ fn event_detail(event: &crate::domain::StoryEvent) -> String {
             other_id, relation, ..
         } => format!("no longer {relation} {other_id}"),
         E::StoryPrioritySet { priority, .. } => format!("priority → {}", priority.as_str()),
+        E::StoryPriorityCleared { .. } => "priority cleared".to_string(),
         E::StoryTypeSet { story_type, .. } => format!("type → {story_type}"),
         E::StoryLabelsSet { labels, .. } if labels.is_empty() => "labels cleared".to_string(),
         E::StoryLabelsSet { labels, .. } => format!("labels → {}", labels.join(", ")),

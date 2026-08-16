@@ -890,6 +890,7 @@ mod tests {
             }],
             relationships: vec![],
             priority: Priority::High,
+            priority_assessed: true,
             labels: vec!["bug".to_string(), "tui".to_string()],
             story_type: None,
             description: None,

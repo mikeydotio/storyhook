@@ -158,12 +158,28 @@ fn new_with_a_comma_inside_a_single_label_flag_still_splits() {
 
     // The point of splitting on the way in: the resulting labels are
     // addressable again, which `web,sse` as one label never was.
+    //
+    // The negative assertion is scoped to the `labels:` line rather than the
+    // whole rendering, because searching an entire story for a bare label name
+    // is a proxy that any unrelated field can break: SH-359 added
+    // `priority: none (not assessed)`, and "a-sse-ssed" contains "sse". The
+    // test was reporting a label-removal failure that had not happened. Assert
+    // what this test actually means — that `sse` is not among the labels.
     story(dir.path())
         .args(["unlabel", "SH-1", "sse"])
         .assert()
         .success()
         .stdout(predicate::str::contains("labels: web"))
-        .stdout(predicate::str::contains("sse").not());
+        .stdout(predicate::function(|out: &str| {
+            let labels = out
+                .lines()
+                .find(|line| line.starts_with("labels:"))
+                .expect("`story show` always renders a labels line");
+            !labels
+                .trim_start_matches("labels:")
+                .split(',')
+                .any(|label| label.trim() == "sse")
+        }));
 }
 
 #[test]

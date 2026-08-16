@@ -14,7 +14,7 @@ stdout: <empty>
 stderr: 
 error: unknown flag `--no-such-flag` for `story list`.
 
-`story list` takes: --state --assignee --priority --label --created-after --updated-after --stale --phase --type --flagged --blocked --ready --drafts
+`story list` takes: --state --assignee --priority --label --created-after --updated-after --stale --phase --type --flagged --blocked --ready --drafts --unassessed
 If `--no-such-flag` was meant as text rather than a flag, quote it as one argument, or put it after a `--`.
 
 
@@ -36,7 +36,7 @@ $ story list --state
 exit: 2
 stdout: <empty>
 stderr: 
-error: usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts]
+error: usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts] [--unassessed]
 
 
 $ story show
