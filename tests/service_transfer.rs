@@ -1661,8 +1661,14 @@ fn a_genuinely_malformed_document_still_reports_serdes_own_error() {
         },
     )
     .expect_err("garbage is not a valid import array");
-    assert!(matches!(import_error, AppError::Storage(_)), "{import_error}");
-    assert!(import_error.to_string().contains("expected ident"), "{import_error}");
+    assert!(
+        matches!(import_error, AppError::Storage(_)),
+        "{import_error}"
+    );
+    assert!(
+        import_error.to_string().contains("expected ident"),
+        "{import_error}"
+    );
 
     let ctx = storyhook::service::Ctx::new(
         fixture.store(),
@@ -1678,7 +1684,10 @@ fn a_genuinely_malformed_document_still_reports_serdes_own_error() {
         },
     )
     .expect_err("garbage is not a valid export document");
-    assert!(matches!(restore_error, AppError::Storage(_)), "{restore_error}");
+    assert!(
+        matches!(restore_error, AppError::Storage(_)),
+        "{restore_error}"
+    );
     assert!(
         restore_error.to_string().contains("expected ident"),
         "{restore_error}"
