@@ -9,8 +9,8 @@ import {
 } from "./support";
 
 /**
- * The notification contract SH-304's council settled
- * (`.council/sh-304-dashboard-notification-contract/DECISION.md`).
+ * The notification contract SH-304's council settled (verdict on that story;
+ * as-built in `docs/spec/dashboard-dispatch.md`).
  *
  * **Routing is by OUTCOME, not by the `--auto` flag** — which is the rule
  * SH-232's own doc comments got wrong, and the reason those comments were
@@ -108,8 +108,7 @@ import {
  * only in which button was clicked and the headline text, so it witnesses an
  * already-covered route. It runs clocked, as an ordinary member.
  *
- * Full reasoning, both spikes and the rejected alternatives:
- * `.council/sh-318-notification-clock-e2e-timing/DECISION.md`.
+ * Full reasoning, both spikes and the rejected alternatives: SH-318.
  *
  * ## What SC 2.2.1 actually asks for (SH-322)
  *
@@ -594,8 +593,7 @@ test("a fading notice still clears under prefers-reduced-motion, without animati
 // branch cannot serve. And the affordance would have to be won in a race
 // against the clock it stops, frequently from inside the drawer's description
 // textarea, where Tab abandons the field. Full reasoning, the panel's own
-// rejections, and the five follow-up defects it turned up:
-// `.council/sh-322-self-clearing-notice-keyboard-pause/DECISION.md`.
+// rejections, and the five follow-up defects it turned up: SH-322.
 
 /** The most Tab presses {@link tabTo} will spend before it gives up.
  *

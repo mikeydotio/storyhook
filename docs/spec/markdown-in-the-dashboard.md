@@ -140,8 +140,9 @@ would look broken; they keep plain `linkifyStoryIds`.
 ## Deliberate divergences from CommonMark
 
 **Soft line breaks collapse to a space (CommonMark), not a hard `<br>` (GitHub's comment
-convention).** Decided by council vote, unanimous 3-0 after deliberation — full record at
-`.council/md-soft-vs-hard-line-breaks/DECISION.md`. The deciding fact: this project's own
+convention).** Decided by council vote, unanimous 3-0 after deliberation. That trail was
+untracked and worktree-local and is gone (SH-363), and it belonged to no story, so what
+follows is the whole of the record. The deciding fact: this project's own
 stored descriptions are hard-wrapped near column 88 for terminal display, so a bare `\n`
 there is a formatting artifact, not an authorial paragraph break — hard breaks would
 render every existing description jagged the moment this shipped, a corpus-wide

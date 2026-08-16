@@ -11,7 +11,7 @@
 //! gap, calling `run_initial_setup`/`run_sync_with` directly the way
 //! `tests/service_github.rs` calls `StoreSyncStorage` directly.
 //!
-//! Design: `.council/sh158-githubapi-trait-seam/DECISION.md`. Notably: no
+//! Design: SH-158's council verdict (`story show SH-158`). Notably: no
 //! per-call error-injection mechanism exists on the fake, by decision —
 //! [`an_error_syncing_one_story_does_not_abort_the_rest_of_the_sync`] below
 //! provokes a real error (a mapping pointing at an issue number the fake

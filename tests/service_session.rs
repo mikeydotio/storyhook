@@ -81,8 +81,8 @@ fn the_counts_separate_open_from_ready() {
     );
 }
 
-/// Regression test for SH-126 (council verdict,
-/// `.council/sh126-blocked-column-membership/DECISION.md`): a story parked
+/// Regression test for SH-126 (council verdict, recorded on that story): a
+/// story parked
 /// in the literal `blocked` state, with no unmet `blocked-by` edge, used to
 /// still count as ready and could be offered as the session's `Next:` pick
 /// — `is_ready` never inspected `story.state`.

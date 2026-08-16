@@ -342,8 +342,7 @@ pub fn create_store(cwd: &Path, requested: &str) -> Result<Response, AppError> {
 /// tool, so refusing would break every scripted caller; and a prompt is useless
 /// exactly where the defect happens, since `dispatch` runs inside the daemon
 /// with no terminal to ask at and agents create stories non-interactively. The
-/// council that settled this is at
-/// `.council/sh354-priority-rubric-reach-and-none-default/DECISION.md`.
+/// council that settled this recorded its verdict on SH-354.
 ///
 /// The warning names the consequence rather than scolding, and it is careful to
 /// be *true*: `none` sorts last in `story next`, it is not excluded from it. A
@@ -4079,8 +4078,7 @@ fn crash_advice(env: &Environment) -> Vec<String> {
 }
 
 /// What `story doctor` says about a `story_commit_links` row with no backing
-/// `StoryCommitLinked` event (SH-70's council, `.council/
-/// sh70-import-project-git-link-source/DECISION.md`).
+/// `StoryCommitLinked` event (SH-70's council; the verdict is on that story).
 ///
 /// Every such row was projected from a `[git]`-shaped comment rather than from
 /// the event itself: schema migration 2's backfill, a `story migrate` replay,

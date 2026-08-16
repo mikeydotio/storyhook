@@ -12,8 +12,8 @@ import { cleanUpCreatedStories, openProject, seedToken } from "./support";
  * Create again.
  *
  * This file has two specs, matching the two distinct failure modes the
- * council-approved fix (`.council/sh312-dashboard-create-idempotency/`)
- * closes:
+ * council-approved fix (verdict on SH-312; the reasoning is written up in
+ * `docs/rca/duplicate-story-from-the-dashboard.md`) closes:
  *
  * 1. The gesture path -- two submissions while the first is genuinely still
  *    in flight -- is now fully prevented by the in-flight guard (F1). This

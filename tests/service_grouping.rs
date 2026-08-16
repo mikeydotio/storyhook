@@ -199,8 +199,8 @@ fn a_phase_rollup_sorts_every_story_into_exactly_one_bucket() {
     assert_eq!(phase.story_ids.len(), 5);
 }
 
-/// Regression test for SH-126 (council verdict,
-/// `.council/sh126-blocked-column-membership/DECISION.md`): a story parked
+/// Regression test for SH-126 (council verdict, recorded on that story): a
+/// story parked
 /// in the literal `blocked` state, with no unmet `blocked-by` edge and no
 /// `awaiting` reason, used to fall through to the `in_progress` bucket here
 /// — `rollup` buckets a story as *blocked* purely via `!is_ready(...)`, and

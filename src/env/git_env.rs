@@ -44,7 +44,7 @@
 //! `GIT_CONFIG_PARAMETERS` *during the vote*, and the amended twelve-name list
 //! offered as its replacement still missed one of them. Two of three seats voted
 //! against their own denylist proposals on that evidence.
-//! `.council/sh160-git-env-scrub-home/DECISION.md` is the record.
+//! SH-160 carries the record (`story show SH-160`).
 //!
 //! # What was measured about `GIT_CONFIG_*`, and why three names survive
 //!

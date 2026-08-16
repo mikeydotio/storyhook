@@ -66,8 +66,9 @@ one, because nothing in this module ever decides what an `Invocation`'s fields m
 ## Decision: hand-rolled, not the `rmcp` SDK
 
 Decided by a 3-member `/council-vote` (software-architect, api-designer, skeptic), unanimous
-3-0 in round 1 before any member saw another's reasoning. Full audit trail:
-`.council/mcp-server-substrate/` in this repository at the time of the vote.
+3-0 in round 1 before any member saw another's reasoning. Its audit trail was untracked
+and is gone (SH-363), and it belonged to no story, so what follows is the whole of the
+record.
 
 `story mcp` is implemented on the crate's existing blocking `std::io`, adding zero new
 dependencies — not on `rmcp` (the official Rust MCP SDK), which would add tokio and roughly

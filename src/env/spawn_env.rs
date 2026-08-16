@@ -43,7 +43,7 @@
 //!
 //! # Two names deliberately left off, and why
 //!
-//! Decided by `.council/sh-193-env-forwarding/` (unanimous, three seats) after
+//! Decided by SH-193's council (unanimous, three seats) after
 //! its first-round proposals were rejected on this exact point: both had
 //! copied [`super::git_env`]'s `GIT_MAY_SEE` verbatim, which omits
 //! `SSH_AUTH_SOCK` — safely, for `git_env`, only because *its* call sites
