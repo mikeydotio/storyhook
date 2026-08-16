@@ -870,6 +870,16 @@ fn project_pr_link(
 /// together, so the flag that replaced the legacy open/archive split cannot
 /// drift from the fact it stands for.
 ///
+/// `head_global_seq` (SH-336) is derived the same way, by a scalar subquery
+/// against `events` rather than a parameter, so it cannot drift from the
+/// event `head` actually names: `COALESCE((SELECT global_seq FROM events
+/// WHERE ... AND seq = head), 0)`. This makes every caller's obligation the
+/// same one `head` already implies — the event this row is folded from must
+/// already be committed in this transaction — and both callers that fold with
+/// no new event (`refold_story`, `rebuild::repair_read_model`) get a correct
+/// value with no special case, since the event `head` names is already on
+/// disk from an earlier write.
+///
 /// Relations are derived from the snapshot too, and only this story's own end
 /// of each edge is written: the schema's mirror triggers materialize the other
 /// end. Writing half of a bidirectional relation is therefore not an operation
@@ -886,13 +896,18 @@ pub(super) fn put_story(
 
     sql(
         conn.execute(
-            "INSERT INTO stories (project_id, story_no, head_seq, title, state, superstate, \
-                 priority, priority_rank, story_type, assignee, awaiting, deleted, archived, \
-                 created_at, updated_at, closed_at, description, hidden_at, draft, snapshot) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, \
+            "INSERT INTO stories (project_id, story_no, head_seq, head_global_seq, title, \
+                 state, superstate, priority, priority_rank, story_type, assignee, awaiting, \
+                 deleted, archived, created_at, updated_at, closed_at, description, hidden_at, \
+                 draft, snapshot) \
+             VALUES (?1, ?2, ?3, \
+                 COALESCE((SELECT e.global_seq FROM events e \
+                            WHERE e.project_id = ?1 AND e.story_no = ?2 AND e.seq = ?3), 0), \
+                 ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, \
                  ?18, ?19, ?20) \
              ON CONFLICT (project_id, story_no) DO UPDATE SET \
-                 head_seq = excluded.head_seq, title = excluded.title, state = excluded.state, \
+                 head_seq = excluded.head_seq, head_global_seq = excluded.head_global_seq, \
+                 title = excluded.title, state = excluded.state, \
                  superstate = excluded.superstate, priority = excluded.priority, \
                  priority_rank = excluded.priority_rank, story_type = excluded.story_type, \
                  assignee = excluded.assignee, awaiting = excluded.awaiting, \

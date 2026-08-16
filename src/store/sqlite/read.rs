@@ -28,9 +28,13 @@ use crate::store::types::{
 const PROJECT_COLUMNS: &str =
     "id, uuid, slug, name, prefix, created_at, next_story_no, next_global_seq";
 
+// `head_global_seq` is appended at the end rather than beside `head_seq`, so
+// the eighteen positional `row.get(n)` calls in `raw_story_from_row` keep
+// their indices — inserting it earlier would renumber every one of them for
+// no reason beyond cosmetics.
 const STORY_COLUMNS: &str = "story_no, head_seq, title, state, superstate, priority, story_type, \
      assignee, awaiting, deleted, archived, created_at, updated_at, closed_at, description, \
-     hidden_at, draft, snapshot";
+     hidden_at, draft, snapshot, head_global_seq";
 
 fn sql<T>(result: Result<T, rusqlite::Error>, context: &str) -> Result<T, StoreError> {
     result.map_err(|e| StoreError::from_sqlite(e, context))
@@ -533,6 +537,7 @@ struct RawStoryRow {
     hidden_at: Option<String>,
     draft: bool,
     snapshot: String,
+    head_global_seq: i64,
 }
 
 fn raw_story_from_row(row: &Row<'_>) -> Result<RawStoryRow, rusqlite::Error> {
@@ -555,6 +560,7 @@ fn raw_story_from_row(row: &Row<'_>) -> Result<RawStoryRow, rusqlite::Error> {
         hidden_at: row.get(15)?,
         draft: row.get(16)?,
         snapshot: row.get(17)?,
+        head_global_seq: row.get(18)?,
     })
 }
 
@@ -562,6 +568,7 @@ fn hydrate(raw: RawStoryRow, labels: Vec<String>) -> Result<StoryRow, StoreError
     Ok(StoryRow {
         story_no: StoryNo::new(raw.story_no),
         head_seq: EventSeq::new(raw.head_seq),
+        head_global_seq: GlobalSeq::new(raw.head_global_seq),
         title: raw.title,
         state: raw.state,
         superstate: parse_superstate(&raw.superstate)?,
@@ -816,10 +823,20 @@ pub(super) fn stories(
     // of them is a *total* order. Identical input cannot produce two different
     // orderings — which the legacy `priority ASC, created_at ASC` comparator
     // could and did, `created_at` having only one-second precision.
+    //
+    // `UpdatedAt` breaks a same-second tie on `head_global_seq` (SH-336) before
+    // falling back to `story_no`: `updated_at` has the same one-second
+    // precision `Priority`'s own comment already names, but `head_global_seq`
+    // is the exact position of each row's head event in the project's write
+    // order and cannot tie the way a timestamp can (writes are serialized
+    // behind one process-wide write mutex). `story_no` stays as the final key
+    // rather than being dropped — it is the only thing that keeps the order
+    // total for the `extra_rows` case, where a row's `head_global_seq` is 0
+    // because no event backs it.
     text.push_str(match query.sort {
         StorySort::StoryNo => " ORDER BY story_no",
         StorySort::Priority => " ORDER BY priority_rank, story_no",
-        StorySort::UpdatedAt => " ORDER BY updated_at DESC, story_no",
+        StorySort::UpdatedAt => " ORDER BY updated_at DESC, head_global_seq DESC, story_no",
     });
     if let Some(limit) = query.limit {
         filter!(limit, " LIMIT ?{}");

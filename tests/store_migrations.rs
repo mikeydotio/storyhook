@@ -1932,3 +1932,154 @@ fn migration_twelve_leaves_every_other_column_and_the_event_log_untouched() {
          12 must not have added any"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Migration 15: `stories.head_global_seq` (SH-336)
+// ---------------------------------------------------------------------------
+
+/// Seeds one v14 project holding two stories, straight to the tables —
+/// migrations 14 and earlier have no `head_global_seq` column, so `WriteOps`
+/// cannot write this fixture; it must be built with the column set migration
+/// 15 will find, the same reason `seed_a_v9_story`/`seed_a_v11_story` do.
+///
+/// **Alpha** carries three events with `global_seq` values (37, 42, 50)
+/// deliberately *not* equal to their `seq` values (1, 2, 3) — a naive
+/// migration that joined `seq = global_seq` would still pass a fixture where
+/// the two coincide, so they must not. `head_seq = 2` names the *second*
+/// event; the third (`global_seq = 50`) stands for an event appended after
+/// the read model's row was last folded — a stale row. The backfill must
+/// read 42 (the `global_seq` of the event `head_seq` actually names), not
+/// `MAX(global_seq)` across the story (which would wrongly read 50 for a
+/// stale row) and not the story's *first* event either (which would read 37).
+///
+/// **Bravo** has `head_seq = 0` and no events at all — the `extra_rows` case
+/// (a read-model row with nothing behind it) — which must backfill to `0`.
+fn seed_a_v14_project(path: &Path) {
+    let conn = Connection::open(path).unwrap();
+    conn.execute_batch(
+        "INSERT INTO projects (id, uuid, slug, name, prefix, created_at, next_global_seq)
+             VALUES (1, 'u-1', 'proj', 'Proj', 'SH', '2026-01-01T00:00:00Z', 100);
+         INSERT INTO project_states (project_id, position, slug, superstate)
+             VALUES (1, 0, 'todo', 'OPEN'), (1, 1, 'done', 'CLOSED');
+         INSERT INTO stories (project_id, story_no, head_seq, title, state, superstate,
+                              priority, priority_rank, created_at, updated_at, snapshot)
+             VALUES (1, 1, 2, 'Alpha', 'todo', 'OPEN', 'none', 4,
+                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '{}');
+         INSERT INTO events (project_id, story_no, seq, global_seq, kind, at, payload)
+             VALUES (1, 1, 1, 37, 'story_created', '2026-01-01T00:00:00Z', '{}'),
+                    (1, 1, 2, 42, 'story_priority_set', '2026-01-01T00:00:00Z', '{}'),
+                    (1, 1, 3, 50, 'story_priority_set', '2026-01-01T00:00:01Z', '{}');
+         INSERT INTO stories (project_id, story_no, head_seq, title, state, superstate,
+                              priority, priority_rank, created_at, updated_at, snapshot)
+             VALUES (1, 2, 0, 'Bravo', 'todo', 'OPEN', 'none', 4,
+                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '{}');",
+    )
+    .unwrap();
+}
+
+fn head_global_seq_of(store: &SqliteStore, story_no: i64) -> i64 {
+    Connection::open(store.path())
+        .unwrap()
+        .query_row(
+            "SELECT head_global_seq FROM stories WHERE project_id = 1 AND story_no = ?1",
+            rusqlite::params![story_no],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn migration_fifteen_backfills_each_row_with_its_head_events_feed_position() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..14]).unwrap();
+    seed_a_v14_project(store.path());
+
+    assert!(
+        Connection::open(store.path())
+            .unwrap()
+            .prepare("SELECT head_global_seq FROM stories")
+            .is_err(),
+        "a v14 database must not already have `head_global_seq` — otherwise \
+         this test proves nothing about the migration that adds it"
+    );
+
+    store.migrate().unwrap();
+
+    assert_eq!(
+        head_global_seq_of(&store, 1),
+        42,
+        "must read the global_seq of the event head_seq (2) names, not the \
+         story's own highest global_seq (50) and not seq==global_seq (which \
+         would read 2)"
+    );
+}
+
+#[test]
+fn migration_fifteen_leaves_a_row_with_no_events_at_zero() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..14]).unwrap();
+    seed_a_v14_project(store.path());
+
+    store.migrate().unwrap();
+
+    assert_eq!(
+        head_global_seq_of(&store, 2),
+        0,
+        "Bravo has no events; a row with nothing behind it backfills to 0, \
+         the same reading head_seq itself already gives an eventless row"
+    );
+}
+
+#[test]
+fn migration_fifteen_leaves_the_event_log_and_the_change_feed_untouched() {
+    use storyhook::store::ReadOps;
+
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..14]).unwrap();
+    seed_a_v14_project(store.path());
+    let before = next_global_seq(&store, storyhook::store::ProjectId::new(1));
+
+    store.migrate().unwrap();
+
+    assert_eq!(
+        before,
+        next_global_seq(&store, storyhook::store::ProjectId::new(1)),
+        "no event is appended — this migration only reads `events`, it never writes it"
+    );
+    let events = store
+        .read(|tx| tx.events_for(storyhook::store::ProjectId::new(1), StoryNo::new(1)))
+        .unwrap();
+    assert_eq!(
+        events.len(),
+        3,
+        "the three seeded events for Alpha must survive the migration unchanged"
+    );
+}
+
+#[test]
+fn migration_fifteen_leaves_the_recency_index_covering_its_sort() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..14]).unwrap();
+    seed_a_v14_project(store.path());
+
+    store.migrate().unwrap();
+
+    let index_sql: String = Connection::open(store.path())
+        .unwrap()
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_stories_updated'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        index_sql.contains("head_global_seq"),
+        "idx_stories_updated must cover head_global_seq, or StorySort::UpdatedAt's \
+         `ORDER BY updated_at DESC, head_global_seq DESC, story_no` degrades to a sort \
+         instead of a reverse index scan: {index_sql}"
+    );
+}

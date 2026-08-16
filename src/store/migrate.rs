@@ -189,6 +189,17 @@ pub const MIGRATIONS: &[Migration] = &[
         // migration 5's `events_reject_delete` warning does not apply.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 15,
+        name: "story_head_global_seq",
+        sql: include_str!("schema/0015_story_head_global_seq.sql"),
+        // One `ALTER TABLE ... ADD COLUMN`, one `UPDATE` that reads `events`
+        // and writes one `stories` column, and an index swap. No table is
+        // rebuilt, so there is no `DROP TABLE` for a trigger to re-parse and
+        // migration 5's `events_reject_delete` warning does not apply;
+        // `events` is only read, never written, by this migration.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.
