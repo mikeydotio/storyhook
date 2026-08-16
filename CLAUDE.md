@@ -37,8 +37,7 @@ over this backlog and applied to all 26 open stories. It lived in this file for
 two days, which was long enough to prove the point SH-354 then fixed: nothing
 that *sets* a priority could read it, so every level chosen by `story new`,
 `/story new` or `story-triage` was chosen by vibe. Promoting it into
-`story help priority-rubric` was a council decision —
-`.council/sh354-priority-rubric-reach-and-none-default/DECISION.md` — taken on
+`story help priority-rubric` was a council decision — recorded on SH-354 — taken on
 the grounds that the generic half describes storyhook's own model (a closed
 five-level enum, a CHECK-constrained rank column, `domain::ready_order`,
 `story next` skipping blocked stories) and so is the tool's to state, the same
@@ -360,6 +359,26 @@ Standing rules for every wave:
   is the entire subject of the tests using it. Each spelling is a named constant with a
   test asserting which of the two it is. Measured rather than assumed: misspelling
   `store_inject.rs`'s constant leaves all eight of that file's other tests green.
+- **A council's verdict goes on its story, and no tracked file names the council's own
+  directory** (SH-363). The `/council-vote` skill writes its trail to a slug directory under
+  a gitignored plugin-state folder, relative to whatever directory the agent was standing
+  in — so a council convened inside a per-story worktree is deleted at teardown while the
+  code citing it survives. Measured when this was filed: 82 such citations across 51 tracked
+  files, of which 16 distinct slugs were already gone. The **inverse** pin is the only one
+  implementable, and `tests/council_citations.rs` is it: a fresh clone has none of that
+  directory, so "every cited slug resolves" would fail everywhere but one machine or go
+  vacuously quiet — instead, a slug may not follow the slash. A **bare** mention is fine and
+  needs no exemption, which is why that test needs none for itself: it assembles its own
+  fixtures at run time so the marker never sits adjacent to a slug in its source. Cite
+  `story show SH-N`; where the trail is already gone, **state the verdict inline** rather
+  than pointing at a story that carries nothing — a pointer that fails silently is worse
+  than the dead path it replaced, which at least failed loudly. Two councils settled this,
+  both unanimous, and the second only because the first's salvage step needed a release that
+  does not exist yet: `story comment` on a *closed* story was fixed by SH-261 and is in no
+  release (SH-369), which is what SH-370 waits on. Both councils rejected reopen/re-close —
+  it retracts and re-stamps `closed_at` and fires live `StateChange` hooks, falsifying an
+  audit trail in order to salvage one — and rejected running an unreleased daemon against
+  the live store, which would migrate it past what the installed binary can read.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
