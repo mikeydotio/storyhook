@@ -111,8 +111,7 @@ since relations are written on both ends and no reverse index or second fetch is
 needed. `blockedFlag()` adds a second, deliberately *unfiltered* half for `obviated-by`:
 `is_ready` blocks on any such edge regardless of resolvability, so an edge this client
 can't resolve is still a real cause, rendered via `storyRef()`'s "unknown" ring rather
-than dropped (council decision, unanimous in round 1:
-`.council/sh309-unresolvable-obviated-by-badge-ref/DECISION.md`).
+than dropped (council decision, unanimous in round 1; the verdict is on SH-309).
 
 ### The cleared-blocker dwell
 

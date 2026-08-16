@@ -432,8 +432,7 @@ fn a_draft_claims_a_story_id_like_any_other_story() {
 // most-used command in the tool, `dispatch` runs inside the daemon where there
 // is no terminal to ask at, and agents create stories non-interactively — a
 // prompt would degrade to a hang or a silent default exactly where the defect
-// happens. Decided unanimously by council; see
-// `.council/sh354-priority-rubric-reach-and-none-default/DECISION.md`.
+// happens. Decided unanimously by council; the verdict is on SH-354.
 //
 // The load-bearing distinction is *flag absent* versus *`--priority none`
 // given*. Both end as the same enum variant, so the check has to happen where

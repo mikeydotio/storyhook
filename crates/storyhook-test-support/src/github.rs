@@ -1,8 +1,8 @@
 //! An in-memory [`GithubApi`] for exercising the sync engine's orchestration
 //! without a network — SH-158.
 //!
-//! See the council verdict this implements:
-//! `.council/sh158-githubapi-trait-seam/DECISION.md` in the storyhook repo.
+//! See the council verdict this implements, recorded on SH-158
+//! (`story show SH-158`).
 //! In short: seeded reads and recorded writes only, no pagination, no
 //! rate-limit or timeline simulation, and no per-call error-injection hook —
 //! `SyncReport.errors` accumulation is reachable by simply not seeding an

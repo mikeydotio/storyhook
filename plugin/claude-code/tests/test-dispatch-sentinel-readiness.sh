@@ -5,7 +5,7 @@
 # modes only the new mechanism can produce at all — no-sentinel with a
 # genuinely live, correctly-named process, and pid-exited).
 #
-# Design of record: .council/sh-231-sentinel-design/DECISION.md. Every
+# Design of record: the council verdict on SH-231 (`story show SH-231`). Every
 # success requires all three: the pane still shows the pid story.sh captured
 # at window-open time, that pid is still alive (`kill -0`), AND a sentinel
 # exists there with the right occupant. These tests isolate each of the first

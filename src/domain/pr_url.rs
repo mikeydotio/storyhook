@@ -7,7 +7,7 @@
 //! `story link-pr`/`unlink-pr` are feature-independent by design: a PR URL is
 //! parsed, not fetched, so linking and unlinking never spend a network call
 //! or a caller's token and must work in every build. The binding council
-//! decision (`.council/sh49-linked-prs/DECISION.md`) is explicit that
+//! decision, recorded on SH-49, is explicit that
 //! linking is "a pure event-sourced fact requiring no network access." This
 //! function has no dependency on anything gated — no [`crate::error`]
 //! aside, it only touches a local host constant — so it moved here rather

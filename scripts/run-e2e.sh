@@ -68,8 +68,7 @@ export STORYHOOK_PARENT_PID="$$"
 # bridges it on its own side rather than widening it: a generated wrapper,
 # named through STORYHOOK_DISPATCH_SCRIPT (the seam every test already uses to
 # point dispatch at a stub), re-exports the fixture's knobs and execs the real
-# script. Council verdict, unanimous:
-# `.council/e2e-fake-tmux-state-across-cleared-env/DECISION.md`.
+# script. Council verdict, unanimous, recorded on SH-263.
 export PATH="$repo_root/plugin/claude-code/tests/fakes:$PATH"
 export STORY_READY_DELAY=0
 export STORY_READY_FALLBACK_DELAY=0

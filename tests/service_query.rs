@@ -793,8 +793,8 @@ fn summary_and_report_agree_about_the_ready_count_by_two_different_routes() {
     assert_eq!(report.blocked_ids, Vec::<String>::new());
 }
 
-/// Regression test for SH-126 (council verdict,
-/// `.council/sh126-blocked-column-membership/DECISION.md`): a story in the
+/// Regression test for SH-126 (council verdict, recorded on that story): a
+/// story in the
 /// literal `blocked` state, with no unmet `blocked-by` edge and no
 /// `awaiting` reason, used to be absent from `blocked_ids` and present in
 /// `ready_ids` — `report_data` computes both purely from `is_ready`, which

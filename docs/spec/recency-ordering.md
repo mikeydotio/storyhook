@@ -63,9 +63,9 @@ independent verification (predating the council) had already shown is unsafe:
 there would report every story as divergent. The winning proposal (round-2
 IRV, 2-1 majority) stated the mechanism without that placement error.
 
-No seat argued for Candidate B in either round. Full audit trail (proposals,
-votes, deliberation, IRV tabulation):
-`.council/sh-336-recency-ordering-design/DECISION.md` (branch `worktree-SH-336`).
+No seat argued for Candidate B in either round. The verdict is recorded on SH-336; the
+fuller trail (proposals, votes, deliberation, IRV tabulation) was written inside a
+worktree that has since been torn down and is not recoverable (SH-363).
 
 ## The design as shipped
 

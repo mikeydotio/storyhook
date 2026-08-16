@@ -361,7 +361,7 @@ than merely refused.
 
 Honouring the IP — a real option, and the one that would have made conjunct 1 load-bearing
 in a new way — was rejected on the merits by a three-seat council
-(`.council/sh-253-daemon-addr-ip-meaning/`, unanimous): `/api/v1/*` 404s off-loopback and
+(verdict on SH-253, unanimous): `/api/v1/*` 404s off-loopback and
 since SH-114 that is the only way a `story` command reaches the store, so an honoured
 `0.0.0.0` yields a daemon its own CLI cannot talk to, while exposing the dashboard. The
 tailnet listener already answers the need a wider bind would be reached for.
@@ -374,9 +374,9 @@ for the token, and the token requirement is exactly where SH-187 left it on ever
 and every listener.
 
 Decided by a three-seat council over two rounds plus a runoff
-(`.council/sh-251-web-open-token-handoff/`, unanimous on the runoff, including from the
-two seats whose own proposals it beat). The verdict is also a comment on SH-251, written
-to be implementable on its own, since `.council/` is gitignored.
+(unanimous on the runoff, including from the
+two seats whose own proposals it beat). The verdict is a comment on SH-251, written
+to be implementable on its own.
 
 ### The experiment, and why it inverted the panel
 
@@ -522,8 +522,8 @@ What redemption issues now is a **capability**: an opaque 32-hex value from a re
 daemon holds in memory, presented in its own header, refused from anywhere but this
 machine, and endable without restarting anything.
 
-Design of record for the decision: `.council/sh-254-scoped-dashboard-capability/` (local
-only; the full verdict is a comment on SH-254). The panel was unanimous on first preference
+Design of record for the decision: the full verdict, a comment on SH-254. The panel was
+unanimous on first preference
 in the runoff, after a round of deliberation moved all three seats.
 
 ### What the capability reaches, and what it does not
@@ -709,7 +709,7 @@ named the residual each one carried. SH-255 does not narrow one of them; it dele
 three and replaces them with a single concept: a **named token**, minted by `story token
 new`, that authenticates everything the dashboard does — reads, project/story CRUD,
 dispatch — on every listener, with no exemption anywhere. Design of record: the council
-verdict comment on SH-255 (`.council/sh-255-named-token-model/`, local only).
+verdict comment on SH-255.
 
 ### What replaced what
 
@@ -893,8 +893,9 @@ past SH-255's own merge gate discussion without failing anything.
 ### The replacement, and the council that picked it
 
 Two shapes were weighed by a `/council-vote` panel (security-researcher,
-software-architect, skeptic; full audit trail — gitignored —
-`.council/cookie-read-same-origin-check-without-sec-fetch/`):
+software-architect, skeptic). Its audit trail was untracked and worktree-local and is
+gone (SH-363), and it belonged to no story, so the table below is the whole of the
+record:
 
 | Option | Verdict |
 |---|---|
@@ -1002,7 +1003,7 @@ a rarer self-heal — longer in the common case, not different in kind.
 **The advertised-host decision.** With the probe asynchronous, a freshly spawned daemon's
 portfile reads `tailnet: None` at the instant a client sees it healthy — the probe has not
 answered yet. A 3-seat council (security-researcher, software-architect, qa-engineer;
-`.council/sh-186-tailnet-advertise/`, gitignored, so the verdict is recorded as a comment on
+the verdict is recorded as a comment on
 SH-186) decided against a `Pending | Absent | Bound` tri-state on `DaemonInfo`: trust is
 bind-derived, never advertisement-derived (`TailnetIdentity::into_bound` is `pub(crate)`,
 consuming, reachable only after a successful bind), so a tri-state would buy no security
