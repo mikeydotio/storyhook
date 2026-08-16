@@ -1048,3 +1048,186 @@ test("dismissing a dispatch result by pointer steals no focus from elsewhere", a
 
   await deleteStory(page, title);
 });
+// ============================================================
+// SH-337 — the arrival path: a rebuild the reader never asked for
+// ============================================================
+//
+// The three tests above are all triggered by the reader's OWN dismissal.
+// `addDispatchHistoryRow` fires from a different direction entirely: a
+// `--auto` dispatch resolving in the background, on nobody's keypress. Before
+// SH-337, `renderDispatchHistory()` answered every arrival the same way it
+// answered a dismissal -- `clear(panel)` and rebuild everything -- so a
+// keyboard user resting on an existing row's dismiss button had it destroyed
+// out from under them by a notice they never interacted with at all. SH-326
+// could not have caught this: its heir policy only runs from a dismissal
+// handler, and nothing here dismisses anything.
+
+test("an arriving dispatch result does not disturb focus already resting on another row", async ({
+  page,
+}) => {
+  await openClocked(page);
+
+  const titleA = "SH-337 — history arrival, already reading";
+  const titleB = "SH-337 — history arrival, in flight";
+
+  const idA = await raiseHistoryRow(page, titleA);
+
+  // Story B's dispatch response is held open until this test releases it.
+  // The point under test is that the row must land WHILE focus already rests
+  // on row A's dismiss button -- not merely that focus returns there
+  // afterward, and not that it merely survives whatever click triggered the
+  // dispatch (that click lands on story B's own button, not row A's).
+  let idB = "";
+  let releaseDispatch: () => void = () => {};
+  const dispatchHeld = new Promise<void>((resolve) => {
+    releaseDispatch = resolve;
+  });
+  await page.route("**/dispatch**", async (route) => {
+    await dispatchHeld;
+    await route.fulfill({
+      status: route.request().method() === "POST" ? 202 : 200,
+      contentType: "application/json",
+      body: stubbedDispatch(idB, true, "refused"),
+    });
+  });
+
+  await page.locator("#home-btn").click();
+  idB = await openFreshStory(page, titleB);
+  await page.locator("#dispatch-auto-btn").click();
+  await page.locator("#drawer-close").click();
+  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
+
+  // The reader is resting on row A's dismiss button -- exactly where SH-326
+  // would leave them after a keyboard dismissal, or wherever they simply
+  // tabbed -- when the held-open dispatch for B is finally let through.
+  await page
+    .locator("#dispatch-history .dispatch-history-row", { hasText: idA })
+    .locator(".dispatch-history-dismiss")
+    .focus();
+
+  releaseDispatch();
+  await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(2);
+
+  // The arriving row lands on top (unshifted); row A -- still under the
+  // reader's finger -- has moved from index 0 to index 1. Asserted through
+  // the rows' own identity below, never through index: an implementation
+  // that reasserts focus by index (e.g. "re-focus whatever is now at 0")
+  // passes a naive version of this test and is wrong.
+  const rows = page.locator("#dispatch-history .dispatch-history-row");
+  await expect(rows.nth(0)).toContainText(idB);
+  await expect(rows.nth(1)).toContainText(idA);
+
+  const focused = await page.evaluate(() => {
+    const el = document.activeElement as HTMLElement | null;
+    return {
+      isDismiss: !!el?.classList.contains("dispatch-history-dismiss"),
+      text: el?.closest(".dispatch-history-row")?.textContent ?? null,
+    };
+  });
+  expect(
+    focused.isDismiss,
+    "an arriving dispatch result must not disturb focus on a row it did not touch",
+  ).toBe(true);
+  expect(focused.text).toContain(idA);
+
+  await deleteStory(page, titleA);
+  await deleteStory(page, titleB);
+});
+
+test("Dismiss all appears at two dispatch results, counts them, and stays synced across arrival and dismissal", async ({
+  page,
+}) => {
+  // addDispatchHistoryRow no longer reaches syncNoticeDock() as a side effect
+  // of calling renderDispatchHistory() -- it calls it directly now (SH-337).
+  // No other pin in this file or notice-dock-geometry.spec.ts asserts
+  // anything about #dispatch-history-bar, #dispatch-history-count, or this
+  // scroller's tabindex, so a dropped call on either the arrival or the
+  // dismissal path would otherwise ship unnoticed. Mirrors #toast-bar's own
+  // threshold pin (notice-dock-geometry.spec.ts).
+  await openClocked(page);
+  const bar = page.locator("#dispatch-history-bar");
+
+  const titleA = "SH-337 — dismiss-all bar, arrival A";
+  const titleB = "SH-337 — dismiss-all bar, arrival B";
+
+  // One row already carries its own dismiss button, so a second control would
+  // be doing the first one's job.
+  await raiseHistoryRow(page, titleA);
+  await expect(bar).toBeHidden();
+
+  await raiseHistoryRow(page, titleB);
+  await expect(bar).toBeVisible();
+  await expect(page.locator("#dispatch-history-count")).toHaveText("2");
+  await expect(page.getByRole("button", { name: "Dismiss all 2" })).toBeVisible();
+
+  // Dismissing back below the threshold hides it again -- the dismissal path
+  // must keep calling syncNoticeDock() too.
+  await page
+    .locator("#dispatch-history .dispatch-history-row")
+    .first()
+    .locator(".dispatch-history-dismiss")
+    .click();
+  await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(1);
+  await expect(bar).toBeHidden();
+
+  await deleteStory(page, titleA);
+  await deleteStory(page, titleB);
+});
+
+// ============================================================
+// SH-337 — direction still discriminates after the dismissal rewrite
+// ============================================================
+//
+// The heir pin above ("a dismissed dispatch result hands focus to the row
+// that took its place") only ever has two rows standing and dismisses the
+// TOP one -- which leaves no previous sibling, so "next sibling" and
+// "previous sibling" pick the same survivor and cannot tell a reversed
+// adjacentNoticeControl direction from a correct one. The toast stack has
+// exactly this same twin pin for exactly this reason
+// (notice-dock-geometry.spec.ts: "a dismissed notice hands focus to the
+// notice that took its place", which dismisses the MIDDLE of three). This is
+// that pin's dispatch-history counterpart, written because SH-337's
+// dismissDispatchHistoryRow rewrite is new enough that nothing else in this
+// suite would catch a reversed direction.
+
+test("a dismissed dispatch result in the middle of the pile hands focus to the next one, not the previous", async ({
+  page,
+}) => {
+  await openClocked(page);
+
+  const titleOld = "SH-337 — history direction, oldest";
+  const titleMid = "SH-337 — history direction, middle";
+  const titleNew = "SH-337 — history direction, newest";
+  const idOld = await raiseHistoryRow(page, titleOld);
+  const idMid = await raiseHistoryRow(page, titleMid);
+  const idNew = await raiseHistoryRow(page, titleNew);
+
+  // Unshifted, so DOM order is newest first: New, Mid, Old.
+  const rows = page.locator("#dispatch-history .dispatch-history-row");
+  await expect(rows).toHaveCount(3);
+  await expect(rows.nth(0)).toContainText(idNew);
+  await expect(rows.nth(1)).toContainText(idMid);
+  await expect(rows.nth(2)).toContainText(idOld);
+
+  await rows.nth(1).locator(".dispatch-history-dismiss").focus();
+  await page.keyboard.press("Enter");
+  await expect(rows).toHaveCount(2);
+
+  // The NEXT sibling (idOld, which moved up into the vacated slot), not the
+  // previous one (idNew). A reversed adjacentNoticeControl direction would
+  // land here on idNew instead.
+  const heir = await page.evaluate(() => {
+    const el = document.activeElement as HTMLElement | null;
+    return {
+      isDismiss: !!el?.classList.contains("dispatch-history-dismiss"),
+      text: el?.closest(".dispatch-history-row")?.textContent ?? null,
+    };
+  });
+  expect(heir.isDismiss).toBe(true);
+  expect(heir.text).toContain(idOld);
+  expect(heir.text).not.toContain(idNew);
+
+  await deleteStory(page, titleOld);
+  await deleteStory(page, titleMid);
+  await deleteStory(page, titleNew);
+});
