@@ -65,10 +65,19 @@ fn tracked_spec_files() -> Vec<PathBuf> {
 
 /// The glob every dispatch stub must use: anchored on the per-story path
 /// segment, so it cannot reach a daemon-scoped sibling.
-const ANCHORED: &str = "\"**/story/*/dispatch**\"";
+///
+/// Matched as a **route registration** (`route("…"`) rather than as a bare
+/// string, and that precision is load-bearing rather than fastidious: this
+/// file's whole subject is a glob that must not be used, so the specs and
+/// the docs have to be able to *name* the bad glob in prose while
+/// explaining it. Matching the bare string flagged `dispatch-log.spec.ts`'s
+/// own explanatory comment — found by the gate, on the first full run after
+/// that spec became tracked, which is exactly when a `git ls-files`-derived
+/// scan first sees a new file.
+const ANCHORED: &str = "route(\"**/story/*/dispatch**\"";
 
 /// The unanchored shape this test exists to keep out.
-const UNANCHORED: &str = "\"**/dispatch**\"";
+const UNANCHORED: &str = "route(\"**/dispatch**\"";
 
 #[test]
 fn no_spec_stubs_dispatch_with_a_glob_that_reaches_a_sibling_route() {
@@ -77,6 +86,14 @@ fn no_spec_stubs_dispatch_with_a_glob_that_reaches_a_sibling_route() {
     for path in tracked_spec_files() {
         let source = std::fs::read_to_string(&path).expect("reading a tracked spec");
         for (n, line) in source.lines().enumerate() {
+            // A comment naming the bad glob is this file's subject being
+            // explained, not the hazard being reintroduced -- and the specs
+            // and docs must be able to name it. Skipping comment lines is
+            // what lets them.
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with('*') {
+                continue;
+            }
             if line.contains(UNANCHORED) {
                 offenders.push(format!("{}:{}", path.display(), n + 1));
             }
@@ -99,8 +116,8 @@ fn no_spec_stubs_dispatch_with_a_glob_that_reaches_a_sibling_route() {
     // clean tree and pass forever. SH-364 wrote this rule down after a
     // fixture-vocabulary scan could have failed the same way.
     assert!(
-        anchored_seen >= 9,
-        "expected at least the nine known anchored dispatch stubs, found \
+        anchored_seen >= 10,
+        "expected at least the ten known anchored dispatch stubs, found \
          {anchored_seen} — this scan has probably stopped reading the specs \
          at all rather than found a clean tree"
     );
