@@ -7,7 +7,7 @@
   SH-227/SH-228, SH-251/SH-252, SH-271/SH-272), and the first traceable to the web dashboard
   rather than a scripted CLI caller.
 - **Status**: Fixed on `fix/sh-312-duplicate-story-from-the-dashboard`. Council verdict on the
-  one open design question: `.council/sh312-dashboard-create-idempotency/DECISION.md`.
+  one open design question: recorded on SH-312, and restated in full below.
 
 ## Summary
 
@@ -152,8 +152,8 @@ timeout the rare anomaly the existing doctrine already knows how to handle, rath
 noise a slow write triggers on every over-10s round trip.
 
 **Council verdict on the one open design question** (does `POST .../story` also gain a
-server-side idempotency key?): **no**, unanimous after deliberation
-(`.council/sh312-dashboard-create-idempotency/DECISION.md`). A caller-minted key does not
+server-side idempotency key?): **no**, unanimous after deliberation (verdict on
+SH-312). A caller-minted key does not
 deliver the same unrepresentability guarantee an intrinsic key (a commit sha, a story id)
 does — a reload or a re-typed form mints a fresh key and files the duplicate regardless — and
 a DB-backed key table would be the first row in this store needing time-based garbage

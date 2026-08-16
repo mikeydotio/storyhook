@@ -1,6 +1,5 @@
 //! Tests for `story move <id> <state> --reason <text>` (SH-205) — the
-//! opt-in `awaiting` field the council decided on
-//! (`.council/sh205-block-reason-capture/DECISION.md`). Mirrors
+//! opt-in `awaiting` field the council decided on (verdict on SH-205). Mirrors
 //! `move_if_state.rs`'s pattern; the two flags share the same leading,
 //! order-independent recognition window immediately after `<state>`.
 

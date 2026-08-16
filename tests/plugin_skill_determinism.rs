@@ -37,9 +37,10 @@
 //!    `references/workflow-patterns.md` were the last two files teaching
 //!    this pattern; both were orphaned (nothing loaded either — confirmed
 //!    by grepping every skill and hook) and were deleted as part of SH-308
-//!    rather than kept as permanent exceptions to this scan (council
-//!    decision, `.council/orphaned-cli-reference-docs/DECISION.md` in the
-//!    worktree that made the call — not tracked in the repo itself).
+//!    rather than kept as permanent exceptions to this scan. That was a
+//!    council decision; its trail lived in the worktree that made the call
+//!    and is gone (SH-363), and it belonged to no story, so the sentence
+//!    above is the whole of the record — delete an orphan, never exempt it.
 
 use std::path::Path;
 

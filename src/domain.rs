@@ -31,7 +31,7 @@ pub mod secret;
 ///
 /// Here rather than under `github` for the same reason [`secret`] is: `src/
 /// github` is gated and `PrLinkService::link`/`unlink` are not, by design
-/// (SH-49, `.council/sh49-linked-prs/DECISION.md`).
+/// (SH-49, whose council verdict that story carries).
 pub mod pr_url;
 
 /// Who wrote an event — the daemon-derived command, and the caller-declared
@@ -4585,8 +4585,8 @@ mod tests {
         assert!(!is_ready(&story, &empty_index()));
     }
 
-    /// Regression test for SH-126 (council verdict,
-    /// `.council/sh126-blocked-column-membership/DECISION.md`): a story
+    /// Regression test for SH-126 (council verdict, recorded on that
+    /// story): a story
     /// parked in the required `blocked` state (SH-125) with no `awaiting`
     /// and no unmet `blocked-by` edge used to report `is_ready() == true`,
     /// because `is_ready` never inspected `story.state`. The dashboard's

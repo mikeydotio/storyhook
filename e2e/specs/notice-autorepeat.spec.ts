@@ -35,8 +35,7 @@ import {
  * Reverting the heir was never a candidate; it reinstates a filed defect (focus
  * stranded on `<body>`, SC 2.4.3). The fix is `refuseAutoRepeatActivation`, one
  * delegated `keydown` listener on `#notice-dock` that cancels Enter when
- * `event.repeat` is true. Council verdict, unanimous 3-0:
- * `.council/sh339-notice-dismiss-autorepeat/DECISION.md`.
+ * `event.repeat` is true. Council verdict, unanimous 3-0, recorded on SH-339.
  *
  * ## Why half these tests are over-reach checks
  *

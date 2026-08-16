@@ -21,8 +21,8 @@ import {
  * asserts.
  *
  * SH-333's council split the fix by architecture rather than picking one
- * mechanism for both notice surfaces (`.council/sh-333-notice-stack-
- * announcement-mechanism/DECISION.md`), because the two were two different
+ * mechanism for both notice surfaces (verdict on SH-333), because the two
+ * were two different
  * defects wearing the same symptom at the time: `#toast-stack` already
  * inserted nodes incrementally, so `aria-atomic="false"` on the stack plus
  * `aria-atomic="true"` on each `.toast` was a spec-native fit. `#dispatch-

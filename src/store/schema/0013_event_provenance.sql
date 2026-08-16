@@ -15,7 +15,7 @@
 -- The council's first instinct was one column — a declared actor "falling back
 -- to" the verb — but that discards an attested fact in exactly the case where a
 -- declaration exists, and leaves a reader unable to tell which kind of thing
--- they are looking at. See `.council/sh246-state-change-audit-trail/DECISION.md`.
+-- they are looking at. The verdict is recorded on SH-246.
 --
 -- # Why on `events` rather than in the payload or in a table of its own
 --

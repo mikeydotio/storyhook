@@ -13,9 +13,7 @@ landed).
 
 One credential concept — a named, persistent, cookie-carried token — replaces the
 loopback exemption, `Authority::Public`/`Session`, and SH-254's session capability.
-Full spec is the council verdict comment on SH-255 and
-`.council/sh-255-named-token-model/DECISION.md` in the **main repo** (not this
-worktree — `.council/` is gitignored and shared).
+Full spec is the council verdict comment on SH-255.
 
 - Sidecar storage (`tokens.json`, 0600, in `daemon_state_dir()`), **not** SQLite. Built.
 - Cookie: `storyhook_<StoreLocation::key()>`, HttpOnly, SameSite=Strict, Max-Age =

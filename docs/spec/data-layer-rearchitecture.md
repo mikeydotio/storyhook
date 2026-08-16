@@ -568,7 +568,7 @@ only remaining second writer is `story tui`, and moving it onto `/api/v1/invoke`
 (`src/api/rpc.rs`), and, until SH-150, so did the TUI directly. `HttpInvoker` is now every
 client's only door — see below.
 
-Design of record for the decision: `.council/sh114-daemon-only-shape/DECISION.md`, clauses
+Design of record for the decision: SH-114's council verdict, clauses
 D1–D8, unanimous.
 
 ### The TUI became a client too (SH-150, 2026-08-07)
@@ -661,7 +661,7 @@ blocking acceptance criterion on SH-119 rather than assumed.
 projects may share one, and it answers a different question: where a project's repo-side work
 runs.
 
-Design of record for the decision: `.council/sh151-origin-ownership-and-resolution/DECISION.md`,
+Design of record for the decision: SH-151's council verdict,
 clauses D2 and R1–R4.
 
 ### The change feed's request boundary did not cover every route (SH-202, 2026-08-08)
@@ -697,9 +697,9 @@ project. Every mutating REST route already has exhaustive `Changed` coverage by 
 so joining it to the diff added no coverage and only this hazard. A 3-member council
 (software-architect and qa-engineer delivered independently and agreed; api-designer
 abstained) confirmed narrowing the fix to the RPC arm alone, matching this story's own
-originally-scoped suggested fix. Design of record:
-`.council/rest-arm-join-shared-change-watcher-boundary/DECISION.md` (gitignored, local to the
-worktree that ran it — not carried into `main`).
+originally-scoped suggested fix. Its audit trail was untracked and local to the worktree
+that ran it, and is gone (SH-363); it belonged to no story, so the paragraph above is the
+whole of the record — the fix is scoped to the RPC arm, deliberately.
 
 **What survives as a known, filed gap.** The coalescing defect the council surfaced —
 `ChangeBus::publish` dedups purely by `Change` value equality within its window, blind to

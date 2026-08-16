@@ -1,7 +1,6 @@
 //! Tests for `story log <id>` — the write-provenance audit trail (SH-246).
 //!
-//! The council's verdict is recorded at
-//! `.council/sh246-state-change-audit-trail/DECISION.md`; these tests pin the
+//! The council's verdict is recorded on SH-246; these tests pin the
 //! parts of it that are behaviour rather than prose.
 //!
 //! # What this trail is, and what it is not

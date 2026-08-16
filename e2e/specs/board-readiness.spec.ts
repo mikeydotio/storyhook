@@ -192,8 +192,8 @@ test("the + New button is inert until the project's data arrives", async ({
 
 /**
  * SH-284: the Drafts button in the same window, which the council settled
- * differently from its neighbour on purpose (`.council/sh284-drafts-button-
- * pre-data-window/DECISION.md`).
+ * differently from its neighbour on purpose (`story show SH-284` carries the
+ * verdict in full, including the dissent).
  *
  * `#new-story-btn` above is *disabled* through this window because the create
  * modal is built once, synchronously, from `meta()` and never repopulates —

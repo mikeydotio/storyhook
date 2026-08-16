@@ -72,12 +72,10 @@
 //! (`story show SH-362`).
 //!
 //! The council's full trail — proposals, the vote, two seats retracting their
-//! own proposals — was written to `.council/sh362-modal-enter-autorepeat-guard/`,
-//! which is **untracked** (`.gitignore:29`) and was created inside a worktree
-//! that this story's own procedure tears down. So it is cited here as what it is
-//! rather than as a path a reader can open: SH-363 is the open story about
-//! exactly that hazard, and pointing this comment at the story instead is the
-//! mitigation that story names as the one that has actually worked.
+//! own proposals — was written to an untracked, worktree-local directory and
+//! is gone, which is the defect SH-363 was filed for and has now fixed: the
+//! verdict on the story is the record, and no tracked file names such a
+//! directory any more.
 //!
 //! The second thing it cannot catch, and every seat agreed on this: a new site
 //! can call `bindEnterSubmit` correctly and still forget its **in-flight

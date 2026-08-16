@@ -519,8 +519,8 @@ wait_ready() {
 #      READY_PROCESS_PATTERN. A sentinel with the right pid dead or a live pid
 #      that is not actually running the launch binary are both refused.
 #
-# Existence alone is NEVER sufficient (`.council/sh-231-sentinel-design/
-# DECISION.md`): a sentinel is not a secret, and nothing stops a second,
+# Existence alone is NEVER sufficient (council verdict on SH-231): a sentinel
+# is not a secret, and nothing stops a second,
 # unrelated Claude Code session from being pointed at the same worktree path
 # during the polling window and publishing an equally well-formed one. (1)
 # and (2) are what make this dispatch's OWN pane the one thing being trusted,

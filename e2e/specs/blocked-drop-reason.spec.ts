@@ -6,7 +6,7 @@ import { cleanUpCreatedStories, openProject, seedToken } from "./support";
  * skippable prompt for the `awaiting` reason, and the move completes either
  * way — submitting a reason, skipping, or dismissing via Escape all move
  * the card; only whether `awaiting` ends up set differs. Decided by council
- * vote (`.council/sh205-block-reason-capture/DECISION.md`, unanimous in
+ * vote (verdict on SH-205, unanimous in
  * round 1): reason-capture on `move` is strictly opt-in, threaded through
  * the same atomic `extra` seam `comment` already uses, and never gates the
  * move itself.

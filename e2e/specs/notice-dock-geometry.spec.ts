@@ -30,8 +30,8 @@ import {
  *
  * ## Why these are hit tests and rect arithmetic rather than CSS assertions
  *
- * The council that settled this work (`.council/sh-323-notice-stack-occlusion-
- * and-growth/DECISION.md`) rejected "the CSS says so" as a pin, for a reason its
+ * The council that settled this work (verdict on SH-323) rejected "the CSS
+ * says so" as a pin, for a reason its
  * own evidence supplies: a static token offset *reads* correct and resolves
  * wrong. `1.5rem + var(--tap-min)` predicts a 48px header band against a real
  * `.topbar` bottom of 62 / 103.5 / 145 / 145 at 1280 / 768 / 390 / 320, because
@@ -661,7 +661,7 @@ test("Dismiss all cancels the clocks of the notices it removes", async ({
 // ============================================================
 //
 // The bulk case above is SH-323's. This is the per-notice one, and the council
-// that settled it (`.council/sh326-notice-dismiss-focus-landing/DECISION.md`,
+// that settled it (verdict on SH-326,
 // unanimous 3-0) resolved the question the story was filed to answer — where
 // focus goes when the dismissed notice was the LAST one — by finding that it did
 // not need a new answer. `focusAfterNoticeRemoval()` is not a rival policy; it is

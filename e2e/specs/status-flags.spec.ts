@@ -12,7 +12,7 @@ import {
  * needs no visual call-out. "Blocked" stays the one visually-flagged
  * exception, in both the board card flag and the list-row left border.
  *
- * Scope decided by council vote (`.council/sh168-ready-label-scope/`,
+ * Scope decided by council vote (verdict on SH-168,
  * unanimous in the runoff): the board card's `.flag-ready` badge and the
  * list-row's green `border-left` both fall — both are steady-state
  * per-render decorations of the same kind. The `flash-ready` transition

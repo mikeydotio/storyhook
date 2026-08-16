@@ -26,8 +26,7 @@ import {
  * undeclared: no constant, no `setTimeout` — the expiry site was a render.
  *
  * The fix is SH-324's own shape, extended: `state.statusPrompt` (unified with
- * `armedDeleteSlug`, council verdict at
- * `.council/sh-334-destination-prompt-state-model/DECISION.md`) is painted by
+ * `armedDeleteSlug`, council verdict on SH-334) is painted by
  * `buildStatusRow()` on every render. Two things follow, and both get their
  * own tests below rather than being assumed from SH-324's coverage:
  *
