@@ -1,4 +1,4 @@
-import { test } from "@playwright/test";
+import { test, expect } from "@playwright/test";
 import {
   cleanUpCreatedStories,
   measureFocusIndicator,
@@ -88,4 +88,41 @@ test("the list view's own focus indicator, in every theme", async ({ page }) => 
   await measureFocusIndicator(page, "tr[tabindex='0']:focus", "a list row", () =>
     tabOnto(page, "#search-input", "tr[tabindex='0']"),
   );
+});
+
+test("the drawer's three focus indicators, in every theme", async ({ page }) => {
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await page.locator(".card").first().click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+
+  // .drawer-title is the FIRST child appended to #drawer-body, immediately
+  // after #drawer-close in the drawer's own DOM order.
+  await measureFocusIndicator(page, ".drawer-title:focus", "the drawer title", () =>
+    tabOnto(page, "#drawer-close", ".drawer-title"),
+  );
+
+  // The same precedent description-edit-mode.spec.ts:167 uses to reach the
+  // description view: one Tab from the field grid's fourth <select>.
+  await measureFocusIndicator(page, ".description-view:focus", "the description view", () =>
+    tabOnto(page, "#drawer-body select >> nth=3", ".description-view"),
+  );
+
+  // enterEdit()'s own path: Enter on the already-focused description view
+  // opens the editor and focuses the textarea programmatically. Reached
+  // this way (not by Tab) deliberately -- SH-217's own mechanism -- and
+  // still asserted as :focus-visible, universally: a <textarea> matches
+  // :focus-visible on ANY focus, programmatic included, in every engine
+  // this suite runs, unlike a <button> or a bare-div `[tabindex]`.
+  await measureFocusIndicator(page, ".description-field:focus", "the description field", () =>
+    page.keyboard.press("Enter"),
+  );
+
+  // Escape reverts rather than saves (nothing was typed, so either is
+  // harmless, but this is the documented no-op exit -- description-edit-
+  // mode.spec.ts:149 uses the same key for the same reason) before closing,
+  // so this test leaves Alpha's fixture story exactly as it found it.
+  await page.keyboard.press("Escape");
+  await page.locator("#drawer-close").click();
+  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 });
