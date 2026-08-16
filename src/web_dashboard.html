@@ -1087,6 +1087,18 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   min-width: var(--tap-min); min-height: var(--tap-min);
 }
 .dispatch-history-dismiss:hover, .toast-dismiss:hover { background: var(--bg-sunken); color: var(--fg); }
+/* Both controls declared `:hover` and nothing else until SH-338, so a keyboard
+   user got the user agent's own ring over `--bg-raised` at a contrast nobody
+   had measured (SC 1.4.11). SH-326 is what made that expensive rather than
+   merely untidy: dismissing one notice rehomes focus to the next notice's `×`,
+   so this ring is the *only* signal that focus moved at all, on the exact
+   gesture that fix exists to serve. Same declaration `.notice-scroll` carries
+   four rules above, for the same reason and with the same words -- these are
+   two controls in one region and a reader should not have to wonder whether
+   the difference means something. Measured rather than asserted:
+   `notice-focus-indicator.spec.ts` composites the real backdrop and fails
+   below 3:1, in all four of this sheet's theme resolutions. */
+.dispatch-history-dismiss:focus-visible, .toast-dismiss:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* ---- Live updates: card/row enter, exit, cross-column move, field flash ----
    All gated behind `prefers-reduced-motion: no-preference` (the JS side
