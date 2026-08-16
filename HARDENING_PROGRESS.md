@@ -115,12 +115,27 @@ git push origin --delete <branch>
 git worktree list                            # confirm it is gone
 ```
 
-Two things this costs, both accepted: a worktree carries its own `target/`, so
+Three things this costs, all accepted. A worktree carries its own `target/`, so
 its first `make test` is a cold build of the whole tree, and the checkout's
-`target/` no longer warms the next story's. What it buys is a checkout that is
-never mid-story — no half-finished branch to inherit, no build artifacts from
-work that was abandoned, and a torn-down worktree as positive evidence that a
-cycle finished rather than a branch left lying around.
+`target/` no longer warms the next story's. And — **run `make e2e-install` in
+the worktree before your first `make test`** — it carries its own
+`e2e/node_modules`, which is gitignored and therefore absent from every fresh
+worktree.
+
+That last one is worth the sentence because of *when* it bites. `run-e2e.sh` is
+the final step of `make test`, so a worktree that has not installed the Node
+toolchain runs the entire suite, passes all of it, and then fails at the last
+line with `e2e/node_modules or the Playwright CLI is missing` — roughly ten
+minutes in, having proved everything except the thing it stopped on. The
+Makefile refuses on purpose rather than skipping the browser suite quietly: a
+green `make test` that silently ran no dashboard tests would claim the dashboard
+was verified when nothing ran, which is this project's vacuous-pass rule applied
+to its own gate. Do the install first and the refusal never fires.
+
+What all of this buys is a checkout that is never mid-story — no half-finished
+branch to inherit, no build artifacts from work that was abandoned, and a
+torn-down worktree as positive evidence that a cycle finished rather than a
+branch left lying around.
 
 **Remove only the worktree this cycle created.** Thirteen others from earlier
 `/story do` sessions live under `.claude/worktrees/`; any of them may be a live

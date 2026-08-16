@@ -282,6 +282,11 @@ Examples:
   story new "Sketch: notification preferences" --draft
 
 Related:
+  story help priority-rubric — What critical/high/medium/low/none
+                               mean. --priority is a scheduling
+                               decision, not a label; omit it and
+                               the story is filed at none, which
+                               sorts LAST in 'story next'.
   story publish <id>     — Make a draft live (one-way)
   story decompose        — Create multiple stories from a spec file
   story set <id>          — Change any field after creation
@@ -326,6 +331,7 @@ Examples:
   story list --drafts                 # Only drafts, to pick one to edit
 
 Related:
+  story help priority-rubric — What the five --priority levels mean
   story next     — Get the highest-priority ready story
   story publish  — Make a draft live
   story summary  — Aggregate counts by state and priority
@@ -1045,6 +1051,8 @@ What is not here:
   exposed as tools. Use the CLI directly for those.
 
 Related:
+  story help priority-rubric — what story_new's and story_prioritize's
+                               level argument means
   story help --compact — a CLI reference for a host without MCP support
   story load-context    — what story_context's underlying command answers
   docs/spec/mcp-server.md — the design of record
@@ -1371,6 +1379,11 @@ Error:
     "error": "story `SH-999` not found",
     "exit_code": 3
   }
+
+Related:
+  story help priority-rubric — what the "priority" field's five
+                               values mean, for a caller choosing
+                               one rather than reading one
 "#,
         );
 
@@ -1576,6 +1589,7 @@ Examples:
   story set SH-1 --description "Root cause: race condition in cache invalidation"
 
 Related:
+  story help priority-rubric — What the --priority levels mean
   story move <id>        — Change state only
   story prioritize <id>  — Set priority only
   story assign <id>      — Set assignee only
@@ -1641,6 +1655,9 @@ Examples:
   story prioritize SH-8 low
 
 Related:
+  story help priority-rubric   — What each level MEANS. Read before
+                                 choosing one: a level is a
+                                 scheduling decision, not a label.
   story next                   — Get highest-priority ready story
   story list --priority high   — Filter by priority
 "#,
@@ -1648,6 +1665,172 @@ Related:
 
         // Redirect old "priority" name
         m.insert("priority", m["prioritize"]);
+
+        // The criteria behind the five levels, and the reason there is a
+        // rubric at all: a priority is `story next`'s sort key, so every level
+        // set without criteria is a scheduling decision made by vibe.
+        //
+        // Shipped in the binary rather than left in one project's CLAUDE.md
+        // (SH-354). What is here is the *generic* rubric — the damage ladder,
+        // the levels, the tiebreakers, the carve-out and the relationship
+        // rules, all of which are statements about a model storyhook itself
+        // defines. This project's own case studies stay in its CLAUDE.md,
+        // because `story scaffold` points third-party repositories at this
+        // text and a stranger's story ids mean nothing there.
+        // `tests/priority_rubric.rs` pins both halves of that boundary.
+        //
+        // Named `priority-rubric`, not `priority`: that key is already an
+        // alias for `prioritize` just above, and taking it would silently
+        // retarget a command people already have in their fingers.
+        m.insert(
+            "priority-rubric",
+            r#"story help priority-rubric
+
+How to choose a priority — and why the choice does more than label a
+story.
+
+Priority is 'story next''s sort key. Stories are ordered by level,
+then by story number ascending, so a level is a claim about what the
+next session picks up. Three consequences follow, and they are why
+this rubric is strict rather than generous:
+
+  - Ties break toward the OLDER story, so inflating a level quietly
+    re-sorts the queue by age.
+  - Every promotion dilutes the level for everything already in it.
+    Resolution spent cannot be earned back.
+  - On a genuine tie, take the LOWER level.
+
+== The axis: what the system holds afterward ==
+
+Rank by damage to the record, not by how annoying the symptom is:
+
+  1. A false statement is stored — the system records something
+     untrue.
+  2. A record is destroyed that nothing can rebuild.
+  3. A wrong answer is returned that someone will act on.
+  4. A loud failure — an error, a hang, a refusal, a red gate.
+     Nothing stored is wrong.
+  5. Friction — costs time, not truth.
+
+Wrong-and-stored always outranks loud-and-broken. A rare wrong write
+outranks a constant wrong sort.
+
+== The levels ==
+
+critical
+  On a supported path, stores a false statement, destroys a record
+  nothing can rebuild, or leaves the data unopenable — AND does not
+  say so at the time. The decision test: "could this already have
+  happened today, to a record nobody has opened, with nobody
+  knowing?" Never critical: anything that fails loudly, however
+  badly.
+
+high
+  Returns a wrong or incomplete ANSWER that someone will act on,
+  with nothing marking it wrong; or is a defect in the detection
+  layer itself — the gate, the receipt, fixture isolation, or the
+  only coverage able to observe a filed critical. Recoverable in
+  principle, but only by someone who already suspects.
+
+medium
+  Fails, misreports or omits on a supported path WHERE IT CAN BE
+  SEEN — an error, a hang, a visibly wrong order, a contradiction on
+  screen. Also symptomless debt outside the detection layer, and
+  failures that block a class of users (accessibility) without
+  touching stored data. Nothing false is left stored.
+
+low
+  Costs time, not truth: friction, inconsistency, an unreachable
+  branch, a single flake costing one re-run, a defect with an
+  obvious workaround, or tooling whose absence hides nothing
+  currently filed.
+
+none
+  DELIBERATELY PARKED — a feature with no settled design, or work
+  deferred pending its owner. Because none sorts LAST, it says "do
+  not pick this up". It does NOT mean "not yet assessed": an
+  unassessed story is a triage failure, not a priority, and a defect
+  must never sit here.
+
+== Tiebreakers, in order ==
+
+  1. Silence promotes exactly one level, exactly once — and only for
+     a defect already on rungs 1 to 3. All three must hold: the
+     operation reports success or nothing; no routine workflow
+     surfaces the discrepancy; the wrong state persists. Silence
+     promotes, it never creates — a silent cosmetic defect is still
+     cosmetic.
+  2. Recoverability demotes one level only when recovery is routine
+     AND the operator is prompted to it. Recoverable-but-
+     undetectable is operationally identical to lost.
+  3. Frequency and blast radius break ties WITHIN a level, never
+     between them. Trigger rarity is not mitigation.
+  4. Price the class, not the sighting. If the mechanism plausibly
+     has a second site and nobody has checked, rank it as a class
+     and file the sweep.
+  5. A docs-versus-behaviour mismatch is priced at the severity of
+     the capability it misdescribes, not as a docs nit.
+  6. A vacuous pass — coverage that cannot fail — is priced at the
+     severity of the claim it fails to deliver, plus one level for
+     the false confidence, capped by real evidence.
+
+== The detection-layer carve-out ==
+
+Test and infrastructure debt is not automatically low. This is the
+only exception to "symptomless debt caps at medium":
+
+  - Debt in the detection layer — the gate, the receipt, fixture
+    isolation, or the only coverage that could observe a filed
+    critical — caps at high.
+  - A story that makes an otherwise-undetectable defect class
+    detectable is capped ONE LEVEL BELOW the highest-priority filed
+    story whose detection it enables, floored at medium. Never equal
+    to it: the live defect always outranks the instrument that would
+    have seen it.
+
+Coverage appetite in general earns nothing. Being the missing
+detector for a NAMED filed defect earns this.
+
+Individual flakes stay low — each costs one re-run, and the gate
+still catches real reds. The POPULATION is the defect: a backlog of
+known flakes is how a genuine red gets waved off as "the usual one".
+Track that as its own story, and price it in the detection layer.
+
+== Relationships never inherit priority ==
+
+A dependency is a scheduling fact, not a severity claim.
+
+  - blocks / blocked-by transmit nothing by default. A low blocker
+    under a high dependent stays low.
+  - The one exception, the blocker floor: if X is blocked-by Y and X
+    sorts EARLIER than Y, raise Y to X's level, never higher. Since
+    story next skips blocked stories, a low blocker beneath a high
+    dependent is a stall the queue cannot resolve by itself.
+  - When the blocker floor and the detection carve-out disagree, the
+    carve-out wins. It is the more specific rule, and the floor
+    exists to prevent a stall that a detector edge does not create.
+  - Never lower a dependent to match its blocker, and never raise a
+    blocker above its dependent — that is the inflation error where
+    every prerequisite of a critical becomes critical and the level
+    saturates.
+  - parent-of: an epic's priority is the MAX of its children, never
+    the sum, and is reporting-only — story next never surfaces a
+    story that has children.
+  - relates-to transmits nothing, ever.
+  - duplicate-of is not a priority edge: collapse duplicates to one
+    story rather than triaging the same defect twice.
+  - A mitigation living in another story never lowers this one. A
+    documented workaround is not a fix.
+  - A blocked-by edge pointing at a CLOSED story is historically
+    accurate; leave it. story next already ignores it.
+
+Related:
+  story new --priority <level>   — Choose a level at creation
+  story prioritize <id> <level>  — Choose or change it afterwards
+  story list --priority <levels> — Filter by level
+  story next                     — What the sort key decides
+"#,
+        );
 
         m.insert(
             "label",
@@ -2406,7 +2589,7 @@ QUERY & NAVIGATION
 STORY METADATA
   story comment <id> "<text>"     Add timestamped comment
   story assign <id> <member>      Assign to team member
-  story prioritize <id> <level>   Set priority: critical|high|medium|low|none
+  story prioritize <id> <level>   Set priority: story help priority-rubric
   story label <id> <csv>          Add comma-separated labels
   story unlabel <id> <csv>        Remove labels
   story block <id> "<reason>"     Mark as blocked

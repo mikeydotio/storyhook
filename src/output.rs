@@ -1675,6 +1675,20 @@ fn render_story(view: &StoryView) -> String {
         }
     }
 
+    // Last, and in the same `warning: ` shape [`Response::MessageWithWarnings`]
+    // uses, so the two renderings of a non-fatal warning read alike.
+    //
+    // This is the half of the field that was missing (SH-354).
+    // [`StoryView::warnings`] has always been serialized into the JSON envelope
+    // and was rendered nowhere, so a warning parked there would have reached a
+    // `--json` caller and no human — which is exactly the shape of the defect
+    // SH-354 was filed about, one layer up. Nothing populated the field before
+    // that story, so this line changes no existing output; `tests/golden_cli.rs`
+    // is the check on that claim.
+    for warning in &view.warnings {
+        body.push_str(&format!("warning: {warning}\n"));
+    }
+
     body
 }
 

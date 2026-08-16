@@ -336,6 +336,31 @@ pub fn create_store(cwd: &Path, requested: &str) -> Result<Response, AppError> {
     )))
 }
 
+/// What `story new` says when it was given no `--priority` at all (SH-354).
+///
+/// Not a refusal and not a prompt. `story new` is the most-used command in the
+/// tool, so refusing would break every scripted caller; and a prompt is useless
+/// exactly where the defect happens, since `dispatch` runs inside the daemon
+/// with no terminal to ask at and agents create stories non-interactively. The
+/// council that settled this is at
+/// `.council/sh354-priority-rubric-reach-and-none-default/DECISION.md`.
+///
+/// The warning names the consequence rather than scolding, and it is careful to
+/// be *true*: `none` sorts last in `story next`, it is not excluded from it. A
+/// warning about a false statement has no business making one.
+///
+/// It says nothing about the story's type. `bug` is only a default type slug —
+/// a project may rename or drop it — so a check keyed on the word would stop
+/// firing for exactly the projects that renamed it, which is a guard that stops
+/// guarding without saying so.
+fn unstated_priority_warning(id: &str) -> String {
+    format!(
+        "priority not set: {id} is filed at `none`, which means \"deliberately parked\" \
+         and sorts last in `story next`. If that is not what you meant, run \
+         `story help priority-rubric` and then `story prioritize {id} <level>`."
+    )
+}
+
 /// Runs one invocation against the store, in this process.
 ///
 /// This is the stack's entry point, and what replaced the pre-rearchitecture
@@ -381,6 +406,13 @@ pub fn dispatch<S: Store>(
             assignee,
             draft,
         } => {
+            // Read *before* the move into `NewStoryInput`, because this
+            // `Option` is the last place the two cases are distinguishable
+            // (SH-354). Downstream, an omitted flag and an explicit
+            // `--priority none` are the same `Priority::None`, and they mean
+            // opposite things: one is a decision to park the story, the other
+            // is nobody having decided anything.
+            let priority_unstated = priority.is_none();
             let input = NewStoryInput {
                 title,
                 state,
@@ -392,7 +424,11 @@ pub fn dispatch<S: Store>(
                 draft,
             };
             let story = StoryService::new(ctx).create(&input)?;
-            ctx.story_view(&story.id)
+            let mut response = ctx.story_view(&story.id)?;
+            if priority_unstated && let Response::Story(view) = &mut response {
+                view.warnings.push(unstated_priority_warning(&story.id));
+            }
+            Ok(response)
         }
         Invocation::Publish { id } => {
             StoryService::new(ctx).publish(&id)?;
