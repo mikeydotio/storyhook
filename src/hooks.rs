@@ -172,6 +172,15 @@ macro_rules! merge_arrival_fn {
 /// `--deadline 10` (SH-343) on the ordinary-commit fallback below, for the
 /// same reason `merge_arrival_fn!`'s own calls carry it: this hook runs
 /// *inside* `git commit`, which imposes no timeout of its own.
+///
+/// # The trailing `exit 0` (SH-355)
+///
+/// Behaviour-neutral here — `githooks(5)` says a nonzero `post-commit` cannot
+/// affect `git commit`'s outcome — but stated anyway so every managed hook
+/// shares one invariant a test can check mechanically instead of a comment a
+/// future edit can silently violate: nothing appended after this line may
+/// leak its own exit status into the hook's. `tests/hooks.rs` fences it
+/// across all three hooks by reading the installed files back.
 const POST_COMMIT_HOOK: &str = concat!(
     "#!/bin/sh\n",
     "# storyhook managed hook -- do not edit this line\n",
@@ -183,6 +192,7 @@ const POST_COMMIT_HOOK: &str = concat!(
   exit 0
 fi
 story --deadline 10 commit-sync --since 1h --quiet 2>/dev/null || true
+exit 0
 "#
 );
 
@@ -191,6 +201,9 @@ story --deadline 10 commit-sync --since 1h --quiet 2>/dev/null || true
 /// because a fast-forward merge has no second parent for `HEAD^1` to name;
 /// `5` is `merge_arrival_fn!`'s slack floor with nothing added on top, since
 /// this hook has never promised more than what it can derive.
+///
+/// The trailing `exit 0` is the same class fence `POST_COMMIT_HOOK` states —
+/// see its doc comment.
 const POST_MERGE_HOOK: &str = concat!(
     "#!/bin/sh\n",
     "# storyhook managed hook -- do not edit this line\n",
@@ -198,6 +211,7 @@ const POST_MERGE_HOOK: &str = concat!(
     merge_arrival_fn!(),
     r#"ORIG_HEAD="$(git rev-parse ORIG_HEAD 2>/dev/null)" || exit 0
 storyhook_merge_arrival "$ORIG_HEAD" 5
+exit 0
 "#
 );
 
@@ -212,16 +226,32 @@ storyhook_merge_arrival "$ORIG_HEAD" 5
 /// Abandoning it degrades to "no hint appended", the same shape SH-182 already
 /// sanctioned for a caller that cannot wait regardless of whether storyhook
 /// could — not a failure, since this hook's entire contract is best-effort.
+///
+/// # This is also the only one of the three git's verdict listens to (SH-355)
+///
+/// `githooks(5)`: a nonzero `post-commit`/`post-merge` "cannot affect the
+/// outcome of `git commit`", but a nonzero `prepare-commit-msg` **aborts the
+/// commit**. Every exit path here ends in an explicit `exit 0` for exactly
+/// that reason — including the append itself, an `if` rather than the
+/// `[ -n "$STORY_ID" ] && { ... }` this shipped with, whose status *was* the
+/// script's own final command. An empty backlog answers `story next` with
+/// `{"result":"ok","message":"no ready stories"}` at exit 0 (a real answer,
+/// not a refusal — see `src/invoke.rs`'s `Next` arm), so `grep` finding no
+/// `"id"` was never the failure a `\|\| exit 0` upstream could catch; only the
+/// trailing conditional's own status decided the commit, silently, for as
+/// long as this hook has existed. `tests/hook_execution.rs`'s empty-backlog
+/// section pins this; `tests/hooks.rs` fences the class across all three hooks.
 const PREPARE_COMMIT_MSG_HOOK: &str = r#"#!/bin/sh
 # storyhook managed hook -- do not edit this line
 command -v story >/dev/null 2>&1 || exit 0
 case "$2" in message|merge|squash) exit 0 ;; esac
 NEXT="$(story --deadline 10 next --count 1 --json 2>/dev/null)" || exit 0
 STORY_ID="$(echo "$NEXT" | grep -o '"id": *"[^"]*"' | head -1 | cut -d'"' -f4)"
-[ -n "$STORY_ID" ] && {
+if [ -n "$STORY_ID" ]; then
   TITLE="$(echo "$NEXT" | grep -o '"title": *"[^"]*"' | head -1 | cut -d'"' -f4)"
   printf '\n# Top story: %s — %s\n' "$STORY_ID" "$TITLE" >> "$1"
-}
+fi
+exit 0
 "#;
 
 const HOOKS: &[(&str, &str)] = &[

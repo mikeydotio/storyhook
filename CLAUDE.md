@@ -460,6 +460,19 @@ Standing rules for every wave:
   handlers within this suite's timeouts (SH-347). Every WebKit quarantine, either shape, is a
   `test.skip(...)` naming its story in the reason string — `tests/e2e_browser_coverage.rs::
   every_webkit_quarantine_names_a_story` fails the build on one that doesn't.
+- **A hook that annotates must never decide** (SH-355). `githooks(5)`: git ignores a nonzero
+  `post-commit`/`post-merge`, but a nonzero `prepare-commit-msg` **aborts the commit** — the
+  only one of the three managed hooks whose exit status git actually obeys.
+  `PREPARE_COMMIT_MSG_HOOK` (`src/hooks.rs`) used to end on `[ -n "$STORY_ID" ] && { ... }`
+  with nothing after it, so an empty backlog — `story next` answers that with
+  `{"result":"ok","message":"no ready stories"}` at **exit 0**, a real answer, not a
+  refusal — left that conditional's own status as the script's last command, and every
+  editor-opening commit or `--amend` against an empty backlog was silently refused, git 2.50.1
+  measured, since the hook was written. Every exit path in a managed hook now ends in an
+  explicit `exit 0` for exactly this reason, `post-commit`/`post-merge` included even though
+  git ignores theirs — one invariant across all three that a test can check mechanically
+  (`tests/hooks.rs::no_managed_hook_lets_its_own_last_statement_decide_gits_verdict`, reading
+  the installed files back) rather than a comment a future edit could silently violate.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
