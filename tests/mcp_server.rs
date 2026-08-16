@@ -162,6 +162,42 @@ fn a_full_story_lifecycle_through_the_curated_tools() {
     );
 }
 
+/// MCP `story_new` inherits `story new`'s unassessed-priority warning
+/// (SH-354/SH-359) with zero MCP-side code (SH-358): `build_new` builds an
+/// argv and calls `cli::parse_invocation`, the exact function the CLI itself
+/// calls, so a tool call with no `priority` produces byte-identically the
+/// same `Invocation::New { priority: None, .. }` `story new` with no
+/// `--priority` does. This test proves that claim rather than asserting it —
+/// the map in SH-358's own plan found no MCP call site for the warning text at
+/// all, which only means "inherited for free" if a call through the tool
+/// actually carries it.
+#[test]
+fn story_new_with_no_priority_inherits_the_unassessed_warning() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let project = env.project().prefix("SH").build();
+    let slug = project.slug();
+    let mut mcp = McpSession::spawn(&env, project.path());
+
+    let created = mcp.call(
+        "story_new",
+        json!({ "project": slug, "title": "Unassessed via MCP" }),
+    );
+    assert_eq!(created["isError"], false, "story_new failed: {created}");
+    let created_json: Value =
+        serde_json::from_str(text_of(&created)).expect("story_new's text is JSON");
+
+    let warnings = created_json["warnings"]
+        .as_array()
+        .expect("the envelope must carry a `warnings` array when nobody assessed the story");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().is_some_and(|w| w.contains("priority not set"))),
+        "expected the unassessed-priority warning, got: {created_json}"
+    );
+}
+
 #[test]
 fn a_missing_project_is_a_tool_error_naming_the_field() {
     let env = TestEnv::isolated();
