@@ -581,6 +581,7 @@ impl<'ctx, S: Store> TransferService<'ctx, S> {
                 // `query::bare_view` draws for the same reason.
                 let referenced_by =
                     ReferencedBy::commits_only(row.snapshot.referenced_by_commits.clone());
+                let head_global_seq = row.head_global_seq;
                 views.push(StoryView {
                     story: row.snapshot,
                     derived_relationships: Vec::new(),
@@ -590,6 +591,10 @@ impl<'ctx, S: Store> TransferService<'ctx, S> {
                     stale_info: None,
                     progress: None,
                     display_state: None,
+                    // A real row read backs this import, unlike `bare_view`'s
+                    // no-row-read case, so the exact recency tiebreak (SH-336)
+                    // is available for free.
+                    head_global_seq: Some(head_global_seq),
                 });
             }
             Ok(views)
