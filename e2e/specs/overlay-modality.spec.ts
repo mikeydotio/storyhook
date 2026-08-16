@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { openProject, seedToken } from "./support";
+import { fullKeyboardAccess, openProject, seedToken } from "./support";
 
 /**
  * SH-299 — an overlay is modal for every input device, or it is modal for
@@ -203,7 +203,19 @@ test.describe("with a credential", () => {
    * arrangement, and the first holds nothing focusable in any arrangement, so
    * the only thing a stray Tab could reach is the dimmed background.
    */
-  test("Tab never escapes the open drawer", async ({ page }) => {
+  test("Tab never escapes the open drawer", async ({ page, browserName }) => {
+    // WebKit's Tab order skips buttons and links unless this machine has
+    // Full Keyboard Access on (`AppleKeyboardUIMode >= 2`) -- real Safari's
+    // own out-of-box behavior, not a bug this suite can assert around
+    // (SH-335 -- story show SH-335 carries the verdict). The trap
+    // itself is unconditional in `web_dashboard.html`; what's untestable
+    // here without that setting is Tab actually reaching every control it
+    // traps. Fully load-bearing on `chromium`, and on a `webkit` this
+    // machine has configured for full keyboard access.
+    test.skip(
+      browserName === "webkit" && !fullKeyboardAccess(),
+      "WebKit's Tab order skips buttons/links unless AppleKeyboardUIMode>=2 (SH-335)",
+    );
     await page.locator(".card-title", { hasText: ALPHA_CARD_TITLE }).click();
     await expect(page.locator("#drawer")).toHaveClass(/open/);
 
@@ -264,7 +276,20 @@ test.describe("with a credential", () => {
    */
   test("a modal opened from the drawer covers the drawer, then gives it back", async ({
     page,
+    browserName,
   }) => {
+    // The same macOS setting governs both halves of this assertion: without
+    // Full Keyboard Access, WebKit does not focus a `<button>` on click, so
+    // `deleteButton.click()` below never makes it the element
+    // `activateOverlay()` captures to restore -- the closing assertion would
+    // find focus back on whatever WAS active before, not this button. That
+    // is the exact WebKit behavior SH-324/SH-334 are about; asserting past
+    // it here needs the same machine configuration `fullKeyboardAccess()`
+    // reports (SH-335 -- story show SH-335 carries the verdict).
+    test.skip(
+      browserName === "webkit" && !fullKeyboardAccess(),
+      "WebKit doesn't focus a <button> on click unless AppleKeyboardUIMode>=2 (SH-335)",
+    );
     await page.locator(".card-title", { hasText: ALPHA_CARD_TITLE }).click();
     await expect(page.locator("#drawer")).toHaveClass(/open/);
 
