@@ -239,7 +239,7 @@ test("the newest dispatch-history row is first in the DOM and first on the scree
 
   // Keyed on the story id in the request path (`/story/<id>/dispatch`), so both
   // rows are real, distinct outcomes rather than one row rendered twice.
-  await page.route("**/dispatch**", async (route) => {
+  await page.route("**/story/*/dispatch**", async (route) => {
     const url = route.request().url();
     const which = url.includes(first) ? first : second;
     await route.fulfill({

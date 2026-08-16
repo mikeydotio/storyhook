@@ -321,7 +321,7 @@ test("a synthesised click with no keydown still dismisses", async ({ page }) => 
  * its own copy to one story id; nothing here reads the id back, so this one
  * echoes the request's own story instead of taking a parameter. */
 async function stubEveryDispatchAsAutoRefusal(page: Page): Promise<void> {
-  await page.route("**/dispatch**", async (route) => {
+  await page.route("**/story/*/dispatch**", async (route) => {
     await route.fulfill({
       status: route.request().method() === "POST" ? 202 : 200,
       contentType: "application/json",

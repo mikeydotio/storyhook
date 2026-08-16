@@ -118,7 +118,7 @@ test("Dispatch issues POST .../dispatch", async ({ page }) => {
   const id = await card.getAttribute("data-id");
 
   const requests: { url: string; method: string }[] = [];
-  await page.route("**/dispatch**", async (route) => {
+  await page.route("**/story/*/dispatch**", async (route) => {
     const req = route.request();
     requests.push({ url: req.url(), method: req.method() });
     await route.fulfill({
@@ -147,7 +147,7 @@ test("Dispatch Auto issues POST .../dispatch?auto=1", async ({ page }) => {
   const id = await card.getAttribute("data-id");
 
   const requests: { url: string; method: string }[] = [];
-  await page.route("**/dispatch**", async (route) => {
+  await page.route("**/story/*/dispatch**", async (route) => {
     const req = route.request();
     requests.push({ url: req.url(), method: req.method() });
     await route.fulfill({
@@ -189,7 +189,7 @@ test("both items are aria-disabled while a dispatch for this story is in flight"
   // fixed 1000ms before SH-245 -- a window the test had to out-race, and
   // one that closes early on a loaded machine.
   const poll = latch();
-  await page.route("**/dispatch**", async (route) => {
+  await page.route("**/story/*/dispatch**", async (route) => {
     const req = route.request();
     if (req.method() === "POST") {
       await route.fulfill({

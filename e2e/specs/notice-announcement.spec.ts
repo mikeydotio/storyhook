@@ -78,7 +78,7 @@ function stubbedRefusal(storyId: string, auto: boolean): string {
 }
 
 async function stubDispatchRefusal(page: Page, storyId: string, auto: boolean): Promise<void> {
-  await page.route("**/dispatch**", async (route) => {
+  await page.route("**/story/*/dispatch**", async (route) => {
     await route.fulfill({
       status: route.request().method() === "POST" ? 202 : 200,
       contentType: "application/json",
