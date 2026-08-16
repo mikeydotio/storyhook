@@ -1451,10 +1451,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
      they were, so every existing selector still resolves and SH-322's fence
      still fences what it fenced. What is new around them is a scroll container
      each and this wrapper. `aria-live`/`aria-atomic` on the two surfaces
-     diverged in SH-333 -- see the comments on each element below -- because the
-     two regions turned out to re-announce their standing contents on every
-     arrival for two different reasons, one an ARIA attribute and one a render
-     strategy, and only the first is fixable in place.
+     diverged in SH-333 and reconverged in SH-337 -- see the comments on each
+     element below. Both regions re-announced their standing contents on every
+     arrival, but for two different reasons at the time: one an ARIA attribute
+     fixable in place, one a render strategy that first had to stop rebuilding
+     the whole panel before the same attributes could apply.
 
      `pointer-events: none` on the dock, `auto` on the scrollers: the inverse of
      the case SH-322's chair correctly rejected on `.toast-stack`, where
@@ -1486,19 +1487,18 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     <div class="notice-region-bar" id="dispatch-history-bar" hidden>
       <button type="button" class="btn btn-ghost notice-dismiss-all" id="dispatch-history-dismiss-all">Dismiss all <span id="dispatch-history-count"></span></button>
     </div>
-    <!-- No `aria-live` here (SH-333): `renderDispatchHistory()` clears and
-         rebuilds this panel wholesale on every render, so every row -- not just
-         the arriving one -- is a fresh DOM addition on every mutation regardless
-         of `aria-atomic`. No live-region attribute combination fixes a wholesale
-         rebuild; `role="region"` stays for its landmark contribution, and
-         arrivals are announced instead through `#dispatch-history-status` below.
-         Deliberate tech debt, not a redesign: the flaw is the wholesale rebuild
-         itself, the limit is a hand-maintained announcer every call site must
-         remember to feed, and the trigger to retire this side-channel is SH-337
-         (the already-scoped incremental-insert rewrite of this function). Council
-         verdict: `.council/sh-333-notice-stack-announcement-mechanism/DECISION.md`. -->
+    <!-- `aria-live="polite" aria-atomic="false"` plus `aria-atomic="true"` on
+         each `.dispatch-history-row` (SH-337): the same shape `#toast-stack`
+         has carried since SH-333, now sound here too because the panel is
+         `insertBefore`d one row at a time rather than rebuilt wholesale, so
+         "the node that changed" is exactly "the node that arrived" on this
+         surface as well. Retires the `#dispatch-history-status` side channel
+         SH-333 stood up as the deliberate-tech-debt stopgap while this
+         rebuild still existed -- see `docs/spec/dashboard-dispatch.md`'s
+         As-built sections for SH-333 and SH-337. `role="region"` and its
+         label are unchanged; only the live-region attributes are new. -->
     <div class="notice-scroll" id="dispatch-history-scroll" role="group" aria-label="Dispatch results">
-      <div class="dispatch-history" id="dispatch-history" role="region" aria-label="Autonomous dispatch results"></div>
+      <div class="dispatch-history" id="dispatch-history" role="region" aria-label="Autonomous dispatch results" aria-live="polite" aria-atomic="false"></div>
     </div>
   </div>
   <!-- Outside both notice regions, so clearing the stack is announced without
@@ -1506,12 +1506,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
        "Dismiss all" and hears nothing, with focus now somewhere else, has been
        told nothing about what just happened. -->
   <span class="sr-only" id="notice-dock-status" role="status"></span>
-  <!-- A dedicated announcer for dispatch-history arrivals (SH-333), deliberately
-       not `#notice-dock-status`: that element also carries the armed-delete
-       confirmation prompt (`onDeleteStatus`), which the user must read and act
-       on, and a background dispatch result landing mid-confirmation would
-       silently overwrite it. See `addDispatchHistoryRow()`. -->
-  <span class="sr-only" id="dispatch-history-status" role="status"></span>
 </div>
 
 <script>
@@ -2049,7 +2043,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // stays until dismissed (SH-304) -- see `finishDispatch`.
     dispatches: {},
     // Durable rows for --auto dispatches that did NOT succeed, newest first
-    // -- see `addDispatchHistoryRow`/`renderDispatchHistory`. Not persisted
+    // -- see `addDispatchHistoryRow`/`buildDispatchHistoryRow`. Not persisted
     // across a reload: it exists to survive a self-clearing notice's own
     // timer, not a page close.
     dispatchHistory: []
@@ -2245,10 +2239,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * a drawer open. They are therefore already symmetric, which is the whole
    * property this function exists to restore; inerting them would not fix an
    * asymmetry, it would create a new behaviour (unreachable by either device)
-   * and silence the toast stack's live region and both `sr-only` announcers
-   * (`#notice-dock-status`, `#dispatch-history-status`) while a modal is up. Restoring
-   * symmetry means covering exactly what is dimmed: the app shell, and the
-   * overlays that are not on top.
+   * and silence both notice surfaces' own live regions (`#toast-stack`,
+   * `#dispatch-history`) and the `sr-only` `#notice-dock-status` announcer
+   * while a modal is up. Restoring symmetry means covering exactly what is
+   * dimmed: the app shell, and the overlays that are not on top.
    *
    * The attribute rather than the `.inert` property: it is visible in the
    * DOM, so a test can assert it and a developer can see it in the
@@ -3235,20 +3229,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     setStatusText("notice-dock-status", message);
   }
 
-  /** Announces an arriving dispatch-history row (SH-333). A dedicated element,
-   * not `#notice-dock-status`: see the markup comment on
-   * `#dispatch-history-status` for why sharing it would risk clobbering the
-   * armed-delete confirmation prompt. `#dispatch-history` itself carries no
-   * `aria-live` -- `renderDispatchHistory()` rebuilds it wholesale on every
-   * render, so nothing about the live region's own attributes can announce
-   * only the arriving row; this is the announcer instead. */
-  function announceDispatchHistoryArrival(headline, detail, reason) {
-    var message = [headline, detail, reason].filter(function(part) {
-      return part;
-    }).join(". ");
-    setStatusText("dispatch-history-status", message);
-  }
-
   /** Clears every notice in the toast stack, clocked ones included.
    *
    * `cancelNoticeClock` is what keeps a removed-but-still-running notice from
@@ -3266,12 +3246,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     announceInNoticeDock("All notices dismissed");
   }
 
-  /** The same, for the dispatch history, which is rendered from state rather
-   * than mutated node by node. */
+  /** The same, for the dispatch history (SH-337: mutated node by node too,
+   * same as the toast stack, since neither surface rebuilds from state any
+   * more). */
   function dismissAllDispatchHistory() {
     var before = noticeFocusIn($("dispatch-history-region"));
+    clear($("dispatch-history"));
     state.dispatchHistory = [];
-    renderDispatchHistory();
+    syncNoticeDock();
     settleNoticeFocus(before, null);
     announceInNoticeDock("All dispatch results dismissed");
   }
@@ -3789,106 +3771,101 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   var dispatchHistorySeq = 0;
 
+  /** Mints one dispatch-history row's DOM node from `entry`
+   * (`{key, storyId, headline, detail, reason}`). Every row here is a failure
+   * now (see `finishDispatch`), so the variant is `error` by construction
+   * rather than carried per-entry -- a success no longer reaches this panel
+   * at all.
+   *
+   * `data-notice-key` carries `entry.key` as the row's identity -- a stable
+   * hook a test can assert against across a DOM reorder that an index
+   * cannot survive, since two failed dispatches of the same story render
+   * byte-identical text. It is not what the dismiss handler uses to find
+   * itself (SH-337 retired that lookup; see `dismissDispatchHistoryRow`). */
+  function buildDispatchHistoryRow(entry) {
+    var node = el("div", {
+      class: "dispatch-history-row error",
+      "aria-atomic": "true",
+      dataset: { noticeKey: entry.key }
+    }, [
+      noticeBody(entry.headline, entry.detail, entry.reason),
+      el("button", {
+        class: "dispatch-history-dismiss",
+        type: "button",
+        "aria-label": "Dismiss this dispatch result",
+        onClick: function() { dismissDispatchHistoryRow(node, entry.key); }
+      }, ["×"])
+    ]);
+    return node;
+  }
+
   /** Adds a durable row for a `--auto` dispatch that did NOT succeed, and
-   * re-renders the panel. Newest first, unbounded within this tab's own
-   * session -- a user who lets several failed autonomous dispatches pile up
-   * unread can dismiss them individually. There is no server-side cap to
-   * mirror: this list is not the daemon's persisted history, just this tab's
-   * memory of what it has seen. Nor is that history a fallback for a row
-   * dismissed too early -- no route exposes it, this page never reads it,
+   * inserts it at the top of the panel. Newest first, unbounded within this
+   * tab's own session -- a user who lets several failed autonomous dispatches
+   * pile up unread can dismiss them individually. There is no server-side cap
+   * to mirror: this list is not the daemon's persisted history, just this
+   * tab's memory of what it has seen. Nor is that history a fallback for a
+   * row dismissed too early -- no route exposes it, this page never reads it,
    * and it evicts after 30 minutes or 32 records (`RETAIN_FOR`,
-   * `RETAIN_FINISHED`, `src/api/dispatch.rs`). This row is the record. */
+   * `RETAIN_FINISHED`, `src/api/dispatch.rs`). This row is the record.
+   *
+   * `insertBefore`, never a rebuild (SH-337). `unshift` on the array and
+   * `insertBefore(node, panel.firstChild)` on the panel are the same
+   * coordinate, so a keyboard user resting on an existing row's dismiss
+   * button keeps it under their finger when a new one arrives -- no
+   * `.focus()` call needed, because nothing was ever destroyed. A
+   * restore-on-render was considered and rejected: SH-326's council found it
+   * would fire on this very path, cutting short the polite announcement of
+   * the row that just landed and scrolling the panel while new rows stack
+   * above it -- both worst in exactly the burst case it would exist to
+   * serve. `toast()` has inserted this way since SH-323 and has never had
+   * this defect. */
   function addDispatchHistoryRow(storyId, headline, detail, reason) {
-    state.dispatchHistory.unshift({
+    var entry = {
       key: "dh-" + (++dispatchHistorySeq),
       storyId: storyId,
       headline: headline,
       detail: detail || null,
       reason: reason || null
-    });
-    renderDispatchHistory();
-    // `#dispatch-history` carries no `aria-live` (SH-333): the panel below is
-    // about to be cleared and rebuilt wholesale, which would re-announce every
-    // standing row if the region were still live. This is the announcement
-    // instead, of the row that actually arrived.
-    announceDispatchHistoryArrival(headline, detail, reason);
-  }
-
-  /** The dismiss control of the row bearing `key`, or null.
-   *
-   * Scans `dataset` rather than interpolating `key` into an attribute selector,
-   * following `focusInStatusRow`'s recorded rule: the key's shape is safe today
-   * and a selector would stop being safe the day it was not. */
-  function dispatchDismissForKey(panel, key) {
-    var rows = panel.querySelectorAll(".dispatch-history-row");
-    for (var i = 0; i < rows.length; i++) {
-      if (rows[i].dataset.noticeKey === key) return rows[i].querySelector(".dispatch-history-dismiss");
-    }
-    return null;
+    };
+    state.dispatchHistory.unshift(entry);
+    var panel = $("dispatch-history");
+    panel.insertBefore(buildDispatchHistoryRow(entry), panel.firstChild);
+    // Still owed on this path even though the panel no longer rebuilds: the
+    // "Dismiss all N" bar's threshold and the scroller's conditional tab stop
+    // are consequences of the count, not of the render.
+    syncNoticeDock();
+    // No explicit announcement call needed (SH-337): `#dispatch-history` is
+    // itself `aria-live="polite"` now, and this insertion is the only
+    // mutation it makes, so the region announces the arriving row on its
+    // own -- the same mechanism `#toast-stack` has used since SH-323. The
+    // dedicated `#dispatch-history-status` side channel SH-333 stood up as a
+    // stopgap while this function still rebuilt the whole panel is gone.
   }
 
   /** Removes one row, and rehomes the focus that removal destroyed (SH-326).
    *
-   * Same policy as a toast's `×` -- the user cannot see that this panel is
-   * rebuilt wholesale and must not be taught two behaviours for one gesture --
-   * but the heir has to be named differently, because `clear(panel)` destroys
-   * every node this function could have held a reference to. So it is named
-   * from `state.dispatchHistory`, whose order **is** DOM order, and re-found by
-   * key after the rebuild.
-   *
-   * **Why that is not SH-283's mistake.** That defect keyed a focus snapshot on
-   * `data-field`, a name that repeats across every story's drawer, and so
-   * restored one story's text into another. `row.key` cannot: it is
-   * `"dh-" + (++dispatchHistorySeq)`, minted once, never reused within a tab's
-   * session, never on two rows, and the lookup is scoped to the panel. Nor is
-   * anything stored across calls -- the capture and the restore happen inside
-   * one synchronous handler, so there is no snapshot for a later render to
-   * consume.
-   *
-   * The restore lives here and deliberately NOT inside `renderDispatchHistory`,
-   * which would also fire on the arrival path: filed as SH-337, where the real
-   * repair is an incremental insert that preserves focus by construction rather
-   * than a `.focus()` call on every arriving row. */
-  function dismissDispatchHistoryRow(key) {
-    var panel = $("dispatch-history");
+   * Same shape as a toast's `×` now (SH-337): the heir is read from `node`'s
+   * own siblings while they still exist, `node` is removed, then the dock is
+   * resynced before the focus decision runs (so it reads a settled DOM), and
+   * focus moves before the announcement so a polite utterance is not cut
+   * short by it. `node` is the row this dismissal's own button closed over
+   * (`buildDispatchHistoryRow`), so this function never re-finds a row by
+   * scanning the DOM the way `dispatchDismissForKey` used to -- that lookup
+   * existed only because a wholesale rebuild had destroyed every reference,
+   * and SH-337 ended the rebuild. `key` identifies the record to drop from
+   * `state.dispatchHistory`; it plays no part in finding the node. */
+  function dismissDispatchHistoryRow(node, key) {
     var before = noticeFocusIn($("dispatch-history-region"));
-    var rows = state.dispatchHistory;
-    var at = -1, i;
-    for (i = 0; i < rows.length; i++) {
-      if (rows[i].key === key) { at = i; break; }
-    }
-    var heir = at === -1 ? null : (rows[at + 1] || rows[at - 1] || null);
-    state.dispatchHistory = rows.filter(function(row) { return row.key !== key; });
-    renderDispatchHistory();
-    settleNoticeFocus(before, heir ? dispatchDismissForKey(panel, heir.key) : null);
-    announceNoticeDismissal(
-      "Dispatch result dismissed", state.dispatchHistory.length, "dispatch results");
-  }
-
-  /** Every row here is a failure now (see `finishDispatch`), so the variant
-   * is `error` by construction rather than carried per-row -- a success no
-   * longer reaches this panel at all. */
-  function renderDispatchHistory() {
-    var panel = $("dispatch-history");
-    clear(panel);
-    state.dispatchHistory.forEach(function(row) {
-      // `data-notice-key` is how a dismissal re-finds the heir it chose before
-      // this rebuild destroyed every node (SH-326). It is a focus-restoration
-      // key, not a general test hook.
-      panel.appendChild(el("div", {
-        class: "dispatch-history-row error",
-        dataset: { noticeKey: row.key }
-      }, [
-        noticeBody(row.headline, row.detail, row.reason),
-        el("button", {
-          class: "dispatch-history-dismiss",
-          type: "button",
-          "aria-label": "Dismiss this dispatch result",
-          onClick: function() { dismissDispatchHistoryRow(row.key); }
-        }, ["×"])
-      ]));
+    var heir = adjacentNoticeControl(node, ".dispatch-history-dismiss");
+    node.remove();
+    state.dispatchHistory = state.dispatchHistory.filter(function(entry) {
+      return entry.key !== key;
     });
     syncNoticeDock();
+    settleNoticeFocus(before, heir);
+    announceNoticeDismissal(
+      "Dispatch result dismissed", state.dispatchHistory.length, "dispatch results");
   }
 
   // ============================================================

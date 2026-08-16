@@ -11,7 +11,8 @@ import {
 } from "./support";
 
 /**
- * SH-333 — what gets announced when a notice arrives, as measured properties.
+ * SH-333/SH-337 — what gets announced when a notice arrives, as measured
+ * properties.
  *
  * A file of its own rather than more of `notification-contract.spec.ts` (which
  * owns semantics and timing) or `notice-dock-geometry.spec.ts` (which owns
@@ -19,30 +20,33 @@ import {
  * mutation actually says, which is a third thing neither of those files
  * asserts.
  *
- * The council that settled the mechanism (`.council/sh-333-notice-stack-
- * announcement-mechanism/DECISION.md`) split the fix by architecture rather
- * than picking one mechanism for both notice surfaces, because the two turned
- * out to be two different defects wearing the same symptom:
+ * SH-333's council split the fix by architecture rather than picking one
+ * mechanism for both notice surfaces (`.council/sh-333-notice-stack-
+ * announcement-mechanism/DECISION.md`), because the two were two different
+ * defects wearing the same symptom at the time: `#toast-stack` already
+ * inserted nodes incrementally, so `aria-atomic="false"` on the stack plus
+ * `aria-atomic="true"` on each `.toast` was a spec-native fit. `#dispatch-
+ * history` still cleared and rebuilt wholesale on every render
+ * (`renderDispatchHistory`), so no live-region attribute combination could
+ * stop it re-announcing every row regardless of atomicity — it lost
+ * `aria-live` entirely and gained a dedicated `sr-only role="status"`
+ * announcer, `#dispatch-history-status`, fed by hand from
+ * `addDispatchHistoryRow()`. Logged as deliberate tech debt naming SH-337
+ * (`renderDispatchHistory`'s incremental-insert rewrite) as the trigger to
+ * retire the side channel.
  *
- * - `#toast-stack` inserts nodes incrementally (`stack.insertBefore`), so
- *   `aria-atomic="false"` on the stack plus `aria-atomic="true"` on each
- *   `.toast` is a spec-native fit: a mutation announces exactly the node that
- *   changed, whole, rather than the whole standing pile.
- * - `#dispatch-history` clears and rebuilds wholesale on every render
- *   (`renderDispatchHistory`), so no live-region attribute combination can
- *   stop it re-announcing every row regardless of atomicity. It lost
- *   `aria-live` entirely and gained a dedicated `sr-only role="status"`
- *   announcer, `#dispatch-history-status`, fed directly by
- *   `addDispatchHistoryRow()`. Deliberate tech debt, tied to SH-337
- *   (`renderDispatchHistory`'s already-scoped incremental-insert rewrite) as
- *   the trigger to retire the side-channel.
+ * SH-337 fired that trigger: the panel is `insertBefore`d one row at a time
+ * now, so `#dispatch-history` carries the identical shape `#toast-stack` has
+ * (`aria-live="polite" aria-atomic="false"` on the region, `aria-atomic="true"`
+ * per row), and `#dispatch-history-status` is gone.
  *
  * What is pinned here: which elements carry which ARIA attributes, and what
- * text a `role="status"` announcer holds. What is NOT claimed: what a real
- * assistive technology actually utters, including whether its own speech
- * queue coalesces two adjacent identical announcements — no AT is driven by
- * this suite (Chromium only), and this project's own SH-322/SH-327 precedent
- * is not to imply coverage of what was not checked.
+ * text or DOM mutation a live region or `role="status"` announcer produces.
+ * What is NOT claimed: what a real assistive technology actually utters,
+ * including whether its own speech queue coalesces two adjacent identical
+ * announcements — no AT is driven by this suite (Chromium only), and this
+ * project's own SH-322/SH-327 precedent is not to imply coverage of what was
+ * not checked.
  */
 
 cleanUpCreatedStories("Alpha Project");
@@ -168,55 +172,80 @@ test("an attended refusal's detail and reason live inside the same atomic node a
 });
 
 // ============================================================
-// Dispatch history (C): the dedicated announcer
+// Dispatch history (SH-337: converged onto the same shape as A′)
 // ============================================================
 
-test("a dispatch-history arrival is announced alone, not the standing pile", async ({
+test("a dispatch-history arrival adds exactly the arriving row, and only it, to the live region", async ({
   page,
 }) => {
   await page.goto("/");
-  const titleA = "SH-333 — history announcer, older";
-  const titleB = "SH-333 — history announcer, newer";
+  const titleA = "SH-337 — history announcer, older";
+  const titleB = "SH-337 — history announcer, newer";
   const idA = await raiseHistoryRow(page, titleA);
-  const idB = await raiseHistoryRow(page, titleB);
 
+  await page.locator("#dispatch-history").evaluate((node) => {
+    (node as HTMLElement & { __added?: string[] }).__added = [];
+    const observer = new MutationObserver((records) => {
+      records.forEach((record) => {
+        record.addedNodes.forEach((added) => {
+          (node as HTMLElement & { __added?: string[] }).__added!.push(
+            (added as HTMLElement).textContent ?? "",
+          );
+        });
+      });
+    });
+    observer.observe(node, { childList: true });
+  });
+
+  const idB = await raiseHistoryRow(page, titleB);
   await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(2);
-  const announced = await page.locator("#dispatch-history-status").textContent();
-  // The measured property: the announcer holds exactly the arriving row's own
-  // text, not the standing pile's -- the older row's id is gone from the
-  // announcer once a second row has landed, even though both rows are still
-  // visible in `#dispatch-history` itself.
-  expect(announced).toContain(`${idB} refused`);
-  expect(announced).not.toContain(idA);
+
+  const added = await page.locator("#dispatch-history").evaluate(
+    (node) => (node as HTMLElement & { __added?: string[] }).__added!,
+  );
+  // The measured property: exactly one node was added to the live region --
+  // the arriving row, whole, carrying its own aria-atomic="true" -- not the
+  // standing pile being rebuilt in and re-announced alongside it.
+  expect(added).toHaveLength(1);
+  expect(added[0]).toContain(idB);
+  expect(added[0]).not.toContain(idA);
 });
 
-test("a dispatch-history arrival's detail and reason are announced, not just its headline", async ({
+test("a dispatch-history arrival's detail and reason live inside the same atomic node as its headline", async ({
   page,
 }) => {
   await page.goto("/");
-  const title = "SH-333 — history announcer detail";
+  const title = "SH-337 — history announcer detail";
   const id = await raiseHistoryRow(page, title);
 
-  const announced = await page.locator("#dispatch-history-status").textContent();
-  expect(announced).toContain(`${id} refused`);
-  expect(announced).toContain("already in-progress");
-  expect(announced).toContain("claim-conflict");
+  const row = page.locator("#dispatch-history .dispatch-history-row").first();
+  await expect(row).toHaveAttribute("aria-atomic", "true");
+  await expect(row).toContainText(`${id} refused`);
+  await expect(row.locator(".notice-detail")).toContainText("already in-progress");
+  await expect(row.locator(".notice-reason")).toHaveText("claim-conflict");
 });
 
-test("two identical arrivals in a row both mutate the announcer", async ({ page }) => {
-  // The SAME story, dispatched twice in sequence: `finishDispatch` clears
-  // `state.dispatches[storyId]` on completion, so a second dispatch of the
-  // same story is allowed once the first has finished, and its headline,
-  // detail and reason are then character-for-character identical to the
-  // first -- the one case that actually exercises `setStatusText`'s
-  // clear-then-set idiom (SH-333 rider 2), which a test using two different
-  // stories (and therefore two different headlines) cannot reach.
+test("two identical dismissal announcements in a row both mutate the announcer", async ({
+  page,
+}) => {
+  // `setStatusText`'s clear-then-set idiom (SH-333 rider 2) is under test
+  // here, not a dispatch-history property. SH-337 made a dispatch-history
+  // arrival insert a distinct DOM node per notice, which is always a genuine
+  // mutation regardless of text equality and cannot regress into the
+  // same-value-reassignment collapse this idiom guards against. The
+  // surviving surface where that collapse is a real risk is
+  // `#notice-dock-status`, fed by `announceInNoticeDock` on every dismissal
+  // -- one shared element whose `textContent` really is reassigned.
   await page.goto("/");
-  const title = "SH-333 — history announcer repeat";
-  const id = await openFreshStory(page, title);
-  await stubDispatchRefusal(page, id, true);
+  await openProject(page, "Alpha Project");
+  await keepNotices(page);
+  await openProject(page, "Alpha Project");
 
-  await page.locator("#dispatch-history-status").evaluate((node) => {
+  const title = "SH-333 — dismissal announcer repeat";
+  await createStory(page, title);
+  await raiseDurableNotices(page, title, 3);
+
+  await page.locator("#notice-dock-status").evaluate((node) => {
     (node as HTMLElement & { __mutations?: number }).__mutations = 0;
     const observer = new MutationObserver((records) => {
       (node as HTMLElement & { __mutations?: number }).__mutations! += records.length;
@@ -224,36 +253,32 @@ test("two identical arrivals in a row both mutate the announcer", async ({ page 
     observer.observe(node, { childList: true, characterData: true, subtree: true });
   });
 
-  await page.locator("#dispatch-auto-btn").click();
-  await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(1);
-  await expect(page.locator("#dispatch-history-status")).toContainText(`${id} refused`);
+  await page.locator("#toast-stack .toast .toast-dismiss").first().click();
+  await expect(page.locator("#notice-dock-status")).toHaveText("Notice dismissed. 2 remaining.");
+  const firstAnnouncement = await page.locator("#notice-dock-status").textContent();
 
-  const firstAnnouncement = await page.locator("#dispatch-history-status").textContent();
-
-  // Re-arm and re-dispatch the identical story.
-  await stubDispatchRefusal(page, id, true);
-  await page.locator("#dispatch-auto-btn").click();
-  await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(2);
-
-  const secondAnnouncement = await page.locator("#dispatch-history-status").textContent();
+  // Back up to 3 standing, then dismiss one again -- 2 remaining once more,
+  // the identical announcement text as above.
+  await raiseDurableNotices(page, title, 1);
+  await page.locator("#toast-stack .toast .toast-dismiss").first().click();
+  await expect(page.locator("#notice-dock-status")).toHaveText("Notice dismissed. 2 remaining.");
+  const secondAnnouncement = await page.locator("#notice-dock-status").textContent();
   expect(secondAnnouncement).toBe(firstAnnouncement);
 
-  const mutationCount = await page.locator("#dispatch-history-status").evaluate(
+  const mutationCount = await page.locator("#notice-dock-status").evaluate(
     (node) => (node as HTMLElement & { __mutations?: number }).__mutations!,
   );
   // Clear-then-set is two DOM mutations per announcement (removing the old
   // text node, adding the new one); two announcements with identical text
   // must not collapse into fewer just because the text happens to match.
   expect(mutationCount).toBeGreaterThanOrEqual(3);
-
-  await page.locator("#drawer-close").click();
 });
 
 // ============================================================
 // Inventory and non-interference
 // ============================================================
 
-test("the notice dock's only live regions are the toast stack and the two sr-only announcers", async ({
+test("the notice dock's only live regions are the two notice surfaces and one sr-only announcer", async ({
   page,
 }) => {
   await page.goto("/");
@@ -261,10 +286,10 @@ test("the notice dock's only live regions are the toast stack and the two sr-onl
   await keepNotices(page);
   await openProject(page, "Alpha Project");
 
-  const title = "SH-333 — live region inventory";
+  const title = "SH-337 — live region inventory";
   await createStory(page, title);
   await raiseDurableNotices(page, title, 1);
-  await raiseHistoryRow(page, "SH-333 — live region inventory, history");
+  await raiseHistoryRow(page, "SH-337 — live region inventory, history");
 
   const inventory = await page.evaluate(() => {
     const dock = document.getElementById("notice-dock")!;
@@ -274,21 +299,21 @@ test("the notice dock's only live regions are the toast stack and the two sr-onl
     return nodes.map((n) => n.id || `${n.tagName.toLowerCase()}.${n.className}`);
   });
 
-  expect(inventory.sort()).toEqual(
-    ["toast-stack", "notice-dock-status", "dispatch-history-status"].sort(),
-  );
+  // `#dispatch-history-status` is gone (SH-337): the panel is its own live
+  // region now, the same shape `#toast-stack` has had since SH-333.
+  expect(inventory.sort()).toEqual(["toast-stack", "dispatch-history", "notice-dock-status"].sort());
 
-  // `#dispatch-history` itself carries no live-region attribute of any kind —
-  // the wholesale rebuild is announced through the side channel instead.
   const dispatchHistoryAttrs = await page.locator("#dispatch-history").evaluate((n) => ({
     ariaLive: n.getAttribute("aria-live"),
+    ariaAtomic: n.getAttribute("aria-atomic"),
     role: n.getAttribute("role"),
   }));
-  expect(dispatchHistoryAttrs.ariaLive).toBeNull();
+  expect(dispatchHistoryAttrs.ariaLive).toBe("polite");
+  expect(dispatchHistoryAttrs.ariaAtomic).toBe("false");
   expect(dispatchHistoryAttrs.role).toBe("region");
 });
 
-test("demoting dispatch-history's live-region status removed no landmark or reachability", async ({
+test("dispatch-history's live-region status changed with no loss of landmark or reachability", async ({
   page,
 }) => {
   await page.goto("/");
@@ -329,15 +354,19 @@ test("a dispatch-history arrival does not clobber the dismissal channel", async 
     "Notice dismissed. No notices remaining.",
   );
 
-  // A dispatch-history arrival lands on its own channel -- #notice-dock-status
-  // must still hold the dismissal message above, untouched (SH-333 rider 1:
-  // that element also carries the armed-delete confirmation prompt a
-  // background arrival must never overwrite).
+  // A dispatch-history arrival announces through #dispatch-history itself now
+  // (SH-337) -- #notice-dock-status must still hold the dismissal message
+  // above, untouched. This is SH-333's rider 1 satisfied structurally rather
+  // than by discipline: the arrival path no longer touches any shared
+  // announcer at all, so there is nothing left that could overwrite the
+  // armed-delete confirmation prompt that element also carries.
   await raiseHistoryRow(page, "SH-333 — no clobber, history");
   await expect(page.locator("#notice-dock-status")).toHaveText(
     "Notice dismissed. No notices remaining.",
   );
-  await expect(page.locator("#dispatch-history-status")).toContainText("refused");
+  await expect(page.locator("#dispatch-history .dispatch-history-row").first()).toContainText(
+    "refused",
+  );
 });
 
 test("both notice surfaces still keep the same headline vocabulary announced", async ({
