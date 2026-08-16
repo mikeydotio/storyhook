@@ -316,6 +316,55 @@ fn nothing_that_runs_builds_a_hooks_directory_by_hand() {
     }
 }
 
+/// **SH-341's shared merge-arrival shell stays shared** — one copy each of
+/// the slack arithmetic and the trailer grammar, and every hook composing it
+/// named in its own doc comment.
+///
+/// The risk this guards is exactly the one sharing the fragment was meant to
+/// avoid: a future hook that needs the same shell copies the text instead of
+/// calling `merge_arrival_fn!()`, and the slack arithmetic or the trailer
+/// alternation drifts between copies in silence.
+/// `tests/service_git.rs::every_keyword_the_merge_hook_closes_on_also_claims`
+/// only checks the alternation is *present*; this is the uniqueness half.
+#[test]
+fn the_merge_arrival_fragment_is_shared_not_duplicated() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let hooks_rs =
+        std::fs::read_to_string(root.join("src/hooks.rs")).expect("reading src/hooks.rs");
+
+    let slack = "/ 60 + 5";
+    assert_eq!(
+        hooks_rs.matches(slack).count(),
+        1,
+        "the daemon-cold-start slack arithmetic (`{slack}`) must appear exactly \
+         once in src/hooks.rs — a second, hand-copied occurrence is the drift \
+         the shared fragment exists to prevent"
+    );
+
+    let alternation = "(closes?|fixes?|resolves?)";
+    assert_eq!(
+        hooks_rs.matches(alternation).count(),
+        1,
+        "the trailer alternation (`{alternation}`) must appear exactly once in \
+         src/hooks.rs"
+    );
+
+    let calls = hooks_rs.matches("merge_arrival_fn!()").count();
+    assert_eq!(
+        calls, 2,
+        "merge_arrival_fn!() is composed into {calls} hook(s); expected exactly \
+         2 (post-commit and post-merge). A third caller — or one fewer — means \
+         the fragment's own doc comment table needs updating alongside it"
+    );
+    for consumer in ["| `POST_COMMIT_HOOK`", "| `POST_MERGE_HOOK`"] {
+        assert!(
+            hooks_rs.contains(consumer),
+            "merge_arrival_fn!()'s doc comment must name {consumer} among its \
+             known consumers"
+        );
+    }
+}
+
 /// **The plugin's copy of the hook marker still matches the one storyhook
 /// writes** (SH-320).
 ///

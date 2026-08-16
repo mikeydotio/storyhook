@@ -233,6 +233,64 @@ fn a_merge_says_nothing_when_the_daemon_cannot_start() {
     assert_eq!(stdout.trim(), "", "and nothing on stdout either: {stdout}");
 }
 
+/// **SH-341's arrival guard**, held to the same obligation: a merge concluded
+/// by `git commit` — the shape a conflict forces — runs `post-commit`'s own
+/// copy of the merge-arrival shell, and that copy must stay exactly as silent
+/// as `post-merge`'s.
+///
+/// Conflicted rather than clean, so this exercises `post-commit`'s
+/// `HEAD^2`-guarded branch specifically and not the flat `--since 1h` path
+/// every other test in this file already covers.
+#[test]
+fn a_conflicted_merge_says_nothing_when_the_daemon_cannot_start() {
+    let repo = HookRepo::new();
+
+    let id = repo.new_story("something a conflicted merge would close");
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    std::fs::write(repo.path().join("f"), "theirs\n").expect("branch edit");
+    repo.git(&["commit", "-qam", &format!("work\n\nCloses {id}")]);
+    repo.git(&["checkout", "-q", "main"]);
+    std::fs::write(repo.path().join("f"), "ours\n").expect("main edit");
+    repo.git(&["commit", "-qam", "main side"]);
+
+    let conflicted = repo.git(&["merge", "--no-ff", "feature"]);
+    assert!(
+        !conflicted.status.success(),
+        "fixture: the merge must actually conflict"
+    );
+
+    repo.break_the_store();
+    let probe = repo
+        .env
+        .story(repo.path())
+        .args(["list"])
+        .output()
+        .expect("running story");
+    assert!(
+        !probe.status.success(),
+        "the fixture needs a storyhook that cannot answer; `story list` succeeded"
+    );
+
+    std::fs::write(repo.path().join("f"), "resolved\n").expect("resolving");
+    repo.git(&["add", "f"]);
+    let out = repo.git(&["commit", "-qm", "conclude the conflicted merge"]);
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "concluding a conflicted merge must not fail because storyhook cannot \
+         answer.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert_eq!(
+        stderr.trim(),
+        "",
+        "post-commit's arrival guard must say nothing at all — the same \
+         obligation post-merge already has"
+    );
+    assert_eq!(stdout.trim(), "", "and nothing on stdout either: {stdout}");
+}
+
 /// The control, and it is not idle.
 ///
 /// Without it the test above passes just as well on a hook that was never
