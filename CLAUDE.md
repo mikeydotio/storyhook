@@ -245,6 +245,30 @@ Standing rules for every wave:
   and a target_os the matrix *does* build passes with no edit. Adding a platform for
   real means adding it to the matrix and proving the code by building it there; the test
   passing is the matrix's decision, not this file's.
+- **An argument that lands nowhere must be refused, not dropped** (SH-357). `story daemon
+  token new psamathe` printed the daemon's **master** bearer token and exited 0: `parse_daemon`'s
+  `"token"` arm was a bare unit variant that never read `args[2..]`, so a request to mint a
+  scoped, revocable token was answered with the credential that rotates on every daemon
+  restart — and the output was byte-identical to the one a correct invocation produces, which
+  is what carried a wrong hypothesis into SH-319. This is the SH-52/SH-62 doctrine
+  (`reject_unknown_flags`, one guard ahead of every verb) arriving for *positional* arguments,
+  which had no equivalent. Every complete arm now ends in `expect_no_more`, naming the
+  offending word above that arm's own usage string. **The filed extent was wrong in both
+  directions and only execution settled it** — nine candidates found by scanning for the shape
+  the bug happened to have; three of those (`github-auth login|status|logout`) already
+  length-checked, and the real count was **25**, across ten parse functions and the top-level
+  `dispatch` table itself (`summary`, `export`, `session-start`). `tests/trailing_arguments.rs`
+  pins the class, and pins it **behaviourally**: it derives only the *vocabulary* from
+  `src/cli.rs` — every quoted word left of a `=>` — and then asks the parser whether
+  `parse_invocation(P + [junk])` returns the **same `Invocation`** as `parse_invocation(P)`.
+  Equality rather than acceptance is the entire distinction, and a shape scan cannot make it:
+  `story import` reads stdin where `story import <file>` reads a file, and both are correct
+  because the word landed in a field. A word that leaves the invocation unchanged landed
+  nowhere. Because the property is about what the parser *does*, an arm written in a shape
+  nobody has thought of yet is still caught — verified by mutation, adding a fresh
+  `"dump-everything"` arm and watching the test name it with no edit of its own. The scan is
+  cheap and safe to run this exhaustively only because `parse_invocation` is pure, which is
+  also why it can provoke `story daemon install` without installing anything.
 - **A hook that did not refuse is not evidence that a hook ran** (SH-306). A Claude Code
   `PreToolUse` hook **fails open at its timeout**: the harness SIGTERMs it and then lets the
   tool call proceed, silently. `~/.claude/hooks/pre-push-tests.sh` runs `make test` under a
