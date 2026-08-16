@@ -716,6 +716,87 @@ e2e claim.
 Refers to SH-337, which relates to SH-326 (the dismissal-path sibling this story completes)
 and SH-333 (whose named debt this story retires).
 
+## As built — SH-339 (a held key walked the heir chain SH-326 built)
+
+SH-326 gave a dismissed notice an heir: focus moves to the next notice's dismiss control.
+That is the fix, it is correct, and it created this. A `<button>` runs its activation
+behaviour on **keydown** for Enter, so a held Enter fires one click per OS auto-repeat —
+harmless before SH-326, because the first click destroyed the button and the repeats fell
+to `<body>`. With an heir the repeats have somewhere to land. Reproduced before the fix:
+five durable **error** notices, one held Enter, **zero** left. A durable error notice is
+the only record of its failure, which the `addDispatchHistoryRow` doc comment has said in
+those words since SH-304.
+
+**Why this shipped at all, having been filed as an accepted trade.** SH-326's council
+looked for a mitigation and recorded that it "could find no mitigation that is not modality
+sniffing," rejecting modality sniffing on grounds this file already endorses (`event.detail
+=== 0` fires for AT-driven pointer users and not for real ones; WebKit focuses no `<button>`
+on click). That premise was false, and the keydown sequence for a held Enter measures it:
+`[false, true, true, …]`. `KeyboardEvent.repeat` asks nothing about who the user is — it is
+a property of the key event, false on the deliberate press and true on every auto-repeat.
+It is the SH-226 test in its strongest available form here, and the AT population the prior
+council was protecting is untouched either way, because an AT activation arrives as a click
+with no keydown at all. Council verdict, unanimous 3-0:
+`.council/sh339-notice-dismiss-autorepeat/DECISION.md`.
+
+**What shipped:** `refuseAutoRepeatActivation`, one delegated `keydown` listener bound on
+`#notice-dock` — the single common ancestor of both regions and both "Dismiss all" bars —
+cancelling `event.key === "Enter" && event.repeat` for any button beneath it. One rule in
+one place rather than four handlers at four construction sites, so a dock button added later
+cannot fall outside it; the drift a hand-maintained selector list produces is this project's
+named failure class. Bubble phase, because the handler only cancels a default action and
+nothing in the dock stops propagation.
+
+**Enter specifically, and the narrowness is the whole design.** A bare `if (event.repeat)`
+would also cancel held Arrow/Page scrolling from a focused dismiss button — the affordance
+`syncNoticeDock`'s conditional `tabindex` on `#toast-scroll` exists to provide — and would
+take it from exactly the people this story is written for. Space needs no guard: a button
+activates on Space *keyup*, so its auto-repeat never activated anything.
+
+**A suppressed repeat announces nothing, by decision.** The press that landed already spoke
+through `announceNoticeDismissal`; an utterance per repeat would arrive at the OS repeat rate
+and queue ahead of the real one in a polite live region, nagging precisely the reader who
+holds a key a beat too long — who is who this exists for. Before it, that reader could not
+reliably dismiss exactly one notice.
+
+**Mutation battery, run and recorded:**
+
+| Mutation | Result |
+|---|---|
+| Unbind the listener from `#notice-dock` | both held-Enter pins red (toast stack and dispatch history); the four over-reach pins stay green, which is correct |
+| Drop the repeat check — `if (event.key !== "Enter") return` (Enter never activates) | the discrete-presses pin red, and both held-Enter pins red too, since with Enter inert the stack never loses its first notice either |
+| Drop the Enter check — bare `if (!event.repeat) return` | **survived.** The ArrowDown pin asserted `scrollTop > 0`, and a bare guard cancels only the *repeats* — the deliberate first keydown still scrolls one step, so the assertion held and the over-reach went unreported. The pin now measures one discrete press and requires the held press to beat it; against the mutant it fails `Expected: > 40, Received: 40`, one arrow step exactly |
+| Add Space to the predicate | **survived, and correctly** — an equivalent mutant. A button activates on Space keyup and the first Space keydown is never `repeat: true`, so the repeats it would newly cancel were doing nothing. The council reasoned that guarding Space "would risk cancelling the one activation a held Space legitimately produces on release"; on Blink, measured, it does not. The Enter-only scope rests on the ArrowDown result above, not on this one |
+
+**Found while closing the first survivor:** Chromium **animates** keyboard scrolling, so a
+`scrollTop` read in the same tick as the keypress reports the pre-animation value — measured
+as exactly `0` for a single discrete ArrowDown. The pin waits for four consecutive equal
+samples (`settledScrollTop`) and boxes the result, since `waitForFunction` reads a bare `0`
+as "keep waiting" and `0` is a legitimate answer.
+
+**What is NOT claimed, and it is more than usual here.** The suite is Chromium-only
+(SH-335), so nothing is said about Gecko or WebKit. And Playwright sets the `repeat` bit
+itself on a second `keyboard.down` — so what these pins prove is Blink's half: that an
+un-prevented repeat keydown activates a button, and that cancelling it stops that. That a
+*physically* held key sets the flag rests on the UI Events spec and on a hand check, not on
+this suite; where an input stack does not set it, the guard is inert, which is the pre-fix
+behaviour and never worse. This is the SH-322/SH-327 precedent applied to an input event
+rather than to an utterance.
+
+**Deliberately out of scope, and filed rather than argued away.** The guard fixes the
+*amplification*, not the *loss*: a durable error's content is still unrecoverable once
+deliberately dismissed, and "Dismiss all" has cleared the pile in one sanctioned gesture
+since SH-323. SH-361 carries that, split as the council required into the dispatch half (a
+server-side copy exists in `src/api/dispatch.rs` with no route and no reader) and the
+ordinary-durable-error half (which exists nowhere but the tab). The sibling sweep this
+defect class requires found a hit outside the dock and it is SH-362: three modal inputs
+(`#token-input`, `#drop-blocked-reason-input`, `#delete-reason`) submit on Enter with
+neither a repeat guard nor an in-flight guard, and the delete path's extra `DELETE`s report
+their failures into a modal the first success already closed — the SH-312 shape.
+
+Refers to SH-339, which relates to SH-326 (whose heir policy this completes rather than
+unpicks) and SH-338 (whose measured focus ring is on the heir control this keeps landing on).
+
 ## Verification
 
 `make test` is the gate. Coverage, by layer:
