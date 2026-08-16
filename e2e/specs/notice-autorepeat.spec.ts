@@ -3,6 +3,7 @@ import type { Page } from "@playwright/test";
 import {
   cleanUpCreatedStories,
   createStory,
+  holdKey,
   openProject,
   raiseNotice,
   seedToken,
@@ -116,16 +117,6 @@ test.beforeEach(async ({ page }) => {
   // notices, which carry no dismiss control at all.
   await seedToken(page);
 });
-
-/** Holds `key` down: one deliberate press, then `repeats` auto-repeats, then
- * release. Playwright reports the first `down` with `repeat: false` and every
- * subsequent one with `repeat: true`, which is the sequence a held key produces
- * and the only part of it this harness can speak to (see the file header). */
-async function holdKey(page: Page, key: string, repeats: number): Promise<void> {
-  await page.keyboard.down(key);
-  for (let i = 0; i < repeats; i++) await page.keyboard.down(key);
-  await page.keyboard.up(key);
-}
 
 /** Raises `count` durable error notices on a fresh story and returns its title. */
 async function raiseDurableErrors(page: Page, label: string, count: number): Promise<void> {
