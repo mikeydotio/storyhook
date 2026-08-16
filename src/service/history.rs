@@ -199,10 +199,24 @@ fn compensate(
             description: after.description.clone().unwrap_or_default(),
         });
     }
-    if before.priority != after.priority {
-        events.push(StoryEvent::StoryPrioritySet {
-            at: at.clone(),
-            priority: after.priority.clone(),
+    // Gated on *both* halves, because they move independently (SH-359). The
+    // case that needs it is invisible to a priority-only gate: undoing a
+    // story's first-ever `story prioritize` targets `priority: none,
+    // assessed: false`, and the story currently reads `priority: none,
+    // assessed: true` — the levels are equal, so a gate keyed on `priority`
+    // alone never fires and the restored story keeps claiming somebody
+    // assessed it.
+    if before.priority != after.priority || before.priority_assessed != after.priority_assessed {
+        // `!after.priority_assessed` implies `after.priority == None` — the
+        // invariant `fold_story` asserts on the way out — so one event
+        // restores both halves and no third case exists.
+        events.push(if after.priority_assessed {
+            StoryEvent::StoryPrioritySet {
+                at: at.clone(),
+                priority: after.priority.clone(),
+            }
+        } else {
+            StoryEvent::StoryPriorityCleared { at: at.clone() }
         });
     }
     if before.labels != after.labels {
