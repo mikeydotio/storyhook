@@ -1451,10 +1451,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
      they were, so every existing selector still resolves and SH-322's fence
      still fences what it fenced. What is new around them is a scroll container
      each and this wrapper. `aria-live`/`aria-atomic` on the two surfaces
-     diverged in SH-333 -- see the comments on each element below -- because the
-     two regions turned out to re-announce their standing contents on every
-     arrival for two different reasons, one an ARIA attribute and one a render
-     strategy, and only the first is fixable in place.
+     diverged in SH-333 and reconverged in SH-337 -- see the comments on each
+     element below. Both regions re-announced their standing contents on every
+     arrival, but for two different reasons at the time: one an ARIA attribute
+     fixable in place, one a render strategy that first had to stop rebuilding
+     the whole panel before the same attributes could apply.
 
      `pointer-events: none` on the dock, `auto` on the scrollers: the inverse of
      the case SH-322's chair correctly rejected on `.toast-stack`, where
@@ -1486,19 +1487,18 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     <div class="notice-region-bar" id="dispatch-history-bar" hidden>
       <button type="button" class="btn btn-ghost notice-dismiss-all" id="dispatch-history-dismiss-all">Dismiss all <span id="dispatch-history-count"></span></button>
     </div>
-    <!-- No `aria-live` here (SH-333): `renderDispatchHistory()` clears and
-         rebuilds this panel wholesale on every render, so every row -- not just
-         the arriving one -- is a fresh DOM addition on every mutation regardless
-         of `aria-atomic`. No live-region attribute combination fixes a wholesale
-         rebuild; `role="region"` stays for its landmark contribution, and
-         arrivals are announced instead through `#dispatch-history-status` below.
-         Deliberate tech debt, not a redesign: the flaw is the wholesale rebuild
-         itself, the limit is a hand-maintained announcer every call site must
-         remember to feed, and the trigger to retire this side-channel is SH-337
-         (the already-scoped incremental-insert rewrite of this function). Council
-         verdict: `.council/sh-333-notice-stack-announcement-mechanism/DECISION.md`. -->
+    <!-- `aria-live="polite" aria-atomic="false"` plus `aria-atomic="true"` on
+         each `.dispatch-history-row` (SH-337): the same shape `#toast-stack`
+         has carried since SH-333, now sound here too because the panel is
+         `insertBefore`d one row at a time rather than rebuilt wholesale, so
+         "the node that changed" is exactly "the node that arrived" on this
+         surface as well. Retires the `#dispatch-history-status` side channel
+         SH-333 stood up as the deliberate-tech-debt stopgap while this
+         rebuild still existed -- see `docs/spec/dashboard-dispatch.md`'s
+         As-built sections for SH-333 and SH-337. `role="region"` and its
+         label are unchanged; only the live-region attributes are new. -->
     <div class="notice-scroll" id="dispatch-history-scroll" role="group" aria-label="Dispatch results">
-      <div class="dispatch-history" id="dispatch-history" role="region" aria-label="Autonomous dispatch results"></div>
+      <div class="dispatch-history" id="dispatch-history" role="region" aria-label="Autonomous dispatch results" aria-live="polite" aria-atomic="false"></div>
     </div>
   </div>
   <!-- Outside both notice regions, so clearing the stack is announced without
@@ -1506,12 +1506,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
        "Dismiss all" and hears nothing, with focus now somewhere else, has been
        told nothing about what just happened. -->
   <span class="sr-only" id="notice-dock-status" role="status"></span>
-  <!-- A dedicated announcer for dispatch-history arrivals (SH-333), deliberately
-       not `#notice-dock-status`: that element also carries the armed-delete
-       confirmation prompt (`onDeleteStatus`), which the user must read and act
-       on, and a background dispatch result landing mid-confirmation would
-       silently overwrite it. See `addDispatchHistoryRow()`. -->
-  <span class="sr-only" id="dispatch-history-status" role="status"></span>
 </div>
 
 <script>
@@ -2245,10 +2239,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * a drawer open. They are therefore already symmetric, which is the whole
    * property this function exists to restore; inerting them would not fix an
    * asymmetry, it would create a new behaviour (unreachable by either device)
-   * and silence the toast stack's live region and both `sr-only` announcers
-   * (`#notice-dock-status`, `#dispatch-history-status`) while a modal is up. Restoring
-   * symmetry means covering exactly what is dimmed: the app shell, and the
-   * overlays that are not on top.
+   * and silence both notice surfaces' own live regions (`#toast-stack`,
+   * `#dispatch-history`) and the `sr-only` `#notice-dock-status` announcer
+   * while a modal is up. Restoring symmetry means covering exactly what is
+   * dimmed: the app shell, and the overlays that are not on top.
    *
    * The attribute rather than the `.inert` property: it is visible in the
    * DOM, so a test can assert it and a developer can see it in the
@@ -3235,20 +3229,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     setStatusText("notice-dock-status", message);
   }
 
-  /** Announces an arriving dispatch-history row (SH-333). A dedicated element,
-   * not `#notice-dock-status`: see the markup comment on
-   * `#dispatch-history-status` for why sharing it would risk clobbering the
-   * armed-delete confirmation prompt. `#dispatch-history` itself carries no
-   * `aria-live` -- `renderDispatchHistory()` rebuilds it wholesale on every
-   * render, so nothing about the live region's own attributes can announce
-   * only the arriving row; this is the announcer instead. */
-  function announceDispatchHistoryArrival(headline, detail, reason) {
-    var message = [headline, detail, reason].filter(function(part) {
-      return part;
-    }).join(". ");
-    setStatusText("dispatch-history-status", message);
-  }
-
   /** Clears every notice in the toast stack, clocked ones included.
    *
    * `cancelNoticeClock` is what keeps a removed-but-still-running notice from
@@ -3805,6 +3785,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function buildDispatchHistoryRow(entry) {
     var node = el("div", {
       class: "dispatch-history-row error",
+      "aria-atomic": "true",
       dataset: { noticeKey: entry.key }
     }, [
       noticeBody(entry.headline, entry.detail, entry.reason),
@@ -3854,13 +3835,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // "Dismiss all N" bar's threshold and the scroller's conditional tab stop
     // are consequences of the count, not of the render.
     syncNoticeDock();
-    // `#dispatch-history` carries no `aria-live` (SH-333): the panel used to
-    // be cleared and rebuilt wholesale on every arrival, which would have
-    // re-announced every standing row if the region were still live. This is
-    // the announcement instead, of the row that actually arrived. SH-337 made
-    // the insert incremental, which is what SH-333's own As-built section
-    // names as the trigger to retire this side channel.
-    announceDispatchHistoryArrival(headline, detail, reason);
+    // No explicit announcement call needed (SH-337): `#dispatch-history` is
+    // itself `aria-live="polite"` now, and this insertion is the only
+    // mutation it makes, so the region announces the arriving row on its
+    // own -- the same mechanism `#toast-stack` has used since SH-323. The
+    // dedicated `#dispatch-history-status` side channel SH-333 stood up as a
+    // stopgap while this function still rebuilt the whole panel is gone.
   }
 
   /** Removes one row, and rehomes the focus that removal destroyed (SH-326).
