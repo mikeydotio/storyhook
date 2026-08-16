@@ -277,6 +277,52 @@ impl HookRepo {
             branch,
         ]);
     }
+
+    /// The branch `HEAD` is on.
+    fn current_branch(&self) -> String {
+        let out = self.git(&["symbolic-ref", "--short", "HEAD"]);
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// Diverges the tracked file `f` between the current branch and a new
+    /// `feature` branch off it — so merging `feature` back **must** conflict —
+    /// resolves it, and concludes it the only way git allows once a merge
+    /// conflicts: a `git commit`, carrying `resolve_message`.
+    ///
+    /// The `feature` branch's own commit is made with **every git hook
+    /// suppressed** ([`commit_unhooked`]), so no `post-commit` firing on the
+    /// branch itself can be credited for anything a test attributes to the
+    /// merge's own conclusion — the same isolation SH-330's fixtures give a
+    /// clean merge, applied here to a real conflict.
+    ///
+    /// Returns the `feature` branch commit's full SHA.
+    fn resolve_a_conflict_with_message(&self, feature_body: &str, resolve_message: &str) -> String {
+        let base = self.current_branch();
+        self.git(&["checkout", "-q", "-b", "feature"]);
+        std::fs::write(self.path().join("f"), "theirs\n").expect("branch edit");
+        self.git(&["add", "f"]);
+        let sha = self.commit_unhooked(feature_body, None);
+        self.git(&["checkout", "-q", &base]);
+        std::fs::write(self.path().join("f"), "ours\n").expect("base edit");
+        self.git(&["commit", "-qam", "feat: ours"]);
+
+        let mut merge = Command::new("git");
+        merge.current_dir(self.path());
+        self.env.apply(&mut merge);
+        let conflicted = merge
+            .args(["merge", "--no-ff", "feature"])
+            .output()
+            .expect("running git merge");
+        assert!(
+            !conflicted.status.success(),
+            "fixture: the merge must actually conflict"
+        );
+
+        std::fs::write(self.path().join("f"), "resolved\n").expect("resolving");
+        self.git(&["add", "f"]);
+        self.git(&["commit", "-qm", resolve_message]);
+        sha
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -523,21 +569,26 @@ fn an_empty_merge_range_links_nothing_and_exits_clean() {
     );
 }
 
-/// **The conflicted-merge hole (SH-341).** A merge that conflicts is concluded
-/// by `git commit`, so it fires `post-commit` and **never** `post-merge` — so
-/// neither this hook's sync nor SH-56's trailer auto-close runs for it at all.
+/// **A named limit of git, not of storyhook (SH-341 fixed the hole this used
+/// to pin; this mechanism is unchanged).** A merge that conflicts is
+/// concluded by `git commit`, so git itself fires `post-commit` and **never**
+/// `post-merge` — that was true before SH-341 and remains true after it,
+/// because nothing about git's own hook dispatch can be changed from here.
 ///
-/// This is a named limit, not a defect in what SH-330 built: `post-merge` is
-/// the hook the arrival runs, and for a conflicted merge git does not run it.
-/// Closing it means teaching `post-commit` to recognise that it is concluding a
-/// merge — a commit with two or more parents is the cheap and honest question —
-/// which is its own change with its own blast radius, filed as SH-341.
+/// What SH-341 changed is what `post-commit` does about it: it now asks
+/// whether the commit it is running for has two or more parents, and if so
+/// runs the same merge-arrival shell `post-merge` runs, over `HEAD^1..HEAD`
+/// (`storyhook_merge_arrival` in `src/hooks.rs`) — see the SH-341 section
+/// below for that coverage.
 ///
-/// Pinned rather than left silent so the next reader does not meet it as a
-/// mystery and "fix" it into a false alarm. The assertion is deliberately about
-/// the **mechanism** (which hook ran), not the outcome: `post-commit` still
-/// links the commit through its own flat `--since 1h`, so a story-level
-/// assertion would pass and hide the hole.
+/// Kept rather than deleted, and unchanged in what it measures: the reason the
+/// fix was needed is exactly that `post-merge` truly never runs here, so
+/// there was nothing to fall back to except `post-commit` recognising the
+/// shape for itself. The assertion stays deliberately about the **mechanism**
+/// (which hook ran), not the outcome — `post-commit` links and closes through
+/// its own guard now, which is what
+/// `a_conflicted_merge_links_a_commit_no_post_commit_ever_saw` and
+/// `a_conflicted_merge_closes_the_story_its_body_names` verify.
 #[test]
 fn a_conflicted_merge_never_runs_the_merge_hook_at_all() {
     let repo = HookRepo::new();
@@ -603,6 +654,335 @@ fn a_conflicted_merge_never_runs_the_merge_hook_at_all() {
         "a conflicted merge is concluded by `git commit`, so git runs \
          post-commit and never post-merge — this is SH-341's named limit, not \
          a regression in what post-merge does when it does run"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// SH-341: post-commit recognises the merge it is concluding
+// ---------------------------------------------------------------------------
+//
+// A merge that conflicts, or that is finished with `git merge --continue` or
+// `git merge --no-commit` + `git commit`, never runs `post-merge` at all —
+// measured on git 2.50.1, three ways. `post-commit` now asks the one question
+// that survives every one of them: does `HEAD` have a second parent? When it
+// does, it runs `post-merge`'s own merge-arrival shell over `HEAD^1..HEAD`.
+//
+// Every fixture that wants to prove the *arrival guard specifically* did the
+// work builds its feature-branch commit with [`commit_unhooked`], exactly as
+// SH-330's own fixtures do — so no `post-commit` firing on the branch itself
+// can be credited for the outcome.
+
+/// The sync half: a commit that arrives by a merge git could only conclude
+/// with `git commit` is linked all the same.
+#[test]
+fn a_conflicted_merge_links_a_commit_no_post_commit_ever_saw() {
+    let repo = HookRepo::new();
+    let id = repo.new_story("Arrived by a conflicted merge");
+
+    let sha = repo
+        .resolve_a_conflict_with_message(&format!("feat: theirs\n\nRefs {id}"), "Merge feature");
+
+    assert!(
+        repo.linked_shas(&id).contains(&sha),
+        "no post-commit ran for the branch commit, post-merge never runs for \
+         this merge at all, and `Refs` claims nothing — only the arrival \
+         guard's own sync can have linked it"
+    );
+}
+
+/// The closing half: SH-56's trailer scan runs for a merge git concluded with
+/// `git commit`, not only for one it concluded itself.
+#[test]
+fn a_conflicted_merge_closes_the_story_its_body_names() {
+    let repo = HookRepo::new();
+    let id = repo.new_story("Closed by a conflicted merge");
+
+    repo.resolve_a_conflict_with_message("feat: theirs", &format!("Merge feature\n\nCloses {id}"));
+
+    assert_eq!(repo.state_of(&id), "done");
+}
+
+/// The branch guard, for a conflicted merge: linking sits outside it, closing
+/// stays inside it — parity with `post-merge`'s own placement
+/// (`a_merge_on_a_side_branch_links_but_does_not_close`).
+#[test]
+fn a_conflicted_merge_on_a_side_branch_links_but_does_not_close() {
+    let repo = HookRepo::new();
+    let id = repo.new_story("Conflicted merge onto a topic branch");
+
+    repo.git(&["checkout", "-q", "-b", "integration"]);
+    // `Closes`, deliberately: the trailer scan would fire on this were it not
+    // for the branch guard, so the story staying open is a real assertion
+    // rather than a vacuous one.
+    let sha =
+        repo.resolve_a_conflict_with_message(&format!("fix: work\n\nCloses {id}"), "Merge feature");
+
+    assert!(
+        repo.linked_shas(&id).contains(&sha),
+        "the sync half sits outside the branch guard, whatever branch \
+         received the merge"
+    );
+    assert_ne!(
+        repo.state_of(&id),
+        "done",
+        "and the close half stays inside it: a conflicted merge into a topic \
+         branch is not a release either"
+    );
+}
+
+/// `git merge --continue` concludes a resolved conflict without a fresh
+/// `git commit -m`, but it is still git's `commit` machinery underneath —
+/// measured to produce the identical two-parent, `MERGE_HEAD`-gone,
+/// `MERGE_MSG`-gone commit the arrival guard has to recognise.
+#[test]
+fn merge_continue_after_a_conflict_also_reaches_the_arrival_guard() {
+    let repo = HookRepo::new();
+    let id = repo.new_story("Arrived via merge --continue");
+
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    std::fs::write(repo.path().join("f"), "theirs\n").expect("branch edit");
+    repo.git(&["add", "f"]);
+    let sha = repo.commit_unhooked(&format!("feat: theirs\n\nRefs {id}"), None);
+    repo.git(&["checkout", "-q", "main"]);
+    std::fs::write(repo.path().join("f"), "ours\n").expect("main edit");
+    repo.git(&["commit", "-qam", "feat: ours"]);
+
+    let mut merge = Command::new("git");
+    merge.current_dir(repo.path());
+    repo.env.apply(&mut merge);
+    let conflicted = merge
+        .args(["merge", "--no-ff", "feature"])
+        .output()
+        .expect("running git merge");
+    assert!(
+        !conflicted.status.success(),
+        "fixture: the merge must actually conflict"
+    );
+
+    std::fs::write(repo.path().join("f"), "resolved\n").expect("resolving");
+    repo.git(&["add", "f"]);
+
+    let mut cont = Command::new("git");
+    cont.current_dir(repo.path());
+    repo.env.apply(&mut cont);
+    cont.env("GIT_EDITOR", "true");
+    let output = cont
+        .args(["merge", "--continue"])
+        .output()
+        .expect("running git merge --continue");
+    assert!(
+        output.status.success(),
+        "concluding the merge with --continue: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        repo.linked_shas(&id).contains(&sha),
+        "`git merge --continue` concludes a merge the same way `git commit` \
+         does — the arrival guard must recognise it too"
+    );
+}
+
+/// `git merge --no-commit` is not a conflict at all — the merge succeeds
+/// cleanly and only stages the result — but concluding it still takes a
+/// `git commit`, and measured, that commit fires `post-commit` and never
+/// `post-merge` either. The guard is about how the merge was *concluded*, not
+/// about whether it conflicted.
+#[test]
+fn a_no_commit_merge_concluded_by_git_commit_also_reaches_the_arrival_guard() {
+    let repo = HookRepo::new();
+    let id = repo.new_story("Arrived via merge --no-commit");
+
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    let sha = repo.commit_unhooked(&format!("feat: unrelated work\n\nRefs {id}"), None);
+    repo.git(&["checkout", "-q", "main"]);
+
+    let mut merge = Command::new("git");
+    merge.current_dir(repo.path());
+    repo.env.apply(&mut merge);
+    let output = merge
+        .args(["merge", "--no-ff", "--no-commit", "feature"])
+        .output()
+        .expect("running git merge --no-commit");
+    assert!(
+        output.status.success(),
+        "fixture: this merge must succeed cleanly, just without committing: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    repo.git(&["commit", "-qm", "Merge feature"]);
+
+    assert!(
+        repo.linked_shas(&id).contains(&sha),
+        "a clean merge concluded by `git commit` instead of letting `git \
+         merge` commit for itself has the identical hole a conflict does"
+    );
+}
+
+/// **Anti-vacuity.** An ordinary, one-parent commit on `main` whose body says
+/// `Closes SH-N` must still only claim the story, through `commit-sync`'s own
+/// grammar — never auto-close it. If the guard fired on every commit rather
+/// than only a two-or-more-parent one, this would read `done` instead.
+#[test]
+fn an_ordinary_commit_with_a_closes_trailer_still_only_claims() {
+    let repo = HookRepo::new();
+    let id = repo.new_story("Not a merge");
+
+    repo.git(&[
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "fix: work",
+        "-m",
+        &format!("Closes {id}"),
+    ]);
+
+    assert_eq!(
+        repo.state_of(&id),
+        "in-progress",
+        "an ordinary commit's `Closes` trailer claims the story exactly as it \
+         did before this fix; a guard that fired on every commit would have \
+         auto-closed it instead"
+    );
+}
+
+/// `git merge --squash` produces a **one-parent** commit — the merge itself
+/// leaves no trace in the graph, so `HEAD^2` does not exist — and must take
+/// the ordinary path: `commit-sync`'s own claim grammar, never the arrival
+/// guard's explicit `story move done`.
+#[test]
+fn a_squash_merge_stays_on_the_ordinary_path() {
+    let repo = HookRepo::new();
+    let id = repo.new_story("Squashed, not merged");
+
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    repo.commit_unhooked("feat: squashed work", None);
+    repo.git(&["checkout", "-q", "main"]);
+    repo.git(&["merge", "-q", "--squash", "feature"]);
+    // `--allow-empty`: the branch commit above is itself empty, so the squash
+    // leaves nothing staged. Real squash merges usually carry a diff; this
+    // fixture only needs the resulting commit's shape (one parent), not its
+    // content.
+    repo.git(&[
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        &format!("squash feature\n\nCloses {id}"),
+    ]);
+
+    assert_eq!(
+        repo.state_of(&id),
+        "in-progress",
+        "a squash commit has exactly one parent, so it must take the ordinary \
+         flat-window path — which claims a `Closes` trailer through \
+         commit-sync's own grammar but never auto-closes, unlike the \
+         two-or-more-parent arrival guard's explicit `story move done`"
+    );
+}
+
+/// A resolved cherry-pick conflict is procedurally the same shape as a merge
+/// conflict — stop, resolve, conclude with `git commit` — but produces a
+/// **one-parent** commit, the same negative space as a squash merge.
+#[test]
+fn a_resolved_cherry_pick_stays_on_the_ordinary_path() {
+    let repo = HookRepo::new();
+    let id = repo.new_story("Cherry-picked, not merged");
+
+    repo.git(&["checkout", "-q", "-b", "source"]);
+    std::fs::write(repo.path().join("f"), "picked\n").expect("source edit");
+    repo.git(&["add", "f"]);
+    repo.commit_unhooked("feat: to be cherry-picked", None);
+    let pick_sha = {
+        let out = repo.git(&["rev-parse", "HEAD"]);
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    repo.git(&["checkout", "-q", "main"]);
+    std::fs::write(repo.path().join("f"), "diverged\n").expect("main edit");
+    repo.git(&["commit", "-qam", "feat: main diverges"]);
+
+    let mut pick = Command::new("git");
+    pick.current_dir(repo.path());
+    repo.env.apply(&mut pick);
+    let conflicted = pick
+        .args(["cherry-pick", &pick_sha])
+        .output()
+        .expect("running git cherry-pick");
+    assert!(
+        !conflicted.status.success(),
+        "fixture: the cherry-pick must actually conflict"
+    );
+
+    std::fs::write(repo.path().join("f"), "resolved\n").expect("resolving");
+    repo.git(&["add", "f"]);
+    repo.git(&["commit", "-qm", &format!("picked\n\nCloses {id}")]);
+
+    assert_eq!(
+        repo.state_of(&id),
+        "in-progress",
+        "a resolved cherry-pick's conclusion is one-parent, so it must claim \
+         through the ordinary path and never auto-close through the arrival \
+         guard"
+    );
+}
+
+/// Amending a merge commit re-enters the guard — `HEAD^2` still exists, and
+/// nothing prevents `post-commit` from firing on an amend. It must be
+/// harmless: a re-`move` of an already-`done` story is a no-op storyhook
+/// already guarantees elsewhere, not a new failure mode for this guard to
+/// introduce.
+#[test]
+fn amending_a_merge_commit_re_enters_the_guard_harmlessly() {
+    let repo = HookRepo::new();
+    let id = repo.new_story("Closed, then the merge is amended");
+    // A second, unrelated ready story: keeps `story next` non-empty for the
+    // amend below, sidestepping SH-355 (unrelated to this guard —
+    // `prepare-commit-msg` aborts an amend outright when the backlog has
+    // zero ready stories, a pre-existing defect this test is not about).
+    repo.new_story("Kept ready so the backlog is never empty");
+
+    repo.resolve_a_conflict_with_message("feat: theirs", &format!("Merge feature\n\nCloses {id}"));
+    assert_eq!(
+        repo.state_of(&id),
+        "done",
+        "fixture: the merge must have closed it first"
+    );
+
+    repo.git(&["commit", "--amend", "-q", "--no-edit"]);
+
+    assert_eq!(
+        repo.state_of(&id),
+        "done",
+        "amending a merge commit re-enters the same guard; re-closing an \
+         already-closed story must be a no-op"
+    );
+}
+
+/// **The floor's own regression guard.** `post-commit` promised a flat `1h`
+/// for an ordinary commit before this fix existed; the arrival guard's
+/// derived window must never come out narrower than that. `FLOOR` is `60`,
+/// not the `5` `post-merge` uses, and this is the case that tells the two
+/// apart: a merge bringing only fresh commits derives only a few minutes on
+/// its own — with the wrong floor, an unrelated commit made half an hour ago
+/// and never synced would be missed.
+#[test]
+fn the_derived_window_never_narrows_below_an_hour() {
+    let repo = HookRepo::new();
+    let stale_id = repo.new_story("Made half an hour ago, never synced");
+    let stale_sha = repo.commit_unhooked(
+        &format!("chore: unrelated, made earlier\n\nRefs {stale_id}"),
+        Some(&epoch_ago(30 * 60)),
+    );
+
+    repo.resolve_a_conflict_with_message("feat: theirs", "Merge feature");
+
+    assert!(
+        repo.linked_shas(&stale_id).contains(&stale_sha),
+        "a merge bringing only fresh commits derives only a few minutes on \
+         its own; the arrival guard's floor must still reach a commit made \
+         thirty minutes ago, exactly as the flat `1h` this hook already \
+         promised before this fix existed"
     );
 }
 
