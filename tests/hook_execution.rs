@@ -323,6 +323,51 @@ impl HookRepo {
         self.git(&["commit", "-qm", resolve_message]);
         sha
     }
+
+    /// `git <args>`, **without** asserting success — for SH-355's tests, where
+    /// the whole point is to observe whether a hook let the commit through.
+    /// `git_in`/`git` panic on a nonzero exit, which would turn this story's
+    /// exact symptom (a silently refused commit) into an opaque test panic
+    /// instead of an assertion that names the cause.
+    fn git_may_fail(&self, args: &[&str]) -> std::process::Output {
+        self.git_in_may_fail(self.path(), args)
+    }
+
+    fn git_in_may_fail(&self, cwd: &Path, args: &[&str]) -> std::process::Output {
+        let mut command = Command::new("git");
+        command.current_dir(cwd);
+        self.env.apply(&mut command);
+        command.env("GIT_TERMINAL_PROMPT", "0");
+        command.args(args).output().expect("running git")
+    }
+
+    /// Installs a fake `$GIT_EDITOR` that copies whatever `prepare-commit-msg`
+    /// already wrote into the commit-message file to `editor-capture.txt`
+    /// (readable via [`Self::editor_capture`]), then overwrites the file with
+    /// a real subject line so the commit can complete without a human.
+    ///
+    /// A relative script name — git invokes the editor through `sh -c` from
+    /// the worktree root, so `./editor.sh` resolves the same way an absolute
+    /// path would, without embedding this fixture's scratch directory into
+    /// the argument string a shell has to parse.
+    fn with_editor(&self) -> &Self {
+        let script = self.path().join("editor.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\ncp \"$1\" editor-capture.txt\nprintf 'test: commit via editor\\n' > \"$1\"\n",
+        )
+        .expect("writing the fake editor");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("making the fake editor executable");
+        self
+    }
+
+    /// What the fake editor captured — the commit-message file exactly as
+    /// `prepare-commit-msg` left it, before the (fake) human touched it.
+    fn editor_capture(&self) -> String {
+        std::fs::read_to_string(self.path().join("editor-capture.txt"))
+            .expect("reading the editor's capture")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1297,5 +1342,188 @@ fn a_hooks_path_that_is_not_a_directory_is_refused() {
     assert!(
         output.contains("not a directory") && output.contains("core.hooksPath"),
         "the refusal must name the cause and the setting: {output}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// SH-355: prepare-commit-msg must never let its own logic decide the commit
+// ---------------------------------------------------------------------------
+//
+// `PREPARE_COMMIT_MSG_HOOK` used to end on `[ -n "$STORY_ID" ] && { ... }`
+// with nothing after it. An empty backlog answers `story next` with
+// `{"result":"ok","message":"no ready stories"}` — exit 0, not a refusal — so
+// `grep` found no `"id"`, `STORY_ID` was empty, and that trailing `[ ]`'s own
+// exit status (1), being the script's last command, became the hook's exit
+// status. `prepare-commit-msg` is the only one of the three managed hooks
+// whose exit status git actually obeys, so a nonzero here aborts the commit
+// outright — silently, since these hooks are required to say nothing
+// (`tests/hook_silence.rs`). `HookRepo::new()` already leaves zero stories,
+// so the defect condition is this fixture's default; every test below relies
+// on that rather than deleting stories to arrange it.
+
+/// **The story's exact repro.** `git commit --amend --no-edit` never opens an
+/// editor, so `$2` is `"commit"` — outside the `message|merge|squash` skip
+/// list — and it must not be refused just because nothing is ready to
+/// suggest.
+#[test]
+fn an_amend_survives_an_empty_backlog() {
+    let repo = HookRepo::new();
+
+    let output = repo.git_may_fail(&["commit", "--amend", "-q", "--no-edit"]);
+
+    assert!(
+        output.status.success(),
+        "`git commit --amend --no-edit` against an empty backlog must \
+         succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "",
+        "silent per this repo's hook-silence obligation"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr).trim(),
+        "",
+        "silent per this repo's hook-silence obligation"
+    );
+}
+
+/// A plain editor-opening commit — `$2` unset, the single most common way
+/// anyone commits interactively — against an empty backlog.
+#[test]
+fn an_editor_commit_survives_an_empty_backlog() {
+    let repo = HookRepo::new();
+    repo.with_editor();
+    std::fs::write(repo.path().join("f"), "editor commit\n").expect("staging a change");
+    repo.git(&["add", "f"]);
+
+    let mut commit = Command::new("git");
+    commit.current_dir(repo.path());
+    repo.env.apply(&mut commit);
+    commit.env("GIT_EDITOR", "./editor.sh");
+    let output = commit
+        .args(["commit", "-q"])
+        .output()
+        .expect("running git commit");
+
+    assert!(
+        output.status.success(),
+        "an editor-opening commit against an empty backlog must succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "",
+        "silent per this repo's hook-silence obligation"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr).trim(),
+        "",
+        "silent per this repo's hook-silence obligation"
+    );
+}
+
+/// `$2 == "template"` — `commit.template`/`-t`, the third reachable shape
+/// named in the story (`case "$2" in message|merge|squash) exit 0 ;; esac`
+/// only skips the other three).
+#[test]
+fn a_templated_commit_survives_an_empty_backlog() {
+    let repo = HookRepo::new();
+    repo.with_editor();
+    std::fs::write(repo.path().join("f"), "templated commit\n").expect("staging a change");
+    repo.git(&["add", "f"]);
+    std::fs::write(repo.path().join("template.txt"), "placeholder\n")
+        .expect("writing the template");
+
+    let mut commit = Command::new("git");
+    commit.current_dir(repo.path());
+    repo.env.apply(&mut commit);
+    // Git refuses a templated commit whose message file is byte-identical to
+    // the template ("you did not edit the message") independently of any
+    // hook, so the fake editor must actually change it — same script the
+    // plain-editor tests use.
+    commit.env("GIT_EDITOR", "./editor.sh");
+    let output = commit
+        .args(["commit", "-q", "-t", "template.txt"])
+        .output()
+        .expect("running git commit -t");
+
+    assert!(
+        output.status.success(),
+        "a templated commit against an empty backlog must succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "",
+        "silent per this repo's hook-silence obligation"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr).trim(),
+        "",
+        "silent per this repo's hook-silence obligation"
+    );
+}
+
+/// Anti-vacuity, half one: with a story actually ready, the editor must still
+/// see the hint. Without this, the three tests above could pass with the
+/// whole append-a-hint feature deleted rather than merely fixed.
+#[test]
+fn the_editor_sees_the_top_story_when_one_is_ready() {
+    let repo = HookRepo::new();
+    let id = repo.new_story("Shown as the top story hint");
+    repo.with_editor();
+    std::fs::write(repo.path().join("f"), "hinted commit\n").expect("staging a change");
+    repo.git(&["add", "f"]);
+
+    let mut commit = Command::new("git");
+    commit.current_dir(repo.path());
+    repo.env.apply(&mut commit);
+    commit.env("GIT_EDITOR", "./editor.sh");
+    let output = commit
+        .args(["commit", "-q"])
+        .output()
+        .expect("running git commit");
+    assert!(
+        output.status.success(),
+        "committing with a ready story must succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let captured = repo.editor_capture();
+    assert!(
+        captured.contains(&format!("# Top story: {id}")),
+        "the editor must see the top-story hint when one is ready: {captured}"
+    );
+
+    let committed = repo.git(&["log", "-1", "--format=%B"]);
+    let committed_message = String::from_utf8_lossy(&committed.stdout);
+    assert!(
+        !committed_message.contains("Top story"),
+        "git strips `#`-prefixed lines from the final message; the hint must \
+         not survive into the committed log: {committed_message}"
+    );
+}
+
+/// Anti-vacuity, half two: `git commit -m` must still short-circuit before
+/// the hint logic runs at all, ready story or not — the `case "$2" in
+/// message|...) exit 0` guard this story's fix sits behind.
+#[test]
+fn a_message_commit_is_never_annotated() {
+    let repo = HookRepo::new();
+    repo.new_story("Never hinted because -m short-circuits first");
+    std::fs::write(repo.path().join("f"), "message commit\n").expect("staging a change");
+    repo.git(&["add", "f"]);
+
+    repo.git(&["commit", "-qm", "test: via -m"]);
+
+    let committed = repo.git(&["log", "-1", "--format=%B"]);
+    let committed_message = String::from_utf8_lossy(&committed.stdout);
+    assert_eq!(
+        committed_message.trim(),
+        "test: via -m",
+        "the message|merge|squash skip must still hold even with a ready \
+         story: {committed_message}"
     );
 }
