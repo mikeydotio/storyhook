@@ -1843,7 +1843,10 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "state" => parse_state(args),
         "list" => parse_list(args),
         "next" => parse_next(args),
-        "summary" => Ok(Invocation::Summary),
+        "summary" => {
+            expect_no_more(&args[1..], "usage: story summary")?;
+            Ok(Invocation::Summary)
+        }
         "report" => parse_report(args),
         "search" => parse_search(args),
         "import" => parse_import(args),
@@ -1862,7 +1865,10 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
              <SLUG> project link checkout <PATH>"
                 .to_string(),
         )),
-        "export" => Ok(Invocation::Export),
+        "export" => {
+            expect_no_more(&args[1..], "usage: story export")?;
+            Ok(Invocation::Export)
+        }
         "load-context" | "context" => parse_context(args),
         "phase" => parse_phase(args),
         "type" => parse_type(args),
@@ -1903,7 +1909,10 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "set" => parse_set(args),
         "relate" | "link" => parse_relate(args),
         "unrelate" | "unlink" => parse_unrelate(args),
-        "session-start" => Ok(Invocation::SessionStart),
+        "session-start" => {
+            expect_no_more(&args[1..], "usage: story session-start")?;
+            Ok(Invocation::SessionStart)
+        }
         _ => Err(AppError::Usage(format!(
             "unknown command `{}`. Run `story --help` for usage.",
             args[0]
@@ -1982,13 +1991,15 @@ fn parse_project(args: &[String]) -> Result<Invocation, AppError> {
              \x20 story project delete [--force]"
                 .to_string(),
         )),
-        "list" => Ok(Invocation::Project {
-            action: ProjectAction::List,
-        }),
-        // Length-checked, unlike `list` above: a trailing word here would most
-        // likely be somebody reaching for a target this verb deliberately does
-        // not take, and swallowing it silently would answer about a different
-        // project than the one they named.
+        "list" => {
+            expect_no_more(&args[2..], PROJECT_USAGE)?;
+            Ok(Invocation::Project {
+                action: ProjectAction::List,
+            })
+        }
+        // Refused with its own usage rather than the group's: a trailing word
+        // here is most likely somebody reaching for a target this verb
+        // deliberately does not take, and the message that helps says so.
         "show" if args.len() == 2 => Ok(Invocation::Project {
             action: ProjectAction::Show,
         }),
@@ -2396,7 +2407,10 @@ fn parse_state(args: &[String]) -> Result<Invocation, AppError> {
         .ok_or_else(|| AppError::Usage(STATE_USAGE.to_string()))?;
 
     let action = match subcommand.as_str() {
-        "list" => StateAction::List,
+        "list" => {
+            expect_no_more(&args[2..], STATE_USAGE)?;
+            StateAction::List
+        }
 
         "add" => {
             let slug = args
@@ -2847,9 +2861,12 @@ fn parse_phase(args: &[String]) -> Result<Invocation, AppError> {
         return Err(AppError::Usage(usage.to_string()));
     }
     match args[1].as_str() {
-        "list" => Ok(Invocation::Phase {
-            action: PhaseAction::List,
-        }),
+        "list" => {
+            expect_no_more(&args[2..], usage)?;
+            Ok(Invocation::Phase {
+                action: PhaseAction::List,
+            })
+        }
         "show" => {
             let phase = args
                 .get(2)
@@ -2875,10 +2892,12 @@ fn parse_phase(args: &[String]) -> Result<Invocation, AppError> {
             })
         }
         "remove" => {
+            let remove_usage = "usage: story phase remove <id>";
             let id = args
                 .get(2)
-                .ok_or_else(|| AppError::Usage("usage: story phase remove <id>".to_string()))?
+                .ok_or_else(|| AppError::Usage(remove_usage.to_string()))?
                 .clone();
+            expect_no_more(&args[3..], remove_usage)?;
             Ok(Invocation::Phase {
                 action: PhaseAction::Remove { id },
             })
@@ -2910,7 +2929,10 @@ fn parse_type(args: &[String]) -> Result<Invocation, AppError> {
         .ok_or_else(|| AppError::Usage(TYPE_USAGE.to_string()))?;
 
     let action = match subcommand.as_str() {
-        "list" => TypeAction::List,
+        "list" => {
+            expect_no_more(&args[2..], TYPE_USAGE)?;
+            TypeAction::List
+        }
 
         "add" => {
             let slug = args
@@ -2979,6 +3001,7 @@ fn parse_type(args: &[String]) -> Result<Invocation, AppError> {
                 .get(2)
                 .cloned()
                 .ok_or_else(|| AppError::Usage(TYPE_REMOVE_USAGE.to_string()))?;
+            expect_no_more(&args[3..], TYPE_REMOVE_USAGE)?;
             TypeAction::Remove { slug }
         }
 
@@ -2994,14 +3017,19 @@ fn parse_epic(args: &[String]) -> Result<Invocation, AppError> {
         return Err(AppError::Usage(usage.to_string()));
     }
     match args[1].as_str() {
-        "list" => Ok(Invocation::Epic {
-            action: EpicAction::List,
-        }),
+        "list" => {
+            expect_no_more(&args[2..], usage)?;
+            Ok(Invocation::Epic {
+                action: EpicAction::List,
+            })
+        }
         "show" => {
+            let show_usage = "usage: story epic show <id>";
             let id = args
                 .get(2)
-                .ok_or_else(|| AppError::Usage("usage: story epic show <id>".to_string()))?
+                .ok_or_else(|| AppError::Usage(show_usage.to_string()))?
                 .clone();
+            expect_no_more(&args[3..], show_usage)?;
             Ok(Invocation::Epic {
                 action: EpicAction::Show { id },
             })
@@ -3023,11 +3051,11 @@ fn parse_epic(args: &[String]) -> Result<Invocation, AppError> {
             })
         }
         "add" => {
+            let add_usage = "usage: story epic add <epic-id> <story-id>";
             if args.len() < 4 {
-                return Err(AppError::Usage(
-                    "usage: story epic add <epic-id> <story-id>".to_string(),
-                ));
+                return Err(AppError::Usage(add_usage.to_string()));
             }
+            expect_no_more(&args[4..], add_usage)?;
             Ok(Invocation::Epic {
                 action: EpicAction::Add {
                     epic_id: args[2].clone(),
@@ -3176,25 +3204,35 @@ fn parse_update(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_hooks(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = "usage: story hooks install|uninstall|list|test <event_type>";
+    let test_usage = "usage: story hooks test <event_type>";
     if args.len() < 2 {
-        return Err(AppError::Usage(
-            "usage: story hooks install|uninstall|list|test <event_type>".to_string(),
-        ));
+        return Err(AppError::Usage(usage.to_string()));
     }
     match args[1].as_str() {
-        "install" => Ok(Invocation::Hooks {
-            action: HooksAction::Install,
-        }),
-        "uninstall" => Ok(Invocation::Hooks {
-            action: HooksAction::Uninstall,
-        }),
-        "list" => Ok(Invocation::Hooks {
-            action: HooksAction::List,
-        }),
+        "install" => {
+            expect_no_more(&args[2..], usage)?;
+            Ok(Invocation::Hooks {
+                action: HooksAction::Install,
+            })
+        }
+        "uninstall" => {
+            expect_no_more(&args[2..], usage)?;
+            Ok(Invocation::Hooks {
+                action: HooksAction::Uninstall,
+            })
+        }
+        "list" => {
+            expect_no_more(&args[2..], usage)?;
+            Ok(Invocation::Hooks {
+                action: HooksAction::List,
+            })
+        }
         "test" => {
-            let event_type = args.get(2).ok_or_else(|| {
-                AppError::Usage("usage: story hooks test <event_type>".to_string())
-            })?;
+            let event_type = args
+                .get(2)
+                .ok_or_else(|| AppError::Usage(test_usage.to_string()))?;
+            expect_no_more(&args[3..], test_usage)?;
             Ok(Invocation::Hooks {
                 action: HooksAction::Test {
                     event_type: event_type.clone(),
@@ -3407,6 +3445,15 @@ fn parse_help(args: &[String]) -> Result<Invocation, AppError> {
         .map(|a| a.as_str())
         .collect();
 
+    // Checked ahead of the flags, so that a second word is refused whichever
+    // form it was written in: `story help move delete` and `story help --all
+    // delete` were both answering about the first word and discarding the
+    // second (SH-357).
+    expect_no_more(
+        positional.get(1..).unwrap_or_default(),
+        "usage: story help [<topic>] [--all|--compact]",
+    )?;
+
     let has_compact = flags.contains(&"--compact");
     let has_all = flags.contains(&"--all");
 
@@ -3420,7 +3467,7 @@ fn parse_help(args: &[String]) -> Result<Invocation, AppError> {
 
     if let Some(topic) = positional.first() {
         return Ok(Invocation::HelpTopic {
-            topic: topic.to_string(),
+            topic: (*topic).to_string(),
         });
     }
 
@@ -3523,13 +3570,60 @@ fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
                 _ => return Err(AppError::Usage(usage.to_string())),
             },
         },
-        "status" => DaemonAction::Status,
-        "install" => DaemonAction::Install,
-        "uninstall" => DaemonAction::Uninstall,
-        "token" => DaemonAction::Token,
+        "status" => {
+            expect_no_more(&args[2..], usage)?;
+            DaemonAction::Status
+        }
+        "install" => {
+            expect_no_more(&args[2..], usage)?;
+            DaemonAction::Install
+        }
+        "uninstall" => {
+            expect_no_more(&args[2..], usage)?;
+            DaemonAction::Uninstall
+        }
+        // `token` prints the master bearer token. The named-token verbs are
+        // `story token new|list|revoke`; anything written after `daemon token`
+        // is reaching for one of those, and printing the master credential
+        // instead is the worst available answer (SH-357).
+        "token" => {
+            expect_no_more(&args[2..], usage)?;
+            DaemonAction::Token
+        }
         _ => return Err(AppError::Usage(usage.to_string())),
     };
     Ok(Invocation::Daemon { action })
+}
+
+/// Refuses `rest` unless it is empty, naming the first word that has no
+/// meaning where it was written.
+///
+/// Every arm that is already a complete command ends with this call. What it
+/// guards is not a typo but a *silence* (SH-357): `story daemon token new
+/// psamathe` used to print the daemon's master bearer token and exit 0,
+/// because the arm never looked past `token`, and the output of a command
+/// that ignored half its arguments is indistinguishable from the output of
+/// one that understood them. On a credential-printing command that
+/// manufactured the specific wrong belief "I minted a scoped, revocable
+/// token".
+///
+/// The class is pinned by `tests/trailing_arguments.rs`, which derives every
+/// command word from this file and asks the parser itself whether appending a
+/// meaningless word leaves the [`Invocation`] unchanged — so a new arm that
+/// forgets this call fails the suite the day it is written, rather than
+/// waiting to be found by a user.
+///
+/// # Errors
+///
+/// [`AppError::Usage`] naming the unexpected word, above `usage`.
+fn expect_no_more<Word: AsRef<str>>(rest: &[Word], usage: &str) -> Result<(), AppError> {
+    match rest.first() {
+        None => Ok(()),
+        Some(unexpected) => Err(AppError::Usage(format!(
+            "unexpected argument `{}`\n{usage}",
+            unexpected.as_ref()
+        ))),
+    }
 }
 
 /// An optional trailing `--port <PORT>`, refusing anything else.
@@ -3570,18 +3664,30 @@ fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
                 action: WebAction::Start { port },
             })
         }
-        "stop" => Ok(Invocation::Web {
-            action: WebAction::Stop,
-        }),
-        "status" => Ok(Invocation::Web {
-            action: WebAction::Status,
-        }),
-        "open" => Ok(Invocation::Web {
-            action: WebAction::Open,
-        }),
-        "address" => Ok(Invocation::Web {
-            action: WebAction::Address,
-        }),
+        "stop" => {
+            expect_no_more(&args[2..], usage)?;
+            Ok(Invocation::Web {
+                action: WebAction::Stop,
+            })
+        }
+        "status" => {
+            expect_no_more(&args[2..], usage)?;
+            Ok(Invocation::Web {
+                action: WebAction::Status,
+            })
+        }
+        "open" => {
+            expect_no_more(&args[2..], usage)?;
+            Ok(Invocation::Web {
+                action: WebAction::Open,
+            })
+        }
+        "address" => {
+            expect_no_more(&args[2..], usage)?;
+            Ok(Invocation::Web {
+                action: WebAction::Address,
+            })
+        }
         // Retired (SH-255): a scoped dashboard capability no longer exists to
         // revoke. `story token revoke <name>` ends one named token; there is
         // no single command for "every token this daemon has issued" — naming
