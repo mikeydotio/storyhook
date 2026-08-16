@@ -63,6 +63,12 @@ story prioritize {prefix}-4 high
 story prioritize {prefix}-6 medium
 ```
 
+**Read `story help priority-rubric` before choosing a level.** Priority is
+`story next`'s sort key, not a label — it decides what the next session picks
+up, ties break toward the older story, and every inflated level costs the
+resolution of the level it joins. A story created with no `--priority` is
+filed at `none`, which means *deliberately parked* and sorts last.
+
 ### Decompose a spec
 
 For larger specs, `story decompose` parses a markdown or YAML file into stories
@@ -124,6 +130,7 @@ story graph --blocked-by {prefix}-1   # trace why a story is blocked
 | Move to a state | `story move {prefix}-<n> <state>` |
 | Add a comment | `story comment {prefix}-<n> "comment text"` |
 | Set priority | `story prioritize {prefix}-<n> high` |
+| What a level means | `story help priority-rubric` |
 | Assign a story | `story assign {prefix}-<n> <member>` |
 | Add a label | `story label {prefix}-<n> <label>` |
 | Block a story | `story block {prefix}-<n> "reason"` |
@@ -193,7 +200,8 @@ to manage tasks.
 - `story show <id>` — show story details
 - `story comment <id> "text"` — add a comment
 - `story move <id> <state>` — change story state
-- `story prioritize <id> <level>` — set priority (critical, high, medium, low, none)
+- `story prioritize <id> <level>` — set priority (critical, high, medium, low, none);
+  run `story help priority-rubric` for what each level means before choosing one
 - `story assign <id> <member>` — assign a story
 - `story label <id> <label>` — add a label
 - `story block <id> "reason"` — mark story as blocked
