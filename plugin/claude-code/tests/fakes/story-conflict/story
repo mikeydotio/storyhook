@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
-# Fake `story` CLI for the claim-conflict regression test ONLY
-# (test-dispatch-claim-conflict.sh). A true TOCTOU race (another process's
-# `story move` landing between story.sh's own state read and its claim
-# attempt) isn't reproducible black-box without genuine concurrency, so
-# this wrapper simulates the race deterministically: it proxies every
-# invocation to the REAL story binary (STORY_REAL_BIN, set by the test)
-# EXCEPT one exact `move <id> in-progress --if-state <expected> --json`
-# call — identified by STORY_CONFLICT_ID/STORY_CONFLICT_EXPECTED — which it
-# answers with a canned {"result":"conflict",...} response instead,
-# regardless of the story's actual state. Every other subcommand (show,
-# list, new, etc.) passes through unchanged, so the fixture stays realistic
-# everywhere except the one moment under test.
+# Fake `story` CLI for the claim-conflict regression tests
+# (test-dispatch-claim-conflict.sh, test-work-claim-conflict.sh,
+# test-work-claim-retry.sh, test-work-claim-exhausted.sh). A true TOCTOU race
+# (another process's `story move` landing between story.sh's own state read
+# and its claim attempt) isn't reproducible black-box without genuine
+# concurrency, so this wrapper simulates the race deterministically: it
+# proxies every invocation to the REAL story binary (STORY_REAL_BIN, set by
+# the test) EXCEPT one exact `move <id> in-progress --if-state <expected>
+# --json` call — identified by STORY_CONFLICT_ID/STORY_CONFLICT_EXPECTED —
+# which it answers with a canned {"result":"conflict",...} response instead.
+# Every other subcommand (show, list, new, etc.) passes through unchanged, so
+# the fixture stays realistic everywhere except the one moment under test.
+#
+# STORY_CONFLICT_RIVAL=1 (SH-346) additionally performs the REAL winning move
+# before answering conflict, rather than leaving the story's actual state
+# untouched — simulating a genuine rival claim landing in the TOCTOU window,
+# not just a canned refusal. This is what makes cmd_work's no-argument retry
+# meaningfully testable: without it, the story never actually leaves the
+# ready pool, so a re-pick would hit the exact same id every time (which is
+# also useful — see test-work-claim-exhausted.sh, which relies on that
+# unmodified default to make EVERY retry lose).
 set -euo pipefail
 
 real="${STORY_REAL_BIN:?STORY_REAL_BIN must point at the real story binary}"
@@ -35,6 +44,12 @@ is_claim_call() {
 }
 
 if is_claim_call "$@"; then
+  if [ -n "${STORY_CONFLICT_RIVAL:-}" ]; then
+    # Actually perform the winning move, so the story genuinely leaves the
+    # ready pool -- the canned response below is still what THIS caller sees
+    # (it lost), independent of what the real command actually returned.
+    "$real" "$@" >/dev/null 2>&1 || true
+  fi
   printf '{"result":"conflict","expected":"%s","actual":"in-progress","error":"state conflict: expected `%s`, was `in-progress`","exit_code":9}\n' \
     "$STORY_CONFLICT_EXPECTED" "$STORY_CONFLICT_EXPECTED"
   exit 9
