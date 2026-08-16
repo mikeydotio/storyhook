@@ -1,8 +1,12 @@
 import { test, expect } from "@playwright/test";
 import {
   cleanUpCreatedStories,
+  COPY_TARGETS,
+  createStory,
+  keepNotices,
   measureFocusIndicator,
   openProject,
+  raiseNotice,
   seedToken,
   tabOnto,
 } from "./support";
@@ -125,4 +129,46 @@ test("the drawer's three focus indicators, in every theme", async ({ page }) => 
   await page.keyboard.press("Escape");
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
+});
+
+/** A hard ceiling on how many notices this test will raise chasing overflow
+ * -- `notice-dock-geometry.spec.ts:488` needs 24 at this suite's default
+ * viewport, so 30 leaves margin without hunting for a smaller number that
+ * would only be true of today's `--notice-row-min`/dock geometry. */
+const MAX_NOTICES_FOR_OVERFLOW = 30;
+
+test("the notice scroller's focus indicator, in every theme", async ({ page }) => {
+  test.setTimeout(60_000); // matches notice-dock-geometry.spec.ts:418's own
+  // budget for the same ~24-notice cost.
+
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await keepNotices(page);
+  await openProject(page, "Alpha Project");
+
+  const title = "SH-360 — notice scroller ring";
+  await createStory(page, title);
+
+  // Raised until #toast-scroll actually overflows -- syncNoticeDock() adds
+  // tabindex="0" only then -- rather than hard-coding the 24 that happens
+  // to be true today, so this test keeps working if the dock's geometry or
+  // --notice-row-min ever changes.
+  const scroll = page.locator("#toast-scroll");
+  let raised = 0;
+  while ((await scroll.getAttribute("tabindex")) !== "0") {
+    if (raised >= MAX_NOTICES_FOR_OVERFLOW) {
+      const box = await scroll.evaluate((el) => ({ scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }));
+      throw new Error(
+        `#toast-scroll never overflowed after ${raised} notices ` +
+          `(scrollHeight=${box.scrollHeight}, clientHeight=${box.clientHeight})`,
+      );
+    }
+    await raiseNotice(page, title, raised % COPY_TARGETS.length);
+    await expect(page.locator("#toast-stack .toast")).toHaveCount(raised + 1);
+    raised++;
+  }
+
+  await measureFocusIndicator(page, "#toast-scroll:focus", "the notice scroller", () =>
+    tabOnto(page, "#toast-dismiss-all", "#toast-scroll"),
+  );
 });
