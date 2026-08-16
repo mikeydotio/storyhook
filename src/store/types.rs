@@ -307,6 +307,15 @@ pub struct StoryRow {
     /// which is a different fault from a row that is *wrong* — and only this
     /// column can tell them apart.
     pub head_seq: EventSeq,
+    /// The change-feed position (`events.global_seq`) of the same event
+    /// [`head_seq`](Self::head_seq) names (SH-336): which event within the
+    /// story vs. where that event sits in the *project's* write order.
+    /// `GlobalSeq::ZERO` means no event backs this row — the `extra_rows`
+    /// case [`crate::store::rebuild`] already names. Exact by construction
+    /// because writes are serialized behind one process-wide write mutex, so
+    /// it tiebreaks a recency ordering that a one-second-precision timestamp
+    /// cannot.
+    pub head_global_seq: GlobalSeq,
     /// Column: title.
     pub title: String,
     /// Column: state slug.
@@ -432,7 +441,9 @@ pub enum StorySort {
     /// service layer's ready-list comparators after this one had already
     /// proven it here.
     Priority,
-    /// Most recently updated first, then ascending story number.
+    /// Most recently updated first; a same-second tie broken exactly by
+    /// [`StoryRow::head_global_seq`](crate::store::types::StoryRow::head_global_seq)
+    /// (SH-336), then ascending story number.
     UpdatedAt,
 }
 

@@ -547,14 +547,16 @@ fn an_unknown_event_kind_is_retained_reported_and_not_a_divergence() {
     assert_eq!(diff.unknown_events[0].kind, "StoryTeleported");
     assert_eq!(diff.unknown_events[0].seq, EventSeq::new(2));
     // Reported, but not damage: retaining an event this binary does not
-    // understand is correct behaviour. Only `head_seq` moved, because the
-    // unknown event still counts as history.
+    // understand is correct behaviour. `head_seq` and `head_global_seq`
+    // (SH-336) both moved, because the unknown event still counts as
+    // history and advances both coordinates of the same head — `seq`
+    // within the story, `global_seq` within the project.
     assert_eq!(
         diff.divergences
             .iter()
             .map(|d| d.field.as_str())
             .collect::<Vec<_>>(),
-        vec!["head_seq"]
+        vec!["head_seq", "head_global_seq"]
     );
 }
 

@@ -361,6 +361,36 @@ fn doctor_reports_and_fixes_a_draft_flag_that_disagrees_with_its_events() {
     project.run(&["doctor"]).success();
 }
 
+/// SH-336's `head_global_seq` gets the same treatment `hidden_at`/`draft`
+/// (SH-211) already do: `put_story` derives it from `events` in the same
+/// statement that writes every other column, so it can only disagree with a
+/// rebuild if something wrote the row outside `put_story` — a raw migration,
+/// an admin script, exactly what this fixture fabricates.
+#[test]
+fn doctor_reports_and_fixes_a_head_global_seq_that_disagrees_with_its_events() {
+    let env = TestEnv::shared();
+    let project = env.project().seed_story("A story").build();
+    let store = project.open_store();
+    let id = project.project_id(&store);
+    let story = project.story_no(&store, "SH-1");
+
+    let conn = rusqlite::Connection::open(store.path()).expect("opening the store");
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .expect("setting a busy timeout");
+    conn.execute(
+        "UPDATE stories SET head_global_seq = 999999 WHERE project_id = ?1 AND story_no = ?2",
+        rusqlite::params![id.get(), story.get()],
+    )
+    .expect("fabricating a head_global_seq with no event behind it");
+
+    project.run(&["doctor"]).code(5).stderr(contains(
+        "SH-1: head_global_seq is `999999` but the events say `",
+    ));
+
+    project.run(&["doctor", "--fix"]).success();
+    project.run(&["doctor"]).success();
+}
+
 /// SH-269, and the half a same-prefix fixture cannot catch: the read-model
 /// pass renders the id from the **project's own** prefix, so a literal `SH`
 /// would pass every other test in this file and still be wrong for every
