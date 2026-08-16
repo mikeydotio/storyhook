@@ -251,7 +251,9 @@ pub fn route<S: Store>(
         // control surface is [`crate::api::rpc`]'s. Reaching here means
         // something upstream stopped answering, and the reply is what an
         // unrouted path has always got.
-        Route::Events | Route::ControlSurface => Routed::quiet(text_reply(404, "Not found")),
+        Route::Events | Route::ControlSurface | Route::DispatchLog => {
+            Routed::quiet(text_reply(404, "Not found"))
+        }
         Route::MethodNotAllowed => Routed::quiet(text_reply(405, "Method not allowed")),
         Route::NotFound => Routed::quiet(text_reply(404, "Not found")),
     }

@@ -92,11 +92,22 @@ const DISPATCH_TIMEOUT: Duration = Duration::from_secs(180);
 pub(crate) const MAX_RUNNING: usize = 4;
 
 /// How many finished records the registry keeps.
-const RETAIN_FINISHED: usize = 32;
+///
+/// `pub` since SH-361: the dispatch log serves this number **as data**
+/// ([`Retention::records`]) so the sentence the dashboard renders is this
+/// constant by construction rather than a second copy of it in
+/// `src/web_dashboard.html`. A hand-copied number on one side of a wire is
+/// the drift class SH-136 has cost this project three times, and
+/// `dashboard_mutation_deadline.rs` is the precedent for pinning the pair
+/// rather than trusting them.
+pub const RETAIN_FINISHED: usize = 32;
 
 /// How long a finished record is kept regardless of how many newer ones
 /// have arrived.
-const RETAIN_FOR: Duration = Duration::from_secs(30 * 60);
+///
+/// `pub` for the same reason as [`RETAIN_FINISHED`] — it reaches the browser
+/// as [`Retention::seconds`].
+pub const RETAIN_FOR: Duration = Duration::from_secs(30 * 60);
 
 /// The most stdout or stderr this module reads back from a dispatch child.
 ///
@@ -304,6 +315,54 @@ struct Inner {
     /// Finished handles, oldest first — [`DispatchRegistry::evict`]'s
     /// working set. A running dispatch is never in here.
     finished_order: VecDeque<String>,
+    /// How many finished records [`DispatchRegistry::evict`] has dropped
+    /// since this registry was built (SH-361).
+    ///
+    /// **A floor, never a total, and the wire says so.** It counts only
+    /// what *this* process collected: it starts at zero on every daemon
+    /// restart, and [`DispatchRegistry::log`] filters expired-but-uncollected
+    /// entries out of its answer without counting them here, because that
+    /// read must not mutate anything (see that method). Both gaps
+    /// under-report in the same direction, which is what makes "at least N"
+    /// the only honest wording — SH-361's council accepted this counter
+    /// solely on that condition, having first rejected an exact `evicted`
+    /// count as "a silent cap wearing a badge".
+    forgotten: usize,
+}
+
+/// The retention policy behind one [`DispatchLog`], reported so a reader is
+/// told why the list ends where it does (SH-361).
+///
+/// This project's rule is that a bounded view which reads as complete is a
+/// vacuous pass, so the log discloses the **rule** — which cannot be wrong —
+/// and only then a floor on what has already gone.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct Retention {
+    /// [`RETAIN_FINISHED`], served as data rather than restated in the page.
+    pub records: usize,
+    /// [`RETAIN_FOR`] in whole seconds, likewise.
+    pub seconds: u64,
+    /// A **lower bound** on how many finished records are already gone. See
+    /// [`Inner::forgotten`] for the two reasons it under-reports; a client
+    /// must render it as "at least N", never as a count.
+    pub forgotten: usize,
+}
+
+/// Everything `GET /api/dispatch-log` answers: the finished records this
+/// daemon still retains, newest first, and the policy that bounds them.
+#[derive(Serialize)]
+struct DispatchLogEnvelope<'a> {
+    result: &'static str,
+    dispatches: &'a [DispatchRecord],
+    retention: Retention,
+}
+
+/// The registry's answer to a dispatch-log read (SH-361).
+pub struct DispatchLog {
+    /// Finished records, **newest first** — `finished_order` reversed.
+    pub dispatches: Vec<DispatchRecord>,
+    /// The policy that bounds `dispatches`.
+    pub retention: Retention,
 }
 
 /// What a `POST` should do about a request to dispatch `story`.
@@ -518,6 +577,7 @@ impl DispatchRegistry {
                 break;
             };
             inner.entries.remove(&oldest);
+            inner.forgotten += 1;
         }
         while let Some(oldest) = inner.finished_order.front() {
             let expired = inner
@@ -530,6 +590,62 @@ impl DispatchRegistry {
             }
             let oldest = inner.finished_order.pop_front().expect("front just peeked");
             inner.entries.remove(&oldest);
+            inner.forgotten += 1;
+        }
+    }
+
+    /// Everything `GET /api/dispatch-log` answers (SH-361): the finished
+    /// records still retained, newest first, and the policy bounding them.
+    ///
+    /// **This read does not mutate the registry, deliberately.** The obvious
+    /// implementation calls [`Self::evict`] first, so the list shows exactly
+    /// what the policy retains — and SH-361's council rejected it, on its own
+    /// author's motion. Eviction is shared state: collecting a record here
+    /// makes [`handle_get`] answer **404** for a handle that would otherwise
+    /// still have resolved, and `pollDispatch`'s `.catch` in
+    /// `src/web_dashboard.html` retries a 404 all the way to
+    /// `DISPATCH_MAX_POLLS` and then reports "Lost track of the dispatch" —
+    /// a fabricated client-side failure whose actual cause was somebody
+    /// opening a Settings panel. A read on one route must not change what a
+    /// second route answers.
+    ///
+    /// Filtering in the read path yields the identical honest list with no
+    /// cross-route side effect: an entry past [`RETAIN_FOR`] is omitted here
+    /// whether or not a later `finish()` has collected it yet. The count
+    /// bound needs no filtering at all, because `finish()` evicts eagerly, so
+    /// `finished_order` never exceeds [`RETAIN_FINISHED`] between writes.
+    ///
+    /// The consequence is stated rather than hidden: a filtered-but-
+    /// uncollected entry is **not** added to `forgotten`, which is the second
+    /// of the two reasons that counter is a floor rather than a total.
+    pub fn log(&self) -> DispatchLog {
+        let inner = self.inner.lock().expect("dispatch registry mutex poisoned");
+        // Reversed: `finished_order` is oldest-first, and this list is
+        // newest-first. Ordering on insertion order rather than on
+        // `finished_at` is SH-336's doctrine on this surface -- every
+        // storyhook timestamp is RFC3339 at one-second precision and
+        // `MAX_RUNNING` dispatches can finish inside one second, so a
+        // timestamp comparator is blind exactly where this list is busiest.
+        // `finished_order` is appended inside this mutex and so cannot tie.
+        let dispatches = inner
+            .finished_order
+            .iter()
+            .rev()
+            .filter_map(|handle| inner.entries.get(handle))
+            .filter(|entry| {
+                !entry
+                    .finished_instant
+                    .is_some_and(|at| at.elapsed() > RETAIN_FOR)
+            })
+            .map(|entry| entry.record.clone())
+            .collect();
+        DispatchLog {
+            dispatches,
+            retention: Retention {
+                records: RETAIN_FINISHED,
+                seconds: RETAIN_FOR.as_secs(),
+                forgotten: inner.forgotten,
+            },
         }
     }
 }
@@ -637,6 +753,31 @@ pub(crate) fn is_dispatch_path(segments: &[&str]) -> bool {
         && segments[5] == "dispatch"
 }
 
+/// Whether `segments` addresses the dispatch log — `GET /api/dispatch-log`
+/// (SH-361).
+///
+/// A **separate** predicate rather than a widening of [`is_dispatch_path`],
+/// which `src/api/routes.rs`'s cross-check maps onto the
+/// `ProjectRoute::Dispatch | DispatchPoll` family; widening it would make
+/// that assertion false. Two predicates, each cross-checked against its own
+/// `Route` variant, keeps both statements true.
+///
+/// **Daemon-scoped, not project-scoped**, because the resource is: one
+/// [`DispatchRegistry`] per daemon and one
+/// [`Environment::dispatch_history`] per store, bounded by
+/// [`RETAIN_FINISHED`]/[`RETAIN_FOR`] **globally**. A per-project projection
+/// of a globally-bounded set cannot describe its own truncation — it would
+/// silently lose entries to another project's dispatches and could not even
+/// say how many — and `state.dispatchHistory` in the dashboard is reset only
+/// by `dismissAllDispatchHistory`, never by `selectRepo`, so the dock
+/// already shows rows across project switches that a per-project log could
+/// not. Each record carries its own `project`, so labelling rows costs
+/// nothing and a `?project=` filter stays available later without this
+/// route having claimed anything false today.
+pub(crate) fn is_dispatch_log_path(segments: &[&str]) -> bool {
+    segments == ["api", "dispatch-log"]
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn intercept(
     segments: &[&str],
@@ -652,6 +793,18 @@ pub fn intercept(
     cookie_name: &str,
     wall_now: DateTime<Utc>,
 ) -> Option<Reply> {
+    if is_dispatch_log_path(segments) {
+        return Some(handle_log(
+            method,
+            headers,
+            token,
+            tokens,
+            cookie_name,
+            wall_now,
+            registry,
+        ));
+    }
+
     if !is_dispatch_path(segments) {
         return None;
     }
@@ -697,6 +850,70 @@ pub fn intercept(
         (Method::Get, 7) => Some(handle_get(segments[6], registry)),
         _ => Some(text_reply(405, "Method Not Allowed")),
     }
+}
+
+/// `GET /api/dispatch-log` — the finished records this daemon still retains,
+/// and the policy that bounds them (SH-361).
+///
+/// # Why this route exists
+///
+/// A durable **error** notice used to be the only record of the failure it
+/// reported: `addDispatchHistoryRow`'s own doc comment said so — "no route
+/// exposes it, this page never reads it… This row is the record" — and
+/// dismissing it, deliberately or through the "Dismiss all" bar that has
+/// existed since SH-323, destroyed that record. SH-339 fixed the
+/// *amplification* (a held Enter walking the heir chain and clearing the
+/// pile); this fixes the *loss*, for the half of it that has a record to
+/// recover. The daemon has kept these records all along, and has persisted
+/// them across its own restarts since SH-232. They simply had no reader.
+///
+/// # The gate
+///
+/// A `GET`, and gated like every other read on this daemon and no more.
+/// [`crate::api::admission::admission`] has already run in
+/// `daemon::serve::worker` before this is reached; the token is re-checked
+/// here with the same expression the dispatch arms use — this module's
+/// deliberate, tested redundancy. **No [`mutation_guard_ok`]**, unlike
+/// [`intercept`]'s other arms: that guard is what tells a browser preflight
+/// this endpoint spawns a process, and reading finished records does not.
+/// Structure first (a method this path does not serve is a 405), then the
+/// credential (401), so an unauthenticated caller learns nothing beyond
+/// which methods the path answers — the same order the arms below use.
+///
+/// `.no_cache()` because a browser re-issues this on every visit to the
+/// Settings screen and must never be handed a stale list.
+fn handle_log(
+    method: &Method,
+    headers: &[Header],
+    token: &str,
+    tokens: &TokenRegistry,
+    cookie_name: &str,
+    wall_now: DateTime<Utc>,
+    registry: &Arc<DispatchRegistry>,
+) -> Reply {
+    if !matches!(method, Method::Get) {
+        return text_reply(405, "Method Not Allowed");
+    }
+    if !token_ok(headers, token)
+        && !named_token_ok(
+            headers,
+            method,
+            cookie_name,
+            tokens,
+            wall_now,
+            Instant::now(),
+        )
+    {
+        return text_reply(401, "storyhook daemon: missing or invalid token");
+    }
+    let log = registry.log();
+    let body = serde_json::to_string(&DispatchLogEnvelope {
+        result: "ok",
+        dispatches: &log.dispatches,
+        retention: log.retention,
+    })
+    .expect("DispatchLogEnvelope holds no type that can fail to serialize");
+    Reply::new(200, "application/json", body).no_cache()
 }
 
 /// Parses the dispatch endpoint's one query parameter, `auto` (SH-208).
@@ -1712,6 +1929,262 @@ mod tests {
             StartOutcome::AtCapacity => {}
             other => panic!("expected AtCapacity beyond MAX_RUNNING: {other:?}"),
         }
+    }
+
+    /// Finishes one dispatch and hands back its handle — the four-line
+    /// preamble every log test below would otherwise repeat.
+    fn finish_one(
+        registry: &DispatchRegistry,
+        story: &str,
+        finished_at: &str,
+        reason: Option<DispatchReason>,
+    ) -> String {
+        let handle = match registry.try_start("proj", story, false, "t".to_string()) {
+            StartOutcome::Started(h) => h,
+            other => panic!("expected Started: {other:?}"),
+        };
+        registry.finish(
+            &handle,
+            story,
+            finished_at.to_string(),
+            (
+                DispatchState::Refused,
+                Some(serde_json::json!({"display": "[story] refused: something"})),
+                None,
+                reason,
+            ),
+        );
+        handle
+    }
+
+    /// SH-361 P1. The log's order is the registry's own insertion order, and
+    /// the probe makes every timestamp identical so a `finished_at`
+    /// comparator has nothing to sort by.
+    ///
+    /// This is SH-336's doctrine on this surface, and it has to be a unit
+    /// test: only a caller-supplied `finished_at` can force a same-second tie
+    /// deterministically, which an e2e driving a real daemon cannot.
+    #[test]
+    fn the_log_is_newest_first_by_insertion_order_not_by_timestamp() {
+        let registry = DispatchRegistry::new();
+        for story in ["SH-1", "SH-2", "SH-3"] {
+            finish_one(&registry, story, "2026-01-01T00:00:00Z", None);
+        }
+        let stories: Vec<String> = registry
+            .log()
+            .dispatches
+            .iter()
+            .map(|record| record.story.clone())
+            .collect();
+        assert_eq!(
+            stories,
+            vec!["SH-3".to_string(), "SH-2".to_string(), "SH-1".to_string()],
+            "three records sharing one timestamp must still come back newest-first"
+        );
+    }
+
+    /// SH-361 P2. A running dispatch is not an outcome and is not in the log.
+    ///
+    /// Also the reason the log iterates `finished_order` rather than the
+    /// `entries` map: doing the latter would leak running records here *and*
+    /// lose the order the test above pins.
+    #[test]
+    fn a_running_dispatch_is_absent_from_the_log() {
+        let registry = DispatchRegistry::new();
+        finish_one(&registry, "SH-1", "2026-01-01T00:00:00Z", None);
+        match registry.try_start("proj", "SH-2", false, "t".to_string()) {
+            StartOutcome::Started(_) => {}
+            other => panic!("expected Started: {other:?}"),
+        }
+        let log = registry.log();
+        assert_eq!(log.dispatches.len(), 1);
+        assert_eq!(log.dispatches[0].story, "SH-1");
+    }
+
+    /// SH-361 P3. Overflowing the count bound is disclosed, not silent.
+    #[test]
+    fn records_dropped_past_the_count_bound_are_counted_as_forgotten() {
+        let registry = DispatchRegistry::new();
+        for n in 0..(RETAIN_FINISHED + 3) {
+            finish_one(&registry, &format!("SH-{n}"), "2026-01-01T00:00:00Z", None);
+        }
+        let log = registry.log();
+        assert_eq!(log.dispatches.len(), RETAIN_FINISHED);
+        assert_eq!(
+            log.retention.forgotten, 3,
+            "three records past the bound must be reported as gone"
+        );
+    }
+
+    /// SH-361 P4, as amended by the council. Two assertions, and the second
+    /// is the one the amendment exists for.
+    ///
+    /// The first half pins `RETAIN_FOR` itself, which **nothing tested before
+    /// this story**: deleting `evict`'s time-based loop shipped green, and
+    /// with it the whole `retention.seconds` half of the disclosure the
+    /// dashboard renders.
+    ///
+    /// The second half pins that reading the log is *not* a write. The
+    /// natural implementation calls `evict()` first so the list matches the
+    /// policy exactly; the council rejected it because collecting a record
+    /// here makes `handle_get` answer 404 for a handle that would still have
+    /// resolved, and `pollDispatch` turns a 404 into "Lost track of the
+    /// dispatch" after exhausting its retries — a failure invented by opening
+    /// a Settings panel. Filtering in the read path gives the identical list
+    /// with no such side effect, and this asserts the difference directly
+    /// rather than trusting the comment above it.
+    #[test]
+    fn an_expired_record_leaves_the_log_without_leaving_the_poll_route() {
+        let registry = DispatchRegistry::new();
+        let handle = finish_one(&registry, "SH-1", "2026-01-01T00:00:00Z", None);
+        {
+            let mut inner = registry.inner.lock().expect("dispatch registry lock");
+            let entry = inner.entries.get_mut(&handle).expect("just finished");
+            entry.finished_instant = Some(
+                Instant::now()
+                    .checked_sub(RETAIN_FOR + Duration::from_secs(1))
+                    .expect("a monotonic clock far enough from its origin"),
+            );
+        }
+        assert!(
+            registry.log().dispatches.is_empty(),
+            "a record past RETAIN_FOR must not be served in the log"
+        );
+        assert!(
+            registry.get(&handle).is_some(),
+            "reading the log must not evict the record the poll route answers with"
+        );
+    }
+
+    /// SH-361 P5. The numbers on the wire are the module's own constants, so
+    /// the sentence the dashboard composes cannot drift from the policy this
+    /// registry actually enforces — the `HOOK_TIMEOUT_CEILING_SECS` /
+    /// `dashboard_mutation_deadline.rs` precedent, applied before the drift
+    /// rather than after it.
+    #[test]
+    fn the_logs_retention_numbers_are_the_modules_own_constants() {
+        let log = DispatchRegistry::new().log();
+        assert_eq!(log.retention.records, RETAIN_FINISHED);
+        assert_eq!(log.retention.seconds, RETAIN_FOR.as_secs());
+        assert_eq!(
+            log.retention.forgotten, 0,
+            "a fresh registry has dropped nothing"
+        );
+    }
+
+    /// SH-361. The record recovered from the log still carries the two lines
+    /// the dismissed notice showed — `payload.display` and the typed
+    /// `reason`, the latter serialized as the bare string `story.sh` wrote.
+    #[test]
+    fn the_log_keeps_the_detail_and_the_typed_reason() {
+        let registry = DispatchRegistry::new();
+        finish_one(
+            &registry,
+            "SH-1",
+            "2026-01-01T00:00:00Z",
+            Some(DispatchReason::parse("claim-conflict")),
+        );
+        let log = registry.log();
+        let json = serde_json::to_string(&log.dispatches[0]).expect("a record serializes");
+        assert!(
+            json.contains("\"reason\":\"claim-conflict\""),
+            "the typed reason must survive as a bare string: {json}"
+        );
+        assert!(
+            json.contains("refused: something"),
+            "the detail must survive: {json}"
+        );
+    }
+
+    /// SH-361 P8's gate, at the unit layer: the log answers no method but
+    /// `GET`, and answers nothing at all without a credential.
+    #[test]
+    fn the_dispatch_log_refuses_a_wrong_method_and_an_untokened_caller() {
+        let registry = Arc::new(DispatchRegistry::new());
+        let bus = ChangeBus::new();
+        let env = env();
+        let mut authed = GUARD_HEADERS.to_vec();
+        authed.push(("X-Storyhook-Token", "tok"));
+        let segments = ["api", "dispatch-log"];
+
+        let post = intercept(
+            &segments,
+            &Method::Post,
+            None,
+            &headers(&authed),
+            &TrustedHosts::default(),
+            "tok",
+            &env,
+            &bus,
+            &registry,
+        )
+        .expect("the log path is always claimed");
+        assert_eq!(post.status, 405);
+
+        let untokened = intercept(
+            &segments,
+            &Method::Get,
+            None,
+            &headers(GUARD_HEADERS),
+            &TrustedHosts::default(),
+            "tok",
+            &env,
+            &bus,
+            &registry,
+        )
+        .expect("the log path is always claimed");
+        assert_eq!(untokened.status, 401);
+
+        let ok = intercept(
+            &segments,
+            &Method::Get,
+            None,
+            &headers(&authed),
+            &TrustedHosts::default(),
+            "tok",
+            &env,
+            &bus,
+            &registry,
+        )
+        .expect("the log path is always claimed");
+        assert_eq!(ok.status, 200);
+    }
+
+    /// SH-361. An empty log is a 200 carrying its policy, never a 404 or a
+    /// 500 — the both-directions check without which "the route always
+    /// errors" would satisfy every assertion above.
+    #[test]
+    fn an_empty_dispatch_log_is_a_200_that_still_states_its_policy() {
+        let registry = Arc::new(DispatchRegistry::new());
+        let bus = ChangeBus::new();
+        let env = env();
+        let mut authed = GUARD_HEADERS.to_vec();
+        authed.push(("X-Storyhook-Token", "tok"));
+        let reply = intercept(
+            &["api", "dispatch-log"],
+            &Method::Get,
+            None,
+            &headers(&authed),
+            &TrustedHosts::default(),
+            "tok",
+            &env,
+            &bus,
+            &registry,
+        )
+        .expect("the log path is always claimed");
+        assert_eq!(reply.status, 200);
+        assert!(
+            reply.body().contains("\"dispatches\":[]"),
+            "{}",
+            reply.body()
+        );
+        assert!(
+            reply
+                .body()
+                .contains(&format!("\"records\":{RETAIN_FINISHED}")),
+            "an empty list must still disclose the policy: {}",
+            reply.body()
+        );
     }
 
     #[test]
