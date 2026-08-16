@@ -76,9 +76,14 @@ test("the board's own focus indicators, in every theme", async ({ page }) => {
   );
 
   // Alpha's two seeded stories are enough; syncRoving keeps exactly one
-  // card at tabindex="0" (SH-197), the one this walk lands on.
-  await measureFocusIndicator(page, ".card[tabindex='0']:focus", "a board card", () =>
-    tabOnto(page, "#search-input", ".card[tabindex='0']"),
+  // card at tabindex="0" (SH-197), the one this walk lands on. The bare
+  // `.card` selector (not `.card[tabindex='0']`) is deliberate: it is the
+  // CSS rule's own base identity, which is what
+  // tests/dashboard_focus_coverage.rs derives its coverage set from --
+  // `:focus`/`Element.matches()` already disambiguate to whichever one
+  // element actually holds focus, so no extra qualifier is needed.
+  await measureFocusIndicator(page, ".card:focus", "a board card", () =>
+    tabOnto(page, "#search-input", ".card"),
   );
 });
 
@@ -88,9 +93,11 @@ test("the list view's own focus indicator, in every theme", async ({ page }) => 
   await page.locator('#view-toggle [data-view="list"]').click();
 
   // Same roving-tabindex mechanism as the board, bound separately for the
-  // list (syncRoving(body, "tr[data-id]", ...)).
-  await measureFocusIndicator(page, "tr[tabindex='0']:focus", "a list row", () =>
-    tabOnto(page, "#search-input", "tr[tabindex='0']"),
+  // list (syncRoving(body, "tr[data-id]", ...)). "tbody tr", not a bare
+  // qualifier, matches the CSS rule's own base identity -- see the board
+  // test's comment above for why no extra qualifier is needed.
+  await measureFocusIndicator(page, "tbody tr:focus", "a list row", () =>
+    tabOnto(page, "#search-input", "tbody tr"),
   );
 });
 
@@ -168,7 +175,11 @@ test("the notice scroller's focus indicator, in every theme", async ({ page }) =
     raised++;
   }
 
-  await measureFocusIndicator(page, "#toast-scroll:focus", "the notice scroller", () =>
-    tabOnto(page, "#toast-dismiss-all", "#toast-scroll"),
+  // `.notice-scroll`, matching the CSS rule's own base identity -- see the
+  // board test's comment for why no `#toast-scroll` qualifier is needed:
+  // once tabOnto lands focus on it, it is the only `.notice-scroll` that
+  // matches `:focus`.
+  await measureFocusIndicator(page, ".notice-scroll:focus", "the notice scroller", () =>
+    tabOnto(page, "#toast-dismiss-all", ".notice-scroll"),
   );
 });
