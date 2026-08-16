@@ -219,13 +219,19 @@ only the cases that are about *it*.
 
 ## Out of scope, named rather than assumed
 
-- **SH-283** — a pre-existing, unrelated defect in `captureDrawerFocus`/
-  `restoreDrawerFocus`: in WebKit, clicking a `<button>` doesn't move focus to it, so a
-  focused description in story A that's left uncommitted when a `storyRef` click opens
-  story B can have its stale value written into story B's now-visible textarea. Found
-  while specifying this story's exact focus-capture semantics; not caused or widened by
-  this story's own surfaces (the description view's `storyRef` links are only clickable
-  in read mode, where the textarea isn't focused). Filed separately, not fixed here.
+- **SH-283** — filed as a pre-existing defect in `captureDrawerFocus`/`restoreDrawerFocus`
+  found while specifying this story's exact focus-capture semantics: the filed premise
+  was that WebKit doesn't move focus to a clicked `<button>`, so a focused description
+  left uncommitted in story A could have its stale value written into story B's drawer
+  after a `storyRef` click. Investigation found that premise doesn't hold in either
+  WebKit or Chromium — `mousedown`'s default action blurs the old field before the
+  click event (and this app's `onClick` handlers) ever run, in both engines, so no
+  click- or keyboard-driven path was found that actually reaches the leak. The
+  snapshot's lack of story identity was real regardless, though, so it was closed as
+  defensive hardening rather than a live-bug fix — see SH-283's own comment for the
+  full forensic record and `src/web_dashboard.html`'s `renderDrawer()`. Not caused or
+  widened by this story's own surfaces either way (the description view's `storyRef`
+  links are only clickable in read mode, where the textarea isn't focused).
 - Harmonizing the pre-existing PR-link anchor's bare `rel="noopener"` with this story's
   `rel="noopener noreferrer"` convention.
 - Rescoping the list view's bare `table`/`thead th`/`tbody tr` selectors so `.md`
