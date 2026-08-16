@@ -44,15 +44,23 @@ import {
  * text or DOM mutation a live region or `role="status"` announcer produces.
  * What is NOT claimed: what a real assistive technology actually utters,
  * including whether its own speech queue coalesces two adjacent identical
- * announcements — no AT is driven by this suite (Chromium only), and this
+ * announcements — no AT is driven by this suite on any engine (SH-335 added
+ * `webkit`, but that is a second rendering engine, not an AT), and this
  * project's own SH-322/SH-327 precedent is not to imply coverage of what was
  * not checked.
  */
 
 cleanUpCreatedStories("Alpha Project");
 
-test.beforeEach(async ({ page, context }) => {
-  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+test.beforeEach(async ({ page, context, browserName }) => {
+  // WebKit gets `clipboard-read` alone: its Playwright permission map has no
+  // `clipboard-write` entry at all (`grantPermissions` throws "Unknown
+  // permission: clipboard-write" there — SH-335). Every other engine keeps
+  // both -- a headless/automated `navigator.clipboard.writeText()` needs the
+  // explicit grant there, not just this file's own read-back.
+  const permissions =
+    browserName === "webkit" ? ["clipboard-read"] : ["clipboard-read", "clipboard-write"];
+  await context.grantPermissions(permissions);
   await seedToken(page);
 });
 

@@ -24,8 +24,16 @@ import {
 
 cleanUpCreatedStories("Alpha Project");
 
-test.beforeEach(async ({ page, context }) => {
-  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+test.beforeEach(async ({ page, context, browserName }) => {
+  // WebKit gets `clipboard-read` alone: its Playwright permission map has no
+  // `clipboard-write` entry at all (`grantPermissions` throws "Unknown
+  // permission: clipboard-write" there — SH-335). Every other engine keeps
+  // both -- a headless/automated `navigator.clipboard.writeText()` needs the
+  // explicit grant there, not just this file's own read-back via
+  // `navigator.clipboard.readText()` to verify what landed.
+  const permissions =
+    browserName === "webkit" ? ["clipboard-read"] : ["clipboard-read", "clipboard-write"];
+  await context.grantPermissions(permissions);
   await seedToken(page);
   await page.goto("/");
   await openProject(page, "Alpha Project");

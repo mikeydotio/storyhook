@@ -433,6 +433,33 @@ Standing rules for every wave:
   `report("…")` literals — was shown to be self-referential, able to prove only that
   comparisons which already exist are tested and blind by construction to a column that
   was never reported at all.
+- **The e2e suite runs on WebKit, not just Chromium — one project per seed, never a shared
+  one** (SH-335). `e2e/playwright.config.ts` names a `webkit` project keyed off the identical
+  spec selector as `chromium` (the same `MOBILE_SPECS` constant both use to stay disjoint from
+  the mobile pair), so nothing is hand-listed onto one engine — `tests/e2e_browser_coverage.rs`
+  fences that identity, plus that every engine the config names is one `make e2e-install`
+  actually installs. `scripts/run-e2e.sh` runs each project against its OWN daemon, seed and
+  `FAKE_TMUX_STATE`, never a shared one: `e2e/specs/dispatch.spec.ts` claims a seeded story for
+  real (a CAS-guarded `story move ... in-progress`) and creates a real `git worktree`, so a
+  second engine's pass against a daemon the first engine's pass already dispatched through would
+  fail on an already-claimed fixture for a reason that has nothing to do with either engine —
+  SH-335 is where that shape was ruled out. A bare
+  `bash scripts/run-e2e.sh` therefore loops once per project *derived from the config*, not a
+  list here; `--project=NAME` still runs one project alone. Separately: WebKit's Tab order skips
+  buttons and links unless this machine has `AppleKeyboardUIMode >= 2` (macOS's Full Keyboard
+  Access, off by default — real Safari's own behavior, not a Playwright quirk). The harness
+  measures it and exports `E2E_FULL_KEYBOARD_ACCESS` rather than silently flipping a System
+  Setting (the SH-306 shape: a gate whose verdict depends on state it never checked or reported)
+  or permanently quarantining the affected assertions (undated debt on the exact
+  keyboard-reachability class this suite exists to strengthen); `e2e/specs/support.ts`'s
+  `fullKeyboardAccess()` is the one place a spec reads it back to gate the handful of assertions
+  that need real Tab traversal, unconditionally on `chromium`. A handful more tests
+  (`board-readiness.spec.ts`, `duplicate-create.spec.ts`, `drawer-field-mutation-timeout.spec.ts`)
+  are quarantined under `webkit` unconditionally, for an unrelated, not-yet-root-caused gap
+  where WebKit doesn't reliably surface a held or delayed `page.route()` to the page's own XHR
+  handlers within this suite's timeouts (SH-347). Every WebKit quarantine, either shape, is a
+  `test.skip(...)` naming its story in the reason string — `tests/e2e_browser_coverage.rs::
+  every_webkit_quarantine_names_a_story` fails the build on one that doesn't.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes

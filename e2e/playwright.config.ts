@@ -23,13 +23,13 @@ if (!baseURL) {
 /**
  * A spec whose subject is the phone — a coarse pointer, a narrow viewport,
  * `hasTouch` — rather than the dashboard's behavior in general. One
- * pattern, referenced by both projects below, so they stay exhaustive and
- * disjoint by construction: every spec file matches it or it doesn't, and
- * no file can end up running in both (where the desktop project would fail
- * a `(pointer: coarse)` assertion by design) or in neither (where it would
- * silently run nowhere). Two independently hand-maintained globs would
- * drift the way `--test-threads`-adjacent counts have before (SH-136); a
- * single regex used twice cannot.
+ * pattern, referenced by every project below, so the desktop pair stay
+ * exhaustive and disjoint by construction: every spec file matches it or it
+ * doesn't, and no file can end up running in more than one desktop project
+ * (where the other would fail a `(pointer: coarse)` assertion by design) or
+ * in none (where it would silently run nowhere). Two independently
+ * hand-maintained globs would drift the way `--test-threads`-adjacent
+ * counts have before (SH-136); a single regex used twice cannot.
  */
 const MOBILE_SPECS = /\.mobile\.spec\.ts$/;
 
@@ -76,19 +76,35 @@ export default defineConfig({
       testIgnore: MOBILE_SPECS,
     },
     {
+      // The engine `chromium` cannot see (SH-335). `document.activeElement`
+      // does not follow a `<button>` click on WebKit the way it does on
+      // Blink (measured against this project's own build, `webkit-2336`;
+      // see `src/web_dashboard.html`'s `armedDeleteSlug` comment), and that
+      // gap let a real defect (half of SH-324, all of SH-334) pass a spec
+      // asserting "survives a poll" on unfixed code, because Chrome held
+      // focus and the poll was skipped. Keyed off the same `MOBILE_SPECS`
+      // constant as `chromium` rather than a second glob, so this project's
+      // coverage can't be quietly narrowed by editing only one of the two.
+      name: "webkit",
+      use: { ...devices["Desktop Safari"] },
+      testIgnore: MOBILE_SPECS,
+    },
+    {
       // Chromium under mobile emulation, not a real phone: `make
-      // e2e-install` installs chromium and nothing else, so a WebKit/iOS
-      // device descriptor would fail with a missing-browser error on every
-      // machine. `devices["Pixel 7"]` is `defaultBrowserType: "chromium"`
-      // with `isMobile: true` and `hasTouch: true`, which is what puts
-      // Blink into mobile emulation -- and mobile emulation is what makes
-      // `(pointer: coarse)` match (SH-256). The engine under test is
-      // therefore Blink, not WebKit, and iOS Safari's 16px zoom threshold
-      // is WebKit's own rule: what this project verifies is that the
-      // *mechanism* -- the dashboard's coarse-pointer CSS override --
+      // e2e-install` installs chromium and webkit, not a WebKit/iOS device,
+      // so a real-iPhone descriptor would fail with a missing-browser error
+      // on every machine. `devices["Pixel 7"]` is `defaultBrowserType:
+      // "chromium"` with `isMobile: true` and `hasTouch: true`, which is
+      // what puts Blink into mobile emulation -- and mobile emulation is
+      // what makes `(pointer: coarse)` match (SH-256). The engine under
+      // test is therefore Blink, not WebKit, and iOS Safari's 16px zoom
+      // threshold is WebKit's own rule: what this project verifies is that
+      // the *mechanism* -- the dashboard's coarse-pointer CSS override --
       // fires and lands every control at or above that threshold, which is
-      // the part that can regress. Only a real iPhone proves the browser
-      // stays unzoomed.
+      // the part that can regress. A `mobile-webkit` project (WebKit under
+      // mobile emulation) would narrow, not close, that remaining gap and
+      // is filed separately rather than folded in here. Only a real iPhone
+      // proves the browser stays unzoomed.
       name: "mobile-chromium",
       use: { ...devices["Pixel 7"] },
       testMatch: MOBILE_SPECS,

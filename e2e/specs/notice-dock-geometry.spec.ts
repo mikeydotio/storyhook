@@ -49,14 +49,25 @@ import {
 
 cleanUpCreatedStories("Alpha Project");
 
-test.beforeEach(async ({ page, context }) => {
+test.beforeEach(async ({ page, context, browserName }) => {
   // Without this the Copy-* paths take `copyText`'s `.catch` branch and raise an
   // ERROR notice instead of a success. That is not a cosmetic difference: an
   // error is durable and carries a `.toast-dismiss`, so a test meaning to
   // exercise self-clearing notices would silently exercise durable ones. It cost
   // this story's own investigation one measurement that reported the exact
   // opposite of the truth before the variant was read off the node.
-  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  //
+  // WebKit gets `clipboard-read` alone: its Playwright permission map has no
+  // `clipboard-write` entry at all (`grantPermissions` throws "Unknown
+  // permission: clipboard-write" there — SH-335). Every other engine keeps
+  // both -- confirmed the hard way that dropping `clipboard-write` for
+  // Chromium too breaks the same Copy-* paths this comment already warns
+  // about, since a headless/automated `navigator.clipboard.writeText()`
+  // needs the explicit grant there, contrary to the (wrong) assumption that
+  // a user-gesture-triggered write never needs one.
+  const permissions =
+    browserName === "webkit" ? ["clipboard-read"] : ["clipboard-read", "clipboard-write"];
+  await context.grantPermissions(permissions);
   await seedToken(page);
 });
 
@@ -172,11 +183,16 @@ async function focusedIdentity(page: Page): Promise<string> {
  * `armedDeleteSlug` comment: `document.activeElement` is `BODY` after a real
  * click on a `<button>`).
  *
- * It **emulates** that state; it does not prove it. `playwright.config.ts`
- * installs chromium and mobile-chromium and nothing else, so the engine this
- * guard exists for is not under test here at all (SH-335). Said plainly rather
- * than left to be inferred: a pin whose comment implies coverage it does not
- * have is the SH-306 shape. */
+ * It **emulates** that state on every engine this file runs under, `webkit`
+ * included, deliberately: this helper exists so every test using it pins the
+ * SAME behavior on both engines rather than branching on `browserName`, which
+ * would prove less (that the *test* handles both engines) than proving the
+ * *dashboard* doesn't depend on which one produced the click). `webkit` is a
+ * real engine in this suite now (SH-335 -- story show SH-335 carries the
+ * verdict), so this stopped being the only place this state
+ * was ever observed — but it remains the only place it's produced this way,
+ * on purpose, so a regression here is caught on `chromium` immediately rather
+ * than waiting on `webkit`'s own (slower) pass to say so. */
 async function dismissWithoutFocusing(page: Page, selector: string): Promise<void> {
   await page.evaluate((sel) => {
     (document.querySelector(sel) as HTMLElement).click();
@@ -925,7 +941,10 @@ test("a bulk clear that took no focus moves none either", async ({ page }) => {
   // the bar button is focused by construction — i.e. only for a keyboard press.
   // A pointer press on WebKit focuses no `<button>`, so `document.activeElement`
   // was still the field the reader was typing in, and focus and caret went to
-  // the drawer. Emulated here, not proven: chromium-only suite (SH-335).
+  // the drawer. Emulated via `dismissWithoutFocusing()` on every engine this
+  // file runs under, `webkit` included (SH-335) -- see that helper's own
+  // comment for why the emulation stays even now that a real WebKit pass
+  // exists.
   await page.locator("#search-input").focus();
   await dismissWithoutFocusing(page, "#toast-dismiss-all");
   await expect(page.locator("#toast-stack .toast")).toHaveCount(0);

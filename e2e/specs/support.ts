@@ -34,6 +34,34 @@ export function requiredEnv(name: string): string {
 }
 
 /**
+ * Whether `scripts/run-e2e.sh` measured this machine as having WebKit's Tab
+ * order include buttons and links (macOS's `AppleKeyboardUIMode >= 2`,
+ * "Full Keyboard Access"), rather than its default of "text boxes and lists
+ * only" -- real Safari's own out-of-box behavior for a keyboard user who has
+ * never turned that setting on.
+ *
+ * A council decided this rather than either of the two easy wrongs (SH-335,
+ * story show SH-335 carries the verdict): silently flipping the
+ * developer's own System Settings would make a green/red verdict on the same
+ * tree depend on unversioned machine state (the SH-306 shape -- a gate whose
+ * outcome depends on something it never checked or reported); permanently
+ * quarantining the affected assertions would leave the exact
+ * keyboard-reachability class this suite exists to strengthen (SC 2.2.1) as
+ * undated debt. So `run-e2e.sh` measures the mode once, states it loudly in
+ * its own preamble, and exports the result -- this function is the one place
+ * a spec reads it back, so the gate this note describes has exactly one
+ * implementation to keep in sync with that preamble.
+ *
+ * Callers gate only the small number of assertions that need real Tab
+ * traversal to reach a `<button>`/`<a>` under `webkit` specifically --
+ * everything else, and every assertion under `chromium`, stays fully
+ * load-bearing regardless of this machine's setting.
+ */
+export function fullKeyboardAccess(): boolean {
+  return process.env.E2E_FULL_KEYBOARD_ACCESS === "1";
+}
+
+/**
  * Seeds a named token into this page's browser context as the `HttpOnly`
  * cookie `web_dashboard.html` now rides rather than reads (SH-255) --
  * `run-e2e.sh` mints `DASHBOARD_NAMED_TOKEN` for the suite and exports the

@@ -3,6 +3,7 @@ import type { Page } from "@playwright/test";
 import {
   cleanUpCreatedStories,
   createStory,
+  fullKeyboardAccess,
   keepNotices,
   openProject,
   raiseDurableNotices,
@@ -78,13 +79,20 @@ import {
 
 cleanUpCreatedStories("Alpha Project");
 
-test.beforeEach(async ({ page, context }) => {
+test.beforeEach(async ({ page, context, browserName }) => {
   // The Copy-* paths raise an ERROR notice via `copyText`'s `.catch` branch
   // without clipboard permission. An error is durable either way, so this is
   // not load-bearing here the way it is in the geometry spec — but a notice
   // whose variant is an accident is a notice whose `border-left-color` is an
   // accident too, and this file measures colour.
-  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  //
+  // WebKit gets `clipboard-read` alone: its Playwright permission map has no
+  // `clipboard-write` entry at all (`grantPermissions` throws "Unknown
+  // permission: clipboard-write" there — SH-335). Every other engine keeps
+  // both.
+  const permissions =
+    browserName === "webkit" ? ["clipboard-read"] : ["clipboard-read", "clipboard-write"];
+  await context.grantPermissions(permissions);
   await seedToken(page);
 });
 
@@ -344,7 +352,19 @@ async function raiseDispatchHistoryRows(page: Page, ids: string[]): Promise<void
   }
 }
 
-test("a keyboard-reached toast dismiss draws a measured ring in every theme", async ({ page }) => {
+test("a keyboard-reached toast dismiss draws a measured ring in every theme", async ({
+  page,
+  browserName,
+}) => {
+  // `tabOnto()` needs real Tab traversal to reach a `<button>`, which WebKit
+  // skips unless this machine has Full Keyboard Access on (`AppleKeyboardUIMode
+  // >= 2`) -- real Safari's own out-of-box behavior (SH-335 -- story show
+  // SH-335 carries the verdict). Fully load-bearing on `chromium`, and on a
+  // `webkit` this machine has configured for full keyboard access.
+  test.skip(
+    browserName === "webkit" && !fullKeyboardAccess(),
+    "WebKit's Tab order skips buttons/links unless AppleKeyboardUIMode>=2 (SH-335)",
+  );
   await page.goto("/");
   await openProject(page, "Alpha Project");
   await keepNotices(page);
@@ -363,7 +383,13 @@ test("a keyboard-reached toast dismiss draws a measured ring in every theme", as
   }
 });
 
-test("the heir of a keyboard dismissal draws the same ring", async ({ page }) => {
+test("the heir of a keyboard dismissal draws the same ring", async ({ page, browserName }) => {
+  // Same gate as the test above: `tabOnto()` needs WebKit to put buttons in
+  // the Tab order, which only happens with Full Keyboard Access on (SH-335).
+  test.skip(
+    browserName === "webkit" && !fullKeyboardAccess(),
+    "WebKit's Tab order skips buttons/links unless AppleKeyboardUIMode>=2 (SH-335)",
+  );
   await page.goto("/");
   await openProject(page, "Alpha Project");
   await keepNotices(page);
@@ -393,7 +419,17 @@ test("the heir of a keyboard dismissal draws the same ring", async ({ page }) =>
   }
 });
 
-test("a dispatch-history dismiss draws a measured ring, reached and inherited", async ({ page }) => {
+test("a dispatch-history dismiss draws a measured ring, reached and inherited", async ({
+  page,
+  browserName,
+}) => {
+  // Same gate as the first test in this file: `tabOnto()` needs WebKit to
+  // put buttons in the Tab order, which only happens with Full Keyboard
+  // Access on (SH-335).
+  test.skip(
+    browserName === "webkit" && !fullKeyboardAccess(),
+    "WebKit's Tab order skips buttons/links unless AppleKeyboardUIMode>=2 (SH-335)",
+  );
   await page.goto("/");
   await openProject(page, "Alpha Project");
 
