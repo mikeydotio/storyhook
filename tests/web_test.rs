@@ -28,7 +28,8 @@ use storyhook::invoke::{dispatch, dispatch_unscoped};
 use storyhook::service::Ctx;
 use storyhook::store::{ProjectId, ReadOps, SqliteStore, Store, StoryNo};
 use storyhook_test_support::{
-    DaemonGuard, TestEnv, scratch_dir, serve, wait_for_addr, wait_for_server,
+    DaemonGuard, TestEnv, path_without_tailscale, scratch_dir, serve, wait_for_addr,
+    wait_for_server,
 };
 
 /// A `story` command in the shared environment, for the tests that only
@@ -496,23 +497,22 @@ fn web_open_hands_the_browser_a_coupon_and_the_terminal_the_bare_url() {
 /// tailnet bind that lands on `tailnet_reprobe`'s background thread rewrites
 /// it too (`on_late_tailnet_bind`), and on a tailnet-equipped machine that
 /// now happens for nearly every daemon shortly after start, not only for
-/// SH-146's rare self-heal. `web start` below therefore runs with no
-/// `tailscale` on `PATH` at all — the daemon can never succeed a bind, so it
-/// can never rewrite the portfile out from under this test's corruption,
-/// deterministically rather than by the timing luck of finishing the
-/// corrupt/read/restore sequence before a real probe resolves.
+/// SH-146's rare self-heal. `web start` below therefore runs with
+/// [`path_without_tailscale`], which denies `tailscale` outright — the daemon
+/// can never succeed a bind, so it can never rewrite the portfile out from
+/// under this test's corruption, deterministically rather than by the timing
+/// luck of finishing the corrupt/read/restore sequence before a real probe
+/// resolves. `tests/daemon_lifecycle.rs`'s version-skew test needs the same
+/// guarantee against the same hazard (SH-345) and shares this helper.
 #[test]
 fn web_open_falls_back_to_the_bare_url_when_arming_fails() {
     let env = TestEnv::isolated();
     let dir = scratch_dir();
     let _daemon = DaemonGuard::new(&env, dir.path());
 
-    let no_tailscale_path = storyhook_test_support::story_binary()
-        .parent()
-        .expect("the binary under test has a parent directory")
-        .to_path_buf();
+    let (_no_tailscale, path) = path_without_tailscale(&env);
     env.story(dir.path())
-        .env("PATH", &no_tailscale_path)
+        .env("PATH", &path)
         .args(["web", "start"])
         .assert()
         .success();
