@@ -377,6 +377,74 @@ test("a synthetic repeat-flagged Enter is ignored at a freshly opened surface", 
 });
 
 // ============================================================
+// The other kill: proving the in-flight claim carries its own weight
+// ============================================================
+
+test("a second discrete Enter while the first request is in flight issues one request", async ({
+  page,
+}) => {
+  // The mirror of the synthetic-repeat test, and it exists because a mutation
+  // survived without it. Deleting `if (deleteModalInFlight) return;` left all
+  // ten other tests green: the claim's setter also disables
+  // `#delete-modal-submit`, and a disabled button cannot be activated, so even
+  // the button-door test was passing on the disabled attribute rather than on
+  // the check it was written for.
+  //
+  // Two *discrete* presses are what isolate the claim. Both carry
+  // `repeat: false`, so `bindEnterSubmit` passes both through by design, and the
+  // input — unlike the button — is never disabled. Nothing but the claim can
+  // refuse the second. This is also the real SH-312 gesture: a user who presses
+  // again because the first press appeared to do nothing.
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  const title = `SH-362 — double press ${Date.now()}`;
+  await createStory(page, title);
+  const card = page.locator('.column[data-state="todo"] .card', { hasText: title });
+
+  const deletes = await countAndHold(page, DELETE_STORY);
+  await openDeleteModal(page, card, "SH-362 double press");
+  await page.locator("#delete-reason").press("Enter");
+  await page.locator("#delete-reason").press("Enter");
+
+  expect(
+    deletes.seen(),
+    "a second press while the first DELETE is outstanding must be refused by the claim",
+  ).toBe(1);
+
+  await deletes.release();
+  await expect(card).not.toBeVisible();
+});
+
+test("a second discrete Enter in the label field while its POST is in flight adds one label", async ({
+  page,
+}) => {
+  // The same property at the other shape of claim. The delete modal's is a
+  // module variable with a setter that also disables a button; this one is a
+  // closure-local `pending` in `buildLabelsSection` with no button at all, so
+  // there is no disabled attribute here to mask a missing check.
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  const title = `SH-362 — double press labels ${Date.now()}`;
+  await createStory(page, title);
+  await page.locator('.column[data-state="todo"] .card', { hasText: title }).click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+
+  const labels = await countAndHold(page, ADD_LABEL);
+  const input = page.locator('#drawer [data-field="label-add"]');
+  await input.fill("sh362-double");
+  await input.press("Enter");
+  await input.press("Enter");
+
+  expect(
+    labels.seen(),
+    "a second press while the first label POST is outstanding must be refused by the claim",
+  ).toBe(1);
+
+  await labels.release();
+  await expect(page.locator("#drawer .label-chip", { hasText: "sh362-double" })).toBeVisible();
+});
+
+// ============================================================
 // Over-reach: the guard must not suppress anything else
 // ============================================================
 
