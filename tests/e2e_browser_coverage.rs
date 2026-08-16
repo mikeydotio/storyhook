@@ -1,9 +1,10 @@
-//! Fences the browser-coverage invariants SH-335 introduces.
+//! Fences the browser-coverage invariants SH-335 and SH-348 introduce.
 //!
-//! `e2e/playwright.config.ts` now names a `webkit` project alongside
-//! `chromium` and `mobile-chromium`, `Makefile`'s `e2e-install` installs the
-//! browsers those projects need, and a handful of specs quarantine an
-//! assertion WebKit cannot satisfy on an unconfigured machine
+//! `e2e/playwright.config.ts` now names four projects -- two engine pairs,
+//! `chromium`/`webkit` (desktop) and `mobile-chromium`/`mobile-webkit`
+//! (mobile, SH-348) -- `Makefile`'s `e2e-install` installs the browsers those
+//! projects need, and a handful of specs quarantine an assertion WebKit
+//! cannot satisfy on an unconfigured machine
 //! (`e2e/specs/support.ts::fullKeyboardAccess()`,
 //! story SH-335 carries the verdict). Three ways for that to
 //! silently rot, each pinned here in the style `tests/dashboard_mutation_
@@ -52,6 +53,11 @@ fn engine_for_device(device: &str) -> &'static str {
         // Blink under mobile emulation, not a real device's own engine (see
         // the config's own comment on this project).
         "Pixel 7" => "chromium",
+        // `defaultBrowserType: "webkit"` with `isMobile`/`hasTouch` set --
+        // WebKit under mobile emulation, and the same `webkit` binary
+        // `Desktop Safari` drives, which is why SH-348 needed no Makefile
+        // change to add this device.
+        "iPhone 15" => "webkit",
         other => panic!(
             "e2e/playwright.config.ts uses devices[\"{other}\"], which engine_for_device() has \
              not been taught to map to a browser engine -- teach it what engine that device \
@@ -138,8 +144,16 @@ fn engine_for_device_recognises_this_configs_own_devices_and_panics_on_an_unknow
     assert_eq!(engine_for_device("Desktop Chrome"), "chromium");
     assert_eq!(engine_for_device("Desktop Safari"), "webkit");
     assert_eq!(engine_for_device("Pixel 7"), "chromium");
+    assert_eq!(engine_for_device("iPhone 15"), "webkit");
 
-    let panicked = std::panic::catch_unwind(|| engine_for_device("iPhone 15")).is_err();
+    // Deliberately NOT a device Playwright ships -- this probe used to name
+    // "iPhone 15", a real descriptor the config had not yet adopted, and
+    // SH-348 then adopted exactly it: the moment it did, the must-panic
+    // control would have silently become a must-NOT-panic one on the same
+    // commit that taught engine_for_device() about it. A name no registry
+    // will ever ship can't be adopted out from under this test the same way.
+    let panicked =
+        std::panic::catch_unwind(|| engine_for_device("Storyhook Handset 9000")).is_err();
     assert!(
         panicked,
         "engine_for_device() silently accepted a device it was never taught -- it must panic on \
@@ -440,7 +454,7 @@ fn project_blocks_and_selector_read_this_configs_own_shape() {
     let names: Vec<&str> = blocks.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
         names,
-        vec!["chromium", "webkit", "mobile-chromium"],
+        vec!["chromium", "webkit", "mobile-chromium", "mobile-webkit"],
         "project_blocks() parsed {names:?} out of the live config -- either a project was \
          added/removed/reordered, or the parser's anchor no longer matches the file's shape"
     );

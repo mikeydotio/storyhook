@@ -11,11 +11,10 @@ import {
 
 /**
  * SH-235: the dashboard's shape at phone and tablet widths, on top of
- * SH-256's zoom fixes (`zoom.mobile.spec.ts`). Runs only under the
- * `mobile-chromium` Playwright project -- see that file's own comment for
- * why a coarse-pointer, `hasTouch` environment is what a `*.mobile.spec.ts`
- * suffix buys, and why Blink under emulation (not WebKit) is what
- * `make e2e-install` can actually run everywhere.
+ * SH-256's zoom fixes (`zoom.mobile.spec.ts`). Runs under both mobile
+ * Playwright projects, `mobile-chromium` and `mobile-webkit` (SH-348) -- see
+ * that file's own comment for why a coarse-pointer, `hasTouch` environment
+ * is what a `*.mobile.spec.ts` suffix buys on either engine.
  *
  * This file grows one commit at a time alongside SH-235's fixes: each fix
  * lands its own RED-then-GREEN test here, beside the mechanism it guards.
@@ -565,6 +564,16 @@ test("toast and dispatch-history overlays never exceed a narrow viewport", async
  * targets to (`--tap-min`'s coarse value; 24px is the floor everywhere
  * else, asserted for the fine-pointer default in `web_test.rs`).
  *
+ * Split into two tests sharing one walk (`sweepTapTargets`) rather than one
+ * combined selector, because `select` and `button, a[href]` no longer have
+ * the same coverage on every engine: WebKit ignores `min-height` on a
+ * default-appearance `<select>` (SH-377, found via this exact sweep under
+ * `mobile-webkit`), so the `select` half is quarantined there while the
+ * `button, a[href]` half stays fully load-bearing everywhere, including
+ * under `mobile-webkit` -- a single combined test would have to quarantine
+ * itself wholesale under WebKit and silently drop button/link coverage
+ * along with it.
+ *
  * Scoped to `button, a[href], select` -- native `input[type=checkbox]`
  * boxes are excluded on purpose: each one here is wrapped by a `<label>`
  * that is itself the real target (clicking anywhere on the label toggles
@@ -573,59 +582,79 @@ test("toast and dispatch-history overlays never exceed a narrow viewport", async
  * positive against a target SC 2.5.8 already exempts (a smaller control
  * inside an equivalent, larger one).
  */
-test("every button, link and select meets the coarse-pointer tap-target minimum", async ({
-  page,
-}) => {
+async function sweepTapTargets(page: Page, selector: string): Promise<void> {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
 
-  await expectNoSmallTargets(page.locator("body"), "the home screen");
+  await expectNoSmallTargets(page.locator("body"), "the home screen", selector);
 
   await openProject(page, "Alpha Project");
-  await expectNoSmallTargets(page.locator("body"), "the board screen (filters collapsed)");
+  await expectNoSmallTargets(
+    page.locator("body"),
+    "the board screen (filters collapsed)",
+    selector,
+  );
   // SH-235: the filter panel's own dropdowns, checkboxes and sort buttons
   // default collapsed and are excluded from the sweep above (a hidden
   // element's box is 0x0, filtered out by findSmallTargets on purpose --
   // see its own comment) -- open it so this sweep actually measures them
   // too, not just the always-visible summary row.
   await openFilters(page);
-  await expectNoSmallTargets(page.locator("body"), "the board screen (filters open)");
+  await expectNoSmallTargets(page.locator("body"), "the board screen (filters open)", selector);
 
   await page.locator('#view-toggle button[data-view="list"]').click();
   await expect(page.locator("#list-body tr").first()).toBeVisible();
-  await expectNoSmallTargets(page.locator("body"), "the list screen");
+  await expectNoSmallTargets(page.locator("body"), "the list screen", selector);
 
   await page.locator("#list-body tr").first().click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
-  await expectNoSmallTargets(page.locator("#drawer"), "the story drawer");
+  await expectNoSmallTargets(page.locator("#drawer"), "the story drawer", selector);
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
   await page.locator("#new-story-btn").click();
   await expect(page.locator("#create-modal")).toHaveClass(/open/);
-  await expectNoSmallTargets(page.locator("#create-modal"), "the create-story modal");
+  await expectNoSmallTargets(page.locator("#create-modal"), "the create-story modal", selector);
   await page.locator("#create-discard").click();
   await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
 
   await page.locator("#settings-btn").click();
   await expect(page.locator("#settings-view")).toBeVisible();
-  await expectNoSmallTargets(page.locator("body"), "the settings screen");
+  await expectNoSmallTargets(page.locator("body"), "the settings screen", selector);
 
   await page
     .locator(".settings-table tr", { hasText: "Alpha Project" })
     .locator("button", { hasText: "Statuses" })
     .click();
   await expect(page.locator(".status-list")).toBeVisible();
-  await expectNoSmallTargets(page.locator(".settings"), "the statuses editor");
+  await expectNoSmallTargets(page.locator(".settings"), "the statuses editor", selector);
+}
+
+test("every button and link meets the coarse-pointer tap-target minimum", async ({ page }) => {
+  await sweepTapTargets(page, "button, a[href]");
 });
 
-/** Asserts `findSmallTargets` reports nothing under `root` for the
- * `button, a[href], select` sweep, at the coarse-pointer 44px minimum. */
+test("every select meets the coarse-pointer tap-target minimum", async ({
+  page,
+  browserName,
+}) => {
+  test.skip(
+    browserName === "webkit",
+    "WebKit ignores min-height on a default-appearance <select>: every select in the " +
+      "dashboard renders ~23px against the 44px coarse-pointer minimum, measured -- a " +
+      "real iOS Safari defect this project is what found, not a harness artifact (SH-377)",
+  );
+  await sweepTapTargets(page, "select");
+});
+
+/** Asserts `findSmallTargets` reports nothing under `root` for `selector`,
+ * at the coarse-pointer 44px minimum. */
 async function expectNoSmallTargets(
   root: Locator,
   surface: string,
+  selector: string,
 ): Promise<void> {
-  const small = await findSmallTargets(root, "button, a[href], select", 44);
+  const small = await findSmallTargets(root, selector, 44);
   expect(
     small,
     `${surface}: these tap targets measure under the 44px coarse-pointer minimum`,
@@ -689,8 +718,9 @@ test("the topbar and collapsed filter bar together stay within a measured chrome
  * silently drift out of step with the first as items are added/removed.
  *
  * Both buttons are `display: none` outside `pointer: coarse` (see their
- * own CSS) -- this file only runs under `mobile-chromium`, where that
- * media query matches, so no extra gating is needed to reach them here.
+ * own CSS) -- this file only runs under the two mobile projects
+ * (`mobile-chromium`, `mobile-webkit`), where that media query matches on
+ * either engine, so no extra gating is needed to reach them here.
  */
 test("the card and list-row actions menus have the same items as right-click", async ({
   page,
