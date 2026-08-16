@@ -71,6 +71,7 @@ source: tests/golden_cli.rs
         "ready_stories": [
           {
             "display_state": "in-progress",
+            "head_global_seq": 51,
             "progress": {
               "children_done": 0,
               "children_total": 3
@@ -103,6 +104,7 @@ source: tests/golden_cli.rs
             }
           },
           {
+            "head_global_seq": 60,
             "story": {
               "assignee": "grace-hopper",
               "awaiting": null,
@@ -136,6 +138,7 @@ source: tests/golden_cli.rs
             }
           },
           {
+            "head_global_seq": 61,
             "story": {
               "assignee": "ada-lovelace",
               "awaiting": null,
@@ -171,6 +174,7 @@ source: tests/golden_cli.rs
             }
           },
           {
+            "head_global_seq": 39,
             "story": {
               "awaiting": null,
               "comments": [],
@@ -186,6 +190,7 @@ source: tests/golden_cli.rs
             }
           },
           {
+            "head_global_seq": 66,
             "story": {
               "awaiting": null,
               "comments": [],
@@ -283,6 +288,7 @@ source: tests/golden_cli.rs
         "ready_stories": [
           {
             "display_state": "in-progress",
+            "head_global_seq": 51,
             "progress": {
               "children_done": 0,
               "children_total": 3
@@ -315,6 +321,7 @@ source: tests/golden_cli.rs
             }
           },
           {
+            "head_global_seq": 60,
             "story": {
               "assignee": "grace-hopper",
               "awaiting": null,
@@ -348,6 +355,7 @@ source: tests/golden_cli.rs
             }
           },
           {
+            "head_global_seq": 61,
             "story": {
               "assignee": "ada-lovelace",
               "awaiting": null,
@@ -383,6 +391,7 @@ source: tests/golden_cli.rs
             }
           },
           {
+            "head_global_seq": 39,
             "story": {
               "awaiting": null,
               "comments": [],
@@ -398,6 +407,7 @@ source: tests/golden_cli.rs
             }
           },
           {
+            "head_global_seq": 66,
             "story": {
               "awaiting": null,
               "comments": [],

@@ -42,7 +42,7 @@ use crate::output::{
     BlockedChainView, GraphOverview, GraphView, ProjectSnapshotView, ReferencedBy, ReportData,
     StaleInfo, StoryView, SummaryView,
 };
-use crate::store::{ProjectId, ReadOps, StoryNo, StoryQuery, partition_known};
+use crate::store::{GlobalSeq, ProjectId, ReadOps, StoryNo, StoryQuery, StoryRow, partition_known};
 
 use super::project_prefix;
 
@@ -155,34 +155,37 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
             .tx
             .project(self.project)?
             .ok_or_else(|| AppError::Storage(format!("project {} does not exist", self.project)))?;
+        // `.draft(false)` (SH-175): the web board is a curated "what's
+        // actionable" view — it already excludes archived stories — and
+        // the council verdict on SH-175 keeps that curation separate
+        // from `story list`'s general-purpose, nothing-hidden-by-default
+        // contract rather than routing both through the same filter.
+        let story_rows = self.tx.stories(
+            self.project,
+            &StoryQuery::all().archived(false).draft(false),
+        )?;
+        // Carried alongside `stories`, not merged into it, for the
+        // Drafts popover and its count badge — see the field's own doc
+        // comment on `ProjectSnapshotView`.
+        let draft_rows = self
+            .tx
+            .stories(self.project, &StoryQuery::all().draft(true))?;
+
+        // `head_global_seqs` (SH-336) is read off the same rows `stories`
+        // and `drafts` already fetched — no extra store trip.
+        let mut head_global_seqs = BTreeMap::new();
+        for row in story_rows.iter().chain(draft_rows.iter()) {
+            head_global_seqs.insert(row.snapshot.id.clone(), row.head_global_seq);
+        }
+
         Ok(ProjectSnapshotView {
             slug: project.slug,
             prefix: project.prefix,
             states: self.tx.states(self.project)?,
             members: self.tx.members(self.project)?,
-            // `.draft(false)` (SH-175): the web board is a curated "what's
-            // actionable" view — it already excludes archived stories — and
-            // the council verdict on SH-175 keeps that curation separate
-            // from `story list`'s general-purpose, nothing-hidden-by-default
-            // contract rather than routing both through the same filter.
-            stories: self
-                .tx
-                .stories(
-                    self.project,
-                    &StoryQuery::all().archived(false).draft(false),
-                )?
-                .into_iter()
-                .map(|row| row.snapshot)
-                .collect(),
-            // Carried alongside `stories`, not merged into it, for the
-            // Drafts popover and its count badge — see the field's own doc
-            // comment on `ProjectSnapshotView`.
-            drafts: self
-                .tx
-                .stories(self.project, &StoryQuery::all().draft(true))?
-                .into_iter()
-                .map(|row| row.snapshot)
-                .collect(),
+            stories: story_rows.into_iter().map(|row| row.snapshot).collect(),
+            drafts: draft_rows.into_iter().map(|row| row.snapshot).collect(),
+            head_global_seqs,
         })
     }
 
@@ -832,15 +835,30 @@ const READY_PREVIEW: usize = 5;
 /// `src/help_topics.rs` named the wrong one (found in passing, SH-280).
 pub const DEFAULT_HANDOFF_HOURS: i64 = 24;
 
+/// Every story row in the project, keyed by id.
+///
+/// The one store read [`story_map`] and [`story_views`] both build on, so
+/// `story_views` can read [`StoryRow::head_global_seq`] (SH-336) off the same
+/// rows `story_map` already discards, without a second `tx.stories` trip.
+fn story_rows(
+    tx: &impl ReadOps,
+    project: ProjectId,
+) -> Result<BTreeMap<String, StoryRow>, AppError> {
+    Ok(tx
+        .stories(project, &StoryQuery::all())?
+        .into_iter()
+        .map(|row| (row.snapshot.id.clone(), row))
+        .collect())
+}
+
 /// Every story in the project, keyed by id.
 pub(crate) fn story_map(
     tx: &impl ReadOps,
     project: ProjectId,
 ) -> Result<BTreeMap<String, StorySnapshot>, AppError> {
-    Ok(tx
-        .stories(project, &StoryQuery::all())?
+    Ok(story_rows(tx, project)?
         .into_iter()
-        .map(|row| (row.snapshot.id.clone(), row.snapshot))
+        .map(|(id, row)| (id, row.snapshot))
         .collect())
 }
 
@@ -857,7 +875,19 @@ pub fn story_views(
     project: ProjectId,
     include_derived: bool,
 ) -> Result<Vec<StoryView>, AppError> {
-    let stories = story_map(tx, project)?;
+    let rows = story_rows(tx, project)?;
+    // `head_global_seq` (SH-336) travels alongside `stories` rather than
+    // through it — `stories` is the snapshot map every function below already
+    // expects, and widening its value type would touch every one of them for
+    // a fact only the final `StoryView` construction needs.
+    let head_global_seq: BTreeMap<String, GlobalSeq> = rows
+        .iter()
+        .map(|(id, row)| (id.clone(), row.head_global_seq))
+        .collect();
+    let stories: BTreeMap<String, StorySnapshot> = rows
+        .into_iter()
+        .map(|(id, row)| (id, row.snapshot))
+        .collect();
     // SH-286's rule reaches here too, and for the same reason it reaches the
     // doctor: absence from this map is not absence from the project, and a
     // `StoryView` that says otherwise is `story show` printing a dangling
@@ -947,6 +977,7 @@ pub fn story_views(
             stale_info: None,
             progress: progress.get(&id).cloned(),
             display_state: display_state.get(&id).cloned(),
+            head_global_seq: head_global_seq.get(&id).copied(),
         });
     }
     Ok(views)
@@ -993,6 +1024,11 @@ fn bare_view(story: StorySnapshot) -> StoryView {
         stale_info: None,
         progress: None,
         display_state: None,
+        // No row read here — a project-wide `story_rows` read is exactly the
+        // per-view work this helper exists to skip, same as `referenced_by.prs`
+        // above. `None` tells a comparator to fall back to its previous
+        // tiebreak (SH-336).
+        head_global_seq: None,
     }
 }
 

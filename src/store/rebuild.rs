@@ -86,6 +86,9 @@ pub struct RebuiltStory {
     pub story_no: StoryNo,
     /// The event sequence the rebuild folded up to.
     pub head_seq: EventSeq,
+    /// The change-feed position of the same event `head_seq` names (SH-336) —
+    /// see [`crate::store::types::StoryRow::head_global_seq`].
+    pub head_global_seq: GlobalSeq,
     /// The snapshot the fold produced, or why it could not.
     ///
     /// A fold failure is reported rather than propagated: one unfoldable story
@@ -324,12 +327,16 @@ pub fn rebuild(tx: &impl ReadOps, project: ProjectId) -> Result<Vec<RebuiltStory
         // story's events must be folded in *its* order.
         events.sort_by_key(|event| event.seq);
         let head_seq = events.last().map_or(EventSeq::ZERO, |event| event.seq);
+        let head_global_seq = events
+            .last()
+            .map_or(GlobalSeq::ZERO, |event| event.global_seq);
         let (known, unknown_events) = partition_known(story_no, &events);
         let id = story_no.to_id(&prefix);
         let snapshot = fold_story(&id, &known, &states).map_err(|error| error.to_string());
         rebuilt.push(RebuiltStory {
             story_no,
             head_seq,
+            head_global_seq,
             snapshot,
             unknown_events,
         });
@@ -416,6 +423,17 @@ pub fn diff_rebuilt(
             "head_seq",
             row.head_seq.to_string(),
             story.head_seq.to_string(),
+        );
+        // `put_story` derives this column from `events` in the same SQL
+        // statement that writes it, so it can only diverge from a rebuild if
+        // something wrote the row outside `put_story` — a raw migration, a
+        // hand edit. Reported beside `head_seq`, the other coordinate of the
+        // same event, for the same reason SH-211 gave `hidden_at`/`draft`
+        // their own divergence checks.
+        report(
+            "head_global_seq",
+            row.head_global_seq.to_string(),
+            story.head_global_seq.to_string(),
         );
         report("title", row.title.clone(), expected.title.clone());
         report("state", row.state.clone(), expected.state.clone());

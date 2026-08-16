@@ -356,6 +356,21 @@ Standing rules for every wave:
   request left the process, a daemon that stopped answering) is reported as ambiguous, never as
   failure — a comforting, false "it didn't work" is worse than an honest "I don't know," because
   the reader acts on the lie.
+- **A timestamp is not an ordering key** (SH-336). Every storyhook timestamp is RFC3339 at
+  one-second precision (`service::Clock::System`), and this tracker's normal workload is
+  agents writing in bursts, so a comparator whose only key is `updated_at`/`created_at` is
+  blind inside a second — it was, on five surfaces at once (SQL, the board's "Modified" and
+  "Added", the dashboard List view, and the TUI's recent-activity panel), found by SH-329's
+  own flake and a sibling sweep after. `stories.head_global_seq` is the exact tiebreak: the
+  change-feed position of the event a row was folded from, allocated inside the write
+  transaction and therefore total — the same doctrine `domain::ready_order` already stated
+  for SH-63 (order on a key that structurally cannot tie, never a timestamp). It reaches the
+  browser on `StoryView.head_global_seq` and the TUI on `ProjectSnapshotView.head_global_seqs`;
+  `StorySnapshot` deliberately does **not** carry it, because that document is the verbatim
+  fold of a story's events and `story doctor`'s `diff_rebuilt` compares it against a fresh
+  fold — a non-fold field there reports every story as divergent. A recency order that does
+  not end in `head_global_seq` is not a total order. `docs/spec/recency-ordering.md` names
+  the comparator and the test on each surface.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes

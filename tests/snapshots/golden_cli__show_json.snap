@@ -8,6 +8,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "story": {
         "display_state": "in-progress",
+        "head_global_seq": 51,
         "progress": {
           "children_done": 0,
           "children_total": 3
@@ -46,6 +47,7 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
+        "head_global_seq": 60,
         "story": {
           "assignee": "grace-hopper",
           "awaiting": null,
@@ -85,6 +87,7 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
+        "head_global_seq": 64,
         "story": {
           "awaiting": "waiting on the benchmark harness",
           "comments": [],
@@ -106,6 +109,7 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
+        "head_global_seq": 24,
         "story": {
           "awaiting": null,
           "comments": [],
@@ -127,6 +131,7 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
+        "head_global_seq": 65,
         "story": {
           "awaiting": null,
           "comments": [],
@@ -161,6 +166,7 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
+        "head_global_seq": 68,
         "story": {
           "awaiting": null,
           "closed_at": "[timestamp]",
@@ -183,6 +189,7 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
+        "head_global_seq": 72,
         "story": {
           "awaiting": null,
           "closed_at": "[timestamp]",

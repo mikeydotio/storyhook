@@ -394,16 +394,26 @@ function timestampResolutionMs(at: string): number {
  *
  * This is the ordering-side companion to {@link latch} and
  * {@link onAFrozenClock}, and it exists because a one-second clock makes
- * "touched after" unrepresentable inside its own second (SH-329). The
- * "Modified" board sort compares `updated_at` strings and breaks a tie on
- * story number ascending, so two writes in one second sort by *creation*
- * order -- which is exactly what the sort under test is supposed to
+ * "touched after" unrepresentable inside its own second (SH-329). Originally
+ * that mattered because the pre-SH-336 "Modified" sort broke a same-second
+ * tie on story number ascending, so two writes in one second sorted by
+ * *creation* order -- exactly what the sort under test was supposed to
  * disprove. `board-sort.spec.ts` created two stories and touched one in
  * 1.9s of wall clock, all three writes stamped `13:31:33Z`, and the board
  * dutifully returned creation order: red, on a correct board, roughly half
  * the time. Warmer machines failed it *more* often, having fitted all three
  * writes into one second more easily -- which is why three sessions read it
  * as load-related and none of them reproduced it that way.
+ *
+ * SH-336 gave the board an exact same-second tiebreak (`head_global_seq`),
+ * which resolved that flake -- but this helper stayed load-bearing for a
+ * different reason: the tiebreak fires off *which sort is selected*
+ * ("Modified"), not off which timestamp field actually produced a tie. A
+ * spec that wants to prove the sort reads `updated_at` rather than
+ * `created_at` still needs the two to diverge, or the tiebreak alone would
+ * mask a wrong field read. `board-sort-tiebreak.spec.ts` covers the
+ * tiebreak's own correctness, forcing the exact tie this helper exists to
+ * dodge everywhere else.
  *
  * Note what this is not. It is not a margin sized against the machine, the
  * shape SH-245 and SH-318 removed from this suite: those sleeps are bets

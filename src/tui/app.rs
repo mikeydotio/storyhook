@@ -1453,6 +1453,7 @@ impl Default for DataStore {
             drafts: Vec::new(),
             prefix: String::new(),
             members: Vec::new(),
+            head_global_seqs: std::collections::BTreeMap::new(),
         }
     }
 }
