@@ -2923,6 +2923,108 @@ macro_rules! store_conformance_suite {
                 );
             }
 
+            /// SH-336: every storyhook timestamp is RFC3339 at one-second
+            /// precision, so four stories created in the same second all tie
+            /// on `updated_at`. Before `head_global_seq`, `StorySort::UpdatedAt`
+            /// broke that tie on ascending `story_no` — creation order — so
+            /// touching the *lowest*-numbered story *last* produced the
+            /// stalest-looking order in a "most recently updated" sort. The
+            /// fixture's own precondition (every row actually ties) is
+            /// asserted first, so a store that gains sub-second timestamps
+            /// fails loudly here rather than passing this test for the wrong
+            /// reason.
+            #[test]
+            fn the_recency_order_resolves_writes_that_share_a_second() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                let stories: Vec<StoryNo> = (1..=4)
+                    .map(|index| new_story(f.store(), project, &format!("Story {index}")))
+                    .collect();
+
+                // Touch story 1 — the lowest number, created first — last.
+                // Every write above and this one share one clock second; only
+                // this touch changes write order.
+                apply(
+                    f.store(),
+                    project,
+                    stories[0],
+                    ExpectedSeq::Any,
+                    &[StoryEvent::StoryPrioritySet {
+                        at: "2026-01-01T00:00:00Z".into(),
+                        priority: Priority::High,
+                    }],
+                )
+                .unwrap();
+
+                let updated_ats: Vec<String> = stories
+                    .iter()
+                    .map(|&story| snapshot(f.store(), project, story).updated_at)
+                    .collect();
+                assert!(
+                    updated_ats.iter().all(|at| at == &updated_ats[0]),
+                    "fixture no longer ties on updated_at ({updated_ats:?}), so the \
+                     ordering assertion below proves nothing"
+                );
+
+                assert_eq!(
+                    story_numbers(
+                        f.store(),
+                        project,
+                        &StoryQuery::all().sort(StorySort::UpdatedAt)
+                    ),
+                    // Story 1 was written last (highest head_global_seq), then
+                    // 4, 3, 2 in the order they were created and never
+                    // touched again. Under the pre-SH-336 comparator this
+                    // would read [1, 2, 3, 4] — ascending story number.
+                    [1, 4, 3, 2]
+                );
+            }
+
+            /// `head_global_seq` (SH-336) names the change-feed position of
+            /// the same event `head_seq` does — mutation-checked against
+            /// `MAX(global_seq)` and against "always 0" by construction: both
+            /// would agree with this assertion only by coincidence on a
+            /// single-event story, so a second touch is included.
+            #[test]
+            fn a_story_row_records_the_feed_position_of_the_event_it_was_folded_from() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                let _other = new_story(f.store(), project, "Bravo");
+                let story = new_story(f.store(), project, "Alpha");
+                apply(
+                    f.store(),
+                    project,
+                    story,
+                    ExpectedSeq::Any,
+                    &[StoryEvent::StoryPrioritySet {
+                        at: "2026-01-01T00:00:01Z".into(),
+                        priority: Priority::High,
+                    }],
+                )
+                .unwrap();
+
+                let (row, events) = f
+                    .store()
+                    .read(|tx| {
+                        Ok((
+                            tx.story(project, story)?.expect("the story exists"),
+                            tx.events_for(project, story)?,
+                        ))
+                    })
+                    .unwrap();
+
+                let head_event = events
+                    .iter()
+                    .find(|event| event.seq == row.head_seq)
+                    .expect("the row's head_seq names an event that exists");
+                assert_eq!(row.head_global_seq, head_event.global_seq);
+                // Not the project's high-water mark: `_other`'s own creation
+                // event was appended after this story's first event but
+                // before its second, so a wrong join against `MAX(global_seq)`
+                // across the whole project would still pass a looser check.
+                assert_ne!(row.head_global_seq, GlobalSeq::ZERO);
+            }
+
             #[test]
             fn a_query_can_be_limited() {
                 let f = <$fixture>::create();

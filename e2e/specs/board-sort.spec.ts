@@ -280,11 +280,18 @@ test('choosing "Modified" reorders a column by last-touched time, not creation t
 
   await createStory(page, untouched, "medium");
   await createStory(page, touched, "medium");
-  // The store stamps at one-second precision, and all three of this test's
-  // writes fit comfortably inside one second on a warm machine -- which
-  // makes "touched after" unrepresentable and hands the sort a tie it
-  // breaks on story number, i.e. creation order (SH-329). Waiting the
-  // second out is what makes the bump below a bump at all.
+  // SH-336 gave "Modified" an exact same-second tiebreak (`head_global_seq`,
+  // the write's position in the store's change feed), which resolved SH-329's
+  // original flake -- but it did *not* make this wait removable, and for a
+  // sharper reason than the flake: the tiebreak fires off `sort.key ===
+  // "modified"`, not off which timestamp field actually tied. If this test's
+  // three writes landed in one second, `created_at` would tie too, and a
+  // mutant that read `created_at` instead of `updated_at` for "Modified"
+  // would still pass -- the tiebreak alone would produce the right answer for
+  // the wrong reason. The wait keeps `updated_at` and `created_at` distinct,
+  // which is the only condition under which the assertion below can tell the
+  // two fields apart. `board-sort-tiebreak.spec.ts` covers the tiebreak
+  // itself, deliberately forcing the tie this wait exists to avoid here.
   await waitUntilStoreClockPasses(await updatedAtOf(page, untouched));
   // Bumps `touched`'s updated_at past both stories' created_at -- by
   // creation order alone the pair would read [untouched, touched]; a

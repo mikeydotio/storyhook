@@ -5,6 +5,7 @@ use crate::domain::{self, Member, StateDef, StorySnapshot, SuperState};
 use crate::error::AppError;
 use crate::invoke::{InvokeRequest, Invoker};
 use crate::output::{ProjectSnapshotView, Response};
+use crate::store::GlobalSeq;
 
 use super::action::FilterSpec;
 
@@ -31,6 +32,13 @@ pub struct DataStore {
     pub drafts: Vec<StorySnapshot>,
     pub prefix: String,
     pub members: Vec<Member>,
+    /// Each story's `head_global_seq` (SH-336), keyed by id, covering
+    /// `stories` and `drafts` alike — the exact recency tiebreak
+    /// `recent_stories` needs. Not on `StorySnapshot` itself: that type is
+    /// the fold of a story's events and nothing else. Empty when the daemon
+    /// that answered predates the field; every reader treats a missing id
+    /// the same way, falling back to the incoming order.
+    pub head_global_seqs: BTreeMap<String, GlobalSeq>,
 }
 
 /// The cross-story context the readiness predicates need, resolved once for a
@@ -100,6 +108,7 @@ impl DataStore {
             drafts: view.drafts,
             prefix: view.prefix,
             members: view.members,
+            head_global_seqs: view.head_global_seqs,
         }
     }
 
@@ -125,6 +134,7 @@ impl DataStore {
             drafts: Vec::new(),
             prefix,
             members,
+            head_global_seqs: BTreeMap::new(),
         }
     }
 
@@ -133,6 +143,15 @@ impl DataStore {
     #[cfg(test)]
     pub fn with_drafts(mut self, drafts: Vec<StorySnapshot>) -> Self {
         self.drafts = drafts;
+        self
+    }
+
+    /// The same, with `head_global_seq` values — only a test that asks about
+    /// the SH-336 recency tiebreak needs them, so they stay off the main
+    /// constructor's signature the same way `with_drafts` does.
+    #[cfg(test)]
+    pub fn with_head_global_seqs(mut self, seqs: BTreeMap<String, GlobalSeq>) -> Self {
+        self.head_global_seqs = seqs;
         self
     }
 

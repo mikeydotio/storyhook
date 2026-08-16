@@ -88,6 +88,23 @@ pub struct StoryView {
     /// that today, so this field is additive and changes nothing for them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_state: Option<String>,
+    /// The change-feed position of the event this story's row was folded from
+    /// (`stories.head_global_seq`, SH-336) — the exact tiebreak for a recency
+    /// ordering, since every storyhook timestamp is RFC3339 at one-second
+    /// precision and a burst of writes inside one second is this tracker's
+    /// normal workload.
+    ///
+    /// `None` from a view built without a row read (`query::bare_view`,
+    /// `transfer::import_project`) or from an older daemon. A consumer must
+    /// fall back to its previous tiebreak when either side of a comparison is
+    /// absent, exactly as `display_state`'s `None` means "use `story.state`".
+    /// Deliberately not on [`StorySnapshot`] itself: that type is the fold of
+    /// a story's events, serialized verbatim into the store's own `snapshot`
+    /// column and compared field-by-field against a fresh fold by `story
+    /// doctor` — a non-fold field there would report every story as
+    /// divergent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_global_seq: Option<crate::store::GlobalSeq>,
 }
 
 /// What `story project delete` would destroy, counted before anything is.
@@ -415,6 +432,18 @@ pub struct ProjectSnapshotView {
     /// per story a board-rendering call site could forget to check.
     #[serde(default)]
     pub drafts: Vec<StorySnapshot>,
+    /// Each story's `head_global_seq` (SH-336), keyed by id, covering
+    /// [`stories`](Self::stories) and [`drafts`](Self::drafts) alike.
+    ///
+    /// Carried beside the snapshots rather than on them, for the same reason
+    /// [`StoryView::head_global_seq`] is not on [`StorySnapshot`]: that type
+    /// is the fold of a story's events and nothing else. This is the TUI's
+    /// only wire type — it never sees a [`StoryView`] — so this is where its
+    /// recency comparator's tiebreak has to arrive. `#[serde(default)]` so an
+    /// older daemon answering a newer TUI degrades to today's behaviour
+    /// (every story absent from the map) rather than failing to deserialize.
+    #[serde(default)]
+    pub head_global_seqs: std::collections::BTreeMap<String, crate::store::GlobalSeq>,
 }
 
 /// Which project a command resolved to, and where its repo-side work runs.

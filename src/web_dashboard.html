@@ -5463,16 +5463,39 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return state.columnSort[slug] || DEFAULT_COLUMN_SORT;
   }
 
+  /** Which of two views the store wrote later, when their `updated_at`
+   * timestamps tie (SH-336). Every storyhook timestamp is RFC3339 at
+   * one-second precision, and this tracker's normal workload is agents
+   * writing in bursts, so a same-second tie is routine rather than rare.
+   * `head_global_seq` is the change-feed position of the event each view's
+   * row was folded from — a per-project counter allocated inside the
+   * store's write transaction, so it orders two writes that share a second
+   * exactly, the way no timestamp can. `0` when either side is absent (an
+   * older daemon, or a view built without a row read): the caller falls
+   * through to its previous tiebreak rather than inventing an order. */
+  function compareWriteOrder(a, b) {
+    var sa = a.head_global_seq, sb = b.head_global_seq;
+    if (typeof sa !== "number" || typeof sb !== "number") return 0;
+    return sa < sb ? -1 : sa > sb ? 1 : 0;
+  }
+
   /** Board card comparator (SH-305, replacing SH-128's single board-wide
    * version): builds a comparator for `slug`'s own `columnSortFor()` entry.
    * Three keys — "priority" (unchanged from SH-128), "added" (`created_at`),
-   * "modified" (`updated_at`) — each `* dir`, then the same
-   * story-number-then-id tiebreak chain SH-128 established, mirroring
-   * `domain::ready_order`'s shape. `created_at`/`updated_at` are RFC3339
-   * UTC strings of fixed, `Z`-suffixed width (`StorySnapshot`'s own
-   * writer), so a plain lexicographic `<`/`>` on them already agrees with
-   * chronological order — no `Date` parsing needed, and none of this file's
-   * other date handling (e.g. `renderList`'s `updated`) does any either. */
+   * "modified" (`updated_at`) — each `* dir`, then a tiebreak chain that
+   * itself reverses with `dir` for a time key (a finer reading of the same
+   * axis) but not for `priority` (a different axis, `domain::ready_order`'s
+   * fixed ascending convention, SH-128).
+   *
+   * `created_at`/`updated_at` are RFC3339 UTC strings of fixed, `Z`-suffixed
+   * width (`StorySnapshot`'s own writer), so a plain lexicographic `<`/`>`
+   * on them already *agrees with* chronological order — no `Date` parsing
+   * needed — but one second of resolution does not *resolve* it: two writes
+   * in the same second tie. `"modified"` breaks that tie on
+   * `compareWriteOrder` before falling back to story number (SH-336);
+   * `"added"` needs no such tiebreak, because story numbers are allocated by
+   * the same serialized write transaction as story creation and so *are*
+   * creation order exactly. */
   function columnCardCompare(slug) {
     var sort = columnSortFor(slug);
     var dir = sort.dir;
@@ -5486,7 +5509,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       }
       var field = sort.key === "added" ? "created_at" : "updated_at";
       var byTimestamp = (sa[field] < sb[field] ? -1 : sa[field] > sb[field] ? 1 : 0) * dir;
-      return byTimestamp !== 0 ? byTimestamp : byNumber;
+      if (byTimestamp !== 0) return byTimestamp;
+      if (sort.key === "modified") {
+        var byWrite = compareWriteOrder(a, b) * dir;
+        if (byWrite !== 0) return byWrite;
+      }
+      return byNumber * dir;
     };
   }
 
@@ -7067,10 +7095,27 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var focusedId = focusedCardId(body, "tr[data-id]");
     var ready = readySet(), blocked = blockedSet();
 
+    // No column here had a tiebreak before SH-336: a tie fell through to
+    // whatever order `Array.prototype.sort`'s stability happened to preserve
+    // from the server's response, which is not an order this file specifies
+    // or tests. The "Updated" column is the board's "Modified" under another
+    // name and gets the same exact tiebreak, `compareWriteOrder`; every
+    // other column's residual key is canonical story-number order (SH-64),
+    // which does not reverse with `dir` any more than the board's
+    // `"priority"` branch does.
     var sorted = stories.slice().sort(function(a, b) {
-      var av = sortValue(a, state.sort.col), bv = sortValue(b, state.sort.col);
-      var cmp = av < bv ? -1 : av > bv ? 1 : 0;
-      return cmp * state.sort.dir;
+      var col = state.sort.col, dir = state.sort.dir;
+      var av = sortValue(a, col), bv = sortValue(b, col);
+      var cmp = (av < bv ? -1 : av > bv ? 1 : 0) * dir;
+      if (cmp !== 0) return cmp;
+      if (col === "updated") {
+        var byWrite = compareWriteOrder(a, b) * dir;
+        if (byWrite !== 0) return byWrite;
+      }
+      var sa = a.story, sb = b.story;
+      var idFallback = sa.id < sb.id ? -1 : sa.id > sb.id ? 1 : 0;
+      var byNumber = (storyNumber(sa.id) - storyNumber(sb.id)) || idFallback;
+      return col === "updated" ? byNumber * dir : byNumber;
     });
 
     document.querySelectorAll(".sort-arrow").forEach(function(a) { a.textContent = ""; });

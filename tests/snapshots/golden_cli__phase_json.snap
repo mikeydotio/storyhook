@@ -41,6 +41,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
+          "head_global_seq": 61,
           "story": {
             "assignee": "ada-lovelace",
             "awaiting": null,
@@ -76,6 +77,7 @@ source: tests/golden_cli.rs
           }
         },
         {
+          "head_global_seq": 65,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -112,6 +114,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
+          "head_global_seq": 63,
           "story": {
             "awaiting": null,
             "comments": [],

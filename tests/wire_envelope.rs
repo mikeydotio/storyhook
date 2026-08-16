@@ -35,7 +35,7 @@ use storyhook::output::{
     SettingSource, SettingView, SetupPlan, StaleInfo, StoryView, SummaryView, UndeletePlan,
     render_error, render_response,
 };
-use storyhook::store::PrLink;
+use storyhook::store::{GlobalSeq, PrLink};
 
 /// The four ways a `Response` can be rendered. Every case in this file is
 /// checked in all of them, because `--quiet` and `--json` route through
@@ -102,6 +102,7 @@ fn view(story: StorySnapshot) -> StoryView {
         stale_info: None,
         progress: None,
         display_state: None,
+        head_global_seq: None,
     }
 }
 
@@ -190,6 +191,7 @@ fn maximal_view() -> StoryView {
             children_total: 5,
         }),
         display_state: Some("in-progress".to_string()),
+        head_global_seq: Some(GlobalSeq::new(7)),
     }
 }
 
@@ -442,6 +444,7 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                 members: Vec::new(),
                 stories: Vec::new(),
                 drafts: Vec::new(),
+                head_global_seqs: std::collections::BTreeMap::new(),
             })),
         ),
         (
@@ -475,6 +478,10 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                     draft: true,
                     ..snapshot("SH-2", "A draft, not yet live")
                 }],
+                head_global_seqs: std::collections::BTreeMap::from([
+                    ("SH-1".to_string(), GlobalSeq::new(7)),
+                    ("SH-2".to_string(), GlobalSeq::new(3)),
+                ]),
             })),
         ),
         ("story_history_empty", Response::StoryHistory(Vec::new())),

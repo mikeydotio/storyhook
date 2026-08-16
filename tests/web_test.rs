@@ -2786,6 +2786,81 @@ fn web_serve_api_data_with_stories() {
     }
 }
 
+/// SH-336: `head_global_seq` must reach the wire on `/data`, or the board's
+/// same-second recency tiebreak has nothing to read. Two stories written
+/// back to back get two distinct, increasing values — proving the field is
+/// both present and actually derived from write order, not a stub.
+#[test]
+fn web_serve_api_data_carries_head_global_seq() {
+    let fixture = served();
+    fixture.seed(&["new", "First"]);
+    fixture.seed(&["new", "Second"]);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let resp = fixture
+        .agent()
+        .get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    let stories = json["stories"].as_array().unwrap();
+    assert_eq!(stories.len(), 2);
+    let seqs: Vec<i64> = stories
+        .iter()
+        .map(|s| {
+            s["head_global_seq"]
+                .as_i64()
+                .expect("head_global_seq must be present and numeric")
+        })
+        .collect();
+    assert_ne!(
+        seqs[0], seqs[1],
+        "two distinct writes must carry two distinct write positions"
+    );
+}
+
+/// The JS half of the same wire contract: `web_dashboard.html`'s
+/// `compareWriteOrder` must read the key `StoryView::head_global_seq`
+/// actually serializes to. Derived from a live round trip rather than a
+/// hand-typed literal on both sides, so a Rust-side rename that left the JS
+/// reading a key nobody emits fails this test instead of silently
+/// resurrecting SH-336.
+#[test]
+fn web_dashboard_js_reads_the_wire_key_head_global_seq_actually_serializes_to() {
+    let fixture = served();
+    fixture.seed(&["new", "Only story"]);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    let resp = fixture
+        .agent()
+        .get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let story = &json["stories"].as_array().unwrap()[0];
+    let key = story
+        .as_object()
+        .unwrap()
+        .keys()
+        .find(|k| k.as_str() == "head_global_seq")
+        .expect("the wire payload must carry a `head_global_seq` key");
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let html = resp.into_body().read_to_string().unwrap();
+    assert!(
+        html.contains(&format!("a.{key}")),
+        "compareWriteOrder must read `a.{key}` — the exact key the wire emits"
+    );
+}
+
 /// SH-197's context menu "Copy Description" reads straight off the summary
 /// record `/data` already returns -- no separate detail fetch -- so this
 /// pins that `description` really is there rather than something only the
