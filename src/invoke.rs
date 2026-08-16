@@ -32,12 +32,11 @@ use crate::cli::{
     SettingsAction, StateAction, StoreAction, TokenAction, TypeAction, WebAction,
 };
 use crate::domain::provenance::{ActorLabel, Provenance};
-use crate::domain::{FieldEdit, ImportStory, StateChanges, SuperState, TypeChanges, TypeDef};
+use crate::domain::{FieldEdit, StateChanges, SuperState, TypeChanges, TypeDef};
 use crate::env::Environment;
 use crate::error::AppError;
 use crate::help_topics;
 use crate::output::{ConfirmationPlan, Response, render_html_report};
-use crate::service::transfer::ProjectExport;
 use crate::service::{
     CatalogService, Clock, ConfigService, Ctx, DeleteOutcome, FieldEdits, GitService,
     GroupingService, ImportBatch, InitOptions, InitOutcome, IntegrityService, ListFilters,
@@ -813,8 +812,11 @@ pub fn dispatch<S: Store>(
             // string that `story import-project` then refuses.
             .map(Response::RawJson),
         Invocation::Import { file } => {
-            let stories: Vec<ImportStory> =
-                serde_json::from_str(&read_input(ctx.cwd(), ctx.stdin(), file.as_deref())?)?;
+            let stories = transfer::parse_import_documents(&read_input(
+                ctx.cwd(),
+                ctx.stdin(),
+                file.as_deref(),
+            )?)?;
             if stories.is_empty() {
                 return Ok(Response::Message("no stories to import".to_string()));
             }
@@ -2103,7 +2105,7 @@ pub fn dispatch_unscoped_with_stdin<S: Store>(
         Invocation::ImportProject { file, legacy_links } => {
             let raw = std::fs::read_to_string(resolve_against(root, &file))
                 .map_err(|e| AppError::Storage(format!("failed to read {file}: {e}")))?;
-            let export: ProjectExport = serde_json::from_str(&raw)?;
+            let export = transfer::parse_export_document(&raw)?;
             let outcome = transfer::import_project(
                 store,
                 root,

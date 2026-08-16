@@ -1578,6 +1578,113 @@ fn the_export_arm_answers_with_the_raw_document() {
     assert_eq!(parsed.stories.len(), 1);
 }
 
+/// The wrong-verb mistake SH-215 was filed over: `story export`'s own output
+/// handed to `story import`, which cannot read it. Before the fix this failed
+/// with serde's own "invalid type: map, expected a sequence", naming neither
+/// the command that wrote the file nor the one that reads it.
+#[test]
+fn an_export_document_handed_to_the_batch_importer_names_import_project() {
+    let fixture = ServiceFixture::new();
+    create(&fixture, "Exported");
+    let json = document(&export(&fixture));
+
+    let dir = scratch_dir();
+    let file = dir.path().join("backup.json");
+    std::fs::write(&file, &json).expect("writing the export document");
+
+    let error = dispatch(
+        &fixture.ctx(),
+        Invocation::Import {
+            file: Some(file.to_string_lossy().into_owned()),
+        },
+    )
+    .expect_err("an export document is not a valid import array");
+    assert!(matches!(error, AppError::Usage(_)), "{error}");
+    let message = error.to_string();
+    assert!(message.contains("story import-project"), "{message}");
+    assert!(message.contains("story export"), "{message}");
+}
+
+/// The mirror mistake: a `story import`-shaped array handed to
+/// `story import-project`, which restores a whole project and cannot read a
+/// bare list of descriptions. Before the fix this failed with serde's
+/// "invalid type: sequence, expected a map".
+#[test]
+fn an_import_array_handed_to_the_restore_reader_names_import() {
+    let fixture = ServiceFixture::new();
+    let json = serde_json::to_string_pretty(&[described("Build API"), described("Write docs")])
+        .expect("serializing an import array");
+
+    let dir = scratch_dir();
+    std::fs::write(dir.path().join("stories.json"), &json).expect("writing the import array");
+    let ctx = storyhook::service::Ctx::new(
+        fixture.store(),
+        fixture.project(),
+        dir.path(),
+        storyhook::env::Environment::at(dir.path()),
+    );
+
+    let error = dispatch(
+        &ctx,
+        Invocation::ImportProject {
+            file: "stories.json".to_string(),
+            legacy_links: false,
+        },
+    )
+    .expect_err("an import array is not a valid export document");
+    assert!(matches!(error, AppError::Usage(_)), "{error}");
+    let message = error.to_string();
+    assert!(message.contains("story import-project"), "{message}");
+    assert!(
+        message.contains("story import <file>"),
+        "the message must name the plain `import` verb as the remedy: {message}"
+    );
+}
+
+/// The sniff that tells the two importers' wrong-verb mistakes apart from
+/// each other must never mask a *genuinely* malformed document — serde's own
+/// error, with its line and column, has to survive untouched. This is the
+/// same input `tests/error_contract.rs`'s `Storage` case provokes against
+/// `import`; this test adds the `import-project` side, which shares the same
+/// sniffing discipline.
+#[test]
+fn a_genuinely_malformed_document_still_reports_serdes_own_error() {
+    let fixture = ServiceFixture::new();
+    let dir = scratch_dir();
+    let broken = dir.path().join("broken.json");
+    std::fs::write(&broken, "not json\n").expect("writing a broken document");
+
+    let import_error = dispatch(
+        &fixture.ctx(),
+        Invocation::Import {
+            file: Some(broken.to_string_lossy().into_owned()),
+        },
+    )
+    .expect_err("garbage is not a valid import array");
+    assert!(matches!(import_error, AppError::Storage(_)), "{import_error}");
+    assert!(import_error.to_string().contains("expected ident"), "{import_error}");
+
+    let ctx = storyhook::service::Ctx::new(
+        fixture.store(),
+        fixture.project(),
+        dir.path(),
+        storyhook::env::Environment::at(dir.path()),
+    );
+    let restore_error = dispatch(
+        &ctx,
+        Invocation::ImportProject {
+            file: "broken.json".to_string(),
+            legacy_links: false,
+        },
+    )
+    .expect_err("garbage is not a valid export document");
+    assert!(matches!(restore_error, AppError::Storage(_)), "{restore_error}");
+    assert!(
+        restore_error.to_string().contains("expected ident"),
+        "{restore_error}"
+    );
+}
+
 #[test]
 fn the_decompose_arm_summarizes_the_stories_and_relationships_it_created() {
     let fixture = ServiceFixture::new();
