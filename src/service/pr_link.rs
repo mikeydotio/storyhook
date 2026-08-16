@@ -7,7 +7,7 @@
 //! GitHub — a PR URL is parsed, not fetched — so they work in every build,
 //! `github-sync` feature or not, and never spend a caller's token. That is a
 //! deliberate design decision, not an accident of what happened to be easy:
-//! see `.council/sh49-linked-prs/DECISION.md`, "Linking/unlinking is
+//! see SH-49's council verdict, "Linking/unlinking is
 //! feature-independent of github-sync — a pure event-sourced fact requiring
 //! no network access." This module and [`crate::domain::pr_url`], which it
 //! depends on, are consequently both ungated.
@@ -153,7 +153,7 @@ impl<'ctx, S: Store> PrLinkService<'ctx, S> {
     /// in which case there is nothing to compare against and this is a no-op.
     ///
     /// Deliberately no override flag: the winning council proposal (Proposal
-    /// B, `.council/sh49-linked-prs/DECISION.md`) is a hard block, and a
+    /// B on SH-49) is a hard block, and a
     /// caller that means a genuine cross-repository bookmark passes
     /// `close_on_merge: false` instead of asking this check to stand aside.
     fn refuse_cross_repo(&self, owner: &str, repo: &str) -> Result<(), AppError> {

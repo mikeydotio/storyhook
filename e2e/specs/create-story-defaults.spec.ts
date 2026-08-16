@@ -12,7 +12,7 @@ import {
  * `meta.defaults` (`src/api/rest.rs::meta_json`) rather than a hardcoded
  * `"todo"`/`"story"` guess. Also exercises SH-127: creating a story no
  * longer flashes a success toast -- the new card's own "entering" animation
- * is the confirmation (council verdict: .council/sh127-status-flash-scope/).
+ * is the confirmation (council verdict on SH-127).
  *
  * Fixtures, from `scripts/run-e2e.sh`:
  *

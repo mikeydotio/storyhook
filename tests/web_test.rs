@@ -2685,7 +2685,7 @@ fn web_serve_root_html_lets_the_next_board_column_peek_on_narrow_phones() {
 /// `clientWidth`, with a 100-character name).
 ///
 /// The fix keeps the button's own 14rem ceiling under the narrow-width block
-/// too -- council-decided (`.council/sh303-projsel-mobile-max-width/`) over a
+/// too -- council-decided (verdict on SH-303) over a
 /// wider mobile-only figure, because `.projsel-btn` shares topbar row 1 with
 /// `.view-toggle`/`.topbar-right` under the same `<=768px` block, and that
 /// row's own chrome-budget test (`responsive.mobile.spec.ts`) has too little
@@ -3746,7 +3746,8 @@ fn web_create_story_is_attributable_to_the_web_door() {
     assert_eq!(created.provenance, Provenance::command("web:new"));
 }
 
-/// SH-312's council verdict (`.council/sh312-dashboard-create-idempotency/`):
+/// SH-312's council verdict (on that story, and reasoned through in
+/// `docs/rca/duplicate-story-from-the-dashboard.md`):
 /// truth-telling plus a client-side in-flight guard, not a server-side
 /// idempotency key. This pins that decision as *current, intentional*
 /// behavior at the layer this test can see — two independent REST creates

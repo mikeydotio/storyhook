@@ -47,8 +47,7 @@ import {
  *    nobody reads a green run here as evidence about Safari. Adding a `webkit`
  *    project is filed separately and deliberately not smuggled in here.
  *
- * Full reasoning, the vote, and the rejected alternatives:
- * `.council/sh324-delete-confirmation-time-limit/DECISION.md`.
+ * Full reasoning, the vote, and the rejected alternatives: SH-324.
  */
 
 /** Two statuses this file creates and destroys, in a project no other spec

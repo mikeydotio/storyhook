@@ -13,7 +13,7 @@ import {
  * Exercises SH-305: every board column gets its own sort, chosen from a
  * popup menu opened by a `.column-sort-btn` glyph at the column header's
  * top-right corner -- replacing SH-128's single pair of board-wide buttons
- * in the filter panel (`.council/sh128-board-sort-options/` explicitly
+ * in the filter panel (SH-128's council explicitly
  * chose that placement, and this story reverses it on new information: a
  * `todo` column and a `done` column can legitimately want different
  * orders, which SH-128's board-wide state could never express).

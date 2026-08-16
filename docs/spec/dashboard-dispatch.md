@@ -544,8 +544,8 @@ SH-127's council unanimously *deleted* — the new card's own `entering` animati
 confirms creation in place. The example is read as format guidance for the headlines above,
 not as a request to reverse that verdict.
 
-Council: `.council/sh-304-dashboard-notification-contract/` (three seats, two rounds, IRV
-after a 1-1-1 split). Its `DECISION.md` records six binding constraints, including the
+Council: SH-304 (three seats, two rounds, IRV
+after a 1-1-1 split). Its verdict records six binding constraints, including the
 chair's correction of a seat's supporting claim: the daemon *does* persist finished
 `DispatchRecord`s, but **no route exposes them, the dashboard never reads them, and they
 evict after 30 minutes or 32 records** (`RETAIN_FOR`/`RETAIN_FINISHED`) — so "unattended
@@ -615,10 +615,10 @@ Worth stating plainly, in this file's own established idiom: without the battery
 who wrote it, and the empirical check is what settled it rather than DOM-spec reasoning
 alone.
 
-Council: `.council/sh-333-notice-stack-announcement-mechanism/` (three seats, unanimous on
+Council: SH-333 (three seats, unanimous on
 the first ballot — both members who separately proposed a single blanket mechanism for
 both surfaces switched their own vote to the split once the two surfaces' distinct failure
-mechanisms were on the table). `DECISION.md` records the full rationale and the three
+mechanisms were on the table). Its verdict records the full rationale and the three
 riders (announcer ownership, duplicate-arrival distinguishability, and the SH-337 tie-back).
 
 ## As built — SH-337 (the panel that rebuilt itself under the reader's hands)
@@ -736,8 +736,7 @@ on click). That premise was false, and the keydown sequence for a held Enter mea
 a property of the key event, false on the deliberate press and true on every auto-repeat.
 It is the SH-226 test in its strongest available form here, and the AT population the prior
 council was protecting is untouched either way, because an AT activation arrives as a click
-with no keydown at all. Council verdict, unanimous 3-0:
-`.council/sh339-notice-dismiss-autorepeat/DECISION.md`.
+with no keydown at all. Council verdict, unanimous 3-0, recorded on SH-339.
 
 **What shipped:** `refuseAutoRepeatActivation`, one delegated `keydown` listener bound on
 `#notice-dock` — the single common ancestor of both regions and both "Dismiss all" bars —
@@ -810,9 +809,8 @@ claimed the loss was closed.
 **What shipped.** `GET /api/dispatch-log` and a "Dispatch log" section on the Settings
 screen. The daemon has kept these records since the beginning and has persisted them
 across its own restarts since SH-232; they simply had no route and no reader. Design
-of record: `.council/sh361-dismissed-durable-error-recoverability/DECISION.md`
-(unanimous 3-0), **written to the main checkout** — `.council/` is gitignored and a
-council convened inside a worktree dies with it (SH-363, open).
+of record: SH-361's council verdict (unanimous 3-0), recorded on that story — which
+is now the rule rather than one session's precaution (SH-363).
 
 **Only the dispatch half, and the split is not cosmetic.** SH-339's council required
 this story be split between *a record that already exists and needs plumbing* and *a

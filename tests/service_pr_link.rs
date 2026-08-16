@@ -4,7 +4,7 @@
 //! Deliberately unconditional (no `#![cfg(feature = "github-sync")]`):
 //! linking and unlinking a pull request never talk to GitHub, so they must
 //! work whether or not that feature is compiled in — see the module doc on
-//! `storyhook::service::pr_link` and `.council/sh49-linked-prs/DECISION.md`.
+//! `storyhook::service::pr_link` and SH-49's council verdict.
 //! `run_check`/`check`'s own tests are in `tests/service_pr_check.rs`, which
 //! *is* gated, because those do talk to GitHub.
 

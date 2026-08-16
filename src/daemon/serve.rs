@@ -1465,10 +1465,12 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
     // Deliberately does NOT also call `serving.watcher.notice()` here.
     // Every mutating REST route is built through `Routed::changing`, so its
     // `Changed` coverage above is already exhaustive and `notice()`'s
-    // store-wide diff would add none. A council vote
-    // (`.council/rest-arm-join-shared-change-watcher-boundary/`) scoped
-    // SH-202's fix to the RPC arm alone, which is the gap that story was
-    // actually filed about.
+    // store-wide diff would add none. A council vote scoped SH-202's fix to
+    // the RPC arm alone, which is the gap that story was actually filed
+    // about. That vote's trail was written to an untracked, worktree-local
+    // directory and is gone (SH-363), and it belonged to no story, so the
+    // sentence above is now the whole of the record: the boundary is the RPC
+    // arm, and this comment is why.
     //
     // Its second reason has since expired: a `notice()` call here could
     // attribute an unrelated out-of-band commit to this response and consume

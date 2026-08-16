@@ -16,8 +16,7 @@
 //! the raw string into an append-only event log. `story relate SH-1 blocks 1`
 //! would have passed the self-relation guard and written `"1"` into history.
 //!
-//! Full verdict: `.council/sh118-bare-integer-ids/DECISION.md`, and as a comment
-//! on SH-118.
+//! Full verdict: recorded as a comment on SH-118.
 
 use storyhook_test_support::TestEnv;
 

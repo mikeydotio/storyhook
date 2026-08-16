@@ -45,7 +45,7 @@ const SENTINEL_PROTOCOL_VERSION: u32 = 1;
 /// undocumented. `story.sh`'s own dispatcher, not this file, decides
 /// liveness: it already captured the pane's pid itself
 /// (`#{pane_pid}`, SH-230) and re-checks that exact pid against the exact
-/// pane at verification time (`.council/sh-231-sentinel-design/DECISION.md`)
+/// pane at verification time (SH-231's council verdict)
 /// — the sentinel is the "something happened here" half of that check, the
 /// re-queried pane is the "and it is still true" half.
 #[derive(Debug, serde::Serialize)]

@@ -16,8 +16,7 @@
 //! A drift test over a paraphrase can only prove two texts differ, never that
 //! either is right; the only mirror that would truly detect drift is a
 //! byte-verbatim block, which is a single source wearing a disguise. Decided
-//! unanimously by a three-seat council —
-//! `.council/sh354-priority-rubric-reach-and-none-default/DECISION.md`.
+//! unanimously by a three-seat council, whose verdict SH-354 carries.
 //!
 //! **Derived, not enumerated.** The in-scope set is computed from the shipped text
 //! itself: anything naming `--priority` or `prioritiz` is offering the operator a

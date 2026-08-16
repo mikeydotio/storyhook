@@ -205,7 +205,7 @@ fn an_ordinary_command_autostarts_fast_under_a_wedged_tailscale() {
 /// wedged `tailscale`, and it must never print a tailnet URL it has not
 /// actually confirmed — a loopback URL plus a note that the tailnet is
 /// still resolving is the honest answer at this instant, per SH-186's
-/// council decision (`.council/sh-186-tailnet-advertise/DECISION.md`).
+/// council decision, which that story carries as a comment.
 #[test]
 fn web_start_returns_fast_under_a_wedged_tailscale_and_never_overclaims() {
     let env = TestEnv::isolated();

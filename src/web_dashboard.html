@@ -1222,7 +1222,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
      responsive.mobile.spec.ts's "topbar and collapsed filter bar" test) has
      too little headroom to safely absorb a wider button with nothing here to
      catch a regression -- council-decided over a wider mobile-only figure,
-     `.council/sh303-projsel-mobile-max-width/`. `calc(100vw - 2.5rem)`
+     verdict on SH-303. `calc(100vw - 2.5rem)`
      -- `.topbar`'s own horizontal padding -- is a backstop for viewports
      narrower than anything this file's own sweep tests. */
   .projsel-btn { max-width: min(14rem, calc(100vw - 2.5rem)); }
@@ -1506,8 +1506,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
          1.2), so a mutation announces only the node that changed, not the whole
          standing pile (SH-333). Each `.toast` then declares `aria-atomic="true"`
          on itself (see `toast()`), so the notice that actually arrived is still
-         announced whole rather than word-by-word. Council verdict:
-         `.council/sh-333-notice-stack-announcement-mechanism/DECISION.md`. This is
+         announced whole rather than word-by-word. Council verdict on SH-333. This is
          the surface where that fix is sufficient in place -- notices are
          `insertBefore`d one at a time, so "the node that changed" is exactly "the
          node that arrived". -->
@@ -1967,8 +1966,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // It ends on the delete, on Cancel or Escape, on leaving the editor, on
     // another status mutation completing, or on the slug leaving the list. It
     // ends on no poll, no push, no re-render, no focus change, and no elapsed
-    // time. `.council/sh324-delete-confirmation-time-limit/DECISION.md` and
-    // `.council/sh-334-destination-prompt-state-model/DECISION.md`.
+    // time. Council verdicts on SH-324 and SH-334.
     statusPrompt: null,
     data: null,
     view: localStorage.getItem("storyhook.view") === "list" ? "list" : "board",
@@ -3113,8 +3111,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * bulk gestures. That is why the question SH-326 was filed to answer -- where
    * focus goes when the dismissed notice was the last one -- needed no new
    * anchor: the answer was already written here, already argued, and already
-   * pinned as a property rather than an identity
-   * (`.council/sh326-notice-dismiss-focus-landing/DECISION.md`).
+   * pinned as a property rather than an identity (council verdict on SH-326).
    *
    * **Every caller gates on `noticeFocusIn` first, the bulk pair included.**
    * They called this unconditionally when SH-323 shipped them, which was safe
@@ -3277,8 +3274,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * stack that delivers repeats as discrete keydown/keyup pairs -- this guard is
    * inert, which is today's behaviour and never worse than it.
    *
-   * Council verdict, unanimous 3-0:
-   * `.council/sh339-notice-dismiss-autorepeat/DECISION.md`. It also ruled that
+   * Council verdict, unanimous 3-0, recorded on SH-339. It also ruled that
    * the guard fixes the *amplification* and not the *loss* -- a durable error's
    * content is still unrecoverable once deliberately dismissed -- and that the
    * loss stays on the books as its own story rather than being argued away
@@ -3435,8 +3431,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // ============================================================
   //
   // One contract, two surfaces, keyed on OUTCOME rather than on which
-  // control started the work (`.council/sh-304-dashboard-notification-
-  // contract/DECISION.md`):
+  // control started the work (council verdict on SH-304):
   //
   //   - a success or a passing remark CLEARS ITSELF, because the thing it
   //     reports is visible elsewhere -- the card moved, the row vanished,
@@ -3513,7 +3508,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * appears and vanishes every three seconds at the end of the document, and
    * a notice that never departs at all once focus lands in it, with nothing
    * telling the user their own focus is what is holding it.
-   * `.council/sh-322-self-clearing-notice-keyboard-pause/DECISION.md` has
+   * SH-322 has
    * the full reasoning; `e2e/specs/notification-contract.spec.ts` fences it. */
   function scheduleAutoDismiss(node) {
     var remaining = TOAST_LIFETIME_MS;
@@ -5003,9 +4998,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * permanently-wrong modal; this popover re-renders on every arrival, so
    * disabling it would remedy nothing and cost the tab order. The asymmetry
    * is a council verdict, not an oversight: `story show SH-284` carries it in
-   * full, including the dissent (audit trail in `.council/sh284-drafts-button-
-   * pre-data-window/`, which is untracked — the story comment is the copy that
-   * survives a clone).
+   * full, including the dissent. (The council's own working directory was
+   * untracked and worktree-local; the story comment is the copy that survives
+   * a clone — SH-363 made that the rule.)
    *
    * The label stays the neutral "Drafts" when that window turns out to be
    * permanent (SH-291) — the failure is named where the user asked for these
@@ -5177,7 +5172,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // disarms dismissal for every screen at once, silently. That is not
     // hypothetical -- SH-284 fenced the identical hazard in
     // `renderDraftsList()`, whose `clear(list)` must likewise precede its
-    // branches. Council: `.council/sh290-drawer-dismissal-placement/`.
+    // branches. Council: SH-290.
     //
     // `selectRepo()` keeps its own `closeDrawer()`: it is a different rule
     // (the project changed, not the screen), and since it sets
@@ -6111,8 +6106,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * client can't resolve is still a real cause, rendered via `storyRef()`'s
    * existing "unknown" ring rather than silently dropped, the same way the
    * drawer's own relationships list already renders every relation
-   * unconditionally. Decided by council vote, unanimous in round 1:
-   * `.council/sh309-unresolvable-obviated-by-badge-ref/DECISION.md`.
+   * unconditionally. Decided by council vote, unanimous in round 1; the
+   * verdict is on SH-309.
    *
    * An empty cause list falls through to the pre-SH-309 two cases -- but
    * only when the server-computed `isBlocked` (`blocked[st.id]`,
@@ -9487,7 +9482,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * `state.statusPrompt` for the eight rebuild paths that made that true and
    * for why the open question now lives in `state`.
    *
-   * `.council/sh324-delete-confirmation-time-limit/DECISION.md` has the full
+   * SH-324 has the full
    * reasoning, the vote (unanimous, with two seats voting against their own
    * proposals), and the alternatives with their rejections.
    *
@@ -9495,8 +9490,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * (SH-334): `openStatusMove()` is the sibling this comment's own reasoning
    * required, filed separately because a destination is a second behaviour
    * change with its own state model — a select value plus a pending intent,
-   * not one slug. `.council/sh-334-destination-prompt-state-model/DECISION.md`
-   * has that council's own verdict. */
+   * not one slug. SH-334 carries that council's own verdict. */
   function onDeleteStatus(status, row) {
     if (status.open_count > 0) {
       openStatusMove(status, "delete", null);
@@ -10150,7 +10144,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         // `entered` classification) already confirms the creation in
         // place, unlike e.g. a deletion, whose exit animation is shared
         // with plain filtering and so still needs the toast to
-        // disambiguate (council: .council/sh127-status-flash-scope/).
+        // disambiguate (council verdict on SH-127).
         fetchData();
       })
       .catch(function(err) { setCreateModalInFlight(false); $("create-error").textContent = describeMutationFailure(err); });

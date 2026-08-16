@@ -11,8 +11,7 @@ import { openFilters, openProject, seedToken } from "./support";
  *   - "Alpha Project" (prefix AA) — two stories: "Wire up the auth flow"
  *     and "Fix the flaky upload test". Also carries an extra `review`
  *     state, added to Alpha's vocabulary only and deliberately absent from
- *     Beta and Gamma — see the council's finding
- *     (`.council/sh-155-filter-persistence-across-projects/DECISION.md`)
+ *     Beta and Gamma — see the council's finding (verdict on SH-155)
  *     that a per-repo-vocabulary filter value must be pruned against the
  *     *next* project's own vocabulary, not just carried over raw: without
  *     that, a `states` filter set to `review` would silently hide every
