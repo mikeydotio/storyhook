@@ -1063,21 +1063,29 @@ Related:
             "import",
             r#"story import [<file>]
 
-Import stories from a JSON file or stdin. Expects an array of story
-objects with at minimum a "title" field.
+Bulk-creates stories from a JSON file or stdin. Expects an array of
+story objects with at minimum a "title" field. Each becomes a fresh
+story with a newly minted id -- it never preserves the ids or event
+history of a document it reads.
+
+This is NOT what reads a 'story export' document: export's whole
+document is one JSON object, not this array, and a JSON object handed
+here is refused with a pointer at the command that can read it,
+'story import-project'.
 
 When to use:
   For bulk story creation from structured data. For markdown/YAML
-  specs, use 'story decompose' instead.
+  specs, use 'story decompose' instead. To restore a 'story export'
+  document, use 'story import-project'.
 
 Examples:
   story import stories.json           # From file
   cat stories.json | story import     # From stdin
 
 Related:
-  story export     — Export all stories to JSON
-  story decompose  — Create stories from markdown/YAML spec
-  story new        — Create a single story
+  story import-project  — Restore a 'story export' document instead
+  story decompose       — Create stories from markdown/YAML spec
+  story new             — Create a single story
 "#,
         );
 
@@ -1085,20 +1093,88 @@ Related:
             "export",
             r#"story export
 
-Export all open stories as a JSON array. Useful for backup, migration,
-or external processing.
+Exports the whole project as one JSON document -- not an array. Every
+story, open and closed alike, each with its full event history, plus
+the project's states, types and members, and -- when the project has
+them -- its settings, registered git remotes, and github-sync
+configuration.
+
+The document's top-level keys:
+  schema         the export format version
+  prefix         the story-id prefix, absent when it is the default
+  states         the configured states, in order
+  types          the configured story types, in order
+  members        the project's members
+  settings       user-set settings, absent when none were ever set
+  remotes        registered git origins, absent when there are none
+  github_sync    the github-sync configuration, absent until configured
+  github_bases   github-sync merge bases, absent until configured
+  stories        every story: id, full event history, and whether it
+                 is archived (closed stories are included, not just
+                 open ones)
+
+--json and --quiet change nothing: the document already is the whole
+result, printed as-is rather than wrapped in the --json envelope
+(see 'story help json-format').
 
 When to use:
-  For data backup, migration to another system, or feeding into
-  external tools.
+  For a portable, one-project-at-a-time backup, before a risky bulk
+  operation, or to move a project to another store. For a snapshot of
+  the whole store -- every project at once, as a binary copy rather
+  than JSON -- use 'story store backup' instead.
 
 Examples:
   story export                        # JSON to stdout
   story export > backup.json          # Save to file
 
 Related:
-  story import  — Import stories from JSON
-  story report  — Human-readable report
+  story import-project  — Restore this document into an empty project
+  story import          — Bulk-create stories from a plain JSON array
+                           (a different, smaller shape than this document)
+  story store backup    — A whole-store snapshot, every project at once
+"#,
+        );
+
+        m.insert(
+            "import-project",
+            r#"story import-project <file> [--legacy-links]
+
+Restores a whole project from a 'story export' document: every
+story's exact id and full event history, its states, types, members,
+and -- when the document carries them -- its settings, registered git
+remotes, and github-sync configuration.
+
+Restores into an EMPTY project only. Run against a directory already
+holding stories and it refuses rather than merging or overwriting.
+Point it at a fresh directory (or one that was never initialized) and
+it creates the project the document describes; point it at a
+directory whose committed .storyhook.toml already names a project
+this store lacks (a disaster-recovery restore) and it recreates that
+project under the same identity.
+
+Reads its file only -- unlike 'story import', it never reads stdin.
+
+--legacy-links asserts that this document predates event kind #18, so
+its `[git] <sha>: <subject>` comments in story history are commit-link
+records rather than prose a user typed. Leave it off for a document
+`story export` wrote; only a genuine pre-#18 backup needs it.
+
+A document that is actually a 'story import' array (bulk-create
+descriptions, not a whole-project snapshot) is refused with a pointer
+at 'story import'.
+
+When to use:
+  To restore a 'story export' backup, or to move a project into a
+  fresh store.
+
+Examples:
+  story import-project backup.json
+  story import-project old-backup.json --legacy-links
+
+Related:
+  story export   — Produce the document this command restores
+  story import   — Bulk-create stories from a plain array instead
+  story migrate  — Move a legacy .storyhook/ directory into the store
 "#,
         );
 
@@ -1261,8 +1337,8 @@ Commands returning a message ("message" field):
   story project new           -> "message": "created story project..."
   story member add            -> "message": "added member alice"
   story state add/remove      -> "message": "added state in-progress (open)"
-  story export                -> "message": "<json array of stories>"
-  story context               -> "message": "<markdown or json string>"
+  story import-project        -> "message": "imported project with N stories"
+  story context (markdown, the default) -> "message": "<markdown string>"
   story handoff               -> "message": "<markdown string>"
   story report --html         -> "message": "<html string>"
   story scaffold              -> "message": "<template content>"
@@ -1270,6 +1346,11 @@ Commands returning a message ("message" field):
   story commit-sync            -> "message": "scanned N commits..."
   story next (no results)     -> "message": "no ready stories"
   story help <topic>          -> "message": "<help text>"
+
+Commands that print their own JSON directly, with NO envelope around
+it, regardless of the global --json flag:
+  story export                     the whole export document
+  story context --format json      the whole context document (SH-66)
 
 == Error Format ==
 
@@ -2600,8 +2681,8 @@ STORY METADATA
 
 BULK & INTEGRATION
   story decompose <file>          Parse spec into stories with dependencies
-  story import [file]             Bulk import from JSON
-  story export                    Export all stories as JSON
+  story import [file]             Bulk-create from JSON
+  story export                    Whole project, one JSON doc
   story commit-sync               Link git commits to stories
   story github-sync               Bidirectional GitHub Issues sync
   story handoff                   End-of-session summary document
