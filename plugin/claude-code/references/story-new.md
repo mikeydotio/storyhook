@@ -78,6 +78,13 @@ bash ${CLAUDE_PLUGIN_ROOT}/bin/story.sh create \
 `backend` and `api`. Comma is always the label delimiter — a single label can
 never contain one.
 
+**Always pass `--priority`, and read `story help priority-rubric` to choose the
+level.** Priority is `story next`'s sort key, so it decides what the next
+session picks up. Omitting it files the story at `none`, which does not mean
+"not assessed yet" — it means *deliberately parked*, and it sorts last. A
+defect filed that way can sit at the bottom of the queue indefinitely with
+nothing saying it is there.
+
 ## 7. Report
 
 Show `display` (it names the new story id).
