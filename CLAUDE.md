@@ -123,6 +123,17 @@ A dependency is a scheduling fact, not a severity claim.
   *earlier* than Y, raise Y to X's level, **never higher**. `story next` excludes
   blocked stories, so a low blocker beneath a high dependent is a stall the queue
   cannot resolve by itself.
+- **When the blocker floor and the detection carve-out disagree, the carve-out
+  wins.** They collide whenever a defect is `blocked-by` the very instrument that
+  would observe it — the floor says raise the detector to the defect's level, the
+  carve-out says a detector is never equal to what it detects. Found the first
+  time the rule was used in anger: SH-283 (critical) `blocked-by` SH-335 (high).
+  Two reasons the carve-out takes precedence. It is the **more specific** rule —
+  it speaks to this exact pairing, where the floor speaks to dependencies in
+  general. And the floor's purpose is **anti-stall**, which a detector edge does
+  not create: the detector already sorts above everything except the defect it is
+  blocking, so the queue hands it out next by itself. Raising it would buy no
+  scheduling and would erase the ordering the carve-out exists to state.
 - **Never lower a dependent to match its blocker**, and **never raise a blocker
   above its dependent** — that is the inflation error where every prerequisite of
   a critical becomes critical and the level saturates.
