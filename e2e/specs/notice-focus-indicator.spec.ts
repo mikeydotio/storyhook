@@ -3,11 +3,14 @@ import type { Page } from "@playwright/test";
 import {
   cleanUpCreatedStories,
   createStory,
+  expectMeasuredFocusRing,
   fullKeyboardAccess,
   keepNotices,
   openProject,
   raiseDurableNotices,
   seedToken,
+  tabOnto,
+  THEMES,
 } from "./support";
 
 /**
@@ -79,6 +82,10 @@ import {
 
 cleanUpCreatedStories("Alpha Project");
 
+/** SH-338's own doc comment on why themes are re-reads, not re-setups, and why
+ * Tab (not `.focus()`) reaches every control here, now lives on `tabOnto` and
+ * `THEMES` in `support.ts` -- lifted there ahead of a second caller (SH-360). */
+
 test.beforeEach(async ({ page, context, browserName }) => {
   // The Copy-* paths raise an ERROR notice via `copyText`'s `.catch` branch
   // without clipboard permission. An error is durable either way, so this is
@@ -95,220 +102,6 @@ test.beforeEach(async ({ page, context, browserName }) => {
   await context.grantPermissions(permissions);
   await seedToken(page);
 });
-
-/** A colour with a straight (non-premultiplied) alpha, in sRGB 0-255. */
-type Rgba = { r: number; g: number; b: number; a: number };
-
-/** Everything the browser will say about one element's focus indicator. */
-type IndicatorProbe = {
-  focusVisible: boolean;
-  outlineStyle: string;
-  outlineWidth: string;
-  outlineColor: string;
-  /** `background-color` from the element outward to `<html>`, in that order. */
-  backgrounds: string[];
-  /** For failure messages: what the probe actually landed on. */
-  what: string;
-};
-
-/** Reads the rendered indicator off whatever `selector` resolves to.
- *
- * `":focus"` is a legal argument and is how the inheritance tests name their
- * subject: the heir is chosen by `adjacentNoticeControl` at dismissal time, so
- * naming it by identity here would restate the implementation instead of asking
- * the page where focus actually is. */
-async function probeIndicator(page: Page, selector: string): Promise<IndicatorProbe | null> {
-  return page.evaluate((sel) => {
-    const el = document.querySelector(sel) as HTMLElement | null;
-    if (!el) return null;
-    const cs = getComputedStyle(el);
-    const backgrounds: string[] = [];
-    for (let n: Element | null = el; n; n = n.parentElement) {
-      backgrounds.push(getComputedStyle(n).backgroundColor);
-    }
-    const cls = typeof el.className === "string" && el.className ? `.${el.className.split(" ").join(".")}` : "";
-    return {
-      focusVisible: el.matches(":focus-visible"),
-      outlineStyle: cs.outlineStyle,
-      outlineWidth: cs.outlineWidth,
-      outlineColor: cs.outlineColor,
-      backgrounds,
-      what: `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ""}${cls}`,
-    };
-  }, selector);
-}
-
-/** Parses a computed colour string. Chromium serialises every computed
- * `<color>` as `rgb(r, g, b)` or `rgba(r, g, b, a)`, so the numbers are taken
- * positionally; anything else is a change in the platform rather than in this
- * page, and throwing names it instead of silently scoring it as black. */
-function parseColor(css: string): Rgba {
-  const nums = css.match(/-?[\d.]+/g);
-  if (!nums || nums.length < 3) throw new Error(`unparseable computed colour: ${css}`);
-  return {
-    r: Number(nums[0]),
-    g: Number(nums[1]),
-    b: Number(nums[2]),
-    a: nums.length > 3 ? Number(nums[3]) : 1,
-  };
-}
-
-/** `fg` painted over `bg`, source-over. */
-function over(fg: Rgba, bg: Rgba): Rgba {
-  const a = fg.a + bg.a * (1 - fg.a);
-  if (a === 0) return { r: 0, g: 0, b: 0, a: 0 };
-  const mix = (f: number, b: number) => (f * fg.a + b * bg.a * (1 - fg.a)) / a;
-  return { r: mix(fg.r, bg.r), g: mix(fg.g, bg.g), b: mix(fg.b, bg.b), a };
-}
-
-/** What is actually painted behind the outline: the ancestor chain composited
- * from the canvas up.
- *
- * Starts on opaque white because that is the initial canvas colour when nothing
- * in the chain is opaque. In this page `body` always is, so the seed never
- * decides an assertion — it is there so a page that changed that fact would
- * still produce a defined number rather than a transparent one. */
-function backdropOf(backgrounds: string[]): Rgba {
-  let base: Rgba = { r: 255, g: 255, b: 255, a: 1 };
-  for (let i = backgrounds.length - 1; i >= 0; i--) {
-    base = over(parseColor(backgrounds[i]), base);
-  }
-  return base;
-}
-
-/** WCAG 2.x relative luminance. */
-function relativeLuminance({ r, g, b }: Rgba): number {
-  const lin = (v: number) => {
-    const c = v / 255;
-    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
-  };
-  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
-}
-
-/** WCAG 2.x contrast ratio between two opaque colours. */
-function contrastRatio(a: Rgba, b: Rgba): number {
-  const la = relativeLuminance(a);
-  const lb = relativeLuminance(b);
-  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
-}
-
-function show({ r, g, b, a }: Rgba): string {
-  return a === 1 ? `rgb(${r}, ${g}, ${b})` : `rgba(${r}, ${g}, ${b}, ${a})`;
-}
-
-/** WCAG SC 1.4.11's floor for a non-text indicator. */
-const MIN_CONTRAST = 3;
-/** WCAG SC 2.4.13's floor for indicator thickness, in CSS pixels. */
-const MIN_OUTLINE_PX = 2;
-
-/** The whole assertion: `selector` is focus-visible, draws an author-declared
- * ring at least `MIN_OUTLINE_PX` thick, and that ring clears `MIN_CONTRAST`
- * against the backdrop the page actually painted behind it.
- *
- * **Soft, and that is the point of calling it in a loop.** A hard assertion
- * stops at the first theme that fails, so a ring broken in three of the four
- * palettes reports as one failure, gets "fixed", and fails again on the next
- * run — twice. The four measurements are independent questions about
- * independent copies of the same token, so all four are asked and all four are
- * reported; Playwright still fails the test at the end. Only the null check is
- * hard, because there is nothing to measure past it. */
-async function expectMeasuredFocusRing(page: Page, selector: string, where: string): Promise<void> {
-  const probe = await probeIndicator(page, selector);
-  expect(probe, `${where}: nothing matches ${selector}`).not.toBeNull();
-  const p = probe!;
-
-  expect.soft(
-    p.focusVisible,
-    `${where}: ${p.what} holds focus but does not match :focus-visible, so no ring is drawn at all`,
-  ).toBe(true);
-
-  expect.soft(
-    ["none", "hidden", "auto"],
-    `${where}: ${p.what} draws outline-style: ${p.outlineStyle}. ` +
-      `"auto" is the user agent's own ring, which declares no colour this page can measure — ` +
-      `its contrast is unknown rather than merely unstated, which is the defect SH-338 was filed for. ` +
-      `"none"/"hidden" is no ring. Declare one, as .notice-scroll does.`,
-  ).not.toContain(p.outlineStyle);
-
-  const width = parseFloat(p.outlineWidth);
-  expect.soft(
-    width,
-    `${where}: ${p.what}'s ring is ${p.outlineWidth}; SC 2.4.13 wants at least ${MIN_OUTLINE_PX} CSS px`,
-  ).toBeGreaterThanOrEqual(MIN_OUTLINE_PX);
-
-  // Skipped when there is no author colour to composite: `outline-style: auto`
-  // has already been reported above, and scoring the user agent's placeholder
-  // colour would add a second, misleading number to that report.
-  if (p.outlineStyle === "auto") return;
-  const backdrop = backdropOf(p.backgrounds);
-  const ink = over(parseColor(p.outlineColor), backdrop);
-  const ratio = contrastRatio(ink, backdrop);
-  expect.soft(
-    ratio,
-    `${where}: ${p.what}'s ring is ${show(ink)} on ${show(backdrop)} — ` +
-      `${ratio.toFixed(2)}:1, below SC 1.4.11's ${MIN_CONTRAST}:1`,
-  ).toBeGreaterThanOrEqual(MIN_CONTRAST);
-}
-
-/** The four ways this page can resolve its palette.
- *
- * The `[data-theme]` pair deliberately sets the media query to the *opposite*
- * scheme: without that, an attribute measurement could be reading the media
- * block's copy of the tokens and nobody would know. */
-const THEMES: { name: string; apply: (page: Page) => Promise<void> }[] = [
-  {
-    name: "prefers-color-scheme: light",
-    apply: async (page) => {
-      await page.emulateMedia({ colorScheme: "light" });
-      await page.evaluate(() => document.documentElement.removeAttribute("data-theme"));
-    },
-  },
-  {
-    name: "prefers-color-scheme: dark",
-    apply: async (page) => {
-      await page.emulateMedia({ colorScheme: "dark" });
-      await page.evaluate(() => document.documentElement.removeAttribute("data-theme"));
-    },
-  },
-  {
-    name: 'data-theme="light" over a dark media query',
-    apply: async (page) => {
-      await page.emulateMedia({ colorScheme: "dark" });
-      await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
-    },
-  },
-  {
-    name: 'data-theme="dark" over a light media query',
-    apply: async (page) => {
-      await page.emulateMedia({ colorScheme: "light" });
-      await page.evaluate(() => document.documentElement.setAttribute("data-theme", "dark"));
-    },
-  },
-];
-
-/** Walks focus onto `selector` with real Tab presses, starting from `from`.
- *
- * Tab rather than `.focus()`, and it is not fussiness: `:focus-visible` is a
- * statement about *how* focus arrived, so a programmatic focus can leave the
- * ring undrawn on exactly the control this file is measuring. The seed focus on
- * `from` is programmatic, but nothing is measured there — the first Tab after it
- * is what establishes keyboard modality for everything that follows. */
-async function tabOnto(page: Page, from: string, selector: string): Promise<void> {
-  await page.locator(from).focus();
-  for (let i = 0; i < 20; i++) {
-    await page.keyboard.press("Tab");
-    const there = await page.evaluate(
-      (sel) => !!(document.activeElement as HTMLElement | null)?.matches(sel),
-      selector,
-    );
-    if (there) return;
-  }
-  const stuck = await page.evaluate(() => {
-    const el = document.activeElement as HTMLElement | null;
-    return el ? `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ""}` : "nothing";
-  });
-  throw new Error(`20 Tabs from ${from} never reached ${selector}; focus is on ${stuck}`);
-}
 
 /** Two durable dispatch-history rows, from two distinct stubbed outcomes.
  *
