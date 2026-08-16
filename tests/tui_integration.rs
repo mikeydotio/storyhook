@@ -1280,7 +1280,7 @@ fn the_ready_panel_and_story_next_agree_over_a_real_project() {
     )
     .unwrap()
     {
-        Response::Stories(views, _) => views
+        Response::Stories { views, .. } => views
             .iter()
             .map(|view| view.story.id.clone())
             .collect::<Vec<_>>(),
