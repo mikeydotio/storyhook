@@ -50,6 +50,7 @@ mod scratch;
 mod server;
 mod service;
 mod store;
+mod tailnet;
 
 pub use crash::{Crash, assert_no_daemon, crash_a_starting_daemon, crash_the_daemon, spawn_daemon};
 pub use env::{TestEnv, daemon_containment, story_binary};
@@ -67,3 +68,4 @@ pub use server::{
 };
 pub use service::{FIXTURE_NOW, ServiceFixture, default_states, default_types};
 pub use store::project_id_at;
+pub use tailnet::path_without_tailscale;
