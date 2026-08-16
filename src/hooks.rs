@@ -7,10 +7,26 @@ use crate::error::AppError;
 
 const HOOK_MARKER: &str = "# storyhook managed hook -- do not edit this line";
 
+/// Links commits made on this branch to the stories they name.
+///
+/// # `--deadline 10` (SH-343)
+///
+/// This hook runs *inside* `git commit`, which imposes no timeout of its own —
+/// without a bound, a cold or unreachable daemon can leave `git commit` sitting
+/// silent for up to 150s (`SPAWN_LOCK_DEADLINE` + `SERVED_DEADLINE`; the hooks
+/// are obliged to print nothing, `tests/hook_silence.rs`). `10` is
+/// [`crate::daemon::lifecycle::GIT_HOOK_DEADLINE`]'s value, pinned by
+/// `tests/git_hook_deadlines.rs` rather than referenced directly — this is a
+/// shell literal a text-scanning test (`tests/push_gate.rs`) depends on staying
+/// readable in source, not a place a Rust constant can be interpolated. Giving
+/// up costs nothing here: the call already discards its own output
+/// (`--quiet 2>/dev/null || true`), and expiry does not cancel the request —
+/// the daemon finishes the sync regardless, so a later sync still picks up
+/// whatever this one abandoned.
 const POST_COMMIT_HOOK: &str = r#"#!/bin/sh
 # storyhook managed hook -- do not edit this line
 command -v story >/dev/null 2>&1 || exit 0
-story commit-sync --since 1h --quiet 2>/dev/null || true
+story --deadline 10 commit-sync --since 1h --quiet 2>/dev/null || true
 "#;
 
 /// Links the commits a merge brought, and closes the stories it says it closes.
@@ -89,6 +105,22 @@ story commit-sync --since 1h --quiet 2>/dev/null || true
 /// real repository, over a real merge. The defect class here is "hook logic
 /// shipped as an untested string literal", and a `&str` nothing executes is how
 /// it survived.
+///
+/// ## `--deadline 10` (SH-343), and why it leaves the slack above untouched
+///
+/// Both calls below bound the *client's* wait, not the *daemon's* cutoff
+/// computation — a different axis from the five-minute slack this docstring
+/// already justifies. Shortening that slack toward the arriving commits would
+/// silently reintroduce SH-330; nothing here does that. Giving up on the sync
+/// call costs nothing (`--quiet 2>/dev/null || true` already discards its
+/// output, and expiry does not cancel the request). Giving up on a `story move`
+/// inside the loop below is real but bounded: the daemon still completes that
+/// move, nothing here reads the answer, and this hook has no shared budget
+/// across loop iterations — a merge naming N stories against a daemon that
+/// stays unreachable for the whole hook still costs N × 10s (filed as SH-353,
+/// deliberately not fixed here: `--deadline`'s exit code 5 is shared with
+/// genuine store errors, `src/error.rs`, so a latch keyed on it would need its
+/// own signal, its own tests, and its own review).
 const POST_MERGE_HOOK: &str = r#"#!/bin/sh
 # storyhook managed hook -- do not edit this line
 command -v story >/dev/null 2>&1 || exit 0
@@ -97,7 +129,7 @@ OLDEST="$({ git log --format='%ct' "$ORIG_HEAD..HEAD" | sort -n | head -n 1; } 2
 if [ -n "$OLDEST" ]; then
   MINUTES=$(( ($(date +%s) - OLDEST) / 60 + 5 ))
   if [ "$MINUTES" -lt 5 ]; then MINUTES=5; fi
-  story commit-sync --since "${MINUTES}m" --quiet 2>/dev/null || true
+  story --deadline 10 commit-sync --since "${MINUTES}m" --quiet 2>/dev/null || true
 fi
 BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null)"
 case "$BRANCH" in main|master) ;; *) exit 0 ;; esac
@@ -105,15 +137,26 @@ git log --format='%B' "$ORIG_HEAD..HEAD" 2>/dev/null |
   grep -oiE '(closes?|fixes?|resolves?)[[:space:]]+[A-Z]+-[0-9]+' |
   while IFS= read -r match; do
     STORY_ID="$(echo "$match" | grep -oE '[A-Z]+-[0-9]+' | head -1)"
-    [ -n "$STORY_ID" ] && story move "$STORY_ID" done "auto-closed by merge" --quiet 2>/dev/null || true
+    [ -n "$STORY_ID" ] && story --deadline 10 move "$STORY_ID" done "auto-closed by merge" --quiet 2>/dev/null || true
   done
 "#;
 
+/// Appends the top-priority ready story as a hint in the commit message editor.
+///
+/// # `--deadline 10` (SH-343)
+///
+/// The only one of the three managed hooks whose answer is read rather than
+/// discarded — and also the one where the wait is most visible, since it runs
+/// *before* the editor opens, ahead of the commit existing at all. Without a
+/// bound this call inherited the same 150s exposure as the other two.
+/// Abandoning it degrades to "no hint appended", the same shape SH-182 already
+/// sanctioned for a caller that cannot wait regardless of whether storyhook
+/// could — not a failure, since this hook's entire contract is best-effort.
 const PREPARE_COMMIT_MSG_HOOK: &str = r#"#!/bin/sh
 # storyhook managed hook -- do not edit this line
 command -v story >/dev/null 2>&1 || exit 0
 case "$2" in message|merge|squash) exit 0 ;; esac
-NEXT="$(story next --count 1 --json 2>/dev/null)" || exit 0
+NEXT="$(story --deadline 10 next --count 1 --json 2>/dev/null)" || exit 0
 STORY_ID="$(echo "$NEXT" | grep -o '"id": *"[^"]*"' | head -1 | cut -d'"' -f4)"
 [ -n "$STORY_ID" ] && {
   TITLE="$(echo "$NEXT" | grep -o '"title": *"[^"]*"' | head -1 | cut -d'"' -f4)"
