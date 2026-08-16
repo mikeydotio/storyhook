@@ -7,49 +7,51 @@ use crate::error::AppError;
 
 const HOOK_MARKER: &str = "# storyhook managed hook -- do not edit this line";
 
-/// Links commits made on this branch to the stories they name.
-///
-/// # `--deadline 10` (SH-343)
-///
-/// This hook runs *inside* `git commit`, which imposes no timeout of its own —
-/// without a bound, a cold or unreachable daemon can leave `git commit` sitting
-/// silent for up to 150s (`SPAWN_LOCK_DEADLINE` + `SERVED_DEADLINE`; the hooks
-/// are obliged to print nothing, `tests/hook_silence.rs`). `10` is
-/// [`crate::daemon::lifecycle::GIT_HOOK_DEADLINE`]'s value, pinned by
-/// `tests/git_hook_deadlines.rs` rather than referenced directly — this is a
-/// shell literal a text-scanning test (`tests/push_gate.rs`) depends on staying
-/// readable in source, not a place a Rust constant can be interpolated. Giving
-/// up costs nothing here: the call already discards its own output
-/// (`--quiet 2>/dev/null || true`), and expiry does not cancel the request —
-/// the daemon finishes the sync regardless, so a later sync still picks up
-/// whatever this one abandoned.
-const POST_COMMIT_HOOK: &str = r#"#!/bin/sh
-# storyhook managed hook -- do not edit this line
-command -v story >/dev/null 2>&1 || exit 0
-story --deadline 10 commit-sync --since 1h --quiet 2>/dev/null || true
-"#;
-
 /// The merge-arrival shell: links the commits a merge brought, and — on
 /// `main` or `master` — closes the stories it says it closes.
 ///
-/// Extracted out of `POST_MERGE_HOOK`'s own body, unchanged, so a future
-/// caller with the same need can compose it via `concat!` rather than
-/// duplicate it. A hand-copied second trailer alternation would drift
-/// silently past
+/// Composed via `concat!` into any hook that needs to react to a commit whose
+/// parent count marks it as a merge, rather than duplicated. A second,
+/// hand-copied trailer alternation would drift silently past
 /// `tests/service_git.rs::every_keyword_the_merge_hook_closes_on_also_claims`,
 /// which only checks the alternation is *present* in `src/hooks.rs`, not that
 /// it is unique.
 ///
+/// # Its known consumers — keep this table current
+///
+/// | Caller | `BASE` | `FLOOR` | Why that floor |
+/// |---|---|---|---|
+/// | `POST_MERGE_HOOK` | `ORIG_HEAD` | `5` | the minutes SH-182's slack alone requires (below) |
+/// | `POST_COMMIT_HOOK`, when `HEAD` has two or more parents (SH-341) | `HEAD^1` | `60` | must never derive a window narrower than the flat `1h` this hook already promised for an ordinary commit |
+///
+/// A story that changes one caller's `--deadline`, guard, or dispatch shape
+/// (SH-343 is live doing exactly that as this is written) does not touch this
+/// function. A story that changes the *window arithmetic* or the *trailer
+/// grammar* changes every caller in this table at once — that is the point of
+/// sharing it.
+///
 /// # `BASE`
 ///
-/// The exclusive start of the arrival range, `$BASE..HEAD`.
+/// The exclusive start of the arrival range, `$BASE..HEAD`. `ORIG_HEAD` and
+/// `HEAD^1` agree for every merge shape measured while building this: a clean
+/// `--no-ff` merge, a conflicted merge concluded by `git commit` or
+/// `git merge --continue`, and a clean `git merge --no-commit` concluded by
+/// `git commit`. They are not the same *kind* of answer, though — `ORIG_HEAD`
+/// is mutable global state a stray `git reset` between resolve and commit can
+/// clobber; `HEAD^1` is intrinsic to the commit the hook is running for.
+/// `post-merge` keeps `ORIG_HEAD` because a fast-forward has no second parent
+/// for `HEAD^1` to name.
 ///
 /// # `FLOOR`
 ///
-/// The narrowest window this caller will ever ask for, in minutes — a
-/// per-caller floor, not to be confused with the five-minute slack below,
-/// which is a different quantity (SH-182's daemon-cold-start allowance) that
-/// happens to share `post-merge`'s value today.
+/// The narrowest window this *caller* will ever ask for, in minutes — not to
+/// be confused with the five-minute slack below, the same number by
+/// coincidence and a different quantity by origin. `post-merge` has never
+/// promised more than what it can derive, so its floor is the slack alone.
+/// `post-commit` promised a flat `1h` for an ordinary commit before this
+/// function existed for it, and a derived window can come out narrower than
+/// that when a merge brings only recent commits — so its floor keeps the
+/// derived window from ever regressing coverage it already had.
 ///
 /// # Why the window is derived and not a constant
 ///
@@ -69,7 +71,7 @@ story --deadline 10 commit-sync --since 1h --quiet 2>/dev/null || true
 /// So the slack must satisfy `slack × 60 ≥ 150 + 59`, i.e. at least four
 /// minutes; five is that with room. Tightening this toward the arriving
 /// commits reads as an obvious optimisation and is a silent reintroduction of
-/// SH-330.
+/// SH-330 (or, for `post-commit`, of SH-341).
 ///
 /// The floor does a second job for whichever caller's `FLOOR` is the slack
 /// itself: `parse_duration` accepts a **negative** number, and a negative
@@ -86,7 +88,9 @@ story --deadline 10 commit-sync --since 1h --quiet 2>/dev/null || true
 /// An empty `$BASE..HEAD` means no commit arrived, so there is nothing to
 /// scan and no age to derive a window from. Falling back to a default window
 /// would scan a period this call has no claim on; computing one from the
-/// empty string would be arithmetic on nothing.
+/// empty string would be arithmetic on nothing. `post-commit`'s caller only
+/// ever invokes this on a two-or-more-parent `HEAD`, for which `HEAD^1..HEAD`
+/// is non-empty by construction — it always contains `HEAD` itself.
 ///
 /// # The closing half (SH-56)
 ///
@@ -148,6 +152,39 @@ macro_rules! merge_arrival_fn {
 "#
     };
 }
+
+/// Links a commit's story references, and — for a merge concluded by
+/// `git commit` rather than `git merge` (SH-341) — the full merge-arrival
+/// shell too.
+///
+/// A merge that conflicts, or that is finished with `git merge --continue` or
+/// `git merge --no-commit` followed by `git commit`, never runs `post-merge`
+/// at all — measured on git 2.50.1, all three ways, before this fix was
+/// designed. `MERGE_HEAD` and `MERGE_MSG` are both already gone by the time
+/// this hook runs in every one of those cases, so neither can be asked; a
+/// commit's own parent count is what survives, and two-or-more is the cheap,
+/// honest, and — checked against `git merge --squash` and a resolved
+/// cherry-pick, both one-parent — exact question.
+///
+/// `FLOOR` is `60`, not the `5` `merge_arrival_fn!` uses for `post-merge`: see
+/// that macro's doc comment for why.
+///
+/// `--deadline 10` (SH-343) on the ordinary-commit fallback below, for the
+/// same reason `merge_arrival_fn!`'s own calls carry it: this hook runs
+/// *inside* `git commit`, which imposes no timeout of its own.
+const POST_COMMIT_HOOK: &str = concat!(
+    "#!/bin/sh\n",
+    "# storyhook managed hook -- do not edit this line\n",
+    "command -v story >/dev/null 2>&1 || exit 0\n",
+    merge_arrival_fn!(),
+    r#"if git rev-parse -q --verify HEAD^2 >/dev/null 2>&1; then
+  BASE="$(git rev-parse HEAD^1 2>/dev/null)" || exit 0
+  storyhook_merge_arrival "$BASE" 60
+  exit 0
+fi
+story --deadline 10 commit-sync --since 1h --quiet 2>/dev/null || true
+"#
+);
 
 /// Fires on every merge `git` concludes without a `commit` of its own — see
 /// `merge_arrival_fn!` for what it does and why. `ORIG_HEAD` is the base
