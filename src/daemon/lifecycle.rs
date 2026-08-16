@@ -1375,6 +1375,7 @@ pub const CONTROL_DEADLINE: Duration = Duration::from_secs(5);
 /// | `SPAWN_DEADLINE` 5s | a process coming up | chosen — bounded by the OS |
 /// | [`SPAWN_LOCK_DEADLINE`] 30s | storyhook's own bounded code | derived — the sum of what the holder can spend |
 /// | `SERVED_DEADLINE` 120s | the user's own data | calibrated — see above |
+/// | [`GIT_HOOK_DEADLINE`] 10s | a git command a human is watching | chosen — git imposes no budget of its own |
 pub const SERVED_DEADLINE: Duration = Duration::from_secs(120);
 
 /// The same bound, for the one command whose duration is set off this machine.
@@ -1416,6 +1417,61 @@ pub const RECORD_POLL: Duration = Duration::from_millis(250);
 /// than sharing [`SERVED_DEADLINE`] is that its message is different — a daemon
 /// that is alive, holding its pidfile, and has not started your command.
 pub const UNPUBLISHED_DEADLINE: Duration = Duration::from_secs(120);
+
+/// The `--deadline` a managed git hook gives its own `story` calls (SH-343).
+///
+/// # Not derived — chosen, and the family table above says so honestly
+///
+/// A tempting shape was tried and rejected: summing [`SPAWN_DEADLINE`] and
+/// [`CONTROL_DEADLINE`] to make this *look* derived. It is not. [`CONTROL_DEADLINE`]
+/// is documented above as bounding "a round trip carrying no work" — `hello`,
+/// `request_shutdown` — and a git hook's `story` call carries work. The honest
+/// sum for what a hook actually waits on is [`SPAWN_DEADLINE`] +
+/// [`SERVED_DEADLINE`] (125s), which is exactly the unbounded-feeling wait this
+/// story exists to remove. No derivation from this family answers "how long may
+/// a git command a human is watching legitimately block", because git supplies
+/// no budget the way `hooks.json` does for the Claude Code plugin's own
+/// `--deadline` precedents (`session-start.sh`, `post-git.sh`, `stop-handoff.sh`
+/// — each sized against a *manifest* timeout that has no counterpart here).
+///
+/// So this is a **judgement call about a human's patience with `git commit`**,
+/// pinned at the low end, with two facts that bound it rather than derive it:
+///
+/// - **Above [`SPAWN_DEADLINE`] (5s).** Traced: on an uncontended cold start,
+///   `lifecycle::ensure` → `spawn_locked` takes a free lock instantly,
+///   `stand_down_legacy_daemon` returns at once with nothing live, and the
+///   stale-daemon `wait_until` is skipped — so the only real wait is
+///   [`await_healthy`], already capped at `SPAWN_DEADLINE`. A value at or below
+///   it would abandon a cold start `await_healthy` itself would have accepted,
+///   which stops the sync firing after every reboot — silently, since these
+///   hooks must stay quiet ([`tests/hook_silence.rs`]).
+/// - **Below [`SPAWN_LOCK_DEADLINE`] (30s).** So *contention* — another client
+///   mid-spawn — is abandoned rather than queued. That is correct here and
+///   nowhere else in this family: the client we would queue behind leaves a
+///   warm daemon behind for the next hook, and every managed hook's own answer
+///   is discarded (`--quiet 2>/dev/null || true`) except `prepare-commit-msg`'s,
+///   whose degrade-on-give-up ("no story hint appended") is the sanctioned
+///   shape SH-182 already established.
+///
+/// `commit-sync` fires no event hooks by design (`Store::commit_sync`'s own
+/// doc), so [`crate::event_hooks::HOOK_TIMEOUT_CEILING_SECS`] does not bear on
+/// three of the four call sites this bounds. Only `story move`'s
+/// `on_state_change`/`on_close` pair can legitimately exceed this deadline —
+/// abandoning that wait is harmless, since expiry does not cancel the request
+/// and the daemon completes the move regardless; nothing reads the answer.
+///
+/// **Cross-file invariant this value must keep**: `post-git.sh` skips its own
+/// sync when a managed `post-commit` exists, crediting that hook for work it
+/// may not finish — so `post-git.sh`'s own `--deadline` must stay `<=` this
+/// constant, or the skip loses coverage it currently has. Pinned in
+/// `tests/hook_budgets.rs`.
+///
+/// Do not alias [`SERVED_PATIENCE`], which is also 10s today. It answers a
+/// different question — "when does a client explain itself to a human" — and
+/// coupling the two means moving one silently moves the other, the same
+/// hazard `SERVED_DEADLINE`'s own doc already refused for
+/// [`UNPUBLISHED_DEADLINE`].
+pub const GIT_HOOK_DEADLINE: Duration = Duration::from_secs(10);
 
 /// How long a client will wait for the daemon to finish one command.
 ///
@@ -2375,12 +2431,22 @@ mod tests {
         assert!(RECORD_POLL < SERVED_PATIENCE);
         assert!(SERVED_DEADLINE < SYNC_SERVED_DEADLINE);
 
+        // GIT_HOOK_DEADLINE (SH-343): above SPAWN_DEADLINE, or a cold start
+        // `await_healthy` itself would accept gets abandoned by the hook that
+        // triggered it; below SPAWN_LOCK_DEADLINE, so contention is abandoned
+        // rather than queued — correct here because the client ahead leaves a
+        // warm daemon for the next hook, and every managed hook's own answer
+        // (bar prepare-commit-msg's, which sanctions degrading) is discarded.
+        assert!(SPAWN_DEADLINE < GIT_HOOK_DEADLINE);
+        assert!(GIT_HOOK_DEADLINE < SPAWN_LOCK_DEADLINE);
+
         assert_eq!(SERVED_PATIENCE, 2 * SPAWN_DEADLINE);
         // 120 consecutive worst-case GitHub calls, each bounded at 30s by
         // `GithubClient`. Stated as the arithmetic rather than as 3600 so that
         // moving the client's own bound is visible here.
         assert_eq!(SYNC_SERVED_DEADLINE, 120 * Duration::from_secs(30));
         assert_eq!(SERVED_DEADLINE, Duration::from_secs(120));
+        assert_eq!(GIT_HOOK_DEADLINE, Duration::from_secs(10));
     }
 
     /// Only `github-sync` and `pr-check` get the long bound, with no hooks
