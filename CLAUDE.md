@@ -379,6 +379,38 @@ Standing rules for every wave:
   it retracts and re-stamps `closed_at` and fires live `StateChange` hooks, falsifying an
   audit trail in order to salvage one — and rejected running an unreleased daemon against
   the live store, which would migrate it past what the installed binary can read.
+- **A column the oracle forgot is a column nothing watches — so the compiler checks the
+  struct and a damage test checks the comparison** (SH-365). `diff_rebuilt` is `story
+  doctor`'s only oracle over the `stories` read model, and it reached the columns through
+  `row.field` accessors: its list was hand-written with nothing checking it, so a column
+  added to `StoryRow` and forgotten there was simply never compared, forever and silently.
+  SH-211 had already added the two lines `hidden_at` and `draft` were missing; it added
+  nothing preventing the third. Two mechanisms now, because neither is sufficient alone.
+  `column_comparisons` destructures `StoryRow` with **no** `..`, so a new field is
+  `error[E0027]` on a bare `cargo check`, and a bound-but-unused one fails clippy's
+  `-D warnings`. `tests/read_model_column_coverage.rs` damages each column underneath the
+  store through a second connection and demands the oracle name it, its case list derived
+  from `StoryRow`'s own definition so it cannot drift, with a positive control on the
+  parser and a clean-fixture assertion so no case can pass vacuously. **Why the compiler
+  is not enough is measured rather than argued:** `sqlite::read::hydrate` is *already* a
+  rest-free struct literal over this exact type and still cannot see that
+  `raw_story_from_row` fills it by **position**, `row.get(N)`, across three
+  `Option<String>`s, three `bool`s and four `String`s — swap an adjacent pair and every
+  field is named and every field is wrong. That decides the damage suite's *form*: it goes
+  through SQLite, never against a hand-built row, or it would sail past exactly that
+  fault. It also closes the `field: _` discard, which is one character and otherwise
+  reviewable only by eye (SH-306). Both mutations were run in both directions: deleting
+  `report("draft", …)` fails the damage test naming `draft`, and adding a column fails
+  `cargo check` here where before the refactor it compiled the whole library clean. Two
+  limits are stated rather than claimed away — a `stories` column the read model never
+  exposes is outside both controls (`priority_rank`, guarded by its own CHECK), and a
+  *symmetric* mis-comparison still passes, because both sides move together. Settled by a
+  council whose verdict is on the story (`story show SH-365`): a 1-1-1 self-vote split in
+  round one, unanimous after one deliberation round, with the QA seat ranking **its own**
+  proposal last once its alternative — deriving coverage from `diff_rebuilt`'s own
+  `report("…")` literals — was shown to be self-referential, able to prove only that
+  comparisons which already exist are tested and blind by construction to a column that
+  was never reported at all.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
