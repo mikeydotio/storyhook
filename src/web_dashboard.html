@@ -3289,6 +3289,60 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (target && target.closest && target.closest("button")) event.preventDefault();
   }
 
+  /** Binds `submit` to Enter on the text input `input`, ignoring auto-repeats.
+   *
+   * **Every** Enter-submitting text input in this file goes through here, and
+   * that is a checkable property rather than a convention:
+   * `tests/dashboard_enter_submit_guard.rs` counts the `"Enter"` literals in
+   * this file and requires each to be either a call to this function or a named
+   * entry on its allowlist of non-submitting idioms (blur-on-Enter, the label
+   * combobox, menu and roving-focus activation). A new input added without this
+   * call fails that test by name.
+   *
+   * That fence is the whole reason this is a helper at all (SH-362's council,
+   * unanimous): weighed on DRY it loses, since it wraps a one-liner over call
+   * sites that differ in every other respect. Weighed on **checkability** it
+   * wins, because a delegated container listener — the shape
+   * {@link refuseAutoRepeatActivation} above uses for buttons — leaves no
+   * per-site token, so nothing can count the sites it was supposed to cover.
+   *
+   * The alternative the council rejected is worth recording, because it is the
+   * one that looks more elegant: one `document`-capture listener that
+   * `stopImmediatePropagation()`s every repeat-flagged Enter into an `<input>`.
+   * It needs no wiring and cannot drift — but it is **not fail-safe**. Where
+   * `refuseAutoRepeatActivation` is merely inert on an input stack that never
+   * sets `repeat`, a page-wide capture rule on a stack that set `repeat` on a
+   * *deliberate* press would make Enter dead in every text input on the page,
+   * with no error and nothing to diagnose. A duplicate submission is rare,
+   * visible in the data and recoverable; a dead Enter key is none of those.
+   *
+   * `e.key` is tested **before** `e.repeat`, and the order is load-bearing. A
+   * bare `if (e.repeat) return` would swallow held Backspace and held Arrow
+   * inside the field — a caret and selection affordance, taken away from
+   * exactly the people a held-key guard is written for. This is SH-339's
+   * ArrowDown finding at a text input rather than a scroller, and
+   * `modal-enter-autorepeat.spec.ts` asserts it rather than inheriting it.
+   *
+   * Suppression is deliberately **silent**. Announcing a swallowed repeat would
+   * flood at OS repeat rate, which is the live-region flood SH-339 rejected,
+   * merely relocated into a modal's error field. The one submission that does
+   * run still reports its outcome through whatever surface the site already
+   * has.
+   *
+   * This stops a *held key*. It does not stop a fast double-press, and it is
+   * inert wherever `KeyboardEvent.repeat` is never set (X11 without detectable
+   * auto-repeat, VNC input replay, some on-screen keyboards — SH-339's recorded
+   * risk, inherited unchanged). Those are the in-flight claim's job, which every
+   * mutating submit below takes for itself; neither guard subsumes the other,
+   * which is why SH-362 shipped both. */
+  function bindEnterSubmit(input, submit) {
+    input.addEventListener("keydown", function(e) {
+      if (e.key !== "Enter") return;
+      if (e.repeat) return;
+      submit();
+    });
+  }
+
   /** Says a single dismissal happened, and how much is left.
    *
    * Announced on **every** dismissal, pointer included, and whether or not focus
@@ -3626,9 +3680,34 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * up" rather than hang forever. */
   var tokenModalCancelCallback = null;
 
+  /** Whether a token exchange issued from this modal is still outstanding.
+   *
+   * This surface is the one where the claim's *release* matters more than its
+   * acquisition. Every other guarded modal closes on success, so a latched claim
+   * would be invisible; this one deliberately stays open and primed on failure
+   * (see {@link submitTokenModal}), which is what makes a wrong token
+   * correctable. So the claim has to survive a refusal and clear on it -- a
+   * guard that latched on the first submission would leave the user in a modal
+   * that had silently stopped answering, which is a worse defect than the nine
+   * exchanges per held key it was added to prevent. */
+  var tokenModalInFlight = false;
+
+  /** Sets {@link tokenModalInFlight} and reflects it onto the button it guards.
+   *
+   * Disabling `#token-submit` also closes the button door: a held Enter on the
+   * focused button activates it once per repeat, and no guard on `#token-input`
+   * can see that path. */
+  function setTokenModalInFlight(value) {
+    tokenModalInFlight = value;
+    $("token-submit").disabled = value;
+  }
+
   function openTokenModal(onSaved, onCancelled) {
     tokenModalCallback = onSaved || null;
     tokenModalCancelCallback = onCancelled || null;
+    // Defensively on every open, for the reason `openDeleteModal` states: a
+    // claim stranded true would refuse the next legitimate exchange silently.
+    setTokenModalInFlight(false);
     $("token-input").value = "";
     $("token-error").textContent = "";
     showBackdrop("token-modal-backdrop");
@@ -3666,9 +3745,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * keeps a cross-origin page from pinning an attacker-chosen value into
    * this cookie. */
   function submitTokenModal() {
+    if (tokenModalInFlight) return;
     var value = $("token-input").value.trim();
     if (!value) { $("token-error").textContent = "The token is required."; return; }
     $("token-error").textContent = "";
+    setTokenModalInFlight(true);
     var xhr = new XMLHttpRequest();
     xhr.open("POST", "/token", true);
     xhr.setRequestHeader("X-Storyhook", "1");
@@ -3676,6 +3757,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     xhr.timeout = 10000;
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
+      // Released once, ahead of every status arm below, because this is a raw
+      // XHR rather than a promise: there is no `.then`/`.catch` pair to hang two
+      // releases off, and an arm added later would otherwise inherit a latched
+      // modal. `onerror` and `ontimeout` are the other two release sites -- all
+      // three are needed, since a settled request is a settled request whichever
+      // way it settled.
+      setTokenModalInFlight(false);
       if (xhr.status === 204) {
         var callback = tokenModalCallback;
         tokenModalCancelCallback = null;
@@ -3695,8 +3783,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         $("token-error").textContent = "That token was not accepted. Check it and try again.";
       }
     };
-    xhr.onerror = function() { $("token-error").textContent = "Could not reach the daemon."; };
-    xhr.ontimeout = function() { $("token-error").textContent = "The request timed out."; };
+    xhr.onerror = function() {
+      setTokenModalInFlight(false);
+      $("token-error").textContent = "Could not reach the daemon.";
+    };
+    xhr.ontimeout = function() {
+      setTokenModalInFlight(false);
+      $("token-error").textContent = "The request timed out.";
+    };
     xhr.send();
   }
 
@@ -6304,6 +6398,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * move itself. A no-op if nothing is pending (safe to call from the
    * shared Escape handler unconditionally). */
   function finishBlockedDrop(reason) {
+    // The read-then-null-then-check order is load-bearing, not incidental
+    // (SH-362). Because the id is discarded SYNCHRONOUSLY, before anything
+    // awaits, a second call arriving in the same burst -- an Enter auto-repeat,
+    // a double-click -- finds `null` and returns. That is why this was the only
+    // one of the four Enter-submitting inputs that never fired a request per
+    // repeat, and why it needs no in-flight claim. Moving this clear into a
+    // callback, the way `submitDeleteStory` once cleared its own subject in a
+    // `.then`, reintroduces SH-362 here.
+    // `modal-enter-autorepeat.spec.ts` pins it; it is not asserted by any test
+    // of the block-reason feature itself.
     var id = dropBlockedReasonMoveId;
     dropBlockedReasonMoveId = null;
     if (!id) return;
@@ -7784,11 +7888,23 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function buildLabelsSection(st) {
     var wrap = el("div", {}, [el("div", { class: "section-label" }, ["Labels"])]);
     var input = el("input", { type: "text", placeholder: "Add label…", dataset: { field: "label-add" } });
-    input.addEventListener("keydown", function(e) {
-      if (e.key !== "Enter" || !input.value.trim()) return;
+    /** Whether this field's own POST is still outstanding.
+     *
+     * The field is cleared in the `.then`, deliberately -- a failed add leaves
+     * the text there to retry -- which is exactly what made a held Enter POST
+     * the same label once per repeat before SH-362: every repeat re-read a value
+     * the reply had not yet emptied. Clearing at entry would have stopped the
+     * repeats and thrown the user's text away on any failure, so the claim is
+     * the fix and the clear stays where it is. */
+    var pending = false;
+    function addTypedLabel() {
+      if (pending || !input.value.trim()) return;
+      pending = true;
       api("POST", apiBase() + "/story/" + encodeURIComponent(st.id) + "/labels", { add: [input.value.trim()] })
-        .then(function(r) { input.value = ""; handleMutationSuccess(r); }).catch(toastError);
-    });
+        .then(function(r) { pending = false; input.value = ""; handleMutationSuccess(r); })
+        .catch(function(err) { pending = false; toastError(err); });
+    }
+    bindEnterSubmit(input, addTypedLabel);
     wrap.appendChild(el("div", { class: "inline-add" }, [input]));
     if ((st.labels || []).length) {
       var chips = el("div", { class: "label-chips" }, []);
@@ -9547,22 +9663,37 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       "aria-label": "New status description"
     }, []);
     var error = el("div", { class: "modal-error" }, []);
+    /** Whether this form's own POST is still outstanding.
+     *
+     * Closure-local rather than a module variable, which is what this site's
+     * lifecycle wants: the form is rebuilt by `renderStatuses()`, so a fresh
+     * one starts unclaimed by construction and needs no equivalent of the
+     * `openDeleteModal` defensive reset. */
+    var pending = false;
+    var addButton = el("button", { class: "btn btn-primary", onClick: function() { submit(); } }, ["Add status"]);
 
     function submit() {
+      if (pending) return;
       var value = slug.value.trim();
       if (!value) { error.textContent = "A slug is required."; return; }
       var body = { slug: value, super_state: superSelect.value };
       if (description.value.trim()) body.description = description.value.trim();
       error.textContent = "";
-      statusMutation("POST", repoApiBase(state.settingsRepoId) + "/states", body, null);
+      pending = true;
+      addButton.disabled = true;
+      // Released on settle either way -- `statusMutation` handles both outcomes
+      // itself and hands back a promise that is always fulfilled, so one release
+      // is correct here where the delete modal needs two. On success this node
+      // has usually been replaced by the re-render already; releasing a detached
+      // form is harmless and keeps the rule the same at every site.
+      statusMutation("POST", repoApiBase(state.settingsRepoId) + "/states", body, null)
+        .then(function() { pending = false; addButton.disabled = false; });
     }
-    slug.addEventListener("keydown", function(e) { if (e.key === "Enter") submit(); });
-    description.addEventListener("keydown", function(e) { if (e.key === "Enter") submit(); });
+    bindEnterSubmit(slug, submit);
+    bindEnterSubmit(description, submit);
 
     return el("div", { class: "status-add" }, [
-      slug, superSelect, description,
-      el("button", { class: "btn btn-primary", onClick: submit }, ["Add status"]),
-      error
+      slug, superSelect, description, addButton, error
     ]);
   }
 
@@ -9594,7 +9725,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * which also rolls back whichever select the user just changed. */
   function statusMutation(method, path, body, row) {
     if (row) row.classList.add("pending");
-    api(method, path, body)
+    // Returned so a caller can release its own in-flight claim when this
+    // settles (SH-362). Both callbacks below handle their outcome and neither
+    // rethrows, so the promise handed back is always fulfilled -- a caller
+    // needs one `.then`, not a `.then`/`.catch` pair.
+    return api(method, path, body)
       .then(function(payload) {
         // The list the open question was asked about has just changed, so the
         // question is withdrawn rather than carried over onto a new one
@@ -10200,6 +10335,36 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * at all. */
   var deleteModalStoryId = null;
 
+  /** Whether a DELETE issued from this modal is still outstanding.
+   *
+   * Deliberately **not** `deleteModalStoryId`, which is a *subject* (which
+   * story) and not a *claim* (is a request in flight). Reusing the subject as
+   * the claim is the shape that made this modal SH-362's worst site: it is
+   * cleared in `closeDeleteModal()`, which runs inside the DELETE's `.then`, so
+   * every auto-repeat arriving before that reply passed the check and issued its
+   * own DELETE — the first succeeding and closing the modal, the rest failing
+   * into `#delete-modal-error`, a field no longer on screen. Nine DELETEs for
+   * one held key, measured.
+   *
+   * Nulling the subject at entry instead — copying `finishBlockedDrop`, which is
+   * correct for exactly that reason — would have fixed the repeat and broken the
+   * retry: this modal deliberately stays open on failure, and a submit whose
+   * subject was already discarded answers nothing on the second press. Hence a
+   * separate claim, released on **settle** rather than on success. */
+  var deleteModalInFlight = false;
+
+  /** Sets {@link deleteModalInFlight} and reflects it onto the button it guards,
+   * the way {@link setCreateModalInFlight} does for the create modal.
+   *
+   * Disabling the button is not decoration: a held Enter on a focused
+   * `#delete-modal-submit` reaches `submitDeleteStory` through the button's own
+   * activation behaviour, which no guard on the *input* can see. The claim
+   * refuses those repeats and the disabled attribute makes the refusal visible. */
+  function setDeleteModalInFlight(value) {
+    deleteModalInFlight = value;
+    $("delete-modal-submit").disabled = value;
+  }
+
   /** Opens the shared delete-confirmation modal for `id` -- used by both
    * the drawer footer's Delete button and the context menu's Delete item,
    * one confirmation surface for the one destructive action rather than the
@@ -10208,6 +10373,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * sole authority on whether `id` still exists and can be deleted. */
   function openDeleteModal(id, title) {
     deleteModalStoryId = id;
+    // Defensively, on every open: a claim stranded true by any path that failed
+    // to release it would refuse the *next* legitimate deletion with no error
+    // and nothing to click -- SH-312's defect in reverse. `openCreateModal()`
+    // resets its own claim here for the same reason.
+    setDeleteModalInFlight(false);
     $("delete-modal-summary").textContent =
       "Delete " + id + (title ? " — " + title : "") + "? This cannot be undone.";
     $("delete-reason").value = "";
@@ -10233,18 +10403,29 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * `src/api/rest.rs`) -- an empty submission should never round-trip to
    * find that out. */
   function submitDeleteStory() {
+    if (deleteModalInFlight) return;
     var id = deleteModalStoryId;
     if (!id) return;
     var reason = $("delete-reason").value.trim();
     if (!reason) { $("delete-modal-error").textContent = "A deletion reason is required."; return; }
+    // Claimed synchronously, before `api()` is reached -- the claim is worth
+    // nothing if a second call can arrive between the check and the send.
+    setDeleteModalInFlight(true);
     api("DELETE", apiBase() + "/story/" + encodeURIComponent(id), { reason: reason })
       .then(function() {
+        setDeleteModalInFlight(false);
         closeDeleteModal();
         toast(id + " deleted", "success");
         if (state.drawerId === id) closeDrawer();
         fetchData();
       })
-      .catch(function(err) { $("delete-modal-error").textContent = err.message; });
+      .catch(function(err) {
+        // Released on failure too, which is the half that keeps this modal
+        // usable: it stays open showing the error, so the user's next press
+        // must reach a live form rather than a latched one.
+        setDeleteModalInFlight(false);
+        $("delete-modal-error").textContent = err.message;
+      });
   }
 
   // ============================================================
@@ -10317,7 +10498,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("create-discard").addEventListener("click", discardDraft);
     $("create-save-draft").addEventListener("click", saveDraft);
     $("create-submit").addEventListener("click", submitCreate);
-    $("create-title").addEventListener("keydown", function(e) { if (e.key === "Enter") submitCreate(); });
+    bindEnterSubmit($("create-title"), submitCreate);
     $("create-description").addEventListener("input", function() { autoGrowTextarea(this); });
     $("drafts-btn").addEventListener("click", openDraftsModal);
     $("drafts-close").addEventListener("click", closeDraftsModal);
@@ -10325,17 +10506,25 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("token-cancel").addEventListener("click", cancelTokenModal);
     $("token-modal-backdrop").addEventListener("click", cancelTokenModal);
     $("token-submit").addEventListener("click", submitTokenModal);
-    $("token-input").addEventListener("keydown", function(e) { if (e.key === "Enter") submitTokenModal(); });
+    bindEnterSubmit($("token-input"), submitTokenModal);
     $("archive-modal-cancel").addEventListener("click", closeArchiveModal);
     $("archive-modal-backdrop").addEventListener("click", closeArchiveModal);
     $("drop-blocked-reason-skip").addEventListener("click", skipDropBlockedReasonModal);
     $("drop-blocked-reason-backdrop").addEventListener("click", skipDropBlockedReasonModal);
     $("drop-blocked-reason-submit").addEventListener("click", submitDropBlockedReasonModal);
-    $("drop-blocked-reason-input").addEventListener("keydown", function(e) { if (e.key === "Enter") submitDropBlockedReasonModal(); });
+    // Wired through the helper for uniformity, not for protection: this site was
+    // already correct, because `finishBlockedDrop` nulls `dropBlockedReasonMoveId`
+    // synchronously before anything awaits, so a repeat finds nothing to do. It
+    // takes no in-flight claim — the modal closes before `moveStory` runs and has
+    // no post-failure reopen path, so a claim there would be a change with no
+    // defect behind it. Routing it here is what keeps the guard's fence free of
+    // an allowlist entry reading "this one is correct by accident", which is a
+    // note that rots.
+    bindEnterSubmit($("drop-blocked-reason-input"), submitDropBlockedReasonModal);
     $("delete-modal-cancel").addEventListener("click", closeDeleteModal);
     $("delete-modal-backdrop").addEventListener("click", closeDeleteModal);
     $("delete-modal-submit").addEventListener("click", submitDeleteStory);
-    $("delete-reason").addEventListener("keydown", function(e) { if (e.key === "Enter") submitDeleteStory(); });
+    bindEnterSubmit($("delete-reason"), submitDeleteStory);
     $("drawer-close").addEventListener("click", closeDrawer);
     $("toast-dismiss-all").addEventListener("click", dismissAllToasts);
     $("dispatch-history-dismiss-all").addEventListener("click", dismissAllDispatchHistory);
