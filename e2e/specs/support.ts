@@ -1026,6 +1026,7 @@ export type IndicatorProbe = {
   outlineStyle: string;
   outlineWidth: string;
   outlineColor: string;
+  outlineOffset: string;
   /** `background-color` from the element outward to `<html>`, in that order. */
   backgrounds: string[];
   /** For failure messages: what the probe actually landed on. */
@@ -1054,6 +1055,7 @@ export async function probeIndicator(page: Page, selector: string): Promise<Indi
       outlineStyle: cs.outlineStyle,
       outlineWidth: cs.outlineWidth,
       outlineColor: cs.outlineColor,
+      outlineOffset: cs.outlineOffset,
       backgrounds,
       what: `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ""}${cls}`,
     };
@@ -1123,6 +1125,39 @@ export const MIN_CONTRAST = 3;
 /** WCAG SC 2.4.13's floor for indicator thickness, in CSS pixels. */
 export const MIN_OUTLINE_PX = 2;
 
+/**
+ * Which ancestor chain(s) a ring's own backdrop should be composited from,
+ * given where the ring sits relative to the border box it outlines --
+ * derived from the computed `outline-offset`/`outline-width` rather than
+ * assumed for every ring (SH-360).
+ *
+ * `outline-offset` places the ring `offset` CSS px out from the border-box
+ * edge, `outline-width` px thick, so the ring occupies the band
+ * `[offset, offset + width]`. A ring entirely OUTSIDE that box
+ * (`offset >= 0`, e.g. `.card`'s `+1px`) paints over whatever the PARENT
+ * chain shows -- the element's own background sits inside the ring, not
+ * behind it, so scoring it (as this file did before SH-360) reads the wrong
+ * pixels. A ring entirely INSIDE (`offset + width <= 0`, every other ring in
+ * this sheet today) paints over the element's own chain. A ring that
+ * straddles the edge -- possible in principle, no rule in this sheet does it
+ * today -- paints over both, and both are returned so the caller can report
+ * whichever the ring clears least.
+ */
+export function ringBackdrops(p: IndicatorProbe): { label: string; backdrop: Rgba }[] {
+  const offset = parseFloat(p.outlineOffset);
+  const width = parseFloat(p.outlineWidth);
+  const paintsInside = offset + width <= 0;
+  const paintsOutside = offset >= 0;
+  const candidates: { label: string; backdrop: Rgba }[] = [];
+  if (paintsInside) {
+    candidates.push({ label: "its own", backdrop: backdropOf(p.backgrounds) });
+  }
+  if (paintsOutside) {
+    candidates.push({ label: "its parent's", backdrop: backdropOf(p.backgrounds.slice(1)) });
+  }
+  return candidates;
+}
+
 /** The whole assertion: `selector` is focus-visible, draws an author-declared
  * ring at least `MIN_OUTLINE_PX` thick, and that ring clears `MIN_CONTRAST`
  * against the backdrop the page actually painted behind it.
@@ -1162,13 +1197,30 @@ export async function expectMeasuredFocusRing(page: Page, selector: string, wher
   // has already been reported above, and scoring the user agent's placeholder
   // colour would add a second, misleading number to that report.
   if (p.outlineStyle === "auto") return;
-  const backdrop = backdropOf(p.backgrounds);
-  const ink = over(parseColor(p.outlineColor), backdrop);
-  const ratio = contrastRatio(ink, backdrop);
+
+  // The ring may paint over its own background, its parent's, or (rarely)
+  // both -- ringBackdrops() derives which from outline-offset/-width rather
+  // than assuming "the element's own" for every ring. When both apply, the
+  // worse-clearing one is what gets reported: the ring must be visible
+  // against whichever side clears it least.
+  let worstRatio = Infinity;
+  let worstInk = { r: 0, g: 0, b: 0, a: 1 };
+  let worstBackdrop = { r: 0, g: 0, b: 0, a: 1 };
+  let worstLabel = "its own";
+  for (const candidate of ringBackdrops(p)) {
+    const ink = over(parseColor(p.outlineColor), candidate.backdrop);
+    const ratio = contrastRatio(ink, candidate.backdrop);
+    if (ratio < worstRatio) {
+      worstRatio = ratio;
+      worstInk = ink;
+      worstBackdrop = candidate.backdrop;
+      worstLabel = candidate.label;
+    }
+  }
   expect.soft(
-    ratio,
-    `${where}: ${p.what}'s ring is ${show(ink)} on ${show(backdrop)} -- ` +
-      `${ratio.toFixed(2)}:1, below SC 1.4.11's ${MIN_CONTRAST}:1`,
+    worstRatio,
+    `${where}: ${p.what}'s ring is ${show(worstInk)} on ${show(worstBackdrop)} (${worstLabel} background) -- ` +
+      `${worstRatio.toFixed(2)}:1, below SC 1.4.11's ${MIN_CONTRAST}:1`,
   ).toBeGreaterThanOrEqual(MIN_CONTRAST);
 }
 
