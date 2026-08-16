@@ -335,26 +335,37 @@ Related:
 
         m.insert(
             "next",
-            r#"story next [--count <n>]
+            r#"story next [--count <n>] [--phase <N>] [--claim]
 
 Get the highest-priority ready stories. A story is "ready" when all its
 predecessors are closed and it has no awaiting blockers.
 
+--claim atomically moves the answer into the project's active state
+(normally in-progress) before returning it, so two callers racing this
+command at once are handed two different stories rather than one winner
+and a refusal. Refused together with --count above 1: a claim holds
+exactly one story. Its --json answer carries "claimed_from", the state
+the story came out of.
+
 When to use:
   At session start to pick your first task, or after completing a story
   to find the next one. Prefer this over 'story list' when you need a
-  single actionable item.
+  single actionable item. Prefer --claim over a separate 'story move'
+  whenever more than one script or agent may be picking up work from the
+  same project at once.
 
 Examples:
   story next                # Top-priority ready story
   story next --count 3      # Top 3 ready stories
   story next --phase 1      # Top-priority ready story in phase 1
+  story next --claim        # Claim the top-priority ready story atomically
   story next --json         # Structured JSON output
 
 Related:
   story load-context  — Full project overview (use first in a new session)
   story list          — All stories with filters (use for exploration)
   story graph         — Dependency visualization (use to understand blockers)
+  story move          — Move a specific, already-known story between states
 "#,
         );
 
@@ -1134,6 +1145,7 @@ Commands returning a single story ("story" field):
   story relate <a> <rel> <b>       -> "story": StoryView (of story a)
   story set <id> --field value     -> "story": StoryView
   story next                       -> "story": StoryView (single result)
+  story next --claim                -> "story": StoryView, plus "claimed_from"
 
   StoryView object:
     {

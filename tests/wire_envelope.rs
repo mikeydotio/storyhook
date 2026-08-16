@@ -274,6 +274,10 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
             Response::Story(Box::new(view(snapshot("SH-1", "A story")))),
         ),
         ("story_maximal", Response::Story(Box::new(maximal_view()))),
+        (
+            "claimed",
+            Response::Claimed(Box::new(maximal_view()), "todo".to_string()),
+        ),
         ("stories_empty", Response::Stories(Vec::new(), None)),
         (
             "stories_with_message",
@@ -689,6 +693,7 @@ fn the_response_corpus_covers_every_variant() {
             Response::Message(_) => "message",
             Response::MessageWithWarnings(..) => "message_with_warnings",
             Response::Story(_) => "story",
+            Response::Claimed(..) => "claimed",
             Response::Stories(..) => "stories",
             Response::Summary(_) => "summary",
             Response::Graph(_) => "graph",
@@ -705,10 +710,11 @@ fn the_response_corpus_covers_every_variant() {
         }
     }
 
-    const EVERY_VARIANT: [&str; 16] = [
+    const EVERY_VARIANT: [&str; 17] = [
         "message",
         "message_with_warnings",
         "story",
+        "claimed",
         "stories",
         "summary",
         "graph",
@@ -754,6 +760,7 @@ fn response_variants_travel_as_snake_case_keys() {
         ("message", "message"),
         ("message_with_warnings", "message_with_warnings"),
         ("story_minimal", "story"),
+        ("claimed", "claimed"),
         ("stories_empty", "stories"),
         ("summary", "summary"),
         ("graph_overview", "graph"),
@@ -1120,6 +1127,12 @@ fn invocation_corpus() -> Vec<Invocation> {
         Invocation::Next {
             count: 3,
             phase: Some("2".to_string()),
+            claim: false,
+        },
+        Invocation::Next {
+            count: 1,
+            phase: None,
+            claim: true,
         },
         Invocation::Summary,
         Invocation::Report { html: true },

@@ -15,8 +15,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::domain::{
-    Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState, normalize_labels,
-    undefined_state_error,
+    Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState, active_state,
+    normalize_labels, undefined_state_error,
 };
 use crate::error::AppError;
 use crate::event_hooks::HookEventType;
@@ -401,6 +401,84 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
 
         self.fire_transition_hooks(id, &before.title, &before.state, state, &snapshot, &now);
         Ok(snapshot)
+    }
+
+    /// `story next --claim` (SH-344) — picks the same story
+    /// [`QueryService::next`](super::QueryService::next) would, and moves it
+    /// into the project's active state before returning it, both inside one
+    /// write transaction.
+    ///
+    /// That single transaction is the whole correctness argument: a write
+    /// transaction is `BEGIN IMMEDIATE`, exclusive among writers, so
+    /// selection is *re-run* under the same lock the claim commits under
+    /// rather than trusted from an earlier read — there is no window between
+    /// "decide" and "take" for a second caller to land in. Contrast
+    /// `set_state`'s `--if-state`, which closes the same window with a
+    /// compare-and-swap over two round trips; a claim needs no CAS because it
+    /// never had a second round trip to race across.
+    ///
+    /// Returns `Ok(None)` when nothing is ready — a legitimate outcome, not
+    /// an error, mirroring [`QueryService::next`](super::QueryService::next)
+    /// returning an empty list. The first element of the pair is the
+    /// snapshot as it stood *before* the claim, so a caller that has to undo
+    /// its own claim (the plugin's dispatch rollback) knows what to move
+    /// back to.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::Validation`] when the project has no state a claim can
+    /// resolve to — [`domain::active_state`] answers `None` for a project
+    /// with neither an explicit `active` role nor exactly two OPEN states.
+    /// Checked before selection runs, so this never depends on whether a
+    /// story happens to be ready.
+    pub fn claim_next(
+        &self,
+        phase: Option<&str>,
+    ) -> Result<Option<(StorySnapshot, StorySnapshot)>, AppError> {
+        let now = self.ctx.now();
+        let project = self.ctx.project();
+        let claimed = self.ctx.store().write(|tx| {
+            let active = active_state(&tx.states(project)?).ok_or_else(|| {
+                AppError::Validation(
+                    "no state has role `active`, and this project does not have exactly two \
+                     OPEN states — `story next --claim` has no state to resolve a claim into; \
+                     set one with `story state set <slug> --role active`"
+                        .to_string(),
+                )
+            })?;
+            let states = tx.state_map(project)?;
+            let query = super::QueryService::new(&*tx, project, &now);
+            let Some(candidate) = query.next(1, phase)?.into_iter().next() else {
+                return Ok(None);
+            };
+            let prefix = project_prefix(&*tx, project)?;
+            let (story_no, row) = resolve_open_story(&*tx, project, &prefix, &candidate.story.id)?;
+            let events = state_transition_events(&active, row.awaiting.is_some(), &now, Vec::new());
+            let snapshot = append_and_fold(
+                tx,
+                project,
+                story_no,
+                &prefix,
+                &states,
+                ExpectedSeq::Exact(row.head_seq),
+                &events,
+                self.ctx.provenance(),
+            )?;
+            Ok(Some((row.snapshot, snapshot)))
+        })?;
+
+        let Some((before, snapshot)) = claimed else {
+            return Ok(None);
+        };
+        self.fire_transition_hooks(
+            &before.id,
+            &before.title,
+            &before.state,
+            &snapshot.state,
+            &snapshot,
+            &now,
+        );
+        Ok(Some((before, snapshot)))
     }
 
     /// Applies a batch of field edits to an open story, returning the

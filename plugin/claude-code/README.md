@@ -38,6 +38,7 @@ exercises the real logic, and the prose can't quietly diverge from it.
 | `list` | bare `/story` |
 | `view <id>` | `/story view`, `/story <id>` |
 | `dispatch <id> [--auto]` | `/story do` |
+| `dispatch --next [--auto]` | not routed by any skill (SH-344) — the id-less sibling: claims whatever `story next --claim` picks atomically, so a caller dispatching several stories at once (a fleet, a loop) gets a distinct story per call instead of racing the same id |
 | `create --title …` | `/story new` |
 | `complete <plan\|execute> <id> [--no-close] [--no-clean] [--force]` | `/story complete` |
 | `reap <id>` | not routed by the skill (SH-208) — the `--auto` charter's own final act; see below |

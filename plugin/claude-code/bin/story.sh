@@ -26,6 +26,19 @@
 #                    worktree, gate on claude becoming ready, then type +
 #                    submit the handoff prompt.
 #
+#   dispatch --next  SH-344's NEXT MODE — the id-less sibling. Instead of a
+#                    caller-named id, claims whatever `story next --claim`
+#                    picks — atomically, in one storyhook write transaction —
+#                    then follows the identical worktree/window/prompt path
+#                    above. Built for a caller dispatching several stories at
+#                    once (a fleet, a loop): N concurrent `dispatch --next`
+#                    calls are handed N DIFFERENT stories, where N concurrent
+#                    `dispatch <id>` calls naming the SAME id would have one
+#                    winner and N-1 `claim-conflict` refusals. Mutually
+#                    exclusive with <id> — `--claim` picks the top-priority
+#                    ready story, so it has no way to honor a caller-supplied
+#                    one, and `dispatch <id>`'s own CAS claim is unchanged.
+#
 # DELIBERATE DEVIATIONS from the agentics storywork.sh this was forked from:
 #
 #   1. ALREADY-IN-PROGRESS GUARD (new). Added because storyhook's own
@@ -686,21 +699,29 @@ council_vote_available() {
 
 # ---- subcommand: dispatch ---------------------------------------------------
 cmd_dispatch() {
-  # <story-id> may appear before or after --auto; anything past that (a
-  # second positional, an unknown flag) is a hard fail rather than the
-  # silent ignore this verb used to give a stray trailing token — matching
-  # view/list/capture/doctor/complete-plan, which already reject extras.
-  local id="" auto=""
+  # <story-id> XOR --next may appear before or after --auto; anything past
+  # that (a second positional, an unknown flag) is a hard fail rather than
+  # the silent ignore this verb used to give a stray trailing token —
+  # matching view/list/capture/doctor/complete-plan, which already reject
+  # extras. --next (SH-344) is the id-less mode: it claims whatever
+  # `story next --claim` picks, atomically, rather than a caller-named id —
+  # see the NEXT MODE section below for why this is a second mode and not a
+  # rewrite of the id-directed claim.
+  local id="" auto="" want_next=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --auto) auto=1; shift ;;
+      --next)
+        [ -z "$id" ] || fail "--next cannot be combined with a story id \`$id\` — usage: story.sh dispatch (<story-id> | --next) [--auto]"
+        want_next=1; shift ;;
       *)
-        [ -z "$id" ] || fail "unexpected argument \`$1\` — usage: story.sh dispatch <story-id> [--auto]"
+        [ -z "$id" ] || fail "unexpected argument \`$1\` — usage: story.sh dispatch (<story-id> | --next) [--auto]"
+        [ -z "$want_next" ] || fail "--next cannot be combined with a story id \`$1\` — usage: story.sh dispatch (<story-id> | --next) [--auto]"
         id="$1"; shift ;;
     esac
   done
-  [ -n "$id" ] || fail "usage: story.sh dispatch <story-id> [--auto]"
-  valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
+  [ -n "$id" ] || [ -n "$want_next" ] || fail "usage: story.sh dispatch (<story-id> | --next) [--auto]"
+  [ -z "$id" ] || valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
 
   # Step 1: tmux precondition (relaxed under dry-run and under
   # STORY_TARGET_SESSION — a non-interactive caller outside tmux dispatches
@@ -722,65 +743,117 @@ cmd_dispatch() {
   enter_checkout
   local dir="$PROJECT_ROOT"
 
-  # Step 4: story exists. Every read here is REAL, even under dry-run
-  # (issue.sh's own asymmetry: reads always run for real, only writes are
-  # symbolic under dry-run).
-  local show_json result title state
-  show_json=$(story_cli show "$id" --json 2>/dev/null) || true
-  result=$(printf '%s' "$show_json" | jq -r '.result // ""' 2>/dev/null || printf '')
-  if [ "$result" != "ok" ]; then
-    # `story show`'s own .error already reads "story `<id>` not found" on a
-    # missing id, so use it directly rather than re-wrapping (which would
-    # double the "not found" text); fall back to a generic message only if
-    # .error itself is absent (e.g. the CLI emitted no JSON at all).
-    fail "$(printf '%s' "$show_json" | jq -r --arg id "$id" '.error // ("story `" + $id + "` not found")' 2>/dev/null)"
-  fi
-  # Every name below — the tmux window, the worktree leaf, the branch — and the
-  # ready-gate's membership test are derived from $id, and the ready list holds
-  # canonical ids. A bare `5` would therefore pass this step and then be called
-  # unready. From here on, $id is what storyhook says it is.
-  id=$(canonical_story_id "$show_json" "$id")
-  title=$(printf '%s' "$show_json" | jq -r '.story.story.title // ""')
-  state=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
+  # Steps 4-6: story identified, verified ready, and claimed. Two mutually
+  # exclusive paths — ID MODE (a caller-named story) and NEXT MODE (SH-344,
+  # --next, id-less) — that converge on the same four facts ($id, $title,
+  # $state, $pre_claim_state) plus a $claim_cmd_desc for the dry-run preview,
+  # so everything from here on (worktree, tmux, the claim-rollback path) runs
+  # identically regardless of which one produced them.
+  local title state pre_claim_state claim_cmd_desc
+  if [ -n "$want_next" ]; then
+    # NEXT MODE (SH-344): a single `story next --claim` call does what ID
+    # MODE's steps 4-6 plus its CAS move do for a caller-named id — pick a
+    # ready story AND claim it — but atomically, inside one write
+    # transaction, so two concurrent `dispatch --next` callers are handed
+    # two DIFFERENT stories rather than one winner and N-1 `claim-conflict`
+    # refusals. This is a second mode, not a replacement for ID MODE's CAS:
+    # `--claim` picks whatever is top-priority, so it has no way to honor a
+    # caller-supplied id, and ID MODE's `--if-state` CAS stays exactly as it
+    # was.
+    claim_cmd_desc="story next --claim"
+    local next_json next_result next_cmd_ran
+    if [ -n "$DRY_RUN" ]; then
+      # Dry-run: a claim is a WRITE, so preview with the plain, non-claiming
+      # read instead — the same reads-real/writes-symbolic asymmetry every
+      # other dry-run path in this file follows.
+      next_cmd_ran="story next"
+      next_json=$(story_cli next --json 2>/dev/null) || true
+    else
+      next_cmd_ran="story next --claim"
+      next_json=$(story_cli --actor dispatch next --claim --json 2>/dev/null) || true
+    fi
+    next_result=$(printf '%s' "$next_json" | jq -r '.result // ""' 2>/dev/null || printf '')
+    if [ "$next_result" != "ok" ]; then
+      fail "$next_cmd_ran failed: $(printf '%s' "$next_json" | jq -r '.error // "emitted no result"' 2>/dev/null)."
+    fi
+    if [ "$(printf '%s' "$next_json" | jq -r '.story // empty')" = "" ]; then
+      fail "$(printf '%s' "$next_json" | jq -r '.message // "no ready stories"' 2>/dev/null) — nothing to dispatch."
+    fi
+    id=$(printf '%s' "$next_json" | jq -r '.story.story.id')
+    title=$(printf '%s' "$next_json" | jq -r '.story.story.title // ""')
+    state=$(printf '%s' "$next_json" | jq -r '.story.story.state // ""')
+    # Dry-run's `$next_json` came from the non-claiming read, so `.state` is
+    # already the pre-claim value and `.claimed_from` was never asked for;
+    # the real claim's `.claimed_from` is what the story actually came from.
+    if [ -n "$DRY_RUN" ]; then
+      pre_claim_state="$state"
+    else
+      pre_claim_state=$(printf '%s' "$next_json" | jq -r '.claimed_from // ""')
+    fi
+  else
+    # ID MODE: unchanged from before SH-344.
+    #
+    # Step 4: story exists. Every read here is REAL, even under dry-run
+    # (issue.sh's own asymmetry: reads always run for real, only writes are
+    # symbolic under dry-run).
+    local show_json result
+    show_json=$(story_cli show "$id" --json 2>/dev/null) || true
+    result=$(printf '%s' "$show_json" | jq -r '.result // ""' 2>/dev/null || printf '')
+    if [ "$result" != "ok" ]; then
+      # `story show`'s own .error already reads "story `<id>` not found" on a
+      # missing id, so use it directly rather than re-wrapping (which would
+      # double the "not found" text); fall back to a generic message only if
+      # .error itself is absent (e.g. the CLI emitted no JSON at all).
+      fail "$(printf '%s' "$show_json" | jq -r --arg id "$id" '.error // ("story `" + $id + "` not found")' 2>/dev/null)"
+    fi
+    # Every name below — the tmux window, the worktree leaf, the branch — and
+    # the ready-gate's membership test are derived from $id, and the ready
+    # list holds canonical ids. A bare `5` would therefore pass this step and
+    # then be called unready. From here on, $id is what storyhook says it is.
+    id=$(canonical_story_id "$show_json" "$id")
+    title=$(printf '%s' "$show_json" | jq -r '.story.story.title // ""')
+    state=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
 
-  # Step 5 (deviation #1 — see header): ALREADY-IN-PROGRESS GUARD. Checked
-  # before the ready-gate for its more specific message — since SH-236 the
-  # ready-gate below would also catch this, just less helpfully.
-  if [ "$state" = "in-progress" ]; then
-    fail "story $id is already in-progress — not redispatching (a previous \`/story do\` may still be running against it, or move it back to a ready state first if this is stale)."
-  fi
+    # Step 5 (deviation #1 — see header): ALREADY-IN-PROGRESS GUARD. Checked
+    # before the ready-gate for its more specific message — since SH-236 the
+    # ready-gate below would also catch this, just less helpfully.
+    if [ "$state" = "in-progress" ]; then
+      fail "story $id is already in-progress — not redispatching (a previous \`/story do\` may still be running against it, or move it back to a ready state first if this is stale)."
+    fi
 
-  # Step 6 (deviation #2 — see header): READY-STATE GATE, issue #40's core
-  # ask. Ground-truth membership check against the CLI's own `is_ready()`,
-  # via the exact command every interactive skill already relies on.
-  local ready_json is_ready_flag
-  # Called plainly, NOT via $(...): _load_ready_stories may `fail`, and a
-  # command substitution would run that in a subshell.
-  _load_ready_stories
-  ready_json="$_READY_JSON"
-  is_ready_flag=$(printf '%s' "$ready_json" | jq --arg id "$id" '([.stories[]?.story.id // empty] | index($id)) != null' 2>/dev/null || printf 'false')
-  if [ "$is_ready_flag" != "true" ]; then
-    local reason
-    reason=$(ready_gate_reason "$show_json" "$id")
-    fail "story $id is not ready to work on ($reason) — run \`story show $id\` for details."
-  fi
+    # Step 6 (deviation #2 — see header): READY-STATE GATE, issue #40's core
+    # ask. Ground-truth membership check against the CLI's own `is_ready()`,
+    # via the exact command every interactive skill already relies on.
+    local ready_json is_ready_flag
+    # Called plainly, NOT via $(...): _load_ready_stories may `fail`, and a
+    # command substitution would run that in a subshell.
+    _load_ready_stories
+    ready_json="$_READY_JSON"
+    is_ready_flag=$(printf '%s' "$ready_json" | jq --arg id "$id" '([.stories[]?.story.id // empty] | index($id)) != null' 2>/dev/null || printf 'false')
+    if [ "$is_ready_flag" != "true" ]; then
+      local reason
+      reason=$(ready_gate_reason "$show_json" "$id")
+      fail "story $id is not ready to work on ($reason) — run \`story show $id\` for details."
+    fi
 
-  # claim target is unconditionally "in-progress" — deviation #4 (see
-  # header): step 5 above already guarantees $state != "in-progress" here.
-  local pre_claim_state="$state"
+    # claim target is unconditionally "in-progress" — deviation #4 (see
+    # header): step 5 above already guarantees $state != "in-progress" here.
+    pre_claim_state="$state"
+    claim_cmd_desc="story move $id in-progress --if-state $pre_claim_state"
 
-  if [ -z "$DRY_RUN" ]; then
-    local move_json move_result
-    move_json=$(story_cli --actor dispatch move "$id" in-progress --if-state "$state" --json 2>/dev/null) || true
-    move_result=$(printf '%s' "$move_json" | jq -r '.result // ""' 2>/dev/null || printf '')
-    case "$move_result" in
-      ok)
-        state="in-progress" ;;
-      conflict)
-        refuse "claim-conflict" "story $id changed state before it could be claimed (expected \`$state\`, now \`$(printf '%s' "$move_json" | jq -r '.actual // "?"' 2>/dev/null)\`) — another dispatch likely won the race." ;;
-      *)
-        fail "story move $id in-progress failed: $(printf '%s' "$move_json" | jq -r '.error // "story move emitted no result"' 2>/dev/null)." ;;
-    esac
+    if [ -z "$DRY_RUN" ]; then
+      local move_json move_result
+      move_json=$(story_cli --actor dispatch move "$id" in-progress --if-state "$state" --json 2>/dev/null) || true
+      move_result=$(printf '%s' "$move_json" | jq -r '.result // ""' 2>/dev/null || printf '')
+      case "$move_result" in
+        ok)
+          state="in-progress" ;;
+        conflict)
+          refuse "claim-conflict" "story $id changed state before it could be claimed (expected \`$state\`, now \`$(printf '%s' "$move_json" | jq -r '.actual // "?"' 2>/dev/null)\`) — another dispatch likely won the race." ;;
+        *)
+          fail "story move $id in-progress failed: $(printf '%s' "$move_json" | jq -r '.error // "story move emitted no result"' 2>/dev/null)." ;;
+      esac
+    fi
   fi
 
   # Compute the name used for the tmux window, the worktree dir leaf, AND the
@@ -855,7 +928,7 @@ cmd_dispatch() {
     jq -n \
       --arg id "$id" --arg title "$title" --arg dir "$dir" \
       --arg wname "$wname" --arg launch "$launch_cmd" --arg prompt "$prompt" \
-      --arg state "$state" \
+      --arg state "$state" --arg claim_cmd "$claim_cmd_desc" \
       --arg ignore_status "$ignore_status" \
       --arg detach "$detach" --arg target "$target" \
       --argjson auto "$([ -n "$auto" ] && echo true || echo false)" --arg auto_note "$auto_note" \
@@ -868,7 +941,7 @@ cmd_dispatch() {
         worktree_branch: $wtbranch, worktree_path: $wtpath,
         gitignore: (if $ignore_status == "already-ignored" then "already-ignored" else "would-add" end),
         commands: [
-          ("story move " + $id + " in-progress --if-state " + $state),
+          $claim_cmd,
           ("git worktree add --no-track -b " + $wtbranch + " " + $wtpath + " <base-oid>"),
           ("tmux new-window " + $target + $detach + "-c " + $wtpath + " -n " + $wname + " -P -F #{pane_id} " + $launch
              + " \\; set-window-option -t " + $wname + " remain-on-exit on"
@@ -879,7 +952,7 @@ cmd_dispatch() {
           "tmux send-keys -t <pane> Enter"
         ],
         display: ("[story] DRY RUN for " + $id + " (" + $title
-                  + "): would claim it via `story move " + $id + " in-progress --if-state " + $state
+                  + "): would claim it via `" + $claim_cmd
                   + "`, create worktree " + $wtpath + " (branch " + $wtbranch
                   + "), open a new tmux window named " + $wname
                   + ", and run the listed commands." + $auto_note)
@@ -2686,5 +2759,5 @@ case "${1:-}" in
   work)       shift; cmd_work "$@" ;;
   triage)     shift; cmd_triage "$@" ;;
   scaffold-claude-md) shift; cmd_scaffold_claude_md "$@" ;;
-  *)          fail "usage: story.sh <list | view <story-id> | dispatch <story-id> [--auto] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | doctor | capture <story-id> | ensure-cli | context [--full] | sync [--since <d>] | handoff [--since <d>] | work [story-id] | triage | scaffold-claude-md [--path <file>]>" ;;
+  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | doctor | capture <story-id> | ensure-cli | context [--full] | sync [--since <d>] | handoff [--since <d>] | work [story-id] | triage | scaffold-claude-md [--path <file>]>" ;;
 esac
