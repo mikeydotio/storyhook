@@ -3192,6 +3192,80 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return null;
   }
 
+  /** Refuses a notice-dock activation that an auto-repeating key produced
+   * rather than a person (SH-339).
+   *
+   * A `<button>` runs its activation behaviour on **keydown** for Enter, so a
+   * held Enter fires one click per OS repeat. On its own that was harmless --
+   * the button was destroyed by the first one and the repeats landed on
+   * `<body>`. SH-326's heir policy is what turned it into a loss: focus now
+   * moves to the next notice's dismiss control, so the repeats have somewhere
+   * to land and one held key walks the whole stack. Measured before this guard
+   * existed: five durable **error** notices, one held Enter, zero left. Those
+   * notices are the only record of what failed -- the daemon's finished
+   * `DispatchRecord`s are exposed on no route, this page never reads them, and
+   * they evict after 30 minutes or 32 records (see `addDispatchHistoryRow`).
+   *
+   * **This is a state question, not a modality question**, which is what makes
+   * it admissible where SH-326's council found nothing admissible. That council
+   * looked at `event.detail === 0` and correctly refused it: assistive
+   * technology dispatches synthesised clicks with `detail === 0`, so it fires
+   * for AT-driven pointer users and not for real ones, and it is trying to
+   * answer "was this person using a keyboard" -- unanswerable. `event.repeat`
+   * asks nothing about the person. It is a property of the key event itself,
+   * false on the deliberate press and true on every auto-repeat, which is
+   * SH-226's doctrine one layer up: ask what a thing IS, not what it is spelled.
+   * The AT path is untouched either way, because a synthesised activation
+   * arrives as a click with no keydown at all and never reaches this handler.
+   *
+   * **Enter specifically, and the narrowness is load-bearing.** A bare
+   * `if (event.repeat)` would also cancel held Arrow/Page scrolling from a
+   * focused dismiss button -- the exact affordance `syncNoticeDock`'s
+   * conditional `tabindex` on `#toast-scroll` exists to serve -- and it would
+   * take that away from the same people this guard is written for. Space needs
+   * no guard and must not have one: a button activates on Space **keyup**, so
+   * its auto-repeat never activated anything, and cancelling a repeated Space
+   * keydown would risk the one activation a held Space legitimately produces on
+   * release. `event.key === "Enter"` covers NumpadEnter.
+   *
+   * **One listener on `#notice-dock`**, the single common ancestor of both
+   * regions and both "Dismiss all" bars, rather than four handlers at the four
+   * construction sites. A hand-maintained list of dismiss selectors is this
+   * project's named drift class (SH-136, SH-258, SH-198, SH-260/276); a rule
+   * that says "no button in this dock" cannot fall behind a button added later.
+   * The two bar buttons are inside the rule's scope but do not exhibit the
+   * chain today -- clearing a region hides its own bar and sends focus out of
+   * the dock -- and the pin does not claim they do.
+   *
+   * **Silent on purpose.** A suppressed repeat announces nothing:
+   * `announceNoticeDismissal` already spoke for the press that did land ("Notice
+   * dismissed. N remaining"), and a second utterance per repeat would arrive at
+   * the OS repeat rate and queue ahead of the real one in a polite live region,
+   * nagging precisely the reader who holds a key a beat too long. That reader is
+   * who this exists for: before it, they could not reliably dismiss exactly one
+   * notice.
+   *
+   * What is NOT claimed, because it was not measured: this is verified on Blink
+   * only (the suite is Chromium-only -- SH-335), and Playwright's `repeat` bit
+   * is set by the harness, so the run proves that Blink activates a button on
+   * every un-prevented repeat keydown and that cancelling it stops that. That a
+   * physically held key sets the flag at all rests on the UI Events spec and on
+   * a hand check, never on this suite. Where the flag is not set -- an input
+   * stack that delivers repeats as discrete keydown/keyup pairs -- this guard is
+   * inert, which is today's behaviour and never worse than it.
+   *
+   * Council verdict, unanimous 3-0:
+   * `.council/sh339-notice-dismiss-autorepeat/DECISION.md`. It also ruled that
+   * the guard fixes the *amplification* and not the *loss* -- a durable error's
+   * content is still unrecoverable once deliberately dismissed -- and that the
+   * loss stays on the books as its own story rather than being argued away
+   * here. */
+  function refuseAutoRepeatActivation(event) {
+    if (event.key !== "Enter" || !event.repeat) return;
+    var target = event.target;
+    if (target && target.closest && target.closest("button")) event.preventDefault();
+  }
+
   /** Says a single dismissal happened, and how much is left.
    *
    * Announced on **every** dismissal, pointer included, and whether or not focus
@@ -10008,6 +10082,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("drawer-close").addEventListener("click", closeDrawer);
     $("toast-dismiss-all").addEventListener("click", dismissAllToasts);
     $("dispatch-history-dismiss-all").addEventListener("click", dismissAllDispatchHistory);
+    // One rule for every button in the dock, present and future (SH-339) --
+    // notices are minted after this runs, so the listener is on the container
+    // rather than on the controls. Bubble phase: the handler only cancels a
+    // default action, which `preventDefault()` does from either phase, and
+    // nothing in the dock stops propagation on the way up.
+    $("notice-dock").addEventListener("keydown", refuseAutoRepeatActivation);
     $("drawer-backdrop").addEventListener("click", closeDrawer);
     document.addEventListener("keydown", function(e) {
       // SH-175: `create-modal` is deliberately absent here — see the
