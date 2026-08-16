@@ -9,6 +9,7 @@ source: tests/golden_cli.rs
       "stories": [
         {
           "display_state": "in-progress",
+          "head_global_seq": 51,
           "progress": {
             "children_done": 0,
             "children_total": 3
@@ -49,6 +50,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "story": {
         "display_state": "in-progress",
+        "head_global_seq": 51,
         "progress": {
           "children_done": 0,
           "children_total": 3
