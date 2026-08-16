@@ -19,12 +19,11 @@
 //! This is the fence that keeps a *third* site from reintroducing it
 //! silently. A file-level scan — "does this file mention `daemon_file()` and
 //! also mention `path_without_tailscale`, anywhere" — was considered and
-//! rejected (SH-345's council vote; `.council/sh-345-portfile-fixture-hygiene-fence/`
-//! carries the full record): the only two files that have ever doctored a
-//! portfile are already permanently "compliant" by that measure from the
-//! SH-345 fix itself, so a file-level fence could only ever catch a
-//! hypothetical third *file* — near-zero real coverage while reading as
-//! protection.
+//! rejected (the council verdict on SH-345, `story show SH-345`): the only
+//! two files that have ever doctored a portfile are already permanently
+//! "compliant" by that measure from the SH-345 fix itself, so a file-level
+//! fence could only ever catch a hypothetical third *file* — near-zero real
+//! coverage while reading as protection.
 //!
 //! # The rule
 //!
