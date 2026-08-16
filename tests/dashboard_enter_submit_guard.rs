@@ -68,8 +68,16 @@
 //! that rather than rediscover it. The alternative the council weighed — one
 //! delegated `document`-capture listener, immune to spelling because it never
 //! reads the site's own code — was rejected for being **not fail-safe**: see
-//! `bindEnterSubmit`'s own doc comment, and
-//! `.council/sh362-modal-enter-autorepeat-guard/DECISION.md`.
+//! `bindEnterSubmit`'s own doc comment, and the verdict recorded on **SH-362**
+//! (`story show SH-362`).
+//!
+//! The council's full trail — proposals, the vote, two seats retracting their
+//! own proposals — was written to `.council/sh362-modal-enter-autorepeat-guard/`,
+//! which is **untracked** (`.gitignore:29`) and was created inside a worktree
+//! that this story's own procedure tears down. So it is cited here as what it is
+//! rather than as a path a reader can open: SH-363 is the open story about
+//! exactly that hazard, and pointing this comment at the story instead is the
+//! mitigation that story names as the one that has actually worked.
 //!
 //! The second thing it cannot catch, and every seat agreed on this: a new site
 //! can call `bindEnterSubmit` correctly and still forget its **in-flight
