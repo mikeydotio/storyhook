@@ -8712,6 +8712,34 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // already paid twice for a surface that guessed.
   var dispatchLog = { readiness: "unasked", dispatches: [], retention: null, error: null };
 
+  /** The possessive phrase `readinessNote` builds both of this section's
+   * readiness sentences around. Named once so the two cannot disagree. */
+  var DISPATCH_LOG_SUBJECT = "the dispatch log";
+
+  /** How long a failed dispatch-log read waits before trying again.
+   *
+   * Its only job is to make `readinessNote`'s "Retrying…" true. The interval
+   * matches the repo list's own safety poll, and this is the ONE path on
+   * which this section re-fetches without the user asking -- the loaded
+   * state deliberately never polls, because rebuilding a rendered list under
+   * a reading user is SH-337's defect. In the failed state there is no list
+   * to rebuild, only the sentence promising the retry. */
+  var DISPATCH_LOG_RETRY_MS = 25000;
+  var dispatchLogRetry = null;
+
+  /** Keeps the retry running only while the section it speaks for is on
+   * screen: a Settings screen the user has left has nothing to update, and a
+   * timer outliving its node is the leak `cancelNoticeClock` exists to
+   * prevent one surface over. Cleared on success by `fetchDispatchLog`. */
+  function scheduleDispatchLogRetry() {
+    if (dispatchLogRetry !== null) return;
+    dispatchLogRetry = window.setTimeout(function() {
+      dispatchLogRetry = null;
+      if (!$("dispatch-log") || dispatchLog.readiness !== "failed") return;
+      fetchDispatchLog();
+    }, DISPATCH_LOG_RETRY_MS);
+  }
+
   /** Builds the Dispatch log section once. Its contents are rendered
    * separately by `renderDispatchLog`, which every fetch outcome calls.
    *
@@ -8753,6 +8781,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function fetchDispatchLog(announce) {
     api("GET", "/api/dispatch-log")
       .then(function(resp) {
+        if (dispatchLogRetry !== null) {
+          window.clearTimeout(dispatchLogRetry);
+          dispatchLogRetry = null;
+        }
         dispatchLog = {
           readiness: "loaded",
           dispatches: resp.dispatches || [],
@@ -8774,8 +8806,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           error: (err && err.message) || "the daemon did not answer"
         };
         renderDispatchLog();
+        scheduleDispatchLogRetry();
         if (announce) {
-          setStatusText("dispatch-log-status", "Couldn't load the dispatch log.");
+          setStatusText("dispatch-log-status", readinessNote(DISPATCH_LOG_SUBJECT, true));
         }
       });
   }
@@ -8822,13 +8855,24 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var body = $("dispatch-log-body");
     if (!body) return;
     clear(body);
+    // Both readiness sentences come from `readinessNote`, the one generator
+    // (SH-291/SH-301), rather than being written here -- a hand-written pair
+    // is how "not yet" and "not at all" drift apart on one fetch while
+    // staying fixed on another, and `web_test.rs` fences the words.
+    //
+    // Using it obliges this surface to keep the promise the failed branch
+    // makes: "Retrying…" is a claim every caller's own poll keeps, so
+    // `scheduleDispatchLogRetry` keeps it here too. Claiming a retry that
+    // never came would be SH-312's comforting falsehood.
     if (dispatchLog.readiness === "unasked") {
-      body.appendChild(el("p", { class: "settings-hint" }, ["Loading…"]));
+      body.appendChild(el("p", { class: "settings-hint" }, [
+        readinessNote(DISPATCH_LOG_SUBJECT, false)
+      ]));
       return;
     }
     if (dispatchLog.readiness === "failed") {
       body.appendChild(el("p", { class: "modal-error" }, [
-        "Couldn't load the dispatch log — " + dispatchLog.error
+        readinessNote(DISPATCH_LOG_SUBJECT, true) + " (" + dispatchLog.error + ")"
       ]));
       return;
     }
