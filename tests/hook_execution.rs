@@ -981,11 +981,6 @@ fn a_resolved_cherry_pick_stays_on_the_ordinary_path() {
 fn amending_a_merge_commit_re_enters_the_guard_harmlessly() {
     let repo = HookRepo::new();
     let id = repo.new_story("Closed, then the merge is amended");
-    // A second, unrelated ready story: keeps `story next` non-empty for the
-    // amend below, sidestepping SH-355 (unrelated to this guard —
-    // `prepare-commit-msg` aborts an amend outright when the backlog has
-    // zero ready stories, a pre-existing defect this test is not about).
-    repo.new_story("Kept ready so the backlog is never empty");
 
     repo.resolve_a_conflict_with_message("feat: theirs", &format!("Merge feature\n\nCloses {id}"));
     assert_eq!(
