@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use storyhook::daemon::crash::{self, CrashClassification};
 use storyhook::daemon::lifecycle::{self, DaemonInfo};
-use storyhook_test_support::{TestEnv, scratch_dir, story_binary};
+use storyhook_test_support::{TestEnv, path_without_tailscale, scratch_dir, story_binary};
 
 /// Whether `info` describes a daemon running the `story` binary this build
 /// produced.
@@ -712,12 +712,38 @@ fn a_daemon_spawn_rotates_the_previous_log_instead_of_destroying_it() {
 /// the check is on the executable's mtime as well as the version — a developer
 /// rebuilding the same version is the common case, and the one that produced a
 /// dashboard serving 42-hour-old code.
+///
+/// Runs with [`path_without_tailscale`] throughout (SH-345). This test doctors
+/// a *live* daemon's portfile and needs the doctoring to hold still until the
+/// next command reads it — but the daemon owns that file too: its background
+/// tailnet probe (`serve::tailnet_reprobe`) rewrites the portfile with its own
+/// (correct) `exe_mtime` the instant it binds, and on a tailnet-equipped
+/// machine that now happens for nearly every daemon shortly after start
+/// (SH-186). Under load, that rewrite can land between this test's doctored
+/// write and the next command's read of it, silently restoring the correct
+/// build and making the daemon look current again — so the replace this test
+/// asserts on never happens, and `first.pid == replacement.pid`. Confirmed by
+/// toggle: with a 150ms gap inserted before the second `daemon start` and
+/// `tailscale` left reachable, this failed 8/8 with the exact signature SH-345
+/// reported (`left != right` on identical pids); with the same gap and
+/// `tailscale` denied, 8/8 passed. `tests/web_test.rs`'s
+/// `web_open_falls_back_to_the_bare_url_when_arming_fails` hit and fixed the
+/// identical hazard against a different doctored field first.
 #[test]
 fn a_daemon_from_another_build_is_replaced_rather_than_reused() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
     let dir = scratch_dir();
-    let first = start(&env);
+    let (_no_tailscale, no_tailscale_path) = path_without_tailscale(&env);
+
+    env.story(dir.path())
+        .env("PATH", &no_tailscale_path)
+        .args(["daemon", "start"])
+        .assert()
+        .success();
+    let first = env
+        .daemon()
+        .expect("a started daemon must publish a portfile");
 
     // Rewrite the portfile to describe a daemon from a different build, leaving
     // the running one in place. The next command must notice, stop it, and put
@@ -730,6 +756,7 @@ fn a_daemon_from_another_build_is_replaced_rather_than_reused() {
     assert!(!is_the_binary_under_test(&stale));
 
     env.story(dir.path())
+        .env("PATH", &no_tailscale_path)
         .args(["daemon", "start"])
         .assert()
         .success();
