@@ -37,15 +37,23 @@ import {
  *    Deleting the `setTimeout` alone would have swapped a visible six-second
  *    limit for an invisible 0–25s one. `armedSurvivesAnUnaskedRefresh` below is
  *    the pin for that half, and it is the half a naive suite would miss.
- * 2. **This suite is Chromium-only** (`playwright.config.ts` ships Desktop
- *    Chrome and Pixel 7, both Blink; `make e2e-install` installs chromium
- *    alone). The original defect bit hardest on WebKit, which does not focus a
- *    `<button>` on click — so `document.activeElement` stays on `BODY`,
- *    `statusEditorIsBusy()` reads false, and the poll wipes the confirmation.
- *    **No test in this file observes Safari.** The one below reproduces that
- *    *state* on Blink by blurring after arming, and says so in its own body, so
- *    nobody reads a green run here as evidence about Safari. Adding a `webkit`
- *    project is filed separately and deliberately not smuggled in here.
+ * 2. **This suite now runs on WebKit too** (`playwright.config.ts` ships a
+ *    `webkit` project alongside `chromium`, keyed off the identical spec
+ *    selector so nothing here is hand-listed onto one engine — SH-335,
+ *    story show SH-335 carries the verdict). The original defect
+ *    bit hardest on WebKit, which does not focus a `<button>` on click — so
+ *    `document.activeElement` stays on `BODY`, `statusEditorIsBusy()` reads
+ *    false, and the poll wipes the confirmation. Every test in this file is
+ *    now observed on real WebKit, not merely emulated, which is what makes
+ *    `armedSurvivesAnUnaskedRefresh` below load-bearing rather than
+ *    aspirational — it reproduces the SAME state on Blink, deliberately, so
+ *    the property under test (the fix does not depend on which element held
+ *    focus) is pinned on the engine where focus behaves differently too, not
+ *    only the one where it's academic. What running on real WebKit does NOT
+ *    prove: a hand-run check against actual Safari on a real Mac, which
+ *    `docs/spec/dashboard-authorization.md` records as still outstanding for
+ *    unrelated (auth/storage) reasons — headless WebKit is a different
+ *    surface from that debt and does not discharge it.
  *
  * Full reasoning, the vote, and the rejected alternatives: SH-324.
  */
@@ -269,10 +277,12 @@ test("an armed confirmation survives a refresh nobody asked for", async ({
   // the instant the user arms, `statusEditorIsBusy()` reads false, and the
   // safety poll rebuilds the rows underneath them.
   //
-  // THIS IS A SIMULATION, NOT A SAFARI TEST. This suite installs chromium
-  // only (see the file header). What it proves is that the armed state does
-  // not depend on focus — which is the property the fix is built on — not
-  // that Safari behaves.
+  // THIS IS A DELIBERATE SIMULATION, EVEN THOUGH THIS SUITE NOW RUNS ON REAL
+  // WEBKIT TOO (SH-335, see the file header). Under `chromium` this `blur()`
+  // is the only way to reach the state WebKit hands the page for free; it
+  // stays here rather than being made engine-conditional so the same test
+  // body pins the property on both engines identically, which is what proves
+  // the fix does not depend on focus rather than on which engine ran it.
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await expect
     .poll(() => page.evaluate(() => document.activeElement?.tagName))

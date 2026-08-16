@@ -257,12 +257,16 @@ this from scratch.
 ## Verification this design can't cover
 
 Headless Chromium under mobile *emulation* is what every automated test above runs
-against — Blink, not WebKit, since `make e2e-install` installs chromium only (see
-`zoom.mobile.spec.ts`'s and `playwright.config.ts`'s own comments on why). It has no
-dynamic toolbar to hide, so the `dvh` mechanism's *source* is pinned but its
-*behavior* is not; iOS Safari's own 16px zoom threshold is WebKit's, not Blink's. A
-real device pass is what SH-256 already flagged as needed and this story inherits:
-on an iPhone, over Tailscale, against the real daemon — the footer reachable with the
-URL bar shown, the filter disclosure's state surviving a reload, the actions menu
-opening on a genuine tap, the list table's horizontal scroll working under a real
-finger rather than emulated `hasTouch`.
+against — Blink, not WebKit (see `zoom.mobile.spec.ts`'s and `playwright.config.ts`'s
+own comments on why). That stays true for this design's mobile specs specifically,
+even though the suite as a whole is no longer Chromium-only: SH-335 added a `webkit`
+project, but scoped to the *desktop* pair only — a `mobile-webkit` project (WebKit
+under mobile emulation) is filed as SH-348 rather than folded in here, because it
+would narrow this gap, not close it (only a real device settles the 16px threshold
+question below). It has no dynamic toolbar to hide, so the `dvh`
+mechanism's *source* is pinned but its *behavior* is not; iOS Safari's own 16px zoom
+threshold is WebKit's, not Blink's. A real device pass is what SH-256 already flagged
+as needed and this story inherits: on an iPhone, over Tailscale, against the real
+daemon — the footer reachable with the URL bar shown, the filter disclosure's state
+surviving a reload, the actions menu opening on a genuine tap, the list table's
+horizontal scroll working under a real finger rather than emulated `hasTouch`.
