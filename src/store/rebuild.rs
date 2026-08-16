@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::domain::{StorySnapshot, fold_story};
 use crate::store::error::StoreError;
 use crate::store::ids::{EventSeq, GlobalSeq, ProjectId, StoryNo};
-use crate::store::types::{StoryQuery, UnknownEventDiagnostic, partition_known};
+use crate::store::types::{StoryQuery, StoryRow, UnknownEventDiagnostic, partition_known};
 use crate::store::{ReadOps, Store, WriteOps};
 
 /// How many change-feed entries a rebuild reads at a time.
@@ -419,117 +419,11 @@ pub fn diff_rebuilt(
             }
         };
 
-        report(
-            "head_seq",
-            row.head_seq.to_string(),
-            story.head_seq.to_string(),
-        );
-        // `put_story` derives this column from `events` in the same SQL
-        // statement that writes it, so it can only diverge from a rebuild if
-        // something wrote the row outside `put_story` — a raw migration, a
-        // hand edit. Reported beside `head_seq`, the other coordinate of the
-        // same event, for the same reason SH-211 gave `hidden_at`/`draft`
-        // their own divergence checks.
-        report(
-            "head_global_seq",
-            row.head_global_seq.to_string(),
-            story.head_global_seq.to_string(),
-        );
-        report("title", row.title.clone(), expected.title.clone());
-        report("state", row.state.clone(), expected.state.clone());
-        report(
-            "superstate",
-            row.superstate.as_str().to_string(),
-            expected.superstate.as_str().to_string(),
-        );
-        report(
-            "priority",
-            row.priority.as_str().to_string(),
-            expected.priority.as_str().to_string(),
-        );
-        report(
-            "story_type",
-            optional(row.story_type.as_deref()),
-            optional(expected.story_type.as_deref()),
-        );
-        report(
-            "assignee",
-            optional(row.assignee.as_deref()),
-            optional(expected.assignee.as_deref()),
-        );
-        report(
-            "awaiting",
-            optional(row.awaiting.as_deref()),
-            optional(expected.awaiting.as_deref()),
-        );
-        report(
-            "deleted",
-            row.deleted.to_string(),
-            expected.deleted.to_string(),
-        );
-        // `archived` has no counterpart in the snapshot: it is *defined* as
-        // "has a close timestamp", and a schema CHECK holds it there. This
-        // compares the flag against that definition.
-        report(
-            "archived",
-            row.archived.to_string(),
-            expected.closed_at.is_some().to_string(),
-        );
-        report(
-            "created_at",
-            row.created_at.clone(),
-            expected.created_at.clone(),
-        );
-        report(
-            "updated_at",
-            row.updated_at.clone(),
-            expected.updated_at.clone(),
-        );
-        report(
-            "closed_at",
-            optional(row.closed_at.as_deref()),
-            optional(expected.closed_at.as_deref()),
-        );
-        report(
-            "description",
-            optional(row.description.as_deref()),
-            optional(expected.description.as_deref()),
-        );
-        // Neither column has a schema CHECK tying it to anything else (SH-43,
-        // SH-175 respectively) — the fold and the service layer are the only
-        // things that ever kept `hidden_at` implying CLOSED or `draft` only
-        // ever clearing. A write that reaches the column directly (a raw
-        // migration, a hand edit) skips both, and until now nothing compared
-        // this column against the fold that would have caught it: `snapshot`
-        // below only sees a divergence here if that same write also touched
-        // the embedded copy, which is exactly what a column-only write does
-        // not do (SH-211).
-        report(
-            "hidden_at",
-            optional(row.hidden_at.as_deref()),
-            optional(expected.hidden_at.as_deref()),
-        );
-        report("draft", row.draft.to_string(), expected.draft.to_string());
-        report(
-            "labels",
-            row.labels.join(","),
-            expected
-                .labels
-                .iter()
-                .cloned()
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>()
-                .join(","),
-        );
-        // The snapshot column against the snapshot the events produce: this is
-        // what catches a change to a field that has no column of its own, such
-        // as a comment.
-        report(
-            SNAPSHOT_FIELD,
-            serde_json::to_string(&row.snapshot)?,
-            serde_json::to_string(expected)?,
-        );
+        for (field, persisted, rebuilt) in
+            column_comparisons(row, expected, story.head_seq, story.head_global_seq)?
+        {
+            report(field, persisted, rebuilt);
+        }
 
         let persisted_edges: BTreeSet<String> = tx
             .relations_from(project, story.story_no)?
@@ -555,6 +449,175 @@ pub fn diff_rebuilt(
         .copied()
         .collect();
     Ok(diff)
+}
+
+/// Every indexed column of a [`StoryRow`], paired with the value the story's
+/// events say it should hold.
+///
+/// `(field, persisted, rebuilt)` triples, rendered as strings and *unfiltered*:
+/// deciding which pairs disagree is [`diff_rebuilt`]'s job, and keeping that
+/// decision out of here is what makes "every column appears exactly once" a
+/// property you can read off the function.
+///
+/// # The pattern below has no `..`, and must never grow one
+///
+/// That is the whole of SH-365. `StoryRow`'s columns used to be reached through
+/// `row.field` accessors, so a column added to the struct and forgotten here was
+/// simply never compared — `story doctor` went quiet about it forever, and the
+/// only reason anyone noticed the first time (SH-211, `hidden_at` and `draft`)
+/// was a reader happening to look. Destructuring without a rest pattern moves
+/// that from vigilance to a compile error: a new field fails `cargo check` here,
+/// and because clippy runs under `-D warnings`, binding one and never using it
+/// fails the gate too.
+///
+/// What the compiler cannot do is check that a field is compared against the
+/// *right* thing, and `store::sqlite::read`'s `hydrate` is the proof — a
+/// rest-free struct literal over this same type, sitting on top of a
+/// `raw_story_from_row` that fills it by position. `tests/read_model_column_
+/// coverage.rs` is the other half: it damages each column underneath the store
+/// and demands the oracle name it.
+///
+/// The two arguments carrying the rebuilt head are separate rather than a whole
+/// `RebuiltStory` because a `RebuiltStory`'s snapshot is a `Result` the caller
+/// has already unwrapped — passing it again would mean unwrapping it twice, in
+/// two places, with only one of them able to report the failure.
+fn column_comparisons(
+    row: &StoryRow,
+    expected: &StorySnapshot,
+    rebuilt_head: EventSeq,
+    rebuilt_head_global: GlobalSeq,
+) -> Result<Vec<(&'static str, String, String)>, StoreError> {
+    let StoryRow {
+        // Not compared, and the only field that is not: this is the key the row
+        // was looked up by, so any comparison against it holds by construction.
+        // A row filed under the wrong number is caught as a missing row and an
+        // extra row, which says more than a divergence could.
+        story_no: _,
+        head_seq,
+        head_global_seq,
+        title,
+        state,
+        superstate,
+        priority,
+        story_type,
+        assignee,
+        awaiting,
+        deleted,
+        archived,
+        created_at,
+        updated_at,
+        closed_at,
+        description,
+        hidden_at,
+        draft,
+        labels,
+        snapshot,
+    } = row;
+
+    Ok(vec![
+        ("head_seq", head_seq.to_string(), rebuilt_head.to_string()),
+        // `put_story` derives this column from `events` in the same SQL
+        // statement that writes it, so it can only diverge from a rebuild if
+        // something wrote the row outside `put_story` — a raw migration, a hand
+        // edit. Reported beside `head_seq`, the other coordinate of the same
+        // event, for the same reason SH-211 gave `hidden_at`/`draft` their own
+        // divergence checks.
+        (
+            "head_global_seq",
+            head_global_seq.to_string(),
+            rebuilt_head_global.to_string(),
+        ),
+        ("title", title.clone(), expected.title.clone()),
+        ("state", state.clone(), expected.state.clone()),
+        (
+            "superstate",
+            superstate.as_str().to_string(),
+            expected.superstate.as_str().to_string(),
+        ),
+        (
+            "priority",
+            priority.as_str().to_string(),
+            expected.priority.as_str().to_string(),
+        ),
+        (
+            "story_type",
+            optional(story_type.as_deref()),
+            optional(expected.story_type.as_deref()),
+        ),
+        (
+            "assignee",
+            optional(assignee.as_deref()),
+            optional(expected.assignee.as_deref()),
+        ),
+        (
+            "awaiting",
+            optional(awaiting.as_deref()),
+            optional(expected.awaiting.as_deref()),
+        ),
+        ("deleted", deleted.to_string(), expected.deleted.to_string()),
+        // `archived` has no counterpart in the snapshot: it is *defined* as
+        // "has a close timestamp", and a schema CHECK holds it there. This
+        // compares the flag against that definition.
+        (
+            "archived",
+            archived.to_string(),
+            expected.closed_at.is_some().to_string(),
+        ),
+        (
+            "created_at",
+            created_at.clone(),
+            expected.created_at.clone(),
+        ),
+        (
+            "updated_at",
+            updated_at.clone(),
+            expected.updated_at.clone(),
+        ),
+        (
+            "closed_at",
+            optional(closed_at.as_deref()),
+            optional(expected.closed_at.as_deref()),
+        ),
+        (
+            "description",
+            optional(description.as_deref()),
+            optional(expected.description.as_deref()),
+        ),
+        // Neither column has a schema CHECK tying it to anything else (SH-43,
+        // SH-175 respectively) — the fold and the service layer are the only
+        // things that ever kept `hidden_at` implying CLOSED or `draft` only
+        // ever clearing. A write that reaches the column directly (a raw
+        // migration, a hand edit) skips both, and nothing else here would catch
+        // it: `snapshot` below only sees a divergence if that same write also
+        // touched the embedded copy, which is exactly what a column-only write
+        // does not do (SH-211).
+        (
+            "hidden_at",
+            optional(hidden_at.as_deref()),
+            optional(expected.hidden_at.as_deref()),
+        ),
+        ("draft", draft.to_string(), expected.draft.to_string()),
+        (
+            "labels",
+            labels.join(","),
+            expected
+                .labels
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(","),
+        ),
+        // The snapshot column against the snapshot the events produce: this is
+        // what catches a change to a field that has no column of its own, such
+        // as a comment.
+        (
+            SNAPSHOT_FIELD,
+            serde_json::to_string(snapshot)?,
+            serde_json::to_string(expected)?,
+        ),
+    ])
 }
 
 /// Rewrites a project's read model from its events, atomically.
