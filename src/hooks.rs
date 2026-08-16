@@ -29,57 +29,64 @@ command -v story >/dev/null 2>&1 || exit 0
 story --deadline 10 commit-sync --since 1h --quiet 2>/dev/null || true
 "#;
 
-/// Links the commits a merge brought, and closes the stories it says it closes.
+/// The merge-arrival shell: links the commits a merge brought, and — on
+/// `main` or `master` — closes the stories it says it closes.
 ///
-/// # The sync half (SH-330)
+/// Extracted out of `POST_MERGE_HOOK`'s own body, unchanged, so a future
+/// caller with the same need can compose it via `concat!` rather than
+/// duplicate it. A hand-copied second trailer alternation would drift
+/// silently past
+/// `tests/service_git.rs::every_keyword_the_merge_hook_closes_on_also_claims`,
+/// which only checks the alternation is *present* in `src/hooks.rs`, not that
+/// it is unique.
 ///
-/// `post-commit` is the only managed hook that ever called `commit-sync`, and a
-/// merge does not run it — measured, a merge fires `post-merge` **only**. So
-/// commits arriving by merge were linked by nobody, and the plugin's own
-/// stand-in skipped on the strength of a `post-commit` that could not have
-/// fired. This half is that repair: what arrives is linked here, by the hook
-/// the arrival actually runs.
+/// # `BASE`
 ///
-/// It sits **outside** the branch check on purpose, and the split is the whole
-/// design: linking is a function of commits *arriving*, whatever branch
-/// received them; closing is a function of a merge reaching a trunk. The two
-/// were fused only because one hook happened to hold both.
+/// The exclusive start of the arrival range, `$BASE..HEAD`.
 ///
-/// ## Why the window is derived and not a constant
+/// # `FLOOR`
+///
+/// The narrowest window this caller will ever ask for, in minutes — a
+/// per-caller floor, not to be confused with the five-minute slack below,
+/// which is a different quantity (SH-182's daemon-cold-start allowance) that
+/// happens to share `post-merge`'s value today.
+///
+/// # Why the window is derived and not a constant
 ///
 /// `commit-sync` takes a *duration*, and `read_log` turns it into
 /// `git log --since`, which filters on **committer date**. A merged commit
-/// keeps the date it was originally made — so the obvious spelling, the flat
-/// `--since 1h` that `POST_COMMIT_HOOK` and the plugin both use, would
-/// reproduce here exactly the defect this half was added to fix: the merge
-/// runs, the sync runs, and everything older than the window is missed. The
-/// window is therefore derived from the oldest committer date in
-/// `ORIG_HEAD..HEAD` — the exact set of commits that arrived.
+/// keeps the date it was originally made — so the obvious spelling, a flat
+/// `--since 1h`, would reproduce here exactly the defect SH-330 added this
+/// function to fix: the merge runs, the sync runs, and everything older than
+/// the window is missed. The window is therefore derived from the oldest
+/// committer date in `$BASE..HEAD` — the exact set of commits that arrived.
 ///
-/// ## Why the slack is five minutes, and why it must not be tightened
+/// # Why the slack is five minutes, and why it must not be tightened
 ///
-/// This script computes `NOW` with `date +%s`; the *daemon* computes the cutoff
-/// later, with its own clock, after a spawn and possibly a cold start — up to
-/// **150s** (SH-182). Integer truncation of `/ 60` eats up to 59s more. So the
-/// slack must satisfy `slack × 60 ≥ 150 + 59`, i.e. at least four minutes; five
-/// is that with room. Tightening this toward the arriving commits reads as an
-/// obvious optimisation and is a silent reintroduction of SH-330.
+/// This script computes `NOW` with `date +%s`; the *daemon* computes the
+/// cutoff later, with its own clock, after a spawn and possibly a cold start —
+/// up to **150s** (SH-182). Integer truncation of `/ 60` eats up to 59s more.
+/// So the slack must satisfy `slack × 60 ≥ 150 + 59`, i.e. at least four
+/// minutes; five is that with room. Tightening this toward the arriving
+/// commits reads as an obvious optimisation and is a silent reintroduction of
+/// SH-330.
 ///
-/// The floor does a second job: `parse_duration` accepts a **negative** number,
-/// and a negative duration puts the cutoff in the *future*, where the scan
-/// finds nothing at all. A clock that jumps backwards cannot produce one here.
+/// The floor does a second job for whichever caller's `FLOOR` is the slack
+/// itself: `parse_duration` accepts a **negative** number, and a negative
+/// duration puts the cutoff in the *future*, where the scan finds nothing at
+/// all. A clock that jumps backwards cannot produce one here.
 ///
-/// Scanning too wide is a no-op — `commit-sync` short-circuits an already-linked
-/// commit on a primary-key probe, and moves no story it has already moved.
-/// Scanning too narrow is the defect. The asymmetry is what pays for the
-/// generosity.
+/// Scanning too wide is a no-op — `commit-sync` short-circuits an
+/// already-linked commit on a primary-key probe, and moves no story it has
+/// already moved. Scanning too narrow is the defect. The asymmetry is what
+/// pays for the generosity.
 ///
-/// ## Why an empty range syncs nothing
+/// # Why an empty range does nothing
 ///
-/// An empty `ORIG_HEAD..HEAD` means no commit arrived, so there is nothing to
+/// An empty `$BASE..HEAD` means no commit arrived, so there is nothing to
 /// scan and no age to derive a window from. Falling back to a default window
-/// would scan a period this merge has no claim on; computing one from the empty
-/// string would be arithmetic on nothing.
+/// would scan a period this call has no claim on; computing one from the
+/// empty string would be arithmetic on nothing.
 ///
 /// # The closing half (SH-56)
 ///
@@ -87,59 +94,75 @@ story --deadline 10 commit-sync --since 1h --quiet 2>/dev/null || true
 ///
 /// `%B`, not `%s` (SH-56). The subject line is reserved for a summary under 72
 /// characters by every Conventional Commits guide there is, so a `Closes SH-12`
-/// reference lives in the body as a trailer — and this hook read subjects, so
-/// following the convention guaranteed it never fired. It had plausibly never
-/// worked for a body trailer at all.
+/// reference lives in the body as a trailer — and this hook once read subjects
+/// only, so following the convention guaranteed it never fired.
 ///
-/// The outer `while read` loop went with the change and did not need replacing:
-/// `%B` emits multi-line records, so a per-line loop no longer receives one
-/// commit per iteration, and it never had to — its only job was feeding text to
-/// `grep -oiE`, which is line-oriented already and emits one match per line.
-/// Piping the log straight into `grep` is both simpler and correct.
+/// The outer `while read` loop does not need one commit per iteration: `%B`
+/// emits multi-line records, and its only job is feeding text to `grep -oiE`,
+/// which is line-oriented already and emits one match per line.
 ///
 /// `[[:space:]]` rather than `\s`: `\s` is a GNU extension, this runs under
-/// `/bin/sh` on whatever the user has, and a hook that silently matches nothing
-/// on BSD grep is exactly the failure mode SH-56 already was.
+/// `/bin/sh` on whatever the user has, and a hook that silently matches
+/// nothing on BSD grep is exactly the failure mode SH-56 already was.
 ///
-/// `tests/hook_execution.rs` runs this script — the real file, installed into a
-/// real repository, over a real merge. The defect class here is "hook logic
-/// shipped as an untested string literal", and a `&str` nothing executes is how
-/// it survived.
+/// `tests/hook_execution.rs` runs this script — the real file, installed into
+/// a real repository, over a real merge or merge-shaped commit. The defect
+/// class here is "hook logic shipped as an untested string literal", and a
+/// `&str` nothing executes is how it survived twice.
 ///
-/// ## `--deadline 10` (SH-343), and why it leaves the slack above untouched
+/// # `--deadline 10` (SH-343), and why it leaves the slack above untouched
 ///
-/// Both calls below bound the *client's* wait, not the *daemon's* cutoff
-/// computation — a different axis from the five-minute slack this docstring
-/// already justifies. Shortening that slack toward the arriving commits would
-/// silently reintroduce SH-330; nothing here does that. Giving up on the sync
-/// call costs nothing (`--quiet 2>/dev/null || true` already discards its
-/// output, and expiry does not cancel the request). Giving up on a `story move`
-/// inside the loop below is real but bounded: the daemon still completes that
-/// move, nothing here reads the answer, and this hook has no shared budget
-/// across loop iterations — a merge naming N stories against a daemon that
-/// stays unreachable for the whole hook still costs N × 10s (filed as SH-353,
-/// deliberately not fixed here: `--deadline`'s exit code 5 is shared with
-/// genuine store errors, `src/error.rs`, so a latch keyed on it would need its
-/// own signal, its own tests, and its own review).
-const POST_MERGE_HOOK: &str = r#"#!/bin/sh
-# storyhook managed hook -- do not edit this line
-command -v story >/dev/null 2>&1 || exit 0
-ORIG_HEAD="$(git rev-parse ORIG_HEAD 2>/dev/null)" || exit 0
-OLDEST="$({ git log --format='%ct' "$ORIG_HEAD..HEAD" | sort -n | head -n 1; } 2>/dev/null)"
-if [ -n "$OLDEST" ]; then
-  MINUTES=$(( ($(date +%s) - OLDEST) / 60 + 5 ))
-  if [ "$MINUTES" -lt 5 ]; then MINUTES=5; fi
-  story --deadline 10 commit-sync --since "${MINUTES}m" --quiet 2>/dev/null || true
-fi
-BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null)"
-case "$BRANCH" in main|master) ;; *) exit 0 ;; esac
-git log --format='%B' "$ORIG_HEAD..HEAD" 2>/dev/null |
-  grep -oiE '(closes?|fixes?|resolves?)[[:space:]]+[A-Z]+-[0-9]+' |
-  while IFS= read -r match; do
-    STORY_ID="$(echo "$match" | grep -oE '[A-Z]+-[0-9]+' | head -1)"
-    [ -n "$STORY_ID" ] && story --deadline 10 move "$STORY_ID" done "auto-closed by merge" --quiet 2>/dev/null || true
-  done
-"#;
+/// Both `story` calls below bound the *client's* wait, not the *daemon's*
+/// cutoff computation — a different axis from the five-minute slack above.
+/// Shortening that slack toward the arriving commits would silently
+/// reintroduce SH-330; nothing here does that. Giving up on the sync call
+/// costs nothing (`--quiet 2>/dev/null || true` already discards its output,
+/// and expiry does not cancel the request). Giving up on a `story move`
+/// inside the loop below is real but bounded: the daemon still completes
+/// that move, nothing here reads the answer, and this fragment has no shared
+/// budget across loop iterations — a merge naming N stories against a daemon
+/// that stays unreachable for the whole hook still costs N × 10s (filed as
+/// SH-353, deliberately not fixed here: `--deadline`'s exit code 5 is shared
+/// with genuine store errors, `src/error.rs`, so a latch keyed on it would
+/// need its own signal, its own tests, and its own review).
+macro_rules! merge_arrival_fn {
+    () => {
+        r#"storyhook_merge_arrival() {
+  BASE="$1"
+  FLOOR="$2"
+  OLDEST="$({ git log --format='%ct' "$BASE..HEAD" | sort -n | head -n 1; } 2>/dev/null)"
+  if [ -n "$OLDEST" ]; then
+    MINUTES=$(( ($(date +%s) - OLDEST) / 60 + 5 ))
+    if [ "$MINUTES" -lt "$FLOOR" ]; then MINUTES="$FLOOR"; fi
+    story --deadline 10 commit-sync --since "${MINUTES}m" --quiet 2>/dev/null || true
+  fi
+  BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null)"
+  case "$BRANCH" in main|master) ;; *) return 0 ;; esac
+  git log --format='%B' "$BASE..HEAD" 2>/dev/null |
+    grep -oiE '(closes?|fixes?|resolves?)[[:space:]]+[A-Z]+-[0-9]+' |
+    while IFS= read -r match; do
+      STORY_ID="$(echo "$match" | grep -oE '[A-Z]+-[0-9]+' | head -1)"
+      [ -n "$STORY_ID" ] && story --deadline 10 move "$STORY_ID" done "auto-closed by merge" --quiet 2>/dev/null || true
+    done
+}
+"#
+    };
+}
+
+/// Fires on every merge `git` concludes without a `commit` of its own — see
+/// `merge_arrival_fn!` for what it does and why. `ORIG_HEAD` is the base
+/// because a fast-forward merge has no second parent for `HEAD^1` to name;
+/// `5` is `merge_arrival_fn!`'s slack floor with nothing added on top, since
+/// this hook has never promised more than what it can derive.
+const POST_MERGE_HOOK: &str = concat!(
+    "#!/bin/sh\n",
+    "# storyhook managed hook -- do not edit this line\n",
+    "command -v story >/dev/null 2>&1 || exit 0\n",
+    merge_arrival_fn!(),
+    r#"ORIG_HEAD="$(git rev-parse ORIG_HEAD 2>/dev/null)" || exit 0
+storyhook_merge_arrival "$ORIG_HEAD" 5
+"#
+);
 
 /// Appends the top-priority ready story as a hint in the commit message editor.
 ///
