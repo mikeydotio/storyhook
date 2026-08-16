@@ -797,6 +797,111 @@ their failures into a modal the first success already closed — the SH-312 shap
 Refers to SH-339, which relates to SH-326 (whose heir policy this completes rather than
 unpicks) and SH-338 (whose measured focus ring is on the heir control this keeps landing on).
 
+## As built — SH-361 (the dispatch history finally gets a reader)
+
+**The sentence this story deleted.** `addDispatchHistoryRow`'s doc comment used to
+read: "no route exposes it, this page never reads it, and it evicts after 30 minutes
+or 32 records. **This row is the record.**" Three other places in the tree said the
+same thing — `refuseAutoRepeatActivation`, the SH-304 contract block, and
+`notification-contract.spec.ts`'s header. That was the defect's own confession, and
+all four are corrected here: leaving them standing would have meant the tree still
+claimed the loss was closed.
+
+**What shipped.** `GET /api/dispatch-log` and a "Dispatch log" section on the Settings
+screen. The daemon has kept these records since the beginning and has persisted them
+across its own restarts since SH-232; they simply had no route and no reader. Design
+of record: `.council/sh361-dismissed-durable-error-recoverability/DECISION.md`
+(unanimous 3-0), **written to the main checkout** — `.council/` is gitignored and a
+council convened inside a worktree dies with it (SH-363, open).
+
+**Only the dispatch half, and the split is not cosmetic.** SH-339's council required
+this story be split between *a record that already exists and needs plumbing* and *a
+record that does not exist and must be created*. The finding that settled which half
+lands here: **`finishDispatch` is the only `toast(...)` call site in
+`src/web_dashboard.html` that passes a `detail` or a `reason`** — every other error
+toast is a bare headline. So the story's own acceptance ("the failed dispatch's detail
+and typed reason") is *not expressible at all* for an ordinary error, and that half's
+real first question is whether such errors should carry a diagnosis in the first
+place. Filed as **SH-367**, framed that way rather than as "add a second log".
+
+**Reading the log evicts nothing, and that is a design decision with a named victim.**
+The obvious implementation calls `evict()` before snapshotting so the list matches the
+policy exactly. It was proposed, and rejected on its own author's motion, because
+eviction is shared state: collecting a record there makes `GET .../dispatch/{handle}`
+answer 404 for a handle that would still have resolved, and `pollDispatch`'s `.catch`
+retries a 404 to `DISPATCH_MAX_POLLS` and then reports **"Lost track of the dispatch"**
+— a client-side failure invented by somebody opening a Settings panel. The read path
+filters instead, for an identical list and no cross-route side effect.
+`an_expired_record_leaves_the_log_without_leaving_the_poll_route` pins both halves and
+**kills in both directions**: remove the filter and an expired record leaks into the
+log; add the eager evict and it vanishes from the poll route.
+
+**That pin is also the first test `RETAIN_FOR` has ever had.** Nothing in the suite
+exercised `evict`'s time-based branch before this story, so it could be deleted and
+still ship green — and with it the whole `retention.seconds` half of the disclosure
+the dashboard renders.
+
+**The bound is disclosed as a rule, and only then as a floor.** `retention` carries
+`RETAIN_FINISHED` and `RETAIN_FOR` as **data**, so the sentence the browser composes is
+the binary's constants by construction rather than a second copy of them. `forgotten`
+is rendered "at least N", never as a count: it resets on a daemon restart, **and** an
+expired-but-uncollected record is filtered from the list without being counted, so it
+under-reports for two independent reasons. An exact-sounding number would be a lie.
+The rule sentence renders unconditionally, including on an empty list — empty is
+exactly where a reader needs to know whether nothing ran or their result aged out.
+
+**Daemon-scoped, not project-scoped**, because the retention bound is global: a
+per-project projection of a globally-bounded set cannot describe its own truncation.
+It also matches the dock, whose `state.dispatchHistory` is reset only by
+`dismissAllDispatchHistory` and never by `selectRepo`, so rows already accumulate
+across project switches.
+
+**The glob hazard, found by two council seats independently before the route existed.**
+Nine `page.route("**/dispatch**")` call sites across six spec files would have matched
+`/api/dispatch-log` and answered it with a `DispatchEnvelope` the log reader cannot
+parse. Narrowed to `**/story/*/dispatch**`, with `tests/dispatch_route_stubs.rs`
+fencing the class — derived over `git ls-files`, with a positive control — rather than
+renaming the route, which would have worked once and taught nobody anything.
+
+**The typed-reason claim is layered, and no single test joins the layers.** The daemon
+half (the record keeps `payload.display` and `reason`, the route serves them, the list
+survives a restart) is Rust's; the client half (the page reads the route rather than
+its own memory, renders both lines through the dock's own `noticeBody`, discloses the
+bound) is `e2e/specs/dispatch-log.spec.ts`'s. The seam is forced, not chosen: the only
+refusal a browser suite can provoke on demand in the shared e2e daemon is `fail()`-
+shaped and carries **no** reason, so a "real" end-to-end reason assertion would pass
+vacuously, and the deterministic alternatives are daemon-wide and would poison
+`dispatch.spec.ts`. SH-322/SH-327's precedent: say what is checked and what is not.
+
+**A pin whose comment was false, caught by mutation and kept as a lesson.** "The route
+is real, and the page's sentence is the daemon's own numbers" claimed it would catch a
+hard-coded `32`/`30 minutes` in the HTML. Measured: it does **not**. The real daemon's
+values *are* 30 and 32, so the literal coincidentally matches what it is supposed to be
+derived from, and the test stays green. The pin that kills that mutation is the
+disclosure test, which rewrites `retention` to 7 and 120 — values no literal can match.
+Worth generalising: **asserting against production's own value looks like a derivation
+pin and is not one whenever production's value is the plausible literal.**
+
+**Placement on the Settings screen was contested and is recorded.** Two seats argued
+it. The log goes **last**, after the project registry, because it is the only
+variable-length block on that screen and putting it above the registry pushes the
+screen's primary interactive content arbitrarily far down, while heading navigation
+reaches an `<h2>` in one hop either way. Fetched on entry and on its own Refresh
+control, never on the 25s repo poll or an `/api/events` wake-up — that path would
+rebuild the panel under a reading user, SH-337's defect on the screen whose sibling
+table already carries the comment recording it.
+
+**Only one announcement changed.** `dismissAllDispatchHistory` gains "They remain in
+the Dispatch log under Settings." `dismissAllToasts` gains **nothing**, and that
+omission is a decision: the toast pile *mixes* a server-backed dispatch failure with
+copy, deep-link and mutation errors that have no record anywhere, so promising that
+pile survives would be the comforting falsehood SH-312's rule forbids. The log itself
+is not a live region — the reader navigated to it, and announcing up to 32 rows on
+every Settings visit is SH-333's defect on a new surface.
+
+Refers to SH-361, which relates to SH-339 (whose council required this filed and split)
+and SH-367 (the half deliberately not shipped here).
+
 ## Verification
 
 `make test` is the gate. Coverage, by layer:
