@@ -304,6 +304,7 @@ fn every_declared_flag_is_accepted_by_its_verb() {
         (&["list"], "--state", Some("todo")),
         (&["list"], "--stale", Some("7d")),
         (&["next"], "--count", Some("2")),
+        (&["next"], "--claim", None),
         (&["set", "SH-1"], "--title", Some("New")),
         (&["set", "SH-1"], "--unblocked", None),
         (&["move", "SH-1", "todo"], "--if-state", Some("todo")),

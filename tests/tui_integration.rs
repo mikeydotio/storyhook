@@ -1275,6 +1275,7 @@ fn the_ready_panel_and_story_next_agree_over_a_real_project() {
         Invocation::Next {
             count: 10,
             phase: None,
+            claim: false,
         },
     )
     .unwrap()

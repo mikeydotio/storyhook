@@ -306,7 +306,7 @@ story epic create "<title>"
 story epic add <epic-id> <story-id>
 
 story list [--state <slug>] [--assignee <member>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts]
-story next [--count <n>] [--phase <N>]
+story next [--count <n>] [--phase <N>] [--claim]
 story summary
 story report [--html]
 story search <query>
@@ -711,7 +711,7 @@ volume really was on purpose.
 Three commands support AI coding agent workflows:
 
 - `story context` -- generates a project overview document (states, priorities, relationships, and ready work) suitable for the start of an AI session. Use `--format json` for structured output.
-- `story next` -- surfaces the highest-priority unblocked story so an agent can pick up work without manual triage. Use `--count <n>` to get multiple candidates.
+- `story next` -- surfaces the highest-priority unblocked story so an agent can pick up work without manual triage. Use `--count <n>` to get multiple candidates. Use `--claim` when more than one agent may be running against the same project at once: it atomically moves the answer into the project's active state before returning it, so two agents racing this command are handed two different stories instead of racing a separate `story move`.
 - `story handoff --since <duration>` -- generates a session handoff document summarizing what changed during a work session (e.g. `--since 2h`). Useful when passing context between agents or between an agent and a human.
 
 ### MCP server
