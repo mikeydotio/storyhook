@@ -20,6 +20,7 @@ source: tests/golden_cli.rs
             "created_at": "[timestamp]",
             "id": "SH-1",
             "priority": "critical",
+            "priority_assessed": true,
             "relationships": [
               {
                 "other_id": "SH-2",
@@ -61,6 +62,7 @@ source: tests/golden_cli.rs
           "created_at": "[timestamp]",
           "id": "SH-1",
           "priority": "critical",
+          "priority_assessed": true,
           "relationships": [
             {
               "other_id": "SH-2",

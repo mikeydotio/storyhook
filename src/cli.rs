@@ -161,6 +161,7 @@ Usage:
              [--label <labels>] [--created-after <date>] [--updated-after <date>]
              [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>]
              [--drafts]                                (narrows to drafts only)
+             [--unassessed]                            (narrows to stories nobody has assessed)
   story next [--count <n>] [--phase <N>] [--claim]
   story summary
   story report [--html]
@@ -323,6 +324,10 @@ pub enum Invocation {
         /// Narrows to drafts only (SH-175) — mirrors `--flagged`/`--blocked`'s
         /// narrow-only semantics; drafts are otherwise shown inline.
         drafts: bool,
+        /// Narrows to stories nobody has assessed (SH-359). Distinct from
+        /// `--priority none`, which also matches every story parked there on
+        /// purpose.
+        unassessed: bool,
     },
     Search {
         query: String,
@@ -1401,6 +1406,7 @@ static VERB_FLAGS: &[VerbFlags] = &[
             bare("blocked"),
             bare("ready"),
             bare("drafts"),
+            bare("unassessed"),
         ],
     },
     VerbFlags {
@@ -2537,8 +2543,9 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
     let mut phase = None;
     let mut story_type = None;
     let mut drafts = false;
+    let mut unassessed = false;
     let mut index = 1;
-    let usage = "usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts]";
+    let usage = "usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts] [--unassessed]";
 
     while index < args.len() {
         match args[index].as_str() {
@@ -2617,6 +2624,10 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
                 story_type = Some(value.clone());
                 index += 2;
             }
+            "--unassessed" => {
+                unassessed = true;
+                index += 1;
+            }
             "--drafts" => {
                 drafts = true;
                 index += 1;
@@ -2641,6 +2652,7 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
         phase,
         story_type,
         drafts,
+        unassessed,
     })
 }
 

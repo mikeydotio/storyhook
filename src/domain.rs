@@ -324,6 +324,26 @@ pub struct StorySnapshot {
     pub relationships: Vec<StoryRelation>,
     #[serde(default)]
     pub priority: Priority,
+    /// `true` once a [`StoryPrioritySet`](StoryEvent::StoryPrioritySet) has
+    /// been folded and not since cleared — i.e. somebody chose this story's
+    /// priority, whatever they chose.
+    ///
+    /// The distinction [`priority`](Self::priority) alone cannot make (SH-359).
+    /// [`Priority::None`] means DELIBERATELY PARKED — "do not pick this up",
+    /// per `story help priority-rubric` — but it is also what [`fold_story`]
+    /// starts at, so a parked story and one nobody ever assessed were the same
+    /// value in the snapshot while the event log could always tell them apart:
+    /// `creation_events` emits `StoryPrioritySet` only when `--priority` was
+    /// actually given.
+    ///
+    /// Defined mechanically — "an event set it" — rather than as a judgement
+    /// the fold cannot verify. An import, a GitHub sync and a human all count,
+    /// because each is a recorded decision.
+    ///
+    /// `priority != Priority::None` implies this is `true`; the converse pair
+    /// is unreachable through [`fold_story`], which asserts it on the way out.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub priority_assessed: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -423,6 +443,24 @@ pub enum StoryEvent {
     StoryPrioritySet {
         at: String,
         priority: Priority,
+    },
+    /// Returns a story to *never assessed* — the inverse of
+    /// [`StoryPrioritySet`](Self::StoryPrioritySet) when the story had no
+    /// priority on record before it (SH-359).
+    ///
+    /// Sibling of [`StoryAssigneeCleared`](Self::StoryAssigneeCleared), added
+    /// for the reason that variant's own doc comment states: a field with an
+    /// event that sets it and none that clears it cannot be put back without
+    /// rewriting history. Without this, `story undo` of a first-ever
+    /// `story prioritize` left the story reading *assessed, and parked* —
+    /// a statement nobody had made.
+    ///
+    /// Folds [`priority`](StorySnapshot::priority) back to [`Priority::None`]
+    /// **and** [`priority_assessed`](StorySnapshot::priority_assessed) to
+    /// `false`. The pair, because the entire point of the event is that those
+    /// two are not the same fact.
+    StoryPriorityCleared {
+        at: String,
     },
     StoryTypeSet {
         at: String,
@@ -692,7 +730,7 @@ fn git_link_subject(text: &str) -> Option<&str> {
 /// It cannot drift: `every_known_kind_is_a_variant_and_every_variant_is_known`
 /// reads serde's own `unknown variant, expected one of …` list back out of the
 /// derive and compares it to this array.
-pub const EVENT_KINDS: [&str; 26] = [
+pub const EVENT_KINDS: [&str; 27] = [
     "StoryCreated",
     "StoryCommentAdded",
     "StoryCommentRetracted",
@@ -704,6 +742,7 @@ pub const EVENT_KINDS: [&str; 26] = [
     "StoryRelationshipAdded",
     "StoryRelationshipRemoved",
     "StoryPrioritySet",
+    "StoryPriorityCleared",
     "StoryTypeSet",
     "StoryLabelsSet",
     "StoryTitleSet",
@@ -745,6 +784,7 @@ pub fn event_kind(event: &StoryEvent) -> &'static str {
         StoryEvent::StoryRelationshipAdded { .. } => "StoryRelationshipAdded",
         StoryEvent::StoryRelationshipRemoved { .. } => "StoryRelationshipRemoved",
         StoryEvent::StoryPrioritySet { .. } => "StoryPrioritySet",
+        StoryEvent::StoryPriorityCleared { .. } => "StoryPriorityCleared",
         StoryEvent::StoryTypeSet { .. } => "StoryTypeSet",
         StoryEvent::StoryLabelsSet { .. } => "StoryLabelsSet",
         StoryEvent::StoryTitleSet { .. } => "StoryTitleSet",
@@ -810,6 +850,7 @@ pub fn last_activity_type(events: &[StoryEvent]) -> &'static str {
             StoryEvent::StoryRelationshipAdded { .. } => "relationship-added",
             StoryEvent::StoryRelationshipRemoved { .. } => "relationship-removed",
             StoryEvent::StoryPrioritySet { .. } => "priority-set",
+            StoryEvent::StoryPriorityCleared { .. } => "priority-cleared",
             StoryEvent::StoryTypeSet { .. } => "type-set",
             StoryEvent::StoryLabelsSet { .. } => "labels-set",
             StoryEvent::StoryTitleSet { .. } => "title-set",
@@ -1278,6 +1319,7 @@ pub fn fold_story(
     let mut assignee = None;
     let mut awaiting = None;
     let mut priority = Priority::None;
+    let mut priority_assessed = false;
     let mut story_type = None;
     let mut description = None;
     let mut labels = Vec::new();
@@ -1402,6 +1444,16 @@ pub fn fold_story(
                 priority: new_priority,
             } => {
                 priority = new_priority.clone();
+                priority_assessed = true;
+                updated_at = Some(at.clone());
+            }
+            // Both halves, together — see this variant's doc comment. Clearing
+            // only `priority_assessed` would leave a story reading unassessed
+            // while still sorting on whatever level it last held, which is the
+            // two-columns-disagreeing shape SH-130 spent a migration removing.
+            StoryEvent::StoryPriorityCleared { at } => {
+                priority = Priority::None;
+                priority_assessed = false;
                 updated_at = Some(at.clone());
             }
             StoryEvent::StoryTypeSet {
@@ -1584,6 +1636,30 @@ pub fn fold_story(
         hidden_at = None;
     }
 
+    // The one pairing of `priority` and `priority_assessed` that is nonsense:
+    // a level nobody stated (SH-359). A boolean beside a five-variant enum
+    // spells ten states and four of them are unreachable through this
+    // function, which is the only constructor — so this is the fence where a
+    // sixth `Priority` variant would have been a wall. The variant was refused
+    // because `Priority::parse` would then have to reject a slug `as_str` can
+    // emit: "unassessed" is the absence of an assignment, not a level anyone
+    // may assign.
+    //
+    // An assertion rather than an `Err`, and deliberately: a replay that could
+    // fail on its own history would make a story unreadable rather than merely
+    // wrong, which is the rule the `StoryCommentRetracted` arm above already
+    // states. Being an assert is also what makes it *cheap enough to be
+    // everywhere* — every fold in the suite becomes a sample of this invariant,
+    // rather than the dozen hand-written permutations a unit test would carry.
+    // Note it is blind in the other direction on purpose: assessed-and-`none`
+    // is legal and load-bearing — that is exactly "deliberately parked" — so
+    // `a_story_with_no_priority_event_is_not_assessed` covers that side.
+    debug_assert!(
+        priority == Priority::None || priority_assessed,
+        "story {id} folded to priority `{}` without a priority event",
+        priority.as_str()
+    );
+
     Ok(StorySnapshot {
         id: id.to_string(),
         title,
@@ -1594,6 +1670,7 @@ pub fn fold_story(
         assignee,
         awaiting,
         priority,
+        priority_assessed,
         labels,
         story_type,
         description,
@@ -3630,6 +3707,127 @@ mod tests {
         assert_eq!(story.awaiting.as_deref(), Some("blocked on API"));
     }
 
+    /// The half the fold-exit `debug_assert!` is structurally blind to.
+    ///
+    /// That assertion catches a priority with no assessment behind it, so it
+    /// fires if the flag is never set. It cannot fire if the flag is set
+    /// *unconditionally*, because assessed-and-`none` is legal — it is exactly
+    /// "deliberately parked". This test is the other direction, and without it
+    /// `priority_assessed = true` at the top of `fold_story` passes the whole
+    /// suite (SH-359).
+    #[test]
+    fn a_story_with_no_priority_event_is_not_assessed() {
+        let story = fold_story(
+            "SH-1",
+            &[StoryEvent::StoryCreated {
+                at: "2026-03-13T00:00:00Z".to_string(),
+                title: "Nobody chose".to_string(),
+                state: "todo".to_string(),
+            }],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert_eq!(story.priority, Priority::None);
+        assert!(
+            !story.priority_assessed,
+            "no priority event was folded, so nobody assessed this story"
+        );
+    }
+
+    /// The load-bearing case: `--priority none` is a *decision*, and folds to
+    /// the same level as no decision at all. Only the flag separates them.
+    #[test]
+    fn an_explicit_priority_none_is_assessed_and_parked() {
+        let story = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Parked on purpose".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryPrioritySet {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    priority: Priority::None,
+                },
+            ],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert_eq!(story.priority, Priority::None);
+        assert!(
+            story.priority_assessed,
+            "somebody ran `--priority none`, which the rubric defines as a decision"
+        );
+    }
+
+    /// Both halves move together — see `StoryPriorityCleared`'s doc comment.
+    #[test]
+    fn clearing_a_priority_returns_the_story_to_unassessed() {
+        let story = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Set then undone".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryPrioritySet {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    priority: Priority::High,
+                },
+                StoryEvent::StoryPriorityCleared {
+                    at: "2026-03-13T00:02:00Z".to_string(),
+                },
+            ],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            story.priority,
+            Priority::None,
+            "clearing the assessment must clear the level with it, or the story \
+             sorts on a level nobody stands behind"
+        );
+        assert!(!story.priority_assessed);
+    }
+
+    /// A clear followed by a fresh set is assessed again — the flag tracks the
+    /// *last* priority event, which is also what migration 16's backfill
+    /// predicate has to do.
+    #[test]
+    fn setting_a_priority_after_clearing_it_is_assessed_again() {
+        let story = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Round trip".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryPrioritySet {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    priority: Priority::High,
+                },
+                StoryEvent::StoryPriorityCleared {
+                    at: "2026-03-13T00:02:00Z".to_string(),
+                },
+                StoryEvent::StoryPrioritySet {
+                    at: "2026-03-13T00:03:00Z".to_string(),
+                    priority: Priority::Low,
+                },
+            ],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert_eq!(story.priority, Priority::Low);
+        assert!(story.priority_assessed);
+    }
+
     #[test]
     fn fold_story_clears_awaiting() {
         let story = fold_story(
@@ -4408,6 +4606,7 @@ mod tests {
             assignee: None,
             awaiting: None,
             priority: Priority::None,
+            priority_assessed: false,
             labels: Vec::new(),
             story_type: None,
             description: None,
@@ -4443,6 +4642,7 @@ mod tests {
             assignee: None,
             awaiting: None,
             priority: Priority::None,
+            priority_assessed: false,
             labels: Vec::new(),
             story_type: None,
             description: None,
@@ -4543,6 +4743,7 @@ mod tests {
             assignee: None,
             awaiting: None,
             priority: Priority::None,
+            priority_assessed: false,
             labels: Vec::new(),
             story_type: None,
             description: None,
@@ -4708,6 +4909,7 @@ mod tests {
                 assignee: None,
                 awaiting: None,
                 priority: Priority::None,
+                priority_assessed: false,
                 labels: Vec::new(),
                 story_type: None,
                 description: None,
@@ -4733,6 +4935,7 @@ mod tests {
                 assignee: None,
                 awaiting: None,
                 priority: Priority::None,
+                priority_assessed: false,
                 labels: Vec::new(),
                 story_type: None,
                 description: None,
@@ -4764,6 +4967,7 @@ mod tests {
                 assignee: None,
                 awaiting: None,
                 priority: Priority::None,
+                priority_assessed: false,
                 labels: Vec::new(),
                 story_type: None,
                 description: None,
@@ -4789,6 +4993,7 @@ mod tests {
                 assignee: None,
                 awaiting: None,
                 priority: Priority::None,
+                priority_assessed: false,
                 labels: Vec::new(),
                 story_type: None,
                 description: None,
@@ -5629,6 +5834,7 @@ mod tests {
             comments: Vec::new(),
             referenced_by_commits: Vec::new(),
             relationships: Vec::new(),
+            priority_assessed: priority != Priority::None,
             priority,
             labels: Vec::new(),
             story_type: None,
@@ -6095,6 +6301,7 @@ mod ready_order_properties {
             comments: Vec::new(),
             referenced_by_commits: Vec::new(),
             relationships: Vec::new(),
+            priority_assessed: priority != Priority::None,
             priority,
             labels: Vec::new(),
             story_type: None,

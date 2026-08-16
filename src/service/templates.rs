@@ -67,7 +67,9 @@ story prioritize {prefix}-6 medium
 `story next`'s sort key, not a label — it decides what the next session picks
 up, ties break toward the older story, and every inflated level costs the
 resolution of the level it joins. A story created with no `--priority` is
-filed at `none`, which means *deliberately parked* and sorts last.
+recorded as *nobody has assessed this*, and sorts last — the same place as a
+story deliberately parked at `none`, which is a decision somebody made. The two
+are stored apart: `story list --unassessed` finds the first kind.
 
 ### Decompose a spec
 

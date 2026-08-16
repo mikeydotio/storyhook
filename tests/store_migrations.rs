@@ -2083,3 +2083,195 @@ fn migration_fifteen_leaves_the_recency_index_covering_its_sort() {
          instead of a reverse index scan: {index_sql}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Migration 16 — `snapshot.priority_assessed` (SH-359)
+// ---------------------------------------------------------------------------
+
+/// The event-kind strings this migration's predicate matches, taken from the
+/// **production** encoder rather than typed out here.
+///
+/// This is not fussiness. `seed_a_v14_project` above seeds `'story_created'`
+/// and `'story_priority_set'` — snake_case spellings that no storyhook writer
+/// has ever put in that column (`domain::event_kind` emits PascalCase, and
+/// `write.rs` inserts its return value verbatim). Migration 15's backfill joins
+/// on `seq = head_seq` and never reads `kind`, so that fixture's invented
+/// vocabulary was harmless there.
+///
+/// Migration 16 makes `kind` the *entire* predicate. A test that seeded the
+/// snake_case spelling and a migration that matched the snake_case spelling
+/// would agree with each other, pass, and match **zero rows** against a real
+/// store — every story in the tracker silently backfilling to "never assessed",
+/// which is a worse defect than the one SH-359 fixes. Deriving the string is
+/// what makes that disagreement impossible rather than merely unlikely.
+fn kind_of(event: &StoryEvent) -> &'static str {
+    storyhook::domain::event_kind(event)
+}
+
+/// One seeded row: `(story_no, head_seq, [(seq, event kind)])`.
+///
+/// Named rather than written inline because the nested tuple trips
+/// `clippy::type_complexity`, and this suite treats warnings as errors.
+type SeededStory<'a> = (i64, i64, &'a [(i64, &'a str)]);
+
+/// A v15 store holding four stories whose priority histories differ, with the
+/// `snapshot` blobs written the way a pre-SH-359 binary wrote them: no
+/// `priority_assessed` key at all.
+///
+/// Raw inserts rather than the write path, because the write path is *this*
+/// binary and would helpfully write the very key the migration is supposed to
+/// add. The kind strings are still derived, so the seed cannot drift from
+/// production even though the rows are hand-built.
+fn v15_store_with_priority_histories(dir: &Path) -> SqliteStore {
+    let store = SqliteStore::open(dir.join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..15]).unwrap();
+
+    let set = kind_of(&StoryEvent::StoryPrioritySet {
+        at: String::new(),
+        priority: storyhook::domain::Priority::None,
+    });
+    let cleared = kind_of(&StoryEvent::StoryPriorityCleared { at: String::new() });
+    let created = kind_of(&StoryEvent::StoryCreated {
+        at: String::new(),
+        title: String::new(),
+        state: String::new(),
+    });
+
+    let conn = Connection::open(store.path()).unwrap();
+    conn.execute_batch(
+        "INSERT INTO projects (id, uuid, slug, name, prefix, created_at, next_global_seq)
+             VALUES (1, 'u-1', 'proj', 'Proj', 'SH', '2026-01-01T00:00:00Z', 100);
+         INSERT INTO project_states (project_id, position, slug, superstate)
+             VALUES (1, 0, 'todo', 'OPEN'), (1, 1, 'done', 'CLOSED');",
+    )
+    .unwrap();
+
+    // Every `snapshot` blob deliberately lacks `priority_assessed`, exactly as
+    // a pre-migration row does.
+    let rows: &[SeededStory] = &[
+        // 1: parked on purpose — somebody ran `--priority none`.
+        (1, 2, &[(1, created), (2, set)]),
+        // 2: nobody ever said anything.
+        (2, 1, &[(1, created)]),
+        // 3: set, then cleared — unassessed again. This is the row an
+        //    `EXISTS(kind = 'StoryPrioritySet')` predicate gets wrong.
+        (3, 3, &[(1, created), (2, set), (3, cleared)]),
+        // 4: set, cleared, set again — assessed, and only last-event-wins says so.
+        (4, 4, &[(1, created), (2, set), (3, cleared), (4, set)]),
+        // 5: a *stale* row — its head_seq stops before a later clear, so the
+        //    backfill must read the story as it was folded, not as it now is.
+        (5, 2, &[(1, created), (2, set), (3, cleared)]),
+    ];
+
+    let mut global = 1i64;
+    for (story_no, head_seq, events) in rows {
+        conn.execute(
+            "INSERT INTO stories (project_id, story_no, head_seq, head_global_seq, title, state, \
+                 superstate, priority, priority_rank, created_at, updated_at, snapshot) \
+             VALUES (1, ?1, ?2, 0, 'S', 'todo', 'OPEN', 'none', 4, \
+                 '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', \
+                 '{\"id\":\"SH-1\",\"title\":\"S\",\"created_at\":\"2026-01-01T00:00:00Z\",\
+                   \"updated_at\":\"2026-01-01T00:00:00Z\",\"state\":\"todo\",\
+                   \"superstate\":\"OPEN\",\"priority\":\"none\"}')",
+            rusqlite::params![story_no, head_seq],
+        )
+        .unwrap();
+        for (seq, kind) in *events {
+            conn.execute(
+                "INSERT INTO events (project_id, story_no, seq, global_seq, kind, at, payload) \
+                 VALUES (1, ?1, ?2, ?3, ?4, '2026-01-01T00:00:00Z', '{}')",
+                rusqlite::params![story_no, seq, global, kind],
+            )
+            .unwrap();
+            global += 1;
+        }
+    }
+    store
+}
+
+/// Reads the migrated flag straight out of the embedded document, which is the
+/// only place it lives — SH-359 adds no column.
+fn assessed_in_snapshot(store: &SqliteStore, story_no: i64) -> bool {
+    Connection::open(store.path())
+        .unwrap()
+        .query_row(
+            "SELECT COALESCE(json_extract(snapshot, '$.priority_assessed'), 0) \
+             FROM stories WHERE project_id = 1 AND story_no = ?1",
+            rusqlite::params![story_no],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+        == 1
+}
+
+#[test]
+fn migration_sixteen_backfills_assessment_from_the_last_priority_event() {
+    let dir = scratch_dir();
+    let store = v15_store_with_priority_histories(dir.path());
+
+    store.migrate().unwrap();
+
+    assert!(
+        assessed_in_snapshot(&store, 1),
+        "an explicit `--priority none` is a decision and must survive as one"
+    );
+    assert!(
+        !assessed_in_snapshot(&store, 2),
+        "no priority event was ever written for this story"
+    );
+    assert!(
+        !assessed_in_snapshot(&store, 3),
+        "set then cleared is unassessed — the case an EXISTS predicate marks \
+         assessed forever, because it can never un-assert"
+    );
+    assert!(
+        assessed_in_snapshot(&store, 4),
+        "cleared then set again is assessed; only last-event-wins reads this right"
+    );
+}
+
+#[test]
+fn migration_sixteen_reads_a_stale_row_as_of_its_own_head_seq() {
+    // Migration 15's bound, for migration 15's reason: `head_seq` is the event
+    // this row was folded from, and reading past it would make one field of a
+    // stale row fresher than the rest of it — stale in one coordinate and
+    // current in another, which is harder to diagnose than consistently behind.
+    let dir = scratch_dir();
+    let store = v15_store_with_priority_histories(dir.path());
+
+    store.migrate().unwrap();
+
+    assert!(
+        assessed_in_snapshot(&store, 5),
+        "story 5's head_seq stops at the priority-set; the later clear is past \
+         the row's own horizon and must not be read"
+    );
+}
+
+#[test]
+fn migration_sixteen_writes_no_key_for_a_story_nobody_assessed() {
+    // `priority_assessed` is `skip_serializing_if = "is_false"`, so a fresh
+    // fold omits the key entirely. Writing `false` into these rows would move
+    // bytes for no change in meaning and leave every one of them differing from
+    // what `put_story` writes next — which `story doctor` would then report.
+    let dir = scratch_dir();
+    let store = v15_store_with_priority_histories(dir.path());
+
+    store.migrate().unwrap();
+
+    let present: i64 = Connection::open(store.path())
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM stories \
+             WHERE json_extract(snapshot, '$.priority_assessed') IS NOT NULL \
+               AND story_no IN (2, 3)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert_eq!(
+        present, 0,
+        "an unassessed story keeps no `priority_assessed` key at all"
+    );
+}
