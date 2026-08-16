@@ -3789,6 +3789,30 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   var dispatchHistorySeq = 0;
 
+  /** Mints one dispatch-history row's DOM node from `entry`
+   * (`{key, storyId, headline, detail, reason}`). Every row here is a failure
+   * now (see `finishDispatch`), so the variant is `error` by construction
+   * rather than carried per-entry -- a success no longer reaches this panel
+   * at all.
+   *
+   * `data-notice-key` is how a dismissal re-finds the heir it chose before
+   * this rebuild destroyed every node (SH-326). It is a focus-restoration
+   * key, not a general test hook. */
+  function buildDispatchHistoryRow(entry) {
+    return el("div", {
+      class: "dispatch-history-row error",
+      dataset: { noticeKey: entry.key }
+    }, [
+      noticeBody(entry.headline, entry.detail, entry.reason),
+      el("button", {
+        class: "dispatch-history-dismiss",
+        type: "button",
+        "aria-label": "Dismiss this dispatch result",
+        onClick: function() { dismissDispatchHistoryRow(entry.key); }
+      }, ["×"])
+    ]);
+  }
+
   /** Adds a durable row for a `--auto` dispatch that did NOT succeed, and
    * re-renders the panel. Newest first, unbounded within this tab's own
    * session -- a user who lets several failed autonomous dispatches pile up
@@ -3865,28 +3889,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       "Dispatch result dismissed", state.dispatchHistory.length, "dispatch results");
   }
 
-  /** Every row here is a failure now (see `finishDispatch`), so the variant
-   * is `error` by construction rather than carried per-row -- a success no
-   * longer reaches this panel at all. */
   function renderDispatchHistory() {
     var panel = $("dispatch-history");
     clear(panel);
-    state.dispatchHistory.forEach(function(row) {
-      // `data-notice-key` is how a dismissal re-finds the heir it chose before
-      // this rebuild destroyed every node (SH-326). It is a focus-restoration
-      // key, not a general test hook.
-      panel.appendChild(el("div", {
-        class: "dispatch-history-row error",
-        dataset: { noticeKey: row.key }
-      }, [
-        noticeBody(row.headline, row.detail, row.reason),
-        el("button", {
-          class: "dispatch-history-dismiss",
-          type: "button",
-          "aria-label": "Dismiss this dispatch result",
-          onClick: function() { dismissDispatchHistoryRow(row.key); }
-        }, ["×"])
-      ]));
+    state.dispatchHistory.forEach(function(entry) {
+      panel.appendChild(buildDispatchHistoryRow(entry));
     });
     syncNoticeDock();
   }
