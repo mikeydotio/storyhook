@@ -1362,6 +1362,14 @@ fn remote_snapshot_to_story_snapshot(
         referenced_by_commits: Vec::new(),
         relationships: remote.non_native_relationships.clone(),
         priority: remote.priority.clone(),
+        // Derived exactly as `local_events_for_remote_story` decides whether to
+        // emit a `StoryPrioritySet` for this same remote (SH-359): a GitHub
+        // issue carrying no priority label is a story nobody has assessed, and
+        // one carrying a label is assessed at that level. Deriving it here from
+        // the same predicate is what keeps this synthetic snapshot agreeing
+        // with the events that path would write — a second, differently-spelled
+        // rule is how the diff and the append come to disagree.
+        priority_assessed: remote.priority != Priority::None,
         labels: remote.labels.clone(),
         story_type: None,
         description: remote.body_text.clone(),

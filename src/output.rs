@@ -1583,7 +1583,20 @@ fn render_story(view: &StoryView) -> String {
         if story.draft { "yes" } else { "no" }
     ));
     body.push_str(&format!("assignee: {assignee}\n"));
-    body.push_str(&format!("priority: {}\n", story.priority.as_str()));
+    // The parenthetical only ever appears on `none`, and only when nobody has
+    // chosen (SH-359). `none` alone is ambiguous to a reader — the rubric
+    // defines it as "deliberately parked", so a story nobody assessed was
+    // silently claiming a decision. Every other level implies an assessment by
+    // the fold's own invariant, so annotating them would be noise.
+    let assessment = if story.priority == Priority::None && !story.priority_assessed {
+        " (not assessed)"
+    } else {
+        ""
+    };
+    body.push_str(&format!(
+        "priority: {}{assessment}\n",
+        story.priority.as_str()
+    ));
     let type_display = story.story_type.as_deref().unwrap_or("Default");
     body.push_str(&format!("type: {type_display}\n"));
     if story.labels.is_empty() {

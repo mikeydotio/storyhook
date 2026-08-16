@@ -81,6 +81,7 @@ fn snapshot(id: &str, title: &str) -> StorySnapshot {
         referenced_by_commits: Vec::new(),
         relationships: Vec::new(),
         priority: Priority::None,
+        priority_assessed: false,
         labels: Vec::new(),
         story_type: None,
         description: None,
@@ -1127,6 +1128,7 @@ fn invocation_corpus() -> Vec<Invocation> {
             phase: Some("1".to_string()),
             story_type: Some("bug".to_string()),
             drafts: true,
+            unassessed: false,
         },
         Invocation::Search {
             query: "trait".to_string(),

@@ -1766,13 +1766,18 @@ cmd_triage() {
     | (rows($all))       as $all_rows
     | (rows($stale))   as $stale_rows
     | (rows($blocked)) as $blocked_rows
-    | ([ $all_rows[] | select(.priority == "none") ])                       as $unprioritized
+    # SH-359: "nobody assessed this", not "priority is none". `none` is a real
+    # level meaning deliberately parked, and flagging those was the conflation
+    # this category existed to surface. `// false` because the field is omitted
+    # from the JSON when false (`skip_serializing_if`), so absent means the same
+    # as explicitly false -- and it is also what an older daemon sends.
+    | ([ $all_rows[] | select((.priority_assessed // false) == false) ])    as $unprioritized
     | ([ $all_rows[] | select((.relationships // []) | length == 0) ])      as $orphans
     | ([ $all_rows[] | select(.id as $id | $cycles | index($id) != null) ]) as $cyc_rows
     | (
         [ $blocked_rows[]    | {id, title, category:"blocked",       detail: (.awaiting // "blocked")} ]
         + [ $stale_rows[]    | {id, title, category:"stale",         detail: ("stale " + $stale_window + "+")} ]
-        + [ $unprioritized[] | {id, title, category:"unprioritized", detail: "priority: none"} ]
+        + [ $unprioritized[] | {id, title, category:"unprioritized", detail: "priority never assessed"} ]
         + [ $cyc_rows[]      | {id, title, category:"cycle",         detail: "on a blocking cycle"} ]
         + [ $orphans[]       | {id, title, category:"orphan",        detail: "no relationships"} ]
       ) as $findings

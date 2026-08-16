@@ -856,6 +856,7 @@ mod tests {
             referenced_by_commits: vec![],
             relationships: vec![],
             priority: Priority::None,
+            priority_assessed: false,
             labels: vec![],
             story_type: None,
             description: None,

@@ -19,6 +19,7 @@ source: tests/golden_cli.rs
           "created_at": "[timestamp]",
           "id": "SH-1",
           "priority": "critical",
+          "priority_assessed": true,
           "relationships": [
             {
               "other_id": "SH-2",
@@ -67,6 +68,7 @@ source: tests/golden_cli.rs
             "defect"
           ],
           "priority": "critical",
+          "priority_assessed": true,
           "relationships": [
             {
               "other_id": "SH-9",
@@ -94,6 +96,7 @@ source: tests/golden_cli.rs
           "created_at": "[timestamp]",
           "id": "SH-6",
           "priority": "low",
+          "priority_assessed": true,
           "relationships": [],
           "state": "todo",
           "story_type": "spike",
@@ -142,6 +145,7 @@ source: tests/golden_cli.rs
             "phase:1"
           ],
           "priority": "high",
+          "priority_assessed": true,
           "relationships": [
             {
               "other_id": "SH-2",
@@ -174,6 +178,7 @@ source: tests/golden_cli.rs
           "created_at": "[timestamp]",
           "id": "SH-8",
           "priority": "low",
+          "priority_assessed": true,
           "relationships": [],
           "state": "done",
           "story_type": "chore",
@@ -204,6 +209,7 @@ source: tests/golden_cli.rs
           "deleted_reason": "superseded by the global store",
           "id": "SH-13",
           "priority": "low",
+          "priority_assessed": true,
           "relationships": [],
           "state": "done",
           "story_type": "chore",

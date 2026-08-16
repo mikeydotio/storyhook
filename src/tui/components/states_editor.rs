@@ -577,6 +577,7 @@ mod tests {
             referenced_by_commits: Vec::new(),
             relationships: Vec::new(),
             priority: crate::domain::Priority::None,
+            priority_assessed: false,
             labels: Vec::new(),
             story_type: None,
             description: None,

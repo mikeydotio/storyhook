@@ -80,10 +80,12 @@ never contain one.
 
 **Always pass `--priority`, and read `story help priority-rubric` to choose the
 level.** Priority is `story next`'s sort key, so it decides what the next
-session picks up. Omitting it files the story at `none`, which does not mean
-"not assessed yet" — it means *deliberately parked*, and it sorts last. A
-defect filed that way can sit at the bottom of the queue indefinitely with
-nothing saying it is there.
+session picks up. Omitting it records the story as *nobody has assessed this*,
+which is a different fact from `--priority none` — that one means *deliberately
+parked*, a decision somebody made. Both sort last, so a defect filed either way
+can sit at the bottom of the queue indefinitely; the difference is that
+`story list --unassessed` and `story-triage` can find the unassessed ones and
+say so, while a parked story is left alone on purpose.
 
 ## 7. Report
 
