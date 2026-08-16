@@ -1068,6 +1068,26 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    panel's top edge rather than nearest the screen corner. What matters is that
    the row reporting a failed dispatch is visible on arrival without scrolling,
    and that is asserted directly rather than inferred from which edge it is on. */
+/* SH-361's Settings-screen log. Deliberately NOT `.dispatch-history`'s rules:
+   that surface is fixed chrome competing for a measured viewport band, and
+   this one is ordinary page content on a screen the reader navigated to. It
+   scrolls at its own ceiling rather than growing the page without limit --
+   `retention.records` multi-line rows is a lot to put between the reader and
+   the bottom of the screen -- and the ceiling is generous enough that the
+   common case (a handful of results) never scrolls at all. */
+.dispatch-log-list { display: flex; flex-direction: column; gap: 0.5rem; max-height: 24rem; overflow-y: auto; margin: 0.5rem 0; }
+/* Keyed on the record's own state, unlike `.dispatch-history-row`, which is
+   `error` by construction because `finishDispatch` sends a success elsewhere.
+   This log is everything the daemon retains, successes included, so a
+   uniformly red rail would misreport most of a healthy list. */
+.dispatch-log-row {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  padding: 0.5rem 0.625rem;
+}
+.dispatch-log-row.ok { border-left-color: var(--success); }
 .dispatch-history { display: flex; flex-direction: column; gap: 0.5rem; max-width: 100%; }
 .dispatch-history-row {
   display: flex; align-items: flex-start; gap: 0.5rem;
@@ -3201,10 +3221,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * `<body>`. SH-326's heir policy is what turned it into a loss: focus now
    * moves to the next notice's dismiss control, so the repeats have somewhere
    * to land and one held key walks the whole stack. Measured before this guard
-   * existed: five durable **error** notices, one held Enter, zero left. Those
-   * notices are the only record of what failed -- the daemon's finished
-   * `DispatchRecord`s are exposed on no route, this page never reads them, and
-   * they evict after 30 minutes or 32 records (see `addDispatchHistoryRow`).
+   * existed: five durable **error** notices, one held Enter, zero left. At the
+   * time those notices were the only record of what failed; since SH-361 a
+   * dispatch failure is also recoverable from the Settings screen's "Dispatch
+   * log" (`GET /api/dispatch-log`) for as long as the daemon retains it, and
+   * an ordinary error still is not recoverable at all. That narrows what a
+   * held key destroys; it does not make this guard optional, since the guard
+   * is what keeps one deliberate press to one dismissal.
    *
    * **This is a state question, not a modality question**, which is what makes
    * it admissible where SH-326's council found nothing admissible. That council
@@ -3341,7 +3364,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     state.dispatchHistory = [];
     syncNoticeDock();
     settleNoticeFocus(before, null);
-    announceInNoticeDock("All dispatch results dismissed");
+    // SH-361: the one place a bulk clear can honestly promise recovery.
+    // `dismissAllToasts` deliberately gains NOTHING, and that omission is a
+    // decision rather than an oversight -- the toast pile MIXES a
+    // server-backed dispatch failure with copy, deep-link and mutation
+    // errors that have no record anywhere, so telling that reader their pile
+    // survives would be a comforting falsehood in the announcement channel,
+    // which is exactly what SH-312's rule forbids. Every row in THIS region
+    // came from a dispatch, so every row is in the daemon's log.
+    announceInNoticeDock(
+      "All dispatch results dismissed. They remain in the Dispatch log under Settings.");
   }
 
   // ============================================================
@@ -3357,10 +3389,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   //     the project list redrew;
   //   - an error STAYS until dismissed, because the thing it reports is
   //     visible nowhere else. Once its notice is gone there is no record in
-  //     this page at all, and the daemon is not a fallback: it keeps
-  //     finished `DispatchRecord`s (`src/api/dispatch.rs`) but exposes them
-  //     on no route, this page never reads them, and they evict after 30
-  //     minutes or 32 records.
+  //     this page at all.
+  //
+  // The daemon is a *partial* fallback since SH-361, where it used to be
+  // none at all: it keeps finished `DispatchRecord`s
+  // (`src/api/dispatch.rs`), `GET /api/dispatch-log` now exposes them, and
+  // the Settings screen's "Dispatch log" reads them. Two limits, both
+  // disclosed on that surface rather than assumed here: the daemon's memory
+  // is bounded (30 minutes or 32 records), and it only ever knew about
+  // DISPATCHES -- an ordinary error raised by any other path is still gone
+  // the moment its notice is.
   //
   // That is why the old `TOAST_ERROR_LIFETIME_MS` is gone rather than
   // larger. SH-196 doubled it to 9s so a remedy sentence could be read; the
@@ -3890,10 +3928,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * tab's own session -- a user who lets several failed autonomous dispatches
    * pile up unread can dismiss them individually. There is no server-side cap
    * to mirror: this list is not the daemon's persisted history, just this
-   * tab's memory of what it has seen. Nor is that history a fallback for a
-   * row dismissed too early -- no route exposes it, this page never reads it,
-   * and it evicts after 30 minutes or 32 records (`RETAIN_FOR`,
-   * `RETAIN_FINISHED`, `src/api/dispatch.rs`). This row is the record.
+   * tab's memory of what it has seen. **This row is no longer the only
+   * record** (SH-361): `GET /api/dispatch-log` exposes the daemon's finished
+   * `DispatchRecord`s, and the Settings screen's "Dispatch log" section
+   * reads them, so a row dismissed too early is recoverable there for as
+   * long as the daemon retains it (`RETAIN_FOR`, `RETAIN_FINISHED`,
+   * `src/api/dispatch.rs`). That fallback is bounded and says so; what it
+   * does not cover is an ordinary `toast(..., "error")` from a non-dispatch
+   * path, which still exists nowhere but this tab's DOM.
    *
    * `insertBefore`, never a rebuild (SH-337). `unshift` on the array and
    * `insertBefore(node, panel.firstChild)` on the panel are the same
@@ -8641,9 +8683,224 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       // poll landed would be worse than no confirmation at all.
       container.appendChild(el("div", { id: "settings-delete" }, []));
       container.appendChild(el("div", { id: "settings-table-wrap" }, []));
+      // LAST on the screen, deliberately (SH-361's council, chair's ruling 1).
+      // Two seats argued the placement and this is the one that won: the log
+      // is the only variable-length block here -- up to `retention.records`
+      // multi-line rows -- so putting it above the project registry pushes
+      // this screen's primary *interactive* content arbitrarily far down,
+      // while heading navigation reaches an `<h2>` in one hop either way. The
+      // Notices preference stays first for its own SC 2.2.1 reason.
+      container.appendChild(buildDispatchLog());
       container.dataset.built = "1";
+      renderDispatchLog();
+      // Fetched on entry, and ONLY on entry (chair's ruling 2).
+      // `renderSettings` is `dataset.built`-guarded, but `renderSettingsTable`
+      // below re-runs on every repo-list refresh and on every `/api/events`
+      // wake-up -- so hanging the log off that path would rebuild this panel
+      // under a reading user, which is SH-337's defect on the screen whose
+      // sibling table already carries the comment recording that hazard. The
+      // user's own pull is the Refresh control.
+      fetchDispatchLog();
     }
     renderSettingsTable();
+  }
+
+  // How the dispatch log's fetch has gone, as a three-value enum rather
+  // than an inference from `dispatches.length` (SH-291/SH-301's shape): a
+  // bare length cannot tell "never asked" from "asked and refused" from
+  // "asked, and the daemon genuinely retains nothing", and this page has
+  // already paid twice for a surface that guessed.
+  var dispatchLog = { readiness: "unasked", dispatches: [], retention: null, error: null };
+
+  /** The possessive phrase `readinessNote` builds both of this section's
+   * readiness sentences around. Named once so the two cannot disagree. */
+  var DISPATCH_LOG_SUBJECT = "the dispatch log";
+
+  /** How long a failed dispatch-log read waits before trying again.
+   *
+   * Its only job is to make `readinessNote`'s "Retrying…" true. The interval
+   * matches the repo list's own safety poll, and this is the ONE path on
+   * which this section re-fetches without the user asking -- the loaded
+   * state deliberately never polls, because rebuilding a rendered list under
+   * a reading user is SH-337's defect. In the failed state there is no list
+   * to rebuild, only the sentence promising the retry. */
+  var DISPATCH_LOG_RETRY_MS = 25000;
+  var dispatchLogRetry = null;
+
+  /** Keeps the retry running only while the section it speaks for is on
+   * screen: a Settings screen the user has left has nothing to update, and a
+   * timer outliving its node is the leak `cancelNoticeClock` exists to
+   * prevent one surface over. Cleared on success by `fetchDispatchLog`. */
+  function scheduleDispatchLogRetry() {
+    if (dispatchLogRetry !== null) return;
+    dispatchLogRetry = window.setTimeout(function() {
+      dispatchLogRetry = null;
+      if (!$("dispatch-log") || dispatchLog.readiness !== "failed") return;
+      fetchDispatchLog();
+    }, DISPATCH_LOG_RETRY_MS);
+  }
+
+  /** Builds the Dispatch log section once. Its contents are rendered
+   * separately by `renderDispatchLog`, which every fetch outcome calls.
+   *
+   * **No `aria-live` on the list, and no `role` of `status`, `log` or
+   * `alert`** -- the user navigated here on purpose, so there is nothing to
+   * push, and announcing up to `retention.records` rows on every Settings
+   * visit is SH-333's defect wearing a new hat. The one thing that IS
+   * announced is the outcome of a Refresh, into a section-local `sr-only`
+   * announcer outside the list -- the same separation `#notice-dock-status`
+   * uses -- because that fetch is asynchronous and otherwise silent to the
+   * person who pressed the button. */
+  function buildDispatchLog() {
+    // Reset, because `goSettings()` clears `dataset.built` and this runs
+    // again on every entry: carrying the previous visit's records into a
+    // freshly-built empty panel would render a list this daemon may no
+    // longer retain, which is the stale-hide class SH-284 and SH-302 were
+    // both filed on.
+    dispatchLog = { readiness: "unasked", dispatches: [], retention: null, error: null };
+    return el("section", { class: "settings-prefs", id: "dispatch-log" }, [
+      el("h2", { class: "settings-section-head" }, ["Dispatch log"]),
+      el("p", { class: "settings-hint" }, [
+        "What the daemon still remembers about finished dispatches, newest first — including the failures whose notices you have already dismissed."
+      ]),
+      el("button", {
+        class: "btn", id: "dispatch-log-refresh",
+        onClick: function() { fetchDispatchLog(true); }
+      }, ["Refresh"]),
+      el("span", { class: "sr-only", id: "dispatch-log-status", role: "status" }, []),
+      el("div", { id: "dispatch-log-body" }, [])
+    ]);
+  }
+
+  /** Reads `GET /api/dispatch-log` and re-renders. `announce` is true only
+   * for the user's own Refresh, so an entry-time fetch stays silent.
+   *
+   * A failed fetch renders INLINE in the section and is never raised as a
+   * durable error toast: a durable notice about the recovery surface, which
+   * the reader then dismisses, is this very defect eating its own fix. */
+  function fetchDispatchLog(announce) {
+    api("GET", "/api/dispatch-log")
+      .then(function(resp) {
+        if (dispatchLogRetry !== null) {
+          window.clearTimeout(dispatchLogRetry);
+          dispatchLogRetry = null;
+        }
+        dispatchLog = {
+          readiness: "loaded",
+          dispatches: resp.dispatches || [],
+          retention: resp.retention || null,
+          error: null
+        };
+        renderDispatchLog();
+        if (announce) {
+          setStatusText("dispatch-log-status",
+            "Dispatch log updated. " + dispatchLog.dispatches.length + " "
+              + (dispatchLog.dispatches.length === 1 ? "result." : "results."));
+        }
+      })
+      .catch(function(err) {
+        dispatchLog = {
+          readiness: "failed",
+          dispatches: [],
+          retention: null,
+          error: (err && err.message) || "the daemon did not answer"
+        };
+        renderDispatchLog();
+        scheduleDispatchLogRetry();
+        if (announce) {
+          setStatusText("dispatch-log-status", readinessNote(DISPATCH_LOG_SUBJECT, true));
+        }
+      });
+  }
+
+  /** The retention sentence, composed from the daemon's own numbers.
+   *
+   * Rendered UNCONDITIONALLY, full list or empty, because "empty" is exactly
+   * where a reader needs to know whether nothing ran or their result aged
+   * out. No literal `32` and no literal `30` lives in this file for this
+   * purpose: both travel as data, so the number on screen is the constant
+   * the daemon enforces (SH-136/SH-312's hand-copy class, which this project
+   * has paid for on a dashboard deadline and a daemon ceiling already).
+   *
+   * `forgotten` is rendered as a FLOOR — "at least N" — never as a count.
+   * SH-361's council accepted the counter solely on that condition: it
+   * resets on a daemon restart, and an expired-but-uncollected record is
+   * filtered from the list without being counted, so it under-reports for
+   * two independent reasons and an exact-sounding number would be a lie. */
+  function dispatchLogPolicySentence(retention) {
+    var minutes = Math.round(retention.seconds / 60);
+    var sentence = "Kept for " + minutes + " minute" + (minutes === 1 ? "" : "s")
+      + ", or until " + retention.records + " newer dispatches finish — whichever comes first.";
+    if (retention.forgotten > 0) {
+      sentence += " At least " + retention.forgotten + " older result"
+        + (retention.forgotten === 1 ? " has" : "s have") + " already been discarded.";
+    }
+    return sentence;
+  }
+
+  /** Renders whichever of the four states the log is in.
+   *
+   * Each row is composed through `noticeBody` — the dock's OWN renderer,
+   * reused rather than reimplemented — from the same three fields
+   * `finishDispatch` passes when it raises the notice: the composed
+   * headline, `payload.display` or `error` as the detail, and the typed
+   * `reason`. That reuse is what makes "the recovered text is the dismissed
+   * notice's text" assertable rather than approximate.
+   *
+   * A record with no `reason` renders no `.notice-reason` at all, and that
+   * absence is meaningful rather than a gap: `DispatchReason` is `None` for
+   * a `fail()`-shaped refusal and for every `failed` record, and `dispatch.rs`
+   * says so. Such a row is never blank — `error` carries its detail. */
+  function renderDispatchLog() {
+    var body = $("dispatch-log-body");
+    if (!body) return;
+    clear(body);
+    // Both readiness sentences come from `readinessNote`, the one generator
+    // (SH-291/SH-301), rather than being written here -- a hand-written pair
+    // is how "not yet" and "not at all" drift apart on one fetch while
+    // staying fixed on another, and `web_test.rs` fences the words.
+    //
+    // Using it obliges this surface to keep the promise the failed branch
+    // makes: "Retrying…" is a claim every caller's own poll keeps, so
+    // `scheduleDispatchLogRetry` keeps it here too. Claiming a retry that
+    // never came would be SH-312's comforting falsehood.
+    if (dispatchLog.readiness === "unasked") {
+      body.appendChild(el("p", { class: "settings-hint" }, [
+        readinessNote(DISPATCH_LOG_SUBJECT, false)
+      ]));
+      return;
+    }
+    if (dispatchLog.readiness === "failed") {
+      body.appendChild(el("p", { class: "modal-error" }, [
+        readinessNote(DISPATCH_LOG_SUBJECT, true) + " (" + dispatchLog.error + ")"
+      ]));
+      return;
+    }
+    var list = el("div", { class: "dispatch-log-list" }, []);
+    dispatchLog.dispatches.forEach(function(record) {
+      var detail = (record.payload && record.payload.display) || record.error || null;
+      list.appendChild(el("div", {
+        class: "dispatch-log-row " + (record.state === "ok" ? "ok" : "error"),
+        dataset: { story: record.story, state: record.state }
+      }, [
+        noticeBody(
+          dispatchHeadline(record.story, record.state, record.auto),
+          detail,
+          record.reason || null
+        )
+      ]));
+    });
+    if (!dispatchLog.dispatches.length) {
+      list.appendChild(el("p", { class: "settings-hint" }, [
+        "No dispatch results are being kept right now."
+      ]));
+    }
+    body.appendChild(list);
+    if (dispatchLog.retention) {
+      body.appendChild(el("p", { class: "settings-hint", id: "dispatch-log-policy" }, [
+        dispatchLogPolicySentence(dispatchLog.retention)
+      ]));
+    }
   }
 
   function renderSettingsTable() {

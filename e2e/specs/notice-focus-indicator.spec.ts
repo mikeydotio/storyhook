@@ -309,7 +309,7 @@ async function tabOnto(page: Page, from: string, selector: string): Promise<void
  * `notice-dock-geometry.spec.ts` uses, and `refused` because SH-304 narrowed
  * this surface to the outcomes that leave no other trace. */
 async function raiseDispatchHistoryRows(page: Page, ids: string[]): Promise<void> {
-  await page.route("**/dispatch**", async (route) => {
+  await page.route("**/story/*/dispatch**", async (route) => {
     const url = route.request().url();
     const which = ids.find((id) => url.includes(id)) ?? ids[0];
     await route.fulfill({
