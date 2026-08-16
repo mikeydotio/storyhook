@@ -1863,6 +1863,33 @@ fn a_blocked_repair_the_run_did_not_dissolve_is_still_named() {
     );
 }
 
+/// A `kind` this build must **not** be able to decode — a newer storyhook's
+/// vocabulary, arriving in an older one's store.
+const UNRECOGNISED_KIND: &str = "StoryPinned";
+
+/// A `kind` this build **does** decode, so an unreadable payload underneath it
+/// reads as damage rather than as data from the future.
+const DECODABLE_KIND: &str = "StoryCommentAdded";
+
+/// The two fixtures below differ in exactly one thing — whether the kind is one
+/// this build knows — and that is the whole distinction `story doctor` draws
+/// between *damage* and *data from the future*. A typo in either spelling
+/// collapses it silently, because an unknown kind is retained rather than
+/// rejected (SH-54) and every assertion downstream still holds (SH-364).
+#[test]
+fn the_two_injected_kinds_still_mean_what_these_fixtures_need_them_to_mean() {
+    assert!(
+        !storyhook::domain::is_known_event_kind(UNRECOGNISED_KIND),
+        "{UNRECOGNISED_KIND} decodes now, so `inject_unrecognised_kind` injects \
+         a recognised kind and every test built on it has changed subject"
+    );
+    assert!(
+        storyhook::domain::is_known_event_kind(DECODABLE_KIND),
+        "{DECODABLE_KIND} does not decode, so `inject_torn_payload` injects a \
+         kind from the future rather than the torn payload it promises"
+    );
+}
+
 /// Injects an unrecognised-kind event (a newer storyhook's data, not this
 /// build's) at seq 2 of a fresh story.
 fn inject_unrecognised_kind(fixture: &ServiceFixture) {
@@ -1871,9 +1898,9 @@ fn inject_unrecognised_kind(fixture: &ServiceFixture) {
         fixture.project(),
         StoryNo::new(1),
         &[storyhook::store::RawEvent {
-            kind: "StoryPinned".to_string(),
+            kind: UNRECOGNISED_KIND.to_string(),
             at: "2030-01-01T00:00:00Z".to_string(),
-            payload: r#"{"kind":"StoryPinned","at":"2030-01-01T00:00:00Z"}"#.to_string(),
+            payload: format!(r#"{{"kind":"{UNRECOGNISED_KIND}","at":"2030-01-01T00:00:00Z"}}"#),
         }],
     )
     .expect("injecting");
@@ -1887,7 +1914,7 @@ fn inject_torn_payload(fixture: &ServiceFixture) {
         fixture.project(),
         StoryNo::new(1),
         &[storyhook::store::RawEvent {
-            kind: "StoryCommentAdded".to_string(),
+            kind: DECODABLE_KIND.to_string(),
             at: "2030-01-01T00:00:01Z".to_string(),
             payload: "{not json at all".to_string(),
         }],

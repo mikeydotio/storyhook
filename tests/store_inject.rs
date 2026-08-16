@@ -27,6 +27,25 @@ use storyhook::store::{
 /// instant has to be the same on every run.
 const AT: &str = "2026-01-01T00:00:00Z";
 
+/// The `kind` every fabrication below writes, which must be one this build
+/// decodes.
+///
+/// Both tests that use it fabricate a *known* kind carrying something wrong —
+/// bytes that are not an event, and an orphan comment with no creation behind
+/// it. Misspell it and both become fabrications of an *unknown* kind instead,
+/// which the store retains rather than rejects (SH-54) and whose assertions
+/// still pass, so the subject changes in silence (SH-364).
+const DECODABLE_KIND: &str = "StoryCommentAdded";
+
+#[test]
+fn the_fabricated_kind_is_still_one_this_build_decodes() {
+    assert!(
+        storyhook::domain::is_known_event_kind(DECODABLE_KIND),
+        "{DECODABLE_KIND} does not decode, so the fabrications below are \
+         unknown-kind events wearing a known kind's name"
+    );
+}
+
 /// A created story, ready to be corrupted.
 fn seeded() -> (
     tempfile::TempDir,
@@ -141,7 +160,7 @@ fn bytes_that_are_not_a_decodable_event_can_be_written_verbatim() {
         project,
         StoryNo::new(1),
         &[RawEvent {
-            kind: "StoryCommentAdded".to_string(),
+            kind: DECODABLE_KIND.to_string(),
             at: AT.to_string(),
             payload: "{not json at all".to_string(),
         }],
@@ -158,7 +177,7 @@ fn bytes_that_are_not_a_decodable_event_can_be_written_verbatim() {
         1,
         "the torn payload must survive as an undecodable event rather than being rejected"
     );
-    assert_eq!(unknown[0].kind, "StoryCommentAdded");
+    assert_eq!(unknown[0].kind, DECODABLE_KIND);
 }
 
 #[test]
@@ -174,10 +193,9 @@ fn a_story_whose_log_cannot_fold_can_be_fabricated() {
         project,
         StoryNo::new(1),
         &[RawEvent {
-            kind: "StoryCommentAdded".to_string(),
+            kind: DECODABLE_KIND.to_string(),
             at: AT.to_string(),
-            payload: r#"{"kind":"StoryCommentAdded","at":"2026-01-01T00:00:00Z","text":"orphan"}"#
-                .to_string(),
+            payload: format!(r#"{{"kind":"{DECODABLE_KIND}","at":"{AT}","text":"orphan"}}"#),
         }],
     )
     .expect("injecting an orphan comment");
