@@ -217,6 +217,28 @@ Standing rules for every wave:
   `test-fake-tmux-state.sh` pins it. Note what did **not** reproduce it: stale state seeded
   before a run, which `new-window` resets. It took a concurrent second writer, which is what a
   fixed shared path is *for*.
+- **A fixture may not doctor a file a live daemon owns** (SH-345). A test rewrote a running
+  daemon's portfile — `stale.exe_mtime -= 1`, leaving the process itself alone — expecting the
+  doctoring to hold until the next `daemon start` read it. It didn't always: since SH-186 a
+  daemon's background tailnet probe (`serve::tailnet_reprobe`) rewrites that same file with its
+  own correct `exe_mtime` the instant it binds, and on a tailnet-equipped machine that happens
+  shortly after nearly every daemon starts. Under load, that rewrite can land between the
+  doctored write and the next command's read of it, silently restoring the correct build and
+  making the version-skew check pass right over the case it exists to catch — reported as
+  identical old/new pids, `assertion left != right failed`. Confirmed by toggle, not by
+  argument: with a 150ms gap inserted before the confirming read and `tailscale` left reachable,
+  8/8 runs failed with the exact reported signature; with the same gap and `tailscale` denied,
+  8/8 passed. `tests/web_test.rs`'s `web_open_falls_back_to_the_bare_url_when_arming_fails` had
+  already hit and fixed the identical hazard once, against a different doctored field, with its
+  own local workaround; SH-345 promoted it to `storyhook_test_support::path_without_tailscale`
+  and moved both fixtures onto it. **The general form:** any fixture that mutates a file a
+  running process also writes is racing that process, whether or not the mutation looks like it
+  targets a static one. `tests/portfile_fixture_hygiene.rs` fences the specific class — a
+  portfile write that follows a daemon start, in the same function, must carry the guard — over
+  a coarser file-level design rejected by unanimous council vote (`.council/
+  sh-345-portfile-fixture-hygiene-fence/`, gitignored) because the two files that have ever
+  doctored a portfile are already permanently "compliant" by that coarser measure, so it could
+  only ever have caught a hypothetical third file.
 - **A `pub` item with no caller is invisible to `dead_code`, so a test has to find it**
   (SH-198). `get_timeline` sat on `GithubClient` with zero call sites anywhere in `src/`
   or `tests/`, and the compiler never warned: `dead_code` only fires for an item
