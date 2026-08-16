@@ -766,9 +766,19 @@ fn a_daemon_from_another_build_is_replaced_rather_than_reused() {
         is_the_binary_under_test(&replacement),
         "a daemon serving another build must be replaced, never reused"
     );
+    // The token, not the pid (SH-239, one layer down: ask what a process *is*,
+    // not what number it has). `mint_token` mints a fresh one per daemon
+    // lifetime, so an unchanged token means the same process is still serving,
+    // however its pid reads — a pid comparison alone cannot tell "replaced"
+    // from "recycled the same number fast enough to collide."
     assert_ne!(
-        replacement.pid, first.pid,
-        "the stale daemon must actually have been stopped"
+        replacement.token, first.token,
+        "the stale daemon must actually have been stopped and a new one started"
+    );
+    assert!(
+        env.daemon_is_live(),
+        "a replacement must actually be running, not just described by a portfile the old \
+         daemon left behind on its way out"
     );
 }
 
