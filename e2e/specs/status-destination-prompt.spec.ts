@@ -35,12 +35,14 @@ import {
  *    carries a chosen destination and, for a reclassify, a pending superstate
  *    — both have to repaint from `state` too, or the panel survives while the
  *    user's own choice quietly resets to nothing.
- * 2. **This suite is Chromium-only** (`playwright.config.ts` ships Desktop
- *    Chrome and Pixel 7, both Blink; `make e2e-install` installs chromium
- *    alone). No test here observes Safari — the "survives a refresh nobody
- *    asked for" spec reproduces the *state* WebKit hands the page for free by
- *    blurring after opening, and says so in its own body. SH-335 tracks the
- *    gap.
+ * 2. **This file runs under both desktop engines now** (SH-335: `chromium` and
+ *    `webkit`, keyed off the same selector). The "survives a refresh nobody
+ *    asked for" spec's own `page.evaluate(() => ... .blur())` call was
+ *    written to reproduce on Blink the state WebKit hands the page for free
+ *    -- under the real `webkit` project that call is redundant with the
+ *    engine's own behaviour rather than a simulation of it, but asserts the
+ *    identical invariant either way, so it stays unconditional rather than
+ *    growing an engine branch for no behavioural difference.
  */
 
 /** Two scratch statuses this file creates and destroys, in a project no other
@@ -271,8 +273,10 @@ test("a destination question survives a refresh nobody asked for", async ({ page
 
   // Reproduces on Blink the state WebKit hands the page for free: there, a
   // click does not focus a `<button>`, so `document.activeElement` stays
-  // `BODY` the instant the user opens the question. THIS IS A SIMULATION, NOT
-  // A SAFARI TEST — see the file header.
+  // `BODY` the instant the user opens the question. Under the real `webkit`
+  // project (SH-335) this is redundant with the engine's own behaviour, not
+  // a simulation of it -- kept unconditional since the assertion is the same
+  // either way.
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await expect
     .poll(() => page.evaluate(() => document.activeElement?.tagName))
