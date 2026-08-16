@@ -31,7 +31,10 @@ one of:
   carries it)
 - **`stale`** — not updated within `STORY_STALE_THRESHOLD`; each finding's own `detail`
   states the real window used (e.g. `"stale 3d+"`), never restated here
-- **`unprioritized`** — `priority: none`
+- **`unprioritized`** — `priority: none`. Read this as a *question*, not a verdict:
+  `none` is a real level meaning **deliberately parked**, so a story here is either
+  parked on purpose or was never assessed, and the store cannot tell the two apart.
+  Resolve each one — a defect must never sit at `none`
 - **`cycle`** — sits on a `blocked-by` cycle — the CLI does not surface this itself, so
   the script detects it directly from every story's own relationships (Kahn's algorithm);
   this is no longer a manual "eyeball the graph" step
@@ -51,7 +54,11 @@ says the backlog looks clean; report that and stop.
 For each finding, ask the user what to do and execute their decision with the matching
 direct CLI command:
 
-- **Reprioritize**: `story prioritize <id> <critical|high|medium|low|none>`
+- **Reprioritize**: `story prioritize <id> <critical|high|medium|low|none>` — run
+  `story help priority-rubric` first and choose against its criteria. A level is
+  `story next`'s sort key, ties break toward the older story, and every inflated
+  level permanently costs the resolution of the level it joins, so on a genuine
+  tie take the lower one
 - **Add labels**: `story label <id> <labels-csv>`
 - **Remove labels**: `story unlabel <id> <labels-csv>`
 - **Clear blockers**: `story unblock <id>`

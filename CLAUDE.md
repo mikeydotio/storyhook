@@ -27,125 +27,63 @@ Versioning settings are in `.semver/config.yaml`. Do not modify this file unless
 
 ## Story priority rubric
 
+**The rubric ships in the binary: run `story help priority-rubric`.** That is the
+source — the damage ladder, the five levels, the ordered tiebreakers, the
+detection-layer carve-out and the relationship rules. It is not restated here,
+and `tests/priority_rubric.rs` fails if it starts being.
+
 Settled 2026-08-16 by a three-seat panel — web/UX, architecture, QA — convened
-over this backlog and applied to all 26 open stories.
+over this backlog and applied to all 26 open stories. It lived in this file for
+two days, which was long enough to prove the point SH-354 then fixed: nothing
+that *sets* a priority could read it, so every level chosen by `story new`,
+`/story new` or `story-triage` was chosen by vibe. Promoting it into
+`story help priority-rubric` was a council decision —
+`.council/sh354-priority-rubric-reach-and-none-default/DECISION.md` — taken on
+the grounds that the generic half describes storyhook's own model (a closed
+five-level enum, a CHECK-constrained rank column, `domain::ready_order`,
+`story next` skipping blocked stories) and so is the tool's to state, the same
+way the required states and the scaffolded `AGENTS.md` workflow already are.
 
-**Priority is not a label; it is `story next`'s sort key.** `domain::ready_order`
-sorts by priority, then by story number *ascending*. Three consequences follow,
-and they are why this rubric is strict rather than generous:
+What stays below is what does **not** belong in a stranger's binary: this
+project's own evidence for each rule. The rubric is the law; these are the cases
+that made it.
 
-- A level is a claim about **what an autonomous session picks up next**.
-- Ties break toward the **older** story, so inflating a level silently re-sorts
-  by age.
-- Every promotion dilutes the level for everything already in it. Resolution
-  spent cannot be earned back.
+### This project's precedents
 
-**On a genuine tie, take the lower level.**
+- **A defect must never sit at `none`.** SH-283 is the case study: filed `none`,
+  it described a live, silent, cross-story overwrite of the system of record, and
+  sorted dead last of 26. `none` was also `story new`'s silent default until
+  SH-354, so it claimed *deliberately parked* on behalf of everyone who never
+  chose — the command warns now.
+- **Price the class, not the sighting.** This project has paid the opposite four
+  times: SH-136, SH-258, SH-198, SH-260/276.
+- **The detection-layer carve-out.** SH-306 is the precedent — a gate that
+  silently did not run shipped six unguarded pushes. Coverage appetite in general
+  earns nothing; being the *missing detector for a named defect* earns this.
+- **Recoverability rarely demotes here.** The append-only event log does not
+  qualify: history is deliberately unreachable from the CLI, so nothing prompts
+  you to look, and recoverable-but-undetectable is operationally identical to
+  lost.
+- **The blocker floor versus the carve-out.** They collide whenever a defect is
+  `blocked-by` the very instrument that would observe it. Found the first time
+  the rule was used in anger: SH-283 (critical) `blocked-by` SH-335 (high). The
+  carve-out wins, for two reasons worth keeping written down. It is the **more
+  specific** rule — it speaks to this exact pairing, where the floor speaks to
+  dependencies in general. And the floor's purpose is **anti-stall**, which a
+  detector edge does not create: the detector already sorts above everything
+  except the defect it is blocking, so the queue hands it out next by itself.
+  Raising it would buy no scheduling and would erase the ordering the carve-out
+  exists to state.
 
-### The axis: what the store holds afterward
+### One standing rule of this project's own
 
-Rank by damage to the record, not by how annoying the symptom is:
-
-1. **A false statement is stored** — storyhook records something untrue.
-2. **A record is destroyed** that no replay can rebuild.
-3. **A wrong answer is returned** about stories the operator will act on.
-4. **A loud failure** — an error, a hang, a refusal, a red gate. Nothing stored
-   is wrong.
-5. **Friction** — costs time, not truth.
-
-**Wrong-and-stored always outranks loud-and-broken.** A rare wrong write
-outranks a constant wrong sort.
-
-### The levels
-
-| Level | The story must |
-|---|---|
-| **critical** | On a supported path, store a false statement, destroy an unrebuildable record, or leave the store unopenable — **and not tell the operator at the time**. Also critical by standing rule: the work-allocation path (`story next`/claim) handing out work that is nonexistent, already taken, or blocked. Decision test: *"could this already have happened today, to a story I have not opened, with nobody knowing?"* Never critical: anything that fails loudly, however badly. |
-| **high** | Return a wrong or incomplete **answer** the operator will act on with nothing marking it wrong; **or** be a defect in the detection layer itself — the gate, the receipt, fixture isolation, or the only coverage able to observe a filed critical; **or** be a race in work allocation whose collision shows only after work is duplicated. Recoverable in principle, but only by someone who already suspects. |
-| **medium** | Fail, misreport, or omit on a supported path **where the operator can see it** — an error, a hang, a visibly wrong order, a contradiction on screen. Also: symptomless debt outside the detection layer, and user-facing failures that block a class of users (accessibility) without touching stored data. The store is never left holding a false statement. |
-| **low** | Cost time, not truth: friction, inconsistency, an unreachable branch, a single flake costing one re-run, a defect with an obvious workaround, or tooling whose absence hides nothing currently filed. |
-| **none** | **Deliberately parked** — a feature or enhancement with no settled design, or work deferred pending the owner. Because `none` sorts *last*, it means "the autonomous loop must not pick this up". |
-
-**A defect must never sit at `none`.** An unassessed story is a triage failure,
-not a priority. SH-283 is the case study: filed `none`, it described a live,
-silent, cross-story overwrite and sorted dead last of 26.
-
-### Tiebreakers, in order
-
-1. **Silence promotes exactly one level, exactly once** — and only for defects
-   already on rungs 1–3. All three must hold: the operation reports success or
-   nothing; no routine workflow surfaces the discrepancy; the wrong state
-   persists. Silence *promotes*; it never *creates*. A silent cosmetic defect is
-   still cosmetic.
-2. **Recoverability demotes one level only when recovery is routine *and* the
-   operator is prompted to it.** The append-only event log does not qualify —
-   history is deliberately unreachable from the CLI, so nothing tells you to
-   look. Recoverable-but-undetectable is operationally identical to lost.
-3. **Frequency and blast radius break ties *within* a level, never between
-   them.** Trigger rarity is not mitigation.
-4. **Price the class, not the sighting.** If the mechanism plausibly has a
-   second site and nobody has checked, rank it as a class and file the sweep.
-   This project has paid the opposite four times (SH-136, SH-258, SH-198,
-   SH-260/276).
-5. **A docs-vs-behaviour mismatch is priced at the severity of the capability it
-   misdescribes**, not as a docs nit.
-6. **A vacuous pass is priced at the severity of the claim it fails to deliver,
-   plus one level** for the false confidence — capped by real evidence.
-
-### The detection-layer carve-out
-
-Test and infrastructure debt is **not** automatically low, and this is the only
-exception to "symptomless debt caps at medium":
-
-- Debt in the **detection layer** — the gate, the receipt, fixture isolation, or
-  the only coverage that could observe a filed critical — **caps at high**.
-- A story that makes an otherwise-undetectable defect class detectable is capped
-  **one level below the highest-priority filed story whose detection it
-  enables**, floored at medium. Never equal to it: the live defect always
-  outranks the instrument that would have seen it.
-
-SH-306 is the precedent — a gate that silently did not run shipped six unguarded
-pushes. Coverage appetite in general earns nothing; being the *missing detector
-for a named defect* earns this.
-
-**Individual flakes stay low** — each costs one re-run and the gate still catches
-real reds. The **population** is the defect: a backlog of known flakes is how a
-genuine red gets waved off as "the usual one". Track that as its own story, and
-price it in the detection layer.
-
-### Relationships never inherit priority
-
-A dependency is a scheduling fact, not a severity claim.
-
-- **`blocks` / `blocked-by` transmit nothing by default.** A low blocker under a
-  high dependent stays low.
-- **The one exception — the blocker floor:** if X is `blocked-by` Y and X sorts
-  *earlier* than Y, raise Y to X's level, **never higher**. `story next` excludes
-  blocked stories, so a low blocker beneath a high dependent is a stall the queue
-  cannot resolve by itself.
-- **When the blocker floor and the detection carve-out disagree, the carve-out
-  wins.** They collide whenever a defect is `blocked-by` the very instrument that
-  would observe it — the floor says raise the detector to the defect's level, the
-  carve-out says a detector is never equal to what it detects. Found the first
-  time the rule was used in anger: SH-283 (critical) `blocked-by` SH-335 (high).
-  Two reasons the carve-out takes precedence. It is the **more specific** rule —
-  it speaks to this exact pairing, where the floor speaks to dependencies in
-  general. And the floor's purpose is **anti-stall**, which a detector edge does
-  not create: the detector already sorts above everything except the defect it is
-  blocking, so the queue hands it out next by itself. Raising it would buy no
-  scheduling and would erase the ordering the carve-out exists to state.
-- **Never lower a dependent to match its blocker**, and **never raise a blocker
-  above its dependent** — that is the inflation error where every prerequisite of
-  a critical becomes critical and the level saturates.
-- **`parent-of`:** an epic's priority is the **max** of its children, never the
-  sum, and is reporting-only — `next` never surfaces a story with children.
-- **`relates-to` transmits nothing, ever.**
-- **A mitigation living in another story never lowers this one.** A documented
-  workaround is not a fix.
-- **`duplicate-of` is not a priority edge**: collapse duplicates to one story
-  rather than triaging the same defect twice.
-- A `blocked-by` edge pointing at a **closed** story is historically accurate and
-  is left alone — `story next` already ignores it for scheduling.
+Not in the shipped rubric, because it is about *this* tracker rather than about
+priorities in general: **a defect in the work-allocation path — `story next` or
+claiming — that hands out work which is nonexistent, already taken, or blocked
+is `critical` by standing rule**, and a race there whose collision shows only
+after work is duplicated is `high`. The autonomous loop in
+`HARDENING_PROGRESS.md` finds its work through that path and inherits any
+defect in it silently, which is the whole reason for the exception.
 
 ## Rearchitecture roadmap
 
