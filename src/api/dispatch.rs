@@ -2562,6 +2562,34 @@ mod tests {
         ));
     }
 
+    /// Every bare `$NAME` token referenced in `composition_line`, in order of
+    /// first appearance, deduplicated.
+    ///
+    /// Skips a `$` immediately followed by `{`: `AUTO_PROMPT_TPL`'s own line
+    /// opens with `${STORY_AUTO_PROMPT:-...}`, which names an *override* env
+    /// var, not a shipped charter piece — the same distinction
+    /// [`PROMPT_OVERRIDE_ENV_VARS`] and the charter constants draw elsewhere
+    /// in this file. A bare `$AUTO_PROMPT_HEAD` inside that default value,
+    /// by contrast, names a piece this test must check.
+    fn charter_vars_referenced(composition_line: &str) -> Vec<String> {
+        let mut vars = Vec::new();
+        let mut rest = composition_line;
+        while let Some(dollar) = rest.find('$') {
+            rest = &rest[dollar + 1..];
+            if rest.starts_with('{') {
+                continue;
+            }
+            let ident: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == '_')
+                .collect();
+            if !ident.is_empty() && !vars.contains(&ident) {
+                vars.push(ident);
+            }
+        }
+        vars
+    }
+
     /// The shipped defaults must themselves pass this check -- otherwise
     /// every UNMODIFIED dispatch (`STORY_PROMPT`/`STORY_AUTO_PROMPT` never
     /// set at all) would refuse itself the moment an operator's daemon
@@ -2589,19 +2617,46 @@ mod tests {
         );
 
         // SH-219: AUTO_PROMPT_TPL and AUTO_PROMPT_SOLO_TPL are no longer
-        // single literals -- each composes a HEAD, one of two decision
-        // CLAUSEs, and a shared TAIL, themselves plain literal assignments
-        // defined just above the composition. Checking each piece on its
-        // own (rather than the composed line, which by now names OTHER
-        // SHELL VARIABLES, not charter text) covers both rendered charters
-        // transitively: a single space joins clean pieces into a still-clean
-        // whole.
-        for var in [
-            "AUTO_PROMPT_HEAD",
-            "AUTO_COUNCIL_CLAUSE",
-            "AUTO_SOLO_CLAUSE",
-            "AUTO_PROMPT_TAIL",
-        ] {
+        // single literals -- each composes several pieces, themselves plain
+        // literal assignments defined just above the composition. Checking
+        // each piece on its own (rather than the composed line, which by now
+        // names OTHER SHELL VARIABLES, not charter text) covers both
+        // rendered charters transitively: a single space joins clean pieces
+        // into a still-clean whole.
+        //
+        // The piece NAMES are derived from the composition lines themselves
+        // rather than hand-listed here (SH-402): a hand-maintained list is
+        // exactly the shape this project fences everywhere else it recurs
+        // (`tests/priority_rubric.rs`'s module doc names SH-136 and SH-198
+        // as the cost of it), and it is what let a fifth charter clause ship
+        // silently unchecked the first time SH-402 added one. Floor- and
+        // membership-guarded so a composition line that stopped naming its
+        // pieces reads as a failure, not a vacuously short list.
+        let mut vars: Vec<String> = ["AUTO_PROMPT_TPL=", "AUTO_PROMPT_SOLO_TPL="]
+            .iter()
+            .flat_map(|prefix| {
+                let line = script
+                    .lines()
+                    .find(|l| l.starts_with(prefix))
+                    .unwrap_or_else(|| panic!("story.sh must still define {prefix} on its own line"));
+                charter_vars_referenced(line)
+            })
+            .collect();
+        vars.sort();
+        vars.dedup();
+        assert!(
+            vars.len() >= 4,
+            "the autonomous charter composition lines named only {vars:?} -- either a \
+             piece was inlined or this scan has stopped seeing the composition"
+        );
+        for expected in ["AUTO_PROMPT_HEAD", "AUTO_PROMPT_TAIL"] {
+            assert!(
+                vars.iter().any(|v| v == expected),
+                "the autonomous charter composition lines did not reference {expected}: {vars:?}"
+            );
+        }
+
+        for var in vars {
             let prefix = format!("{var}=\"");
             let line = script
                 .lines()
