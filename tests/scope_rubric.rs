@@ -1,0 +1,192 @@
+//! Every surface that could file a story instead says how to decide whether to (SH-402).
+//!
+//! No shipped surface said anything about what to do with a problem found mid-work
+//! — not the dispatch charters, not the scaffolded `AGENTS.md`/`.cursorrules`, not
+//! any of the 53 help topics that existed before this one. The doctrine that
+//! actually governed it ("defects become stories before they become fixes"; "sweep
+//! for siblings, file issues for those"; "two hats") lived only in the operator's
+//! own global config, outside this repository, and every rule in it pushed toward
+//! filing — which is a large part of why this project's own backlog grew faster
+//! than it closed.
+//!
+//! This is the SH-354 shape one rule over: nothing that decides whether to FILE a
+//! story could read a rule about when to. The repair is the same one SH-354 used —
+//! promote the generic decision into the binary as a shipped help topic
+//! (`scope-rubric`) and have every surface that could file instead point at it,
+//! rather than mirror a paraphrase into five places and hope the copies stay
+//! honest. This project's own precedent and its numeric calibration stay in
+//! `CLAUDE.md`, exactly where `priority-rubric`'s did.
+//!
+//! **`*-rubric` is now a family, not a one-off.** `priority-rubric` and
+//! `scope-rubric` share two invariants — self-naming, and no project-private
+//! precedent — and this file checks both as a derived scan over every topic whose
+//! key ends in `-rubric`, so a third doctrine topic inherits the fence for free
+//! rather than needing its own hand-copied test.
+//!
+//! Some checks here are deliberately NOT derived over a broad corpus. A blanket
+//! scan for `"story new"` across every help topic or every plugin document was
+//! tried first and rejected: `story new` appears in cross-reference rows on
+//! topics that never offer the filing decision at all (`decompose`, `github-sync`,
+//! `json-format`, `priority-rubric`'s own `Related:` block), and in plugin index
+//! pages (`README.md`, `skills/story/SKILL.md`'s frontmatter) that merely describe
+//! what the command does. A marker precise enough to exclude those false positives
+//! matches only the `new` topic itself, which makes the derived form no more
+//! informative than naming the handful of doors this doctrine actually governs
+//! directly — `new`, `delete`, the scaffolded templates, the two plugin docs this
+//! story edits, and the autonomous charter. Each is checked by name, the same way
+//! `tests/priority_rubric.rs` checks `the_priority_alias_still_redirects_to_
+//! prioritize` by name rather than by scan.
+
+use storyhook::help_topics::{get_help_topic, list_topics};
+
+/// What a surface must name to have discharged its duty.
+const POINTER: &str = "story help scope-rubric";
+
+/// The topic key the pointer resolves to.
+const TOPIC: &str = "scope-rubric";
+
+#[test]
+fn the_scope_topic_exists_and_names_itself() {
+    let body = get_help_topic(TOPIC).expect("`story help scope-rubric` must be a topic");
+    assert!(
+        body.starts_with(POINTER),
+        "the topic's first line must be its own invocation, matching every other topic \
+         and every other member of the -rubric family"
+    );
+}
+
+/// Every story id in `text`, by shape: two or more capitals, a hyphen, digits.
+///
+/// Copied from `tests/priority_rubric.rs::story_ids_in` rather than shared — this
+/// repo already accepts that duplication between independent test binaries, and a
+/// shared helper crate for two call sites would be more machinery than the
+/// duplication it removes.
+fn story_ids_in(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut found = Vec::new();
+    for (index, window) in chars.windows(2).enumerate() {
+        if window[0] != '-' || !window[1].is_ascii_digit() {
+            continue;
+        }
+        let prefix: String = chars[..index]
+            .iter()
+            .rev()
+            .take_while(|c| c.is_ascii_uppercase())
+            .collect();
+        if prefix.chars().count() < 2 {
+            continue;
+        }
+        let digits: String = chars[index + 1..]
+            .iter()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        found.push(format!(
+            "{}-{digits}",
+            prefix.chars().rev().collect::<String>()
+        ));
+    }
+    found
+}
+
+#[test]
+fn the_story_id_scan_would_notice_one() {
+    // The positive control — see `tests/priority_rubric.rs`'s own copy of this test
+    // for why a scan that could pass vacuously needs one.
+    assert_eq!(
+        story_ids_in("filed at none, the case study is SH-283, dead last of 26"),
+        vec!["SH-283".to_string()],
+        "the scan must find a story id in prose"
+    );
+    assert!(
+        story_ids_in("a defect already on rungs 1-3, priced as a class").is_empty(),
+        "a numeric range is not a story id"
+    );
+    assert!(
+        story_ids_in("blocked-by transmits nothing, and next-5 is not an id").is_empty(),
+        "a lowercase word before the hyphen is not a story id"
+    );
+}
+
+/// This project's own machinery, meaningless in a stranger's repository.
+const PROJECT_PRIVATE: [&str; 4] = ["make test", ".githooks", "scripts/", "HARDENING_PROGRESS"];
+
+/// Which entries of [`PROJECT_PRIVATE`] appear in `body`, if any.
+fn project_private_hits(body: &str) -> Vec<&'static str> {
+    PROJECT_PRIVATE
+        .into_iter()
+        .filter(|private| body.contains(private))
+        .collect()
+}
+
+#[test]
+fn every_rubric_topic_self_names_and_ships_no_project_private_precedent() {
+    // Derived, not enumerated: any topic key ending in `-rubric` joins this scan
+    // with no edit here. Vacuity-guarded on family size and membership, so a scan
+    // that silently stopped seeing topics reads as a failure rather than a clean
+    // family of size zero.
+    let family: Vec<&str> = list_topics()
+        .into_iter()
+        .filter(|topic| topic.ends_with("-rubric"))
+        .collect();
+    assert!(
+        family.len() >= 2,
+        "the -rubric family scan found only {family:?} — expected at least \
+         priority-rubric and scope-rubric; either a topic was renamed or this scan \
+         has stopped seeing topics"
+    );
+    for expected in ["priority-rubric", "scope-rubric"] {
+        assert!(
+            family.contains(&expected),
+            "the -rubric family scan did not find `{expected}`: {family:?}"
+        );
+    }
+
+    for topic in family {
+        let body = get_help_topic(topic).expect("a listed topic must resolve");
+        let self_pointer = format!("story help {topic}");
+        assert!(
+            body.starts_with(&self_pointer),
+            "`{topic}`'s first line must be its own invocation"
+        );
+
+        let ids = story_ids_in(body);
+        assert!(
+            ids.is_empty(),
+            "`{topic}` names story ids from this project's own tracker: {ids:?} — they \
+             belong in CLAUDE.md, not in every user's binary"
+        );
+        let private = project_private_hits(body);
+        assert!(
+            private.is_empty(),
+            "`{topic}` names {private:?}, this project's own machinery, meaningless in \
+             the repository it will be read in"
+        );
+    }
+}
+
+#[test]
+fn the_new_topic_points_at_scope_rubric() {
+    // `new` is the door this doctrine most directly governs: the moment a story is
+    // about to be filed. Checked by name rather than by a derived scan — see the
+    // module doc for why a marker broad enough to find `new` on its own also
+    // catches topics that only cross-reference `story new` in passing.
+    let body = get_help_topic("new").expect("the `new` topic must exist");
+    assert!(
+        body.contains(POINTER),
+        "`story help new` must point at {POINTER} — the moment before a story is \
+         filed is where the adopt-or-file decision belongs"
+    );
+}
+
+#[test]
+fn the_delete_topic_points_at_scope_rubric() {
+    // `delete` is the collapse door — `duplicate-of` + `story delete` is how an
+    // existing duplicate is retired, which is scope-rubric's own recommended
+    // remedy for "stories are multiplying faster than they're being closed".
+    let body = get_help_topic("delete").expect("the `delete` topic must exist");
+    assert!(
+        body.contains(POINTER),
+        "`story help delete` must point at {POINTER} — it is the collapse door \
+         scope-rubric names as the remedy for a duplicate"
+    );
+}
