@@ -38,7 +38,12 @@ use std::net::TcpListener;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use storyhook::daemon::lifecycle::{self, DaemonInfo};
+use storyhook::daemon::lifecycle::{self, DaemonInfo, SPAWN_LOCK_DEADLINE};
+
+/// Named rather than inline (SH-394's `tests/timing_assertions.rs` fence): a
+/// refused TCP connection fails at the OS level in microseconds, so this is
+/// margin against a hidden timeout resurfacing, not a claim about speed.
+const REFUSED_CONNECTION_CEILING: Duration = Duration::from_secs(5);
 
 /// How long a test waits for a call that is supposed to give up on its own.
 ///
@@ -46,6 +51,14 @@ use storyhook::daemon::lifecycle::{self, DaemonInfo};
 /// distinction being drawn is between a bounded wait and an unbounded one, not
 /// between two bounded ones.
 const PATIENCE: Duration = Duration::from_secs(45);
+
+/// [`SPAWN_LOCK_DEADLINE`] (the client's own bound, which must fire) plus
+/// margin, and strictly below [`PATIENCE`] (this harness's own backstop,
+/// which must not be what actually fires). Named and derived rather than a
+/// second hand-picked number beside the two it sits between (SH-394's
+/// `tests/timing_assertions.rs` fence).
+const CLIENT_BOUND_FIRES_CEILING: Duration =
+    Duration::from_secs(SPAWN_LOCK_DEADLINE.as_secs() + 10);
 
 /// A socket that accepts connections and then says nothing, ever.
 ///
@@ -180,7 +193,7 @@ fn a_refused_connection_still_fails_immediately() {
     let started = Instant::now();
     assert!(lifecycle::hello(&info).is_err());
     assert!(
-        started.elapsed() < Duration::from_secs(5),
+        started.elapsed() < REFUSED_CONNECTION_CEILING,
         "a refused connection must fail at once, not after a timeout: took {:?}",
         started.elapsed()
     );
@@ -232,7 +245,7 @@ fn ensure_gives_up_on_a_spawn_lock_somebody_else_holds() {
     // own deadline fired, not the harness's — which is the whole difference
     // between a bounded wait and an unbounded one.
     assert!(
-        waited < Duration::from_secs(40),
+        waited < CLIENT_BOUND_FIRES_CEILING,
         "the client's own bound must fire well inside the harness's: took {waited:?}"
     );
 
@@ -257,7 +270,7 @@ fn ensure_gives_up_on_a_spawn_lock_somebody_else_holds() {
 /// decision table as pure unit tests; these three prove the wiring, and they
 /// drive the bound in milliseconds because it is a parameter (SH-144).
 mod exchange {
-    use super::{PATIENCE, SilentPeer, within_patience};
+    use super::{CLIENT_BOUND_FIRES_CEILING, PATIENCE, SilentPeer, within_patience};
     use std::time::{Duration, Instant};
     use storyhook::daemon::lifecycle::{CurrentRequest, ExchangeBound};
     use storyhook::env::Environment;
@@ -472,7 +485,7 @@ mod exchange {
         // The client's own bound must fire, not the harness's. That difference
         // is the whole distinction between a bounded wait and an unbounded one.
         assert!(
-            waited < Duration::from_secs(40),
+            waited < CLIENT_BOUND_FIRES_CEILING,
             "the client's own bound must fire well inside the harness's: {waited:?}"
         );
     }

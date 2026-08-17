@@ -13,7 +13,7 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use storyhook::daemon::crash::{self, CrashClassification};
-use storyhook::daemon::lifecycle::{self, DaemonInfo};
+use storyhook::daemon::lifecycle::{self, DaemonInfo, FORCE_GRACE};
 use storyhook_test_support::{TestEnv, path_without_tailscale, scratch_dir, story_binary};
 
 /// Whether `info` describes a daemon running the `story` binary this build
@@ -451,6 +451,12 @@ fn a_forced_stop_kills_a_daemon_that_is_still_draining() {
         },
     );
 
+    // 5x FORCE_GRACE (SH-394) — named and derived rather than a bare literal:
+    // a forced stop signals the incumbent after FORCE_GRACE if it has not
+    // drained on its own, so this proves the wait was bounded by that grace
+    // period (plus a whole CLI round trip) rather than by the 60s hook.
+    let force_stop_ceiling = FORCE_GRACE * 5;
+
     let started = Instant::now();
     env.story(project.path())
         .args(["daemon", "stop", "--force"])
@@ -459,7 +465,7 @@ fn a_forced_stop_kills_a_daemon_that_is_still_draining() {
     let waited = started.elapsed();
 
     assert!(
-        waited < Duration::from_secs(10),
+        waited < force_stop_ceiling,
         "a forced stop must not wait for a 60s hook: took {waited:?}"
     );
     assert!(
@@ -882,11 +888,17 @@ fn the_web_aliases_keep_their_output_and_announce_themselves_on_stderr() {
 ///
 /// # The assertion calibrates itself
 ///
-/// One client is timed first, and the wave of four must land inside twice that.
-/// A hard-coded second count would be a claim about this machine; a multiple of
-/// a measurement taken moments earlier on the same machine is a claim about the
-/// shape, which is what changed. Before the fix the wave took four attempts and
-/// fails this by a wide margin.
+/// One client is timed first, and the wave of four must land inside three
+/// times that. A hard-coded second count would be a claim about this machine;
+/// a multiple of a measurement taken moments earlier on the same machine is a
+/// claim about the shape, which is what changed. Before the fix the wave took
+/// four attempts (measured 10.16s, 20.25s, 30.33s, 40.42s — roughly 4x
+/// `alone`, sequentially), so a 3x ceiling still fails that by a wide margin.
+/// 3x rather than 2x (SH-394): `together` is a wall-clock span over FOUR
+/// concurrent process spawns racing everything else this machine is running,
+/// while `alone` is over one — that asymmetry, not the machine's ambient
+/// speed, is what self-calibration alone does not absorb, and 3x still
+/// leaves the fixed 4x failure signature nowhere near this ceiling.
 #[test]
 fn four_clients_behind_a_wedged_daemon_share_one_attempt() {
     use std::sync::mpsc;
@@ -954,7 +966,7 @@ fn four_clients_behind_a_wedged_daemon_share_one_attempt() {
         "the fixture must fail every client, or the timing proves nothing"
     );
     assert!(
-        together < alone * 2,
+        together < alone * 3,
         "four clients must share one attempt, not queue four of them: one alone \
          took {alone:?} and four together took {together:?}"
     );
@@ -1064,6 +1076,9 @@ fn a_refused_stand_down_is_named_above_the_failure_it_causes() {
 /// rather than returning as soon as the daemon exists.
 #[test]
 fn concurrent_clients_against_a_startable_daemon_stay_fast() {
+    // Named rather than inline (SH-394's `tests/timing_assertions.rs` fence).
+    const RACE_CEILING: Duration = Duration::from_secs(10);
+
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
 
@@ -1097,7 +1112,7 @@ fn concurrent_clients_against_a_startable_daemon_stay_fast() {
     let elapsed = started.elapsed();
 
     assert!(
-        elapsed < Duration::from_secs(10),
+        elapsed < RACE_CEILING,
         "six clients racing to start one daemon must not queue behind a deadline: \
          took {elapsed:?}"
     );

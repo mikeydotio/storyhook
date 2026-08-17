@@ -1196,6 +1196,7 @@ fn session_start_quiet_flag_still_outputs_json() {
 // the machine is running.
 mod degrades_under_contention {
     use fs4::FileExt;
+    use storyhook::daemon::lifecycle::SPAWN_DEADLINE;
     use storyhook_test_support::TestEnv;
 
     /// Opens (creating if needed) and exclusively locks `env`'s daemon spawn
@@ -1224,12 +1225,20 @@ mod degrades_under_contention {
         let project = env.project().prefix("SH").build();
         let held = hold_spawn_lock(&env);
 
+        // `--deadline` is the CLIENT's own bound; it is what makes this
+        // command give up quickly instead of waiting out the contended spawn
+        // lock. The elapsed window this test measures also has to cover
+        // process spawn and exit around that wait, which the deadline itself
+        // says nothing about — SPAWN_DEADLINE (SH-394) is production's own
+        // named allowance for "a process coming up", so the ceiling below
+        // derives from both rather than hand-picking a number beside them.
+        let deadline_secs = 1u64;
         let started = std::time::Instant::now();
         let output = env
             .story(project.path())
-            .args(["--deadline", "1", "session-start"])
+            .args(["--deadline", &deadline_secs.to_string(), "session-start"])
             .output()
-            .expect("running story --deadline 1 session-start");
+            .expect("running story --deadline session-start");
         let elapsed = started.elapsed();
 
         let _ = FileExt::unlock(&held);
@@ -1240,9 +1249,11 @@ mod degrades_under_contention {
             "session-start must exit 0 even when it could not load project state: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+        let ceiling = std::time::Duration::from_secs(deadline_secs) + SPAWN_DEADLINE;
         assert!(
-            elapsed < std::time::Duration::from_secs(3),
-            "took {elapsed:?} against a --deadline of 1s"
+            elapsed < ceiling,
+            "took {elapsed:?} against a --deadline of {deadline_secs}s plus a \
+             {SPAWN_DEADLINE:?} process-overhead allowance"
         );
 
         let stdout = String::from_utf8_lossy(&output.stdout);

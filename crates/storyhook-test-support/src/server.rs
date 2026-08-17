@@ -562,6 +562,9 @@ mod tests {
         let mut cmd = Command::new("sh");
         cmd.args(["-c", "sleep 5"]);
         let deadline = Duration::from_millis(300);
+        // Named rather than inline (SH-394): margin for a subprocess spawn
+        // atop the 300ms deadline itself, not a claim about speed.
+        let give_up_ceiling = deadline * 7;
 
         let started = Instant::now();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
@@ -575,7 +578,7 @@ mod tests {
              it had finished"
         );
         assert!(
-            elapsed < Duration::from_secs(2),
+            elapsed < give_up_ceiling,
             "run_bounded took {elapsed:?} to give up on a {deadline:?} deadline — it waited \
              out the hung command instead of bounding the wait"
         );

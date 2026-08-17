@@ -28,8 +28,14 @@
 //! A fourth way to name a project is the thing SH-116 exists to have removed.
 
 use std::path::Path;
+use std::time::Duration;
 
 use storyhook_test_support::TestEnv;
+
+/// Named rather than inline (SH-394's `tests/timing_assertions.rs` fence): a
+/// backstop against an infinite re-ask loop, not a load-sensitivity bound —
+/// two ordinary CLI round trips finish in a small fraction of this.
+const TWO_STEP_ROUND_TRIP_CEILING: Duration = Duration::from_secs(60);
 
 /// A project with `stories` stories in it, at `<home>/<name>`.
 fn project_with(env: &TestEnv, name: &str, stories: usize) -> std::path::PathBuf {
@@ -177,7 +183,7 @@ fn the_two_step_round_trip_completes_in_one_cycle() {
 
     assert_eq!(forced.status.code(), Some(0), "{}", stderr(&forced));
     assert!(
-        elapsed < std::time::Duration::from_secs(60),
+        elapsed < TWO_STEP_ROUND_TRIP_CEILING,
         "the refusal and the forced retry together took {elapsed:?}; a confirmation that \
          re-asks forever looks exactly like this"
     );

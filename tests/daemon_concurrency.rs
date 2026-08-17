@@ -78,6 +78,18 @@ fn wait_for(what: &str, deadline: Duration, ready: impl Fn() -> bool) {
 /// claim about the shape.
 #[test]
 fn a_slow_command_does_not_block_another_client() {
+    // Wide on purpose (SH-394): the property under test is "queued vs.
+    // concurrent", a binary distinction, not "fast" vs. "slow". A hook that
+    // sleeps only a few seconds leaves too thin a gap between "the daemon is
+    // working normally under load" and "a client queued behind this hook" —
+    // this machine can run three-to-four concurrent worktree suites, and a
+    // correctly-concurrent `story list` competing with them for CPU could
+    // plausibly cost a few seconds on its own. Widening the hook's sleep
+    // rather than tightening the assertion below keeps the two cases
+    // unmistakable however loaded the machine is; it costs this one test
+    // real wall-clock, which is cheap next to a flake.
+    const HOOK_SLEEP_SECS: u64 = 30;
+
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
     let environment = env.environment();
@@ -88,8 +100,11 @@ fn a_slow_command_does_not_block_another_client() {
         .expect("writing hooks.toml");
     hooks
         .write_all(
-            b"[settings]\ntimeout_seconds = 60\n\n\
-              [on_comment]\ncommand = \"sleep 3\"\ntimeout_seconds = 60\n",
+            format!(
+                "[settings]\ntimeout_seconds = 60\n\n\
+                 [on_comment]\ncommand = \"sleep {HOOK_SLEEP_SECS}\"\ntimeout_seconds = 60\n"
+            )
+            .as_bytes(),
         )
         .expect("writing the hook");
     drop(hooks);
@@ -135,10 +150,14 @@ fn a_slow_command_does_not_block_another_client() {
     let mut concurrent_cmd = env.raw_story(project.path());
     concurrent_cmd.args(["list", "--json"]);
     let started = Instant::now();
+    // Above the correctness assertion's own ceiling (HOOK_SLEEP_SECS / 2)
+    // rather than below it (SH-394) — this is a "did it deadlock" backstop,
+    // and it must not fire first on ordinary load and preempt the assertion
+    // below, which names the actual property and reports it more precisely.
     let concurrent_output = run_bounded(
         concurrent_cmd,
         "concurrent `story list`",
-        Duration::from_secs(15),
+        Duration::from_secs(HOOK_SLEEP_SECS),
     );
     let concurrent = started.elapsed();
 
@@ -153,12 +172,16 @@ fn a_slow_command_does_not_block_another_client() {
         "a concurrent `story list` (took {concurrent:?}) must not be inflated by an \
          unrelated slow command; baseline alone was {baseline:?}"
     );
-    // And a claim about the hook itself: the hook sleeps 3s, so a `story
-    // list` that queued behind it would take at least that long.
+    // And a claim about the hook itself: the hook sleeps HOOK_SLEEP_SECS, so
+    // a `story list` that queued behind it would take at least that long.
+    // Half of that (SH-394) is still comfortably below "queued", and leaves
+    // most of a 30-second budget for the concurrent command's own cost under
+    // load, instead of the 2-second ceiling this used to be measured against
+    // a 3-second hook.
     assert!(
-        concurrent < Duration::from_secs(2),
-        "`story list` took {concurrent:?} — it queued behind the 3s hook instead of \
-         running concurrently with it"
+        concurrent < Duration::from_secs(HOOK_SLEEP_SECS / 2),
+        "`story list` took {concurrent:?} — it queued behind the {HOOK_SLEEP_SECS}s hook \
+         instead of running concurrently with it"
     );
 
     child.wait().expect("the slow command finishes");
