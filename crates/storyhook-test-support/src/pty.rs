@@ -483,6 +483,11 @@ mod tests {
     /// which prompt it stopped at.
     #[test]
     fn an_expect_for_something_never_written_fails_within_its_deadline() {
+        // Named rather than inline (SH-394): the `Pty` deadline set below is
+        // 400ms, so this is generous margin for a whole subprocess spawn, not
+        // a claim about speed.
+        const DEADLINE_ENFORCED_CEILING: Duration = Duration::from_secs(10);
+
         let started = Instant::now();
         let outcome = std::panic::catch_unwind(|| {
             let mut pty = Pty::spawn("deadline", contained("echo HERE; sleep 60"))
@@ -502,7 +507,7 @@ mod tests {
             "the panic must carry what it waited for and what it saw: {message}"
         );
         assert!(
-            started.elapsed() < Duration::from_secs(10),
+            started.elapsed() < DEADLINE_ENFORCED_CEILING,
             "the deadline did not bound the wait: {:?}",
             started.elapsed()
         );
@@ -512,6 +517,11 @@ mod tests {
     /// waiting out a timeout for something that can never arrive.
     #[test]
     fn an_expect_fails_at_once_when_the_child_exits_first() {
+        // Named rather than inline (SH-394): proves EOF is noticed rather
+        // than waiting out the 30s timeout set below, with margin for a
+        // whole subprocess spawn.
+        const EOF_NOTICED_CEILING: Duration = Duration::from_secs(5);
+
         let started = Instant::now();
         let outcome = std::panic::catch_unwind(|| {
             let mut pty = Pty::spawn("eof", contained("echo BYE")).timeout(Duration::from_secs(30));
@@ -520,7 +530,7 @@ mod tests {
 
         assert!(outcome.is_err(), "the expect was supposed to fail");
         assert!(
-            started.elapsed() < Duration::from_secs(5),
+            started.elapsed() < EOF_NOTICED_CEILING,
             "EOF must fail the expect rather than waiting out the deadline: {:?}",
             started.elapsed()
         );

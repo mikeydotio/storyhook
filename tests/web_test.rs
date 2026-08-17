@@ -21,6 +21,7 @@ use predicates::prelude::*;
 use std::path::Path;
 use std::sync::Arc;
 use storyhook::cli::parse_invocation;
+use storyhook::daemon::lifecycle::CONTROL_DEADLINE;
 use storyhook::daemon::serve::BoundAddress;
 use storyhook::domain::provenance::Provenance;
 use storyhook::env::Environment;
@@ -7258,8 +7259,17 @@ fn a_late_tailnet_bind_does_not_block_shutdown_behind_an_open_sse_connection() {
         .assert()
         .success();
     let elapsed = started_at.elapsed();
+    // A blocked reader would hang for as long as the SSE connection stays
+    // open above (i.e. indefinitely — this test never closes it before this
+    // assertion), so the property being ruled out has no finite worst case
+    // to derive a ceiling from directly. `2 * CONTROL_DEADLINE` (SH-394)
+    // covers a full `story web stop` subprocess — spawn, connect, the
+    // shutdown request's own admission check — against the same "generous
+    // for CPU contention" doctrine `sse_connection_does_not_block_other_
+    // requests` states for its own, cheaper (no subprocess) HTTP-level
+    // sibling of this assertion.
     assert!(
-        elapsed < Duration::from_secs(2),
+        elapsed < CONTROL_DEADLINE * 2,
         "`story daemon stop` took {elapsed:?} with an SSE connection open — an open, \
          long-lived request must never hold the trusted-hosts lock across its whole \
          lifetime, or every other reader (including this shutdown request's own \
@@ -7382,6 +7392,17 @@ fn sse_delivers_a_cli_write_with_the_safety_net_poll_disabled() {
 /// `accept_loop`) actually frees the loop rather than blocking it.
 #[test]
 fn sse_connection_does_not_block_other_requests() {
+    // A blocked accept loop would hang for as long as the SSE connection
+    // stays open below (i.e. indefinitely, since this test never closes it)
+    // — this threshold only needs to rule that out, not assert sub-second
+    // latency, so it's generous enough to tolerate CPU contention from the
+    // rest of this suite running in parallel. Named (SH-394's
+    // `tests/timing_assertions.rs` fence) — this is the reference bound
+    // `a_late_tailnet_bind_does_not_block_shutdown_behind_an_open_sse_
+    // connection` cites for its own, heavier (subprocess-inclusive) sibling
+    // of this assertion.
+    const OPEN_SSE_CEILING: Duration = Duration::from_secs(5);
+
     let _sse_guard = sse_test_lock();
     let fixture = served();
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
@@ -7395,13 +7416,8 @@ fn sse_connection_does_not_block_other_requests() {
         .call()
         .unwrap();
     assert_eq!(resp.status(), 200);
-    // A blocked accept loop would hang for as long as the SSE connection
-    // stays open (i.e. indefinitely, since this test never closes it) —
-    // this threshold only needs to rule that out, not assert sub-second
-    // latency, so it's generous enough to tolerate CPU contention from the
-    // rest of this suite running in parallel.
     assert!(
-        start.elapsed() < Duration::from_secs(5),
+        start.elapsed() < OPEN_SSE_CEILING,
         "a normal request took {:?} while an SSE connection was open — the accept loop \
          may be blocked on it",
         start.elapsed()
@@ -7682,16 +7698,13 @@ fn spawn_sse_server_whose_first_event_is_late(first_event_after: Duration, event
 fn read_sse_until_quiet_after_waits_for_the_first_event_not_the_first_byte() {
     const QUIET: Duration = Duration::from_millis(400);
     const EVENTS: usize = 3;
+    // Named rather than inline (SH-394's `tests/timing_assertions.rs` fence).
+    const OVERALL_CAP: Duration = Duration::from_secs(15);
     let port = spawn_sse_server_whose_first_event_is_late(QUIET * 3, EVENTS);
 
     let mut sse = connect_sse(port, "fake-token");
     let start = Instant::now();
-    let received = read_sse_until_quiet_after(
-        &mut sse,
-        "event: repo-changed",
-        QUIET,
-        Duration::from_secs(15),
-    );
+    let received = read_sse_until_quiet_after(&mut sse, "event: repo-changed", QUIET, OVERALL_CAP);
     let elapsed = start.elapsed();
 
     assert_eq!(
@@ -7702,9 +7715,12 @@ fn read_sse_until_quiet_after_waits_for_the_first_event_not_the_first_byte() {
     );
     // The other half of the contract: the quiet window still ends the read.
     // A reader that simply ran to its cap would satisfy the count above while
-    // costing every caller the full overall timeout.
+    // costing every caller the full overall timeout. Just under half of
+    // OVERALL_CAP (SH-394) rather than a second hand-picked number: still a
+    // strong distinction from "ran to the cap", derived from the same
+    // constant the read itself is bounded by.
     assert!(
-        elapsed < Duration::from_secs(7),
+        elapsed < OVERALL_CAP / 2,
         "the quiet window, not the overall cap, must end the read; it took {elapsed:?}"
     );
 }

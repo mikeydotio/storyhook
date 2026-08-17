@@ -18,6 +18,16 @@ use std::time::{Duration, Instant};
 use fs4::FileExt;
 use storyhook_test_support::{TestEnv, scratch_dir};
 
+/// Named rather than inline (SH-394's `tests/timing_assertions.rs` fence):
+/// well below the 30s spawn-lock bound a working `--deadline 1` must never
+/// reach, generous for a whole CLI process spawn plus the ~1s deadline
+/// itself.
+const DEADLINE_GIVE_UP_CEILING: Duration = Duration::from_secs(10);
+
+/// Named for the same reason: an ordinary command with nothing held must
+/// start and finish well inside this, whatever the machine's ambient load.
+const ORDINARY_COMMAND_CEILING: Duration = Duration::from_secs(5);
+
 /// Opens (creating if needed) and exclusively locks `env`'s daemon spawn
 /// lock, simulating another client mid-spawn. Unlocking is the caller's job;
 /// the file is closed (and any lock released) when the returned handle drops
@@ -66,7 +76,7 @@ fn a_deadline_expires_behind_a_held_spawn_lock_and_says_so() {
         "AppError::Storage carries exit code 5"
     );
     assert!(
-        elapsed < Duration::from_secs(10),
+        elapsed < DEADLINE_GIVE_UP_CEILING,
         "--deadline 1 should give up in about a second, took {elapsed:?} against a \
          30s spawn-lock bound it must never reach"
     );
@@ -112,7 +122,7 @@ fn abandoning_a_deadline_does_not_wedge_the_next_command() {
     let started = Instant::now();
     env.story(dir.path()).arg("list").assert().success();
     assert!(
-        started.elapsed() < Duration::from_secs(5),
+        started.elapsed() < ORDINARY_COMMAND_CEILING,
         "an ordinary command after the abandoned one took {:?}; the earlier \
          giving-up should have left nothing behind to wait on",
         started.elapsed()

@@ -32,6 +32,7 @@
 use std::path::Path;
 use std::process::Output;
 
+use storyhook::daemon::lifecycle::SPAWN_DEADLINE;
 use storyhook::store::{ReadOps, Store};
 use storyhook_test_support::{TestEnv, scratch_dir};
 
@@ -652,6 +653,13 @@ fn a_client_reports_the_daemon_s_own_reason_for_not_starting() {
 /// is not being spent, not that the machine is fast; a threshold near the true
 /// figure would be a speed assertion in a suite that runs at core-count
 /// parallelism, which is a known way to build a flaky test (SH-140).
+///
+/// The ceiling is 4/5 of [`SPAWN_DEADLINE`] itself (SH-394) — derived, not a
+/// second hand-picked number beside the one this test's own message already
+/// names. Proportional rather than "minus one second" so it stays
+/// meaningfully below the deadline (the property this test exists to prove)
+/// however that constant moves, while giving the whole command — process
+/// spawn included — most of a 5-second budget instead of a bare 3.
 #[test]
 fn a_client_does_not_wait_out_the_deadline_for_a_daemon_that_already_died() {
     let env = env_with_store_bytes(b"not a database\n");
@@ -663,9 +671,9 @@ fn a_client_does_not_wait_out_the_deadline_for_a_daemon_that_already_died() {
 
     failure_message(&out, "story list");
     assert!(
-        elapsed < std::time::Duration::from_secs(3),
+        elapsed < SPAWN_DEADLINE * 4 / 5,
         "a daemon that exited must be noticed rather than waited out; the whole \
-         command took {elapsed:?} against a 5s spawn deadline"
+         command took {elapsed:?} against a {SPAWN_DEADLINE:?} spawn deadline"
     );
 }
 
