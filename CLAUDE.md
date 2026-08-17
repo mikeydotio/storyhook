@@ -65,7 +65,10 @@ that made it.
   lost.
 - **The blocker floor versus the carve-out.** They collide whenever a defect is
   `blocked-by` the very instrument that would observe it. Found the first time
-  the rule was used in anger: SH-283 (critical) `blocked-by` SH-335 (high). The
+  the rule was used in anger: SH-283 (critical) `blocked-by` SH-335 (high) — a
+  pairing no longer live on either story, since SH-335 landed and SH-283's edge
+  was demoted to `relates-to` when it closed. What the precedent preserves is the
+  reasoning, not the relation; do not go looking for the edge. The
   carve-out wins, for two reasons worth keeping written down. It is the **more
   specific** rule — it speaks to this exact pairing, where the floor speaks to
   dependencies in general. And the floor's purpose is **anti-stall**, which a
