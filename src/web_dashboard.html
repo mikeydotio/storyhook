@@ -3449,17 +3449,39 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    *
    * `cancelNoticeClock` is what keeps a removed-but-still-running notice from
    * leaving its `visibilitychange` listener attached to `document` for the rest
-   * of the session -- the node is gone, so nothing else would ever release it. */
+   * of the session -- the node is gone, so nothing else would ever release it.
+   *
+   * **The announcement discloses what this destroys** (SH-367). It used to say
+   * only "All notices dismissed", and the comment on
+   * `dismissAllDispatchHistory` justified that silence: the toast pile MIXES a
+   * server-backed dispatch failure with copy, deep-link and mutation errors
+   * that have no record anywhere, so promising recovery would be a comforting
+   * falsehood. The premise was right and the conclusion was wrong. Silence over
+   * a mixed state is itself read as "none of these survive" -- SH-312's failure
+   * mirrored, a mixed outcome reported as a uniform one.
+   *
+   * So it is a HYBRID, which is what SH-361's own `retention.forgotten`
+   * amendment already ruled for the same question one surface over: the
+   * **rule** sentence is unconditional, rendered always, *because a rule cannot
+   * be wrong*; the clause that points somewhere is conditional, and appears
+   * only when this pile actually holds something that surface will have. The
+   * provenance that makes it conditional is one flag at one call site --
+   * `finishDispatch` is the only path that raises a recoverable notice. */
   function dismissAllToasts() {
     var stack = $("toast-stack");
     var before = noticeFocusIn($("toast-region"));
+    var hadRecoverable = !!stack.querySelector('[data-recoverable="dispatch"]');
     Array.prototype.slice.call(stack.children).forEach(function(node) {
       if (node.cancelNoticeClock) node.cancelNoticeClock();
       node.remove();
     });
     syncNoticeDock();
     settleNoticeFocus(before, null);
-    announceInNoticeDock("All notices dismissed");
+    announceInNoticeDock(
+      "All notices dismissed. Dismissed notices are not kept." +
+      (hadRecoverable
+        ? " Dispatch results remain in the Dispatch log under Settings."
+        : ""));
   }
 
   /** The same, for the dispatch history (SH-337: mutated node by node too,
@@ -3471,14 +3493,19 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     state.dispatchHistory = [];
     syncNoticeDock();
     settleNoticeFocus(before, null);
-    // SH-361: the one place a bulk clear can honestly promise recovery.
-    // `dismissAllToasts` deliberately gains NOTHING, and that omission is a
-    // decision rather than an oversight -- the toast pile MIXES a
-    // server-backed dispatch failure with copy, deep-link and mutation
-    // errors that have no record anywhere, so telling that reader their pile
-    // survives would be a comforting falsehood in the announcement channel,
-    // which is exactly what SH-312's rule forbids. Every row in THIS region
-    // came from a dispatch, so every row is in the daemon's log.
+    // SH-361: the one place a bulk clear can promise recovery UNCONDITIONALLY.
+    // Every row in THIS region came from a dispatch, so every row is in the
+    // daemon's log and no test on the pile's contents is needed.
+    //
+    // `dismissAllToasts` used to gain nothing at all, on the reasoning that
+    // the toast pile MIXES a server-backed dispatch failure with copy,
+    // deep-link and mutation errors that have no record anywhere, so promising
+    // recovery there would be the comforting falsehood SH-312 forbids. SH-367
+    // kept that premise and reversed the conclusion: silence over a mixed
+    // state is *itself* read as "none of these survive", which is the same
+    // rule broken in the other direction. That surface now states the
+    // retention rule unconditionally and points at this log only when its own
+    // pile holds something this log will have.
     announceInNoticeDock(
       "All dispatch results dismissed. They remain in the Dispatch log under Settings.");
   }
@@ -3709,6 +3736,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     stack.insertBefore(node, stack.firstChild);
     if (!durable) scheduleAutoDismiss(node);
     syncNoticeDock();
+    // Returned so a caller that knows its outcome is recoverable elsewhere can
+    // say so on the node (SH-367). Only `finishDispatch` does; see
+    // `dismissAllToasts`.
+    return node;
   }
 
   /** Turns an `api()` rejection into the sentence a user should read.
@@ -4166,7 +4197,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     } else if (auto) {
       addDispatchHistoryRow(storyId, headline, detail, reason);
     } else {
-      toast(headline, "error", detail, reason);
+      // The one notice in this stack whose loss is recoverable: the daemon
+      // keeps every finished `DispatchRecord` regardless of `auto`
+      // (`DispatchRegistry::finish` has no filter on it), so an ATTENDED
+      // failure is in `GET /api/dispatch-log` exactly as an unattended one is.
+      // `dismissAllToasts` reads this to decide whether it may say so.
+      toast(headline, "error", detail, reason).dataset.recoverable = "dispatch";
     }
     if (state.drawerId === storyId) renderDrawer();
     fetchData();
