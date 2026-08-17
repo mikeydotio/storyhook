@@ -44,7 +44,7 @@
 # `make test` runs without it, the deferral is printed and named, never
 # silent.
 
-.PHONY: test test-full build fmt lint clippy check release-build install check-no-orphan-servers e2e-install e2e
+.PHONY: test test-full build fmt lint clippy check release-build install check-no-orphan-servers e2e-install e2e merge-watch
 
 # Where `make install` puts the binary. Mirrors install.sh's default and its
 # STORYHOOK_INSTALL_DIR override so both entry points agree; a one-off can
@@ -178,6 +178,20 @@ e2e-install:
 # the loop) or `make e2e ARGS=--project=webkit` (runs that one project only).
 e2e:
 	bash scripts/run-e2e.sh $(ARGS)
+
+# One reconcile pass over every open PR (SH-396): computes each PR's merge
+# tree against origin/main, and for any tree with no `make test` receipt yet,
+# tests it in a persistent worktree and certifies it for real on green --
+# so a PR that has gone green here needs no further work at merge time, and
+# `.githooks/pre-push` already recognizes the resulting tree once it lands.
+# Reports on the PR itself (an upserted comment, never a fresh one per pass --
+# see scripts/merge-watch.sh's own header for why). This target runs ONE
+# pass and exits; it installs no timer of its own. Meant to be re-run every
+# 1-3 minutes by something that already exists on this machine (`/loop`, a
+# launchd job) -- bootstrapping that recurrence is a per-machine choice, not
+# something this target does for you.
+merge-watch:
+	bash scripts/merge-watch.sh
 
 # Fails if a test-spawned server from this worktree is still running. Never
 # looks at the installed dashboard daemon on :3456 — that one is production.
