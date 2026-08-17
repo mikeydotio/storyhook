@@ -137,12 +137,32 @@ breaks one fails the suite; one that keeps the promise by other means does not.
 Standing rules for every wave:
 
 - Every commit passes `make test`; history stays bisectable and two-hats clean.
-- **`make test` is the gate, and the only one.** It runs the whole suite over
-  `/api/v1/invoke`, because since SH-114 that is the only way a `story` command reaches the
-  store. `make test-daemon` and `make gate` are gone with the second transport; what the
-  daemon leg caught — a fixture that is only correct when nothing else holds the store — the
-  single run catches now. `--test-threads=4` is a **bound on how many daemons exist at
-  once**, kept as a measured decision; the arithmetic is on the target.
+- **`make test` is the merge gate; `make test-full` is the release gate** (SH-394). Both run
+  the whole Rust suite over `/api/v1/invoke`, because since SH-114 that is the only way a
+  `story` command reaches the store — `make test-daemon` and `make gate` are gone with the
+  second transport, and what the daemon leg caught (a fixture only correct when nothing else
+  holds the store) the single run catches now. `--test-threads=4` is a **bound on how many
+  daemons exist at once**, kept as a measured decision; the arithmetic is on the target.
+  `make test-full` additionally runs `scripts/run-e2e.sh`, the dashboard's browser suite:
+  `e2e/playwright.config.ts`'s own SH-222 measurement put that leg at 2.9-6.4 minutes *per
+  desktop project*, against a 36s median for the entire Rust suite
+  (`docs/rearch/baseline/timings.md`) — nearly all of what made "nine minutes nominal,
+  routinely longer" true, and the dashboard is a feature of storyhook, not the tool itself.
+  `.githooks/pre-push` accepts a receipt from either tier and names which one it found;
+  `scripts/release.sh` requires `test-full` and refuses `--skip-gate` outside
+  `--local-only`. Design of record: [`docs/spec/test-tiers.md`](docs/spec/test-tiers.md).
+- **A wall-clock ceiling on a test must derive from the deadline it disproves, never a bare
+  literal** (SH-394). `assert!(elapsed < Duration::from_secs(2), ...)` states two things at
+  once — that some production deadline was not spent, and an opinion about how fast that
+  should look on this machine, today — and the second claim is the one that flakes on a
+  machine running three-to-four concurrent worktree suites at once. Derive the ceiling from
+  the constant it is meant to prove was not reached (half of it, twice it, or the constant
+  plus a stated margin), widen a fixture's own fixed cost rather than tightening the
+  assertion when the two sit too close together to separate any other way, or widen an
+  already self-calibrated ratio when concurrent measurement pays more contention than the
+  baseline it is compared against. `tests/timing_assertions.rs` fences the bare-literal shape
+  mechanically, in either comparison direction and whether or not the type is qualified;
+  it cannot judge whether a margin is wide enough, only that the question was asked by name.
 - **`make test` must keep its isolated `STORYHOOK_DATA_DIR`** (`scripts/run-tests.sh`).
   ~45 test files still build fixtures with `tempfile::tempdir()` and inherit the process
   environment; without the override a test run writes into the developer's real store.
