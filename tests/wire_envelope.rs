@@ -18,8 +18,8 @@
 //! pins that a hop through JSON changes neither.
 
 use storyhook::cli::{
-    AbandonedAction, Attach, ConflictSide, CrashesAction, DaemonAction, EpicAction,
-    GithubAuthAction, GraphMode, HistoryAction, HooksAction, Invocation, MemberInput,
+    AbandonedAction, Attach, AttachmentAction, ConflictSide, CrashesAction, DaemonAction,
+    EpicAction, GithubAuthAction, GraphMode, HistoryAction, HooksAction, Invocation, MemberInput,
     NewProjectRequest, NewProjectSpec, PhaseAction, PluginAction, ProjectAction, SettingsAction,
     SetupMode, SetupStrategy, StateAction, StoreAction, TokenAction, TypeAction, WebAction,
 };
@@ -90,6 +90,7 @@ fn snapshot(id: &str, title: &str) -> StorySnapshot {
         deleted_reason: None,
         hidden_at: None,
         draft: false,
+        attachments: Vec::new(),
     }
 }
 
@@ -1537,6 +1538,38 @@ fn invocation_corpus() -> Vec<Invocation> {
         Invocation::Store {
             action: StoreAction::Backup { label: None },
         },
+        Invocation::Attachment {
+            action: AttachmentAction::Add {
+                id: "SH-1".to_string(),
+                path: "shot.png".to_string(),
+                name: Some("screenshot".to_string()),
+            },
+        },
+        Invocation::Attachment {
+            action: AttachmentAction::Add {
+                id: "SH-1".to_string(),
+                path: "shot.png".to_string(),
+                name: None,
+            },
+        },
+        Invocation::Attachment {
+            action: AttachmentAction::List {
+                id: "SH-1".to_string(),
+            },
+        },
+        Invocation::Attachment {
+            action: AttachmentAction::Remove {
+                id: "SH-1".to_string(),
+                attachment_id: 2,
+            },
+        },
+        Invocation::Attachment {
+            action: AttachmentAction::Save {
+                id: "SH-1".to_string(),
+                attachment_id: 2,
+                path: "out.png".to_string(),
+            },
+        },
     ]
 }
 
@@ -1608,6 +1641,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::ProjectSnapshot => "ProjectSnapshot",
         Invocation::History { .. } => "History",
         Invocation::Migrate { .. } => "Migrate",
+        Invocation::Attachment { .. } => "Attachment",
     }
 }
 
@@ -1621,7 +1655,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        63,
+        64,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

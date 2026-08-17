@@ -29,6 +29,7 @@
 //! `story`, which needs a second connection to the same database, and holding
 //! a write transaction open across that is a deadlock with a five-second fuse.
 
+pub mod attachment;
 pub mod catalog;
 pub mod config;
 pub mod git;
@@ -68,6 +69,7 @@ use crate::store::{
     partition_known,
 };
 
+pub use attachment::{AttachmentService, MAX_ATTACHMENT_BYTES};
 pub use catalog::{
     CatalogEntry, CatalogService, OriginFinding, OriginSweep, OrphanedRegistration, RecordedOrigin,
     UnregisteredOrigin,

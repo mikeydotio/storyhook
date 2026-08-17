@@ -337,6 +337,10 @@ story sync-git [--since <duration>]           # alias of commit-sync
 story github-sync [<id>] [--dry-run] [--resolve local|remote] [--strategy import-all|match-titles|push-only|future-only] [--mode manual|off]
 story link-pr <id> <url> [--no-close-on-merge]
 story unlink-pr <id> <url>
+story attachment add <id> <path> [--name <text>]
+story attachment list <id>
+story attachment remove <id> <n>
+story attachment save <id> <n> <path>
 story pr-check [<id>]
 story github-auth login|status|logout
 story plugin install <target>
