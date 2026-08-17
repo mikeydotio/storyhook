@@ -12,7 +12,10 @@
 #
 # This hook does no work. It asks whether the tree being pushed has a receipt
 # and answers in milliseconds. `scripts/gate-receipt.sh` is what writes one, as
-# the last line of `make test`.
+# the last line of `make test` or `make test-full` (SH-394). Either receipt
+# passes this gate — the reduced `gate` tier protecting `main` is the entire
+# reason the split exists — but the tier is named on the way through so a push
+# that skipped the browser suite never looks the same as one that didn't.
 #
 # Bypasses, both deliberate and both documented in CLAUDE.md:
 #   SKIP_PREPUSH_TESTS=1   announced loudly here (a silent bypass is the same
@@ -57,6 +60,12 @@ while read -r local_ref local_sha _remote_ref remote_sha; do
         refused=1
         continue
     fi
+
+    # Name the tier a passing receipt carries. A receipt written before
+    # SH-394 has no `tier` line at all — treat that the same as `gate` rather
+    # than failing to report it, since that is what it certified.
+    tier="$(sed -n 's/^tier //p' "$receipts/$tree" 2>/dev/null | head -n1)"
+    echo "pre-push: $local_ref (tree $tree) certified — tier ${tier:-gate}." >&2
 
     # Per-commit greenness is a rule this project states, and one this gate
     # deliberately does not enforce: a receipt per commit would mean a

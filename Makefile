@@ -1,25 +1,50 @@
 # Storyhook developer tasks.
 #
-# `make test` is the gate, and the only one — there is no push/PR CI (see
-# .github/workflows/release.yml, which triggers on version tags only), so the
-# local pre-push hook is it. Skipping it is how a non-compiling commit reaches
-# `main` undetected (see #23).
+# Two gate tiers (SH-394), because the browser suite dwarfs everything else in
+# this file. `docs/rearch/baseline/timings.md` puts the whole Rust suite at a
+# 36s median; `e2e/playwright.config.ts`'s own SH-222 measurement puts the
+# Playwright leg at 2.9-6.4 MINUTES per desktop project, and the 52 desktop
+# specs run twice (chromium and webkit). On a machine that routinely runs
+# three-to-four concurrent worktree suites, that gap is the whole reason the
+# gate was ever "nine minutes nominal, routinely longer" — the CLI's own tests
+# were never the slow part.
 #
-# It used to be one of two: `make test-daemon` ran the identical suite a second
-# time with every CLI command going over `/api/v1/invoke`, and `make gate` ran
-# both. That leg existed because there were two transports, and it is gone with
-# the second one (SH-114). What it caught — a fixture that is only correct when
-# nothing else holds the store — is now caught by the only run there is, because
-# every command in it goes through a daemon.
+#   make test        fmt, clippy, the Rust suite, a release build, the plugin
+#                     bash harness. THE MERGE GATE — this is what
+#                     `.githooks/pre-push` requires a receipt for.
+#   make test-full    `make test`, plus `scripts/run-e2e.sh` (the dashboard's
+#                     browser suite). THE RELEASE GATE — `scripts/release.sh`
+#                     will not cut a public release without it, and
+#                     `--skip-gate` stays refused there. See
+#                     `docs/spec/test-tiers.md` for the design of record.
 #
-# `scripts/run-e2e.sh` is the one leg `cargo test` cannot cover: the dashboard's
-# JavaScript has no Rust to exercise it, so it is driven in a real browser
-# instead (see `e2e/`). It fails the whole gate loudly rather than skipping if
-# its Node toolchain was never installed (`make e2e-install`) — a green `make
-# test` that quietly skipped the browser suite would say "the dashboard was
-# verified" when nothing ran, which is worse than a red one.
+# The dashboard is a feature; the CLI is the tool storyhook actually is. A
+# push that changed only Rust code was never made safer by a browser suite
+# that exercises none of it, and a push that changed `src/web_dashboard.html`
+# is still caught — one release away, not never. There is no push/PR CI (see
+# .github/workflows/release.yml, which triggers on version tags only), so
+# `.githooks/pre-push` plus this file is the entire gate. Skipping `make test`
+# is how a non-compiling commit reaches `main` undetected (see #23).
+#
+# `make test` used to run the browser suite too, and before that it was one of
+# two Rust legs: `make test-daemon` ran the identical suite a second time with
+# every CLI command going over `/api/v1/invoke`, and `make gate` ran both.
+# That leg existed because there were two transports, and it is gone with the
+# second one (SH-114). What it caught — a fixture that is only correct when
+# nothing else holds the store — is now caught by the only run there is,
+# because every command in it goes through a daemon.
+#
+# `scripts/run-e2e.sh` is the one leg `cargo test` cannot cover: the
+# dashboard's JavaScript has no Rust to exercise it, so it is driven in a real
+# browser instead (see `e2e/`). Within `make test-full` it fails the whole gate
+# loudly rather than skipping if its Node toolchain was never installed (`make
+# e2e-install`) — a green run that quietly skipped the browser suite would say
+# "the dashboard was verified" when nothing ran, which is worse than a red
+# one. `scripts/leg.sh` is what makes the OTHER direction loud too: when
+# `make test` runs without it, the deferral is printed and named, never
+# silent.
 
-.PHONY: test build fmt lint clippy check release-build install check-no-orphan-servers e2e-install e2e
+.PHONY: test test-full build fmt lint clippy check release-build install check-no-orphan-servers e2e-install e2e
 
 # Where `make install` puts the binary. Mirrors install.sh's default and its
 # STORYHOOK_INSTALL_DIR override so both entry points agree; a one-off can
@@ -96,22 +121,42 @@ INSTALL_DIR ?= $(STORYHOOK_INSTALL_DIR)
 # target instead would have inherited the same deadline pressure and started a
 # second nine-minute suite while the first was still running, which this project
 # has already recorded as the cause of a false red.
+#
+# `test-full: E2E=1` is a target-specific variable (not recursive make): it is
+# visible to every prerequisite `test` reaches, including the `$(if $(E2E),…)`
+# conditional below, without a second process and without re-parsing this
+# file. `test-full` depends on `test` rather than duplicating its recipe, so
+# the two tiers can never drift apart on everything but the browser leg.
+#
+# The receipt's tier argument mirrors E2E exactly: `full` only when the
+# browser suite actually ran, `gate` otherwise. `gate-receipt.sh` refuses to
+# let a `gate` postlude downgrade an existing `full` receipt for the same
+# tree, so re-running the cheap tier after the expensive one never loses the
+# stronger claim.
+#
+# `$(if …)` treats any NON-EMPTY expansion as true -- E2E=0 would still be
+# "on", the same footgun as a shell `[ -n "$VAR" ]` check. There is exactly
+# one place this variable is ever set, immediately below, and it is set or
+# absent, never to a string meaning false.
+test-full: E2E=1
+test-full: test
+
 test: check-no-orphan-servers
 	@bash scripts/gate-receipt.sh preflight
-	cargo fmt --all -- --check
-	cargo clippy --workspace --all-targets -- -D warnings
-	@bash scripts/run-tests.sh -- --test-threads=4
-	cargo build
-	PATH="$(CURDIR)/target/debug:$$PATH" bash plugin/claude-code/tests/run-tests.sh
-	bash scripts/run-e2e.sh
+	bash scripts/leg.sh fmt -- cargo fmt --all -- --check
+	bash scripts/leg.sh clippy -- cargo clippy --workspace --all-targets -- -D warnings
+	@bash scripts/leg.sh rust-suite -- bash scripts/run-tests.sh -- --test-threads=4
+	bash scripts/leg.sh build -- cargo build
+	PATH="$(CURDIR)/target/debug:$$PATH" bash scripts/leg.sh plugin -- bash plugin/claude-code/tests/run-tests.sh
+	$(if $(E2E),bash scripts/leg.sh e2e -- bash scripts/run-e2e.sh,@bash scripts/leg.sh --skipped e2e)
 	@bash scripts/check-no-orphan-servers.sh postlude
-	@bash scripts/gate-receipt.sh postlude
+	@bash scripts/gate-receipt.sh postlude $(if $(E2E),full,gate)
 
 # Installs the e2e/ Node toolchain and the browsers e2e/playwright.config.ts
-# names (chromium, webkit -- SH-335). Not part of `test` itself -- it is a
-# one-time (per-machine, per-Playwright-version) bootstrap step, not
-# something every run should repeat -- but `test`'s e2e leg fails loudly,
-# naming this target, if it was never run.
+# names (chromium, webkit -- SH-335). Not part of either gate target itself --
+# it is a one-time (per-machine, per-Playwright-version) bootstrap step, not
+# something every run should repeat -- but `test-full`'s e2e leg fails loudly,
+# naming this target, if it was never run. `make test` never reaches it.
 #
 # One further, OPTIONAL per-machine step this target documents rather than
 # performs: WebKit's Tab order skips buttons and links unless macOS's Full

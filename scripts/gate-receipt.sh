@@ -2,8 +2,9 @@
 #
 # The developer push gate's two phases — SH-306.
 #
-# `make test` is this project's entire CI (there is no push/PR job by policy),
-# and until now the only thing enforcing "run it before you push" was a Claude
+# `make test` (or `make test-full` -- SH-394) is this project's entire CI
+# (there is no push/PR job by policy), and until now the only thing enforcing
+# "run it before you push" was a Claude
 # Code `PreToolUse` hook with a 900-second timeout. That hook fires for every
 # invocation shape, backgrounded ones included — but `make test` here is nine
 # minutes nominal and routinely longer under the three-to-four concurrent
@@ -26,10 +27,21 @@
 # hook asks whether the tree being pushed has one. The check costs
 # milliseconds.
 #
-#   preflight  enrol this clone, refuse if the gate cannot work here, and
-#              record the tree the suite is about to run against
-#   postlude   the LAST line of `make test`, so make's own fail-fast semantics
-#              mean it is reached only if every leg passed; certifies that tree
+#   preflight       enrol this clone, refuse if the gate cannot work here, and
+#                   record the tree the suite is about to run against
+#   postlude [TIER] the LAST line of `make test` / `make test-full`, so make's
+#                   own fail-fast semantics mean it is reached only if every
+#                   leg passed; certifies that tree
+#
+# TIER is `gate` (the default -- fmt, clippy, the Rust suite, the plugin bash
+# harness) or `full` (`gate` plus the browser suite -- SH-394). It names what
+# was actually run, nothing more: `.githooks/pre-push` accepts either, because
+# the reduced gate protecting `main` is the whole point of the split, but it
+# reports which one a push carries so that is never silent. A `full` receipt
+# for a tree is a strictly stronger claim than a `gate` one for the same tree,
+# so postlude never lets a `gate` run overwrite an existing `full` receipt --
+# re-running the cheap tier after the expensive one must not erase the
+# stronger claim.
 #
 # The receipt is keyed on a tree object id — not a commit sha, and not a clock.
 # Content is the thing that was tested; a clock is a second thing to be wrong
@@ -141,6 +153,12 @@ onto main:"
     ;;
 
 postlude)
+    tier="${2:-gate}"
+    case "$tier" in
+    gate | full) ;;
+    *) die "unknown tier '$tier' -- postlude takes 'gate' or 'full'" ;;
+    esac
+
     [ -f "$preflight_state" ] \
         || die "no preflight was recorded — 'make test' must run \
 'gate-receipt.sh preflight' before its first leg, or nothing certified is \
@@ -160,6 +178,19 @@ certifies nothing. Changed:"
     fi
 
     mkdir -p "$receipts" || die "could not create $receipts"
+
+    # A `full` receipt already on file for this exact tree is a strictly
+    # stronger claim than the `gate` tier this run would write -- don't erase
+    # it. Any other combination (no prior receipt, a prior `gate` receipt, or
+    # this run itself being `full`) proceeds to write below.
+    if [ "$tier" = "gate" ] && [ -f "$receipts/$after" ] \
+        && grep -q '^tier full$' "$receipts/$after" 2>/dev/null; then
+        note "tree $after already carries a full receipt; a gate-tier run \
+does not downgrade it"
+        rm -f "$preflight_state"
+        exit 0
+    fi
+
     # Atomic: the filename IS the claim, so a half-written one would read as
     # valid. rename(2) within a directory is atomic; a SIGTERM mid-write — the
     # exact failure this story measured — leaves the temp file, not a receipt.
@@ -167,12 +198,13 @@ certifies nothing. Changed:"
     {
         printf 'tree %s\n' "$after"
         printf 'worktree %s\n' "$root"
+        printf 'tier %s\n' "$tier"
     } > "$tmp" || die "could not stage the receipt"
     mv -f "$tmp" "$receipts/$after" || die "could not publish the receipt"
     rm -f "$preflight_state"
     ;;
 
 *)
-    die "usage: gate-receipt.sh preflight|postlude"
+    die "usage: gate-receipt.sh preflight|postlude [gate|full]"
     ;;
 esac
