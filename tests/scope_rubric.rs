@@ -208,3 +208,70 @@ fn every_scaffolded_instruction_file_points_at_the_rubric() {
         );
     }
 }
+
+/// `AUTO_SCOPE_CLAUSE`'s literal text, extracted from the checked-in script the
+/// same way `src/api/dispatch.rs::the_shipped_default_templates_are_charter_inert`
+/// extracts every other charter constant — one `VAR="…"` assignment on its own
+/// line.
+fn scope_clause() -> &'static str {
+    let script = include_str!("../plugin/claude-code/bin/story.sh");
+    let prefix = "AUTO_SCOPE_CLAUSE=\"";
+    let line = script
+        .lines()
+        .find(|l| l.starts_with(prefix))
+        .expect("story.sh must define AUTO_SCOPE_CLAUSE on its own line");
+    line.strip_prefix(prefix)
+        .and_then(|rest| rest.strip_suffix('"'))
+        .expect("AUTO_SCOPE_CLAUSE's literal-assignment shape changed -- update this extraction")
+}
+
+#[test]
+fn the_autonomous_charter_carries_the_adoption_clause() {
+    let clause = scope_clause();
+    for needle in [
+        "prefer adopting it into",
+        "context window is still unused",
+        "leave <n> open",
+        "treat it as spent",
+    ] {
+        assert!(
+            clause.contains(needle),
+            "the autonomous charter's scope clause no longer states [{needle}] -- \
+             inertness must not be bought by removing the instructions"
+        );
+    }
+
+    // Defined but never wired into either composition would pass every check
+    // above while reaching no dispatched session at all.
+    let script = include_str!("../plugin/claude-code/bin/story.sh");
+    for var in ["AUTO_PROMPT_TPL=", "AUTO_PROMPT_SOLO_TPL="] {
+        let composition = script
+            .lines()
+            .find(|l| l.starts_with(var))
+            .unwrap_or_else(|| panic!("story.sh must still define {var} on its own line"));
+        assert!(
+            composition.contains("$AUTO_SCOPE_CLAUSE"),
+            "{var} no longer references $AUTO_SCOPE_CLAUSE"
+        );
+    }
+}
+
+#[test]
+fn the_charter_scope_clause_names_no_raw_token_count() {
+    // This project's own rule: a ceiling derives from the deadline it
+    // disproves, never a bare literal (CLAUDE.md's timing-assertions rule,
+    // applied here to a context budget rather than a wall clock). A raw
+    // "500000"/"500k" would state an opinion about how big THIS operator's
+    // context window is -- not a fact about every install this charter ships
+    // to, and vacuously true on a smaller one. That calibration belongs in
+    // CLAUDE.md, next to the window it derives from, not in the shipped
+    // charter. The clause has no legitimate reason to name any digit at all:
+    // "half" and "still unused" carry the condition without picking a number.
+    let clause = scope_clause();
+    assert!(
+        !clause.chars().any(|c| c.is_ascii_digit()),
+        "the charter's scope clause names a raw number; the context condition must be \
+         expressed as a fraction of the window, never a token count -- see CLAUDE.md \
+         for where this project's own calibration belongs"
+    );
+}

@@ -64,7 +64,9 @@ for marker in \
   "gh pr merge --merge" \
   "story block $id" \
   "story move $id done" \
-  "semver bump"; do
+  "semver bump" \
+  "prefer adopting it into" \
+  "context window is still unused"; do
   case "$prompt" in
     *"$marker"*) : ;;
     *) fail_test "auto+council-on: prompt missing charter obligation [$marker]" ;;
@@ -85,7 +87,9 @@ for marker in \
   "story block $id" \
   "story move $id done" \
   "semver bump" \
-  "do not stall"; do
+  "do not stall" \
+  "prefer adopting it into" \
+  "context window is still unused"; do
   case "$solo_prompt" in
     *"$marker"*) : ;;
     *) fail_test "auto+council-off: solo prompt missing charter obligation [$marker]" ;;
