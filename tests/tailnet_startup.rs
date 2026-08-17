@@ -30,7 +30,9 @@
 //! [`an_ordinary_command_autostarts_fast_under_a_wedged_tailscale`],
 //! [`web_start_returns_fast_under_a_wedged_tailscale_and_never_overclaims`])
 //! do not compare against `TAILNET_PROBE_TIMEOUT` at all (SH-394's council
-//! decision, `.council/tailnet-startup-load-flakiness/`). Each measures a
+//! decision — see `story show SH-394`; this project's own council
+//! directories are gitignored and per-worktree, so the verdict is restated
+//! here rather than pointed at alone, per SH-363). Each measures a
 //! quantity that includes a whole process spawn, on a machine that runs
 //! three-to-four concurrent worktree suites at once — and no fixed ceiling
 //! can be simultaneously tight enough to reject a reintroduced synchronous

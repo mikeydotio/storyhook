@@ -130,9 +130,12 @@ proves did not fire:
   ~20s bound, ~6x `TAILNET_PROBE_TIMEOUT`, stayed green with the defect
   present) — the site went to a 3-member council. Two of three seats failed
   to deliver a proposal after two dispatch attempts each; the chair adopted
-  the one substantive proposal received (`.council/tailnet-startup-load-
-  flakiness/`, `ABORT.md` and `DECISION.md`). **Verdict: drop the wall clock
-  entirely.** No fixed ceiling can be both tight enough to reject a
+  the one substantive proposal received, documented as a chair decision
+  under an aborted quorum (see `story show SH-394` for the full trail — this
+  project's own council directories are gitignored and per-worktree, so the
+  verdict is restated here rather than pointed at alone, per SH-363).
+  **Verdict: drop the wall clock entirely.** No fixed ceiling can be both
+  tight enough to reject a
   reintroduced synchronous probe and loose enough to survive this machine's
   load, because that is a structural property of comparing two unrelated
   quantities (probe latency and OS scheduling noise), not a threshold-tuning
