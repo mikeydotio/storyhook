@@ -267,7 +267,14 @@ fn pull_phase_creates_a_local_story_from_an_unmapped_issue() {
         None,
     )
     .expect("syncing");
-    assert!(matches!(response, Response::Message(_)), "{response:?}");
+    // `MessageWithWarnings`, not `Message`, since SH-358: the seeded issue
+    // carries no storyhook block, so the pulled story lands unassessed and the
+    // sync says so — see `pulling_an_issue_with_no_priority_warns_unassessed`
+    // and its sibling below for the dedicated coverage of that behaviour.
+    assert!(
+        matches!(response, Response::MessageWithWarnings(..)),
+        "{response:?}"
+    );
 
     let stories = storage.open_stories().expect("open stories");
     assert_eq!(stories.len(), 1, "{stories:?}");
@@ -276,6 +283,124 @@ fn pull_phase_creates_a_local_story_from_an_unmapped_issue() {
     let config = storage.load_config().expect("loading").expect("configured");
     assert_eq!(config.mappings.len(), 1);
     assert_eq!(config.mappings[0].issue_number, issue.number);
+}
+
+// ---------------------------------------------------------------------------
+// SH-358 -- a pulled issue with no priority lands unassessed, and the sync
+// says so; one with a storyhook priority block does not need to be told.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pulling_an_issue_with_no_priority_warns_unassessed() {
+    // `create_story_from_issue` (this file) only writes `StoryPrioritySet` when
+    // the issue's storyhook block names a priority other than `none` — an
+    // issue with no block at all (`seed_issue`'s default) carries
+    // `RemoteSnapshot::priority == Priority::None`, so the pulled story gets no
+    // priority event and folds unassessed, exactly like `story new` with no
+    // `--priority` (SH-354/SH-359).
+    let fixture = ServiceFixture::new();
+    add_github_remote(&fixture);
+    let ctx = fixture.ctx();
+    let storage = StoreSyncStorage::new(&ctx);
+    let fake = FakeGithubApiFactory::new();
+
+    run_sync_with(
+        &storage,
+        &fake,
+        Some(&token()),
+        None,
+        false,
+        None,
+        Some(InitialStrategy::PushOnly),
+        Some(SyncMode::Manual),
+    )
+    .expect("initial setup");
+
+    fake.seed_issue("No priority named on GitHub");
+
+    let response = run_sync_with(
+        &storage,
+        &fake,
+        Some(&token()),
+        None,
+        false,
+        None,
+        None,
+        None,
+    )
+    .expect("syncing");
+
+    let stories = storage.open_stories().expect("open stories");
+    assert_eq!(stories.len(), 1, "{stories:?}");
+    assert!(
+        !stories[0].priority_assessed,
+        "an issue with no storyhook block must not silently claim its story was assessed"
+    );
+
+    let Response::MessageWithWarnings(_, warnings) = response else {
+        panic!("a sync that pulled an unassessed story must warn: {response:?}");
+    };
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains(&stories[0].id));
+    assert!(warnings[0].contains("story list --unassessed"));
+}
+
+#[test]
+fn pulling_an_issue_with_a_stated_priority_stays_silent() {
+    let fixture = ServiceFixture::new();
+    add_github_remote(&fixture);
+    let ctx = fixture.ctx();
+    let storage = StoreSyncStorage::new(&ctx);
+    let fake = FakeGithubApiFactory::new();
+
+    run_sync_with(
+        &storage,
+        &fake,
+        Some(&token()),
+        None,
+        false,
+        None,
+        Some(InitialStrategy::PushOnly),
+        Some(SyncMode::Manual),
+    )
+    .expect("initial setup");
+
+    // `story_id` names a story that does not exist locally, so
+    // `already_has_a_local_story` still treats this as unmapped
+    // (`already_has_a_local_story`'s own doc — SH-191's shape) and the pull
+    // phase creates a new one, carrying the block's stated priority.
+    let body = "Filed on GitHub, priority already known.\n\n\
+                ---\n\n\
+                ```storyhook\n\
+                story_id: SH-999\n\
+                priority: high\n\
+                ```\n";
+    fake.seed_issue_with_body("Priority already named on GitHub", Some(body));
+
+    let response = run_sync_with(
+        &storage,
+        &fake,
+        Some(&token()),
+        None,
+        false,
+        None,
+        None,
+        None,
+    )
+    .expect("syncing");
+
+    let stories = storage.open_stories().expect("open stories");
+    assert_eq!(stories.len(), 1, "{stories:?}");
+    assert!(
+        stories[0].priority_assessed,
+        "a storyhook block naming a priority must be honoured, not treated as unassessed"
+    );
+    assert_eq!(stories[0].priority.as_str(), "high");
+
+    assert!(
+        matches!(response, Response::Message(_)),
+        "an already-assessed pull must not warn: {response:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -32,11 +32,13 @@ use crate::cli::{
     SettingsAction, StateAction, StoreAction, TokenAction, TypeAction, WebAction,
 };
 use crate::domain::provenance::{ActorLabel, Provenance};
-use crate::domain::{FieldEdit, StateChanges, SuperState, TypeChanges, TypeDef};
+use crate::domain::{
+    FieldEdit, ImportStory, Priority, StateChanges, SuperState, TypeChanges, TypeDef,
+};
 use crate::env::Environment;
 use crate::error::AppError;
 use crate::help_topics;
-use crate::output::{ConfirmationPlan, Response, render_html_report};
+use crate::output::{ConfirmationPlan, Response, StoryView, render_html_report};
 use crate::service::{
     CatalogService, Clock, ConfigService, Ctx, DeleteOutcome, FieldEdits, GitService,
     GroupingService, ImportBatch, InitOptions, InitOutcome, IntegrityService, ListFilters,
@@ -335,39 +337,6 @@ pub fn create_store(cwd: &Path, requested: &str) -> Result<Response, AppError> {
     )))
 }
 
-/// What `story new` says when it was given no `--priority` at all (SH-354).
-///
-/// Not a refusal and not a prompt. `story new` is the most-used command in the
-/// tool, so refusing would break every scripted caller; and a prompt is useless
-/// exactly where the defect happens, since `dispatch` runs inside the daemon
-/// with no terminal to ask at and agents create stories non-interactively. The
-/// council that settled this recorded its verdict on SH-354.
-///
-/// The warning names the consequence rather than scolding, and it is careful to
-/// be *true*: `none` sorts last in `story next`, it is not excluded from it. A
-/// warning about a false statement has no business making one.
-///
-/// **That last sentence is why this text changed in SH-359.** It used to say the
-/// story "is filed at `none`, which means \"deliberately parked\"" — which was
-/// the conflation SH-354 had just warned about, asserted by the warning itself.
-/// Nobody parked the story; nobody said anything. The store can now tell those
-/// apart ([`StorySnapshot::priority_assessed`]), so the warning stops claiming a
-/// decision was made and describes the *consequence* the two share: sorting
-/// last. Which is what the reader needs either way.
-///
-/// It says nothing about the story's type. `bug` is only a default type slug —
-/// a project may rename or drop it — so a check keyed on the word would stop
-/// firing for exactly the projects that renamed it, which is a guard that stops
-/// guarding without saying so.
-fn unstated_priority_warning(id: &str) -> String {
-    format!(
-        "priority not set: nobody has assessed {id}, so it sorts last in \
-         `story next` — alongside stories deliberately parked at `none`. If that \
-         is not what you meant, run `story help priority-rubric` and then \
-         `story prioritize {id} <level>`."
-    )
-}
-
 /// Runs one invocation against the store, in this process.
 ///
 /// This is the stack's entry point, and what replaced the pre-rearchitecture
@@ -436,7 +405,8 @@ pub fn dispatch<S: Store>(
             if let Response::Story(view) = &mut response
                 && !view.story.priority_assessed
             {
-                view.warnings.push(unstated_priority_warning(&story.id));
+                view.warnings
+                    .push(crate::priority_notice::unassessed_warning(&story.id));
             }
             Ok(response)
         }
@@ -636,7 +606,11 @@ pub fn dispatch<S: Store>(
                 drafts,
                 unassessed,
             };
-            query(ctx, |service| service.list(&filters)).map(|views| Response::Stories(views, None))
+            query(ctx, |service| service.list(&filters)).map(|views| Response::Stories {
+                views,
+                message: None,
+                warnings: Vec::new(),
+            })
         }
         Invocation::Show { id } => {
             query(ctx, |service| service.show(&id)).map(|view| Response::Story(Box::new(view)))
@@ -645,8 +619,13 @@ pub fn dispatch<S: Store>(
             let (id, title, entries) = session::story_log(ctx, &id)?;
             Ok(Response::StoryLog { id, title, entries })
         }
-        Invocation::Search { query: needle } => query(ctx, |service| service.search(&needle))
-            .map(|views| Response::Stories(views, None)),
+        Invocation::Search { query: needle } => {
+            query(ctx, |service| service.search(&needle)).map(|views| Response::Stories {
+                views,
+                message: None,
+                warnings: Vec::new(),
+            })
+        }
         Invocation::Next {
             count,
             phase,
@@ -680,7 +659,11 @@ pub fn dispatch<S: Store>(
                 } else if count == 1 {
                     Ok(Response::Story(Box::new(ready.remove(0))))
                 } else {
-                    Ok(Response::Stories(ready, None))
+                    Ok(Response::Stories {
+                        views: ready,
+                        message: None,
+                        warnings: Vec::new(),
+                    })
                 }
             }
         }
@@ -869,9 +852,13 @@ pub fn dispatch<S: Store>(
             if stories.is_empty() {
                 return Ok(Response::Message("no stories to import".to_string()));
             }
-            TransferService::new(ctx)
-                .import(&stories)
-                .map(|batch| Response::Stories(batch.views, None))
+            let mut batch = TransferService::new(ctx).import(&stories)?;
+            let warnings = batch_priority_warnings(&stories, &mut batch.views);
+            Ok(Response::Stories {
+                views: batch.views,
+                message: None,
+                warnings,
+            })
         }
         Invocation::Decompose {
             file,
@@ -886,9 +873,14 @@ pub fn dispatch<S: Store>(
             if stories.is_empty() {
                 return Ok(Response::Message("no stories to import".to_string()));
             }
-            let batch = TransferService::new(ctx).import(&stories)?;
+            let mut batch = TransferService::new(ctx).import(&stories)?;
             let summary = decompose_summary(&batch);
-            Ok(Response::Stories(batch.views, Some(summary)))
+            let warnings = batch_priority_warnings(&stories, &mut batch.views);
+            Ok(Response::Stories {
+                views: batch.views,
+                message: Some(summary),
+                warnings,
+            })
         }
         // The `project` arms that name a project rather than creating,
         // destroying or enumerating them, so the only ones answered here.
@@ -1613,9 +1605,15 @@ fn dispatch_phase<S: Store>(ctx: &Ctx<'_, S>, action: PhaseAction) -> Result<Res
     let service = GroupingService::new(ctx);
     match action {
         PhaseAction::List => service.phases().map(Response::PhaseList),
-        PhaseAction::Show { phase } => service
-            .phase_stories(&phase)
-            .map(|views| Response::Stories(views, None)),
+        PhaseAction::Show { phase } => {
+            service
+                .phase_stories(&phase)
+                .map(|views| Response::Stories {
+                    views,
+                    message: None,
+                    warnings: Vec::new(),
+                })
+        }
         PhaseAction::Add { id, phase } => {
             service.assign_phase(&id, &phase)?;
             Ok(Response::Message(format!("assigned {id} to phase {phase}")))
@@ -1635,7 +1633,11 @@ fn dispatch_phase<S: Store>(ctx: &Ctx<'_, S>, action: PhaseAction) -> Result<Res
 fn dispatch_epic<S: Store>(ctx: &Ctx<'_, S>, action: EpicAction) -> Result<Response, AppError> {
     let service = GroupingService::new(ctx);
     match action {
-        EpicAction::List => service.epics().map(|views| Response::Stories(views, None)),
+        EpicAction::List => service.epics().map(|views| Response::Stories {
+            views,
+            message: None,
+            warnings: Vec::new(),
+        }),
         EpicAction::Show { id } => ctx.story_view(&id),
         EpicAction::Create { title } => {
             let story = service.create_epic(&title)?;
@@ -2405,6 +2407,69 @@ fn decompose_input(
                 .to_string(),
         )),
     }
+}
+
+/// What `story import` and `story decompose` say about the batch they just
+/// filed, when some of it landed unassessed (SH-358).
+///
+/// `specs` and `views` are parallel and same-length — [`TransferService::import`]'s
+/// own doc guarantees `views` is "the stories created, in the order they were
+/// described" — so this zips them rather than re-deriving anything from the
+/// store.
+///
+/// Two responsibilities, kept together because they read the same zip once
+/// rather than twice:
+///
+/// 1. **Per-story attribution.** Every view whose
+///    [`priority_assessed`](crate::domain::StorySnapshot::priority_assessed) came
+///    back `false` gets [`priority_notice::unassessed_warning`] pushed onto its
+///    own `warnings` — a `--json` caller (`/story-plan` drives `decompose`) can
+///    then tell exactly which of a large batch need a look, which the aggregate
+///    line below deliberately cannot.
+/// 2. **The aggregate.** At most two lines regardless of batch size — the
+///    story's own constraint, so a spec of forty does not emit forty. One names
+///    how many of the batch are unassessed and points at
+///    `story list --unassessed`; a second, only if it applies, names which
+///    entries gave a priority the domain could not parse — the leniency that
+///    silently dropped those (`service::transfer::import_events`) still imports
+///    them, so this is the only place that silence ends.
+fn batch_priority_warnings(specs: &[ImportStory], views: &mut [StoryView]) -> Vec<String> {
+    debug_assert_eq!(
+        specs.len(),
+        views.len(),
+        "a batch's specs and created views must be the same length and in the same order"
+    );
+
+    let mut unassessed_ids = Vec::new();
+    let mut unparseable = Vec::new();
+
+    for (spec, view) in specs.iter().zip(views.iter_mut()) {
+        if view.story.priority_assessed {
+            continue;
+        }
+        view.warnings
+            .push(crate::priority_notice::unassessed_warning(&view.story.id));
+        unassessed_ids.push(view.story.id.clone());
+        if let Some(raw) = spec.priority.as_deref()
+            && Priority::parse(raw).is_none()
+        {
+            unparseable.push((view.story.id.clone(), raw.to_string()));
+        }
+    }
+
+    let mut warnings = Vec::new();
+    if !unassessed_ids.is_empty() {
+        warnings.push(crate::priority_notice::unassessed_batch_warning(
+            &unassessed_ids,
+            views.len(),
+        ));
+    }
+    if !unparseable.is_empty() {
+        warnings.push(crate::priority_notice::unparseable_priority_warning(
+            &unparseable,
+        ));
+    }
+    warnings
 }
 
 /// The `Created 3 stories with 2 relationships:` block `story decompose` prints

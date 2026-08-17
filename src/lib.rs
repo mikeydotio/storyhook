@@ -18,6 +18,7 @@ pub mod legacy;
 pub mod mcp;
 pub mod output;
 pub mod plugin;
+pub mod priority_notice;
 pub mod service;
 pub mod storage;
 pub mod store;

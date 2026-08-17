@@ -281,17 +281,37 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
             "claimed",
             Response::Claimed(Box::new(maximal_view()), "todo".to_string()),
         ),
-        ("stories_empty", Response::Stories(Vec::new(), None)),
+        (
+            "stories_empty",
+            Response::Stories {
+                views: Vec::new(),
+                message: None,
+                warnings: Vec::new(),
+            },
+        ),
         (
             "stories_with_message",
-            Response::Stories(
-                vec![maximal_view(), view(snapshot("SH-2", "Second"))],
-                Some("2 ready stories".to_string()),
-            ),
+            Response::Stories {
+                views: vec![maximal_view(), view(snapshot("SH-2", "Second"))],
+                message: Some("2 ready stories".to_string()),
+                warnings: Vec::new(),
+            },
         ),
         (
             "stories_without_message",
-            Response::Stories(vec![view(snapshot("SH-3", "Third"))], None),
+            Response::Stories {
+                views: vec![view(snapshot("SH-3", "Third"))],
+                message: None,
+                warnings: Vec::new(),
+            },
+        ),
+        (
+            "stories_with_warnings",
+            Response::Stories {
+                views: vec![view(snapshot("SH-4", "Fourth"))],
+                message: Some("Created 1 story".to_string()),
+                warnings: vec!["priority not set on 1 of 1 stories: SH-4".to_string()],
+            },
         ),
         ("summary", Response::Summary(Box::new(summary()))),
         (
@@ -702,7 +722,7 @@ fn the_response_corpus_covers_every_variant() {
             Response::MessageWithWarnings(..) => "message_with_warnings",
             Response::Story(_) => "story",
             Response::Claimed(..) => "claimed",
-            Response::Stories(..) => "stories",
+            Response::Stories { .. } => "stories",
             Response::Summary(_) => "summary",
             Response::Graph(_) => "graph",
             Response::Issues(_) => "issues",

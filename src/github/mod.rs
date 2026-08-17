@@ -691,7 +691,40 @@ pub fn run_sync_with(
         sync.save_config(&config)?;
     }
 
-    report.outcome()
+    // A pulled issue with no storyhook priority block files at the fold's
+    // starting value with nobody having assessed it — `create_story_from_issue`
+    // goes through `StoryService::create` with a bare `NewStoryInput`, the same
+    // door `service::grouping`'s epic/phase creations use, and no
+    // `StoryPrioritySet` event is written (SH-358). Skipped in a dry run: a
+    // dry-run entry's "id" is the literal `"(dry-run)"`, since nothing was
+    // written to read back.
+    //
+    // A conflict or a per-story error already returned above via `?` on
+    // `report.outcome()`, so only the success arm reaches this — a warning is
+    // additive to it, never a reason to change its exit code.
+    let unassessed: Vec<String> = if dry_run {
+        Vec::new()
+    } else {
+        report
+            .created_stories
+            .iter()
+            .filter_map(|(_, id)| match sync.story(id) {
+                Ok(snapshot) if !snapshot.priority_assessed => Some(id.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+
+    match report.outcome()? {
+        Response::Message(message) if !unassessed.is_empty() => Ok(Response::MessageWithWarnings(
+            message,
+            vec![crate::priority_notice::unassessed_batch_warning(
+                &unassessed,
+                report.created_stories.len(),
+            )],
+        )),
+        other => Ok(other),
+    }
 }
 
 // ---------------------------------------------------------------------------

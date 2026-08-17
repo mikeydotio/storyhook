@@ -1714,7 +1714,12 @@ fn the_decompose_arm_summarizes_the_stories_and_relationships_it_created() {
         },
     )
     .expect("decomposing");
-    let Response::Stories(views, Some(summary)) = response else {
+    let Response::Stories {
+        views,
+        message: Some(summary),
+        ..
+    } = response
+    else {
         panic!("`story decompose` must answer with stories and a summary");
     };
     assert!(!views.is_empty());
