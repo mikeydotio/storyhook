@@ -1289,6 +1289,80 @@ fn every_backdrop_overlay_is_wired_into_the_focus_trap() {
     );
 }
 
+/// A card's presentational body is transparent to pointer events, so a click
+/// anywhere on it always lands on `.card` itself (SH-397).
+///
+/// `.card`'s own node survives an ordinary board re-render
+/// (`reconcileColumnCards` reuses it, keyed by `data-id`), but
+/// `populateCard()` clears and rebuilds every *child* on every render,
+/// unconditionally. The click listener is bound once on `.card`, so a
+/// re-render landing between a real mousedown and mouseup can destroy the
+/// child the pointer is actually over -- and per the UI Events
+/// click-dispatch algorithm, a `mousedown` target disconnected before
+/// `mouseup` means no `click` fires anywhere at all, not even at an
+/// ancestor. `.card * { pointer-events: none }` makes this structurally
+/// impossible rather than timing-dependent: whatever the pointer is over
+/// inside a card, the hit test resolves to `.card`, which nothing destroys
+/// on an ordinary render. `e2e/specs/drawer-open-race.spec.ts` proves the
+/// behaviour in a real browser, deterministically, by forcing the exact
+/// race through the daemon's own `/data` reply; this fences the CSS rule
+/// that closes it so a future edit to this block cannot narrow or drop it
+/// silently.
+///
+/// The two descendants punched back through with `pointer-events: auto`
+/// need genuine per-element interactivity for what THEY do, not what the
+/// card does: `.card-actions-btn` (opens this card's own menu) and `.rel-id`
+/// (a reference to a DIFFERENT story, reachable from a blocked-by badge or a
+/// cleared-blocker chip -- `storyRef()`'s own `stopPropagation()` depends on
+/// the click reaching it). Both remain individually exposed to the identical
+/// hazard this rule closes for the card body -- named in SH-397's own
+/// closing comment, not fenced here, since neither can take
+/// `pointer-events: none` and closing it needs a different shape of fix.
+#[test]
+fn every_presentational_descendant_of_a_card_is_transparent_to_pointer_events() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading src/web_dashboard.html");
+
+    const OPEN: &str = "<style>";
+    const CLOSE: &str = "</style>";
+    let opens = html.matches(OPEN).count();
+    let closes = html.matches(CLOSE).count();
+    assert_eq!(
+        (opens, closes),
+        (1, 1),
+        "expected exactly one <style> block in src/web_dashboard.html, found \
+         {opens} open tag(s) and {closes} close tag(s) -- this scan reads only \
+         the first, and a second block would leave rules unseen"
+    );
+    let start = html.find(OPEN).unwrap() + OPEN.len();
+    let end = html.find(CLOSE).unwrap();
+    let style = &html[start..end];
+
+    assert!(
+        style.contains(".card * { pointer-events: none; }")
+            || style.contains(".card *{pointer-events:none;}")
+            || style.contains(".card * {\n  pointer-events: none;\n}"),
+        "expected a rule making every descendant of `.card` transparent to \
+         pointer events (SH-397) -- without it, a click can land on a child \
+         `populateCard()` is free to destroy between mousedown and mouseup, \
+         and WebKit's (and Chromium's) own click-dispatch algorithm then \
+         fires no `click` event at all. Exact text expected: \
+         `.card * {{ pointer-events: none; }}` (whitespace-flexible)."
+    );
+
+    for selector in [".card-actions-btn", ".rel-id"] {
+        assert!(
+            style.contains(&format!(".card .{}", &selector[1..])),
+            "expected `.card {selector}` to be punched back through with \
+             `pointer-events: auto` -- without it, the blanket `.card * {{ \
+             pointer-events: none }}` rule above makes {selector} unclickable \
+             wherever it appears inside a card (SH-397)"
+        );
+    }
+}
+
 /// Every backdrop is shown and hidden through the shared pair, never by hand
 /// (SH-302).
 ///
