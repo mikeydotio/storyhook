@@ -2638,7 +2638,9 @@ mod tests {
                 let line = script
                     .lines()
                     .find(|l| l.starts_with(prefix))
-                    .unwrap_or_else(|| panic!("story.sh must still define {prefix} on its own line"));
+                    .unwrap_or_else(|| {
+                        panic!("story.sh must still define {prefix} on its own line")
+                    });
                 charter_vars_referenced(line)
             })
             .collect();
