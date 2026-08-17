@@ -522,6 +522,32 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
 .card.pending { opacity: 0.55; pointer-events: none; }
 .card.not-draggable { cursor: default; }
 .card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* SH-397: `.card`'s own node survives an ordinary board re-render
+   (`reconcileColumnCards` reuses it, keyed by `data-id`), but
+   `populateCard()` clears and rebuilds every *child* on every render,
+   unconditionally -- so a pointer that landed on a child (`.card-title`, for
+   a short card's centre point) between a real mousedown and the matching
+   mouseup can find its target destroyed out from under it by a `/data`
+   reply landing in that window. Per the UI Events click-dispatch algorithm,
+   a `mousedown` target disconnected before `mouseup` means no `click` fires
+   anywhere at all -- not even at an ancestor -- so the listener bound once
+   on `.card` itself (which a render never destroys or rebinds) never runs,
+   and nothing recovers. Made structurally impossible rather than timing-
+   dependent: every presentational descendant is transparent to pointer
+   events, so a pointer anywhere in the card body always resolves to `.card`
+   itself. The two descendants that need real per-element interactivity are
+   punched back through explicitly, immediately below. */
+.card * { pointer-events: none; }
+/* The two card-body descendants a click must land on for what THEY do, not
+   what the card does: the "⋯" actions button (opens this card's own menu),
+   and any `.rel-id` reference this card renders for a DIFFERENT story (a
+   blocked-by badge, a cleared-blocker chip) -- storyRef()'s own
+   stopPropagation() depends on the click actually reaching it. Both are
+   individually still exposed to the identical race this rule closes for the
+   card body; they need genuine per-target interactivity, so they cannot
+   take pointer-events: none, and are tracked separately rather than fixed
+   here. */
+.card .card-actions-btn, .card .rel-id { pointer-events: auto; }
 .card-id-row { display: flex; align-items: center; gap: 0.3125rem; }
 .card-id { font-family: var(--mono); font-size: 0.6875rem; color: var(--fg-faint); font-weight: 600; }
 .type-badge { font-size: 0.8125rem; line-height: 1; }
