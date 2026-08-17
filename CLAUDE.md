@@ -592,6 +592,45 @@ Standing rules for every wave:
   retroactively express it, and the fix is for *absence* to decode as "states nothing,"
   resolved against whatever the reader already believes, never silently promoted to a
   negative answer.
+- **`.githooks/pre-push` cannot see a merge commit, so nothing certified it — a poller has
+  to** (SH-396). `gh pr merge --merge` is a server-side merge: no push happens, so the push
+  gate never fires, and this project runs no test CI in GitHub Actions by policy. PR #484
+  (SH-315) landed exactly that gap: two independently green branches — an exhaustive
+  `Invocation` match in `tests/unassessed_priority_paths.rs`, and SH-315's new `Attachment`
+  variant with no arm added for it — with zero textual conflict, merged into a tree that
+  failed to compile. `main` was red for 73 minutes before anyone noticed. Measured over the
+  30 merges preceding the fix: **14 produced a tree matching neither parent** — content no
+  receipt could possibly have covered; one of the 14 didn't compile. `scripts/merge-
+  preflight.sh` asks the exact question before a merge happens rather than a proxy for it:
+  `git merge-tree --write-tree origin/main <pr-head>` computes the tree the merge WOULD
+  produce (verified byte-identical to a real merge of the same two parents,
+  `tests/merge_gate.rs::the_predicted_tree_matches_a_real_merges_tree_exactly`), and checks
+  it against the same tree-oid-keyed receipt store `.githooks/pre-push` already reads — a
+  merge tree and a pushed tree are the same kind of claim, so they share the one store
+  rather than needing a second one taught to every reader of the first. `make test` is
+  36.4s median warm on this machine (`docs/rearch/baseline/timings.md`), so the gate runs
+  as `scripts/merge-watch.sh`, a poller over every open PR (`make merge-watch`, meant to be
+  re-run every 1-3 minutes by something that already exists on the machine — installing
+  that timer is a bootstrap step this repo documents rather than performs) rather than a
+  merge-time-only check that depends on an agent remembering to invoke it: it reaches a
+  merge made from the GitHub UI, another machine, or a session that never read this file,
+  none of which a local hook can. A green run certifies the tree for real through the same
+  `gate-receipt.sh` postlude every ordinary push uses, so a PR that has gone green here
+  needs no further work once actually merged. Status is reported by upserting one PR
+  comment per PR, found by a fixed marker and edited in place rather than posted fresh —
+  GitHub does not notify on an edit the way it does on a new comment, so a PR that is still
+  red after the next poll produces one notification total, not one per pass, which is the
+  self-noise shape this project has already paid for three times over (SH-306, SH-345,
+  SH-263: a gate or fixture that fires repeatedly for one unchanged fact). The comment
+  always carries a last-checked timestamp for exactly the reason SH-306 named one layer
+  down: a gate that goes silent (the poller dies, `gh` auth expires) must read as stale, not
+  as a quiet all-clear. `tests/merge_gate.rs` exhaustively covers the primitive
+  (`merge-preflight.sh`) the way `tests/push_gate.rs` covers the push gate — real git, real
+  receipts from the production writer, mutation-checked; `merge-watch.sh`'s own `gh`
+  orchestration is deliberately outside that suite, for the same reason SH-263 and SH-345
+  are the precedent rather than the counter-example: mocking `gh`'s behaviour would validate
+  the mock, not the integration, so it is verified by hand against this repo's own live PRs
+  instead.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
