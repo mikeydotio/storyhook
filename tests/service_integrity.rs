@@ -23,7 +23,8 @@ use storyhook::domain::finding::{Finding, FindingCode, FindingData};
 use storyhook::domain::{StateDef, StoryEvent, SuperState, TypeDef, fold_story};
 use storyhook::error::AppError;
 use storyhook::service::{
-    Ctx, Examination, IntegrityService, NewStoryInput, QueryService, RelationService, StoryService,
+    AttachmentService, Ctx, Examination, IntegrityService, NewStoryInput, QueryService,
+    RelationService, StoryService,
 };
 use storyhook::store::{
     ExpectedSeq, ReadOps, SqliteStore, Store, StoreError, StoryNo, WriteOps, folds, partition_known,
@@ -2776,7 +2777,10 @@ fn every_finding_code() -> Vec<FindingCode> {
             | FindingCode::ReadModelDivergence
             | FindingCode::UndecodableEvent
             | FindingCode::UnexaminedStory
-            | FindingCode::Unstructured => code,
+            | FindingCode::Unstructured
+            | FindingCode::MissingAttachmentBlob
+            | FindingCode::OrphanedAttachmentBlob
+            | FindingCode::AttachmentBlobMismatch => code,
         }
     };
     [
@@ -2796,6 +2800,9 @@ fn every_finding_code() -> Vec<FindingCode> {
         FindingCode::UndecodableEvent,
         FindingCode::UnexaminedStory,
         FindingCode::Unstructured,
+        FindingCode::MissingAttachmentBlob,
+        FindingCode::OrphanedAttachmentBlob,
+        FindingCode::AttachmentBlobMismatch,
     ]
     .into_iter()
     .map(named)
@@ -2912,6 +2919,78 @@ fn code_provocations() -> Vec<Box<dyn Fn() -> Vec<Finding>>> {
                     relation: "blocks".to_string(),
                 }],
             );
+            let found = findings(&fixture);
+            let _ = fix(&fixture);
+            found
+        }),
+        // SH-315: a real attachment, its blob row deleted out from under it —
+        // the snapshot still claims it, the bytes are gone.
+        Box::new(|| {
+            const PNG_BYTES: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0];
+            let fixture = ServiceFixture::new();
+            let ctx = fixture.ctx();
+            let id = new_story(&ctx, "with an attachment");
+            AttachmentService::new(&ctx)
+                .add(&id, PNG_BYTES, "shot.png", None)
+                .expect("attaching");
+            drop(ctx);
+            Connection::open(fixture.store().path())
+                .expect("opening the store")
+                .execute("DELETE FROM story_attachment_blobs", [])
+                .expect("damaging the store");
+            let found = findings(&fixture);
+            let _ = fix(&fixture);
+            found
+        }),
+        // SH-315: a blob row with no attachment in any snapshot naming it —
+        // written directly, since the service never leaves one behind.
+        Box::new(|| {
+            let fixture = ServiceFixture::new();
+            let ctx = fixture.ctx();
+            new_story(&ctx, "with an orphaned blob");
+            drop(ctx);
+            let placeholder_sha = "0".repeat(64);
+            Connection::open(fixture.store().path())
+                .expect("opening the store")
+                .execute(
+                    &format!(
+                        "INSERT INTO story_attachment_blobs \
+                             (project_id, story_no, attachment_id, bytes, byte_len, sha256, \
+                              added_at) \
+                         SELECT project_id, story_no, 1, X'89504e470d0a1a0a', 8, \
+                             '{placeholder_sha}', '2026-01-01T00:00:00Z' \
+                         FROM stories LIMIT 1"
+                    ),
+                    [],
+                )
+                .expect("orphaning a blob");
+            let found = findings(&fixture);
+            let _ = fix(&fixture);
+            found
+        }),
+        // SH-315: a real attachment whose stored sha256 was altered after the
+        // fact — the snapshot's recorded hash no longer matches the row.
+        // Not `byte_len`: the schema's own `CHECK (byte_len = length(bytes))`
+        // would refuse a length that disagrees with the actual blob, so only
+        // `sha256` — which carries no such constraint against the bytes — can
+        // be damaged this way without the damage SQL itself failing.
+        Box::new(|| {
+            const PNG_BYTES: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0];
+            let fixture = ServiceFixture::new();
+            let ctx = fixture.ctx();
+            let id = new_story(&ctx, "with a mismatched attachment");
+            AttachmentService::new(&ctx)
+                .add(&id, PNG_BYTES, "shot.png", None)
+                .expect("attaching");
+            drop(ctx);
+            let wrong_sha = "1".repeat(64);
+            Connection::open(fixture.store().path())
+                .expect("opening the store")
+                .execute(
+                    &format!("UPDATE story_attachment_blobs SET sha256 = '{wrong_sha}'"),
+                    [],
+                )
+                .expect("damaging the store");
             let found = findings(&fixture);
             let _ = fix(&fixture);
             found
