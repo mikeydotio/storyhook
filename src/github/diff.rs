@@ -777,7 +777,10 @@ mod tests {
 
         let result = three_way_merge(&base, &local, &remote);
 
-        assert_eq!(result.remote_updates.priority, FieldEdit::Set(Priority::None));
+        assert_eq!(
+            result.remote_updates.priority,
+            FieldEdit::Set(Priority::None)
+        );
         assert!(result.local_updates.priority.is_keep());
     }
 

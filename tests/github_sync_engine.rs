@@ -996,10 +996,7 @@ fn a_hand_deleted_remote_priority_key_is_silence_not_a_statement() {
 
     let created = fake.created_issues();
     assert_eq!(created.len(), 1, "{created:?}");
-    let config = storage
-        .load_config()
-        .expect("loading")
-        .expect("configured");
+    let config = storage.load_config().expect("loading").expect("configured");
     let issue_number = config
         .mappings
         .iter()
@@ -1014,10 +1011,13 @@ fn a_hand_deleted_remote_priority_key_is_silence_not_a_statement() {
     // A human deletes the `priority:` line on GitHub directly -- bypassing
     // the sync engine's own renderer entirely, the way an actual hand edit
     // would.
-    let client = fake.build("token".to_string(), "acme".to_string(), "widgets".to_string());
-    let edited_body = format!(
-        "Parked, then edited by hand.\n\n---\n\n```storyhook\nstory_id: {story_id}\n```\n"
+    let client = fake.build(
+        "token".to_string(),
+        "acme".to_string(),
+        "widgets".to_string(),
     );
+    let edited_body =
+        format!("Parked, then edited by hand.\n\n---\n\n```storyhook\nstory_id: {story_id}\n```\n");
     client
         .update_issue(
             issue_number,
