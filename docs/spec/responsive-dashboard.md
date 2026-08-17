@@ -95,6 +95,27 @@ height than the token's own 24px desktop floor before the token existed (36px, 4
 a bare `var(--tap-min)` would have *shrunk* either on a fine pointer instead of only
 raising it where it was too short.
 
+**`<select>` is the one exception to `min-height`, and reads an explicit `height`
+instead (SH-377).** WebKit ignores `min-height` entirely on a default-appearance
+(menulist) `<select>` — measured at ~20-23px on that engine regardless of
+`--tap-min`'s own value, against `min-height` correctly resolving on Blink. `height`
+is the one sizing property WebKit does honour there, so every select in the sheet
+carries `height: max(2.5rem, var(--tap-min))` — one bare `select` selector, so a
+select added anywhere in this file is covered with no further edit, rather than
+repeating the rule across each of the (seven, not four) selectors that place a
+`<select>` in context. `2.5rem` mirrors `.description-field`'s own rest-height
+constant above, chosen because it clears every select's tallest measured natural
+render (37px, this sheet's own `.modal-body select` on desktop Chromium) with
+margin, giving `max()` the same "only ever raises, never compresses" guarantee this
+section's other two `max()` spots rely on. `appearance: none` plus a replacement
+caret was considered and rejected: this page's CSP (`src/api/http.rs`) declares no
+`img-src`, so a `data:` URI SVG background-image would be silently blocked by the
+browser at runtime with no test in this repo able to catch it, and a `linear-gradient`
+caret would still need its own disabled/hover/focus treatment and a matching
+`measureFocusIndicator` call site the moment it grew a `:focus` rule of its own. An
+explicit `height` needed none of that: WebKit's native chevron, native disabled
+rendering, and native focus ring are all kept, on every engine.
+
 ### Overlay widths (D5)
 
 `.toast-stack`/`.dispatch-history` both read `max-width: min(<rem-ceiling>,
@@ -256,7 +277,7 @@ row says otherwise.
 |---|---|---|
 | D1, D6, D7 (viewport units) | `web_serve_root_html_sizes_the_shell_to_the_dynamic_viewport` | `responsive.mobile.spec.ts`: "the app shell and an open modal fit inside a squeezed viewport height" |
 | D2 (list table) | (covered by the CSS itself; no literal-value regression to pin beyond D3's coverage of the wrap) | `responsive.mobile.spec.ts`: "the list table scrolls sideways to its far columns instead of clipping them" |
-| D3 (tap targets) | `web_serve_root_html_meets_wcag_tap_target_size` | `responsive.mobile.spec.ts`: "every button and link meets the coarse-pointer tap-target minimum" (`mobile-chromium`/`mobile-webkit`), "every select meets the coarse-pointer tap-target minimum" (`mobile-chromium` only — quarantined under `mobile-webkit`, SH-377) |
+| D3 (tap targets) | `web_serve_root_html_meets_wcag_tap_target_size` | `responsive.mobile.spec.ts`: "every button and link meets the coarse-pointer tap-target minimum", "every select meets the coarse-pointer tap-target minimum" (both `mobile-chromium`/`mobile-webkit`, since SH-377) |
 | D4 (filter disclosure) | `web_serve_root_html_has_a_collapsible_filter_panel` | `filter-bar-disclosure.spec.ts` (desktop — not a mobile-only behavior) |
 | D5 (overlay widths) | `web_serve_root_html_clamps_overlay_widths_to_the_viewport` | `responsive.mobile.spec.ts`: "toast and dispatch-history overlays never exceed a narrow viewport" |
 | D8 (column peek) | `web_serve_root_html_lets_the_next_board_column_peek_on_narrow_phones` | `responsive.mobile.spec.ts`: "the next board column peeks on the narrowest supported phone" (plus its own "stays at 18rem" companion) |
@@ -278,9 +299,13 @@ and hides — is not. `hasTouch: true` sets a capability flag; it is not a finge
 here proves a real tap lands where a click did. And WebKit-under-emulation surfaced one
 genuine engine-specific defect of its own rather than closing every remaining question:
 WebKit ignores `min-height` on a default-appearance `<select>`, so every select in the
-dashboard measures ~23px against the intended 44px on that engine (SH-377, quarantined
-pending its own fix) — the emulated environment found a real gap the design didn't
-anticipate, which is itself evidence that emulation and reality still diverge.
+dashboard measured ~23px against the intended 44px on that engine (SH-377) — the emulated
+environment found a real gap the design didn't anticipate, which is itself evidence that
+emulation and reality still diverge. Fixed by giving every `select` an explicit `height`
+instead of relying on `min-height` a second time (`min-height` is what every other
+tap-target selector in this file still reads, and stays correct there — only a menulist
+`<select>` ignores it); see "Tap targets (D3)" above for the full rule and why `height`
+was chosen over `appearance: none` plus a replacement caret.
 
 A real device pass is what SH-256 already flagged as needed and SH-235 inherited, and
 SH-348 does not change that: on an iPhone, over Tailscale, against the real daemon — the

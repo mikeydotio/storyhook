@@ -460,11 +460,16 @@ Standing rules for every wave:
   are quarantined under `webkit` unconditionally, for an unrelated, not-yet-root-caused gap
   where WebKit doesn't reliably surface a held or delayed `page.route()` to the page's own XHR
   handlers within this suite's timeouts (SH-347). `mobile-webkit`'s own first run surfaced a
-  fourth: WebKit ignores `min-height` on a default-appearance `<select>`, so every select in the
-  dashboard measures ~23px against the intended 44px coarse-pointer minimum on that engine
-  (SH-377) — `responsive.mobile.spec.ts`'s tap-target sweep is split into a button/link half
-  (load-bearing on every project) and a select half (quarantined under `webkit` alone) so the
-  gap doesn't silently take button/link coverage down with it. Every WebKit quarantine, either
+  fourth, since fixed: WebKit ignores `min-height` on a default-appearance `<select>`, so every
+  select in the dashboard measured ~23px against the intended 44px coarse-pointer minimum on
+  that engine (SH-377). Fixed by giving every `select` an explicit `height` instead of a second
+  `min-height` rule WebKit would keep ignoring — `docs/spec/responsive-dashboard.md`'s own "Tap
+  targets (D3)" section has the rule and why `height` was chosen over `appearance: none` plus a
+  replacement caret — so `responsive.mobile.spec.ts`'s select-half tap
+  target test is fully load-bearing again, on every project, with no quarantine left to name.
+  The button/link half of that sweep stays a separate test regardless, so a *future* select
+  regression still can't take button/link coverage down with it by sharing one selector. Every
+  remaining WebKit quarantine, either
   shape, is a `test.skip(...)` naming its story in the reason string —
   `tests/e2e_browser_coverage.rs::every_webkit_quarantine_names_a_story` fails the build on one
   that doesn't.
