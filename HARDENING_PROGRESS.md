@@ -113,7 +113,23 @@ git worktree remove .claude/worktrees/<id>   # --force if it holds a target/
 git branch -d <branch>
 git push origin --delete <branch>
 git worktree list                            # confirm it is gone
+cargo clean                                  # in THIS checkout — see below
 ```
+
+**`cargo clean` is the last teardown step, and it is close to free for this
+loop.** Read the paragraph below before deciding to skip it: a worktree builds
+cold whatever this checkout holds, so the artifacts accumulating here warm
+*nothing* the loop ever does. They are pure cost — 11 GB measured on
+2026-08-17, from cycles that each left another full debug tree behind.
+
+What it costs is one cold rebuild to anyone working directly in this checkout,
+which is why it goes at the *end* of a cycle rather than the start: the next
+cycle's first act is creating a worktree, which would not have reused these
+artifacts anyway. Two reasons this is worth a step of its own rather than a
+someday-chore. This project has already been bitten by that directory growing
+unbounded — a `.o` pileup stalls `FSEventStreamStart`, and a full disk reads as
+`TESTS FAILED` with nothing naming the real cause. And a loop that runs
+unattended for days has no other moment where anyone would notice.
 
 Three things this costs, all accepted. A worktree carries its own `target/`, so
 its first `make test` is a cold build of the whole tree, and the checkout's
@@ -198,6 +214,24 @@ gets all four of these before it starts:
    leaves daemons that make the *next* run refuse to start), and restart it —
    preferably a narrower slice, which is both faster and more diagnostic. Two
    consecutive wedges of the same slice is a finding: stop, and log it.
+
+**Never gate a wait on `pgrep -f "<pattern>"`.** Measured 2026-08-17, and it
+cost this loop most of a day. A waiter written
+`until ! pgrep -f "playwright test"; do sleep 15; done` **matches itself** — the
+waiting shell's own command line contains the pattern, so the condition is never
+false and the loop never exits. Five of them accumulated, 14 hours to 4 days
+old, and because they also matched *each other* every liveness check reported a
+suite running when the browser had been idle the whole time. Work was deferred
+behind a queue that did not exist, and a story shipped its fix on a scan's
+red-green because the browser "was busy".
+
+This is SH-239's rule one layer out: a process's name is not its identity, and
+neither is a string in its arguments. Wait on a **fact**, not on a spelling —
+the actual browser process (`pgrep -f chrome-headless`), a marker file the work
+itself writes, or the harness's own completion notification. If a pattern must
+be used, exclude self: `pgrep -f "[p]laywright test"`. And when a wait exceeds
+its stall timeout by an order of magnitude, suspect the *waiter* before
+believing what it reports.
 
 Every wedge and restart goes in the story's `story comment`, including how long
 it was wedged. That number is the only thing that makes this rule feel worth
