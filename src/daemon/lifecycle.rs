@@ -56,7 +56,7 @@ use crate::error::AppError;
 pub const PROTOCOL: u32 = 1;
 
 /// How long a client waits for a daemon it just spawned to answer.
-const SPAWN_DEADLINE: Duration = Duration::from_secs(5);
+pub const SPAWN_DEADLINE: Duration = Duration::from_secs(5);
 
 /// How often it asks, while waiting.
 const SPAWN_POLL: Duration = Duration::from_millis(25);

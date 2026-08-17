@@ -157,6 +157,24 @@ impl GateRepo {
         assert_ok(&self.gate("postlude"), "fixture: writing the receipt");
     }
 
+    /// `gate-receipt.sh postlude <tier>` — the tiered form (SH-394). `gate`
+    /// above always takes the default tier; this names one explicitly, for
+    /// tests exercising the `gate`/`full` split itself.
+    fn gate_postlude(&self, tier: &str) -> Output {
+        run(
+            self.path(),
+            "bash",
+            &[
+                &checkout()
+                    .join("scripts/gate-receipt.sh")
+                    .display()
+                    .to_string(),
+                "postlude",
+                tier,
+            ],
+        )
+    }
+
     fn push(&self, extra: &[&str]) -> Output {
         let mut args = vec!["push", "origin", "main"];
         args.extend_from_slice(extra);
@@ -291,6 +309,79 @@ fn a_commit_made_after_the_receipt_is_refused() {
         repo.remote_sha("main"),
         shipped,
         "the remote must still hold the certified commit"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The tier split (SH-394) — `make test` writes a `gate` receipt, `make
+// test-full` writes a `full` one, and pre-push must let either through while
+// naming which it found. `tests/gate_tiers.rs` fences the Makefile wiring
+// that decides which tier a run writes; these fence pre-push's own reporting
+// of whatever it finds.
+// ---------------------------------------------------------------------------
+
+/// A `full` receipt must be named on the way through — without this, a push
+/// that ran the browser suite looks identical at push time to one that
+/// didn't, which is exactly the silent-coverage-gap shape SH-306 exists to
+/// prevent one layer up.
+#[test]
+fn a_push_names_the_full_tier_its_receipt_carries() {
+    let repo = GateRepo::new();
+    assert_ok(&repo.gate("preflight"), "enrolling");
+    assert_ok(
+        &repo.gate_postlude("full"),
+        "fixture: writing a full receipt",
+    );
+
+    let out = repo.push(&[]);
+
+    assert_ok(&out, "a push whose tree has a full receipt");
+    let err = stderr(&out);
+    assert!(
+        err.contains("tier full"),
+        "a full receipt must be named as such, got: {err}"
+    );
+}
+
+/// The ordinary case: an unqualified receipt — the default `postlude` takes,
+/// and what `make test` writes — reports as the `gate` tier.
+#[test]
+fn an_unqualified_receipt_is_reported_as_the_gate_tier() {
+    let repo = GateRepo::new();
+    repo.enroll_and_certify();
+
+    let out = repo.push(&[]);
+
+    assert_ok(&out, "a push whose tree has a gate receipt");
+    let err = stderr(&out);
+    assert!(
+        err.contains("tier gate"),
+        "an unqualified receipt must report as the gate tier, got: {err}"
+    );
+}
+
+/// A `full` receipt is a strictly stronger claim than a `gate` one for the
+/// same tree. A later, cheaper `make test` run over unchanged content must
+/// not quietly erase the evidence that the expensive tier already passed.
+#[test]
+fn a_gate_tier_postlude_does_not_downgrade_an_existing_full_receipt() {
+    let repo = GateRepo::new();
+    assert_ok(&repo.gate("preflight"), "enrolling");
+    assert_ok(&repo.gate_postlude("full"), "writing the full receipt");
+
+    assert_ok(&repo.gate("preflight"), "re-enrolling");
+    assert_ok(
+        &repo.gate_postlude("gate"),
+        "a gate-tier postlude over the same tree",
+    );
+
+    let out = repo.push(&[]);
+
+    assert_ok(&out, "a push whose tree still has a full receipt");
+    let err = stderr(&out);
+    assert!(
+        err.contains("tier full"),
+        "the full receipt must survive a later gate-tier run, got: {err}"
     );
 }
 

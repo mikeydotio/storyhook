@@ -24,6 +24,12 @@
 
 use std::time::{Duration, Instant};
 
+/// Named rather than inline (SH-394's `tests/timing_assertions.rs` fence): a
+/// terminating hook chain should finish in a fraction of this; a non-
+/// terminating one would run until the depth guard's own error surfaces,
+/// which is fast, so this is generous margin rather than a tight bound.
+const HOOK_CHAIN_TERMINATION_CEILING: Duration = Duration::from_secs(30);
+
 use storyhook::store::{ReadOps, Store, StoryQuery};
 use storyhook_test_support::{TestEnv, project_id_at, scratch_dir, story_binary};
 
@@ -135,7 +141,7 @@ fn a_hook_that_runs_story_terminates() {
     let out = via_daemon(&env, dir.path(), &["new", "The one a human asked for"]);
     assert!(out.status.success(), "{out:?}");
     assert!(
-        started.elapsed() < Duration::from_secs(30),
+        started.elapsed() < HOOK_CHAIN_TERMINATION_CEILING,
         "the hook chain did not terminate promptly"
     );
 
