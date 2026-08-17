@@ -79,6 +79,16 @@ const PATIENCE: Duration = Duration::from_secs(30);
 /// before anybody looks. A regression here leaks one `sleep` per test.
 const GRANDCHILD_LIFETIME_SECS: u64 = 300;
 
+/// The `timeout_seconds` every hook in this file declares (SH-394 — named
+/// rather than repeated as a bare `10` at each `fire_bounded` call and each
+/// ceiling derived from it, so the two can never drift independently).
+const HOOK_TIMEOUT_SECS: u64 = 10;
+
+/// 2x [`HOOK_TIMEOUT_SECS`]: what a hook that DID wedge against its own
+/// timeout would still be under, so this ceiling proves the wedge is gone
+/// rather than merely fast today.
+const WEDGE_RETURN_CEILING: Duration = Duration::from_secs(HOOK_TIMEOUT_SECS * 2);
+
 /// Fires one hook with `command` and returns how long the call took.
 ///
 /// Panics with the hook's command rather than hanging, because a hang here is
@@ -149,10 +159,10 @@ fn a_grandchild_holding_stderr_does_not_hold_the_caller() {
     let elapsed = fire_bounded(
         &format!("sleep {GRANDCHILD_LIFETIME_SECS} & exit 1"),
         r#"{"event_type":"create"}"#,
-        10,
+        HOOK_TIMEOUT_SECS,
     );
     assert!(
-        elapsed < Duration::from_secs(20),
+        elapsed < WEDGE_RETURN_CEILING,
         "a failing hook with a live grandchild took {elapsed:?}; \
          the hook's timeout is 10s"
     );
@@ -185,10 +195,10 @@ fn a_grandchild_holding_stdin_does_not_hold_the_caller() {
     let elapsed = fire_bounded(
         &format!("exec 3<&0; sleep {GRANDCHILD_LIFETIME_SECS} & exit 0"),
         &oversized_payload(),
-        10,
+        HOOK_TIMEOUT_SECS,
     );
     assert!(
-        elapsed < Duration::from_secs(20),
+        elapsed < WEDGE_RETURN_CEILING,
         "a hook that never read its oversized payload took {elapsed:?}; \
          the hook's timeout is 10s"
     );
@@ -222,10 +232,10 @@ fn a_chatty_hook_that_also_reads_its_payload_is_not_deadlocked() {
             sink.display()
         ),
         &payload,
-        10,
+        HOOK_TIMEOUT_SECS,
     );
     assert!(
-        elapsed < Duration::from_secs(20),
+        elapsed < WEDGE_RETURN_CEILING,
         "a verbose hook that reads its payload took {elapsed:?}; \
          the hook's timeout is 10s, and it has no grandchild at all"
     );
@@ -275,10 +285,10 @@ fn a_hook_may_background_work_that_outlives_it() {
             marker.display()
         ),
         r#"{"event_type":"create"}"#,
-        10,
+        HOOK_TIMEOUT_SECS,
     );
     assert!(
-        elapsed < Duration::from_secs(10),
+        elapsed < Duration::from_secs(HOOK_TIMEOUT_SECS),
         "firing took {elapsed:?}; it should not wait for backgrounded work"
     );
 
@@ -336,13 +346,19 @@ fn a_hook_that_reads_its_payload_receives_every_byte() {
 /// `tests/event_hooks.rs`, where the message reaches a capturable stderr.
 #[test]
 fn a_failing_hook_with_nothing_behind_it_returns_at_once() {
+    // Half of HOOK_TIMEOUT_SECS (SH-394) — not a hand-picked round number.
+    // What this proves is that the fast-fail path does not wait out any part
+    // of that deadline, and half of it is still comfortably below the
+    // failure this test exists to catch (waiting out the whole 10s) while
+    // leaving room for a real process spawn under load that a bare 2s
+    // ceiling did not.
     let elapsed = fire_bounded(
         "echo 'the hook is unhappy' >&2; exit 3",
         r#"{"event_type":"create"}"#,
-        10,
+        HOOK_TIMEOUT_SECS,
     );
     assert!(
-        elapsed < Duration::from_secs(2),
+        elapsed < Duration::from_secs(HOOK_TIMEOUT_SECS / 2),
         "a failing hook with nothing behind it took {elapsed:?}; \
          a bound that waits out its own deadline on every failure is a bound in \
          the wrong place"

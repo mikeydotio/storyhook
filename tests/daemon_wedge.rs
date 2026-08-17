@@ -47,6 +47,19 @@ use storyhook_test_support::{TestEnv, scratch_dir};
 /// rather than however long the whole suite's own deadline is.
 const PROBE_DEADLINE: Duration = Duration::from_secs(5);
 
+/// The ceiling every `hello_elapsed` assertion below proves it never came
+/// close to (SH-394). Derived from `http1::PEER_IO_TIMEOUT` — the production
+/// deadline these tests exist to prove was never spent on an unrelated
+/// client's request — rather than a hand-picked round number, so it tracks
+/// that constant if it ever moves and stays honest about what "fast" means
+/// here: half of the deadline, not the fastest number that happened to pass
+/// on a quiet machine. A raw loopback round trip against an already-running
+/// daemon answers in single-digit milliseconds; this still leaves orders of
+/// magnitude of headroom for a loaded machine before it would fail for the
+/// wrong reason.
+const WEDGE_PROBE_CEILING: Duration =
+    Duration::from_secs(storyhook::daemon::http1::PEER_IO_TIMEOUT.as_secs() / 2);
+
 /// Stops whatever daemon `env` is running, even if the test panics first.
 struct DaemonGuard<'a>(&'a TestEnv);
 
@@ -146,7 +159,7 @@ fn one_stalled_body_over_the_buffering_threshold_does_not_stop_the_daemon() {
         .expect("hello must answer, not error, with one stalled >1024-byte body held");
     assert_eq!(status, 200);
     assert!(
-        elapsed < Duration::from_secs(1),
+        elapsed < WEDGE_PROBE_CEILING,
         "hello took {elapsed:?} with one stalled >1024-byte body held; the daemon is wedged"
     );
 }
@@ -172,7 +185,7 @@ fn twelve_stalled_connections_do_not_stop_the_daemon() {
         .expect("hello must answer, not error, with the story's own 12-connection shape held");
     assert_eq!(status, 200);
     assert!(
-        elapsed < Duration::from_secs(1),
+        elapsed < WEDGE_PROBE_CEILING,
         "hello took {elapsed:?} with 12 stalled connections held; the daemon is wedged"
     );
     drop(held);
@@ -198,7 +211,7 @@ fn a_body_under_the_buffering_threshold_never_reaches_the_daemon() {
         .expect("hello must answer with 20 <=1024-byte stalled bodies held");
     assert_eq!(status, 200);
     assert!(
-        elapsed < Duration::from_secs(1),
+        elapsed < WEDGE_PROBE_CEILING,
         "hello took {elapsed:?} with 20 buffered-class connections held"
     );
     drop(held);
@@ -252,7 +265,7 @@ fn a_chunked_body_that_never_arrives_does_not_stop_the_daemon() {
         .expect("hello must answer with a chunked body stalled");
     assert_eq!(status, 200);
     assert!(
-        elapsed < Duration::from_secs(1),
+        elapsed < WEDGE_PROBE_CEILING,
         "hello took {elapsed:?} with a stalled chunked body held; the daemon is wedged"
     );
     drop(attacker);
@@ -343,7 +356,7 @@ fn stalled_connections_past_the_cap_are_refused_without_growing_the_daemon() {
         .expect("hello must answer once the cap has room again");
     assert_eq!(status, 200);
     assert!(
-        elapsed < Duration::from_secs(1),
+        elapsed < WEDGE_PROBE_CEILING,
         "hello took {elapsed:?} after the cap should have recovered"
     );
 }

@@ -58,5 +58,5 @@ mod conn;
 mod message;
 mod parse;
 
-pub use conn::{ConnectionSlots, Limits, Request, serve_connections};
+pub use conn::{ConnectionSlots, Limits, PEER_IO_TIMEOUT, Request, serve_connections};
 pub use message::{Header, Method, Response};
