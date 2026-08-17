@@ -2087,6 +2087,12 @@ fn web_serve_root_html_clamps_overlay_widths_to_the_viewport() {
 /// browser actually *resolves* every one of these to 44px or more under a
 /// real coarse pointer, across every surface that renders them -- this
 /// test only pins the source text.
+///
+/// `select` is the one exception to "reads `min-height` from --tap-min"
+/// below (SH-377): WebKit ignores `min-height` entirely on a
+/// default-appearance `<select>`, so every select instead reads an
+/// EXPLICIT `height` from the same token -- see that assertion's own
+/// comment for why `min-height` alone cannot be trusted here.
 #[test]
 fn web_serve_root_html_meets_wcag_tap_target_size() {
     let fixture = served();
@@ -2193,6 +2199,32 @@ fn web_serve_root_html_meets_wcag_tap_target_size() {
             "`{selector}` must set `{expected}`"
         );
     }
+
+    // SH-377: WebKit ignores `min-height` entirely on a default-appearance
+    // <select> -- every select rendered ~20-23px regardless of --tap-min's
+    // own value, confirmed against this repo's own webkit-2336 build.
+    // `height` is the one sizing property that engine does honour, so
+    // `select` gets its floor from an EXPLICIT height instead of another
+    // min-height rule a WebKit reader would silently drop. `2.5rem` is
+    // `.description-field`'s own rest-height constant, chosen because it
+    // clears every select's tallest measured natural render (37px, this
+    // sheet's own `.modal-body select` on desktop Chromium) with margin --
+    // `max()` still means this can only raise a select's height, never
+    // compress it below its own unstyled size, the same guarantee the loop
+    // above gives `.field textarea`/`.description-field`. A bare `select`
+    // selector rather than a repeat of the seven grouped lists above so a
+    // select added anywhere in this file is covered with no further edit.
+    let select_rule = declarations(css, "select");
+    assert!(
+        select_rule.contains("height: max(2.5rem, var(--tap-min))"),
+        "`select` must set `height: max(2.5rem, var(--tap-min))` -- min-height alone is \
+         silently inert on WebKit's menulist <select> (SH-377)"
+    );
+    assert!(
+        !select_rule.contains("min-height"),
+        "`select`'s own rule must not (re)introduce `min-height` -- WebKit ignores it on this \
+         element, so a min-height here would silently do nothing there (SH-377)"
+    );
 }
 
 /// SH-305: the column header's Archive button (CLOSED-superstate columns

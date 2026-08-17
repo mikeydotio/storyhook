@@ -181,6 +181,22 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 button, input, select, textarea { font: inherit; color: inherit; }
+/* SH-377: a default-appearance (menulist) <select> ignores `min-height` on
+   WebKit -- every rule below that floors a select's height via --tap-min is
+   honoured on Blink and silently dropped on WebKit, rendering ~20-23px
+   regardless of --tap-min's own value (measured: WebKit does not vary with
+   the coarse-pointer override at all, unlike every replaced/non-replaced
+   element beside it). An explicit `height` is the one sizing property that
+   engine does honour, so every select carries one instead of relying on
+   min-height a second time. `max(2.5rem, var(--tap-min))` mirrors
+   `.description-field`'s own rest-height shape below for the same reason:
+   2.5rem sits above every select's tallest natural render measured across
+   both engines, so this only ever raises a select's height, never
+   compresses one below its own unstyled size. One bare selector, so a
+   select added anywhere in this file is covered with no further edit --
+   this fixes `.status-move select` and `.inline-add select` too, neither of
+   which carried a --tap-min floor of their own before now. */
+select { height: max(2.5rem, var(--tap-min)); }
 button { cursor: pointer; }
 /* Double-tap-to-zoom is the second way a phone zooms without being asked:
    the browser holds a tap for ~300ms in case a second one follows, then

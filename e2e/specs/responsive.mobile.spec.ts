@@ -565,14 +565,15 @@ test("toast and dispatch-history overlays never exceed a narrow viewport", async
  * else, asserted for the fine-pointer default in `web_test.rs`).
  *
  * Split into two tests sharing one walk (`sweepTapTargets`) rather than one
- * combined selector, because `select` and `button, a[href]` no longer have
- * the same coverage on every engine: WebKit ignores `min-height` on a
- * default-appearance `<select>` (SH-377, found via this exact sweep under
- * `mobile-webkit`), so the `select` half is quarantined there while the
- * `button, a[href]` half stays fully load-bearing everywhere, including
- * under `mobile-webkit` -- a single combined test would have to quarantine
- * itself wholesale under WebKit and silently drop button/link coverage
- * along with it.
+ * combined selector, because a `select`'s tap target depends on a sizing
+ * property (`height`) `button, a[href]` never needed: WebKit ignores
+ * `min-height` on a default-appearance `<select>` (SH-377, found via this
+ * exact sweep under `mobile-webkit` when the `select` half of this test was
+ * still quarantined there), so `web_dashboard.html` sizes every `select` with
+ * an explicit `height` instead. That fix is the same property on every
+ * engine and needs no per-engine carve-out any more -- the two tests stay
+ * split anyway, on purpose, so a future `select` regression can never take
+ * button/link coverage down with it by sharing one selector.
  *
  * Scoped to `button, a[href], select` -- native `input[type=checkbox]`
  * boxes are excluded on purpose: each one here is wrapped by a `<label>`
@@ -634,16 +635,7 @@ test("every button and link meets the coarse-pointer tap-target minimum", async 
   await sweepTapTargets(page, "button, a[href]");
 });
 
-test("every select meets the coarse-pointer tap-target minimum", async ({
-  page,
-  browserName,
-}) => {
-  test.skip(
-    browserName === "webkit",
-    "WebKit ignores min-height on a default-appearance <select>: every select in the " +
-      "dashboard renders ~23px against the 44px coarse-pointer minimum, measured -- a " +
-      "real iOS Safari defect this project is what found, not a harness artifact (SH-377)",
-  );
+test("every select meets the coarse-pointer tap-target minimum", async ({ page }) => {
   await sweepTapTargets(page, "select");
 });
 
