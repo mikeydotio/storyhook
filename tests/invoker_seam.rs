@@ -279,6 +279,9 @@ fn the_project_less_verbs_all_answer_outside_a_project() {
     // exported: no `set_var`, and therefore no window in which a sibling test
     // in this binary sees the wrong data directory.
     let environment = Environment::at(data.path());
+    // `scratch_dir` is always empty, so `open_store` finds no schema and no
+    // pending migration — `storyhook::migration_guard::decide` permits on
+    // `from_version == 0` alone, regardless of `is_default()`.
     let store = open_store(&environment).expect("opening a fixture store");
 
     let cases: Vec<(&str, Invocation)> = vec![

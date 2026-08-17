@@ -280,6 +280,21 @@ pub fn open_store(env: &Environment) -> Result<crate::store::SqliteStore, AppErr
     config.backup_dir = env.backups_dir();
     config.busy_timeout = env.busy_timeout_value();
     let store = crate::store::SqliteStore::open_with(config)?;
+    // The write-side counterpart to the SH-54 read gate (SH-404): a binary
+    // that is not the `story` on this machine's own `$PATH` must not advance
+    // the default store's schema out from under whatever *is* installed.
+    // `create_store` below needs no such check — it refuses the default path
+    // and refuses an existing file, so it only ever opens a store at version
+    // 0, which `migration_guard::decide` always permits.
+    let from_version = store.schema_version()?;
+    let to_version = crate::store::current_schema_version();
+    let inputs = crate::migration_guard::gather(
+        env.store_path(),
+        env.store().is_default(),
+        from_version,
+        to_version,
+    );
+    crate::migration_guard::decide(&inputs).map_err(AppError::Usage)?;
     store.migrate()?;
     Ok(store)
 }
@@ -296,6 +311,11 @@ pub fn open_store(env: &Environment) -> Result<crate::store::SqliteStore, AppErr
 /// run. Creating it by hand would put an empty database where the daemon expects
 /// either nothing or its own, and the failure would surface later as a tracker
 /// that had lost everything.
+///
+/// Carries no [`crate::migration_guard`] check, unlike [`open_store`] above:
+/// the two refusals just below (the default path, an existing file) mean this
+/// function only ever opens a store at schema version 0, which the guard
+/// always permits — there is no installed binary's schema to break yet.
 pub fn create_store(cwd: &Path, requested: &str) -> Result<Response, AppError> {
     use crate::store::Store as _;
 
