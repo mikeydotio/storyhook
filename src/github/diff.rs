@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use crate::domain::{Priority, StoryComment, StorySnapshot};
+use crate::domain::{FieldEdit, Priority, StoryComment, StorySnapshot};
 
 /// Result of a three-way merge between base, local, and remote snapshots.
 #[derive(Debug, Clone)]
@@ -18,12 +18,20 @@ pub struct MergeResult {
 }
 
 /// A set of field updates to apply to either the local or remote side.
+///
+/// `priority` is [`FieldEdit<Priority>`], not `Option<Option<Priority>>`
+/// (SH-372): the domain already defines `FieldEdit` specifically to replace
+/// that shape, whose own doc comment warns it "is misread at every call
+/// site" — `assignee`'s use of it below is legacy, not precedent.
+/// `FieldEdit::Keep` (the default) means untouched; `Clear` means an
+/// authoritative move to unassessed (`StoryPriorityCleared`); `Set(p)` means
+/// assessed at `p`, where `p == Priority::None` is deliberately parked.
 #[derive(Debug, Clone, Default)]
 pub struct FieldUpdates {
     pub title: Option<String>,
     pub state: Option<String>,
     pub assignee: Option<Option<String>>,
-    pub priority: Option<Priority>,
+    pub priority: FieldEdit<Priority>,
     pub awaiting: Option<Option<String>>,
     pub labels: Option<Vec<String>>,
     pub description: Option<Option<String>>,
@@ -34,7 +42,7 @@ impl FieldUpdates {
         self.title.is_none()
             && self.state.is_none()
             && self.assignee.is_none()
-            && self.priority.is_none()
+            && self.priority.is_keep()
             && self.awaiting.is_none()
             && self.labels.is_none()
             && self.description.is_none()
@@ -139,32 +147,43 @@ pub fn three_way_merge(
         &mut conflicts,
     );
 
-    // 4. priority — Priority enum comparison
+    // 4. priority — compares the pair (level, assessed), not the level alone
+    // (SH-372): a level nobody stated and one explicitly stated must not
+    // compare equal, or a story deliberately parked at `none` reads as
+    // unchanged next to one nobody has ever assessed.
     {
-        let base_str = base.priority.as_str();
-        let local_str = local.priority.as_str();
-        let remote_str = remote.priority.as_str();
+        let base_edit = (base.priority.clone(), base.priority_assessed);
+        let local_edit = (local.priority.clone(), local.priority_assessed);
+        let remote_edit = (remote.priority.clone(), remote.priority_assessed);
 
-        let local_changed = local_str != base_str;
-        let remote_changed = remote_str != base_str;
+        let local_changed = local_edit != base_edit;
+        let remote_changed = remote_edit != base_edit;
+
+        let as_field_edit = |(priority, assessed): &(Priority, bool)| -> FieldEdit<Priority> {
+            if *assessed {
+                FieldEdit::Set(priority.clone())
+            } else {
+                FieldEdit::Clear
+            }
+        };
 
         match (local_changed, remote_changed) {
             (false, false) => {}
             (true, false) => {
-                remote_updates.priority = Some(local.priority.clone());
+                remote_updates.priority = as_field_edit(&local_edit);
             }
             (false, true) => {
-                local_updates.priority = Some(remote.priority.clone());
+                local_updates.priority = as_field_edit(&remote_edit);
             }
             (true, true) => {
-                if local_str == remote_str {
+                if local_edit == remote_edit {
                     // Converged — no action
                 } else {
                     conflicts.push(FieldConflict {
                         field: ConflictField::Priority,
-                        base_value: base_str.to_string(),
-                        local_value: local_str.to_string(),
-                        remote_value: remote_str.to_string(),
+                        base_value: render_priority_for_conflict(&base_edit.0, base_edit.1),
+                        local_value: render_priority_for_conflict(&local_edit.0, local_edit.1),
+                        remote_value: render_priority_for_conflict(&remote_edit.0, remote_edit.1),
                     });
                 }
             }
@@ -256,7 +275,15 @@ pub fn base_after_sync(
                 base.superstate = previous.superstate.clone();
             }
             ConflictField::Assignee => base.assignee = previous.assignee.clone(),
-            ConflictField::Priority => base.priority = previous.priority.clone(),
+            ConflictField::Priority => {
+                // Both halves, together (SH-372) -- the same rule `State`'s
+                // arm above states for slug/superstate. Restoring only the
+                // level would leave a base claiming a story is assessed at a
+                // level nobody actually confirmed, or unassessed at a level
+                // that was in fact held back pending the conflict.
+                base.priority = previous.priority.clone();
+                base.priority_assessed = previous.priority_assessed;
+            }
             ConflictField::Awaiting => base.awaiting = previous.awaiting.clone(),
             ConflictField::Labels => base.labels = previous.labels.clone(),
             ConflictField::Description => base.description = previous.description.clone(),
@@ -335,6 +362,44 @@ fn merge_optional(
                     remote_value: fmt(remote),
                 });
             }
+        }
+    }
+}
+
+/// The literal naming an unassessed priority inside a [`FieldConflict`]'s
+/// string values (SH-372) — the priority sibling of `merge_optional`'s own
+/// `<none>` for a genuinely absent value. Deliberately distinct from the
+/// real level `none`: `Priority::None.as_str()` is `"none"`, a stated
+/// decision (deliberately parked); this is the absence of one.
+const UNASSESSED_PRIORITY_CONFLICT_VALUE: &str = "<unassessed>";
+
+/// Renders a priority's `(level, assessed)` pair as a [`FieldConflict`]
+/// string value.
+fn render_priority_for_conflict(priority: &Priority, assessed: bool) -> String {
+    if assessed {
+        priority.as_str().to_string()
+    } else {
+        UNASSESSED_PRIORITY_CONFLICT_VALUE.to_string()
+    }
+}
+
+/// The inverse of [`render_priority_for_conflict`] — parses a stored
+/// `local_value`/`remote_value` back into the edit it names, for a conflict
+/// resolution to apply. Both strings a `Priority` [`FieldConflict`] ever
+/// stores come from this module's own renderer, so a value that is neither
+/// the unassessed literal nor a level [`Priority::parse`] accepts is
+/// unreachable in practice; it maps to [`FieldEdit::Clear`] rather than
+/// panicking; a stray `Priority::parse(...).unwrap_or(Priority::None)`
+/// used to have the same effect by accident (silently laundering an
+/// unrecognised value into *parked*) — here it is the documented fallback
+/// for data this process itself produced, not an accident.
+pub fn parse_priority_conflict_value(value: &str) -> FieldEdit<Priority> {
+    if value == UNASSESSED_PRIORITY_CONFLICT_VALUE {
+        FieldEdit::Clear
+    } else {
+        match Priority::parse(value) {
+            Some(p) => FieldEdit::Set(p),
+            None => FieldEdit::Clear,
         }
     }
 }
@@ -635,12 +700,16 @@ mod tests {
         let base = make_snapshot("SH-1");
         let mut local = base.clone();
         local.priority = Priority::High;
+        local.priority_assessed = true;
         let remote = base.clone();
 
         let result = three_way_merge(&base, &local, &remote);
 
-        assert_eq!(result.remote_updates.priority, Some(Priority::High));
-        assert!(result.local_updates.priority.is_none());
+        assert_eq!(
+            result.remote_updates.priority,
+            FieldEdit::Set(Priority::High)
+        );
+        assert!(result.local_updates.priority.is_keep());
     }
 
     #[test]
@@ -649,11 +718,15 @@ mod tests {
         let local = base.clone();
         let mut remote = base.clone();
         remote.priority = Priority::Critical;
+        remote.priority_assessed = true;
 
         let result = three_way_merge(&base, &local, &remote);
 
-        assert_eq!(result.local_updates.priority, Some(Priority::Critical));
-        assert!(result.remote_updates.priority.is_none());
+        assert_eq!(
+            result.local_updates.priority,
+            FieldEdit::Set(Priority::Critical)
+        );
+        assert!(result.remote_updates.priority.is_keep());
     }
 
     #[test]
@@ -661,13 +734,15 @@ mod tests {
         let base = make_snapshot("SH-1");
         let mut local = base.clone();
         local.priority = Priority::Medium;
+        local.priority_assessed = true;
         let mut remote = base.clone();
         remote.priority = Priority::Medium;
+        remote.priority_assessed = true;
 
         let result = three_way_merge(&base, &local, &remote);
 
-        assert!(result.local_updates.priority.is_none());
-        assert!(result.remote_updates.priority.is_none());
+        assert!(result.local_updates.priority.is_keep());
+        assert!(result.remote_updates.priority.is_keep());
         assert!(result.conflicts.is_empty());
     }
 
@@ -676,8 +751,10 @@ mod tests {
         let base = make_snapshot("SH-1");
         let mut local = base.clone();
         local.priority = Priority::High;
+        local.priority_assessed = true;
         let mut remote = base.clone();
         remote.priority = Priority::Low;
+        remote.priority_assessed = true;
 
         let result = three_way_merge(&base, &local, &remote);
 
@@ -685,6 +762,43 @@ mod tests {
         assert_eq!(result.conflicts[0].field, ConflictField::Priority);
         assert_eq!(result.conflicts[0].local_value, "high");
         assert_eq!(result.conflicts[0].remote_value, "low");
+    }
+
+    /// SH-372: a story deliberately parked at `none` (assessed) and one
+    /// nobody has ever assessed (both `Priority::None`) must not compare
+    /// equal — the exact ambiguity this fix exists to resolve.
+    #[test]
+    fn local_parks_a_story_that_was_previously_unassessed() {
+        let base = make_snapshot("SH-1");
+        assert!(!base.priority_assessed, "fixture must start unassessed");
+        let mut local = base.clone();
+        local.priority_assessed = true; // priority stays Priority::None -- parked
+        let remote = base.clone();
+
+        let result = three_way_merge(&base, &local, &remote);
+
+        assert_eq!(
+            result.remote_updates.priority,
+            FieldEdit::Set(Priority::None)
+        );
+        assert!(result.local_updates.priority.is_keep());
+    }
+
+    /// SH-372: the inverse of the above -- a local `story undo` of a first
+    /// prioritization moves a story back to unassessed, which must push as
+    /// `FieldEdit::Clear`, distinct from parking it at `none`.
+    #[test]
+    fn local_unassesses_a_story_that_was_previously_parked() {
+        let mut base = make_snapshot("SH-1");
+        base.priority_assessed = true; // parked in the base
+        let mut local = base.clone();
+        local.priority_assessed = false; // undone back to unassessed
+        let remote = base.clone();
+
+        let result = three_way_merge(&base, &local, &remote);
+
+        assert_eq!(result.remote_updates.priority, FieldEdit::Clear);
+        assert!(result.local_updates.priority.is_keep());
     }
 
     #[test]
@@ -1067,6 +1181,7 @@ mod tests {
         let mut local = base.clone();
         local.title = "New local title".to_string();
         local.priority = Priority::High;
+        local.priority_assessed = true;
         let mut remote = base.clone();
         remote.state = "done".to_string();
         remote.assignee = Some("bob".to_string());
@@ -1078,7 +1193,10 @@ mod tests {
             result.remote_updates.title.as_deref(),
             Some("New local title")
         );
-        assert_eq!(result.remote_updates.priority, Some(Priority::High));
+        assert_eq!(
+            result.remote_updates.priority,
+            FieldEdit::Set(Priority::High)
+        );
 
         // Remote changes should pull to local
         assert_eq!(result.local_updates.state.as_deref(), Some("done"));
@@ -1219,6 +1337,7 @@ mod tests {
             synced.state = "done".to_string();
             synced.assignee = Some("mikey".to_string());
             synced.priority = Priority::High;
+            synced.priority_assessed = true;
             synced.awaiting = Some("review".to_string());
             synced.labels = vec!["bug".to_string()];
             synced.description = Some("Synced body".to_string());
@@ -1242,7 +1361,10 @@ mod tests {
                     expected.superstate = previous.superstate.clone();
                 }
                 ConflictField::Assignee => expected.assignee = previous.assignee.clone(),
-                ConflictField::Priority => expected.priority = previous.priority.clone(),
+                ConflictField::Priority => {
+                    expected.priority = previous.priority.clone();
+                    expected.priority_assessed = previous.priority_assessed;
+                }
                 ConflictField::Awaiting => expected.awaiting = previous.awaiting.clone(),
                 ConflictField::Labels => expected.labels = previous.labels.clone(),
                 ConflictField::Description => expected.description = previous.description.clone(),

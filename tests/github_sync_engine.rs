@@ -25,12 +25,14 @@ use std::process::Command;
 use storyhook::domain::StoryEvent;
 use storyhook::domain::secret::GithubToken;
 use storyhook::error::AppError;
+use storyhook::github::api::GithubApiFactory;
 use storyhook::github::initial::{
     InitialSetupOutcome, InitialStrategy, SetupAnswers, run_initial_setup,
 };
 use storyhook::github::run_sync_with;
 use storyhook::github::storage::SyncStorage;
 use storyhook::github::sync_state::{StoryIssueMapping, SyncMode};
+use storyhook::github::types::UpdateIssueRequest;
 use storyhook::output::Response;
 use storyhook::service::{NewStoryInput, StoreSyncStorage, StoryService};
 use storyhook_test_support::{FakeGithubApiFactory, RecordedCall, ServiceFixture};
@@ -43,6 +45,17 @@ fn create(fixture: &ServiceFixture, title: &str) -> String {
     StoryService::new(&fixture.ctx())
         .create(&NewStoryInput {
             title: title.to_string(),
+            ..NewStoryInput::default()
+        })
+        .expect("creating a story")
+        .id
+}
+
+fn create_with_priority(fixture: &ServiceFixture, title: &str, priority: &str) -> String {
+    StoryService::new(&fixture.ctx())
+        .create(&NewStoryInput {
+            title: title.to_string(),
+            priority: Some(priority.to_string()),
             ..NewStoryInput::default()
         })
         .expect("creating a story")
@@ -716,4 +729,321 @@ fn pushing_a_genuinely_new_label_leaves_an_existing_comma_bearing_one_alone() {
         "the pre-existing label must go back out under its real GitHub name, \
          not the storyhook rendering: {update:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// SH-372 -- a deliberately parked priority survives a push and a pull back,
+// on a second, independent clone syncing the same repo. This is the story's
+// own concrete failure scenario, steps 1-5.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_parked_priority_pushes_the_key_and_pulls_back_parked_not_unassessed() {
+    let pusher = ServiceFixture::new();
+    add_github_remote(&pusher);
+    let pusher_ctx = pusher.ctx();
+    let pusher_storage = StoreSyncStorage::new(&pusher_ctx);
+    let fake = FakeGithubApiFactory::new();
+
+    run_sync_with(
+        &pusher_storage,
+        &fake,
+        Some(&token()),
+        None,
+        false,
+        None,
+        Some(InitialStrategy::PushOnly),
+        Some(SyncMode::Manual),
+    )
+    .expect("initial setup");
+
+    create_with_priority(&pusher, "Deliberately parked", "none");
+
+    run_sync_with(
+        &pusher_storage,
+        &fake,
+        Some(&token()),
+        None,
+        false,
+        None,
+        None,
+        None,
+    )
+    .expect("pushing");
+
+    let created = fake.created_issues();
+    assert_eq!(created.len(), 1, "{created:?}");
+    let body = created[0].body.as_deref().unwrap_or_default();
+    assert!(
+        body.contains("priority: none"),
+        "a deliberately parked story's push must state the key: {body:?}"
+    );
+
+    // A second, independent clone syncing the same repo -- the story's own
+    // step 3.
+    let puller = ServiceFixture::new();
+    add_github_remote(&puller);
+    let puller_ctx = puller.ctx();
+    let puller_storage = StoreSyncStorage::new(&puller_ctx);
+
+    let response = run_sync_with(
+        &puller_storage,
+        &fake,
+        Some(&token()),
+        None,
+        false,
+        None,
+        Some(InitialStrategy::ImportAll),
+        Some(SyncMode::Manual),
+    )
+    .expect("pulling on a fresh clone");
+
+    let stories = puller_storage.open_stories().expect("open stories");
+    assert_eq!(stories.len(), 1, "{stories:?}");
+    assert!(
+        stories[0].priority_assessed,
+        "a pulled `priority: none` must read as deliberately parked, not unassessed"
+    );
+    assert_eq!(stories[0].priority.as_str(), "none");
+    assert!(
+        matches!(response, Response::Message(_)),
+        "a story that was actually assessed must not draw SH-358's unassessed warning: {response:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// SH-372 -- a merge base written before SH-359 has no `priority_assessed`
+// key and deserializes to `false` even for a real assessed level. The base
+// is normalized against `fold_story`'s own invariant before any merge, or a
+// stale base would look like a real remote change on every mapped,
+// prioritized story's first sync after upgrade.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_stale_pre_sh359_base_does_not_spuriously_push_or_pull_an_assessed_priority() {
+    let fixture = ServiceFixture::new();
+    add_github_remote(&fixture);
+    let story_id = create_with_priority(&fixture, "Already assessed", "high");
+    let ctx = fixture.ctx();
+    let storage = StoreSyncStorage::new(&ctx);
+    let fake = FakeGithubApiFactory::new();
+
+    // The remote already correctly carries the level -- a real level always
+    // rendered its key, even before this fix; only `none` was ever dropped.
+    let body = "Filed on GitHub, priority already high.\n\n\
+                ---\n\n\
+                ```storyhook\n\
+                story_id: SH-BOGUS\n\
+                priority: high\n\
+                ```\n";
+    let issue = fake.seed_issue_with_body("Already assessed", Some(body));
+
+    let outcome = run_initial_setup(
+        &storage,
+        &fake,
+        Some(&token()),
+        Some(SetupAnswers {
+            strategy: InitialStrategy::MatchTitles,
+            mode: SyncMode::Manual,
+        }),
+    )
+    .expect("linking");
+    let InitialSetupOutcome::Configured { config, .. } = outcome else {
+        panic!("stated answers must proceed");
+    };
+    storage.save_config(&config).expect("saving the link");
+
+    // Simulate a `github_bases` row written by a pre-SH-359 binary: the
+    // stored snapshot's `priority` is real but its JSON has no
+    // `priority_assessed` key at all, so it deserializes to `false`.
+    let mut stale_base = storage.story(&story_id).expect("reading");
+    assert!(
+        stale_base.priority_assessed,
+        "fixture must start genuinely assessed"
+    );
+    stale_base.priority_assessed = false;
+    storage
+        .save_base(&story_id, &stale_base)
+        .expect("seeding a stale base");
+
+    let response = run_sync_with(
+        &storage,
+        &fake,
+        Some(&token()),
+        Some(&story_id),
+        false,
+        None,
+        None,
+        None,
+    )
+    .expect("syncing");
+
+    assert!(
+        matches!(response, Response::Message(_)),
+        "a stale base must not manufacture a conflict or an error: {response:?}"
+    );
+    assert!(
+        fake.recorded_calls()
+            .iter()
+            .all(|c| !matches!(c, RecordedCall::UpdateIssue(n, _) if *n == issue.number)),
+        "an already-agreeing priority must not be spuriously pushed: {:?}",
+        fake.recorded_calls()
+    );
+    let after = storage.story(&story_id).expect("reading");
+    assert!(after.priority_assessed, "must not be silently cleared");
+    assert_eq!(after.priority.as_str(), "high");
+}
+
+// ---------------------------------------------------------------------------
+// SH-403 -- MatchTitles never saves a base, so the first real sync used to
+// fall back to `base = story.clone()`; a blockless remote then read as a
+// remote change and silently parked the story's priority. `RemotePriority::
+// Unknown` resolving against that same fallback base closes it as a side
+// effect of this fix.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn match_titles_first_sync_does_not_silently_park_an_assessed_priority() {
+    let fixture = ServiceFixture::new();
+    add_github_remote(&fixture);
+    let story_id = create_with_priority(&fixture, "Matched by title", "high");
+    let ctx = fixture.ctx();
+    let storage = StoreSyncStorage::new(&ctx);
+    let fake = FakeGithubApiFactory::new();
+    // An ordinary GitHub-native issue -- no storyhook block at all, the
+    // exact shape MatchTitles exists to link.
+    fake.seed_issue("Matched by title");
+
+    let outcome = run_initial_setup(
+        &storage,
+        &fake,
+        Some(&token()),
+        Some(SetupAnswers {
+            strategy: InitialStrategy::MatchTitles,
+            mode: SyncMode::Manual,
+        }),
+    )
+    .expect("linking");
+    let InitialSetupOutcome::Configured { config, .. } = outcome else {
+        panic!("stated answers must proceed");
+    };
+    storage.save_config(&config).expect("saving the link");
+
+    // No `save_base` call -- MatchTitles's own gap (SH-403). The first real
+    // sync must not treat the blockless remote as an authoritative clear.
+    run_sync_with(
+        &storage,
+        &fake,
+        Some(&token()),
+        Some(&story_id),
+        false,
+        None,
+        None,
+        None,
+    )
+    .expect("the first real sync after MatchTitles");
+
+    let after = storage.story(&story_id).expect("reading");
+    assert!(
+        after.priority_assessed,
+        "MatchTitles's missing base must not silently park an assessed priority"
+    );
+    assert_eq!(after.priority.as_str(), "high");
+}
+
+// ---------------------------------------------------------------------------
+// SH-372 scope item 5 -- a remote priority edited away to nothing (by hand,
+// on GitHub) must not be read as an authoritative statement either way: not
+// a false "un-assess" of a parked story.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_hand_deleted_remote_priority_key_is_silence_not_a_statement() {
+    let fixture = ServiceFixture::new();
+    add_github_remote(&fixture);
+    let story_id = create_with_priority(&fixture, "Parked, then edited by hand", "none");
+    let ctx = fixture.ctx();
+    let storage = StoreSyncStorage::new(&ctx);
+    let fake = FakeGithubApiFactory::new();
+
+    // Push it for real, so the remote and the base both correctly agree the
+    // story is parked -- the state a human would actually be editing.
+    let outcome = run_initial_setup(
+        &storage,
+        &fake,
+        Some(&token()),
+        Some(SetupAnswers {
+            strategy: InitialStrategy::PushOnly,
+            mode: SyncMode::Manual,
+        }),
+    )
+    .expect("initial setup");
+    let InitialSetupOutcome::Configured { config, .. } = outcome else {
+        panic!("stated answers must proceed");
+    };
+    storage.save_config(&config).expect("saving the config");
+    run_sync_with(
+        &storage,
+        &fake,
+        Some(&token()),
+        None,
+        false,
+        None,
+        None,
+        None,
+    )
+    .expect("the initial push");
+
+    let created = fake.created_issues();
+    assert_eq!(created.len(), 1, "{created:?}");
+    let config = storage.load_config().expect("loading").expect("configured");
+    let issue_number = config
+        .mappings
+        .iter()
+        .find(|m| m.story_id == story_id)
+        .expect("mapped")
+        .issue_number;
+
+    let synced = storage.story(&story_id).expect("reading");
+    assert!(synced.priority_assessed, "must have pushed as parked");
+    assert_eq!(synced.priority.as_str(), "none");
+
+    // A human deletes the `priority:` line on GitHub directly -- bypassing
+    // the sync engine's own renderer entirely, the way an actual hand edit
+    // would.
+    let client = fake.build(
+        "token".to_string(),
+        "acme".to_string(),
+        "widgets".to_string(),
+    );
+    let edited_body =
+        format!("Parked, then edited by hand.\n\n---\n\n```storyhook\nstory_id: {story_id}\n```\n");
+    client
+        .update_issue(
+            issue_number,
+            &UpdateIssueRequest {
+                body: Some(edited_body),
+                ..Default::default()
+            },
+        )
+        .expect("simulating a hand edit");
+
+    run_sync_with(
+        &storage,
+        &fake,
+        Some(&token()),
+        Some(&story_id),
+        false,
+        None,
+        None,
+        None,
+    )
+    .expect("syncing after the hand edit");
+
+    let after = storage.story(&story_id).expect("reading");
+    assert!(
+        after.priority_assessed,
+        "a hand-deleted remote key must not silently un-park the story"
+    );
+    assert_eq!(after.priority.as_str(), "none");
 }

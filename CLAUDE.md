@@ -534,6 +534,32 @@ Standing rules for every wave:
   cannot find SH-338's *own* defect class — a focusable control with no author-declared rule at
   all, which `.btn`/`.ctxmenu-item` still are today, deliberately, and so never enter the
   declared set this fence reads from.
+- **An absent field in a message written by an older version is not a stated value**
+  (SH-372). GitHub-sync's issue-body block omitted its `priority:` key whenever a story's
+  priority was `Priority::None` — collapsing *deliberately parked* (`story prioritize <id>
+  none`, a decision) and *never assessed* (SH-359's `priority_assessed = false`, silence)
+  into the identical wire shape. A push read only `story.priority`, never
+  `priority_assessed`; a pull that found no key wrote no `StoryPrioritySet` event at all, so
+  a parked story pulled back down — on a second clone, or an "Import all" re-run — folded
+  unassessed, and SH-358's own new warning then told the operator a falsehood about a story
+  they had personally assessed. The fix is a decoded three-state read
+  (`github::field_map::RemotePriority::{Unknown, Assessed}`) rather than a bare `Priority`,
+  with `Unknown` — no key, no block, or a value `Priority::parse` rejects — resolved against
+  the sync's own merge base instead of ever being read as "unassessed" on its own; only an
+  explicit `Assessed(p)` can move either side of a priority merge. That resolution is also
+  what keeps a merge base written before `priority_assessed` existed (every `github_bases`
+  row from any release before this fix has no such key in its stored JSON, and deserializes
+  it to `false` even for a story assessed at a real level) from reading as a live remote
+  change — normalized once, on load, against `fold_story`'s own invariant
+  (`priority == None || priority_assessed`), rather than trusted as stored. Council verdict
+  on the sibling question — whether the wire format should carry a version marker so an
+  already-synced, already-quiet story could be force-repushed onto the corrected shape —
+  was no, unanimous by round 2 after one deliberation round: `story show SH-372` (SH-363 —
+  cite the story, not the council's own directory, which resolves on no fresh clone). The
+  general form travels beyond this one field: a message format that predates a distinction cannot
+  retroactively express it, and the fix is for *absence* to decode as "states nothing,"
+  resolved against whatever the reader already believes, never silently promoted to a
+  negative answer.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
