@@ -40,7 +40,10 @@
 #   - Squash or rebase-merge. The org allows merge commits only.
 #   - Skip the gate in public mode. `--skip-gate` is accepted ONLY with
 #     --local-only, because an unreleased build you are dogfooding is yours to
-#     break and a published one is not.
+#     break and a published one is not. When the gate does run, it is the FULL
+#     battery -- `make test-full`, browser suite included (SH-394) -- because
+#     this script is the one place that battery is meant to run at all; the
+#     ordinary merge gate, `make test`, deliberately does not.
 #   - Move a tag that already exists.
 #
 set -euo pipefail
@@ -195,7 +198,7 @@ Options:
   --local-only      Rebuild and reinstall the checked-out tree. Nothing is
                     tagged, pushed or published.
   --no-install      With --bump: cut the version but do not install it here.
-  --skip-gate       Skip `make test`. Only permitted with --local-only.
+  --skip-gate       Skip `make test-full`. Only permitted with --local-only.
   --skip-plugin     Local mode: leave the Claude Code plugin alone.
   --skip-daemon     Local mode: do not stop or start the daemon.
   --dry-run         Print every command instead of running it.
@@ -262,7 +265,7 @@ if [ "$local_only" = 0 ] && [ "$do_publish" = 0 ] && [ -z "$bump" ]; then
 fi
 
 if [ "$skip_gate" = 1 ] && [ "$local_only" = 0 ] && [ "$do_publish" = 0 ]; then
-  die "--skip-gate is only allowed with --local-only. A version that will be shipped runs the gate."
+  die "--skip-gate is only allowed with --local-only. A version that will be shipped runs the full battery (make test-full)."
 fi
 
 # ---------------------------------------------------------------------------
@@ -484,11 +487,12 @@ fi
 # ---------------------------------------------------------------------------
 
 if [ "$skip_gate" = 1 ]; then
-  warn "skipping \`make test\`. This build is not gated."
+  warn "skipping \`make test-full\`. This build is not gated."
 else
-  step "Gate — make test"
-  note "this also mints the push receipt .githooks/pre-push verifies"
-  run make test
+  step "Gate — make test-full"
+  note "the full battery, including the browser suite (SH-394) -- this also \
+mints the push receipt .githooks/pre-push verifies"
+  run make test-full
 fi
 
 # ---------------------------------------------------------------------------
