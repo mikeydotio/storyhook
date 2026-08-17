@@ -120,6 +120,20 @@ story graph --blocked-by {prefix}-1   # trace why a story is blocked
 - What is ready: `story next --count 5`
 - What is blocked: `story list --blocked`
 
+### When you find a second problem
+
+Filing a story for something you already understand, while already holding
+the context, throws that context away and pays somebody else to rebuild it.
+The default is to adopt it into the story you are already on instead: its
+own commit, its own regression test, a comment on the story naming what was
+adopted and why. This does not weaken two hats — two hats governs commits,
+not stories.
+
+**Read `story help scope-rubric` before filing a story for something you
+found mid-work.** It has the test for whether a discovery belongs to your
+story, when to fix it now versus adopt it and leave the story open, and
+what still gets filed.
+
 ## Quick reference
 
 | Action | Command |
@@ -133,6 +147,7 @@ story graph --blocked-by {prefix}-1   # trace why a story is blocked
 | Add a comment | `story comment {prefix}-<n> "comment text"` |
 | Set priority | `story prioritize {prefix}-<n> high` |
 | What a level means | `story help priority-rubric` |
+| Adopt or file a mid-work find | `story help scope-rubric` |
 | Assign a story | `story assign {prefix}-<n> <member>` |
 | Add a label | `story label {prefix}-<n> <label>` |
 | Block a story | `story block {prefix}-<n> "reason"` |
@@ -194,6 +209,8 @@ to manage tasks.
 - Run `story next` to find the highest-priority ready task.
 - After completing work, mark the story done: `story move <id> done`.
 - Use `story handoff --since 2h` to summarize work at session end.
+- Found a second problem while working? Prefer adopting it into the story you
+  are on over filing a new one — run `story help scope-rubric` before you file.
 
 ## Commands
 
