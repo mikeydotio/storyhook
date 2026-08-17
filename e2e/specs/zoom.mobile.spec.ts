@@ -158,6 +158,9 @@ async function createStory(page: Page, title: string): Promise<void> {
   await page.locator("#new-story-btn").click();
   await expect(page.locator("#create-modal")).toHaveClass(/open/);
   await page.locator("#create-title").fill(title);
+  // SH-358: an unassessed priority raises a timer-driven warning toast this
+  // file's own assertions do not expect.
+  await page.locator("#create-priority").selectOption("medium");
   await page.locator("#create-submit").click();
   await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
   await expect(

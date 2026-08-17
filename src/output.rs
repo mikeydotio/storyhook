@@ -644,7 +644,27 @@ pub enum Response {
     /// one more envelope field (`claimed_from`), so every existing
     /// `.story.story.id` consumer reads a claim exactly like a `next`.
     Claimed(Box<StoryView>, String),
-    Stories(Vec<StoryView>, Option<String>),
+    /// Several stories at once — `story list`, `story next` with a count,
+    /// `story import`, `story decompose`, `story epic list`.
+    ///
+    /// A struct variant since SH-358, not the original `(Vec<StoryView>,
+    /// Option<String>)`: a batch creator (`import`, `decompose`) needed a
+    /// warnings channel of its own — [`StoryView::warnings`] answers for one
+    /// story, and a bulk file has no single story to hang a batch-level
+    /// warning on. [`Response::StoryLog`] is the in-repo precedent for naming
+    /// fields here rather than leaving a third positional slot for callers to
+    /// guess at.
+    Stories {
+        views: Vec<StoryView>,
+        message: Option<String>,
+        /// Batch-level warnings — never per-story; those ride on each
+        /// [`StoryView::warnings`] instead. `skip_serializing_if` is not used
+        /// here the way [`JsonEnvelope::warnings`] uses it on the wire struct:
+        /// this is the in-process `Response`, not its serialized envelope, so
+        /// an empty vec is just the ordinary "nothing to warn about" case
+        /// every other `Response` construction site already passes.
+        warnings: Vec<String>,
+    },
     Summary(Box<SummaryView>),
     Graph(Box<GraphView>),
     Issues(Vec<String>),
@@ -892,12 +912,16 @@ fn render_json(response: &Response) -> String {
             warnings: &view.warnings,
             flagged_reasons: &view.flagged_reasons,
         }),
-        Response::Stories(stories, msg) => serde_json::to_string_pretty(&JsonEnvelope {
+        Response::Stories {
+            views,
+            message,
+            warnings,
+        } => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
             claimed_from: None,
-            message: msg.as_deref(),
+            message: message.as_deref(),
             story: None,
-            stories: Some(stories),
+            stories: Some(views),
             summary: None,
             graph: None,
             issues: None,
@@ -906,7 +930,7 @@ fn render_json(response: &Response) -> String {
             phases: None,
             settings: None,
             project: None,
-            warnings: &[],
+            warnings,
             flagged_reasons: &[],
         }),
         Response::Summary(summary) => serde_json::to_string_pretty(&JsonEnvelope {
@@ -1072,7 +1096,11 @@ fn render_human(response: &Response) -> String {
                 render_story(view)
             )
         }
-        Response::Stories(stories, msg) => {
+        Response::Stories {
+            views: stories,
+            message: msg,
+            warnings,
+        } => {
             if stories.is_empty() {
                 return "no stories found\n".to_string();
             }
@@ -1138,6 +1166,11 @@ fn render_human(response: &Response) -> String {
                     flagged,
                     stale
                 ));
+            }
+            // Same `warning: ` shape [`Response::MessageWithWarnings`] and
+            // `render_story` already use, so all three read alike (SH-358).
+            for warning in warnings {
+                body.push_str(&format!("warning: {warning}\n"));
             }
             body
         }
