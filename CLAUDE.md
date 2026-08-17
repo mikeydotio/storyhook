@@ -481,6 +481,31 @@ Standing rules for every wave:
   git ignores theirs — one invariant across all three that a test can check mechanically
   (`tests/hooks.rs::no_managed_hook_lets_its_own_last_statement_decide_gits_verdict`, reading
   the installed files back) rather than a comment a future edit could silently violate.
+- **A declared focus rule with nothing measuring it fails the build, derived on both sides**
+  (SH-360). SH-338 built `measureFocusIndicator` (`e2e/specs/support.ts`) — real Tab presses,
+  `getComputedStyle`, the backdrop composited from the live ancestor chain, all four theme
+  resolutions — and pointed it at exactly two of the sheet's nine `:focus`/`:focus-visible`
+  selectors; the other seven sat unmeasured until SH-360 closed the gap. What stops it
+  reopening is `tests/dashboard_focus_coverage.rs`, which names no selector itself: DECLARED
+  comes from scanning `web_dashboard.html`'s one `<style>` block for every focus pseudo-class
+  (comments stripped first — CSS's `/* */` blocks routinely sit directly above a rule with no
+  intervening brace, which swallowed two real selectors into their own doc-comment prose the
+  first time this ran), MEASURED comes from every string-literal argument
+  `measureFocusIndicator(` is called with across `e2e/specs/*.spec.ts`, and both reduce to a
+  base selector (stripping the trailing pseudo-class) before a plain set-equality check in both
+  directions — an unmeasured declared rule, or a measured selector the sheet no longer
+  declares. A hand-maintained coverage list was rejected outright: it is the exact shape that
+  let the original two-control gap sit unnoticed, and this project has paid for that shape
+  before (SH-136, SH-198, SH-258, SH-260/276, SH-364). Rust over an in-page CSSOM scan for the
+  same reason `tests/dead_public_surface.rs`/`tests/store_isolation.rs` are Rust: a focus rule
+  inside `@media` needs identical treatment to one outside it, so no brace-depth tracking is
+  needed either way, and CSSOM can only ever see the declared half — checking the measured half
+  from inside a browser spec would report a repo-hygiene finding as a two-engine failure in a
+  ~9-minute leg instead of a sub-second `cargo test`. It is a **wiring** fence, not a behaviour
+  one: it proves a call site exists, never that it reaches the right pixel, and it structurally
+  cannot find SH-338's *own* defect class — a focusable control with no author-declared rule at
+  all, which `.btn`/`.ctxmenu-item` still are today, deliberately, and so never enter the
+  declared set this fence reads from.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
