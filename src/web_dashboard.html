@@ -3697,8 +3697,54 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     syncNoticeDock();
   }
 
+  /** Turns an `api()` rejection into the sentence a user should read.
+   *
+   * **The one place a failure becomes prose**, and the reason it is one place
+   * (SH-367): `status === 0` is `api()`'s signal that NO REPLY EVER ARRIVED —
+   * `onerror` (network failure) or `ontimeout` (the client gave up waiting) —
+   * and neither means the daemon did not act. A mutation's deadline is the
+   * server's own documented worst case ({@link MUTATION_TIMEOUT_MS}, derived
+   * from `HOOK_TIMEOUT_CEILING_SECS`), not "the daemon is definitely gone", so
+   * a timeout can fire while the write is still committing or has already
+   * committed.
+   *
+   * Rendering `err.message` there says "request timed out", which reads as a
+   * definite failure and is what turned a slow-but-successful create into a
+   * duplicate one: the user believed it and resubmitted (SH-310/SH-311, 24s
+   * apart). CLAUDE.md carries that verdict as a standing rule binding **any
+   * client this daemon has, present or future** — an ambiguous outcome is
+   * reported as ambiguous, never as failure, because the reader acts on the
+   * lie. This mirrors `HttpInvoker`'s own "may or may not have run" wording in
+   * `src/invoke.rs`: the same daemon answering the same ambiguity to a second
+   * client, which may not answer it differently.
+   *
+   * Any other status is the daemon itself giving a definite answer
+   * (400/403/409/422/500/…), which is not ambiguous and keeps its own message.
+   *
+   * Pure on purpose. {@link describeMutationFailure} adds the refetch a *write*
+   * failure owes; a failed read has nothing to reconcile and must not trigger a
+   * board fetch on every error notice. `tests/dashboard_error_reporting.rs`
+   * fences both the branch and the callers. */
+  function describeFailure(err) {
+    if (typeof err === "string") return err;
+    if (err && err.status === 0) {
+      return "storyhook could not confirm whether this reached the daemon — it may or may not have gone through. Check the board, then try again if it didn't.";
+    }
+    return (err && err.message) || "Something went wrong";
+  }
+
+  /** Raises a durable error notice describing `err` honestly.
+   *
+   * Seventeen call sites, at least eight of them guarding a POST that mutates
+   * the store — `/reopen`, `/labels` add and remove, `/relate`, `/unrelate`,
+   * `/comment`, `/archive`. Every one used to render `err.message` verbatim,
+   * so all eight reported an unprovable outcome as a definite failure. Fixing
+   * it *here* rather than at each call site is what makes those sites correct
+   * by construction; the scan in `tests/dashboard_error_reporting.rs` then
+   * fences the only remaining hazard, which is a NEW site that hand-rolls
+   * `toast(..., err.message, ...)` and bypasses this function. */
   function toastError(err) {
-    toast(typeof err === "string" ? err : (err && err.message) || "Something went wrong", "error");
+    toast(describeFailure(err), "error");
   }
 
   /** Surfaces a mutation response's envelope `warnings` as toasts (SH-358).
@@ -9900,7 +9946,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           toast("Project created", "success");
           fetchReposOnce();
         })
-        .catch(function(err) { error.textContent = err.message; });
+        .catch(function(err) { error.textContent = describeMutationFailure(err); });
     } }, ["Create"]);
     return el("div", { class: "settings-form" }, [pathInput, nameInput, prefixInput, submit, error]);
   }
@@ -9976,7 +10022,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       }
       api("DELETE", "/api/repos/" + encodeURIComponent(plan.slug), { confirm: plan.slug })
         .then(function() { clear(wrap); afterDelete(plan.slug); })
-        .catch(function(err) { error.textContent = err.message; });
+        .catch(function(err) { error.textContent = describeMutationFailure(err); });
     } }, ["Delete permanently"]);
     var cancel = el("button", { class: "btn", onClick: function() { clear(wrap); } }, ["Cancel"]);
 
@@ -10150,10 +10196,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * which is not ambiguous and keeps its own message unchanged. */
   function describeMutationFailure(err) {
     fetchData();
-    if (err.status === 0) {
-      return "storyhook could not confirm whether this reached the daemon — it may or may not have gone through. Check the board, then try again if it didn't.";
-    }
-    return err.message;
+    return describeFailure(err);
   }
 
   /** Discard Draft (SH-175). Editing an existing draft: deletes it outright
@@ -10420,7 +10463,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         toast(resp.message || ("archived `" + slug + "`"), "success");
         fetchData();
       })
-      .catch(function(err) { $("archive-modal-error").textContent = err.message; });
+      .catch(function(err) { $("archive-modal-error").textContent = describeMutationFailure(err); });
   }
 
   /** The story id the delete modal (SH-197) is currently open for, or
@@ -10519,7 +10562,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         // usable: it stays open showing the error, so the user's next press
         // must reach a live form rather than a latched one.
         setDeleteModalInFlight(false);
-        $("delete-modal-error").textContent = err.message;
+        $("delete-modal-error").textContent = describeMutationFailure(err);
       });
   }
 
