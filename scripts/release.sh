@@ -2,25 +2,33 @@
 #
 # Cut a storyhook release.
 #
-# Two modes, and the difference is whether anything leaves this machine:
+# Three verbs, because CUTTING a version and SHIPPING it are separate
+# decisions:
 #
-#   ./scripts/release.sh --bump minor      # public: PR, merge, tag, GitHub release
-#   ./scripts/release.sh --local-only      # dogfood: build, install, relaunch. Nothing pushed.
+#   ./scripts/release.sh --bump minor    # cut v-next, build it everywhere, install it here
+#   ./scripts/release.sh --publish       # ship the draft you have been dogfooding
+#   ./scripts/release.sh --local-only    # just rebuild and reinstall what is checked out
 #
-# PUBLIC mode is the full path a user's `install.sh` one-liner and `story
-# update` both resolve: bump VERSION on a release branch, open a PR (main is
-# protected org-wide, so nothing reaches it any other way), merge it with a
-# merge commit, tag `main`, push the tag. Pushing a `v*` tag is what triggers
-# `.github/workflows/release.yml`, which builds four targets and publishes the
-# release. This script then WAITS for that workflow and verifies all four
-# assets actually landed before it reports success — a release missing one
-# platform's asset is a 404 for that platform's installer on a release that
-# looks complete (SH-259).
+# --bump bumps VERSION on a release branch, opens a PR (main is protected
+# org-wide, so nothing reaches it any other way), merges with a merge commit,
+# tags `main` and pushes the tag. Pushing a `v*` tag triggers
+# `.github/workflows/release.yml`, which builds all four targets and assembles
+# a **draft** release. This script waits for that build, verifies every
+# platform asset actually reached the draft, and then installs the new version
+# locally — so what you dogfood is the artifact that would ship.
 #
-# LOCAL-ONLY mode builds what is checked out right now, installs the binary,
-# refreshes the Claude Code plugin from this working copy, and relaunches the
-# daemon so it is actually running the build you just made. It does not touch
-# VERSION, does not tag, does not push, and never talks to GitHub.
+# Nothing is public at that point, and that is the design. `install.sh` and
+# `story update` both resolve `/releases/latest`, which GitHub defines as the
+# newest release that is neither a draft nor a prerelease. So the local and
+# committed version may legitimately run AHEAD of the published one, for as
+# long as you want, without anyone downloading it by accident.
+#
+# --publish is the second decision: it refuses unless every platform asset is
+# attached, then flips the draft. That check is the one v2.1.0 never got — its
+# build died on one target and the release never happened at all (SH-259).
+#
+# --local-only rebuilds and reinstalls the checked-out tree without touching
+# VERSION, tagging, pushing, or talking to GitHub.
 #
 # WHAT THIS SCRIPT WILL NOT DO, deliberately:
 #
@@ -58,11 +66,14 @@ ARTIFACTS=(
 
 local_only=0
 bump=""
+do_publish=0
+publish=""
 skip_gate=0
 assume_yes=0
 dry_run=0
 skip_plugin=0
 skip_daemon=0
+no_install=0
 
 # ---------------------------------------------------------------------------
 # Output
@@ -96,19 +107,94 @@ confirm() {
   case "$reply" in [yY]*) return 0 ;; *) die "aborted" ;; esac
 }
 
+# Build the working tree, put it on PATH, refresh the plugin, and relaunch the
+# daemon onto it. Shared by --local-only and by --bump, so the version being
+# dogfooded is installed by exactly the same steps whichever way you got here.
+install_locally() {
+  step "Building and installing the binary"
+  # The daemon is stopped BEFORE the binary is replaced: a running daemon holds
+  # the old executable, answers reads from its own page cache, and would keep
+  # serving the build just replaced. `make install` uses `install(1)` rather
+  # than `cp`, which is what keeps this from SIGKILLing a running process on
+  # macOS.
+  if [ "$skip_daemon" = 0 ]; then
+    if story daemon status >/dev/null 2>&1; then
+      info "stopping the running daemon first"
+      run story daemon stop || warn "\`story daemon stop\` reported a problem; continuing"
+    else
+      note "no daemon currently running"
+    fi
+  fi
+
+  run make install
+
+  # Read back what is now on PATH. Under --dry-run nothing was installed, so
+  # reporting the version found here would name the OLD build as though it were
+  # the new one -- a false statement of exactly the kind this project's notice
+  # doctrine forbids elsewhere. Say what was not done instead.
+  if [ "$dry_run" = 1 ]; then
+    installed_version=""
+    note "nothing installed (dry run); the running binary is still $(story --version 2>/dev/null | awk '{print $2}')"
+  else
+    installed_version="$( { command -v story >/dev/null && story --version; } 2>/dev/null | awk '{print $2}')"
+    info "installed    story ${installed_version:-unknown}"
+  fi
+
+  if [ "$skip_plugin" = 0 ]; then
+    step "Refreshing the Claude Code plugin from this working copy"
+    # `marketplace add` errors if the name is already registered, so update an
+    # existing registration rather than re-adding it.
+    if claude plugin marketplace list 2>/dev/null | grep -q "$MARKETPLACE"; then
+      info "marketplace \`$MARKETPLACE\` already registered; updating from source"
+      run claude plugin marketplace update "$MARKETPLACE"
+    else
+      info "registering marketplace \`$MARKETPLACE\` from $repo_root"
+      run claude plugin marketplace add "$repo_root"
+    fi
+
+    if claude plugin list 2>/dev/null | grep -q "$PLUGIN"; then
+      run claude plugin update "${PLUGIN}@${MARKETPLACE}" || run claude plugin update "$PLUGIN"
+    else
+      run claude plugin install "${PLUGIN}@${MARKETPLACE}"
+    fi
+    note "restart Claude Code for the plugin change to take effect"
+  fi
+
+  if [ "$skip_daemon" = 0 ]; then
+    step "Relaunching the daemon"
+    run story daemon start
+    if [ "$dry_run" = 0 ]; then
+      # Confirm the PROCESS, not just that a command exited 0 -- this project
+      # has been bitten by inferring a running process from rendered output
+      # (SH-226).
+      sleep 1
+      story daemon status || die "the daemon did not come back up"
+      running="$(story daemon status 2>/dev/null | head -1 | awk '{print $3}')"
+      info "daemon reports version ${running:-unknown}"
+      if [ -n "$installed_version" ] && [ -n "$running" ] && [ "$running" != "$installed_version" ]; then
+        warn "daemon reports $running but the installed binary is $installed_version — version skew"
+      fi
+    fi
+  fi
+}
+
 usage() {
   sed -n '2,38p' "$0" | sed 's/^#\{1,2\} \{0,1\}//'
   cat <<'EOF'
 
 Usage:
-  scripts/release.sh --bump <major|minor|patch> [options]
-  scripts/release.sh --local-only [options]
+  scripts/release.sh --bump <major|minor|patch> [options]   # cut, build, install
+  scripts/release.sh --publish [vX.Y.Z] [options]           # ship the draft
+  scripts/release.sh --local-only [options]                 # reinstall only
 
 Options:
-  --local-only      Build, install, refresh the plugin and relaunch the daemon.
-                    Nothing is tagged, pushed or published.
-  --bump LEVEL      major | minor | patch. Required for a public release.
-                    Optional (and unusual) with --local-only.
+  --bump LEVEL      major | minor | patch. Cuts the version: PR, merge, tag,
+                    CI builds a DRAFT release, then installs it locally.
+  --publish [VER]   Publish an already-assembled draft (default: VERSION).
+                    Refuses unless all four platform assets are attached.
+  --local-only      Rebuild and reinstall the checked-out tree. Nothing is
+                    tagged, pushed or published.
+  --no-install      With --bump: cut the version but do not install it here.
   --skip-gate       Skip `make test`. Only permitted with --local-only.
   --skip-plugin     Local mode: leave the Claude Code plugin alone.
   --skip-daemon     Local mode: do not stop or start the daemon.
@@ -127,6 +213,18 @@ while [ $# -gt 0 ]; do
     --local-only) local_only=1; shift ;;
     --bump) bump="${2:-}"; [ -n "$bump" ] || die "--bump needs a level"; shift 2 ;;
     --bump=*) bump="${1#*=}"; shift ;;
+    # Optional value: `--publish` alone means whatever VERSION says. A bare
+    # `--publish --yes` must not swallow the next FLAG as its argument, so a
+    # value is only consumed when it does not begin with a dash.
+    --publish)
+      do_publish=1
+      case "${2:-}" in
+        ""|-*) shift ;;
+        *) publish="$2"; shift 2 ;;
+      esac
+      ;;
+    --publish=*) do_publish=1; publish="${1#*=}"; shift ;;
+    --no-install) no_install=1; shift ;;
     --skip-gate) skip_gate=1; shift ;;
     --skip-plugin) skip_plugin=1; shift ;;
     --skip-daemon) skip_daemon=1; shift ;;
@@ -146,12 +244,25 @@ if [ -n "$bump" ]; then
   esac
 fi
 
-if [ "$local_only" = 0 ] && [ -z "$bump" ]; then
-  die "a public release needs --bump <major|minor|patch>. For a dogfood build use --local-only."
+# Three verbs, and exactly one of them per invocation.
+#
+#   --bump      cut a version: PR, merge, tag, and let CI assemble a DRAFT
+#   --publish   ship a draft that already exists
+#   --local-only  rebuild and reinstall what is checked out
+#
+# --bump and --publish are deliberately separate because that separation is
+# the whole point: a tag push proves the build on four platforms and attaches
+# every asset, and only then is shipping a decision worth making.
+if [ "$do_publish" = 1 ] && { [ "$local_only" = 1 ] || [ -n "$bump" ]; }; then
+  die "--publish is its own step. Run it after --bump, once you have decided to ship."
 fi
 
-if [ "$skip_gate" = 1 ] && [ "$local_only" = 0 ]; then
-  die "--skip-gate is only allowed with --local-only. A published release runs the gate."
+if [ "$local_only" = 0 ] && [ "$do_publish" = 0 ] && [ -z "$bump" ]; then
+  die "nothing to do. Use --bump <level> to cut a version, --publish to ship a draft, or --local-only to reinstall."
+fi
+
+if [ "$skip_gate" = 1 ] && [ "$local_only" = 0 ] && [ "$do_publish" = 0 ]; then
+  die "--skip-gate is only allowed with --local-only. A version that will be shipped runs the gate."
 fi
 
 # ---------------------------------------------------------------------------
@@ -204,6 +315,60 @@ else
   warn "the \`claude\` CLI is not on PATH; plugin manifest validation skipped"
   [ "$local_only" = 1 ] && [ "$skip_plugin" = 0 ] \
     && die "--local-only installs the plugin and needs the \`claude\` CLI. Use --skip-plugin to omit it."
+fi
+
+# --------------------------------------------------------------------------
+# PUBLISH — flip an already-assembled draft. Its own step, and it ends here.
+# --------------------------------------------------------------------------
+
+if [ "$do_publish" = 1 ]; then
+  command -v gh >/dev/null || die "gh is not on PATH, and publishing needs it"
+  gh auth status >/dev/null 2>&1 || die "gh is not authenticated. Run \`gh auth login\`."
+
+  target="${publish:-$current_version}"
+  step "Publishing $target"
+
+  state="$(gh release view "$target" --repo "$REPO" --json isDraft,isPrerelease 2>/dev/null)" \
+    || die "no release $target exists. Push its tag first (\`--bump\` does), and let the workflow assemble it."
+
+  case "$state" in
+    *'"isDraft":false'*)
+      info "$target is already published."
+      note "nothing to do; /releases/latest already resolves it unless a newer one exists"
+      exit 0 ;;
+  esac
+
+  # A draft is only worth shipping if it is COMPLETE. This is the check that
+  # v2.1.0 never got: its build died on one target, so the release it would
+  # have published was missing an asset that `install.sh` resolves by name.
+  step "Verifying every platform asset is attached before shipping"
+  missing=0
+  for artifact in "${ARTIFACTS[@]}"; do
+    if gh release view "$target" --repo "$REPO" --json assets \
+        --jq '.assets[].name' 2>/dev/null | grep -qx "$artifact"; then
+      info "ok       $artifact"
+    else
+      printf '    %smissing  %s%s\n' "$red" "$artifact" "$reset"
+      missing=$((missing + 1))
+    fi
+  done
+  [ "$missing" -eq 0 ] \
+    || die "$missing asset(s) missing from the $target draft. Publishing it would 404 for those platforms.
+    Re-run the build (\`gh workflow run release.yml --ref $target\`) rather than shipping this."
+
+  confirm "Publish $target? This is the moment it becomes visible to install.sh and \`story update\`."
+  run gh release edit "$target" --repo "$REPO" --draft=false
+
+  if [ "$dry_run" = 0 ]; then
+    latest="$(gh release view --repo "$REPO" --json tagName --jq .tagName 2>/dev/null)"
+    info "latest release is now ${latest:-unknown}"
+    [ "$latest" = "$target" ] \
+      || warn "/releases/latest resolves $latest, not $target — a newer release already exists"
+  fi
+
+  step "Published $target"
+  info "https://github.com/$REPO/releases/tag/$target"
+  exit 0
 fi
 
 if [ "$local_only" = 0 ]; then
@@ -362,71 +527,7 @@ if [ "$local_only" = 1 ]; then
     fi
   fi
 
-  step "Building and installing the binary"
-  # The daemon is stopped BEFORE the binary is replaced: a running daemon holds
-  # the old executable, answers reads from its own page cache, and would keep
-  # serving the build you just replaced. `make install` uses `install(1)`
-  # rather than `cp`, which is what keeps this from SIGKILLing a running
-  # process on macOS.
-  if [ "$skip_daemon" = 0 ]; then
-    if story daemon status >/dev/null 2>&1; then
-      info "stopping the running daemon first"
-      run story daemon stop || warn "\`story daemon stop\` reported a problem; continuing"
-    else
-      note "no daemon currently running"
-    fi
-  fi
-
-  run make install
-
-  # Read back what is now on PATH. Under --dry-run nothing was installed, so
-  # reporting the version found here would name the OLD build as though it were
-  # the new one — a false statement of exactly the kind this project's notice
-  # doctrine forbids elsewhere. Say what was not done instead.
-  if [ "$dry_run" = 1 ]; then
-    installed_version=""
-    note "nothing installed (dry run); the running binary is still $(story --version 2>/dev/null | awk '{print $2}')"
-  else
-    installed_version="$( { command -v story >/dev/null && story --version; } 2>/dev/null | awk '{print $2}')"
-    info "installed    story ${installed_version:-unknown}"
-  fi
-
-  if [ "$skip_plugin" = 0 ]; then
-    step "Refreshing the Claude Code plugin from this working copy"
-    # `marketplace add` is idempotent-ish but errors if the name is already
-    # registered, so update an existing registration rather than re-adding it.
-    if claude plugin marketplace list 2>/dev/null | grep -q "$MARKETPLACE"; then
-      info "marketplace \`$MARKETPLACE\` already registered; updating from source"
-      run claude plugin marketplace update "$MARKETPLACE"
-    else
-      info "registering marketplace \`$MARKETPLACE\` from $repo_root"
-      run claude plugin marketplace add "$repo_root"
-    fi
-
-    if claude plugin list 2>/dev/null | grep -q "$PLUGIN"; then
-      run claude plugin update "${PLUGIN}@${MARKETPLACE}" || run claude plugin update "$PLUGIN"
-    else
-      run claude plugin install "${PLUGIN}@${MARKETPLACE}"
-    fi
-    note "restart Claude Code for the plugin change to take effect"
-  fi
-
-  if [ "$skip_daemon" = 0 ]; then
-    step "Relaunching the daemon"
-    run story daemon start
-    if [ "$dry_run" = 0 ]; then
-      # Confirm the PROCESS, not just that a command exited 0 — this project
-      # has been bitten by inferring a running process from rendered output
-      # (SH-226).
-      sleep 1
-      story daemon status || die "the daemon did not come back up"
-      running="$(story daemon status 2>/dev/null | head -1 | awk '{print $3}')"
-      info "daemon reports version ${running:-unknown}"
-      if [ -n "$installed_version" ] && [ -n "$running" ] && [ "$running" != "$installed_version" ]; then
-        warn "daemon reports $running but the installed binary is $installed_version — version skew"
-      fi
-    fi
-  fi
+  install_locally
 
   step "Local build installed"
   info "Nothing was tagged, pushed or published."
@@ -513,14 +614,16 @@ if [ "$dry_run" = 1 ]; then
   exit 0
 fi
 
-step "Waiting for the release workflow"
+step "Waiting for the build to assemble the draft"
 info "watching the run triggered by $next_version"
 sleep 10
 if ! gh run watch --exit-status "$(gh run list --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId')"; then
-  die "the release workflow failed. The tag $next_version exists and was NOT published — see \`gh run list\`."
+  die "the build failed, so no draft was assembled for $next_version.
+    The tag exists and nothing was published — which is the safe half of this
+    failure. Fix the build and re-run: gh workflow run release.yml --ref $next_version"
 fi
 
-step "Verifying every platform asset landed"
+step "Verifying every platform asset reached the draft"
 missing=0
 for artifact in "${ARTIFACTS[@]}"; do
   if gh release view "$next_version" --repo "$REPO" --json assets \
@@ -533,8 +636,19 @@ for artifact in "${ARTIFACTS[@]}"; do
 done
 
 [ "$missing" -eq 0 ] \
-  || die "$missing asset(s) missing from $next_version. That release is a 404 for those platforms — do not announce it."
+  || die "$missing asset(s) missing from the $next_version draft. Do not publish it — re-run the build first."
 
-step "Released $next_version"
-info "https://github.com/$REPO/releases/tag/$next_version"
-note "the install one-liner and \`story update\` both resolve /releases/latest, so this is now live"
+# Install the version just cut, so the thing being dogfooded is the thing that
+# would ship. Skipped with --no-install for a version cut on one machine and
+# tried on another.
+if [ "$no_install" = 0 ]; then
+  install_locally
+fi
+
+step "$next_version is cut, built on every platform, and NOT published"
+info "draft   https://github.com/$REPO/releases/tag/$next_version"
+info "main    in sync at $next_version"
+note "install.sh and \`story update\` still resolve the previous release: a draft is"
+note "invisible to /releases/latest, which is what lets your local version run ahead."
+printf '\n    %sWhen you have dogfooded it and want to ship:%s\n' "$bold" "$reset"
+printf '        ./scripts/release.sh --publish\n\n'
