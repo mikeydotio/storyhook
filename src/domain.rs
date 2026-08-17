@@ -49,6 +49,16 @@ use finding::{Finding, FindingCode, FindingData};
 
 pub mod provenance;
 
+/// Sniffing and naming an attachment's media type from its own bytes
+/// (SH-315).
+///
+/// Its own file for the same reason [`remote`] is: a self-contained grammar
+/// — magic-byte signatures in, an enum out — with call sites in the service
+/// layer, the store, and the CLI, none of which need anything else here.
+pub mod media_type;
+
+use media_type::MediaType;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImportStory {
     pub title: String,
@@ -301,6 +311,39 @@ pub struct StoryRelation {
     pub other_id: String,
 }
 
+/// One image attached to a story (SH-315), folded from a
+/// [`StoryEvent::StoryAttachmentAdded`].
+///
+/// This is the attachment's **metadata**. The bytes it names live in the
+/// store's `story_attachment_blobs` table, keyed by `(project, story, id)` —
+/// see `store::sqlite::write::put_attachment_blob` — never in the event
+/// payload: `append_and_fold` re-reads and re-folds a story's entire history
+/// on every write to it, and a multi-megabyte payload would tax every later
+/// comment or move on that story.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attachment {
+    /// A per-story counter, allocated by the event that added this
+    /// attachment and never reused: removing one never renumbers a
+    /// survivor, and an id stays a stable, human-typable handle
+    /// (`story attachment remove SH-9 2`) for as long as this project's
+    /// history exists.
+    pub id: u32,
+    /// The name it is shown under — the caller's `--name`, or a name
+    /// [`AttachmentService::add`](crate::service::attachment::AttachmentService::add)
+    /// derived from the source path when none was given.
+    pub name: String,
+    /// The format [`MediaType::sniff`] identified from the bytes at the time
+    /// this attachment was added.
+    pub media_type: MediaType,
+    /// The size of the stored bytes.
+    pub byte_len: u64,
+    /// The SHA-256 of the stored bytes, hex-encoded — re-verified against the
+    /// blob row by `story doctor`.
+    pub sha256: String,
+    /// When this attachment was added.
+    pub added_at: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorySnapshot {
     pub id: String,
@@ -374,10 +417,43 @@ pub struct StorySnapshot {
     /// it can never become `true` again — see that event's doc comment.
     #[serde(default, skip_serializing_if = "is_false")]
     pub draft: bool,
+    /// Images attached to this story (SH-315), oldest first. See
+    /// [`Attachment`] for what folds here versus what lives in the store's
+    /// blob table.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
+    /// The id [`StoryAttachmentAdded`](StoryEvent::StoryAttachmentAdded) will
+    /// use next.
+    ///
+    /// Deliberately **not** derived as `attachments.iter().map(|a|
+    /// a.id).max() + 1`: an id must never be reused once its attachment is
+    /// removed (`AttachmentService::add`'s own doc comment states the same
+    /// rule `next_story_no` states for story numbers), and a removal empties
+    /// exactly the slot a max-of-current computation would read back from.
+    /// This counter only ever moves forward, independent of which ids are
+    /// still present.
+    #[serde(
+        default = "default_next_attachment_id",
+        skip_serializing_if = "is_first_attachment_id"
+    )]
+    pub next_attachment_id: u32,
 }
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// The starting value of [`StorySnapshot::next_attachment_id`] — attachment
+/// ids are 1-based, matching every other id this project hands out.
+fn default_next_attachment_id() -> u32 {
+    1
+}
+
+/// Whether `next_attachment_id` is still at its starting value, so a story
+/// that has never held an attachment serializes exactly as it did before
+/// this field existed.
+fn is_first_attachment_id(value: &u32) -> bool {
+    *value == default_next_attachment_id()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -635,6 +711,45 @@ pub enum StoryEvent {
     StoryPublished {
         at: String,
     },
+    /// Attaches an image to a story (SH-315).
+    ///
+    /// Folds into [`StorySnapshot::attachments`] — the metadata only. The
+    /// bytes are written to the store's blob table in the same transaction as
+    /// this event, by the caller of `append_and_fold`
+    /// ([`crate::service::attachment::AttachmentService::add`]), not by a
+    /// projection this event's `kind` triggers the way `StoryCommitLinked`
+    /// does: unlike a commit's sha, an image is too large to carry in the
+    /// event payload itself (see [`Attachment`]'s own doc comment).
+    ///
+    /// `id` is chosen by the caller, not allocated by this event — the
+    /// service reads [`StorySnapshot::next_attachment_id`] off the story's
+    /// own snapshot, so replaying this event is deterministic and two
+    /// attachments never race for the same id the way two `story new`s would
+    /// for a story number (which the store *does* allocate, inside the write
+    /// transaction, for exactly that race).
+    StoryAttachmentAdded {
+        at: String,
+        id: u32,
+        name: String,
+        media_type: MediaType,
+        byte_len: u64,
+        sha256: String,
+    },
+    /// Removes a previously-attached image — the inverse of
+    /// [`StoryAttachmentAdded`](Self::StoryAttachmentAdded).
+    ///
+    /// Not a tombstone: the caller
+    /// ([`AttachmentService::remove`](crate::service::attachment::AttachmentService::remove))
+    /// deletes the blob row in the same transaction, so an attachment
+    /// removed by mistake is genuinely gone rather than merely hidden — an
+    /// image is not a fact worth keeping bytes for once someone has said it
+    /// should not have been attached. The event log still records that it
+    /// existed and that it was removed, which is what an append-only history
+    /// is for.
+    StoryAttachmentRemoved {
+        at: String,
+        id: u32,
+    },
 }
 
 /// The `kind` tag [`StoryEvent::StoryCommitLinked`] serializes with.
@@ -730,7 +845,7 @@ fn git_link_subject(text: &str) -> Option<&str> {
 /// It cannot drift: `every_known_kind_is_a_variant_and_every_variant_is_known`
 /// reads serde's own `unknown variant, expected one of …` list back out of the
 /// derive and compares it to this array.
-pub const EVENT_KINDS: [&str; 27] = [
+pub const EVENT_KINDS: [&str; 29] = [
     "StoryCreated",
     "StoryCommentAdded",
     "StoryCommentRetracted",
@@ -758,6 +873,8 @@ pub const EVENT_KINDS: [&str; 27] = [
     "StoryPrClosed",
     "StoryCreatedAsDraft",
     "StoryPublished",
+    "StoryAttachmentAdded",
+    "StoryAttachmentRemoved",
 ];
 
 /// Whether `kind` is an event this binary can decode.
@@ -800,6 +917,8 @@ pub fn event_kind(event: &StoryEvent) -> &'static str {
         StoryEvent::StoryPrClosed { .. } => "StoryPrClosed",
         StoryEvent::StoryCreatedAsDraft { .. } => "StoryCreatedAsDraft",
         StoryEvent::StoryPublished { .. } => "StoryPublished",
+        StoryEvent::StoryAttachmentAdded { .. } => "StoryAttachmentAdded",
+        StoryEvent::StoryAttachmentRemoved { .. } => "StoryAttachmentRemoved",
     }
 }
 
@@ -872,6 +991,8 @@ pub fn last_activity_type(events: &[StoryEvent]) -> &'static str {
             StoryEvent::StoryPrClosed { .. } => "pr-closed",
             StoryEvent::StoryCreatedAsDraft { .. } => "created-as-draft",
             StoryEvent::StoryPublished { .. } => "published",
+            StoryEvent::StoryAttachmentAdded { .. } => "attachment-added",
+            StoryEvent::StoryAttachmentRemoved { .. } => "attachment-removed",
         })
         .unwrap_or("unknown")
 }
@@ -1332,6 +1453,8 @@ pub fn fold_story(
     let mut hidden_at = None;
     let mut draft = false;
     let mut published = false;
+    let mut attachments = Vec::new();
+    let mut next_attachment_id: u32 = default_next_attachment_id();
 
     for event in events {
         match event {
@@ -1576,6 +1699,32 @@ pub fn fold_story(
                 published = true;
                 updated_at = Some(at.clone());
             }
+            StoryEvent::StoryAttachmentAdded {
+                at,
+                id,
+                name,
+                media_type,
+                byte_len,
+                sha256,
+            } => {
+                attachments.push(Attachment {
+                    id: *id,
+                    name: name.clone(),
+                    media_type: *media_type,
+                    byte_len: *byte_len,
+                    sha256: sha256.clone(),
+                    added_at: at.clone(),
+                });
+                // `max`, not a plain overwrite: a replayed history could in
+                // principle carry ids out of order (a hand-edited import),
+                // and the counter must never move backward.
+                next_attachment_id = next_attachment_id.max(*id + 1);
+                updated_at = Some(at.clone());
+            }
+            StoryEvent::StoryAttachmentRemoved { at, id } => {
+                attachments.retain(|a: &Attachment| a.id != *id);
+                updated_at = Some(at.clone());
+            }
         }
     }
 
@@ -1682,6 +1831,8 @@ pub fn fold_story(
         deleted_reason,
         hidden_at,
         draft,
+        attachments,
+        next_attachment_id,
     })
 }
 
@@ -4618,6 +4769,8 @@ mod tests {
             deleted_reason: None,
             hidden_at: None,
             draft: false,
+            attachments: Vec::new(),
+            next_attachment_id: 1,
         };
 
         assert!(!is_ready(&story, &empty_index()));
@@ -4654,6 +4807,8 @@ mod tests {
             deleted_reason: None,
             hidden_at: None,
             draft: false,
+            attachments: Vec::new(),
+            next_attachment_id: 1,
         };
         let active = state("in-progress", SuperState::Open, Some(STATE_ROLE_ACTIVE));
 
@@ -4755,6 +4910,8 @@ mod tests {
             deleted_reason: None,
             hidden_at: None,
             draft: false,
+            attachments: Vec::new(),
+            next_attachment_id: 1,
         };
         let mut dependent = blocker.clone();
         dependent.id = "SH-2".to_string();
@@ -4924,6 +5081,8 @@ mod tests {
                 deleted_reason: None,
                 hidden_at: None,
                 draft: false,
+                attachments: Vec::new(),
+                next_attachment_id: 1,
             },
             StorySnapshot {
                 id: "SH-2".to_string(),
@@ -4956,6 +5115,8 @@ mod tests {
                 deleted_reason: None,
                 hidden_at: None,
                 draft: false,
+                attachments: Vec::new(),
+                next_attachment_id: 1,
             },
             StorySnapshot {
                 id: "SH-3".to_string(),
@@ -4982,6 +5143,8 @@ mod tests {
                 deleted_reason: None,
                 hidden_at: None,
                 draft: false,
+                attachments: Vec::new(),
+                next_attachment_id: 1,
             },
             StorySnapshot {
                 id: "SH-4".to_string(),
@@ -5005,6 +5168,8 @@ mod tests {
                 deleted_reason: None,
                 hidden_at: None,
                 draft: false,
+                attachments: Vec::new(),
+                next_attachment_id: 1,
             },
         ];
 
@@ -5844,6 +6009,8 @@ mod tests {
             deleted_reason: None,
             hidden_at: None,
             draft: false,
+            attachments: Vec::new(),
+            next_attachment_id: 1,
         }
     }
 
@@ -6311,6 +6478,8 @@ mod ready_order_properties {
             deleted_reason: None,
             hidden_at: None,
             draft: false,
+            attachments: Vec::new(),
+            next_attachment_id: 1,
         }
     }
 

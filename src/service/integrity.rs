@@ -56,7 +56,8 @@ use crate::domain::{
 };
 use crate::error::{AppError, IntegrityDetail};
 use crate::store::{
-    ExpectedSeq, ProjectId, ReadOps, Store, StoryNo, StoryQuery, diff, repair_read_model,
+    AttachmentBlobRow, ExpectedSeq, ProjectId, ReadOps, Store, StoryNo, StoryQuery, diff,
+    repair_read_model,
 };
 
 use super::state_set::write_states_repairing;
@@ -121,7 +122,7 @@ impl<'a, S: Store> IntegrityService<'a, S> {
             let prefix = project_prefix(tx, project)?;
             let unattested = rendered_ids(&drift.unattested(), &prefix);
 
-            findings.extend(story_issues(tx, project, &unattested)?);
+            findings.extend(story_issues(tx, project, &prefix, &unattested)?);
             findings.extend(drift_issues(&drift, &prefix));
 
             let mut notices = notice_issues(&drift, &prefix);
@@ -344,7 +345,7 @@ impl<'a, S: Store> IntegrityService<'a, S> {
             // than the run has decisions.
             let mut pending: BTreeMap<String, Vec<StoryEvent>> = BTreeMap::new();
 
-            for finding in story_issues(&*tx, project, &unattested)? {
+            for finding in story_issues(&*tx, project, &prefix, &unattested)? {
                 let Some(planned) = plan_repair(&*tx, project, &prefix, &now, &finding)? else {
                     continue;
                 };
@@ -785,6 +786,17 @@ fn plan_repair(
         // events do not vouch for (SH-286), so a repair derived from that row
         // is the fabrication the disclosure exists to refuse.
         | FindingCode::UnexaminedStory
+        // SH-315: none of the three attachment findings has a safe automatic
+        // repair. A missing or orphaned blob could mean either half of a
+        // half-completed write — appending the event without writing the
+        // bytes, or the reverse — and guessing which one happened would mean
+        // either fabricating bytes this build never received or silently
+        // discarding a real image. A mismatch is evidence of corruption on
+        // disk; overwriting it with a guess would destroy that evidence the
+        // same way an unrepairable `FoldFailure` does.
+        | FindingCode::MissingAttachmentBlob
+        | FindingCode::OrphanedAttachmentBlob
+        | FindingCode::AttachmentBlobMismatch
         | FindingCode::Unstructured => Ok(None),
     }
 }
@@ -920,6 +932,7 @@ fn catalog_issues(states: &[StateDef], types: &[TypeDef]) -> Vec<Finding> {
 fn story_issues(
     tx: &impl ReadOps,
     project: ProjectId,
+    prefix: &str,
     unattested: &BTreeSet<String>,
 ) -> Result<Vec<Finding>, AppError> {
     let types: BTreeSet<String> = tx
@@ -930,6 +943,15 @@ fn story_issues(
 
     let stories = story_map(tx, project)?;
     let mut by_story = compute_integrity_issues(&stories, unattested);
+
+    // SH-315: one project-wide query, not one per story — see
+    // `ReadOps::attachment_blobs`'s own doc comment for why. `story_no` is
+    // reparsed from each story's `id` below, matching `attachment_blobs`'
+    // own keying.
+    let mut blobs_by_story: BTreeMap<StoryNo, Vec<AttachmentBlobRow>> = BTreeMap::new();
+    for (story_no, blob) in tx.attachment_blobs(project)? {
+        blobs_by_story.entry(story_no).or_default().push(blob);
+    }
 
     let mut issues = Vec::new();
     for story in stories.values() {
@@ -988,6 +1010,75 @@ fn story_issues(
                     labels: story.labels.clone(),
                 }),
             );
+        }
+
+        // SH-315: the snapshot's own attachment list against the blob
+        // table's rows for the same story. `story_no` reparses cleanly for
+        // every story here — each came from a row this store minted, so a
+        // parse failure would mean the snapshot's own `id` is corrupt, which
+        // `ReadModelDivergence` already covers; skip rather than double-report.
+        if let Ok(story_no) = StoryNo::parse_id(prefix, &story.id) {
+            let blobs = blobs_by_story
+                .get(&story_no)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let blob_by_id: BTreeMap<u32, &AttachmentBlobRow> = blobs
+                .iter()
+                .map(|blob| (blob.attachment_id, blob))
+                .collect();
+            for attachment in &story.attachments {
+                match blob_by_id.get(&attachment.id) {
+                    None => issues.push(
+                        Finding::new(
+                            FindingCode::MissingAttachmentBlob,
+                            format!(
+                                "{}: attachment {} (\"{}\") has no stored bytes",
+                                story.id, attachment.id, attachment.name
+                            ),
+                        )
+                        .about(&story.id),
+                    ),
+                    Some(blob)
+                        if blob.byte_len != attachment.byte_len
+                            || blob.sha256 != attachment.sha256 =>
+                    {
+                        issues.push(
+                            Finding::new(
+                                FindingCode::AttachmentBlobMismatch,
+                                format!(
+                                    "{}: attachment {} (\"{}\") disagrees with its stored bytes \
+                                     — recorded {} bytes/sha256 {}, stored {} bytes/sha256 {}",
+                                    story.id,
+                                    attachment.id,
+                                    attachment.name,
+                                    attachment.byte_len,
+                                    attachment.sha256,
+                                    blob.byte_len,
+                                    blob.sha256
+                                ),
+                            )
+                            .about(&story.id),
+                        );
+                    }
+                    Some(_) => {}
+                }
+            }
+            let known_ids: BTreeSet<u32> = story.attachments.iter().map(|a| a.id).collect();
+            for blob in blobs {
+                if !known_ids.contains(&blob.attachment_id) {
+                    issues.push(
+                        Finding::new(
+                            FindingCode::OrphanedAttachmentBlob,
+                            format!(
+                                "{}: stored bytes for attachment {} have no matching \
+                                 attachment record",
+                                story.id, blob.attachment_id
+                            ),
+                        )
+                        .about(&story.id),
+                    );
+                }
+            }
         }
     }
 

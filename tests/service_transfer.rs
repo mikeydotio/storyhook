@@ -1385,6 +1385,7 @@ fn a_document_whose_ids_do_not_match_its_prefix_is_rejected_whole() {
                 },
             )],
             archived: false,
+            attachment_blobs: Vec::new(),
         });
 
     let error = transfer::import_project(&store, dir.path(), &Clock::System, &export, false)

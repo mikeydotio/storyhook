@@ -150,6 +150,7 @@ const PROJECT_SCOPED_TABLES: &[(&str, &str)] = &[
     ("github_bases", "project_id"),
     ("story_commit_links", "project_id"),
     ("story_pr_links", "project_id"),
+    ("story_attachment_blobs", "project_id"),
     ("story_relations", "project_id"),
     ("story_labels", "project_id"),
     ("stories", "project_id"),
@@ -253,6 +254,7 @@ const STORY_SCOPED_TABLES: &[(&str, &str)] = &[
     ("github_bases", "story_no = ?2"),
     ("story_commit_links", "story_no = ?2"),
     ("story_pr_links", "story_no = ?2"),
+    ("story_attachment_blobs", "story_no = ?2"),
     ("story_relations", "(story_no = ?2 OR other_no = ?2)"),
     ("story_labels", "story_no = ?2"),
     ("stories", "story_no = ?2"),
@@ -1244,4 +1246,62 @@ pub(super) fn put_github_base(
         "writing a github base",
     )?;
     Ok(())
+}
+
+/// Writes one attachment's bytes (SH-315). See
+/// [`WriteOps::put_attachment_blob`](crate::store::WriteOps::put_attachment_blob)
+/// for why this upserts rather than rejects a second write under the same id.
+pub(super) fn put_attachment_blob(
+    conn: &Connection,
+    project: ProjectId,
+    story: StoryNo,
+    attachment_id: u32,
+    bytes: &[u8],
+    sha256: &str,
+    added_at: &str,
+) -> Result<(), StoreError> {
+    let byte_len = i64::try_from(bytes.len()).map_err(|_| {
+        StoreError::Invariant(format!("attachment is too large: {} bytes", bytes.len()))
+    })?;
+    sql(
+        conn.execute(
+            "INSERT INTO story_attachment_blobs \
+                 (project_id, story_no, attachment_id, bytes, byte_len, sha256, added_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+             ON CONFLICT (project_id, story_no, attachment_id) DO UPDATE SET \
+                 bytes = excluded.bytes, byte_len = excluded.byte_len, \
+                 sha256 = excluded.sha256, added_at = excluded.added_at",
+            params![
+                project.get(),
+                story.get(),
+                attachment_id,
+                bytes,
+                byte_len,
+                sha256,
+                added_at
+            ],
+        ),
+        "writing an attachment blob",
+    )?;
+    Ok(())
+}
+
+/// Deletes one attachment's bytes (SH-315), reporting whether there was a row
+/// to delete. See
+/// [`WriteOps::delete_attachment_blob`](crate::store::WriteOps::delete_attachment_blob).
+pub(super) fn delete_attachment_blob(
+    conn: &Connection,
+    project: ProjectId,
+    story: StoryNo,
+    attachment_id: u32,
+) -> Result<bool, StoreError> {
+    let removed = sql(
+        conn.execute(
+            "DELETE FROM story_attachment_blobs \
+             WHERE project_id = ?1 AND story_no = ?2 AND attachment_id = ?3",
+            params![project.get(), story.get(), attachment_id],
+        ),
+        "deleting an attachment blob",
+    )?;
+    Ok(removed > 0)
 }

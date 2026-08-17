@@ -99,6 +99,7 @@ fn the_export_topic_names_every_key_the_export_document_carries() {
             id: "TST-1".to_string(),
             events: Vec::new(),
             archived: false,
+            attachment_blobs: Vec::new(),
         }],
     };
 

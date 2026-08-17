@@ -761,6 +761,8 @@ mod tests {
             deleted_reason: None,
             hidden_at: None,
             draft: false,
+            attachments: Vec::new(),
+            next_attachment_id: 1,
         }
     }
 

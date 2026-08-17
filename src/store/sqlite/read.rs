@@ -21,8 +21,9 @@ use crate::domain::{Member, StateDef, StoryEvent, StorySnapshot, TypeDef};
 use crate::store::error::StoreError;
 use crate::store::ids::{EventSeq, GlobalSeq, ProjectId, StoryNo};
 use crate::store::types::{
-    FeedEvent, PrLink, ProjectRecord, ProjectRemoteRecord, ProjectSettings, RelationEdge,
-    StoredEvent, StoredPayload, StoryQuery, StoryRow, StorySort, parse_priority, parse_superstate,
+    AttachmentBlobRow, FeedEvent, PrLink, ProjectRecord, ProjectRemoteRecord, ProjectSettings,
+    RelationEdge, StoredEvent, StoredPayload, StoryQuery, StoryRow, StorySort, parse_priority,
+    parse_superstate,
 };
 
 const PROJECT_COLUMNS: &str =
@@ -745,6 +746,57 @@ fn pr_link_from_row_offset(row: &Row<'_>, offset: usize) -> Result<PrLink, rusql
         linked_at: row.get(offset + 6)?,
         last_checked_at: row.get(offset + 7)?,
     })
+}
+
+/// One attachment's stored bytes (SH-315). See
+/// [`ReadOps::attachment_blob`](crate::store::ReadOps::attachment_blob).
+pub(super) fn attachment_blob(
+    conn: &Connection,
+    project: ProjectId,
+    story: StoryNo,
+    attachment_id: u32,
+) -> Result<Option<Vec<u8>>, StoreError> {
+    sql(
+        conn.query_row(
+            "SELECT bytes FROM story_attachment_blobs \
+             WHERE project_id = ?1 AND story_no = ?2 AND attachment_id = ?3",
+            params![project.get(), story.get(), attachment_id],
+            |row| row.get(0),
+        )
+        .optional(),
+        "reading an attachment blob",
+    )
+}
+
+/// Every attachment blob's metadata across the project (SH-315). See
+/// [`ReadOps::attachment_blobs`](crate::store::ReadOps::attachment_blobs).
+pub(super) fn attachment_blobs(
+    conn: &Connection,
+    project: ProjectId,
+) -> Result<Vec<(StoryNo, AttachmentBlobRow)>, StoreError> {
+    let mut stmt = sql(
+        conn.prepare(
+            "SELECT story_no, attachment_id, byte_len, sha256 FROM story_attachment_blobs \
+             WHERE project_id = ?1 \
+             ORDER BY story_no, attachment_id",
+        ),
+        "preparing an attachment-blobs read",
+    )?;
+    let rows = sql(
+        stmt.query_map(params![project.get()], |row| {
+            let story_no: i64 = row.get(0)?;
+            Ok((
+                StoryNo::new(story_no),
+                AttachmentBlobRow {
+                    attachment_id: row.get(1)?,
+                    byte_len: row.get(2)?,
+                    sha256: row.get(3)?,
+                },
+            ))
+        }),
+        "reading attachment blobs",
+    )?;
+    collect(rows, "reading attachment blobs")
 }
 
 pub(super) fn story(

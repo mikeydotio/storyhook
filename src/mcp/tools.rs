@@ -891,7 +891,8 @@ pub fn tool_for_variant(invocation: &Invocation) -> Option<&'static str> {
         | Invocation::Update { .. }
         | Invocation::Version
         | Invocation::ProjectSnapshot
-        | Invocation::History { .. } => None,
+        | Invocation::History { .. }
+        | Invocation::Attachment { .. } => None,
     }
 }
 

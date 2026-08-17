@@ -22,6 +22,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use sha2::{Digest, Sha256};
+
 use crate::domain::provenance::Provenance;
 use crate::domain::remote::{OwnedOrigin, RemoteUrl};
 use crate::domain::{
@@ -269,6 +271,35 @@ pub struct ExportedStory {
     /// Whether the story lives in the legacy archive rather than as an open
     /// log.
     pub archived: bool,
+    /// Every attachment's bytes this story's own snapshot names (SH-315).
+    ///
+    /// Carried separately from `events` because the bytes never rode an event
+    /// payload in the store either — see `StoryEvent::StoryAttachmentAdded`'s
+    /// own doc comment. A story whose snapshot names an attachment with no
+    /// backing blob row (a defect `story doctor` already reports) simply
+    /// carries fewer entries here than attachments; `story export` has no
+    /// `--force` and must never fail on account of already-known damage.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachment_blobs: Vec<ExportedAttachmentBlob>,
+}
+
+/// One attachment's bytes, as [`ExportedStory`] carries them.
+///
+/// A plain JSON array of byte values rather than base64: this document is
+/// the backup-and-rollback format, not a wire-optimized one, and a hand-
+/// rolled base64 codec is exactly the kind of "add it because it seems
+/// obviously needed" complexity this project's own conventions ask to be
+/// justified against a real cost. If export documents holding large
+/// attachments ever make that cost real, `serde`'s `#[serde(with = "...")]`
+/// hook is the seam a later story would use — nothing about this shape
+/// forecloses it.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ExportedAttachmentBlob {
+    /// Matches [`crate::domain::Attachment::id`] in the story's own folded
+    /// snapshot.
+    pub attachment_id: u32,
+    /// The stored bytes, verbatim.
+    pub bytes: Vec<u8>,
 }
 
 /// One event inside an [`ExportedStory`]: decoded when this binary understands
@@ -569,10 +600,24 @@ impl<'ctx, S: Store> TransferService<'ctx, S> {
                 // Every event, decoded or not. `partition_known` stood here and
                 // its second half was discarded, which is what SH-67 was.
                 let events = stored.iter().map(ExportedEvent::from_stored).collect();
+                // SH-315: one blob read per attachment the snapshot names. A
+                // missing row (already-known damage — see `ExportedStory::
+                // attachment_blobs`'s own doc comment) is skipped rather than
+                // failing the whole export.
+                let mut attachment_blobs = Vec::new();
+                for attachment in &row.snapshot.attachments {
+                    if let Some(bytes) = tx.attachment_blob(project, story_no, attachment.id)? {
+                        attachment_blobs.push(ExportedAttachmentBlob {
+                            attachment_id: attachment.id,
+                            bytes,
+                        });
+                    }
+                }
                 let exported = ExportedStory {
                     id: row.snapshot.id.clone(),
                     events,
                     archived: row.archived,
+                    attachment_blobs,
                 };
                 // Every story's github-sync base, not just open ones — an
                 // archived story can still carry a base from before it closed.
@@ -1006,6 +1051,14 @@ pub fn import_project<S: Store>(
             }
             written.push((story_no, head));
         }
+        // SH-315: by id, not by index — `written`'s order is `export.stories`'
+        // order today, but nothing enforces that, and a lookup makes the
+        // pairing explicit either way.
+        let attachment_blobs_by_id: BTreeMap<&str, &[ExportedAttachmentBlob]> = export
+            .stories
+            .iter()
+            .map(|story| (story.id.as_str(), story.attachment_blobs.as_slice()))
+            .collect();
         for (story_no, head) in written {
             let stored = tx.events_for(project, story_no)?;
             let (known, _unknown) = partition_known(story_no, &stored);
@@ -1018,6 +1071,33 @@ pub fn import_project<S: Store>(
             // story this loop writes, so this can never miss.
             if let Some(base) = export.github_bases.get(&id) {
                 tx.put_github_base(project, story_no, base)?;
+            }
+            // The sha256 is recomputed from the restored bytes rather than
+            // carried in the document: a restore that recomputes it is
+            // self-healing against any mismatch the backup captured, and
+            // `added_at` comes from the snapshot this same fold just
+            // produced — the attachment's own record of when it was added,
+            // not a second copy the document would have to keep in step.
+            for blob in attachment_blobs_by_id
+                .get(id.as_str())
+                .copied()
+                .unwrap_or(&[])
+            {
+                if let Some(attachment) = snapshot
+                    .attachments
+                    .iter()
+                    .find(|a| a.id == blob.attachment_id)
+                {
+                    let sha256 = format!("{:x}", Sha256::digest(&blob.bytes));
+                    tx.put_attachment_blob(
+                        project,
+                        story_no,
+                        blob.attachment_id,
+                        &blob.bytes,
+                        &sha256,
+                        &attachment.added_at,
+                    )?;
+                }
             }
         }
         tx.reserve_story_no(project, highest)?;

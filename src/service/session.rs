@@ -459,6 +459,8 @@ fn event_detail(event: &crate::domain::StoryEvent) -> String {
         E::StoryPrClosed { url, .. } => format!("pull request closed — {url}"),
         E::StoryCreatedAsDraft { .. } => "created as a draft".to_string(),
         E::StoryPublished { .. } => "published".to_string(),
+        E::StoryAttachmentAdded { name, .. } => format!("attachment added — {name}"),
+        E::StoryAttachmentRemoved { id, .. } => format!("attachment {id} removed"),
     }
 }
 
