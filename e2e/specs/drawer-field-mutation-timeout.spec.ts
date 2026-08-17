@@ -210,5 +210,14 @@ test("a slow but successful comment is reported honestly, not as a failure", asy
   await expect(toast).toContainText("may or may not have gone through");
   await expect(toast).not.toContainText("request timed out");
 
+  // And the sentence names its subject. Without this the honest message is
+  // still unfinished: a reader mid-burst cannot tell WHICH write is in doubt.
+  const subject = toast.locator(".notice-detail");
+  await expect(subject).toContainText("comment");
+  // Composed, not relayed (SH-304's rule): the reader gets `<id> · comment`,
+  // never the raw request line.
+  await expect(subject).not.toContainText("/api/");
+  await expect(subject).not.toContainText("POST");
+
   await routeDone;
 });
