@@ -12,18 +12,20 @@ pub mod types;
 
 use std::collections::BTreeMap;
 
-use crate::domain::{Member, Priority, StateDef, StoryEvent, StorySnapshot, normalize_labels};
+use crate::domain::{FieldEdit, Member, StateDef, StoryEvent, StorySnapshot, normalize_labels};
 use crate::error::AppError;
 use crate::output::Response;
 
 use self::api::{GithubApi, GithubApiFactory};
 use self::conflict::{Resolution, ResolvedConflict, resolve_conflicts_batch};
 use self::diff::{
-    ConflictField, FieldConflict, FieldUpdates, MergeResult, base_after_sync, three_way_merge,
+    ConflictField, FieldConflict, FieldUpdates, MergeResult, base_after_sync,
+    parse_priority_conflict_value, three_way_merge,
 };
 use self::field_map::{
-    RemoteSnapshot, format_comment_for_github, github_comment_to_story, is_sync_generated_comment,
-    issue_to_remote_snapshot, story_to_create_request, updates_to_issue_request,
+    RemotePriority, RemoteSnapshot, format_comment_for_github, github_comment_to_story,
+    is_sync_generated_comment, issue_to_remote_snapshot, story_to_create_request,
+    updates_to_issue_request,
 };
 use self::initial::{InitialSetupOutcome, SetupAnswers, require_github_token, run_initial_setup};
 use self::storage::SyncStorage;
@@ -793,11 +795,27 @@ fn sync_single_story(
     let issue = client.get_issue(mapping.issue_number)?;
     let remote_snap = issue_to_remote_snapshot(&issue, states, members, prefix);
 
-    // Build a StorySnapshot from the remote data for diffing
-    let remote_as_story = remote_snapshot_to_story_snapshot(&remote_snap, &issue, &story.id);
-
     // Load base snapshot (falls back to current local state for first sync)
-    let base = sync.load_base(&story.id)?.unwrap_or_else(|| story.clone());
+    let mut base = sync.load_base(&story.id)?.unwrap_or_else(|| story.clone());
+
+    // A base saved by a binary that predates SH-359 has no `priority_assessed`
+    // key in its stored JSON at all, so it deserializes to `false` -- even for
+    // a base whose `priority` is a real level, which `fold_story`'s own
+    // invariant (`priority == None || priority_assessed`) says is impossible
+    // for a snapshot that was ever actually folded. Restoring the invariant
+    // here, rather than trusting the stored bit, is what keeps a stale base
+    // from disagreeing with a remote block that (for any non-`none` level)
+    // has always rendered its key honestly -- a provable no-op for every base
+    // `base_after_sync` itself ever wrote, since that path only ever clones a
+    // freshly-folded snapshot.
+    if base.priority != crate::domain::Priority::None {
+        base.priority_assessed = true;
+    }
+
+    // Build a StorySnapshot from the remote data for diffing. Needs `base`
+    // (SH-372): `RemotePriority::Unknown` resolves against it rather than
+    // ever reading as "unassessed" on its own -- see this function's doc.
+    let remote_as_story = remote_snapshot_to_story_snapshot(&remote_snap, &issue, &story.id, &base);
 
     // Fetch remote comments
     let remote_comments = client.list_comments(mapping.issue_number, None)?;
@@ -1013,10 +1031,15 @@ fn create_story_from_issue(
         });
     }
 
-    if remote_snap.priority != Priority::None {
+    // A story being minted has no merge base to resolve `Unknown` against
+    // (SH-372) -- unlike `remote_snapshot_to_story_snapshot`, which does.
+    // Only an explicit statement creates an event; a silent block leaves the
+    // new story unassessed, exactly as `NewStoryInput` with no `--priority`
+    // does for `story new`.
+    if let RemotePriority::Assessed(priority) = &remote_snap.priority {
         events.push(StoryEvent::StoryPrioritySet {
             at: now.clone(),
-            priority: remote_snap.priority.clone(),
+            priority: priority.clone(),
         });
     }
 
@@ -1189,11 +1212,13 @@ fn apply_local_updates(
         });
     }
 
-    if let Some(ref priority) = updates.priority {
-        events.push(StoryEvent::StoryPrioritySet {
+    match &updates.priority {
+        FieldEdit::Keep => {}
+        FieldEdit::Set(priority) => events.push(StoryEvent::StoryPrioritySet {
             at: now.clone(),
             priority: priority.clone(),
-        });
+        }),
+        FieldEdit::Clear => events.push(StoryEvent::StoryPriorityCleared { at: now.clone() }),
     }
 
     if let Some(ref awaiting_opt) = updates.awaiting {
@@ -1272,10 +1297,14 @@ fn apply_conflict_locally(
                 member_id: conflict.remote_value.clone(),
             }
         }
-        ConflictField::Priority => {
-            let priority = Priority::parse(&conflict.remote_value).unwrap_or(Priority::None);
-            StoryEvent::StoryPrioritySet { at: now, priority }
-        }
+        // SH-372: `<unassessed>` names an authoritative move back to
+        // unassessed (only reachable from a local `story undo`, per
+        // `parse_priority_conflict_value`'s own doc) -- distinct from a
+        // stated `none`, which is parked.
+        ConflictField::Priority => match parse_priority_conflict_value(&conflict.remote_value) {
+            FieldEdit::Set(priority) => StoryEvent::StoryPrioritySet { at: now, priority },
+            FieldEdit::Clear | FieldEdit::Keep => StoryEvent::StoryPriorityCleared { at: now },
+        },
         ConflictField::Awaiting => {
             if conflict.remote_value == "<none>" {
                 StoryEvent::StoryAwaitingCleared { at: now }
@@ -1338,8 +1367,7 @@ fn apply_conflict_remotely(
             }
         }
         ConflictField::Priority => {
-            let priority = Priority::parse(&conflict.local_value).unwrap_or(Priority::None);
-            updates.priority = Some(priority);
+            updates.priority = parse_priority_conflict_value(&conflict.local_value);
         }
         ConflictField::Awaiting => {
             if conflict.local_value == "<none>" {
@@ -1375,11 +1403,26 @@ fn apply_conflict_remotely(
 // Helper: convert RemoteSnapshot to StorySnapshot for diffing
 // ---------------------------------------------------------------------------
 
+/// `base` resolves a [`RemotePriority::Unknown`] remote (SH-372): a block
+/// stating nothing about assessment copies the merge base's own
+/// `(priority, priority_assessed)` pair verbatim rather than reading as
+/// "unassessed" on its own. This is what keeps a pre-SH-372 issue body — or
+/// one from an ordinary GitHub-native issue with no storyhook block at all —
+/// from registering as a remote *change* and silently clearing a local
+/// assessment on an otherwise-quiet sync; only an issue whose block
+/// explicitly names a level (`Assessed`) can move the remote side of a
+/// priority merge.
 fn remote_snapshot_to_story_snapshot(
     remote: &RemoteSnapshot,
     issue: &types::GithubIssue,
     story_id: &str,
+    base: &StorySnapshot,
 ) -> StorySnapshot {
+    let (priority, priority_assessed) = match &remote.priority {
+        RemotePriority::Assessed(p) => (p.clone(), true),
+        RemotePriority::Unknown => (base.priority.clone(), base.priority_assessed),
+    };
+
     StorySnapshot {
         id: story_id.to_string(),
         title: remote.title.clone(),
@@ -1394,15 +1437,8 @@ fn remote_snapshot_to_story_snapshot(
         // the remote side to diff `referenced_by_commits` against.
         referenced_by_commits: Vec::new(),
         relationships: remote.non_native_relationships.clone(),
-        priority: remote.priority.clone(),
-        // Derived exactly as `local_events_for_remote_story` decides whether to
-        // emit a `StoryPrioritySet` for this same remote (SH-359): a GitHub
-        // issue carrying no priority label is a story nobody has assessed, and
-        // one carrying a label is assessed at that level. Deriving it here from
-        // the same predicate is what keeps this synthetic snapshot agreeing
-        // with the events that path would write — a second, differently-spelled
-        // rule is how the diff and the append come to disagree.
-        priority_assessed: remote.priority != Priority::None,
+        priority,
+        priority_assessed,
         labels: remote.labels.clone(),
         story_type: None,
         description: remote.body_text.clone(),
@@ -1502,8 +1538,10 @@ fn print_field_updates(indent: &str, updates: &FieldUpdates) {
             None => eprintln!("{indent}assignee -> (cleared)"),
         }
     }
-    if let Some(ref priority) = updates.priority {
-        eprintln!("{indent}priority -> \"{}\"", priority.as_str());
+    match &updates.priority {
+        FieldEdit::Keep => {}
+        FieldEdit::Set(priority) => eprintln!("{indent}priority -> \"{}\"", priority.as_str()),
+        FieldEdit::Clear => eprintln!("{indent}priority -> (unassessed)"),
     }
     if let Some(ref awaiting) = updates.awaiting {
         match awaiting {

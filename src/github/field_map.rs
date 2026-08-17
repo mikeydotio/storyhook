@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::domain::{
-    Member, Priority, StateDef, StoryComment, StoryRelation, StorySnapshot, SuperState,
+    FieldEdit, Member, Priority, StateDef, StoryComment, StoryRelation, StorySnapshot, SuperState,
 };
 use crate::github::body_block::{BlockRelationship, StoryhookBlock, extract_block, render_block};
 use crate::github::diff::FieldUpdates;
@@ -15,6 +15,28 @@ fn is_native_relation(relation: &str) -> bool {
     NATIVE_RELATIONS.contains(&relation)
 }
 
+/// What an issue's storyhook block says about its story's priority, decoded
+/// from the raw `Option<String>` on [`StoryhookBlock::priority`] (SH-372).
+///
+/// Deliberately not a bare [`Priority`]: that type has no way to say "this
+/// block makes no claim," so a remote with no `priority:` key and one with
+/// an explicit `priority: none` were indistinguishable, and a caller that
+/// treated the former as an assessed `none` (parked) would falsely mark a
+/// story nobody has looked at as deliberately deferred. See
+/// [`StoryhookBlock`]'s own doc comment for the wire-format contract this
+/// type decodes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemotePriority {
+    /// No block, no `priority:` key, or a value [`Priority::parse`] rejects
+    /// (a typo). The remote states nothing — resolved against the sync's
+    /// merge base by [`super::remote_snapshot_to_story_snapshot`], never
+    /// treated as "unassessed" on its own.
+    Unknown,
+    /// The block states a level. [`Priority::None`] means deliberately
+    /// parked, per `story help priority-rubric` — a decision, not silence.
+    Assessed(Priority),
+}
+
 /// A snapshot of story-relevant fields extracted from a GitHub Issue.
 #[derive(Debug, Clone)]
 pub struct RemoteSnapshot {
@@ -22,7 +44,7 @@ pub struct RemoteSnapshot {
     pub state: String,
     pub superstate: SuperState,
     pub assignee: Option<String>,
-    pub priority: Priority,
+    pub priority: RemotePriority,
     pub awaiting: Option<String>,
     pub labels: Vec<String>,
     pub body_text: Option<String>,
@@ -156,11 +178,10 @@ pub fn issue_to_remote_snapshot(
         match issue.body.as_deref() {
             Some(body) => match extract_block(body) {
                 Some((text, block)) => {
-                    let priority = block
-                        .priority
-                        .as_deref()
-                        .and_then(Priority::parse)
-                        .unwrap_or(Priority::None);
+                    let priority = match block.priority.as_deref().and_then(Priority::parse) {
+                        Some(p) => RemotePriority::Assessed(p),
+                        None => RemotePriority::Unknown,
+                    };
 
                     let relationships: Vec<StoryRelation> = block
                         .relationships
@@ -184,10 +205,10 @@ pub fn issue_to_remote_snapshot(
                     } else {
                         Some(body.to_string())
                     };
-                    (text, None, Priority::None, None, Vec::new())
+                    (text, None, RemotePriority::Unknown, None, Vec::new())
                 }
             },
-            None => (None, None, Priority::None, None, Vec::new()),
+            None => (None, None, RemotePriority::Unknown, None, Vec::new()),
         };
 
     RemoteSnapshot {
@@ -264,18 +285,20 @@ pub fn updates_to_issue_request(
 
     // If priority, awaiting, or description changed, we need to re-render the
     // body block.
-    let body = if updates.priority.is_some()
+    let body = if !updates.priority.is_keep()
         || updates.awaiting.is_some()
         || updates.description.is_some()
     {
         // Build the block from the current story state, then overlay the updates.
         let mut block = story_to_block(story);
-        if let Some(ref prio) = updates.priority {
-            block.priority = if *prio == Priority::None {
-                None
-            } else {
-                Some(prio.as_str().to_string())
-            };
+        match &updates.priority {
+            FieldEdit::Keep => {}
+            // No `priority:` key -- an authoritative "un-assess," never
+            // reachable from a remote block on its own (see
+            // `RemotePriority::Unknown`'s doc comment), only from a local
+            // `story prioritize <id> none` cleared back or `StoryPriorityCleared`.
+            FieldEdit::Clear => block.priority = None,
+            FieldEdit::Set(prio) => block.priority = Some(prio.as_str().to_string()),
         }
         if let Some(ref aw) = updates.awaiting {
             block.awaiting = aw.clone();
@@ -309,11 +332,17 @@ pub fn updates_to_issue_request(
 
 /// Build a [`StoryhookBlock`] from a [`StorySnapshot`] for embedding in the
 /// issue body. Only includes non-native relationships.
+///
+/// Renders `priority_assessed`, not just `priority` (SH-372): an assessed
+/// story renders its level, `Priority::None` included — deliberately parked
+/// is a stated decision, not silence. An unassessed story renders no
+/// `priority:` key at all, matching what an absent key means on the read
+/// side ([`RemotePriority::Unknown`]).
 pub fn story_to_block(story: &StorySnapshot) -> StoryhookBlock {
-    let priority = if story.priority == Priority::None {
-        None
-    } else {
+    let priority = if story.priority_assessed {
         Some(story.priority.as_str().to_string())
+    } else {
+        None
     };
 
     let relationships: Vec<BlockRelationship> = story
@@ -330,7 +359,6 @@ pub fn story_to_block(story: &StorySnapshot) -> StoryhookBlock {
         priority,
         awaiting: story.awaiting.clone(),
         relationships,
-        sync_version: None,
     }
 }
 
@@ -645,7 +673,7 @@ mod tests {
         assert_eq!(snap.state, "todo");
         assert_eq!(snap.superstate, SuperState::Open);
         assert_eq!(snap.assignee, Some("alice".to_string()));
-        assert_eq!(snap.priority, Priority::High);
+        assert_eq!(snap.priority, RemotePriority::Assessed(Priority::High));
         assert_eq!(snap.awaiting.as_deref(), Some("code review"));
         assert_eq!(snap.labels, vec!["bug".to_string()]);
         assert_eq!(
@@ -821,7 +849,7 @@ mod tests {
         assert_eq!(snap.state, "done");
         assert_eq!(snap.superstate, SuperState::Closed);
         assert!(snap.assignee.is_none());
-        assert_eq!(snap.priority, Priority::None);
+        assert_eq!(snap.priority, RemotePriority::Unknown);
         assert!(snap.awaiting.is_none());
         assert!(snap.labels.is_empty());
         assert_eq!(snap.body_text.as_deref(), Some("Just a normal issue body."));
@@ -924,11 +952,24 @@ mod tests {
     }
 
     #[test]
-    fn story_to_block_no_priority() {
+    fn story_to_block_unassessed_has_no_priority_key() {
         let mut story = test_story();
         story.priority = Priority::None;
+        story.priority_assessed = false;
         let block = story_to_block(&story);
         assert!(block.priority.is_none());
+    }
+
+    /// SH-372: a story deliberately parked at `none` is a stated decision,
+    /// not silence -- it must render the key, distinct from
+    /// [`story_to_block_unassessed_has_no_priority_key`] above.
+    #[test]
+    fn story_to_block_parked_renders_priority_none() {
+        let mut story = test_story();
+        story.priority = Priority::None;
+        story.priority_assessed = true;
+        let block = story_to_block(&story);
+        assert_eq!(block.priority, Some("none".to_string()));
     }
 
     // -----------------------------------------------------------------------
@@ -1049,7 +1090,7 @@ mod tests {
     #[test]
     fn updates_to_issue_request_priority_triggers_body_update() {
         let updates = FieldUpdates {
-            priority: Some(Priority::Critical),
+            priority: FieldEdit::Set(Priority::Critical),
             ..Default::default()
         };
 
@@ -1064,6 +1105,51 @@ mod tests {
 
         let body = req.body.unwrap();
         assert!(body.contains("priority: critical"));
+    }
+
+    /// SH-372: pushing a local `story prioritize <id> none` (a genuine
+    /// assessment, not silence) must render the key.
+    #[test]
+    fn updates_to_issue_request_priority_set_to_none_renders_the_key() {
+        let updates = FieldUpdates {
+            priority: FieldEdit::Set(Priority::None),
+            ..Default::default()
+        };
+
+        let story = test_story();
+        let req = updates_to_issue_request(
+            &updates,
+            &story,
+            &test_members(),
+            &test_states(),
+            &BTreeMap::new(),
+        );
+
+        let body = req.body.unwrap();
+        assert!(body.contains("priority: none"));
+    }
+
+    /// SH-372: `FieldEdit::Clear` is the authoritative un-assess -- reachable
+    /// only from a local `StoryPriorityCleared`, never from a remote block on
+    /// its own -- and it must render no `priority:` key at all.
+    #[test]
+    fn updates_to_issue_request_priority_cleared_omits_the_key() {
+        let updates = FieldUpdates {
+            priority: FieldEdit::Clear,
+            ..Default::default()
+        };
+
+        let story = test_story();
+        let req = updates_to_issue_request(
+            &updates,
+            &story,
+            &test_members(),
+            &test_states(),
+            &BTreeMap::new(),
+        );
+
+        let body = req.body.unwrap();
+        assert!(!body.contains("priority:"));
     }
 
     #[test]
@@ -1135,7 +1221,7 @@ mod tests {
         let mut story = test_story();
         story.description = Some("Existing free text".to_string());
         let updates = FieldUpdates {
-            priority: Some(Priority::Low),
+            priority: FieldEdit::Set(Priority::Low),
             ..Default::default()
         };
 
