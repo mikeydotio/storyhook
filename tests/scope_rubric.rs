@@ -319,3 +319,22 @@ fn story_new_reference_searches_before_filing() {
          flow -- the user's explicit go-ahead still wins"
     );
 }
+
+#[test]
+fn claude_md_points_at_the_topic_and_does_not_restate_it() {
+    let text = std::fs::read_to_string(repo_root().join("CLAUDE.md")).expect("reading CLAUDE.md");
+    assert!(
+        text.contains(POINTER),
+        "CLAUDE.md must send a reader to the shipped topic rather than being the only \
+         place this doctrine exists"
+    );
+
+    // The heading the shipped topic uses for its own remedy list. If it appears in
+    // CLAUDE.md verbatim, the doctrine has been restated rather than pointed at —
+    // the SH-136 class this repo has paid for before.
+    assert!(
+        !text.contains("== What still gets filed =="),
+        "CLAUDE.md has restated the shipped topic's own section; the topic is the \
+         source now, and a second copy is the SH-136 class all over again"
+    );
+}
