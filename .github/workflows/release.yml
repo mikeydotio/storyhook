@@ -187,3 +187,24 @@ jobs:
           body_path: notes/release-body.md
           generate_release_notes: true
           files: artifacts/*
+          # A tag push builds and assembles a release; it does not SHIP one.
+          #
+          # Pushing a tag used to publish immediately, which forced a single
+          # decision to be made twice over: whether the version is ready, and
+          # whether the four platform builds actually work. v2.1.0 answered
+          # the first yes and the second no — its build died on one target,
+          # nothing published, and the tag has dangled ever since (SH-259).
+          # A draft separates them. The tag push proves the build on every
+          # platform and attaches all four assets; deciding to ship is then a
+          # separate, reversible act against a release that is already
+          # complete and inspectable.
+          #
+          # Holding it back is safe precisely because of what `/releases/latest`
+          # means: the newest release that is neither a draft nor a
+          # prerelease. `install.sh` and `story update` both resolve exactly
+          # that, so a draft is invisible to every installer until it is
+          # published — which is what makes a local version legitimately
+          # running ahead of the public one, rather than a broken state.
+          #
+          # `scripts/release.sh --publish` flips it.
+          draft: true
