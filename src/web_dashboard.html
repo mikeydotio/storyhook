@@ -2522,6 +2522,20 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function api(method, path, body, opts) {
     opts = opts || {};
     return new Promise(function(resolve, reject) {
+      // Every rejection carries WHICH REQUEST failed (SH-367). Nothing did
+      // before, so `describeMutationFailure`'s honest sentence -- "storyhook
+      // could not confirm whether this reached the daemon" -- named no
+      // subject, and a reader who had just edited two fields could not tell
+      // which write was in doubt.
+      //
+      // One funnel rather than four literal `reject(...)` calls, so a branch
+      // added later cannot forget it: the 401-cancelled path, the definite
+      // refusal, `onerror` and `ontimeout` all pass through here.
+      function refuse(err) {
+        err.method = method;
+        err.path = path;
+        reject(err);
+      }
       function attempt() {
         var xhr = new XMLHttpRequest();
         xhr.open(method, path, true);
@@ -2541,7 +2555,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
             resolve(parsed || {});
           } else if (xhr.status === 401) {
             openTokenModal(attempt, function() {
-              reject({ status: 401, message: "authentication cancelled" });
+              refuse({ status: 401, message: "authentication cancelled" });
             });
           } else {
             // Not every error body is JSON -- the dispatch endpoint's own
@@ -2551,11 +2565,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
             // diagnosis a caller most needs on exactly those replies.
             var text = xhr.responseText && xhr.responseText.trim();
             var message = (parsed && parsed.error) || (!parsed && text) || xhr.statusText || ("HTTP " + xhr.status);
-            reject({ status: xhr.status, message: message, body: parsed });
+            refuse({ status: xhr.status, message: message, body: parsed });
           }
         };
-        xhr.onerror = function() { reject({ status: 0, message: "network error" }); };
-        xhr.ontimeout = function() { reject({ status: 0, message: "request timed out" }); };
+        xhr.onerror = function() { refuse({ status: 0, message: "network error" }); };
+        xhr.ontimeout = function() { refuse({ status: 0, message: "request timed out" }); };
         xhr.send(body ? JSON.stringify(body) : null);
       }
       attempt();
@@ -3743,8 +3757,68 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * by construction; the scan in `tests/dashboard_error_reporting.rs` then
    * fences the only remaining hazard, which is a NEW site that hand-rolls
    * `toast(..., err.message, ...)` and bypasses this function. */
+  /** Which request failed, as a line a reader can act on — or null.
+   *
+   * The honest sentence `describeFailure` returns for an unprovable outcome
+   * names no subject, and in a burst ("set priority, then assign, then
+   * comment") that leaves the reader unable to tell which write is in doubt.
+   * The request's identity is the one thing that disambiguates it, and unlike
+   * a typed error name it is **nowhere else on screen** — which is precisely
+   * why SH-367's council kept this and dropped the typed reason.
+   *
+   * **Composed from the path's own segments, never relayed raw.** A reader is
+   * not shown `POST /api/repos/alpha/story/SH-12/comment`; they are shown
+   * `SH-12 · comment`. That is `dispatchHeadline`'s rule (SH-304) applied
+   * here: forwarding a machine string into a human UI is the defect, and no
+   * fix that keeps relaying it can hold.
+   *
+   * **Nothing is mapped.** The action word is the path's own trailing segment,
+   * not a lookup from route name to prose. A table here would duplicate
+   * `src/api/routes.rs` in a second language with nothing keeping the two in
+   * step — the drift class this project has paid for four times (SH-136,
+   * SH-198, SH-260, SH-364), and the specific reason SH-367's council refused
+   * a client-side label map for error kinds. A segment copied out of the URL
+   * cannot drift from the URL.
+   *
+   * Returns null rather than inventing a subject when the path names neither a
+   * story nor an action — an absent line is honest where a vague one
+   * ("something failed") is noise. */
+  function requestSubject(err) {
+    if (!err || !err.path) return null;
+    var segments = String(err.path).replace(/[?#].*$/, "").split("/");
+    var kept = [];
+    for (var i = 0; i < segments.length; i++) {
+      if (segments[i]) kept.push(segments[i]);
+    }
+    var storyAt = -1;
+    for (var j = 0; j < kept.length; j++) {
+      if (kept[j] === "story") storyAt = j;
+    }
+    var story = storyAt >= 0 && kept[storyAt + 1] ? decodeURIComponent(kept[storyAt + 1]) : "";
+    var tail = kept.length ? kept[kept.length - 1] : "";
+    // The trailing segment is an action only when it is not the story id
+    // itself -- `DELETE /story/SH-12` has no action word, and "SH-12 · SH-12"
+    // would be worse than saying nothing.
+    var action = tail && tail !== encodeURIComponent(story) && tail !== story ? tail : "";
+    if (story && action) return story + " · " + action;
+    if (story) return story;
+    if (action && action !== "repos") return action;
+    return null;
+  }
+
+  /** Raises a durable error notice describing `err` honestly, beneath which
+   * the failed request names itself.
+   *
+   * Seventeen call sites, at least eight of them guarding a POST that mutates
+   * the store — `/reopen`, `/labels` add and remove, `/relate`, `/unrelate`,
+   * `/comment`, `/archive`. Every one used to render `err.message` verbatim,
+   * so all eight reported an unprovable outcome as a definite failure. Fixing
+   * it *here* rather than at each call site is what makes those sites correct
+   * by construction; the scan in `tests/dashboard_error_reporting.rs` then
+   * fences the only remaining hazard, which is a NEW site that hand-rolls
+   * `toast(..., err.message, ...)` and bypasses this function. */
   function toastError(err) {
-    toast(describeFailure(err), "error");
+    toast(describeFailure(err), "error", requestSubject(err));
   }
 
   /** Surfaces a mutation response's envelope `warnings` as toasts (SH-358).
