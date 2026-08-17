@@ -78,7 +78,8 @@ done
 # are the load-bearing spans -- the things the agent is actually told to run.
 # Shared between both --auto charters (the head/tail SH-219 split in two):
 for needle in "story show $id --json" "story move $id done" "gh pr merge --merge" \
-              "make test" "story block $id"; do
+              "make test" "story block $id" "prefer adopting it into" \
+              "context window is still unused"; do
   for variant in "auto:$auto" "solo:$solo"; do
     label="${variant%%:*}"; text="${variant#*:}"
     case "$text" in
