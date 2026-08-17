@@ -15,15 +15,16 @@ import {
  * targets carry `touch-action: manipulation`, so a quick double tap acts
  * instead of double-tap-zooming.
  *
- * This file runs only under the `mobile-chromium` Playwright project
- * (`playwright.config.ts`'s `MOBILE_SPECS` pattern, matched by this file's
- * own `.mobile.spec.ts` suffix) -- never under the desktop `chromium`
- * project, because headless desktop Chromium reports `pointer: fine` and
- * the very first test below would fail there by design. `devices["Pixel
- * 7"]` is Blink under mobile emulation, not WebKit: `make e2e-install`
- * installs chromium only, so a WebKit device descriptor would fail with a
- * missing-browser error on every machine. iOS Safari's 16px rule is
- * WebKit's; what this file verifies is that the *mechanism* (the
+ * This file runs under both mobile Playwright projects, `mobile-chromium`
+ * and `mobile-webkit` (`playwright.config.ts`'s `MOBILE_SPECS` pattern,
+ * matched by this file's own `.mobile.spec.ts` suffix) -- never under either
+ * desktop project, because headless desktop Chromium and WebKit both report
+ * `pointer: fine` and the very first test below would fail there by design.
+ * `devices["Pixel 7"]` is Blink under mobile emulation; `devices["iPhone
+ * 15"]` (SH-348) is WebKit under mobile emulation -- iOS Safari's 16px rule
+ * is WebKit's own, and until SH-348 this file could only simulate a
+ * coarse-pointer environment on the engine that doesn't have the rule.
+ * What this file verifies, on either engine, is that the *mechanism* (the
  * `--control-font-*` tokens, raised under `@media (pointer: coarse)`) fires
  * in a genuinely coarse-pointer environment and reaches every control --
  * not that a phone would actually stay unzoomed, which only a real device

@@ -23,13 +23,14 @@ if (!baseURL) {
 /**
  * A spec whose subject is the phone — a coarse pointer, a narrow viewport,
  * `hasTouch` — rather than the dashboard's behavior in general. One
- * pattern, referenced by every project below, so the desktop pair stay
- * exhaustive and disjoint by construction: every spec file matches it or it
- * doesn't, and no file can end up running in more than one desktop project
- * (where the other would fail a `(pointer: coarse)` assertion by design) or
- * in none (where it would silently run nowhere). Two independently
- * hand-maintained globs would drift the way `--test-threads`-adjacent
- * counts have before (SH-136); a single regex used twice cannot.
+ * pattern, referenced by every project below, so the two engine pairs each
+ * stay exhaustive and disjoint by construction: every spec file matches it
+ * or it doesn't, and no file can end up running in more than one project
+ * per pair (where the other would fail a `(pointer: coarse)` assertion by
+ * design) or in none (where it would silently run nowhere). Two
+ * independently hand-maintained globs would drift the way
+ * `--test-threads`-adjacent counts have before (SH-136); a single regex
+ * used four times cannot.
  */
 const MOBILE_SPECS = /\.mobile\.spec\.ts$/;
 
@@ -90,23 +91,52 @@ export default defineConfig({
       testIgnore: MOBILE_SPECS,
     },
     {
-      // Chromium under mobile emulation, not a real phone: `make
-      // e2e-install` installs chromium and webkit, not a WebKit/iOS device,
-      // so a real-iPhone descriptor would fail with a missing-browser error
-      // on every machine. `devices["Pixel 7"]` is `defaultBrowserType:
-      // "chromium"` with `isMobile: true` and `hasTouch: true`, which is
-      // what puts Blink into mobile emulation -- and mobile emulation is
-      // what makes `(pointer: coarse)` match (SH-256). The engine under
-      // test is therefore Blink, not WebKit, and iOS Safari's 16px zoom
-      // threshold is WebKit's own rule: what this project verifies is that
-      // the *mechanism* -- the dashboard's coarse-pointer CSS override --
-      // fires and lands every control at or above that threshold, which is
-      // the part that can regress. A `mobile-webkit` project (WebKit under
-      // mobile emulation) would narrow, not close, that remaining gap and
-      // is filed separately rather than folded in here. Only a real iPhone
-      // proves the browser stays unzoomed.
+      // Chromium under mobile emulation, not a real phone. `devices["Pixel
+      // 7"]` is `defaultBrowserType: "chromium"` with `isMobile: true` and
+      // `hasTouch: true`, which is what puts Blink into mobile emulation --
+      // and mobile emulation is what makes `(pointer: coarse)` match
+      // (SH-256). The engine under test is therefore Blink, not WebKit, and
+      // iOS Safari's 16px zoom threshold is WebKit's own rule: this project
+      // verifies that the *mechanism* -- the dashboard's coarse-pointer CSS
+      // override -- fires and lands every control at or above that
+      // threshold, which is the part that can regress. Paired below with
+      // `mobile-webkit`, the engine that rule actually belongs to (SH-348);
+      // only a real iPhone proves the browser stays unzoomed.
       name: "mobile-chromium",
       use: { ...devices["Pixel 7"] },
+      testMatch: MOBILE_SPECS,
+    },
+    {
+      // WebKit under mobile emulation (SH-348) -- the engine whose own rule
+      // the mobile pair's central assertion actually is. iOS Safari's 16px
+      // zoom-avoidance threshold is WebKit's, not Blink's, and until this
+      // project existed it was asserted only against Blink under emulation.
+      // `devices["iPhone 15"]` is `defaultBrowserType: "webkit"` with
+      // `isMobile: true`/`hasTouch: true`, and drives the same `webkit`
+      // binary `make e2e-install` already installs for the desktop `webkit`
+      // project above -- no second browser to fetch, which is why the
+      // Makefile needed no change.
+      //
+      // Measured against that build before this project was added, rather
+      // than assumed: `(pointer: coarse)` and `(hover: none)` both match,
+      // and `page.setViewportSize()` moves `window.innerWidth` exactly at
+      // 320, 375, 390 and 768 -- so the coarse-pointer CSS override fires
+      // here the same way it does under `Pixel 7`, and the widths
+      // `responsive.mobile.spec.ts` sweeps are real. One divergence,
+      // harmless and recorded so the next reader doesn't re-derive it:
+      // `navigator.maxTouchPoints` reports 0 under this build, where
+      // Blink's emulation reports 1+. Nothing branches on it --
+      // `web_dashboard.html`'s only `matchMedia` call is
+      // `prefers-reduced-motion`, and `zoom.mobile.spec.ts`'s own first
+      // test reports that field for diagnostics while asserting only
+      // `pointerCoarse`.
+      //
+      // Keyed off the same `MOBILE_SPECS` constant as `mobile-chromium`,
+      // for the same reason the desktop pair share theirs: a pair whose two
+      // members select differently is a pair one of whose engines can be
+      // narrowed without either project's own file saying so.
+      name: "mobile-webkit",
+      use: { ...devices["iPhone 15"] },
       testMatch: MOBILE_SPECS,
     },
   ],

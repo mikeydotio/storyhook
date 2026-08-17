@@ -595,7 +595,8 @@ overwriting a live confirmation mid-read.
 carry which ARIA attributes, and what text a `role="status"` announcer holds — are pinned
 by `e2e/specs/notice-announcement.spec.ts`. What a real assistive technology actually
 *utters*, including whether its own speech queue coalesces two adjacent identical
-announcements, is not: no AT is driven by this suite (Chromium only), and this project's
+announcements, is not: no AT is driven by this suite on any engine (SH-335 added a real
+`webkit` project, but a second browser engine is not a screen reader), and this project's
 own SH-322/SH-327 precedent is not to claim what wasn't checked. That residual is named
 here rather than implied away.
 
@@ -773,12 +774,18 @@ as exactly `0` for a single discrete ArrowDown. The pin waits for four consecuti
 samples (`settledScrollTop`) and boxes the result, since `waitForFunction` reads a bare `0`
 as "keep waiting" and `0` is a legitimate answer.
 
-**What is NOT claimed, and it is more than usual here.** The suite is Chromium-only
-(SH-335), so nothing is said about Gecko or WebKit. And Playwright sets the `repeat` bit
-itself on a second `keyboard.down` — so what these pins prove is Blink's half: that an
-un-prevented repeat keydown activates a button, and that cancelling it stops that. That a
-*physically* held key sets the flag rests on the UI Events spec and on a hand check, not on
-this suite; where an input stack does not set it, the guard is inert, which is the pre-fix
+**What is NOT claimed, and it is more than usual here.** Five of `notice-autorepeat.
+spec.ts`'s six pins, this mutation battery's own subject, are quarantined under `webkit`
+for an unrelated harness gap (SH-374, a clipboard-default fixture issue, not an
+auto-repeat one) — so this battery itself speaks to Blink. `modal-enter-autorepeat.
+spec.ts` exercises the same `holdKey()` mechanism without that dependency and passes
+clean under `webkit` (12/12), which is why the mechanism, as opposed to this particular
+battery, is not believed to be Blink-specific. Nothing is said about Gecko either way.
+And Playwright sets the `repeat` bit itself on a second `keyboard.down` — so what these
+pins prove is Blink's half: that an un-prevented repeat keydown activates a button, and
+that cancelling it stops that. That a *physically* held key sets the flag rests on the UI
+Events spec and on a hand check, not on this suite; where an input stack does not set it,
+the guard is inert, which is the pre-fix
 behaviour and never worse. This is the SH-322/SH-327 precedent applied to an input event
 rather than to an utterance.
 
