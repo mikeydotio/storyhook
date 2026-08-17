@@ -285,8 +285,12 @@ Related:
   story help priority-rubric — What critical/high/medium/low/none
                                mean. --priority is a scheduling
                                decision, not a label; omit it and
-                               the story is filed at none, which
-                               sorts LAST in 'story next'.
+                               nobody has assessed this story yet,
+                               which sorts LAST in 'story next' — the
+                               same place as 'none' (deliberately
+                               parked), but a different fact.
+                               story list --unassessed finds the
+                               first kind.
   story publish <id>     — Make a draft live (one-way)
   story decompose        — Create multiple stories from a spec file
   story set <id>          — Change any field after creation
@@ -2898,6 +2902,33 @@ pub fn all_topics_text() -> String {
 #[cfg(test)]
 mod tests {
     use super::get_help_topic;
+
+    /// SH-402's sibling defect, adopted rather than filed: the `new` topic
+    /// used to say omitting `--priority` "files the story at none, which
+    /// sorts LAST" — the exact unassessed/parked conflation SH-359's
+    /// `priority_notice::unassessed_warning` was written to avoid at
+    /// runtime. Docs and runtime behaviour disagreeing about the same
+    /// command is the SH-136 class regardless of which one is filed to fix.
+    #[test]
+    fn the_new_topic_does_not_conflate_unassessed_with_deliberately_parked() {
+        let body = get_help_topic("new").expect("the `new` topic must exist");
+        assert!(
+            !body.contains("the story is filed at none"),
+            "the `new` topic must not claim omitting --priority parks the story at \
+             none — that is a decision somebody made, and omission is the absence of \
+             one; the two are stored apart precisely so this distinction survives"
+        );
+        assert!(
+            body.contains("nobody has assessed"),
+            "the `new` topic must state the true fact about omitting --priority, \
+             matching priority_notice::unassessed_warning's own phrasing"
+        );
+        assert!(
+            body.contains("story list --unassessed"),
+            "the `new` topic must name the command that finds an unassessed story, \
+             the same remedy SH-359 shipped for this exact question"
+        );
+    }
 
     #[test]
     fn json_format_topic_exists_and_covers_key_concepts() {
