@@ -245,6 +245,26 @@ if [ -n "$bump" ]; then
   { [ -n "$SEMVER_CLI" ] && [ -x "$SEMVER_CLI" ]; } \
     || die "--bump needs semver-cli. Set SEMVER_CLI=/path/to/semver-cli, or install the semver plugin."
   note "semver-cli   $SEMVER_CLI"
+
+  # Ask semver whether it will consent BEFORE the gate, the build and the
+  # install — all of which are wasted if it refuses. It reports a refusal as
+  # JSON on stdout and exits 0, so the answer has to be read out of the body
+  # rather than taken from the exit status.
+  if [ "$dry_run" = 0 ]; then
+    validation="$("$SEMVER_CLI" validate 2>/dev/null || true)"
+    if printf '%s' "$validation" | grep -q '"status"[[:space:]]*:[[:space:]]*"FAIL"'; then
+      printf '%s\n' "$validation" \
+        | grep -B2 '"status"[[:space:]]*:[[:space:]]*"FAIL"' \
+        | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/    failing check: \1/p' >&2
+      printf '%s\n' "$validation" \
+        | sed -n 's/.*"detail"[[:space:]]*:[[:space:]]*"\(Tag [^"]*\)".*/    \1/p' >&2
+      die "semver-cli validation fails, so \`bump run\` will refuse.
+    A missing tag for the CURRENT version is the usual cause: this repository
+    bumps VERSION through a PR and tags afterwards, so a release that never
+    finished leaves VERSION ahead of any tag. Fix that first, or pass
+    --skip-validation intent explicitly by bumping with semver yourself."
+    fi
+  fi
 fi
 
 if [ "$local_only" = 0 ]; then
@@ -320,7 +340,26 @@ if [ "$local_only" = 1 ]; then
     # that no GitHub release corresponds to, which is the dangling-tag state
     # release.yml's own notes step exists to avoid.
     run "$SEMVER_CLI" bump run "$bump" --skip-tag --non-interactive
-    current_version="$(tr -d '[:space:]' < VERSION)"
+
+    # Verify the bump actually landed, rather than trusting the exit status.
+    # `semver-cli` reports a refusal as a JSON body on stdout and STILL EXITS
+    # 0 — measured: a `validation_failed` refusal ("Tag vX.Y.Z not found")
+    # printed `"error": "non_interactive_blocked"` and returned success, so
+    # `set -e` sailed straight past it and this script went on to build,
+    # install and relaunch an UNBUMPED tree while reporting a release. The
+    # public path below has always checked VERSION for exactly this reason;
+    # the local path did not, and that asymmetry was the bug.
+    if [ "$dry_run" = 0 ]; then
+      bumped="$(tr -d '[:space:]' < VERSION)"
+      if [ "$bumped" = "$current_version" ]; then
+        die "the bump did not happen — VERSION is still $current_version.
+    semver-cli refused (it prints the reason above and still exits 0).
+    Run \`semver-cli validate\` to see which check failed; a missing tag for
+    the CURRENT version is the usual cause. Nothing was built or installed."
+      fi
+      current_version="$bumped"
+      info "bumped to    $current_version"
+    fi
   fi
 
   step "Building and installing the binary"
