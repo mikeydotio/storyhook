@@ -568,6 +568,7 @@ mod tests {
             deleted_reason: None,
             hidden_at: None,
             draft: false,
+            attachments: Vec::new(),
         }
     }
 

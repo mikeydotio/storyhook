@@ -389,6 +389,28 @@ pub struct PrLink {
     pub last_checked_at: Option<String>,
 }
 
+/// One attachment's stored bytes, as a row of `story_attachment_blobs`
+/// (SH-315) — the metadata half only, never the bytes themselves.
+///
+/// Deliberately not the full row: `story doctor`'s project-wide pass
+/// (`ReadOps::attachment_blobs`) compares this against every story's folded
+/// [`crate::domain::Attachment`] list without ever loading a single image
+/// into memory. Fetching the bytes themselves — `story attachment save`'s
+/// job — is a separate, per-attachment call (`ReadOps::attachment_blob`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttachmentBlobRow {
+    /// The attachment this blob belongs to, matching
+    /// [`crate::domain::Attachment::id`].
+    pub attachment_id: u32,
+    /// The stored byte count, as recorded at write time — compared against
+    /// the snapshot's own copy of this fact, and against `length(bytes)`,
+    /// which the schema's own `CHECK` already guarantees agree.
+    pub byte_len: u64,
+    /// The stored SHA-256, hex-encoded — compared against the snapshot's own
+    /// copy of this fact by `story doctor`.
+    pub sha256: String,
+}
+
 /// A relation edge as stored: both ends are numbers within one project.
 ///
 /// Story *ids* (`SH-1`) are a rendering concern. Keeping the store in numbers

@@ -212,6 +212,14 @@ pub const MIGRATIONS: &[Migration] = &[
         // `events_reject_delete` warning does not apply.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 17,
+        name: "story_attachment_blobs",
+        sql: include_str!("schema/0017_story_attachment_blobs.sql"),
+        // `CREATE TABLE` of a new, unreferenced table — nothing is rebuilt, so
+        // migration 5's `events_reject_delete` warning does not apply.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.
