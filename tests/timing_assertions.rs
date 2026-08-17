@@ -113,6 +113,17 @@ fn bare_duration_ceilings(source: &str) -> Vec<BareCeiling> {
     let mut found = Vec::new();
 
     for (index, line) in source.lines().enumerate() {
+        // A line that is entirely a comment (`//`, `///`, `//!`) is prose
+        // ABOUT the shape, not the shape itself — this file's own doc
+        // comments give worked examples of exactly the pattern being
+        // fenced, and without this the scan would flag its own
+        // documentation. Does not catch a trailing `// comment` after real
+        // code on the same line, which no real site in this corpus has ever
+        // needed; a scan this cheap does not need to parse Rust to be
+        // useful, only to not flag its own prose.
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
         for ctor in DURATION_CTORS {
             let mut search_from = 0;
             while let Some(offset) = line[search_from..].find(ctor) {
@@ -267,6 +278,33 @@ fn the_scanner_recognizes_a_bare_ceiling_in_either_direction() {
             text: format!("elapsed < std::time::{ctor}3),")
         }],
         "a fully-qualified std::time::Duration::from_secs(N) ceiling must be caught too"
+    );
+}
+
+#[test]
+fn the_scanner_does_not_flag_prose_about_the_shape() {
+    // This file's own doc comments give worked examples of exactly the
+    // pattern being fenced — this is the control proving the comment skip
+    // that makes that safe actually works, rather than trusting that this
+    // file's own corpus-scan test happens to pass today for the right
+    // reason. Without the skip, this fixture is flagged identically to the
+    // "forward" case in the sibling test above.
+    let ctor = DURATION_CTORS[0];
+
+    let doc_comment = format!("    //! A ceiling written as `elapsed < {ctor}2)` is the shape.\n");
+    assert_eq!(
+        bare_duration_ceilings(&doc_comment),
+        vec![],
+        "a line that is entirely a comment must not be flagged — it is prose \
+         about the shape, not the shape itself"
+    );
+
+    let trailing_inline_comment =
+        format!("    // note: elapsed < {ctor}2) would be the bad shape\n");
+    assert_eq!(
+        bare_duration_ceilings(&trailing_inline_comment),
+        vec![],
+        "a `//` comment must be skipped regardless of what it says"
     );
 }
 
