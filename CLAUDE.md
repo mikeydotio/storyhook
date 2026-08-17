@@ -554,9 +554,9 @@ Standing rules for every wave:
   (`priority == None || priority_assessed`), rather than trusted as stored. Council verdict
   on the sibling question — whether the wire format should carry a version marker so an
   already-synced, already-quiet story could be force-repushed onto the corrected shape —
-  was no: `story show SH-372`, `.council/sh-372-priority-block-versioning/DECISION.md` on
-  the machine that convened it (cite the story, not that path, per SH-363). The general
-  form travels beyond this one field: a message format that predates a distinction cannot
+  was no, unanimous by round 2 after one deliberation round: `story show SH-372` (SH-363 —
+  cite the story, not the council's own directory, which resolves on no fresh clone). The
+  general form travels beyond this one field: a message format that predates a distinction cannot
   retroactively express it, and the fix is for *absence* to decode as "states nothing,"
   resolved against whatever the reader already believes, never silently promoted to a
   negative answer.
