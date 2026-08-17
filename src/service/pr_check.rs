@@ -2,29 +2,47 @@
 //! (SH-49).
 //!
 //! The one PR-link operation that talks to GitHub, which is why it is the
-//! one gated behind the `github-sync` feature, the same way `story
-//! github-sync` is gated (see `invoke::dispatch`). [`super::pr_link`]
+//! one gated behind the `github-sync` feature, the same way the daemon's
+//! background poll is gated (see `invoke::dispatch`). [`super::pr_link`]
 //! documents why `link`/`unlink` are not gated the same way.
 //!
 //! # The second mandatory cross-repo check
 //!
 //! [`super::pr_link::PrLinkService::link`] refuses a `close_on_merge: true`
-//! link whose repository disagrees with the project's remote *at link time*.
-//! [`run_check`] re-reads that configuration **fresh, on every call** — never
-//! from what was true when the link was made — and silently skips (never
-//! acts on) any link whose `(owner, repo)` no longer matches. A project can
-//! repoint its GitHub remote after a link exists; this is what keeps a stale
-//! link from being acted on against the wrong repository once that happens.
+//! link whose repository matches none of the project's registered remotes
+//! *at link time*. [`run_check`] re-reads those registrations **fresh, on
+//! every call** — never from what was true when the link was made — and
+//! silently skips (never acts on) any link whose `(owner, repo)` no longer
+//! matches any of them. A project can register or unregister a GitHub remote
+//! after a link exists; this is what keeps a stale link from being acted on
+//! against the wrong repository once that happens.
+//!
+//! # One client per repository, not one for the whole run (SH-408)
+//!
+//! A project may have more than one registered GitHub remote — see
+//! [`super::pr_link`]'s module doc for why that is ordinary rather than an
+//! edge case, and why this file does not resolve down to a single
+//! repository the way it once read a single `(owner, repo)` off the deleted
+//! sync engine's config. [`run_check`] instead groups matching links by
+//! their own `(owner, repo)` and builds one [`GithubApi`] per group, so a
+//! multi-repository project is checked correctly and so that one
+//! repository's API failure — an expired token, a rate limit, a repository
+//! made private — cannot silently abort checking every other repository's
+//! links in the same invocation. A failure is recorded per link and, if any
+//! occurred, turns the whole call into an error (never a "successful"
+//! message hiding a partial failure — the same doctrine SH-159 already
+//! established for the sync engine this file survived).
+
+use std::collections::BTreeMap;
 
 use crate::domain::{StoryEvent, SuperState};
 use crate::error::AppError;
-use crate::github::api::GithubApiFactory;
-use crate::github::storage::SyncStorage;
+use crate::github::api::{GithubApi, GithubApiFactory};
 use crate::output::Response;
 use crate::store::{ExpectedSeq, PrLink, ReadOps, Store, StoreError, StoryNo};
 
-use super::github::{RealGithubApiFactory, StoreSyncStorage};
-use super::pr_link::PrLinkService;
+use super::github::RealGithubApiFactory;
+use super::pr_link::{PrLinkService, configured_github_repos};
 use super::story::state_transition_events;
 use super::{Ctx, append_and_fold, project_prefix, resolve_story};
 
@@ -36,9 +54,12 @@ impl<'ctx, S: Store> PrLinkService<'ctx, S> {
     /// # Errors
     ///
     /// [`AppError::GithubAuth`] if no GitHub token was supplied — this is the
-    /// one PR-link operation that spends one. Whatever
-    /// [`crate::github::api::GithubApi::get_pull_request`] returns for a
-    /// given link's own repository otherwise propagates.
+    /// one PR-link operation that spends one. [`AppError::Validation`] if the
+    /// project has no registered GitHub remote at all. [`AppError::GithubApi`]
+    /// if [`crate::github::api::GithubApi::get_pull_request`] failed for one
+    /// or more links — see the module doc's "One client per repository"
+    /// section for why that never aborts the rest of the run, only the exit
+    /// code.
     pub fn check(&self, id: Option<&str>) -> Result<Response, AppError> {
         run_check(self.ctx(), &RealGithubApiFactory, id)
     }
@@ -58,14 +79,19 @@ pub fn run_check<S: Store>(
     let project = ctx.project();
 
     // Read fresh, every call — see the module doc's check. A link linked
-    // against yesterday's remote is not evidence about today's.
-    let Some(config) = StoreSyncStorage::new(ctx).load_config()? else {
+    // against a remote registration that has since changed is not evidence
+    // about today's.
+    let configured = configured_github_repos(ctx)?;
+    if configured.is_empty() {
         return Err(AppError::Validation(
-            "no GitHub remote is configured for this project — run `story github-sync` \
-             (or configure one) before `story pr-check`"
+            "this project has no GitHub repository, so there is nothing to check a linked \
+             pull request against. `story pr-check` asks GitHub whether a linked pull request \
+             merged, and the repositories it may ask about are the project's registered \
+             origins. Register one with `story project link origin <url>`; `story project \
+             show` lists what this project already holds."
                 .to_string(),
         ));
-    };
+    }
 
     let prefix = ctx.store().read(|tx| project_prefix(tx, project))?;
     let candidates: Vec<(StoryNo, PrLink)> = match id {
@@ -83,17 +109,19 @@ pub fn run_check<S: Store>(
     };
     let total_candidates = candidates.len();
 
-    // Mandatory security control #2: a link whose (owner, repo) no longer
-    // matches what the project is configured to sync with **right now** is
-    // skipped, not acted on — the remote may have been repointed since the
-    // link was made, and a client scoped to the configured remote (below)
-    // has no business asking about a pull request on a different one.
+    // Mandatory security control #2: a link whose (owner, repo) matches none
+    // of the project's registered GitHub remotes **right now** is skipped,
+    // not acted on — a remote may have been registered or unregistered
+    // since the link was made, and a client is only ever built for a
+    // repository this project currently claims (below).
     let mut skipped: Vec<String> = Vec::new();
     let matching: Vec<(StoryNo, PrLink)> = candidates
         .into_iter()
         .filter(|(_, link)| {
-            let matches = link.owner.eq_ignore_ascii_case(&config.github.owner)
-                && link.repo.eq_ignore_ascii_case(&config.github.repo);
+            let matches = configured.iter().any(|repo| {
+                repo.owner.eq_ignore_ascii_case(&link.owner)
+                    && repo.repo.eq_ignore_ascii_case(&link.repo)
+            });
             if !matches {
                 skipped.push(link.url.clone());
             }
@@ -101,18 +129,37 @@ pub fn run_check<S: Store>(
         })
         .collect();
 
-    let client = factory.build(
-        token.expose().to_string(),
-        config.github.owner.clone(),
-        config.github.repo.clone(),
-    );
+    // One client per distinct repository among the matching links, built
+    // lazily — see the module doc's "One client per repository" section.
+    let mut clients: BTreeMap<(String, String), Box<dyn GithubApi>> = BTreeMap::new();
 
     let mut merged: Vec<String> = Vec::new();
     let mut closed_without_merging: Vec<String> = Vec::new();
     let mut closed_stories: Vec<String> = Vec::new();
+    // Per-link GitHub API failures, isolated from one another: one
+    // repository's error must not stop another repository's links in the
+    // same run from being checked. Non-empty at the end turns this call
+    // into an error — see the trailing check, and the module doc's SH-159
+    // cross-reference.
+    let mut errored: Vec<(String, String)> = Vec::new();
 
     for (story_no, link) in matching {
-        let status = client.get_pull_request(link.number)?;
+        let client = clients
+            .entry((link.owner.clone(), link.repo.clone()))
+            .or_insert_with(|| {
+                factory.build(
+                    token.expose().to_string(),
+                    link.owner.clone(),
+                    link.repo.clone(),
+                )
+            });
+        let status = match client.get_pull_request(link.number) {
+            Ok(status) => status,
+            Err(err) => {
+                errored.push((link.url.clone(), err.to_string()));
+                continue;
+            }
+        };
         let now = ctx.now();
 
         if status.merged {
@@ -187,7 +234,9 @@ pub fn run_check<S: Store>(
     }
 
     let mut message = format!(
-        "checked {total_candidates} linked pull request(s): {} merged, {} closed without merging",
+        "checked {} of {total_candidates} linked pull request(s): {} merged, {} closed without \
+         merging",
+        total_candidates - errored.len(),
         merged.len(),
         closed_without_merging.len()
     );
@@ -196,9 +245,21 @@ pub fn run_check<S: Store>(
     }
     if !skipped.is_empty() {
         message.push_str(&format!(
-            "\nskipped (repository no longer matches this project's configured remote): {}",
+            "\nskipped (repository matches none of this project's registered GitHub remotes): {}",
             skipped.join(", ")
         ));
     }
-    Ok(Response::Message(message))
+    if errored.is_empty() {
+        return Ok(Response::Message(message));
+    }
+    // Per-link failures are never folded into a "successful" message at
+    // exit 0 — the same doctrine SH-159 established for the sync engine
+    // this file survived. Every repository that *did* answer is still
+    // reflected above and, for a merge, already committed; only the
+    // repositories that failed are missing from it.
+    message.push_str("\nerrored (not checked — see below; other links were still checked):");
+    for (url, detail) in &errored {
+        message.push_str(&format!("\n  {url}: {detail}"));
+    }
+    Err(AppError::GithubApi(message))
 }

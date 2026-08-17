@@ -27,16 +27,34 @@
 //! linked in by URL.
 //!
 //! [`PrLinkService::link`] refuses to record a `close_on_merge: true` link
-//! whose `(owner, repo)` disagrees with the project's *currently* configured
-//! `github_sync` remote, at link time — see
-//! [`configured_remote`](PrLinkService::configured_remote). `super::pr_check`
+//! whose `(owner, repo)` matches none of the project's *registered* GitHub
+//! remotes, at link time — see [`configured_github_repos`]. `super::pr_check`
 //! documents its own, second check of the same kind, taken fresh at check
-//! time because the configured remote can change between the two.
+//! time because the registered remotes can change between the two.
+//!
+//! # Why this is a membership test, not a resolve-to-one lookup (SH-408)
+//!
+//! A project may register more than one GitHub remote — a repository that
+//! moved, a second canonical remote (`src/store/schema/0006_project_remotes.
+//! sql`'s own header calls this an ordinary configuration, not a
+//! hypothetical one). Neither caller here ever needs to pick "the" one
+//! repository: [`parse_pr_url`] always yields a full, already-known
+//! `(owner, repo, number)` before this guard runs, and a [`crate::store::
+//! PrLink`] row stores its own `owner`/`repo` from link time. The question
+//! both callers ask is "is this PR's repository one I registered?", which
+//! has exactly one correct answer regardless of how many remotes are
+//! registered — never an ambiguous one to refuse. A council convened on this
+//! exact question (SH-408, 3-0) rejected resolving to a single value and
+//! refusing on 2+ registered remotes: the daemon's background poll discards
+//! [`super::pr_check::run_check`]'s result with no channel back to a human,
+//! so a refusal there would silently and permanently disable close-on-merge
+//! for any project with two legitimate remotes.
 //!
 //! Neither check applies to a `close_on_merge: false` link — that is
 //! deliberately a cross-repository bookmark, and nothing about it can close
 //! anything.
 
+use crate::domain::github_remote::{GithubRepo, parse_github_url};
 use crate::domain::pr_url::parse_pr_url;
 use crate::domain::{StoryEvent, StorySnapshot};
 use crate::error::AppError;
@@ -148,67 +166,68 @@ impl<'ctx, S: Store> PrLinkService<'ctx, S> {
         })?)
     }
 
-    /// Refuses `(owner, repo)` unless it matches this project's currently
-    /// configured `github_sync` remote — or the project has none configured,
-    /// in which case there is nothing to compare against and this is a no-op.
+    /// Refuses `(owner, repo)` unless it matches at least one of this
+    /// project's registered GitHub remotes — or the project has none
+    /// registered, in which case there is nothing to compare against and
+    /// this is a no-op.
     ///
     /// Deliberately no override flag: the winning council proposal (Proposal
     /// B on SH-49) is a hard block, and a
     /// caller that means a genuine cross-repository bookmark passes
     /// `close_on_merge: false` instead of asking this check to stand aside.
     fn refuse_cross_repo(&self, owner: &str, repo: &str) -> Result<(), AppError> {
-        let Some((configured_owner, configured_repo)) = self.configured_remote()? else {
-            return Ok(());
-        };
-        if configured_owner.eq_ignore_ascii_case(owner)
-            && configured_repo.eq_ignore_ascii_case(repo)
+        let configured = configured_github_repos(self.ctx)?;
+        if configured.is_empty()
+            || configured
+                .iter()
+                .any(|c| c.owner.eq_ignore_ascii_case(owner) && c.repo.eq_ignore_ascii_case(repo))
         {
             return Ok(());
         }
         Err(AppError::Validation(format!(
-            "pull request `{owner}/{repo}` does not match this project's configured GitHub \
-             repository `{configured_owner}/{configured_repo}` — a `close_on_merge` link could \
-             close this story on another repository's merge. Pass --no-close-on-merge (or \
-             `close_on_merge: false` over the API) if you mean to bookmark a pull request in \
-             another repository.",
+            "pull request `{owner}/{repo}` does not match any GitHub repository this project \
+             has registered ({}) — a `close_on_merge` link could close this story on another \
+             repository's merge. Pass --no-close-on-merge (or `close_on_merge: false` over the \
+             API) if you mean to bookmark a pull request in another repository.",
+            configured
+                .iter()
+                .map(|c| format!("{}/{}", c.owner, c.repo))
+                .collect::<Vec<_>>()
+                .join(", "),
         )))
     }
+}
 
-    /// This project's configured GitHub remote, `(owner, repo)`, if it has
-    /// one.
-    ///
-    /// A deliberately narrow, ungated read: `github-sync`'s full
-    /// `GithubSyncConfig` (`crate::github::sync_state`) is feature-gated, so
-    /// [`refuse_cross_repo`](Self::refuse_cross_repo) — which must work
-    /// without that feature — reads the two fields it needs straight off the
-    /// raw JSON document `ReadOps::settings` returns rather than deserializing
-    /// the whole thing.
-    ///
-    /// `None` for a missing document, a document with no `github` key, or one
-    /// whose `owner`/`repo` aren't strings — every one of those means
-    /// "nothing configured", exactly as [`refuse_cross_repo`](Self::refuse_cross_repo)
-    /// already treats an absent document. A malformed document is not this
-    /// method's job to report; `story doctor` is where that belongs.
-    fn configured_remote(&self) -> Result<Option<(String, String)>, AppError> {
-        let project = self.ctx.project();
-        let document = self
-            .ctx
-            .store()
-            .read(|tx| Ok(tx.settings(project)?.github_sync))?;
-        let Some(document) = document else {
-            return Ok(None);
-        };
-        let owner = document
-            .get("github")
-            .and_then(|github| github.get("owner"))
-            .and_then(serde_json::Value::as_str);
-        let repo = document
-            .get("github")
-            .and_then(|github| github.get("repo"))
-            .and_then(serde_json::Value::as_str);
-        Ok(match (owner, repo) {
-            (Some(owner), Some(repo)) => Some((owner.to_string(), repo.to_string())),
-            _ => None,
-        })
-    }
+/// Every GitHub repository this project has a registered git origin for.
+///
+/// Empty when the project has no origin on `github.com` registered at all —
+/// the same "nothing configured" state
+/// [`refuse_cross_repo`](PrLinkService::refuse_cross_repo) already treats as
+/// *accept*, and the state [`super::pr_check::run_check`] refuses under
+/// (nothing to scope a GitHub API client to).
+///
+/// A **set**, never resolved down to one value, and never refused for
+/// holding more than one member — see the module doc's "Why this is a
+/// membership test" section for the council verdict (SH-408) this codifies.
+///
+/// Reads [`ReadOps::project_remotes`] — the store's registered origins —
+/// never `git remote get-url` in a checkout: `crate::daemon::github_poll`'s
+/// background poll has no checkout to read one from, and SH-112 made git an
+/// optional convenience layer for a fact the store already holds
+/// authoritatively. A project that has never run `story project link
+/// origin` is consequently invisible here even with a perfectly good
+/// `origin` in its working tree — registering it is what makes a project
+/// reachable at all (SH-116), and this reads the same registration.
+pub(super) fn configured_github_repos<S: Store>(
+    ctx: &Ctx<'_, S>,
+) -> Result<Vec<GithubRepo>, AppError> {
+    let project = ctx.project();
+    let remotes = ctx.store().read(|tx| tx.project_remotes(project))?;
+    let mut repos: Vec<GithubRepo> = remotes
+        .iter()
+        .filter_map(|remote| parse_github_url(&remote.raw))
+        .collect();
+    repos.sort();
+    repos.dedup();
+    Ok(repos)
 }
