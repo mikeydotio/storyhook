@@ -91,11 +91,18 @@ import {
  *
  * ## What is NOT claimed here
  *
- * **Blink only.** The suite is Chromium-only (SH-335 is filed against exactly
- * that), so nothing here says how Gecko or WebKit behave. Where an engine or
- * input stack does not set `KeyboardEvent.repeat` at all — an input path that
- * delivers repeats as discrete keydown/keyup pairs — the guard is inert, which
- * is the pre-fix behaviour and never worse than it.
+ * **Blink is what this file's own tests actually exercise** -- five of its six
+ * are quarantined under `webkit` for an unrelated harness gap (SH-374: this
+ * file's `raiseDurableErrors()` needs an unpermitted clipboard write to fail,
+ * which WebKit doesn't do by default), so nothing here says how WebKit's
+ * *auto-repeat* behaves specifically -- see `modal-enter-autorepeat.spec.ts`
+ * instead, which exercises the same `holdKey()` mechanism without depending
+ * on the clipboard default and passes clean under `webkit` (confirming the
+ * mechanism itself is engine-agnostic; this file's gap is its fixture's, not
+ * the feature's). Nothing here says how Gecko behaves either way. Where an
+ * engine or input stack does not set `KeyboardEvent.repeat` at all — an input
+ * path that delivers repeats as discrete keydown/keyup pairs — the guard is
+ * inert, which is the pre-fix behaviour and never worse than it.
  *
  * **Playwright sets the `repeat` bit itself** on a second `keyboard.down` of a
  * key already down. So what these tests prove is Blink's half: that an

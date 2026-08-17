@@ -68,9 +68,10 @@ only the automatic post-rotation inflation heuristic, not pinch-zoom or the OS's
 accessibility text size (the same distinction SH-256 drew for rejecting
 `user-scalable=no`).
 
-Headless Blink has no dynamic toolbar to hide, so `dvh` and `vh` compute identically
-there — `tests/web_test.rs` is the layer that can guard the fallback-pair *mechanism*
-(and its declaration order) at all; only a real device with a real URL bar proves the
+Headless Blink has no dynamic toolbar to hide, and neither does headless WebKit
+(SH-348) — `dvh` and `vh` compute identically under both, whichever engine is asked —
+so `tests/web_test.rs` is the layer that can guard the fallback-pair *mechanism* (and
+its declaration order) at all; only a real device with a real URL bar proves the
 behavior itself.
 
 ### The list table (D2)
@@ -239,15 +240,23 @@ that the table's own `scrollWidth` (and its horizontal-scroll behavior) is
 unaffected. Recorded here because it cost real investigation time and the next
 person hitting `window.innerWidth` disagreeing with `document.documentElement
 .clientWidth` under `mobile-chromium` device emulation should not have to re-derive
-this from scratch.
+this from scratch. Blink-specific, as far as this suite can tell: `mobile-webkit`
+(SH-348) runs the identical eight-column list-view sweep and passes clean, so
+whatever internal viewport-fit heuristic caused the divergence is not one WebKit
+shares -- the `contain: layout` fix stays in place regardless, since it is harmless
+where the bug it targets doesn't exist.
 
 ## What guards each defect
+
+Every behavioral test below runs under both `mobile-chromium` (Blink) and, since SH-348,
+`mobile-webkit` (WebKit) — both mobile emulation, neither a real device — except where a
+row says otherwise.
 
 | Defect | Structural test (`tests/web_test.rs`) | Behavioral test (`e2e/specs/`) |
 |---|---|---|
 | D1, D6, D7 (viewport units) | `web_serve_root_html_sizes_the_shell_to_the_dynamic_viewport` | `responsive.mobile.spec.ts`: "the app shell and an open modal fit inside a squeezed viewport height" |
 | D2 (list table) | (covered by the CSS itself; no literal-value regression to pin beyond D3's coverage of the wrap) | `responsive.mobile.spec.ts`: "the list table scrolls sideways to its far columns instead of clipping them" |
-| D3 (tap targets) | `web_serve_root_html_meets_wcag_tap_target_size` | `responsive.mobile.spec.ts`: "every button, link and select meets the coarse-pointer tap-target minimum" |
+| D3 (tap targets) | `web_serve_root_html_meets_wcag_tap_target_size` | `responsive.mobile.spec.ts`: "every button and link meets the coarse-pointer tap-target minimum" (`mobile-chromium`/`mobile-webkit`), "every select meets the coarse-pointer tap-target minimum" (`mobile-chromium` only — quarantined under `mobile-webkit`, SH-377) |
 | D4 (filter disclosure) | `web_serve_root_html_has_a_collapsible_filter_panel` | `filter-bar-disclosure.spec.ts` (desktop — not a mobile-only behavior) |
 | D5 (overlay widths) | `web_serve_root_html_clamps_overlay_widths_to_the_viewport` | `responsive.mobile.spec.ts`: "toast and dispatch-history overlays never exceed a narrow viewport" |
 | D8 (column peek) | `web_serve_root_html_lets_the_next_board_column_peek_on_narrow_phones` | `responsive.mobile.spec.ts`: "the next board column peeks on the narrowest supported phone" (plus its own "stays at 18rem" companion) |
@@ -256,17 +265,26 @@ this from scratch.
 
 ## Verification this design can't cover
 
-Headless Chromium under mobile *emulation* is what every automated test above runs
-against — Blink, not WebKit (see `zoom.mobile.spec.ts`'s and `playwright.config.ts`'s
-own comments on why). That stays true for this design's mobile specs specifically,
-even though the suite as a whole is no longer Chromium-only: SH-335 added a `webkit`
-project, but scoped to the *desktop* pair only — a `mobile-webkit` project (WebKit
-under mobile emulation) is filed as SH-348 rather than folded in here, because it
-would narrow this gap, not close it (only a real device settles the 16px threshold
-question below). It has no dynamic toolbar to hide, so the `dvh`
-mechanism's *source* is pinned but its *behavior* is not; iOS Safari's own 16px zoom
-threshold is WebKit's, not Blink's. A real device pass is what SH-256 already flagged
-as needed and this story inherits: on an iPhone, over Tailscale, against the real
-daemon — the footer reachable with the URL bar shown, the filter disclosure's state
-surviving a reload, the actions menu opening on a genuine tap, the list table's
-horizontal scroll working under a real finger rather than emulated `hasTouch`.
+Every mobile spec now runs under both `mobile-chromium` (Blink) and `mobile-webkit`
+(WebKit) mobile *emulation* (SH-348) — so iOS Safari's own 16px zoom-avoidance threshold
+is, for the first time, asserted against the engine whose rule it actually is, not only
+simulated on Blink. That closed the engine gap this section used to describe. It did not
+close the *emulation* gap: `devices["iPhone 15"]` under either engine is still a headless
+browser told to pretend it's a phone, not a real one, and three things stay true no matter
+which engine drives it. It has no dynamic toolbar to hide, so the `dvh` fallback pair's
+*mechanism* (declaration order, that both lines are present) is pinned on both engines but
+its *behavior* — the visible area actually shrinking and growing as a real URL bar shows
+and hides — is not. `hasTouch: true` sets a capability flag; it is not a finger, so nothing
+here proves a real tap lands where a click did. And WebKit-under-emulation surfaced one
+genuine engine-specific defect of its own rather than closing every remaining question:
+WebKit ignores `min-height` on a default-appearance `<select>`, so every select in the
+dashboard measures ~23px against the intended 44px on that engine (SH-377, quarantined
+pending its own fix) — the emulated environment found a real gap the design didn't
+anticipate, which is itself evidence that emulation and reality still diverge.
+
+A real device pass is what SH-256 already flagged as needed and SH-235 inherited, and
+SH-348 does not change that: on an iPhone, over Tailscale, against the real daemon — the
+footer reachable with the URL bar shown, the filter disclosure's state surviving a reload,
+the actions menu opening on a genuine tap, the list table's horizontal scroll working under
+a real finger, and confirmation that iOS Safari actually stays unzoomed rather than merely
+receiving CSS that computes to the right numbers under emulation.

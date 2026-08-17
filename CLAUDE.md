@@ -434,16 +434,18 @@ Standing rules for every wave:
   comparisons which already exist are tested and blind by construction to a column that
   was never reported at all.
 - **The e2e suite runs on WebKit, not just Chromium — one project per seed, never a shared
-  one** (SH-335). `e2e/playwright.config.ts` names a `webkit` project keyed off the identical
-  spec selector as `chromium` (the same `MOBILE_SPECS` constant both use to stay disjoint from
-  the mobile pair), so nothing is hand-listed onto one engine — `tests/e2e_browser_coverage.rs`
-  fences that identity, plus that every engine the config names is one `make e2e-install`
-  actually installs. `scripts/run-e2e.sh` runs each project against its OWN daemon, seed and
-  `FAKE_TMUX_STATE`, never a shared one: `e2e/specs/dispatch.spec.ts` claims a seeded story for
-  real (a CAS-guarded `story move ... in-progress`) and creates a real `git worktree`, so a
-  second engine's pass against a daemon the first engine's pass already dispatched through would
-  fail on an already-claimed fixture for a reason that has nothing to do with either engine —
-  SH-335 is where that shape was ruled out. A bare
+  one** (SH-335, SH-348). `e2e/playwright.config.ts` names two engine pairs: `chromium`/`webkit`
+  (desktop) and `mobile-chromium`/`mobile-webkit` (mobile). Each pair is keyed off the identical
+  spec selector — one `MOBILE_SPECS` constant, used four times, excluded by the desktop pair and
+  matched by the mobile pair — so nothing is hand-listed onto one engine —
+  `tests/e2e_browser_coverage.rs` fences both pairs' identity (and that the two pairs share the
+  constant under opposite selector kinds), plus that every engine the config names is one
+  `make e2e-install` actually installs. `scripts/run-e2e.sh` runs each project against its OWN
+  daemon, seed and `FAKE_TMUX_STATE`, never a shared one: `e2e/specs/dispatch.spec.ts` claims a
+  seeded story for real (a CAS-guarded `story move ... in-progress`) and creates a real `git
+  worktree`, so a second engine's pass against a daemon the first engine's pass already
+  dispatched through would fail on an already-claimed fixture for a reason that has nothing to
+  do with either engine — SH-335 is where that shape was ruled out. A bare
   `bash scripts/run-e2e.sh` therefore loops once per project *derived from the config*, not a
   list here; `--project=NAME` still runs one project alone. Separately: WebKit's Tab order skips
   buttons and links unless this machine has `AppleKeyboardUIMode >= 2` (macOS's Full Keyboard
@@ -457,9 +459,15 @@ Standing rules for every wave:
   (`board-readiness.spec.ts`, `duplicate-create.spec.ts`, `drawer-field-mutation-timeout.spec.ts`)
   are quarantined under `webkit` unconditionally, for an unrelated, not-yet-root-caused gap
   where WebKit doesn't reliably surface a held or delayed `page.route()` to the page's own XHR
-  handlers within this suite's timeouts (SH-347). Every WebKit quarantine, either shape, is a
-  `test.skip(...)` naming its story in the reason string — `tests/e2e_browser_coverage.rs::
-  every_webkit_quarantine_names_a_story` fails the build on one that doesn't.
+  handlers within this suite's timeouts (SH-347). `mobile-webkit`'s own first run surfaced a
+  fourth: WebKit ignores `min-height` on a default-appearance `<select>`, so every select in the
+  dashboard measures ~23px against the intended 44px coarse-pointer minimum on that engine
+  (SH-377) — `responsive.mobile.spec.ts`'s tap-target sweep is split into a button/link half
+  (load-bearing on every project) and a select half (quarantined under `webkit` alone) so the
+  gap doesn't silently take button/link coverage down with it. Every WebKit quarantine, either
+  shape, is a `test.skip(...)` naming its story in the reason string —
+  `tests/e2e_browser_coverage.rs::every_webkit_quarantine_names_a_story` fails the build on one
+  that doesn't.
 - **A hook that annotates must never decide** (SH-355). `githooks(5)`: git ignores a nonzero
   `post-commit`/`post-merge`, but a nonzero `prepare-commit-msg` **aborts the commit** — the
   only one of the three managed hooks whose exit status git actually obeys.

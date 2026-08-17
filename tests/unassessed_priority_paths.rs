@@ -283,7 +283,10 @@ fn creates_a_story_that_could_land_unassessed(invocation: &Invocation) -> bool {
         | Invocation::Update { .. }
         | Invocation::Version
         | Invocation::ProjectSnapshot
-        | Invocation::History { .. } => false,
+        | Invocation::History { .. }
+        // Operates on an existing story's attachments (`AttachmentAction::
+        // Add { id, .. }` requires one) -- never creates one (SH-396).
+        | Invocation::Attachment { .. } => false,
     }
 }
 

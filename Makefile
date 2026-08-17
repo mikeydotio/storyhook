@@ -126,8 +126,9 @@ e2e-install:
 	cd e2e && npx playwright install --with-deps chromium webkit
 
 # Runs just the dashboard's browser suite. Bare, this loops once per project
-# `e2e/playwright.config.ts` names (chromium, webkit, mobile-chromium),
-# each against its own isolated daemon and seed (SH-335). Pass Playwright CLI
+# `e2e/playwright.config.ts` names (chromium, webkit, mobile-chromium,
+# mobile-webkit), each against its own isolated daemon and seed (SH-335,
+# SH-348). Pass Playwright CLI
 # flags through, e.g. `make e2e ARGS=--headed` (applies to every project in
 # the loop) or `make e2e ARGS=--project=webkit` (runs that one project only).
 e2e:
