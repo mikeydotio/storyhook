@@ -38,6 +38,7 @@
 //! prioritize` by name rather than by scan.
 
 use storyhook::help_topics::{get_help_topic, list_topics};
+use storyhook::service::templates;
 
 /// What a surface must name to have discharged its duty.
 const POINTER: &str = "story help scope-rubric";
@@ -189,4 +190,21 @@ fn the_delete_topic_points_at_scope_rubric() {
         "`story help delete` must point at {POINTER} — it is the collapse door \
          scope-rubric names as the remedy for a duplicate"
     );
+}
+
+#[test]
+fn every_scaffolded_instruction_file_points_at_the_rubric() {
+    // These go into *other people's* repositories — same reasoning as
+    // `tests/priority_rubric.rs`'s own copy of this test, and the same two
+    // functions it checks.
+    for (name, text) in [
+        ("AGENTS.md", templates::agents_md("SH", "done")),
+        (".cursorrules", templates::cursor_rules()),
+    ] {
+        assert!(
+            text.contains(POINTER),
+            "scaffolded {name} tells an agent how to work a story but not what to do \
+             with a problem it finds along the way; it must point at {POINTER}"
+        );
+    }
 }
