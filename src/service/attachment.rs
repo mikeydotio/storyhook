@@ -86,17 +86,12 @@ impl<'ctx, S: Store> AttachmentService<'ctx, S> {
             let prefix = project_prefix(&*tx, project)?;
             let states = tx.state_map(project)?;
             let (story_no, row) = resolve_open_story(&*tx, project, &prefix, id)?;
-            // Allocated from the snapshot's own current claims, not from a
-            // store-side counter — see `StoryAttachmentAdded`'s doc comment
-            // for why that is deterministic under replay.
-            let attachment_id = row
-                .snapshot
-                .attachments
-                .iter()
-                .map(|a| a.id)
-                .max()
-                .unwrap_or(0)
-                + 1;
+            // From the snapshot's own monotonic counter, never from
+            // `max(current attachments) + 1` — see
+            // `StorySnapshot::next_attachment_id`'s own doc comment for why
+            // that computation reuses an id the moment its attachment is
+            // removed.
+            let attachment_id = row.snapshot.next_attachment_id;
             let snapshot = append_and_fold(
                 tx,
                 project,
