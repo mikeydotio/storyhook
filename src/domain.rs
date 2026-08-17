@@ -422,10 +422,38 @@ pub struct StorySnapshot {
     /// blob table.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<Attachment>,
+    /// The id [`StoryAttachmentAdded`](StoryEvent::StoryAttachmentAdded) will
+    /// use next.
+    ///
+    /// Deliberately **not** derived as `attachments.iter().map(|a|
+    /// a.id).max() + 1`: an id must never be reused once its attachment is
+    /// removed (`AttachmentService::add`'s own doc comment states the same
+    /// rule `next_story_no` states for story numbers), and a removal empties
+    /// exactly the slot a max-of-current computation would read back from.
+    /// This counter only ever moves forward, independent of which ids are
+    /// still present.
+    #[serde(
+        default = "default_next_attachment_id",
+        skip_serializing_if = "is_first_attachment_id"
+    )]
+    pub next_attachment_id: u32,
 }
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// The starting value of [`StorySnapshot::next_attachment_id`] — attachment
+/// ids are 1-based, matching every other id this project hands out.
+fn default_next_attachment_id() -> u32 {
+    1
+}
+
+/// Whether `next_attachment_id` is still at its starting value, so a story
+/// that has never held an attachment serializes exactly as it did before
+/// this field existed.
+fn is_first_attachment_id(value: &u32) -> bool {
+    *value == default_next_attachment_id()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -694,8 +722,8 @@ pub enum StoryEvent {
     /// event payload itself (see [`Attachment`]'s own doc comment).
     ///
     /// `id` is chosen by the caller, not allocated by this event — the
-    /// service reads the current maximum out of the story's own snapshot and
-    /// records `max + 1`, so replaying this event is deterministic and two
+    /// service reads [`StorySnapshot::next_attachment_id`] off the story's
+    /// own snapshot, so replaying this event is deterministic and two
     /// attachments never race for the same id the way two `story new`s would
     /// for a story number (which the store *does* allocate, inside the write
     /// transaction, for exactly that race).
@@ -1426,6 +1454,7 @@ pub fn fold_story(
     let mut draft = false;
     let mut published = false;
     let mut attachments = Vec::new();
+    let mut next_attachment_id: u32 = default_next_attachment_id();
 
     for event in events {
         match event {
@@ -1686,6 +1715,10 @@ pub fn fold_story(
                     sha256: sha256.clone(),
                     added_at: at.clone(),
                 });
+                // `max`, not a plain overwrite: a replayed history could in
+                // principle carry ids out of order (a hand-edited import),
+                // and the counter must never move backward.
+                next_attachment_id = next_attachment_id.max(*id + 1);
                 updated_at = Some(at.clone());
             }
             StoryEvent::StoryAttachmentRemoved { at, id } => {
@@ -1799,6 +1832,7 @@ pub fn fold_story(
         hidden_at,
         draft,
         attachments,
+        next_attachment_id,
     })
 }
 
@@ -4736,6 +4770,7 @@ mod tests {
             hidden_at: None,
             draft: false,
             attachments: Vec::new(),
+            next_attachment_id: 1,
         };
 
         assert!(!is_ready(&story, &empty_index()));
@@ -4773,6 +4808,7 @@ mod tests {
             hidden_at: None,
             draft: false,
             attachments: Vec::new(),
+            next_attachment_id: 1,
         };
         let active = state("in-progress", SuperState::Open, Some(STATE_ROLE_ACTIVE));
 
@@ -4875,6 +4911,7 @@ mod tests {
             hidden_at: None,
             draft: false,
             attachments: Vec::new(),
+            next_attachment_id: 1,
         };
         let mut dependent = blocker.clone();
         dependent.id = "SH-2".to_string();
@@ -5045,6 +5082,7 @@ mod tests {
                 hidden_at: None,
                 draft: false,
                 attachments: Vec::new(),
+                next_attachment_id: 1,
             },
             StorySnapshot {
                 id: "SH-2".to_string(),
@@ -5078,6 +5116,7 @@ mod tests {
                 hidden_at: None,
                 draft: false,
                 attachments: Vec::new(),
+                next_attachment_id: 1,
             },
             StorySnapshot {
                 id: "SH-3".to_string(),
@@ -5105,6 +5144,7 @@ mod tests {
                 hidden_at: None,
                 draft: false,
                 attachments: Vec::new(),
+                next_attachment_id: 1,
             },
             StorySnapshot {
                 id: "SH-4".to_string(),
@@ -5129,6 +5169,7 @@ mod tests {
                 hidden_at: None,
                 draft: false,
                 attachments: Vec::new(),
+                next_attachment_id: 1,
             },
         ];
 
@@ -5969,6 +6010,7 @@ mod tests {
             hidden_at: None,
             draft: false,
             attachments: Vec::new(),
+            next_attachment_id: 1,
         }
     }
 
@@ -6437,6 +6479,7 @@ mod ready_order_properties {
             hidden_at: None,
             draft: false,
             attachments: Vec::new(),
+            next_attachment_id: 1,
         }
     }
 
