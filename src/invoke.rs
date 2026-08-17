@@ -27,9 +27,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::{
-    AbandonedAction, Attach, CrashesAction, DaemonAction, EpicAction, HELP_TEXT, HistoryAction,
-    HooksAction, Invocation, NewProjectRequest, PhaseAction, PluginAction, ProjectAction,
-    SettingsAction, StateAction, StoreAction, TokenAction, TypeAction, WebAction,
+    AbandonedAction, Attach, AttachmentAction, CrashesAction, DaemonAction, EpicAction, HELP_TEXT,
+    HistoryAction, HooksAction, Invocation, NewProjectRequest, PhaseAction, PluginAction,
+    ProjectAction, SettingsAction, StateAction, StoreAction, TokenAction, TypeAction, WebAction,
 };
 use crate::domain::provenance::{ActorLabel, Provenance};
 use crate::domain::{
@@ -40,11 +40,11 @@ use crate::error::AppError;
 use crate::help_topics;
 use crate::output::{ConfirmationPlan, Response, StoryView, render_html_report};
 use crate::service::{
-    CatalogService, Clock, ConfigService, Ctx, DeleteOutcome, FieldEdits, GitService,
-    GroupingService, ImportBatch, InitOptions, InitOutcome, IntegrityService, ListFilters,
-    NewStoryInput, PhaseCleared, PointerUpdate, ProjectService, QueryService, RelationOutcome,
-    RelationService, SessionService, SetPrefixOutcome, SettingsService, StateListing, StoryService,
-    SystemService, TransferService, migrate, session, system, transfer,
+    AttachmentService, CatalogService, Clock, ConfigService, Ctx, DeleteOutcome, FieldEdits,
+    GitService, GroupingService, ImportBatch, InitOptions, InitOutcome, IntegrityService,
+    ListFilters, NewStoryInput, PhaseCleared, PointerUpdate, ProjectService, QueryService,
+    RelationOutcome, RelationService, SessionService, SetPrefixOutcome, SettingsService,
+    StateListing, StoryService, SystemService, TransferService, migrate, session, system, transfer,
 };
 use crate::store::{ProjectId, ReadOps, Store};
 
@@ -777,6 +777,42 @@ pub fn dispatch<S: Store>(
             HistoryAction::Restore { id, events } => {
                 crate::service::history::restore(ctx, &id, &events)?;
                 ctx.story_view(&id)
+            }
+        },
+        Invocation::Attachment { action } => match action {
+            // `story attachment list <id>` renders the whole story rather
+            // than a bespoke list response: `StorySnapshot.attachments` is
+            // already part of it, `story show`'s human and `--json`
+            // renderings already surface it (SH-315), and a dedicated
+            // response type would earn this one verb an entry in every other
+            // arm of `render_json`/`render_human` for no reader this project
+            // has.
+            AttachmentAction::Add { id, path, name } => {
+                let bytes = std::fs::read(resolve_against(ctx.cwd(), &path))
+                    .map_err(|e| AppError::Storage(format!("failed to read {path}: {e}")))?;
+                AttachmentService::new(ctx).add(&id, &bytes, &path, name.as_deref())?;
+                ctx.story_view(&id)
+            }
+            AttachmentAction::List { id } => ctx.story_view(&id),
+            AttachmentAction::Remove { id, attachment_id } => {
+                AttachmentService::new(ctx).remove(&id, attachment_id)?;
+                ctx.story_view(&id)
+            }
+            AttachmentAction::Save {
+                id,
+                attachment_id,
+                path,
+            } => {
+                let (attachment, bytes) = AttachmentService::new(ctx).get(&id, attachment_id)?;
+                let destination = resolve_against(ctx.cwd(), &path);
+                std::fs::write(&destination, &bytes)
+                    .map_err(|e| AppError::Storage(format!("failed to write {path}: {e}")))?;
+                Ok(Response::Message(format!(
+                    "saved {} ({} bytes) to {}",
+                    attachment.name,
+                    bytes.len(),
+                    destination.display()
+                )))
             }
         },
         Invocation::GithubSync {
@@ -2376,6 +2412,7 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::Version
         | Invocation::ProjectSnapshot
         | Invocation::History { .. }
+        | Invocation::Attachment { .. }
         | Invocation::Publish { .. } => false,
         // `Login` does spend a credential, but never through this envelope —
         // it is handled entirely client-side in `main.rs`, which prompts for
@@ -2647,6 +2684,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::ProjectSnapshot => "project-snapshot",
         Invocation::History { .. } => "history",
         Invocation::Publish { .. } => "publish",
+        Invocation::Attachment { .. } => "attachment",
     }
 }
 
@@ -3566,7 +3604,8 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Version
         | Invocation::ProjectSnapshot
         | Invocation::History { .. }
-        | Invocation::GithubAuth { .. } => None,
+        | Invocation::GithubAuth { .. }
+        | Invocation::Attachment { .. } => None,
     }
 }
 

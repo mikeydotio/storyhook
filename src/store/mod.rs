@@ -89,9 +89,10 @@ pub use rebuild::{
 };
 pub use sqlite::{SqliteReadTx, SqliteStore, SqliteWriteTx, StoreConfig};
 pub use types::{
-    DeletedProject, FeedEvent, LinkSource, MigrationReport, NewProject, PrLink, ProjectRecord,
-    ProjectRemoteRecord, ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent,
-    StoredPayload, StoryQuery, StoryRow, StorySort, UnknownEventDiagnostic, partition_known,
+    AttachmentBlobRow, DeletedProject, FeedEvent, LinkSource, MigrationReport, NewProject, PrLink,
+    ProjectRecord, ProjectRemoteRecord, ProjectSettings, PurgedStory, RawEvent, RelationEdge,
+    StoredEvent, StoredPayload, StoryQuery, StoryRow, StorySort, UnknownEventDiagnostic,
+    partition_known,
 };
 
 /// A transactional store of projects, events, and the read model folded from
@@ -435,6 +436,33 @@ pub trait ReadOps {
     /// exact filter that serves `pr-check` would hide the PR a reader is most
     /// likely to want to see (the one that already shipped the fix).
     fn pr_links(&self, project: ProjectId) -> Result<Vec<(StoryNo, PrLink)>, StoreError>;
+
+    /// One attachment's stored bytes (SH-315), or `None` if no blob row backs
+    /// it — which `story doctor` reports as damage, not this call.
+    ///
+    /// `story attachment save`'s read. Loads the whole blob into memory,
+    /// which is why every other consumer — `story attachment list`,
+    /// `story doctor` — reaches for [`Self::attachment_blobs`] instead.
+    fn attachment_blob(
+        &self,
+        project: ProjectId,
+        story: StoryNo,
+        attachment_id: u32,
+    ) -> Result<Option<Vec<u8>>, StoreError>;
+
+    /// Every attachment blob's metadata across the whole project, paired with
+    /// the story number that owns it (SH-315) — `story doctor`'s read.
+    ///
+    /// One project-wide query rather than one call per story: the doctor's
+    /// per-story pass runs over every story regardless of whether it holds
+    /// any attachments, and reaching for [`Self::attachment_blob`] there would
+    /// make that an N+1 query loading full image bytes it never uses. This
+    /// returns metadata only, following [`Self::pr_links`]'s own precedent for
+    /// the same shape of project-wide read.
+    fn attachment_blobs(
+        &self,
+        project: ProjectId,
+    ) -> Result<Vec<(StoryNo, AttachmentBlobRow)>, StoreError>;
 }
 
 /// Everything that can be written inside a transaction.
@@ -728,4 +756,44 @@ pub trait WriteOps: ReadOps {
         story: StoryNo,
         snapshot: &StorySnapshot,
     ) -> Result<(), StoreError>;
+
+    /// Writes one attachment's bytes (SH-315), replacing any blob already
+    /// stored under this `(project, story, attachment_id)`.
+    ///
+    /// Called by [`crate::service::attachment::AttachmentService::add`] in the
+    /// same transaction as the [`StoryEvent::StoryAttachmentAdded`] that names
+    /// this attachment — not from `write::append`'s per-kind projection loop
+    /// the way `story_pr_links` is, because the bytes are never present in
+    /// that event's own JSON payload for a projection to read out of it. An
+    /// upsert rather than a pure insert for the same reason
+    /// `story_pr_links`' `StoryPrLinked` write is: a caller cannot reach this
+    /// under an id that already holds bytes through the ordinary CLI path
+    /// (ids are never reused), but replay is not ordinary — `story
+    /// import-project` restores an id-numbered document that may already
+    /// have written this row once, and an upsert makes that restore
+    /// idempotent rather than a duplicate-key failure.
+    fn put_attachment_blob(
+        &mut self,
+        project: ProjectId,
+        story: StoryNo,
+        attachment_id: u32,
+        bytes: &[u8],
+        sha256: &str,
+        added_at: &str,
+    ) -> Result<(), StoreError>;
+
+    /// Deletes one attachment's stored bytes (SH-315), reporting whether
+    /// there was a row to delete.
+    ///
+    /// Called by
+    /// [`crate::service::attachment::AttachmentService::remove`] in the same
+    /// transaction as the [`StoryEvent::StoryAttachmentRemoved`] that retracts
+    /// this attachment — removal deletes the bytes rather than tombstoning
+    /// them, per that event's own doc comment.
+    fn delete_attachment_blob(
+        &mut self,
+        project: ProjectId,
+        story: StoryNo,
+        attachment_id: u32,
+    ) -> Result<bool, StoreError>;
 }

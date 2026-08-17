@@ -2010,6 +2010,46 @@ Related:
         );
 
         m.insert(
+            "attachment",
+            r#"story attachment add <id> <path> [--name <text>]
+story attachment list <id>
+story attachment remove <id> <n>
+story attachment save <id> <n> <path>
+
+Attach an image to a story, list its attachments, remove one, or save one
+back to a file. The format is identified from the file's own bytes, never
+from its name or extension — PNG, JPEG, GIF and WebP are accepted; anything
+else, including SVG, is refused. `<path>` on `add`/`save` is resolved
+against the directory you ran the command in.
+
+`add`/`remove` refuse a closed story, the same as any other field edit —
+reopen it first if you need to change its attachments. `list`/`save` work
+on a closed story exactly as `story show` does.
+
+An attachment's `<n>` is a small counter local to its own story, shown by
+`story show <id>` or `story attachment list <id>` — never reused once an
+attachment holding it is removed.
+
+When to use:
+  Recording a screenshot, diagram, or other supporting image alongside a
+  story's description. This is the storage-and-CLI foundation of a larger
+  epic (SH-315) — the web dashboard does not yet show attachment
+  thumbnails; use `story attachment save` to pull one back out and view it.
+
+Examples:
+  story attachment add SH-9 ./screenshot.png
+  story attachment add SH-9 ./diagram.jpg --name "before/after diagram"
+  story attachment list SH-9
+  story attachment save SH-9 1 ./restored.png
+  story attachment remove SH-9 1
+
+Related:
+  story show <id>    — View a story, including its attachments
+  story doctor        — Verify every attachment's bytes against its record
+"#,
+        );
+
+        m.insert(
             "reopen",
             r#"story reopen <id> [--force]
 

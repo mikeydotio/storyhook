@@ -28,7 +28,7 @@
 //! and two independent reviewers each found a different subset. A hand-kept
 //! list of id-bearing verbs is exactly the thing that was already wrong.
 
-use crate::cli::{EpicAction, GraphMode, HistoryAction, Invocation, PhaseAction};
+use crate::cli::{AttachmentAction, EpicAction, GraphMode, HistoryAction, Invocation, PhaseAction};
 use crate::error::AppError;
 use crate::service::Ctx;
 use crate::store::{ProjectRecord, ReadOps, Store, StoreError, StoryRef};
@@ -231,6 +231,12 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         },
         Invocation::History { action } => match action {
             HistoryAction::Read { id } | HistoryAction::Restore { id, .. } => vec![id],
+        },
+        Invocation::Attachment { action } => match action {
+            AttachmentAction::Add { id, .. }
+            | AttachmentAction::List { id }
+            | AttachmentAction::Remove { id, .. }
+            | AttachmentAction::Save { id, .. } => vec![id],
         },
 
         Invocation::Help

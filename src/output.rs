@@ -1698,6 +1698,19 @@ fn render_story(view: &StoryView) -> String {
         }
     }
 
+    // SH-315: empty-gated like every other optional section above, so a
+    // story with no attachments — every story in the golden fixture, today —
+    // renders exactly as it did before this field existed.
+    if !story.attachments.is_empty() {
+        body.push_str("attachments:\n");
+        for attachment in &story.attachments {
+            body.push_str(&format!(
+                "- {} {} ({}, {} bytes)\n",
+                attachment.id, attachment.name, attachment.media_type, attachment.byte_len
+            ));
+        }
+    }
+
     if !view.referenced_by.is_empty() {
         body.push_str("referenced_by:\n");
         for commit in &view.referenced_by.commits {

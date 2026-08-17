@@ -874,6 +874,9 @@ pub fn export_project(root: &Path) -> Result<ProjectExport, AppError> {
                 id,
                 events,
                 archived: false,
+                // A legacy `.storyhook` tree has nowhere to put attachment
+                // bytes — SH-315 postdates this rollback path entirely.
+                attachment_blobs: Vec::new(),
             });
         }
     }
@@ -892,6 +895,8 @@ pub fn export_project(root: &Path) -> Result<ProjectExport, AppError> {
             id,
             events: events.into_iter().map(ExportedEvent::Known).collect(),
             archived: true,
+            // Same reasoning as the open-story arm above.
+            attachment_blobs: Vec::new(),
         });
     }
 
@@ -1139,6 +1144,8 @@ mod tests {
             deleted_reason: None,
             hidden_at: None,
             draft: false,
+            attachments: Vec::new(),
+            next_attachment_id: 1,
         }
     }
 

@@ -1416,6 +1416,10 @@ fn remote_snapshot_to_story_snapshot(
         hidden_at: None,
         // Nor of SH-175's draft flag — same reasoning as `hidden_at` above.
         draft: false,
+        // Nor of SH-315's attachments — same reasoning as `hidden_at` above:
+        // nothing on the GitHub side to diff an attachment list against.
+        attachments: Vec::new(),
+        next_attachment_id: 1,
     }
 }
 

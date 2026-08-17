@@ -49,9 +49,9 @@ use crate::store::fault::{FaultPoint, fire};
 use crate::store::ids::{EventSeq, ExpectedSeq, GlobalSeq, ProjectId, StoryNo};
 use crate::store::migrate::{self, MIGRATIONS, Migration, current_schema_version};
 use crate::store::types::{
-    DeletedProject, FeedEvent, LinkSource, MigrationReport, NewProject, PrLink, ProjectRecord,
-    ProjectRemoteRecord, ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent,
-    StoryQuery, StoryRow,
+    AttachmentBlobRow, DeletedProject, FeedEvent, LinkSource, MigrationReport, NewProject, PrLink,
+    ProjectRecord, ProjectRemoteRecord, ProjectSettings, PurgedStory, RawEvent, RelationEdge,
+    StoredEvent, StoryQuery, StoryRow,
 };
 use crate::store::{ReadOps, Store, WriteOps, WriteWithSnapshot};
 
@@ -782,6 +782,22 @@ macro_rules! impl_read_ops {
             fn pr_links(&self, project: ProjectId) -> Result<Vec<(StoryNo, PrLink)>, StoreError> {
                 read::pr_links(&self.conn, project)
             }
+
+            fn attachment_blob(
+                &self,
+                project: ProjectId,
+                story: StoryNo,
+                attachment_id: u32,
+            ) -> Result<Option<Vec<u8>>, StoreError> {
+                read::attachment_blob(&self.conn, project, story, attachment_id)
+            }
+
+            fn attachment_blobs(
+                &self,
+                project: ProjectId,
+            ) -> Result<Vec<(StoryNo, AttachmentBlobRow)>, StoreError> {
+                read::attachment_blobs(&self.conn, project)
+            }
         }
     };
 }
@@ -920,5 +936,34 @@ impl WriteOps for SqliteWriteTx<'_> {
         snapshot: &StorySnapshot,
     ) -> Result<(), StoreError> {
         write::put_github_base(&self.conn, project, story, snapshot)
+    }
+
+    fn put_attachment_blob(
+        &mut self,
+        project: ProjectId,
+        story: StoryNo,
+        attachment_id: u32,
+        bytes: &[u8],
+        sha256: &str,
+        added_at: &str,
+    ) -> Result<(), StoreError> {
+        write::put_attachment_blob(
+            &self.conn,
+            project,
+            story,
+            attachment_id,
+            bytes,
+            sha256,
+            added_at,
+        )
+    }
+
+    fn delete_attachment_blob(
+        &mut self,
+        project: ProjectId,
+        story: StoryNo,
+        attachment_id: u32,
+    ) -> Result<bool, StoreError> {
+        write::delete_attachment_blob(&self.conn, project, story, attachment_id)
     }
 }

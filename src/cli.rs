@@ -191,6 +191,10 @@ Usage:
   story github-sync [<id>] [--dry-run] [--resolve local|remote]
   story link-pr <id> <url> [--no-close-on-merge]    (link a GitHub pull request to a story)
   story unlink-pr <id> <url>
+  story attachment add <id> <path> [--name <text>]  (attach an image to a story)
+  story attachment list <id>
+  story attachment remove <id> <n>
+  story attachment save <id> <n> <path>
   story pr-check [<id>]                             (requires the github-sync feature)
   story github-auth login|status|logout             (durable credential for unattended pr-check polling)
   story scaffold agents-md|claude-md|cursor-rules
@@ -638,6 +642,40 @@ pub enum Invocation {
     /// should be able to ask for by accident.
     History {
         action: HistoryAction,
+    },
+    /// `story attachment add|list|remove|save` — image attachments on a story
+    /// (SH-315).
+    Attachment {
+        action: AttachmentAction,
+    },
+}
+
+/// The four forms of `story attachment` (SH-315).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AttachmentAction {
+    /// `story attachment add <id> <path> [--name <text>]`.
+    ///
+    /// `path` is resolved by the daemon against the request's own `cwd`, the
+    /// same way `story import-project <file>` is (see `invoke::
+    /// resolve_against`) — never against this process's own working
+    /// directory, which may not be the caller's when this runs across the
+    /// wire.
+    Add {
+        id: String,
+        path: String,
+        /// Defaults to `path`'s own file name when omitted.
+        name: Option<String>,
+    },
+    /// `story attachment list <id>`.
+    List { id: String },
+    /// `story attachment remove <id> <n>`.
+    Remove { id: String, attachment_id: u32 },
+    /// `story attachment save <id> <n> <path>` — writes the attachment's
+    /// bytes to `path`, resolved the same way `Add`'s `path` is.
+    Save {
+        id: String,
+        attachment_id: u32,
+        path: String,
     },
 }
 
@@ -1505,6 +1543,14 @@ static VERB_FLAGS: &[VerbFlags] = &[
         subcommand: None,
         flags: &[bare("no-close-on-merge")],
     },
+    // One shared entry for all four subcommands, matching this table's
+    // existing looseness for `daemon`: only `add` accepts `--name`, and
+    // `parse_attachment` itself is what refuses it on `list`/`remove`/`save`.
+    VerbFlags {
+        verb: "attachment",
+        subcommand: None,
+        flags: &[value("name")],
+    },
     VerbFlags {
         verb: "decompose",
         subcommand: None,
@@ -1888,6 +1934,7 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "github-sync" => parse_github_sync(args),
         "link-pr" => parse_link_pr(args),
         "unlink-pr" => parse_unlink_pr(args),
+        "attachment" => parse_attachment(args),
         "pr-check" => parse_pr_check(args),
         "github-auth" => parse_github_auth(args),
         "plugin" => parse_plugin(args),
@@ -3414,6 +3461,94 @@ fn parse_unlink_pr(args: &[String]) -> Result<Invocation, AppError> {
         id: args[1].clone(),
         url: args[2].clone(),
     })
+}
+
+const ATTACHMENT_USAGE: &str = "usage: story attachment add <id> <path> [--name <text>] | \
+    list <id> | remove <id> <n> | save <id> <n> <path>";
+
+/// `story attachment add|list|remove|save` (SH-315).
+fn parse_attachment(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = || AppError::Usage(ATTACHMENT_USAGE.to_string());
+    if args.len() < 2 {
+        return Err(usage());
+    }
+    match args[1].as_str() {
+        "add" => {
+            let mut positionals: Vec<String> = Vec::new();
+            let mut name = None;
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--name" => {
+                        let value = args.get(index + 1).ok_or_else(usage)?;
+                        name = Some(value.clone());
+                        index += 2;
+                    }
+                    _ => {
+                        positionals.push(args[index].clone());
+                        index += 1;
+                    }
+                }
+            }
+            if positionals.len() != 2 {
+                return Err(usage());
+            }
+            Ok(Invocation::Attachment {
+                action: AttachmentAction::Add {
+                    id: positionals[0].clone(),
+                    path: positionals[1].clone(),
+                    name,
+                },
+            })
+        }
+        "list" => {
+            let id = args.get(2).ok_or_else(usage)?.clone();
+            expect_no_more(&args[3..], ATTACHMENT_USAGE)?;
+            Ok(Invocation::Attachment {
+                action: AttachmentAction::List { id },
+            })
+        }
+        "remove" => {
+            let id = args.get(2).ok_or_else(usage)?.clone();
+            let attachment_id = parse_attachment_id(args.get(3))?;
+            expect_no_more(&args[4..], ATTACHMENT_USAGE)?;
+            Ok(Invocation::Attachment {
+                action: AttachmentAction::Remove { id, attachment_id },
+            })
+        }
+        "save" => {
+            let id = args.get(2).ok_or_else(usage)?.clone();
+            let attachment_id = parse_attachment_id(args.get(3))?;
+            let path = args.get(4).ok_or_else(usage)?.clone();
+            expect_no_more(&args[5..], ATTACHMENT_USAGE)?;
+            Ok(Invocation::Attachment {
+                action: AttachmentAction::Save {
+                    id,
+                    attachment_id,
+                    path,
+                },
+            })
+        }
+        _ => Err(usage()),
+    }
+}
+
+/// Parses an attachment id — a positive integer, matching
+/// [`crate::domain::Attachment::id`]'s own type.
+fn parse_attachment_id(raw: Option<&String>) -> Result<u32, AppError> {
+    let usage = || AppError::Usage(ATTACHMENT_USAGE.to_string());
+    let raw = raw.ok_or_else(usage)?;
+    let id: u32 = raw.parse().map_err(|_| {
+        AppError::Usage(format!(
+            "attachment id must be a positive integer, got `{raw}`"
+        ))
+    })?;
+    if id == 0 {
+        return Err(AppError::Usage(
+            "attachment id must be a positive integer".to_string(),
+        ));
+    }
+    Ok(id)
 }
 
 fn parse_pr_check(args: &[String]) -> Result<Invocation, AppError> {

@@ -115,6 +115,19 @@ pub enum FindingCode {
     /// finding, so an integrity error with an empty `findings` array is
     /// unrepresentable rather than merely unusual.
     Unstructured,
+    /// A story's snapshot names an attachment (SH-315) that has no
+    /// backing row in `story_attachment_blobs` — the bytes are gone, but the
+    /// folded record still claims them.
+    MissingAttachmentBlob,
+    /// A row in `story_attachment_blobs` (SH-315) that no story's snapshot
+    /// names — bytes with nothing pointing at them, left behind by a write
+    /// that appended the removal event but never reached the blob delete (or
+    /// vice versa for [`Self::MissingAttachmentBlob`]).
+    OrphanedAttachmentBlob,
+    /// A story's snapshot and its attachment blob row (SH-315) disagree about
+    /// the same attachment's byte length or SHA-256 — the bytes on disk are
+    /// not the bytes the record describes.
+    AttachmentBlobMismatch,
 }
 
 /// What a finding carries beyond its sentence.
