@@ -3,6 +3,28 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 /// Metadata block embedded in a GitHub Issue body as a fenced `storyhook` code block.
+///
+/// **`priority`'s presence is a statement; its absence is silence, not a
+/// claim (SH-372).** A key of `priority: <level>` — `none` included — means
+/// somebody assessed this story, and `none` means *deliberately parked*, per
+/// `story help priority-rubric`. No `priority:` key at all means the block
+/// states nothing about assessment: either nobody has assessed the story, or
+/// the block predates this distinction (every block written before SH-372
+/// omits the key regardless of whether the story was parked or unassessed,
+/// since [`super::field_map::story_to_block`] used to read only the level).
+/// [`super::field_map::RemotePriority`] is the decoded form of this
+/// ambiguity — its `Unknown` variant is resolved against the sync's own
+/// merge base rather than ever read as "unassessed" on its own, which is
+/// what keeps an old, keyless block from silently clearing an assessment a
+/// human already made. There is no version marker distinguishing an old
+/// block from a new one that simply has nothing to say (a council decision —
+/// `story show SH-372` — on the grounds that the only consumer of such a
+/// marker would be a one-time forced re-push with real, external-facing
+/// cost, for a legibility gap confined to issue bodies written before this
+/// fix). The corollary: a remote-side "un-assess" — deleting the
+/// `priority:` line by hand on GitHub — can never be distinguished from an
+/// old block and so never propagates locally; only a local `story
+/// prioritize` can move a story back to unassessed.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct StoryhookBlock {
     pub story_id: String,
@@ -12,8 +34,6 @@ pub struct StoryhookBlock {
     pub awaiting: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relationships: Vec<BlockRelationship>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sync_version: Option<u32>,
 }
 
 /// A single relationship entry represented as a one-entry map, e.g. `{"relates-to": "SH-10"}`.
@@ -117,7 +137,6 @@ mod tests {
                     entries: BTreeMap::from([("obviates".into(), "SH-15".into())]),
                 },
             ],
-            sync_version: Some(1),
         }
     }
 
@@ -134,7 +153,6 @@ mod tests {
             "relationships:",
             "  - relates-to: SH-10",
             "  - obviates: SH-15",
-            "sync_version: 1",
             "```",
             "",
         ]
@@ -150,7 +168,6 @@ mod tests {
         assert_eq!(block.priority.as_deref(), Some("high"));
         assert_eq!(block.awaiting.as_deref(), Some("code review from @alice"));
         assert_eq!(block.relationships.len(), 2);
-        assert_eq!(block.sync_version, Some(1));
     }
 
     #[test]
@@ -168,7 +185,29 @@ mod tests {
         assert!(block.priority.is_none());
         assert!(block.awaiting.is_none());
         assert!(block.relationships.is_empty());
-        assert!(block.sync_version.is_none());
+    }
+
+    /// `priority: none` is a real, stated level (deliberately parked, SH-372)
+    /// -- distinct from an absent `priority:` key -- and must round-trip as
+    /// the string `"none"`, never as a YAML null. serde_yml's plain-scalar
+    /// null recognition (`null`/`Null`/`NULL`/`~`) does not include `none`,
+    /// so this is a property of the dependency being pinned here, not an
+    /// assumption.
+    #[test]
+    fn priority_none_round_trips_as_the_string_not_a_yaml_null() {
+        let block = StoryhookBlock {
+            story_id: "SH-9".into(),
+            priority: Some("none".into()),
+            awaiting: None,
+            relationships: vec![],
+        };
+        let rendered = render_block("Description.", &block);
+        assert!(
+            rendered.contains("priority: none\n"),
+            "expected an unquoted `priority: none` line: {rendered:?}"
+        );
+        let (_, extracted) = extract_block(&rendered).expect("should parse");
+        assert_eq!(extracted.priority.as_deref(), Some("none"));
     }
 
     #[test]
@@ -192,7 +231,6 @@ mod tests {
             priority: Some("low".into()),
             awaiting: None,
             relationships: vec![],
-            sync_version: Some(2),
         };
         let rendered = render_block(&body, &new_block);
 
@@ -219,7 +257,6 @@ mod tests {
             extracted_block.relationships.len(),
             block.relationships.len()
         );
-        assert_eq!(extracted_block.sync_version, block.sync_version);
     }
 
     #[test]
