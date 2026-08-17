@@ -34,6 +34,11 @@ pub mod secret;
 /// (SH-49, whose council verdict that story carries).
 pub mod pr_url;
 
+/// Recognizes a registered git remote as a GitHub repository — the sibling
+/// grammar to [`pr_url`], moved here out of the feature-gated `github` module
+/// once `story pr-check`/`story link-pr` became its only callers (SH-408).
+pub mod github_remote;
+
 /// Who wrote an event — the daemon-derived command, and the caller-declared
 /// actor beside it (SH-246).
 ///

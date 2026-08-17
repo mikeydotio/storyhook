@@ -3,9 +3,9 @@
 //!
 //! # What this reuses, and why nothing here re-detects a merge
 //!
-//! [`pr_check::run_check`] is `story pr-check`'s whole engine: it loads a
-//! project's `github_sync` remote fresh, re-validates every linked PR's
-//! `(owner, repo)` against that remote (the cross-repo spoofing guard SH-49
+//! [`pr_check::run_check`] is `story pr-check`'s whole engine: it reads a
+//! project's registered GitHub remotes fresh, re-validates every linked PR's
+//! `(owner, repo)` against that set (the cross-repo spoofing guard SH-49
 //! built in), and applies `StoryPrMerged`/`StoryPrClosed`. This module calls
 //! it unmodified, once per project per tick — the alternative, a second
 //! merge-detection path, is exactly how that guard would end up silently
@@ -34,9 +34,9 @@
 //!
 //! # Per-project isolation
 //!
-//! One project's error — no remote configured (the common case: most
-//! projects never ran `github-sync`), a revoked token, a rate limit, a
-//! network blip — must never stop the tick for the rest. [`tick`] discards
+//! One project's error — no remote registered (the common case: most
+//! projects never link-pr'd against GitHub), a revoked token, a rate limit,
+//! a network blip — must never stop the tick for the rest. [`tick`] discards
 //! each project's `Result` rather than propagating it, deliberately: there is
 //! nobody to report a background failure to, and one bad project silently
 //! starving every other project's close-on-merge would be worse than the
