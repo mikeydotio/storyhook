@@ -94,7 +94,13 @@ git fetch -q origin '+refs/pull/*/head:refs/remotes/origin/pr/*' \
 # A persistent worktree so `target/` stays warm across passes -- a scratch
 # worktree per pass would mean a cold compile every 1-3 minutes.
 poller_wt="$common_dir/storyhook/merge-watch-worktree"
-if [ ! -d "$poller_wt/.git" ]; then
+# A LINKED worktree's `.git` is a gitlink FILE pointing back at the shared
+# admin dir, never a directory -- `-d` here always missed it and re-ran
+# `git worktree add` on every pass, which then failed because the directory
+# already existed (SH-396, found running this against this repo's own live
+# PR: `-e` is the check that works for both a fresh main checkout and a
+# linked worktree).
+if [ ! -e "$poller_wt/.git" ]; then
     note "creating the persistent poller worktree at $poller_wt"
     git worktree add -q --detach "$poller_wt" origin/main \
         || die "could not create the poller worktree"
@@ -110,18 +116,22 @@ find_comment_id() {
 }
 
 # Edits the marker comment in place if one exists, else creates it. Read from
-# stdin so a multi-line body never has to survive shell word-splitting.
+# stdin so a multi-line body never has to survive shell word-splitting -- and
+# it must be `-F` (typed field), not `-f` (raw field): only `-F` documents
+# `@-`/`@path` for reading a value from stdin/a file. `-f body=@-` runs
+# without error and posts the four literal characters `@-` as the comment
+# body (found running this against this repo's own live PR, SH-396).
 upsert_comment() {
     local pr="$1" body="$2" id
     id="$(find_comment_id "$pr")"
     if [ -n "$id" ]; then
         printf '%s' "$body" \
-            | gh api --method PATCH "repos/$repo_slug/issues/comments/$id" -f body=@- \
+            | gh api --method PATCH "repos/$repo_slug/issues/comments/$id" -F body=@- \
                 >/dev/null \
             || note "PR #$pr: could not edit the existing status comment"
     else
         printf '%s' "$body" \
-            | gh api --method POST "repos/$repo_slug/issues/$pr/comments" -f body=@- \
+            | gh api --method POST "repos/$repo_slug/issues/$pr/comments" -F body=@- \
                 >/dev/null \
             || note "PR #$pr: could not post the status comment"
     fi
