@@ -132,3 +132,78 @@ test("a slow but successful drawer field edit is reported honestly, not as a fai
   await deleteStory(page, title);
   await routeDone;
 });
+
+/**
+ * SH-367: the same lie, at the sites SH-310's fix never reached.
+ *
+ * `runFieldMutation` was routed through `describeMutationFailure` above, but
+ * that function has only ever had four call sites. `toastError` has
+ * seventeen, and at least eight of them guard a POST that mutates the store
+ * -- `/reopen`, `/labels` add and remove, `/relate`, `/unrelate`,
+ * `/comment`, `/archive`. Every one of those renders `err.message`
+ * verbatim, so `api()`'s `{status: 0, message: "request timed out"}` is
+ * reported as a definite failure by exactly the surfaces `runFieldMutation`
+ * does not own.
+ *
+ * That is CLAUDE.md's SH-312 rule violated, not merely unimplemented: it
+ * binds "any client this daemon has, present or future," and its recorded
+ * consequence was a duplicate story filed 24 seconds later because the user
+ * believed the message and retried. `runFieldMutation`'s own doc comment
+ * says the fix arrived for "every caller of this function," which reads as
+ * complete and is false one function over.
+ *
+ * Driven through the drawer's comment box because it is the cheapest
+ * unambiguous `toastError` mutation site: one textarea, one button, no
+ * second story to relate to and no label vocabulary to arrange.
+ */
+test("a slow but successful comment is reported honestly, not as a failure", async ({
+  page,
+  browserName,
+}) => {
+  // Same WebKit limitation as the test above, same story owns it: the held
+  // route's timeout does not reliably reach the page's XHR under WebKit.
+  test.skip(
+    browserName === "webkit",
+    "WebKit doesn't reliably surface a delayed route's timeout to the page's XHR (SH-347)",
+  );
+  const title = `SH-367 honest comment timeout ${Date.now()}`;
+  const shrunkTimeoutMs = 300;
+
+  let markRouteDone: () => void;
+  const routeDone = new Promise<void>((resolve) => {
+    markRouteDone = resolve;
+  });
+
+  await page.route(/\/story\/[^/]+\/comment$/, async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    // Real request, real daemon, real commit -- the comment DOES land. The
+    // client just never hears so, which is the entire point: the outcome is
+    // unknown to the client and known-good to the store.
+    const response = await route.fetch();
+    await new Promise((resolve) => setTimeout(resolve, shrunkTimeoutMs + 500));
+    await route.fulfill({ response });
+    markRouteDone();
+  });
+
+  await page.goto(`/?mutationTimeoutMs=${shrunkTimeoutMs}`);
+  await openProject(page, "Alpha Project");
+
+  const card = await createStory(page, title);
+  await card.click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+
+  await page.locator('textarea[placeholder="Add a comment…"]').fill("SH-367 probe");
+  await page.locator("#drawer-body .comment-add button").click();
+
+  const toast = page.locator("#toast-stack .toast.error");
+  // The defect: this reads "request timed out" today -- a definite claim of
+  // failure that the committed comment disproves.
+  await expect(toast).toContainText("may or may not have gone through");
+  await expect(toast).not.toContainText("request timed out");
+
+  await deleteStory(page, title);
+  await routeDone;
+});
