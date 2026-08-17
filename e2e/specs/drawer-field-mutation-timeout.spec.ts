@@ -166,7 +166,6 @@ test("a slow but successful comment is reported honestly, not as a failure", asy
     browserName === "webkit",
     "WebKit doesn't reliably surface a delayed route's timeout to the page's XHR (SH-347)",
   );
-  const title = `SH-367 honest comment timeout ${Date.now()}`;
   const shrunkTimeoutMs = 300;
 
   let markRouteDone: () => void;
@@ -191,7 +190,14 @@ test("a slow but successful comment is reported honestly, not as a failure", asy
   await page.goto(`/?mutationTimeoutMs=${shrunkTimeoutMs}`);
   await openProject(page, "Alpha Project");
 
-  const card = await createStory(page, title);
+  // A seeded story, not a created one. This pin is about what the comment
+  // form's `.catch` SAYS, so the story only has to exist -- and creating one
+  // here opened the new story's drawer, whose backdrop then intercepted the
+  // click meant to open it. Commenting leaves the fixture's own stories
+  // untouched apart from one comment, and each engine runs against its own
+  // seed (SH-335), so there is nothing to clean up and nothing to collide.
+  const card = page.locator('.column[data-state="todo"] .card').first();
+  await expect(card).toBeVisible();
   await card.click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
 
@@ -199,11 +205,10 @@ test("a slow but successful comment is reported honestly, not as a failure", asy
   await page.locator("#drawer-body .comment-add button").click();
 
   const toast = page.locator("#toast-stack .toast.error");
-  // The defect: this reads "request timed out" today -- a definite claim of
-  // failure that the committed comment disproves.
+  // The defect: this read "request timed out" before this story -- a definite
+  // claim of failure that the committed comment disproves.
   await expect(toast).toContainText("may or may not have gone through");
   await expect(toast).not.toContainText("request timed out");
 
-  await deleteStory(page, title);
   await routeDone;
 });
