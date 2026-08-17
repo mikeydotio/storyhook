@@ -37,6 +37,8 @@
 //! `tests/priority_rubric.rs` checks `the_priority_alias_still_redirects_to_
 //! prioritize` by name rather than by scan.
 
+use std::path::Path;
+
 use storyhook::help_topics::{get_help_topic, list_topics};
 use storyhook::service::templates;
 
@@ -45,6 +47,10 @@ const POINTER: &str = "story help scope-rubric";
 
 /// The topic key the pointer resolves to.
 const TOPIC: &str = "scope-rubric";
+
+fn repo_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+}
 
 #[test]
 fn the_scope_topic_exists_and_names_itself() {
@@ -273,5 +279,43 @@ fn the_charter_scope_clause_names_no_raw_token_count() {
         "the charter's scope clause names a raw number; the context condition must be \
          expressed as a fraction of the window, never a token count -- see CLAUDE.md \
          for where this project's own calibration belongs"
+    );
+}
+
+#[test]
+fn story_triage_names_a_collapse_resolution() {
+    let text = std::fs::read_to_string(
+        repo_root().join("plugin/claude-code/skills/story-triage/SKILL.md"),
+    )
+    .expect("reading story-triage/SKILL.md");
+    for needle in ["duplicate-of", "obviates", POINTER] {
+        assert!(
+            text.contains(needle),
+            "story-triage/SKILL.md's resolution list is missing [{needle}] -- \
+             'prefer collapsing and combining stories' needs a concrete resolution, \
+             not just the relationship vocabulary"
+        );
+    }
+}
+
+#[test]
+fn story_new_reference_searches_before_filing() {
+    let text =
+        std::fs::read_to_string(repo_root().join("plugin/claude-code/references/story-new.md"))
+            .expect("reading references/story-new.md");
+    assert!(
+        text.contains("story search"),
+        "references/story-new.md must search the existing backlog before drafting a \
+         new story"
+    );
+    assert!(
+        text.contains(POINTER),
+        "references/story-new.md must point at {POINTER} when an existing story \
+         already covers the request"
+    );
+    assert!(
+        text.contains("Never file without an explicit"),
+        "the search-first step must not weaken the human-confirmed nature of this \
+         flow -- the user's explicit go-ahead still wins"
     );
 }
