@@ -338,3 +338,24 @@ fn claude_md_points_at_the_topic_and_does_not_restate_it() {
          source now, and a second copy is the SH-136 class all over again"
     );
 }
+
+#[test]
+fn this_repos_agents_md_is_what_the_template_generates() {
+    // The root AGENTS.md used to be a pre-SH-354 rendering — no Planning
+    // section, no priority-rubric pointer, no relationship table — which
+    // meant nothing added to templates::agents_md, this story's own
+    // scope-rubric pointer included, ever reached this repository's own
+    // agents until it was regenerated. Byte-equal against the same
+    // "SH"/"done" pair tests/priority_rubric.rs already hardcodes for this
+    // project (this project's own prefix and closed state), so a future
+    // template edit that forgets to regenerate this file fails here rather
+    // than drifting silently again.
+    let on_disk =
+        std::fs::read_to_string(repo_root().join("AGENTS.md")).expect("reading AGENTS.md");
+    assert_eq!(
+        on_disk,
+        templates::agents_md("SH", "done"),
+        "AGENTS.md no longer matches templates::agents_md(\"SH\", \"done\") — regenerate \
+         it with `story scaffold agents-md` rather than hand-editing"
+    );
+}
