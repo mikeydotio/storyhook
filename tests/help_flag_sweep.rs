@@ -97,6 +97,9 @@ const VERBS: &[&[&str]] = &[
     // whole database called `--help`.
     &["store"],
     &["store", "new"],
+    &["attachment"],
+    &["attachment", "add"],
+    &["attachment", "list"],
 ];
 
 /// A project with one story, so an accidental `story new` is visible in
