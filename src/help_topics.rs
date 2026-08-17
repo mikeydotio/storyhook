@@ -285,13 +285,19 @@ Related:
   story help priority-rubric — What critical/high/medium/low/none
                                mean. --priority is a scheduling
                                decision, not a label; omit it and
-                               the story is filed at none, which
-                               sorts LAST in 'story next'.
+                               nobody has assessed this story yet,
+                               which sorts LAST in 'story next' — the
+                               same place as 'none' (deliberately
+                               parked), but a different fact.
+                               story list --unassessed finds the
+                               first kind.
   story publish <id>     — Make a draft live (one-way)
   story decompose        — Create multiple stories from a spec file
   story set <id>          — Change any field after creation
   story prioritize <id>  — Set priority after creation
   story label <id>       — Add labels after creation
+  story help scope-rubric — Whether this should be a new story at all,
+                            or work adopted into one already open
 "#,
         );
 
@@ -1913,6 +1919,134 @@ Related:
 "#,
         );
 
+        // Shipped in the binary for the same reason priority-rubric is
+        // (SH-354's argument, one rule over): nothing that decides whether to
+        // FILE a story can read a rule that lives only in an operator's
+        // private config. What is here is generic — a stranger's story ids
+        // mean nothing to `story scaffold`'s audience, so this topic carries
+        // none, and neither does any of the other project-private vocabulary
+        // priority-rubric already excludes. This project's own precedent and
+        // its numeric calibration stay in CLAUDE.md. `tests/scope_rubric.rs`
+        // pins both halves of that boundary, plus the family this topic and
+        // priority-rubric now share: every topic whose key ends in `-rubric`
+        // must self-name and ship no project-private precedent.
+        //
+        // Named `scope-rubric`, not `scope`: `story <verb> --help` resolves
+        // through this same map (see `help_for_verb`), so a topic named after
+        // a plausible future verb would silently pre-empt it — the exact
+        // reason `priority` is an alias here rather than the rubric's own
+        // key.
+        m.insert(
+            "scope-rubric",
+            r#"story help scope-rubric
+
+Whether a problem you find mid-work is its own story, or work you
+adopt into the one you are already on.
+
+== The default: adopt, do not file ==
+
+Filing a story for something you already understand, while already
+holding the context, throws that context away and pays somebody else
+to rebuild it. The default is to fix the problem inside the story you
+are on: its own commit, its own regression test, a comment on the
+story naming what was adopted and why.
+
+Adopting does not weaken two hats. Two hats governs COMMITS, not
+stories or pull requests — a behaviour fix and a refactor still never
+share a commit. What changes is only that one story, and one pull
+request, can now cover more than the single thing it started as.
+
+== Does it belong to this story? ==
+
+  - Same mechanism: the same defect class, or the same code path, as
+    the one you are already fixing.
+  - Same neighbourhood: the same file, module, or surface you are
+    already editing.
+  - Caused by being here: you would not have found it without doing
+    this work.
+
+Any one of these is enough. None of them is a claim about size — a
+one-line fix and a large one can both belong.
+
+== Do you have the room to finish it? ==
+
+Two separate questions, and they do not have the same answer:
+
+  1. Does it belong to this story? (above)
+  2. Do you have enough context left to finish it, test it, and land
+     it in this session?
+
+Adopt AND fix now only when both are yes. If it belongs but you do
+not have the room — at least half of your context window should
+still be unused, and the added work should be small next to what is
+left of it — adopt it into the story's scope without doing it now:
+comment what you found and leave the story open rather than closing
+it, so the next session picks up exactly where you stopped. If you
+cannot tell how much context remains, treat it as spent.
+
+Never file for either reason alone. A discovery that belongs to this
+story is never better served by a new story than by a comment on this
+one — filing does not answer the context question, it just hands the
+whole problem, context included, to somebody who has none of it.
+
+== What still gets filed ==
+
+  - The subject is genuinely unrelated to what you are doing.
+  - The scope is too large to land in one story even with the room to
+    try — a rewrite, a new subsystem, work that needs its own design
+    review.
+  - It is blocked on something you cannot reach from here: a decision
+    only its owner can make, an external dependency, access you do
+    not have.
+
+== Collapsing an existing backlog ==
+
+A story is not force multiplied by existing twice. Before filing,
+search:
+
+  story search "<key terms>"
+  story list --ready
+
+A true duplicate:
+  story relate <dup> duplicate-of <keep>
+  story delete <dup> "duplicate of <keep>"
+
+One story makes another unnecessary:
+  story relate <keeper> obviates <obsolete>
+
+Related but distinct — say so without merging:
+  story relate <a> relates-to <b>
+
+duplicate-of and delete are soft and reversible: the reason travels
+with the deletion, and story reopen undoes it.
+
+== Why a filed story is a cost, not a neutral record ==
+
+Every story that exists must be scheduled, claimed, re-read, planned
+against, and eventually closed — each of those by a session that
+starts from nothing and has to rebuild the context you are holding
+right now, for free. A story that should have been three lines of
+comment on the one you were already working costs a full pass through
+that whole lifecycle for no more information than the comment would
+have carried.
+
+== What this is not ==
+
+Decomposing a spec into stories at planning time is not what this
+discourages — that is 'story decompose', choosing a shape for work
+that does not exist yet, not filing a story for work you have already
+found and understood.
+
+Related:
+  story new                  — File when nothing above applies
+  story comment <id>         — Record an adopted finding
+  story relate <a> <r> <b>   — duplicate-of, obviates, relates-to
+  story delete <id>          — Retire a collapsed duplicate
+  story decompose            — Planning-time decomposition, not this
+  story help priority-rubric — The sibling doctrine, for priority
+"#,
+        );
+
         m.insert(
             "label",
             r#"story label <id> <labels>
@@ -2198,6 +2332,8 @@ Related:
   story reopen <id> [--force]  — Undelete (reopen a deleted story)
   story purge <id> [--force]   — Remove a deleted story permanently
   story search                 — Find deleted stories
+  story help scope-rubric      — Collapsing a duplicate onto the
+                                  story it duplicates
 "#,
         );
 
@@ -2766,6 +2902,33 @@ pub fn all_topics_text() -> String {
 #[cfg(test)]
 mod tests {
     use super::get_help_topic;
+
+    /// SH-402's sibling defect, adopted rather than filed: the `new` topic
+    /// used to say omitting `--priority` "files the story at none, which
+    /// sorts LAST" — the exact unassessed/parked conflation SH-359's
+    /// `priority_notice::unassessed_warning` was written to avoid at
+    /// runtime. Docs and runtime behaviour disagreeing about the same
+    /// command is the SH-136 class regardless of which one is filed to fix.
+    #[test]
+    fn the_new_topic_does_not_conflate_unassessed_with_deliberately_parked() {
+        let body = get_help_topic("new").expect("the `new` topic must exist");
+        assert!(
+            !body.contains("the story is filed at none"),
+            "the `new` topic must not claim omitting --priority parks the story at \
+             none — that is a decision somebody made, and omission is the absence of \
+             one; the two are stored apart precisely so this distinction survives"
+        );
+        assert!(
+            body.contains("nobody has assessed"),
+            "the `new` topic must state the true fact about omitting --priority, \
+             matching priority_notice::unassessed_warning's own phrasing"
+        );
+        assert!(
+            body.contains("story list --unassessed"),
+            "the `new` topic must name the command that finds an unassessed story, \
+             the same remedy SH-359 shipped for this exact question"
+        );
+    }
 
     #[test]
     fn json_format_topic_exists_and_covers_key_concepts() {

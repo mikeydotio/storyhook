@@ -87,6 +87,38 @@ after work is duplicated is `high`. The autonomous loop in
 `HARDENING_PROGRESS.md` finds its work through that path and inherits any
 defect in it silently, which is the whole reason for the exception.
 
+## Scope: adopt or file
+
+**The rubric ships in the binary: run `story help scope-rubric`.** That is the
+source — the default of adopting a mid-work discovery rather than filing it,
+the test for whether it belongs to the story already in progress, when to fix
+it now versus widen scope and leave the story open, and what still gets
+filed. It is not restated here, and `tests/scope_rubric.rs` fails if it starts
+being.
+
+Settled 2026-08-17 on SH-402. This project's own evidence for the rule: the
+backlog this doctrine was written against sat at 43 open against 358 closed
+and climbing, and every prior autonomous cycle paid a full dispatch — plan,
+worktree, PR, merge, close, reap — for problems a session already understood
+before it ever filed them. The mechanism for landing more than one fix per
+story needed no new plumbing: the autonomous charter has always read "every
+pull request you open" and "once every merge lands", already plural. Only the
+permission to use it, and the doctrine that names when to, were missing.
+
+This widens the operator's own "except trivial same-session finds" — it does
+not repeal "defects become stories before they become fixes" for anything
+genuinely separate, too large for one session, or blocked on something
+unreachable from where you are.
+
+**This project's own numeric calibration**, which the shipped charter
+deliberately does not carry (a raw token count there would be an opinion
+about one operator's context window, not a fact about every install): this
+project's autonomous sessions run a 1M-token context window, so "at least
+half unused" is roughly 500k tokens used or fewer — the figure SH-402 itself
+named. Recorded here, next to the window it derives from, per the project's
+own "a ceiling derives from the deadline it disproves, never a bare literal"
+rule.
+
 ## Rearchitecture roadmap
 
 Story data has moved out of per-repo `.storyhook/` directories into one global SQLite store

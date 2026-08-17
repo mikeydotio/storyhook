@@ -67,6 +67,14 @@ direct CLI command:
 - **Close stale stories**: `story move <id> done "Closed during triage -- no longer needed"`
 - **Add relationships**: `story relate <a> <relationship> <b>` — the only valid relationships are `blocks`, `blocked-by`, `parent-of`, `child-of`, `relates-to`, `duplicate-of`, `obviates`, `obviated-by` (use `blocks`/`blocked-by` for execution-order dependencies, not `relates-to`)
 - **Remove relationships**: `story unrelate <a> <relationship> <b>`
+- **Collapse a duplicate**: `story relate <dup> duplicate-of <keep>` then
+  `story delete <dup> "duplicate of <keep>"` — soft and reversible, the reason
+  travels with the deletion and `story reopen` undoes it. Two stories
+  describing one problem cost two schedulings and two plannings, and the
+  second session rebuilds context the first already had; see
+  `story help scope-rubric`
+- **Absorb an obsoleted story**: `story relate <keeper> obviates <obsolete>`
+  then close or delete the obsolete one
 
 A `cycle` finding needs one of its `blocked-by` edges removed or redirected
 (`story unrelate`/`story relate`) — which edge is wrong is a judgment call the script does
