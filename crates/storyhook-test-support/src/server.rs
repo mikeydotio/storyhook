@@ -49,30 +49,38 @@ use crate::env::story_binary;
 ///   one. The band here is entered at a random offset, and each candidate is
 ///   bind-tested before being handed out.
 pub fn reserve_port() -> u16 {
-    use std::sync::atomic::{AtomicU16, Ordering};
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     // Above the registered-port range, below the ephemeral range macOS and
     // Linux draw from (49152+ / 32768+ — the band avoids both).
     const BAND: std::ops::Range<u16> = 19000..29000;
+    const SPAN: u32 = BAND.end as u32 - BAND.start as u32;
 
-    static NEXT: std::sync::LazyLock<AtomicU16> = std::sync::LazyLock::new(|| {
+    // A `u32` counter, mapped into the band by `% SPAN` on every call — never
+    // a stored "current candidate" a caller reads and then conditionally
+    // resets (SH-394). That two-step shape was racy across the concurrent
+    // callers this crate actually has: `--test-threads=4` runs multiple test
+    // functions in one process, and any of them wrapping the band at the same
+    // moment could both observe an out-of-band value, both decide to reset to
+    // `BAND.start`, and both hand out that exact port to two different
+    // callers — reproduced as `reservations must not repeat: left: 7, right:
+    // 8` in a real `cargo test --workspace` run. `fetch_add` alone gives every
+    // caller a distinct raw value with no read-then-write gap for another
+    // thread to land in; the modulus is a pure function of that value, so two
+    // distinct raw values can only ever collide after a full `SPAN`-call
+    // cycle, the same harmless long-run reuse the band already relies on.
+    static NEXT: std::sync::LazyLock<AtomicU32> = std::sync::LazyLock::new(|| {
         let entropy = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.subsec_nanos())
             .unwrap_or(0)
-            ^ std::process::id();
-        let span = (BAND.end - BAND.start) as u32;
-        AtomicU16::new(BAND.start + (entropy % span) as u16)
+            ^ std::process::id() as u32;
+        AtomicU32::new(entropy % SPAN)
     });
 
     for _ in 0..64 {
-        let candidate = NEXT.fetch_add(1, Ordering::Relaxed);
-        let candidate = if BAND.contains(&candidate) {
-            candidate
-        } else {
-            NEXT.store(BAND.start, Ordering::Relaxed);
-            BAND.start
-        };
+        let raw = NEXT.fetch_add(1, Ordering::Relaxed);
+        let candidate = BAND.start + (raw % SPAN) as u16;
         // Binding and immediately releasing proves nothing else holds it
         // *right now* — including a daemon leaked by an earlier run, the
         // exact hazard the fixed counter walked straight into — but not that
@@ -461,6 +469,86 @@ mod tests {
                  in-process server binding port 0 (SH-51); got {port}"
             );
         }
+    }
+
+    /// SH-394: `reserve_port`'s old wraparound branch read the shared
+    /// counter, decided out-of-band, and only *then* wrote a reset — a gap
+    /// another thread could land in and walk away with the identical port.
+    /// That is specifically a concurrency defect, so the regression pin has
+    /// to actually be concurrent: this crate's own tests already run
+    /// `--test-threads=4`, and `reserve_port` is a shared static counter
+    /// across every one of them, which is what let the sequential 8-call
+    /// test above fail from a race that was not inside its own call
+    /// sequence at all (`reservations must not repeat: left: 7, right: 8`,
+    /// from a real `cargo test --workspace` run).
+    ///
+    /// # Why `THREADS * PER_THREAD` stays under the band's own width (10,000)
+    ///
+    /// The first version of this test requested *more* ports than the band
+    /// holds (12,000 of 10,000), on the theory that overrunning the band
+    /// would force the old boundary-crossing branch to fire at least once.
+    /// It does — but it is the wrong test: once total calls exceed the
+    /// band's width, `raw % SPAN` cycles back through values it has already
+    /// returned even under the fix, because a 10,000-slot band mathematically
+    /// cannot hand out 12,000 distinct ports. Mutation-checked directly, and
+    /// the numbers say exactly this: reverted to the old branch, 4 of 4 runs
+    /// failed at "2000 of 12000 collided"; the *fix restored*, 8 of 8 runs
+    /// *also* failed, at the identical "2000 of 12000" — proving the
+    /// over-large volume was measuring band exhaustion, not the race, and
+    /// would have "caught" a correct implementation just as readily as a
+    /// broken one. Below the band's width, exhaustion cannot happen, so any
+    /// collision left to observe is a real one.
+    ///
+    /// # What this test does and does not establish
+    ///
+    /// It cannot force the exact instant the old counter crossed the band
+    /// boundary — that depended on a random per-process starting offset this
+    /// test does not control — so it is a concurrent smoke test, not a
+    /// guaranteed reproduction. Measured directly at this test's own volume:
+    /// against the reverted (old) branch, 4 of 15 runs failed, each a
+    /// different random starting offset landing the shared counter near the
+    /// boundary at just the right moment — exactly the load-dependent,
+    /// non-deterministic shape the real failure had. The actual correctness
+    /// argument for the fix is structural, not statistical:
+    /// `AtomicU32::fetch_add` is a single hardware-atomic read-modify-write
+    /// with no gap another thread can land in, and every value it can ever
+    /// return is guaranteed distinct from every other, so `% SPAN` — a pure
+    /// function of that one value, touching no other shared state — cannot
+    /// map two concurrent calls to the same port unless total calls exceed
+    /// `SPAN`, which is exactly the bound kept below.
+    #[test]
+    fn concurrent_reservations_never_collide() {
+        const THREADS: usize = 32;
+        const PER_THREAD: usize = 100;
+
+        let ports: Vec<u16> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..THREADS)
+                .map(|_| {
+                    scope.spawn(|| (0..PER_THREAD).map(|_| reserve_port()).collect::<Vec<_>>())
+                })
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|h| h.join().expect("a reserving thread panicked"))
+                .collect()
+        });
+
+        assert_eq!(
+            ports.len(),
+            THREADS * PER_THREAD,
+            "every thread must have reported"
+        );
+
+        let mut unique = ports.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            ports.len(),
+            "{} of {} concurrent reservations collided",
+            ports.len() - unique.len(),
+            ports.len()
+        );
     }
 
     /// A foreign listener on the port the harness is about to use stands in for
