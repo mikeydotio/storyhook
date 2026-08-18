@@ -200,6 +200,19 @@ pub enum Health {
     NotInstalled,
     /// A plist this build cannot find a program in.
     Unreadable { plist: PathBuf },
+    /// The plist at this store's own label actually serves a different
+    /// store. Judged before every exe question, for the same reason
+    /// [`Missing`](Health::Missing) is: a foreign agent's binary is not this
+    /// store's business to report on. The state a machine that ran a
+    /// pre-SH-414 `--store-path X daemon install` is left in — that install
+    /// wrote `X`'s agent under the bare label, which now means "the
+    /// login-time default's own agent".
+    ServesAnotherStore {
+        plist: PathBuf,
+        exe: PathBuf,
+        serves: PathBuf,
+        wanted: PathBuf,
+    },
     /// The agent names a binary that is no longer on disk. Judged before
     /// `$PATH` is consulted and independently of it — see the module doc.
     Missing { plist: PathBuf, exe: PathBuf },
@@ -223,14 +236,30 @@ pub enum Health {
 /// project has a standing rule against exactly that shape
 /// (`tests/read_model_column_coverage.rs`'s own precedent, SH-365 — swap two
 /// same-typed positional arguments and every call site still compiles, every
-/// value still wrong). Named fields make a swap visible in the diff, and a
-/// future field (a store comparison, say) has an obvious place to land rather
-/// than a sixth positional parameter.
+/// value still wrong). Named fields make a swap visible in the diff.
 struct Reading {
     plist: PathBuf,
     found: bool,
     exe: Option<PathBuf>,
     exe_exists: bool,
+    /// The store the plist's `ProgramArguments` claims to serve, canonicalized
+    /// — the value after `--store-path`, or the login-time default when the
+    /// array carries no such flag. Meaningless when `found` is false.
+    serves: PathBuf,
+    /// The store this call is actually asking about.
+    wanted: PathBuf,
+}
+
+/// The store a plist's own `ProgramArguments` claims, canonicalized so two
+/// spellings of one store read as one store. Absence of `--store-path`
+/// resolves to the login-time default for `env`'s home, matching how a
+/// flagless launchd child would resolve it — the same doctrine
+/// [`serves_the_login_default`] states.
+fn served_store(text: &str, env: &Environment) -> PathBuf {
+    match registered_store(text) {
+        Some(claimed) => crate::env::canonical_ish(&claimed).unwrap_or(claimed),
+        None => StoreLocation::for_home(env.home()).path().to_path_buf(),
+    }
 }
 
 /// Reads this machine's agent and judges it.
@@ -240,11 +269,18 @@ pub fn health(env: &Environment) -> Health {
     let text = std::fs::read_to_string(&plist_path).ok();
     let exe = text.as_deref().and_then(registered_exe);
     let exists = exe.as_deref().is_some_and(Path::exists);
+    let wanted = env.store_path().to_path_buf();
+    let serves = text
+        .as_deref()
+        .map(|t| served_store(t, env))
+        .unwrap_or_else(|| wanted.clone());
     let reading = Reading {
         plist: plist_path,
         found: text.is_some(),
         exe,
         exe_exists: exists,
+        serves,
+        wanted,
     };
     judge(reading, path_identity::installed_story())
 }
@@ -261,6 +297,8 @@ fn judge(reading: Reading, installed: Option<path_identity::InstalledStory>) -> 
         found,
         exe,
         exe_exists,
+        serves,
+        wanted,
     } = reading;
     if !found {
         return Health::NotInstalled;
@@ -268,6 +306,18 @@ fn judge(reading: Reading, installed: Option<path_identity::InstalledStory>) -> 
     let Some(exe) = exe else {
         return Health::Unreadable { plist };
     };
+    // Ahead of every exe question: if this label's plist serves a different
+    // store, a binary disagreement on it is not this store's business to
+    // report. Judged the same way Missing is judged ahead of the $PATH
+    // comparison — the ordering is the point, not an accident.
+    if serves != wanted {
+        return Health::ServesAnotherStore {
+            plist,
+            exe,
+            serves,
+            wanted,
+        };
+    }
     if !exe_exists {
         return Health::Missing { plist, exe };
     }
@@ -303,6 +353,16 @@ pub fn warning(health: &Health) -> Option<String> {
              understands. Re-run `story daemon install` to rewrite it.",
             plist.display()
         )),
+        Health::ServesAnotherStore { plist, serves, .. } => Some(format!(
+            "the login agent at {} actually serves {}, not this store. Re-running \
+             `story daemon install` here would silently replace it. If {} still needs \
+             its own login agent, run `story --store-path {} daemon install` first, then \
+             re-run `story daemon install` here.",
+            plist.display(),
+            serves.display(),
+            serves.display(),
+            serves.display()
+        )),
         Health::Missing { exe, .. } => Some(format!(
             "the login agent runs {}, which no longer exists — the dashboard will not \
              come back after a reboot. Re-run `story daemon install`.",
@@ -331,6 +391,20 @@ pub fn describe(health: &Health) -> String {
             "login agent  {}\n             ! this storyhook cannot find a program in that plist \
              — re-run `story daemon install`",
             plist.display()
+        ),
+        Health::ServesAnotherStore {
+            plist,
+            exe,
+            serves,
+            ..
+        } => format!(
+            "login agent  {}\n             runs {}\n             ! serves {} instead of this \
+             store — run `story --store-path {} daemon install` first if it still needs its \
+             own agent, then re-run `story daemon install` here",
+            plist.display(),
+            exe.display(),
+            serves.display(),
+            serves.display()
         ),
         Health::Missing { plist, exe } => format!(
             "login agent  {}\n             runs {}\n             ! that binary no longer exists \
@@ -732,12 +806,28 @@ mod tests {
         PathBuf::from("/home/dev/Library/LaunchAgents/io.mikey.storyhook.daemon.plist")
     }
 
+    fn wanted_store() -> PathBuf {
+        PathBuf::from("/home/dev/.local/share/storyhook/store.db")
+    }
+
+    /// `serves` defaults to `wanted`, so every existing row's fixture is
+    /// unaffected by the store question — it never fires unless a test asks
+    /// for it, via [`foreign_reading`].
     fn reading(found: bool, exe: Option<&str>, exe_exists: bool) -> Reading {
         Reading {
             plist: plist_path(),
             found,
             exe: exe.map(PathBuf::from),
             exe_exists,
+            serves: wanted_store(),
+            wanted: wanted_store(),
+        }
+    }
+
+    fn foreign_reading(exe: Option<&str>, exe_exists: bool) -> Reading {
+        Reading {
+            serves: PathBuf::from("/scratch/other.db"),
+            ..reading(true, exe, exe_exists)
         }
     }
 
@@ -823,6 +913,39 @@ mod tests {
         );
     }
 
+    /// The state a pre-SH-414 `--store-path X daemon install` leaves behind:
+    /// the bare label's plist actually serves a different store.
+    #[test]
+    fn judge_reports_an_agent_that_serves_another_store() {
+        let exe = PathBuf::from("/usr/local/bin/story");
+        assert_eq!(
+            judge(foreign_reading(Some("/usr/local/bin/story"), true), None),
+            Health::ServesAnotherStore {
+                plist: plist_path(),
+                exe,
+                serves: PathBuf::from("/scratch/other.db"),
+                wanted: wanted_store(),
+            }
+        );
+    }
+
+    /// The dominance the module doc claims: a foreign agent whose exe is
+    /// ALSO missing must still report `ServesAnotherStore`, not `Missing` —
+    /// a foreign agent's binary is not this store's business to report on.
+    #[test]
+    fn the_store_question_is_asked_before_the_binary_questions() {
+        let exe = PathBuf::from("/gone/story");
+        assert_eq!(
+            judge(foreign_reading(Some("/gone/story"), false), None),
+            Health::ServesAnotherStore {
+                plist: plist_path(),
+                exe,
+                serves: PathBuf::from("/scratch/other.db"),
+                wanted: wanted_store(),
+            }
+        );
+    }
+
     /// `warning` interrupts for a definite problem and nothing else. The
     /// `Unconfirmable` silence is the deliberate mirror of the install guard's
     /// refusal on the same condition — see [`warning`]'s own doc.
@@ -856,8 +979,14 @@ mod tests {
             },
             Health::Disagrees {
                 plist: plist_path(),
-                exe,
+                exe: exe.clone(),
                 installed: PathBuf::from("/home/dev/.local/bin/story"),
+            },
+            Health::ServesAnotherStore {
+                plist: plist_path(),
+                exe,
+                serves: PathBuf::from("/scratch/other.db"),
+                wanted: wanted_store(),
             },
         ] {
             let said = warning(&loud).unwrap_or_else(|| panic!("{loud:?} must be reported"));
@@ -892,8 +1021,14 @@ mod tests {
             },
             Health::Disagrees {
                 plist: plist_path(),
-                exe,
+                exe: exe.clone(),
                 installed: PathBuf::from("/home/dev/.local/bin/story"),
+            },
+            Health::ServesAnotherStore {
+                plist: plist_path(),
+                exe,
+                serves: PathBuf::from("/scratch/other.db"),
+                wanted: wanted_store(),
             },
         ] {
             let said = describe(&health);

@@ -377,18 +377,33 @@ pub fn uninstall(env: &Environment) -> Result<String, AppError> {
 /// `unload` is a parameter for the same reason [`apply`]'s `load` is: a
 /// fixture that ran real `launchctl` would touch the developer's own login
 /// session.
+///
+/// Reads the plist before removing it — the reader already exists
+/// ([`agent::health`]) — so a pre-SH-414 leftover (a bare-label agent
+/// actually serving a different store) is named rather than silently
+/// discarded under a report that only ever says "removed".
 fn uninstall_with(env: &Environment, unload: &dyn Fn(&str)) -> Result<String, AppError> {
     let path = agent::path(env);
     if !path.exists() {
         return Ok("the storyhook daemon is not installed as a launchd agent".to_string());
     }
+    let note = match agent::health(env) {
+        agent::Health::ServesAnotherStore { serves, .. } => format!(
+            "\n  note: that agent was actually serving {} — if it still needs its own \
+             login agent, run `story --store-path {} daemon install`",
+            serves.display(),
+            serves.display()
+        ),
+        _ => String::new(),
+    };
     let label = agent::label(env);
     unload(&label);
     std::fs::remove_file(&path)
         .map_err(|e| AppError::Storage(format!("failed to remove {}: {e}", path.display())))?;
     Ok(format!(
-        "removed the storyhook daemon's launchd agent\n  {}",
-        path.display()
+        "removed the storyhook daemon's launchd agent\n  {}{}",
+        path.display(),
+        note
     ))
 }
 
@@ -664,5 +679,35 @@ mod tests {
             std::fs::read(agent::path(&env_a)).expect("plist a still there"),
             bytes_a
         );
+    }
+
+    /// The migration seam a council found this fix must handle explicitly:
+    /// a pre-SH-414 `--store-path X daemon install` left X's agent at the
+    /// bare label. `story daemon uninstall` for the default store must say
+    /// which store it was actually serving, not just "removed".
+    #[test]
+    fn uninstalling_a_pre_fix_leftover_names_the_store_it_actually_served() {
+        let dir = scratch();
+        let env_a = Environment::at(dir.path());
+        let other = dir.path().join("other.db");
+        let path = agent::path(&env_a);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("the LaunchAgents dir");
+        std::fs::write(
+            &path,
+            format!(
+                "<key>ProgramArguments</key><array><string>/usr/local/bin/story</string>\
+                 <string>--store-path</string><string>{}</string></array>",
+                other.display()
+            ),
+        )
+        .expect("planting a pre-fix leftover");
+
+        let reported = uninstall_with(&env_a, &|_| {}).expect("uninstall");
+        assert!(reported.contains("removed"), "{reported}");
+        assert!(
+            reported.contains(&other.display().to_string()),
+            "the report must name the store the removed agent actually served: {reported}"
+        );
+        assert!(!path.exists());
     }
 }
