@@ -104,7 +104,7 @@ pub fn status(env: &Environment) -> Result<String, AppError> {
             lifecycle::describe_paths(env),
             crate::daemon::backup::describe(env),
             crate::daemon::backup::describe_maintenance(env),
-            agent::describe(&agent::health(env))
+            agent::report(env)
         ));
     }
     match lifecycle::read_info(env) {
@@ -130,7 +130,7 @@ pub fn status(env: &Environment) -> Result<String, AppError> {
                 lifecycle::describe_paths(env),
                 crate::daemon::backup::describe(env),
                 crate::daemon::backup::describe_maintenance(env),
-                agent::describe(&agent::health(env))
+                agent::report(env)
             ))
         }
         // The lock is held by something that published nothing. Say so plainly
@@ -138,7 +138,7 @@ pub fn status(env: &Environment) -> Result<String, AppError> {
         None => Ok(format!(
             "a storyhook daemon holds the pidfile but published no portfile\n\n{}\n{}",
             lifecycle::describe_paths(env),
-            agent::describe(&agent::health(env))
+            agent::report(env)
         )),
     }
 }
@@ -259,7 +259,15 @@ pub fn install(env: &Environment, this_binary: bool) -> Result<String, AppError>
     let running = crate::path_identity::running_exe()
         .ok_or_else(|| AppError::Storage("failed to find the running executable".to_string()))?;
     let inputs = install_guard::gather(user_id(), this_binary, running);
-    apply(&install_plan(env, &inputs)?, &bootstrap_via_launchctl)
+    let message = apply(&install_plan(env, &inputs)?, &bootstrap_via_launchctl)?;
+    // Named at the moment a machine grows past one store, not only when
+    // someone happens to run `status` later.
+    let others = agent::describe_others(env);
+    Ok(if others.is_empty() {
+        message
+    } else {
+        format!("{message}\n\n{others}")
+    })
 }
 
 /// The gate, then the bytes. No side effects.
@@ -400,10 +408,17 @@ fn uninstall_with(env: &Environment, unload: &dyn Fn(&str)) -> Result<String, Ap
     unload(&label);
     std::fs::remove_file(&path)
         .map_err(|e| AppError::Storage(format!("failed to remove {}: {e}", path.display())))?;
+    let others = agent::describe_others(env);
+    let others = if others.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n{others}")
+    };
     Ok(format!(
-        "removed the storyhook daemon's launchd agent\n  {}{}",
+        "removed the storyhook daemon's launchd agent\n  {}{}{}",
         path.display(),
-        note
+        note,
+        others
     ))
 }
 

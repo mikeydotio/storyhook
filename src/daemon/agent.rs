@@ -437,6 +437,99 @@ pub fn describe(health: &Health) -> String {
     }
 }
 
+/// One other storyhook login agent found on this machine — not this store's
+/// own.
+struct OtherAgent {
+    plist: PathBuf,
+    serves: PathBuf,
+    exe: Option<PathBuf>,
+}
+
+/// Every OTHER storyhook login agent on this machine: plists in
+/// `~/Library/LaunchAgents` under this project's own label prefix, excluding
+/// the one [`path`] would read for `env`'s own store.
+///
+/// Per-store labels remove the accidental self-limiting collision a shared
+/// label used to provide — a second install no longer replaces the first, it
+/// coexists — so this is the visibility that stops the accumulation from
+/// being invisible. An entry whose plist this build cannot parse is still
+/// named, with `exe: None`, rather than silently skipped: the SH-312 rule
+/// that an unprovable outcome is reported as unprovable, never dropped.
+#[must_use]
+fn others(env: &Environment) -> Vec<OtherAgent> {
+    let dir = env.home().join("Library/LaunchAgents");
+    let own = path(env);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut found: Vec<OtherAgent> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|candidate| {
+            *candidate != own
+                && candidate
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with(LAUNCHD_LABEL) && name.ends_with(".plist")
+                    })
+        })
+        .map(|plist| {
+            let text = std::fs::read_to_string(&plist).ok();
+            let exe = text.as_deref().and_then(registered_exe);
+            let serves = text
+                .as_deref()
+                .map(|t| served_store(t, env))
+                .unwrap_or_else(|| plist.clone());
+            OtherAgent { plist, serves, exe }
+        })
+        .collect();
+    found.sort_by(|a, b| a.plist.cmp(&b.plist));
+    found
+}
+
+/// The block naming every other storyhook login agent this machine has, or
+/// `String::new()` when there are none. `pub` rather than folded only into
+/// [`report`]: `install`'s and `uninstall`'s own success messages append it
+/// too, so accumulation is named at the moment a machine grows past one
+/// store, not only when someone happens to run `status`.
+#[must_use]
+pub fn describe_others(env: &Environment) -> String {
+    let others = others(env);
+    if others.is_empty() {
+        return String::new();
+    }
+    let mut lines = vec!["other login agents on this machine".to_string()];
+    for other in others {
+        let ran = match &other.exe {
+            Some(exe) => format!(", runs {}", exe.display()),
+            None => ", this storyhook cannot find a program in that plist".to_string(),
+        };
+        lines.push(format!(
+            "  {}\n    serves {}{ran}",
+            other.plist.display(),
+            other.serves.display()
+        ));
+    }
+    lines.join("\n")
+}
+
+/// This store's own login-agent health, plus — when there are any — every
+/// other storyhook login agent on this machine. One function rather than a
+/// pair of calls at each of `status`'s three call sites (and `install`'s and
+/// `uninstall`'s own messages), so the machine-wide facility cannot be
+/// reported at one and silently dropped at another.
+#[must_use]
+pub fn report(env: &Environment) -> String {
+    let mut said = describe(&health(env));
+    let others = describe_others(env);
+    if !others.is_empty() {
+        said.push_str("\n\n");
+        said.push_str(&others);
+    }
+    said
+}
+
 /// The three characters that cannot appear literally in XML element text.
 ///
 /// `&` goes first, or it would escape the ampersands the other two just
@@ -1037,5 +1130,97 @@ mod tests {
                 "{health:?} rendered as {said}"
             );
         }
+    }
+
+    // -- enumeration -----------------------------------------------------------
+
+    fn write_raw_plist(env: &Environment, filename: &str, contents: &str) -> PathBuf {
+        let dir = env.home().join("Library/LaunchAgents");
+        std::fs::create_dir_all(&dir).expect("the LaunchAgents directory");
+        let file = dir.join(filename);
+        std::fs::write(&file, contents).expect("planting a plist");
+        file
+    }
+
+    /// The negative control: with nothing else on the machine, enumeration
+    /// says nothing.
+    #[test]
+    fn describe_others_is_empty_when_there_is_nothing_else() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        assert_eq!(describe_others(&env), String::new());
+    }
+
+    /// This store's own agent, freshly written, must never be named as
+    /// "another" — the self-exclusion is by path equality, not by content.
+    #[test]
+    fn this_stores_own_agent_is_not_named_as_another() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        write_raw_plist(
+            &env,
+            &format!("{LAUNCHD_LABEL}.plist"),
+            "<key>ProgramArguments</key><array><string>/usr/local/bin/story</string></array>",
+        );
+        assert!(others(&env).is_empty());
+        assert_eq!(describe_others(&env), String::new());
+    }
+
+    /// A plist outside this project's label namespace — a launchd agent for
+    /// an unrelated tool — must never be swept up.
+    #[test]
+    fn an_unrelated_plist_is_ignored() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        write_raw_plist(
+            &env,
+            "com.apple.something.plist",
+            "<key>ProgramArguments</key><array><string>/usr/bin/true</string></array>",
+        );
+        assert!(others(&env).is_empty());
+    }
+
+    /// A sibling agent for another store is named, with the store it serves
+    /// and the exe it runs.
+    #[test]
+    fn describe_others_names_a_sibling_agent() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let named = dir.path().join("named.db");
+        write_raw_plist(
+            &env,
+            &format!("{LAUNCHD_LABEL}.deadbeefdeadbeef.plist"),
+            &format!(
+                "<key>ProgramArguments</key><array><string>/usr/local/bin/story</string>\
+                 <string>--store-path</string><string>{}</string></array>",
+                named.display()
+            ),
+        );
+        let said = describe_others(&env);
+        assert!(said.contains("other login agents on this machine"), "{said}");
+        assert!(said.contains(&named.display().to_string()), "{said}");
+        assert!(said.contains("/usr/local/bin/story"), "{said}");
+    }
+
+    /// An unparseable sibling is still named — SH-312's rule that an
+    /// unprovable outcome is reported as unprovable, never silently skipped.
+    #[test]
+    fn an_agent_whose_store_cannot_be_read_is_named_anyway() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let plist = write_raw_plist(
+            &env,
+            &format!("{LAUNCHD_LABEL}.deadbeefdeadbeef.plist"),
+            "not a plist at all",
+        );
+        let found = others(&env);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].plist, plist);
+        assert_eq!(found[0].exe, None);
+        let said = describe_others(&env);
+        assert!(
+            said.contains("cannot find a program in that plist"),
+            "{said}"
+        );
     }
 }

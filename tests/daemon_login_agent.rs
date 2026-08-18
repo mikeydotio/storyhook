@@ -258,3 +258,71 @@ fn status_does_not_report_this_stores_own_agent_as_foreign() {
         "this store's own correctly-labeled agent must not read as foreign: {said}"
     );
 }
+
+/// Per-store labels remove the accidental self-limiting collision a shared
+/// label used to provide — a second install no longer replaces the first, it
+/// coexists. Enumeration is the visibility that stops that from being
+/// invisible: `status` for this store must also name a sibling agent
+/// installed for another one.
+#[test]
+fn status_names_other_storyhook_login_agents_on_this_machine() {
+    let env = TestEnv::isolated();
+    let project = project(&env);
+    plant_agent(&env, "/usr/local/bin/story");
+    let other_store = env.home().join("other-project/store.db");
+    let dir = env.home().join("Library/LaunchAgents");
+    std::fs::write(
+        dir.join(format!("{LABEL}.deadbeefdeadbeef.plist")),
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{LABEL}.deadbeefdeadbeef</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/story</string>
+        <string>--store-path</string>
+        <string>{}</string>
+        <string>daemon</string>
+        <string>--serve</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
+"#,
+            other_store.display()
+        ),
+    )
+    .expect("planting a sibling agent");
+
+    let reported = project
+        .story()
+        .args(["daemon", "status"])
+        .output()
+        .expect("status");
+    let said = String::from_utf8_lossy(&reported.stdout).to_string();
+    assert!(
+        said.contains("other login agents on this machine"),
+        "{said}"
+    );
+    assert!(said.contains(&other_store.display().to_string()), "{said}");
+}
+
+/// The negative control: with only this store's own agent installed,
+/// enumeration says nothing.
+#[test]
+fn status_names_no_other_agents_when_there_are_none() {
+    let env = TestEnv::isolated();
+    let project = project(&env);
+    plant_agent(&env, "/usr/local/bin/story");
+
+    let reported = project
+        .story()
+        .args(["daemon", "status"])
+        .output()
+        .expect("status");
+    let said = String::from_utf8_lossy(&reported.stdout).to_string();
+    assert!(!said.contains("other login agents"), "{said}");
+}
