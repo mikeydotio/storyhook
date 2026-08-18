@@ -111,7 +111,10 @@ defensible answers research alone can't settle — it convenes `/council-vote` (
 when that skill will actually resolve in this session**; `story.sh` decides this itself, via
 `council_vote_available`, before rendering the charter, rather than leaving the child to guess
 at its own skill roster). On a machine with no council installed, the charter says so plainly and
-tells the child to research, decide, and record instead — never to stall. Either way it runs
+tells the child to research, decide, and record instead — never to stall. Both charters name **when**
+as well as what (SH-371): the outcome goes on the story the moment it is reached, before the work
+resumes — a council writes its trail into the worktree, which does not survive the `reap` that
+reclaims it, and a solo decision leaves no trail at all. Either way it runs
 `make test` before pushing, merges every PR it opens with a merge commit, and closes the story
 itself once its own acceptance criteria are met (or `story block` and stops on a hard stop it
 cannot resolve). Once closed, it runs `bin/story.sh reap <id>` as its absolute last action

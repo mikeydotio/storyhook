@@ -79,7 +79,7 @@ done
 # Shared between both --auto charters (the head/tail SH-219 split in two):
 for needle in "story show $id --json" "story move $id done" "gh pr merge --merge" \
               "make test" "story block $id" "prefer adopting it into" \
-              "context window is still unused"; do
+              "context window is still unused" "before you resume the work"; do
   for variant in "auto:$auto" "solo:$solo"; do
     label="${variant%%:*}"; text="${variant#*:}"
     case "$text" in

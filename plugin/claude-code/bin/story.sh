@@ -190,8 +190,19 @@ PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this rep
 # and STORY_AUTO_PROMPT_SOLO still let a caller override either wholesale, same
 # as STORY_PROMPT always has for the attended template.
 AUTO_PROMPT_HEAD="Investigate and plan a fix for story <n> in this repo. Begin by reading it with ‘story show <n> --json’ -- its comments carry the discussion history. This is an AUTONOMOUS session: the user approves your plan once and is then unavailable -- ask no further questions after that approval and never block waiting on input. When your plan is finalized and approved, post it as a comment on <n> before you start implementing. For every later decision, first judge whether it has one clear best answer: when it does, research current best practice for it, decide it yourself, and note the decision and your reasoning as a comment on <n>."
-AUTO_COUNCIL_CLAUSE="Only when a decision has two or more genuinely defensible answers -- a question of scope, direction, or technical approach that research alone cannot settle -- convene ‘/council-vote’ instead of asking, and record its outcome as a comment on <n>. If ‘/council-vote’ turns out not to be available to you, or the council aborts without a decision, do not stall: research the alternatives, choose the one you can best defend, and comment on <n> naming the decision, what you weighed, and why you chose as you did."
-AUTO_SOLO_CLAUSE="When a decision has two or more genuinely defensible answers -- a question of scope, direction, or technical approach that research alone cannot settle -- do not stall waiting for a person to answer: choose the one you can best defend, and comment on <n> naming the decision, what you weighed, and why you chose as you did."
+# SH-371: both decision clauses say WHEN, not just what — record the outcome
+# the moment it is reached, before resuming the work. A council writes its trail
+# into a directory relative to wherever the agent was standing, which for a
+# dispatched session is this worktree, so a verdict deferred to the end-of-story
+# comment dies with the teardown that reclaims it; a solo decision has no trail
+# on disk at all and dies with the session that made it. The user determination
+# on SH-371 accepts that loss rather than gating teardown on it — a teardown
+# beating the council's own close is urgent by construction, the story being
+# abandoned, re-filed or fast-tracked — and that only holds while the charter
+# names the earlier moment. Shared in kind between COUNCIL and SOLO, for the
+# same reason AUTO_SCOPE_CLAUSE below is shared outright.
+AUTO_COUNCIL_CLAUSE="Only when a decision has two or more genuinely defensible answers -- a question of scope, direction, or technical approach that research alone cannot settle -- convene ‘/council-vote’ instead of asking, and record its outcome as a comment on <n> the moment the council concludes, before you resume the work: the council writes its own trail into a directory this worktree owns, so a verdict left there and nowhere else does not survive this worktree being reclaimed. If ‘/council-vote’ turns out not to be available to you, or the council aborts without a decision, do not stall: research the alternatives, choose the one you can best defend, and comment on <n> naming the decision, what you weighed, and why you chose as you did."
+AUTO_SOLO_CLAUSE="When a decision has two or more genuinely defensible answers -- a question of scope, direction, or technical approach that research alone cannot settle -- do not stall waiting for a person to answer: choose the one you can best defend, and comment on <n> naming the decision, what you weighed, and why you chose as you did. Comment it the moment you decide, before you resume the work: a decision held only in this session is gone with the session."
 # SH-402: filing a story for something you already understand, while
 # already holding the context, throws that context away and pays somebody
 # else to rebuild it -- and this project's own backlog grew faster than it
