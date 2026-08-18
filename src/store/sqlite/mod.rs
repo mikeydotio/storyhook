@@ -211,6 +211,19 @@ impl SqliteStore {
         &self.config.backup_dir
     }
 
+    /// The schema version currently recorded in this store.
+    ///
+    /// A thin wrapper over [`migrate::schema_version`] — [`Self::open_with`]
+    /// already runs the equivalent read as part of the SH-54 gate, but keeps no
+    /// handle a caller can reuse. This exists for [`crate::migration_guard`],
+    /// which has to know `from_version` *before* deciding whether
+    /// [`Store::migrate`](crate::store::Store::migrate) may run at all, and must
+    /// not migrate in order to find out.
+    pub fn schema_version(&self) -> Result<u32, StoreError> {
+        let conn = self.explain_corruption(self.checkout())?;
+        self.explain_corruption(migrate::schema_version(&conn))
+    }
+
     /// Applies a specific migration list.
     ///
     /// [`Store::migrate`] applies [`MIGRATIONS`]; this exists so that a test —

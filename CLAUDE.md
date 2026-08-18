@@ -592,6 +592,30 @@ Standing rules for every wave:
   retroactively express it, and the fix is for *absence* to decode as "states nothing,"
   resolved against whatever the reader already believes, never silently promoted to a
   negative answer.
+- **A blocker that is a story is recorded as a story, not as prose about one** (SH-398).
+  `story block <id> "<reason>"` could only ever write a free-text `awaiting` field —
+  `is_ready`'s three block signals (the reserved `blocked` state, an open `blocked-by`/
+  `obviated-by` edge, and `awaiting`) already agreed that only the middle one is a fact
+  the store can act on: it clears itself the instant the blocker closes, is visible from
+  both stories, and `story doctor` can audit it. Prose is inert. An autonomous session
+  blocked SH-394 *on* SH-397 with nothing but a paragraph naming it; there was no edge to
+  clear when SH-397 closed, and the dashboard drawer's banner — gated on `awaiting` alone
+  and rendering `linkifyStoryIds()`'s own mixed array of nodes straight into a
+  `display: flex; align-items: center` container with no wrapping body — rendered that
+  paragraph as a run of narrow, unreadable columns rather than wrapped prose. Fixed on
+  three layers: `story block <id> --on <blocker>...` records the edge and the reason in
+  one transaction (`RelationService::block_on`, `relate()` generalised from one target to
+  N); a nudge (`src/block_notice.rs`) warns — never refuses, since `story block` runs
+  non-interactively — when a written reason names an open story with no edge behind it,
+  wired at every dispatch arm that can set `awaiting` and fenced by a derived door list
+  (`tests/block_notice_paths.rs`) rather than a hand-kept one, the shape SH-136/SH-198/
+  SH-258/SH-260/276 already cost this project; and `story doctor` sweeps the existing
+  backlog for the same gap, since the nudge only fires at authoring time. The dashboard's
+  card badge and drawer banner now derive their blocker/obviator lists from one shared
+  function (`blockCauses`, `src/web_dashboard.html`) rather than each filtering
+  `st.relationships` on its own — the drawer used to be blind to a relation-only block
+  entirely, showing the "add a reason" form beneath a card that already read `● blocked
+  (SH-397)`. Design of record: `docs/spec/blocked-causes.md`.
 - **`.githooks/pre-push` cannot see a merge commit, so nothing certified it — a poller has
   to** (SH-396). `gh pr merge --merge` is a server-side merge: no push happens, so the push
   gate never fires, and this project runs no test CI in GitHub Actions by policy. PR #484
@@ -643,6 +667,44 @@ Standing rules for every wave:
   placement rule — see `docs/spec/board-ordering-and-placement.md` for the design and
   the two council verdicts it was decided by (`story show SH-407`, SH-363: never the
   council's own directory, which resolves on no fresh clone).
+- **The forward-compat gate needed a write-side twin, or a newer binary could break an older
+  one's store on the way in** (SH-404). SH-54 refuses an older binary that opens a *newer*
+  store — the read side. Nothing stopped the opposite: a `cargo build` binary (debug or
+  release, in any worktree) resolves the real data home and applies every pending migration
+  on first open, one-way, with no prompt. `storyhook::env::is_test_build` fences `cargo test`
+  builds out of the real data home; a `cargo build` binary carried no fence at all. On
+  2026-08-17 a worktree's debug binary carrying a migration merged to `main` but shipped in
+  no release moved the real store's schema from 16 to 17; the installed v2.1.1 binary
+  understood only 16, so every `story` command failed at daemon start until a build from
+  `main` was installed by hand. No data was damaged — only the schema stamp moved — but the
+  tracker was down. `storyhook::migration_guard` (`src/migration_guard.rs`) is the write-side
+  twin: it refuses to advance the **default** store's schema when the running binary is not
+  the `story` its own `$PATH` would resolve, and a store already at a non-zero version has
+  something pending. Two choices were deliberate rather than obvious. The predicate is PATH
+  identity, not a build-provenance sentinel in the `is_test_build` mould — a sentinel would
+  also be absent from every `cargo test` binary, so the guard would fire across the whole
+  suite and need its own test-build exemption, making it impossible to prove end-to-end, and
+  it would need `build.rs` machinery this crate has none of. It is also not a per-migration
+  "released in" marker, which would refuse the very recovery this incident used — `make
+  install` from `main`, carrying an unreleased migration on purpose. The scope is
+  `StoreLocation::is_default()`, not `StoreOrigin`: the daemon always spawns its serving
+  child with `--store-path` on its own argv, so inside the one process that ever migrates an
+  existing store, origin is always `Flag`, never `XdgDefault` — an origin-keyed guard would
+  never fire in production. `is_default()` is nearly inert *inside this repository's own test
+  suite* for the opposite reason — `storyhook_test_support::TestEnv` mirrors the default
+  layout under a fake `HOME`, the same gap `is_test_build`'s own refusal and
+  `service::project::refuse_temp_project_in_real_store` already record — so what actually
+  keeps ~70 fixture sites green is that they all open a **fresh** store (`from_version == 0`,
+  which the guard always permits), not `is_default()` reading false. The one place in this
+  tree where `is_default()` is true, a fixture plants a non-zero schema, and `$PATH` is
+  deliberately shadowed is `plugin/claude-code/tests/run-tests.sh`'s decoy-`story` fixtures —
+  safe only because that harness always creates its store fresh in the same run, which is why
+  the fresh-store exemption is load-bearing for `make test` itself, not merely a convenience.
+  Fail-open is deliberate and measured, not assumed: `$PATH` naming no `story` at all (a
+  launchd-started daemon's plist carries no `PATH`) permits, and `tests/migration_guard.rs`
+  pins that case rather than leaving it implicit. The refusal message deliberately does not
+  point at `story update` — an unreleased migration has no release to update *to*, and that
+  dead end is SH-405's own defect; repeating it here would ship it twice.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes

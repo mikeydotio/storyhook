@@ -86,10 +86,20 @@ file and the plan above. Read the plan, then:
 9. **Freshen, then stop.** Queue the next cycle and end your turn. Do not start
    a second story in this context:
    ```
-   bash /Users/mikey/.claude/plugins/cache/agentics/freshen/2.38.0/bin/freshen.sh \
+   bash "$(ls -d /Users/mikey/.claude/plugins/cache/agentics/freshen/*/bin/freshen.sh | sort -V | tail -1)" \
      queue "Continue the storyhook hardening run: read /Volumes/Code/mikeyward/storyhook/HARDENING_PROGRESS.md and follow its START HERE section." \
      --source storyhook-hardening --summary "<story just finished> done, next: <id>"
    ```
+
+   **The version is resolved, never pinned — and read the exit status.** This
+   line named `2.38.0` until 2026-08-17, by which point a plugin update had
+   deleted that directory and the installed versions were 2.40.1 and 3.7.x. A
+   pinned path fails with `No such file or directory`, which is the worst
+   possible failure for *this* step: freshen is what starts the next cycle, so
+   a session that fires it, does not read the output, and ends its turn stops
+   the loop silently — no queue drained, nothing to notice, and no story left
+   `in-progress` to make it visible. Confirm the `freshen: queued …` line
+   before ending the turn.
 
 **One worktree per story — created for it, torn down after it.** Added
 2026-08-14 at Mikey's direction; it supersedes the earlier "branch off `main`
@@ -113,24 +123,37 @@ git worktree remove .claude/worktrees/<id>   # --force if it holds a target/
 git branch -d <branch>
 git push origin --delete <branch>
 git worktree list                            # confirm it is gone
+cargo clean                                  # in THIS checkout — see below
 ```
 
-Three things this costs, all accepted. A worktree carries its own `target/`, so
-its first `make test` is a cold build of the whole tree, and the checkout's
-`target/` no longer warms the next story's. And — **run `make e2e-install` in
-the worktree before your first `make test`** — it carries its own
-`e2e/node_modules`, which is gitignored and therefore absent from every fresh
-worktree.
+**`cargo clean` is the last teardown step, and it is close to free for this
+loop.** Read the paragraph below before deciding to skip it: a worktree builds
+cold whatever this checkout holds, so the artifacts accumulating here warm
+*nothing* the loop ever does. They are pure cost — 11 GB measured on
+2026-08-17, from cycles that each left another full debug tree behind.
 
-That last one is worth the sentence because of *when* it bites. `run-e2e.sh` is
-the final step of `make test`, so a worktree that has not installed the Node
-toolchain runs the entire suite, passes all of it, and then fails at the last
-line with `e2e/node_modules or the Playwright CLI is missing` — roughly ten
-minutes in, having proved everything except the thing it stopped on. The
-Makefile refuses on purpose rather than skipping the browser suite quietly: a
-green `make test` that silently ran no dashboard tests would claim the dashboard
-was verified when nothing ran, which is this project's vacuous-pass rule applied
-to its own gate. Do the install first and the refusal never fires.
+What it costs is one cold rebuild to anyone working directly in this checkout,
+which is why it goes at the *end* of a cycle rather than the start: the next
+cycle's first act is creating a worktree, which would not have reused these
+artifacts anyway. Two reasons this is worth a step of its own rather than a
+someday-chore. This project has already been bitten by that directory growing
+unbounded — a `.o` pileup stalls `FSEventStreamStart`, and a full disk reads as
+`TESTS FAILED` with nothing naming the real cause. And a loop that runs
+unattended for days has no other moment where anyone would notice.
+
+What it costs is accepted: a worktree carries its own `target/`, so its first
+`make test` is a cold build of the whole tree, and the checkout's `target/` no
+longer warms the next story's.
+
+**You do not need `make e2e-install` for this loop.** It used to be required
+here, and this file said so, because `run-e2e.sh` was the final step of `make
+test` — a worktree without the Node toolchain ran the entire suite, passed all
+of it, and failed at the last line with `e2e/node_modules or the Playwright CLI
+is missing`, ten minutes in. SH-394 split the tiers: `make test` (the merge
+gate) now *skips* the browser leg and prints it as skipped, and only `make
+test-full` (the release gate) or `make e2e` runs it. This loop gates on `make
+test` and never releases, so the install is only worth doing in a worktree
+whose story actually touches the dashboard.
 
 What all of this buys is a checkout that is never mid-story — no half-finished
 branch to inherit, no build artifacts from work that was abandoned, and a
@@ -198,6 +221,24 @@ gets all four of these before it starts:
    leaves daemons that make the *next* run refuse to start), and restart it —
    preferably a narrower slice, which is both faster and more diagnostic. Two
    consecutive wedges of the same slice is a finding: stop, and log it.
+
+**Never gate a wait on `pgrep -f "<pattern>"`.** Measured 2026-08-17, and it
+cost this loop most of a day. A waiter written
+`until ! pgrep -f "playwright test"; do sleep 15; done` **matches itself** — the
+waiting shell's own command line contains the pattern, so the condition is never
+false and the loop never exits. Five of them accumulated, 14 hours to 4 days
+old, and because they also matched *each other* every liveness check reported a
+suite running when the browser had been idle the whole time. Work was deferred
+behind a queue that did not exist, and a story shipped its fix on a scan's
+red-green because the browser "was busy".
+
+This is SH-239's rule one layer out: a process's name is not its identity, and
+neither is a string in its arguments. Wait on a **fact**, not on a spelling —
+the actual browser process (`pgrep -f chrome-headless`), a marker file the work
+itself writes, or the harness's own completion notification. If a pattern must
+be used, exclude self: `pgrep -f "[p]laywright test"`. And when a wait exceeds
+its stall timeout by an order of magnitude, suspect the *waiter* before
+believing what it reports.
 
 Every wedge and restart goes in the story's `story comment`, including how long
 it was wedged. That number is the only thing that makes this rule feel worth

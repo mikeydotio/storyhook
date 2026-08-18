@@ -58,7 +58,40 @@ test("an unknown ?project= lands on Home with an error toast", async ({
   const toast = page.locator("#toast-stack .toast.error");
   await expect(toast).toBeVisible();
   await expect(toast).toContainText("no-such-project-xyz");
+  await expectNoDiagnosis(toast);
 });
+
+/**
+ * A client-only error notice is a headline and nothing else — SH-367's
+ * negative half, and the part of that verdict that would otherwise decay in
+ * silence.
+ *
+ * Eight notices in this dashboard are raised without any request having
+ * failed: an unknown `?project=`, a `?story=` the project does not hold, a
+ * deep link the user navigated away from, a clipboard refusal, a project
+ * deleted in another tab, a status with nowhere to move its stories. Their
+ * headline already contains everything known — two of them fold their only
+ * detail into it — so there is no diagnosis to add, and SH-367's council ruled
+ * that none is owed.
+ *
+ * That ruling is prose, and prose decays. `.notice-detail` and
+ * `.notice-reason` are rendered by `noticeBody` for *every* notice, so a later
+ * change that starts passing a third argument at one of these sites would
+ * bolt a fabricated diagnosis onto a notice that has nothing to diagnose, and
+ * nothing in the suite would notice. This is the assertion that refuses it.
+ *
+ * Deliberately the inverse shape of the pin in
+ * `drawer-field-mutation-timeout.spec.ts`: there a subject line MUST appear,
+ * because a failed request has an identity worth naming. Here it must not,
+ * because there was no request.
+ */
+async function expectNoDiagnosis(
+  toast: import("@playwright/test").Locator,
+): Promise<void> {
+  await expect(toast.locator(".notice-headline")).toHaveCount(1);
+  await expect(toast.locator(".notice-detail")).toHaveCount(0);
+  await expect(toast.locator(".notice-reason")).toHaveCount(0);
+}
 
 test("a project with no checkout is still reachable by deep link (canOpen, not available)", async ({
   page,
@@ -82,6 +115,7 @@ test("?story= naming a story absent from the project errors and is stripped from
   const toast = page.locator("#toast-stack .toast.error");
   await expect(toast).toBeVisible();
   await expect(toast).toContainText("AA-9999");
+  await expectNoDiagnosis(toast);
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
   // `syncUrl()` runs synchronously off the same fetch callback that shows
@@ -195,6 +229,7 @@ test("a deep link that resolves after the user left the board is refused, not op
   const toast = page.locator("#toast-stack .toast.error");
   await expect(toast).toBeVisible();
   await expect(toast).toContainText(ALPHA_STORY_ID);
+  await expectNoDiagnosis(toast);
 });
 
 /**
@@ -255,6 +290,7 @@ test("a deep link pending for one project is not consumed by a different project
   const toast = page.locator("#toast-stack .toast.error");
   await expect(toast).toBeVisible();
   await expect(toast).toContainText(ALPHA_STORY_ID);
+  await expectNoDiagnosis(toast);
   await expect(toast).toContainText(alpha);
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
