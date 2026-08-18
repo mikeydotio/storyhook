@@ -750,6 +750,52 @@ Standing rules for every wave:
   **restores** the plist it replaced rather than deleting it, since `bootout` has already
   unloaded the working agent by then. Design of record: the module docs on
   `src/daemon/install_guard.rs` and `src/path_identity.rs`.
+- **A version string is not a build identity, and a semver bump cannot become one** (SH-406).
+  `make install` puts whatever `target/release/story` was just built onto `PATH` under
+  whatever `VERSION` already says, so two builds with different capabilities can report the
+  identical `story --version` string — the exact SH-404 incident: the binary that broke the
+  store and the binary that fixed it both said `story 2.1.1`, one understanding schema 16 and
+  the other 17, with nothing to tell them apart until the daemon refused to start. The story
+  was filed with a chosen mechanism, an install-time semver **patch** bump, and that mechanism
+  turned out to be unbuildable: `semver-cli bump run --non-interactive` refuses on a dirty
+  tree, off `main`, on a tag conflict, or with no new commits, and an install bump must pass
+  `--skip-tag` (an unpublished build must never be tagged), which leaves `VERSION` permanently
+  ahead of any tag — exactly the condition `semver-cli validate`'s `tag_exists` check fails on,
+  which then blocks every *later* release bump too, `scripts/release.sh --bump` included, at
+  its own preflight. `bump` also always creates a `chore(release):` commit with no
+  `--no-commit` escape, and `install: release-build` builds before any bump could run, so a
+  post-build bump would install the version that predates it. A patch bump is blind to the
+  incident's own shape besides: two builds from one commit with different uncommitted edits
+  would still report the same number. The fix instead stamps every build with the git tree
+  object id of the content it was built from (`build.rs`, `src/version.rs`) — the identical
+  identity primitive `scripts/gate-receipt.sh` already uses to key gate receipts (SH-306) and
+  `scripts/merge-preflight.sh` uses for merge certification (SH-396), so two builds share a
+  version string if and only if their tracked content is byte-identical. No `VERSION` write,
+  no commit, no tag, no PR, no `semver` call at all — the worktree refusal this story's
+  constraints worried about simply never applies, and a worktree install becomes an honest
+  answer instead of an ambiguous one. A council (unanimous 3-0, `story show SH-406`, SH-363's
+  rule against citing the council's own directory, which does not survive worktree teardown)
+  decided where the shared tree-identity primitive should live once `build.rs` became its
+  second caller: `scripts/tracked-tree.sh`, extracted from `gate-receipt.sh`, invoked as a
+  **subprocess** by both callers rather than sourced by one and shelled out to by the other —
+  two round-1 proposals had independently suggested the file split without noticing those are
+  two different calling conventions for one function, and the winning proposal collapsed both
+  onto one contract (stdout carries the oid, a nonzero exit means "no answer") that is provable
+  end to end the same way `tests/push_gate.rs` already proves `gate-receipt.sh` itself. `build.rs`
+  emits deliberately **no** `cargo::rerun-if-*` directive: doing so would *replace* cargo's
+  default "rerun on any tracked-adjacent file change" policy with only the directives named,
+  which is a narrower trigger than the stamp needs, not a wider one. Measured rather than
+  assumed, per this project's own SH-306 doctrine: `scripts/tracked-tree.sh` costs ~130ms on
+  this repo (three git subprocess spawns plus a full tracked-file walk), paid on every rebuild
+  cargo's default policy triggers — broader than release builds alone, since an editor's
+  `cargo check` on save can trigger it too — and accepted as a small fraction of any
+  `cargo check`/`build`'s own wall clock rather than left unmeasured. `tests/build_identity.rs`
+  proves the script for real against throwaway git repositories and proves `build.rs` itself by
+  compiling the literal tracked file standalone with `rustc` (it has zero external
+  dependencies, so this costs under a second, unlike the tens of seconds a full isolated
+  `cargo build` would add) and running it against controlled fixtures — never a copy of either
+  artifact's logic pasted into the test, the SH-136 doctrine this story's own rejected mechanism
+  had already been measured against once.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
