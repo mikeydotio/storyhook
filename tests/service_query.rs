@@ -752,6 +752,53 @@ fn a_blocked_epic_keeps_its_display_state_even_with_an_active_child() {
     );
 }
 
+/// SH-407: a story sitting in `todo` with an open `blocked-by` edge onto a
+/// still-open story display-promotes to "blocked" — the same field, and the
+/// same eligibility guard, `an_epic_in_todo_with_an_active_child_shows_a_
+/// promoted_display_state` above exercises for the SH-165 arm.
+#[test]
+fn a_todo_story_blocked_by_an_open_story_shows_a_promoted_display_state() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let blocked = new_story(&ctx, "blocked story");
+    let blocker = new_story(&ctx, "its blocker");
+    RelationService::new(&ctx)
+        .relate(&blocked, "blocked-by", &blocker, false)
+        .expect("relating");
+
+    let shown = query(&fixture, |service| service.show(&blocked));
+    assert_eq!(
+        shown.story.state, "todo",
+        "the story's own recorded state is untouched"
+    );
+    assert_eq!(shown.display_state.as_deref(), Some("blocked"));
+}
+
+/// SH-407 council verdict, recorded on that story (`story show SH-407`):
+/// an epic eligible for BOTH promotions at once — an active child, and an
+/// open blocker on the epic's own record — shows "blocked", not
+/// "in-progress".
+#[test]
+fn blocked_wins_over_an_active_child_promotion_end_to_end() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let epic = new_story(&ctx, "epic");
+    let child = new_story(&ctx, "child");
+    let blocker = new_story(&ctx, "epic's own blocker");
+    RelationService::new(&ctx)
+        .relate(&epic, "parent-of", &child, false)
+        .expect("relating");
+    RelationService::new(&ctx)
+        .relate(&epic, "blocked-by", &blocker, false)
+        .expect("relating");
+    StoryService::new(&ctx)
+        .set_state(&child, "in-progress", None, None, None)
+        .expect("moving the child");
+
+    let shown = query(&fixture, |service| service.show(&epic));
+    assert_eq!(shown.display_state.as_deref(), Some("blocked"));
+}
+
 #[test]
 fn next_offers_leaves_only_and_honours_count_and_phase() {
     let fixture = ServiceFixture::new();
@@ -819,6 +866,58 @@ fn report_data_treats_the_blocked_state_as_not_ready() {
     let report = query(&fixture, |service| service.report_data());
     assert_eq!(report.blocked_ids, [id.as_str()]);
     assert!(!report.ready_ids.contains(&id));
+}
+
+/// SH-407: `report_data().next_ids` is the same queue `story next` hands
+/// out, in the same order — both routes share one `ready_queue` helper
+/// (`src/service/query.rs`), so this is an equality pin in the style of
+/// `summary_and_report_agree_about_the_ready_count_by_two_different_routes`
+/// above, guarding against the two ever being computed independently again.
+/// Priorities are assigned out of creation order so a passing assertion
+/// proves the order came from `ready_order`, not from insertion order.
+#[test]
+fn report_datas_next_ids_agrees_with_next_by_two_different_routes() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let low = new_story(&ctx, "low");
+    let critical = new_story(&ctx, "critical");
+    let medium = new_story(&ctx, "medium");
+    StoryService::new(&ctx)
+        .set_priority(&low, "low")
+        .expect("prioritizing");
+    StoryService::new(&ctx)
+        .set_priority(&critical, "critical")
+        .expect("prioritizing");
+    StoryService::new(&ctx)
+        .set_priority(&medium, "medium")
+        .expect("prioritizing");
+
+    let next = query(&fixture, |service| service.next(usize::MAX, None));
+    let report = query(&fixture, |service| service.report_data());
+    let next_ids: Vec<String> = next.into_iter().map(|view| view.story.id).collect();
+
+    assert_eq!(next_ids, [critical.as_str(), medium.as_str(), low.as_str()]);
+    assert_eq!(report.next_ids, next_ids);
+}
+
+/// SH-407: `next_ids` excludes a parent the same way `story next` does —
+/// `ready_queue`'s `!has_children` filter applies to both callers, so an
+/// epic never appears in the dashboard's "Next" sort even though it is
+/// itself `is_claimable` and therefore does appear in `ready_ids`.
+#[test]
+fn report_datas_next_ids_excludes_parents_the_way_next_does() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let epic = new_story(&ctx, "epic");
+    let child = new_story(&ctx, "child");
+    RelationService::new(&ctx)
+        .relate(&epic, "parent-of", &child, false)
+        .expect("relating");
+
+    let report = query(&fixture, |service| service.report_data());
+    assert!(report.ready_ids.contains(&epic));
+    assert!(!report.next_ids.contains(&epic));
+    assert!(report.next_ids.contains(&child));
 }
 
 #[test]

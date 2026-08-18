@@ -114,6 +114,7 @@ different-axis tiebreak, like priority's, does not):
 | SQL | `StorySort::UpdatedAt` | `ORDER BY updated_at DESC, head_global_seq DESC, story_no` — `story_no` kept as the residual total-order key for the all-zero (`extra_rows`) case |
 | Board "Modified" | `columnCardCompare` | `compareWriteOrder(a, b) * dir`, then `byNumber * dir` |
 | Board "Added" | `columnCardCompare` | `byNumber * dir` only — story numbers are allocated by the same serialized write transaction as creation, so they already *are* creation order exactly |
+| Board "Completed" (SH-407, CLOSED columns only) | `columnCardCompare` | same shape as "Modified", keyed on `closed_at` instead of `updated_at`; see `docs/spec/board-ordering-and-placement.md` for the absent-`closed_at` case, which neither "Modified" nor "Added" has to handle |
 | List view "Updated" | `renderList` | same as the board's "Modified" |
 | TUI recent activity | `recent_stories` | `data.head_global_seqs` lookup, `None` sorting after every `Some` so an unknown ordinal degrades to the incoming order rather than inventing one |
 

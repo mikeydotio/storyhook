@@ -1,6 +1,7 @@
 #![recursion_limit = "256"]
 
 pub mod api;
+pub mod block_notice;
 pub mod cli;
 pub mod clipboard;
 pub mod daemon;
@@ -18,6 +19,7 @@ pub mod legacy;
 pub mod mcp;
 pub mod migration_guard;
 pub mod output;
+pub mod path_identity;
 pub mod plugin;
 pub mod priority_notice;
 pub mod service;

@@ -55,6 +55,192 @@ impl<'ctx, S: Store> RelationService<'ctx, S> {
         Self { ctx }
     }
 
+    /// Marks `id` as blocked by every story in `blockers`, and/or by a prose
+    /// `awaiting` reason — SH-398's origin fix, generalising [`Self::relate`]
+    /// from one target to N so a blocker that is a story can be recorded as a
+    /// `blocked-by` edge (cited, and self-clearing when the blocker closes)
+    /// in the SAME transaction as the reason, rather than as prose alone that
+    /// never clears itself.
+    ///
+    /// `awaiting`, when `Some`, commits in the subject's own append —
+    /// alongside every new `blocked-by` edge, never as a second, non-atomic
+    /// write. That is the reason this exists rather than a loop of
+    /// [`Self::relate`] calls plus a separate `set_awaiting`: the half-edge
+    /// hazard this module's own doc names is exactly "blocked by A and B"
+    /// landing with only A actually recorded, or the edges landing without
+    /// the reason that explained them.
+    ///
+    /// Duplicate ids in `blockers` are collapsed before anything is read, so
+    /// `--on SH-B --on SH-B` cannot double either edge's event. A blocker
+    /// already recorded from an earlier call is left alone — this call
+    /// writes only what is missing, on both ends independently, which also
+    /// self-heals a half-edge inherited from before this existed.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::NotFound`] if `id` or any blocker does not resolve;
+    /// [`AppError::Validation`] if a blocker names `id` itself, or if
+    /// `awaiting` is present but blank after trimming.
+    pub fn block_on(
+        &self,
+        id: &str,
+        blockers: &[String],
+        awaiting: Option<&str>,
+    ) -> Result<(), AppError> {
+        self.edge_batch(id, blockers, awaiting, false)
+    }
+
+    /// Removes `id`'s `blocked-by` edge onto every story in `blockers`, in one
+    /// transaction — the inverse of [`Self::block_on`]. Never touches
+    /// `awaiting`; bare `story unblock <id>` (no blockers named) is
+    /// [`crate::service::story::StoryService::clear_awaiting`] instead, which
+    /// owns the prose reason.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::NotFound`] if `id` or any blocker does not resolve;
+    /// [`AppError::Validation`] if a blocker names `id` itself.
+    pub fn unblock_from(&self, id: &str, blockers: &[String]) -> Result<(), AppError> {
+        self.edge_batch(id, blockers, None, true)
+    }
+
+    /// Shared plumbing for [`Self::block_on`]/[`Self::unblock_from`]: batches
+    /// every named blocker's own inverse-edge event and the subject's own
+    /// `blocked-by` events (plus, when adding, an optional `awaiting` event)
+    /// into one transaction — each blocker takes exactly one append (its own
+    /// edge), and the subject takes exactly one append carrying everything
+    /// that changes about it, mirroring [`Self::relate`]'s own per-story
+    /// batching generalised from one target to N.
+    fn edge_batch(
+        &self,
+        id: &str,
+        blockers: &[String],
+        awaiting: Option<&str>,
+        remove: bool,
+    ) -> Result<(), AppError> {
+        let now = self.ctx.now();
+        let project = self.ctx.project();
+
+        let mut seen = std::collections::BTreeSet::new();
+        let blockers: Vec<&String> = blockers
+            .iter()
+            .filter(|b| seen.insert((*b).clone()))
+            .collect();
+
+        let mut touched: Vec<String> = Vec::new();
+
+        self.ctx.store().write(|tx| {
+            let prefix = project_prefix(&*tx, project)?;
+            let (a_no, a_row) = resolve_open_story(&*tx, project, &prefix, id)?;
+
+            let mut b_rows = Vec::with_capacity(blockers.len());
+            for b in &blockers {
+                if b.as_str() == id {
+                    return Err(AppError::Validation(
+                        "stories cannot relate to themselves".to_string(),
+                    )
+                    .into());
+                }
+                let (b_no, b_row) = resolve_story(&*tx, project, &prefix, b.as_str())?;
+                b_rows.push((*b, b_no, b_row));
+            }
+
+            let states = tx.state_map(project)?;
+
+            for (b, b_no, b_row) in &b_rows {
+                let has = has_relation(&b_row.snapshot, "blocks", id);
+                let event = if remove {
+                    has.then(|| StoryEvent::StoryRelationshipRemoved {
+                        at: now.clone(),
+                        other_id: id.to_string(),
+                        relation: "blocks".to_string(),
+                    })
+                } else {
+                    (!has).then(|| StoryEvent::StoryRelationshipAdded {
+                        at: now.clone(),
+                        other_id: id.to_string(),
+                        relation: "blocks".to_string(),
+                    })
+                };
+                if let Some(event) = event {
+                    append_and_fold(
+                        tx,
+                        project,
+                        *b_no,
+                        &prefix,
+                        &states,
+                        ExpectedSeq::Exact(b_row.head_seq),
+                        &[event],
+                        self.ctx.provenance(),
+                    )?;
+                    touched.push((*b).clone());
+                }
+            }
+
+            let mut a_events = Vec::new();
+            for (b, _, _) in &b_rows {
+                let has = has_relation(&a_row.snapshot, "blocked-by", b.as_str());
+                let event = if remove {
+                    has.then(|| StoryEvent::StoryRelationshipRemoved {
+                        at: now.clone(),
+                        other_id: (*b).clone(),
+                        relation: "blocked-by".to_string(),
+                    })
+                } else {
+                    (!has).then(|| StoryEvent::StoryRelationshipAdded {
+                        at: now.clone(),
+                        other_id: (*b).clone(),
+                        relation: "blocked-by".to_string(),
+                    })
+                };
+                if let Some(event) = event {
+                    a_events.push(event);
+                }
+            }
+            if let Some(reason) = awaiting {
+                let reason = reason.trim().to_string();
+                if reason.is_empty() {
+                    return Err(AppError::Validation(
+                        "awaiting reason must not be empty".to_string(),
+                    )
+                    .into());
+                }
+                a_events.push(StoryEvent::StoryAwaitingSet {
+                    at: now.clone(),
+                    awaiting: reason,
+                });
+            }
+            if !a_events.is_empty() {
+                append_and_fold(
+                    tx,
+                    project,
+                    a_no,
+                    &prefix,
+                    &states,
+                    ExpectedSeq::Exact(a_row.head_seq),
+                    &a_events,
+                    self.ctx.provenance(),
+                )?;
+            }
+            Ok(())
+        })?;
+
+        for other_id in &touched {
+            self.ctx.fire_hook(
+                HookEventType::RelationshipChange,
+                &serde_json::json!({
+                    "event_type": "relationship_change",
+                    "story_id": id,
+                    "timestamp": self.ctx.now(),
+                    "action": if remove { "removed" } else { "added" },
+                    "relation": "blocked-by",
+                    "other_id": other_id,
+                }),
+            );
+        }
+        Ok(())
+    }
+
     /// Adds or removes `relation` between `a` and `b`, updating both stories in
     /// one transaction.
     ///

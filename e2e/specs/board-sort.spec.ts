@@ -158,6 +158,53 @@ async function updatedAtOf(
   return match.story.updated_at;
 }
 
+/** Reads `title`'s story's `closed_at` from the store, the same way
+ * `updatedAtOf` above reads `updated_at` -- used by the "Completed" tests
+ * (SH-407) to prove their own precondition rather than assume it. */
+async function closedAtOf(
+  page: import("@playwright/test").Page,
+  title: string,
+): Promise<string> {
+  const slug = await projectSlug(page.request, "Alpha Project");
+  const resp = await page.request.get(
+    `/api/repos/${encodeURIComponent(slug)}/data`,
+    { headers: { "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN") } },
+  );
+  if (!resp.ok()) {
+    throw new Error(
+      `closedAtOf: GET /data answered ${resp.status()}: ${await resp.text()}`,
+    );
+  }
+  const data: {
+    stories?: Array<{ story: { title: string; closed_at?: string | null } }>;
+  } = await resp.json();
+  const match = (data.stories ?? []).find((v) => v.story.title === title);
+  if (!match || !match.story.closed_at) {
+    throw new Error(`closedAtOf: no closed_at for a story titled "${title}" in GET /data`);
+  }
+  return match.story.closed_at;
+}
+
+/** Adds a `parent-of` relation from whichever story's drawer is currently
+ * open to `childId` -- same shape as `list-state-pill.spec.ts`'s own
+ * `addChild`. Used by the "Next" test (SH-407) to make one card a real
+ * epic, since only `has_children` is excluded from the ready queue. */
+async function addChild(
+  page: import("@playwright/test").Page,
+  childId: string,
+) {
+  await page
+    .locator('input[placeholder="Story ID (e.g. SH-2)"]')
+    .fill(childId);
+  await page
+    .locator("#drawer-body .inline-add select")
+    .selectOption("parent-of");
+  await page
+    .locator("#drawer-body .inline-add button", { hasText: "Add" })
+    .click();
+  await expect(page.locator(".rel-row", { hasText: childId })).toBeVisible();
+}
+
 /** This spec's own cards' titles within `slug`'s column, in DOM order --
  * filtered to this file's own prefix rather than asserted unfiltered,
  * since "todo" always carries the Alpha Project fixture's own two stories
@@ -217,7 +264,7 @@ test("within a tied priority, story number ascending breaks the tie", async ({
   await deleteStory(page, second);
 });
 
-test("the sort glyph opens a menu of exactly six options, with the active one checked", async ({
+test("an OPEN column's sort glyph opens a menu of exactly eight options, with the active one checked", async ({
   page,
 }) => {
   await columnSortBtn(page, "todo").click();
@@ -225,7 +272,10 @@ test("the sort glyph opens a menu of exactly six options, with the active one ch
   await expect(menu).toBeVisible();
 
   const items = menu.locator('[role="menuitemradio"]');
-  await expect(items).toHaveCount(6);
+  // SH-407 added "Next ↑/↓" to the six SH-305 already offered -- and offers
+  // it only on an OPEN column, since a CLOSED column's contents will never
+  // be handed out by `story next` again.
+  await expect(items).toHaveCount(8);
   for (const label of [
     "Added ↑",
     "Added ↓",
@@ -233,18 +283,58 @@ test("the sort glyph opens a menu of exactly six options, with the active one ch
     "Modified ↓",
     "Priority ↑",
     "Priority ↓",
+    "Next ↑",
+    "Next ↓",
   ]) {
     await expect(menu.locator(".ctxmenu-item", { hasText: label })).toBeVisible();
   }
+  await expect(
+    menu.locator(".ctxmenu-item", { hasText: "Completed" }),
+  ).toHaveCount(0);
 
-  // Priority descending is the default for a column with no sort of its
-  // own -- it, and only it, should read as checked.
+  // Priority descending is the default for an OPEN column with no sort of
+  // its own -- it, and only it, should read as checked.
   await expect(
     menu.locator(".ctxmenu-item", { hasText: "Priority ↓" }),
   ).toHaveAttribute("aria-checked", "true");
   await expect(
     menu.locator(".ctxmenu-item", { hasText: "Priority ↑" }),
   ).toHaveAttribute("aria-checked", "false");
+});
+
+test("a CLOSED column's sort glyph offers \"Completed\" instead of \"Next\", defaulting to most-recently-finished-first", async ({
+  page,
+}) => {
+  await columnSortBtn(page, "done").click();
+  const menu = columnSortMenu(page, "done");
+  await expect(menu).toBeVisible();
+
+  const items = menu.locator('[role="menuitemradio"]');
+  await expect(items).toHaveCount(8);
+  for (const label of [
+    "Added ↑",
+    "Added ↓",
+    "Modified ↑",
+    "Modified ↓",
+    "Priority ↑",
+    "Priority ↓",
+    "Completed ↑",
+    "Completed ↓",
+  ]) {
+    await expect(menu.locator(".ctxmenu-item", { hasText: label })).toBeVisible();
+  }
+  await expect(menu.locator(".ctxmenu-item", { hasText: "Next" })).toHaveCount(0);
+
+  // Completion order, most recent first, is the default for a CLOSED
+  // column with no sort of its own -- priority reads as near-arbitrary for
+  // work that is already finished.
+  await expect(
+    menu.locator(".ctxmenu-item", { hasText: "Completed ↓" }),
+  ).toHaveAttribute("aria-checked", "true");
+  await expect(columnSortBtn(page, "done")).toHaveAttribute(
+    "title",
+    "Sort: Completed ↓",
+  );
 });
 
 test('choosing "Added" reorders a column by creation time, not priority', async ({
@@ -322,6 +412,109 @@ test('choosing "Modified" reorders a column by last-touched time, not creation t
 
   await deleteStory(page, untouched);
   await deleteStory(page, touched);
+});
+
+test('choosing "Next" ranks a column by the order story next would hand it out, sorting a parent last regardless of its own priority', async ({
+  page,
+}) => {
+  const epic = "SH-305 sort test — next, epic (excluded, has a child)";
+  const child = "SH-305 sort test — next, epic's own child";
+  const leaf = "SH-305 sort test — next, plain leaf, same priority as the epic";
+
+  // Both critical, and the epic created first (lower story number) -- under
+  // "Priority ↓" this pair would read [epic, leaf] (story-number tiebreak).
+  // A passing assertion below, after switching to "Next", proves the epic
+  // was excluded from the queue entirely rather than merely reordered.
+  await createStory(page, epic, "critical");
+  await createStory(page, leaf, "critical");
+  await createStory(page, child, "low");
+
+  const epicCard = page.locator(".card", { hasText: epic });
+  const childId = (await page
+    .locator(".card", { hasText: child })
+    .getAttribute("data-id"))!;
+
+  await epicCard.click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await addChild(page, childId);
+  await page.locator("#drawer-close").click();
+  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
+
+  // `next_ids` is a project-wide aggregate the server recomputes on its own
+  // `/data` fetch (same category as `ready_ids`/`blocked_ids`, per
+  // `blockedFlag()`'s own comment on that distinction) -- unlike a
+  // mutation's own response, which patches only the one story it touched.
+  // A reload forces a fresh `/data` fetch, so the epic's new `parent-of`
+  // relation is guaranteed to have reached the aggregate before the
+  // assertion below reads it, rather than racing a live-update push.
+  await page.reload();
+  await expect(page.locator("#board-view")).toBeVisible();
+  await expect(page.locator(".card", { hasText: leaf })).toBeVisible();
+
+  await selectColumnSort(page, "todo", "Next ↓");
+  await expect(columnSortBtn(page, "todo")).toHaveAttribute(
+    "title",
+    "Sort: Next ↓",
+  );
+
+  const titles = await ourColumnTitles(page, "todo");
+  expect(
+    titles.indexOf(epic),
+    "the epic (has_children) is never offered by story next, so it must sort last regardless of its own critical priority",
+  ).toBe(titles.length - 1);
+  expect(titles.indexOf(leaf)).toBeLessThan(titles.indexOf(epic));
+  expect(titles.indexOf(child)).toBeLessThan(titles.indexOf(epic));
+
+  // Direction-independence: the epic stays last under "Next ↑" too --
+  // an unranked card has no position on this axis to reverse.
+  await selectColumnSort(page, "todo", "Next ↑");
+  const titlesAsc = await ourColumnTitles(page, "todo");
+  expect(titlesAsc.indexOf(epic)).toBe(titlesAsc.length - 1);
+
+  await deleteStory(page, epic);
+  await deleteStory(page, leaf);
+  await deleteStory(page, child);
+});
+
+test('the Done column defaults to completion order, most recently finished first, and "Completed ↑" reverses it', async ({
+  page,
+}) => {
+  const first = "SH-305 sort test — completed, finished first";
+  const second = "SH-305 sort test — completed, finished second";
+
+  await createStory(page, first, "medium");
+  await createStory(page, second, "medium");
+  await moveToState(page, first, "done");
+  // Same SH-336 reasoning `board-sort.spec.ts`'s own "Modified" test
+  // documents above: the store's clock is one-second resolution, so this
+  // wait is what makes the two closed_at values provably distinct rather
+  // than coincidentally so.
+  await waitUntilStoreClockPasses(await closedAtOf(page, first));
+  await moveToState(page, second, "done");
+
+  const firstAt = await closedAtOf(page, first);
+  const secondAt = await closedAtOf(page, second);
+  expect(
+    secondAt > firstAt,
+    `the second story's closed_at (${secondAt}) is not later than the ` +
+      `first's (${firstAt}), so "Completed" cannot tell them apart and ` +
+      "the assertion below would be testing nothing",
+  ).toBe(true);
+
+  // No selectColumnSort() call -- this is the CLOSED column's own default.
+  await expect(columnSortBtn(page, "done")).toHaveAttribute(
+    "title",
+    "Sort: Completed ↓",
+  );
+  expect(await ourColumnTitles(page, "done")).toEqual([second, first]);
+
+  await selectColumnSort(page, "done", "Completed ↑");
+  expect(await ourColumnTitles(page, "done")).toEqual([first, second]);
+
+  // `deleteStory()` is scoped to the todo column (see this file's own
+  // header comment on the per-column isolation test) -- both stories are
+  // left in "done" for `cleanUpCreatedStories`'s afterEach to reopen and
+  // delete by id, the same way that test leaves its moved stories behind.
 });
 
 test("changing one column's sort leaves every other column's sort and order untouched", async ({

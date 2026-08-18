@@ -171,6 +171,7 @@ source: tests/golden_cli.rs
           }
         },
         {
+          "display_state": "blocked",
           "head_global_seq": 64,
           "story": {
             "awaiting": "waiting on the benchmark harness",
@@ -204,6 +205,7 @@ source: tests/golden_cli.rs
           }
         },
         {
+          "display_state": "blocked",
           "head_global_seq": 63,
           "story": {
             "awaiting": null,
@@ -395,6 +397,7 @@ source: tests/golden_cli.rs
           }
         },
         {
+          "display_state": "blocked",
           "head_global_seq": 64,
           "story": {
             "awaiting": "waiting on the benchmark harness",
@@ -428,6 +431,7 @@ source: tests/golden_cli.rs
           }
         },
         {
+          "display_state": "blocked",
           "head_global_seq": 63,
           "story": {
             "awaiting": null,
@@ -634,6 +638,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
+          "display_state": "blocked",
           "head_global_seq": 64,
           "story": {
             "awaiting": "waiting on the benchmark harness",
@@ -1121,6 +1126,7 @@ source: tests/golden_cli.rs
           }
         },
         {
+          "display_state": "blocked",
           "head_global_seq": 64,
           "story": {
             "awaiting": "waiting on the benchmark harness",
@@ -1138,6 +1144,7 @@ source: tests/golden_cli.rs
           }
         },
         {
+          "display_state": "blocked",
           "head_global_seq": 63,
           "story": {
             "awaiting": null,
@@ -1630,6 +1637,7 @@ source: tests/golden_cli.rs
           }
         },
         {
+          "display_state": "blocked",
           "head_global_seq": 64,
           "story": {
             "awaiting": "waiting on the benchmark harness",
@@ -1663,6 +1671,7 @@ source: tests/golden_cli.rs
           }
         },
         {
+          "display_state": "blocked",
           "head_global_seq": 63,
           "story": {
             "awaiting": null,
@@ -1917,6 +1926,7 @@ source: tests/golden_cli.rs
           }
         },
         {
+          "display_state": "blocked",
           "head_global_seq": 64,
           "story": {
             "awaiting": "waiting on the benchmark harness",
@@ -1950,6 +1960,7 @@ source: tests/golden_cli.rs
           }
         },
         {
+          "display_state": "blocked",
           "head_global_seq": 63,
           "story": {
             "awaiting": null,
@@ -2375,6 +2386,7 @@ source: tests/golden_cli.rs
           }
         },
         {
+          "display_state": "blocked",
           "head_global_seq": 64,
           "story": {
             "awaiting": "waiting on the benchmark harness",
@@ -2426,6 +2438,7 @@ source: tests/golden_cli.rs
           }
         },
         {
+          "display_state": "blocked",
           "head_global_seq": 63,
           "story": {
             "awaiting": null,
@@ -2691,6 +2704,7 @@ source: tests/golden_cli.rs
           }
         },
         {
+          "display_state": "blocked",
           "head_global_seq": 64,
           "story": {
             "awaiting": "waiting on the benchmark harness",
@@ -2742,6 +2756,7 @@ source: tests/golden_cli.rs
           }
         },
         {
+          "display_state": "blocked",
           "head_global_seq": 63,
           "story": {
             "awaiting": null,
@@ -3007,6 +3022,7 @@ source: tests/golden_cli.rs
           }
         },
         {
+          "display_state": "blocked",
           "head_global_seq": 64,
           "story": {
             "awaiting": "waiting on the benchmark harness",
@@ -3058,6 +3074,7 @@ source: tests/golden_cli.rs
           }
         },
         {
+          "display_state": "blocked",
           "head_global_seq": 63,
           "story": {
             "awaiting": null,

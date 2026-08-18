@@ -766,10 +766,20 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .label-chip button:hover { color: var(--danger); }
 .inline-add { display: flex; gap: 0.375rem; margin-top: 0.5rem; }
 .inline-add input, .inline-add select { flex: 1; padding: 0.3125rem 0.5rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg); font-size: var(--control-font-xs); }
-.banner { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.625rem; border-radius: var(--radius-sm); font-size: 0.8125rem; }
+/* A column, not a row (SH-398): `.banner-head` is the one-line row (icon-
+   ish lead text, blocker chips, the trailing button); `.banner-body` is
+   ordinary flowed prose beneath it. Before this, `.banner` itself was the
+   flex row and a multi-sentence reason -- `linkifyStoryIds()`'s own mixed
+   array of text nodes and `storyRef()` elements -- became one anonymous
+   flex item per fragment, each only as wide as its own text, so a long
+   reason rendered as a run of narrow vertical columns rather than wrapped
+   prose. `.banner-archived` has no body and still reads as one line. */
+.banner { display: flex; flex-direction: column; gap: 0.375rem; padding: 0.5rem 0.625rem; border-radius: var(--radius-sm); font-size: 0.8125rem; }
+.banner-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.banner-body { overflow-wrap: anywhere; }
 .banner-blocked { background: var(--danger-soft); color: var(--danger); }
 .banner-archived { background: var(--bg-raised); color: var(--fg-muted); }
-.banner button { margin-left: auto; }
+.banner-head button { margin-left: auto; }
 .comments { display: flex; flex-direction: column; gap: 0.625rem; }
 .comment { background: var(--bg-sunken); border-radius: var(--radius-sm); padding: 0.5rem 0.625rem; font-size: 0.8125rem; }
 .comment-meta { font-size: 0.6875rem; color: var(--fg-faint); margin-bottom: 0.1875rem; }
@@ -4858,12 +4868,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // menu it has no submenu, so it needs none of that nesting.
   // ------------------------------------------------------------
 
-  /** The six reachable sorts, in menu order, each paired with the label its
-   * menu item (and a column header's `title`/`aria-label`) shows. "Added"
-   * is `created_at`, "Modified" is `updated_at` -- both dropped by SH-128's
-   * council in favor of `storyNumber`'s "story order," which SH-305 in turn
-   * drops as a user-facing option (see `storyNumber`'s own comment on why
-   * it stays as the tiebreak regardless). */
+  /** The three sorts every column offers, in menu order, each paired with
+   * the label its menu item (and a column header's `title`/`aria-label`)
+   * shows. "Added" is `created_at`, "Modified" is `updated_at` -- both
+   * dropped by SH-128's council in favor of `storyNumber`'s "story order,"
+   * which SH-305 in turn drops as a user-facing option (see `storyNumber`'s
+   * own comment on why it stays as the tiebreak regardless). */
   var COLUMN_SORT_OPTIONS = [
     { key: "added", dir: 1, label: "Added ↑" },
     { key: "added", dir: -1, label: "Added ↓" },
@@ -4873,25 +4883,54 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     { key: "priority", dir: -1, label: "Priority ↓" }
   ];
 
+  /** The one sort key an OPEN column additionally offers (SH-407): the
+   * order `story next` would hand this queue out in
+   * (`state.data.next_ids`). Not offered on a CLOSED column -- nothing in
+   * it is still waiting to be picked up, so there is no queue position to
+   * show. */
+  var NEXT_SORT_OPTIONS = [
+    { key: "next", dir: 1, label: "Next ↑" },
+    { key: "next", dir: -1, label: "Next ↓" }
+  ];
+
+  /** The one sort key a CLOSED column additionally offers (SH-407): the
+   * order stories finished in (`story.closed_at`). Not offered on an OPEN
+   * column -- nothing in it has a `closed_at` yet. */
+  var COMPLETED_SORT_OPTIONS = [
+    { key: "completed", dir: 1, label: "Completed ↑" },
+    { key: "completed", dir: -1, label: "Completed ↓" }
+  ];
+
+  /** `slug`'s full reachable sort list: the three common options plus
+   * whichever superstate-specific pair applies. Keeps a CLOSED column from
+   * ever offering "Next" (a queue position that will never resolve) and an
+   * OPEN column from ever offering "Completed" (a timestamp that isn't set
+   * yet) -- each would be a dead, always-degenerate choice otherwise. */
+  function columnSortOptionsFor(slug) {
+    var extra = stateSuperstate(slug) === "CLOSED" ? COMPLETED_SORT_OPTIONS : NEXT_SORT_OPTIONS;
+    return COLUMN_SORT_OPTIONS.concat(extra);
+  }
+
   /** The menu label for whichever sort `slug` currently has (its own choice,
    * or `DEFAULT_COLUMN_SORT`) -- what a column header's sort button names
    * itself after, so the active sort is legible without opening the menu. */
   function columnSortLabel(slug) {
     var sort = columnSortFor(slug);
-    var match = COLUMN_SORT_OPTIONS.filter(function(opt) {
+    var options = columnSortOptionsFor(slug);
+    var match = options.filter(function(opt) {
       return opt.key === sort.key && opt.dir === sort.dir;
     })[0];
-    return match ? match.label : COLUMN_SORT_OPTIONS[0].label;
+    return match ? match.label : options[0].label;
   }
 
   /** The column sort menu's model: one `role="menuitemradio"` entry per
-   * `COLUMN_SORT_OPTIONS` choice, checked against `slug`'s current sort.
-   * Selecting an entry writes `state.columnSort[slug]` directly, rather
-   * than the flip-in-place toggle SH-128's two board-wide buttons used --
-   * a popup can name every reachable choice at once, so it does. */
+   * `columnSortOptionsFor(slug)` choice, checked against `slug`'s current
+   * sort. Selecting an entry writes `state.columnSort[slug]` directly,
+   * rather than the flip-in-place toggle SH-128's two board-wide buttons
+   * used -- a popup can name every reachable choice at once, so it does. */
   function columnSortMenuModel(slug) {
     var active = columnSortFor(slug);
-    return COLUMN_SORT_OPTIONS.map(function(opt) {
+    return columnSortOptionsFor(slug).map(function(opt) {
       return {
         label: opt.label,
         checked: active.key === opt.key && active.dir === opt.dir,
@@ -5047,7 +5086,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         var t = st.story_type || "__untyped__";
         if (f.types.indexOf(t) === -1) return false;
       }
-      if (f.states.length && f.states.indexOf(st.state) === -1) return false;
+      // `display_state || st.state` (SH-407) -- same expression every other
+      // renderer in this file uses for "what state does this card actually
+      // show," so filtering by "blocked" finds the cards SH-407's own
+      // promotion just moved into that column, instead of missing them
+      // because their literal `state` is still `todo`.
+      var shownState = v.display_state || st.state;
+      if (f.states.length && f.states.indexOf(shownState) === -1) return false;
       return true;
     });
   }
@@ -5902,8 +5947,29 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * priority descending, most urgent first, the same default SH-128
    * established board-wide. */
   var DEFAULT_COLUMN_SORT = { key: "priority", dir: -1 };
+
+  /** A CLOSED column's own default (SH-407): completion order, most
+   * recently finished first — "priority" reads as near-arbitrary for work
+   * that is already done, where "what finished last" reads as a log. */
+  var DEFAULT_CLOSED_COLUMN_SORT = { key: "completed", dir: -1 };
+
+  /** `slug`'s effective sort: its own persisted choice if that choice is
+   * still one `columnSortOptionsFor(slug)` actually offers, else the
+   * column's default for its current superstate. The re-validation matters
+   * because a column's superstate can change after a sort was persisted
+   * (a project reconfiguring a state from OPEN to CLOSED, say) — without
+   * it, a stale "next" or "completed" entry would keep applying to a
+   * column that no longer offers it, silently falling through
+   * `columnCardCompare`'s "no rank" case for every card instead of the
+   * default a user would actually recognise. */
   function columnSortFor(slug) {
-    return state.columnSort[slug] || DEFAULT_COLUMN_SORT;
+    var def = stateSuperstate(slug) === "CLOSED" ? DEFAULT_CLOSED_COLUMN_SORT : DEFAULT_COLUMN_SORT;
+    var chosen = state.columnSort[slug];
+    if (!chosen) return def;
+    var stillOffered = columnSortOptionsFor(slug).some(function(opt) {
+      return opt.key === chosen.key && opt.dir === chosen.dir;
+    });
+    return stillOffered ? chosen : def;
   }
 
   /** Which of two views the store wrote later, when their `updated_at`
@@ -5922,23 +5988,55 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return sa < sb ? -1 : sa > sb ? 1 : 0;
   }
 
+  /** `id`'s position in `state.data.next_ids` -- the order `story next`
+   * would hand this queue out in (SH-407). `Infinity` when `id` is absent
+   * (not in the queue at all: claimed, an epic, out of phase, or the field
+   * is missing from an older daemon), so an unranked card always sorts
+   * after every ranked one regardless of `dir` -- see `columnCardCompare`'s
+   * `"next"` branch for why that has to be direction-independent rather
+   * than `* dir`. Reads the wire key literally (`next_ids`), mirroring
+   * `compareWriteOrder`'s `a.head_global_seq` -- both are pinned against
+   * drift by a `tests/web_test.rs` assertion that reads the field's actual
+   * serialized name back out of a live daemon rather than hand-copying it
+   * on both sides. */
+  function nextRank(id) {
+    var ids = (state.data && state.data.next_ids) || [];
+    var idx = ids.indexOf(id);
+    return idx === -1 ? Infinity : idx;
+  }
+
   /** Board card comparator (SH-305, replacing SH-128's single board-wide
    * version): builds a comparator for `slug`'s own `columnSortFor()` entry.
-   * Three keys — "priority" (unchanged from SH-128), "added" (`created_at`),
-   * "modified" (`updated_at`) — each `* dir`, then a tiebreak chain that
-   * itself reverses with `dir` for a time key (a finer reading of the same
-   * axis) but not for `priority` (a different axis, `domain::ready_order`'s
-   * fixed ascending convention, SH-128).
+   * Five keys — "priority" and "next" (each a *different axis* from time,
+   * so their own ordering never reverses with `dir`; `domain::ready_order`'s
+   * fixed ascending convention, SH-128/SH-407), "added" (`created_at`) and
+   * "modified" (`updated_at`, a *same-axis* pair that reverses with `dir`),
+   * and "completed" (`story.closed_at`, same-axis, SH-407) — each producing
+   * its own primary comparison, then a tiebreak chain.
    *
-   * `created_at`/`updated_at` are RFC3339 UTC strings of fixed, `Z`-suffixed
-   * width (`StorySnapshot`'s own writer), so a plain lexicographic `<`/`>`
-   * on them already *agrees with* chronological order — no `Date` parsing
-   * needed — but one second of resolution does not *resolve* it: two writes
-   * in the same second tie. `"modified"` breaks that tie on
-   * `compareWriteOrder` before falling back to story number (SH-336);
-   * `"added"` needs no such tiebreak, because story numbers are allocated by
-   * the same serialized write transaction as story creation and so *are*
-   * creation order exactly. */
+   * `created_at`/`updated_at`/`closed_at` are RFC3339 UTC strings of fixed,
+   * `Z`-suffixed width (`StorySnapshot`'s own writer), so a plain
+   * lexicographic `<`/`>` on them already *agrees with* chronological order
+   * — no `Date` parsing needed — but one second of resolution does not
+   * *resolve* it: two writes in the same second tie. `"modified"` and
+   * `"completed"` both break that tie on `compareWriteOrder` before falling
+   * back to story number (SH-336); `"added"` needs no such tiebreak,
+   * because story numbers are allocated by the same serialized write
+   * transaction as story creation and so *are* creation order exactly.
+   *
+   * `"completed"` reads `sa.closed_at`/`sb.closed_at`, which are `undefined`
+   * for an OPEN story (`skip_serializing_if`, `src/domain.rs`) — that can
+   * only happen on a CLOSED column's own default sort if a card somehow
+   * lands there with no `closed_at` at all (a legacy row from before that
+   * field existed), so an absent value sorts last regardless of `dir`,
+   * the same "no position on this axis" convention `"next"` uses, rather
+   * than the empty string's own (wrong) place in lexicographic order.
+   *
+   * `head_global_seq` is a story's *most recent* write, not its close
+   * event, so `"completed"`'s tiebreak is a correct total order but only an
+   * approximate completion ordinal for two stories closed in the same
+   * second and edited again afterward — recorded in
+   * `docs/spec/recency-ordering.md` rather than claimed away. */
   function columnCardCompare(slug) {
     var sort = columnSortFor(slug);
     var dir = sort.dir;
@@ -5950,10 +6048,44 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         var byPriority = (priorityUrgency(sa.priority) - priorityUrgency(sb.priority)) * dir;
         return byPriority !== 0 ? byPriority : byNumber;
       }
-      var field = sort.key === "added" ? "created_at" : "updated_at";
-      var byTimestamp = (sa[field] < sb[field] ? -1 : sa[field] > sb[field] ? 1 : 0) * dir;
+      if (sort.key === "next") {
+        var ra = nextRank(sa.id), rb = nextRank(sb.id);
+        // An unranked card (Infinity) sorts after every ranked one
+        // regardless of `dir` -- naively multiplying `(ra - rb)` by a
+        // negative `dir` would flip that (Infinity would sort FIRST under
+        // "Next ↓"), and `Infinity - Infinity` is `NaN` when both sides are
+        // unranked, an invalid comparator result. Both handled explicitly,
+        // before `dir` ever applies to the (always distinct, since
+        // `next_ids` is a plain array) ranked/ranked case.
+        if (ra === Infinity || rb === Infinity) {
+          if (ra === Infinity && rb === Infinity) return byNumber;
+          return ra === Infinity ? 1 : -1;
+        }
+        return (ra - rb) * dir;
+      }
+      var field = sort.key === "added" ? "created_at"
+        : sort.key === "completed" ? "closed_at"
+        : "updated_at";
+      var va = sa[field], vb = sb[field];
+      var byTimestamp;
+      if (sort.key === "completed" && (va === undefined || vb === undefined)) {
+        // An absent `closed_at` sorts after every set one regardless of
+        // `dir`, same convention as `"next"`'s unranked case above. Both
+        // absent ties on this axis (`byTimestamp = 0`) and falls through
+        // to the ordinary tiebreak chain below, rather than skipping
+        // straight to `byNumber`: two stories that both lack `closed_at`
+        // can still disagree on `head_global_seq`, and that tiebreak is no
+        // less meaningful for them than it is for two tied timestamps.
+        if (va === undefined && vb === undefined) {
+          byTimestamp = 0;
+        } else {
+          return va === undefined ? 1 : -1;
+        }
+      } else {
+        byTimestamp = (va < vb ? -1 : va > vb ? 1 : 0) * dir;
+      }
       if (byTimestamp !== 0) return byTimestamp;
-      if (sort.key === "modified") {
+      if (sort.key === "modified" || sort.key === "completed") {
         var byWrite = compareWriteOrder(a, b) * dir;
         if (byWrite !== 0) return byWrite;
       }
@@ -6292,21 +6424,42 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * refs plus a reason still has a chance of fitting `.card-flags`' wrap. */
   var AWAITING_FLAG_TRUNCATE = 40;
 
-  /** Renders `ids` as a comma-joined run of `storyRef()`s for the blocked
-   * badge's parenthetical, capped at `BLOCKED_FLAG_REF_CAP`. Commas are
+  /** Renders `ids` as a comma-joined run of `storyRef()`s, capped at `cap`
+   * (default `BLOCKED_FLAG_REF_CAP`, the badge's own limit). Commas are
    * real text nodes rather than `.flag`'s own `gap` -- a dropped separator
    * has to be visible to a `toHaveText` assertion, not merely to `.flag`'s
-   * layout, or nothing would ever catch losing one. */
-  function refList(ids) {
+   * layout, or nothing would ever catch losing one.
+   *
+   * `blockBanner()` calls this with `cap: ids.length` -- the drawer has the
+   * width the card does not, so its banner names every blocker rather than
+   * folding the rest into a "+N" (SH-398). */
+  function refList(ids, cap) {
+    var effectiveCap = cap === undefined ? BLOCKED_FLAG_REF_CAP : cap;
     var nodes = [];
-    ids.slice(0, BLOCKED_FLAG_REF_CAP).forEach(function(id, i) {
+    ids.slice(0, effectiveCap).forEach(function(id, i) {
       if (i > 0) nodes.push(", ");
       nodes.push(storyRef(id));
     });
-    if (ids.length > BLOCKED_FLAG_REF_CAP) {
-      nodes.push(", +" + (ids.length - BLOCKED_FLAG_REF_CAP));
+    if (ids.length > effectiveCap) {
+      nodes.push(", +" + (ids.length - effectiveCap));
     }
     return nodes;
+  }
+
+  /** The two relationship-derived causes a story can be blocked for, read
+   * directly off `st.relationships` -- the one place [`blockedFlag`] (the
+   * card badge) and [`blockBanner`] (the drawer banner, SH-398) both derive
+   * from, so the two surfaces cannot silently disagree about which edges
+   * count. See `openBlockers()`'s own doc for the resolvability gap this
+   * inherits: an edge onto a draft or soft-deleted story blocks server-side
+   * but is invisible here. */
+  function blockCauses(st) {
+    return {
+      blockerIds: openBlockers(st).map(function(r) { return r.other_id; }),
+      obviatorIds: (st.relationships || [])
+        .filter(function(r) { return r.relation === "obviated-by"; })
+        .map(function(r) { return r.other_id; })
+    };
   }
 
   /** Every sentence the blocked badge can say, derived in one place (SH-309)
@@ -6364,15 +6517,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var causes = [];
     var ariaParts = [];
 
-    var blockerIds = openBlockers(st).map(function(r) { return r.other_id; });
+    var derived = blockCauses(st);
+    var blockerIds = derived.blockerIds;
     if (blockerIds.length) {
       causes.push(refList(blockerIds));
       ariaParts.push("blocked by " + blockerIds.join(", "));
     }
 
-    var obviatorIds = (st.relationships || [])
-      .filter(function(r) { return r.relation === "obviated-by"; })
-      .map(function(r) { return r.other_id; });
+    var obviatorIds = derived.obviatorIds;
     if (obviatorIds.length) {
       causes.push(["obviated by "].concat(refList(obviatorIds)));
       ariaParts.push("obviated by " + obviatorIds.join(", "));
@@ -6415,6 +6567,62 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       children: children,
       title: reasonTitle,
       ariaText: "blocked (" + ariaParts.join(", ") + ")"
+    };
+  }
+
+  /** The drawer's blocked banner, derived from [`blockCauses`] the same way
+   * [`blockedFlag`] is (SH-398) -- so the two surfaces cannot disagree about
+   * *which* edges block, only about how much room each has to say so. Two
+   * differences from the badge, both because the drawer has the width the
+   * card does not: blocker/obviator chips are never capped
+   * (`refList(ids, ids.length)`), and an `awaiting` reason renders as its
+   * own paragraph (`reason`, left for the caller to pass through
+   * `renderMarkdown()`) instead of a truncated quoted fragment.
+   *
+   * Returns `null` under the exact condition `blockedFlag` does -- nothing
+   * this client can see blocks the story -- so `renderDrawer` can fall back
+   * to the block *form* the same way it always has. Returns `{ headline,
+   * reason, title }` otherwise: `headline` is a mixed array of strings and
+   * `storyRef()` nodes for `.banner-head`, `reason` is the raw `awaiting`
+   * text (or `null`), and `title` is set only on the two causeless
+   * fallbacks -- the same "no reason recorded" / "cause not shown" gap
+   * `blockedFlag`'s own doc explains, told here in a full sentence rather
+   * than a hover-only one since the banner has room to just say it. */
+  function blockBanner(st, isBlocked) {
+    var derived = blockCauses(st);
+    var blockerIds = derived.blockerIds;
+    var obviatorIds = derived.obviatorIds;
+    var hasEdges = blockerIds.length > 0 || obviatorIds.length > 0;
+
+    if (!hasEdges && !st.awaiting) {
+      if (!isBlocked) return null;
+      if (st.state === "blocked") {
+        return {
+          headline: ["Blocked — no reason recorded"],
+          reason: null,
+          title: "No awaiting reason recorded — add one below."
+        };
+      }
+      return {
+        headline: ["Blocked"],
+        reason: null,
+        title: "Blocked by something this board can't resolve — open the story for details."
+      };
+    }
+
+    var headline = ["Blocked"];
+    if (blockerIds.length) {
+      headline.push(" by ");
+      headline = headline.concat(refList(blockerIds, blockerIds.length));
+    }
+    if (obviatorIds.length) {
+      headline.push(blockerIds.length ? ", obviated by " : " obviated by ");
+      headline = headline.concat(refList(obviatorIds, obviatorIds.length));
+    }
+    return {
+      headline: headline,
+      reason: st.awaiting || null,
+      title: null
     };
   }
 
@@ -7635,14 +7843,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   /** The list view's own `.state-pill` -- SH-277. Reads
    * `display_state || state`, same as the board's column placement
-   * (`renderBoard`), the drag-drop no-op guard, and `storyLight()`: an
-   * epic display-promoted by `compute_epic_display_state` (SH-165, an
-   * active child pulls it out of `todo`) must show the same word here as
-   * the column its own card sits in, or the list contradicts the board.
-   * `st.state` was the one place in this file still reading the literal
-   * state for *display* (the state *filter*, `filteredStories`, still
-   * does -- that's a different, deliberate rule). When the two disagree the
-   * pill carries a `title` naming both, so the table never silently says
+   * (`renderBoard`), the drag-drop no-op guard, `storyLight()`, and (SH-407)
+   * `filteredStories`'s state filter: a story display-promoted by
+   * `compute_display_state` (SH-165's active-child arm, or SH-407's blocked
+   * arm) must show the same word here as the column its own card sits in,
+   * or the list contradicts the board. When the two disagree the pill
+   * carries a `title` naming both, so the table never silently says
    * something `story show` doesn't. */
   function buildStatePill(v) {
     var st = v.story;
@@ -7894,16 +8100,33 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
     if (st.hidden_at) {
       body.appendChild(el("div", { class: "banner banner-archived" }, [
-        "🗄 Archived — hidden from the board until unarchived.",
-        el("button", { class: "btn btn-ghost", onClick: function() { runFieldMutation(st.id, "POST", "unarchive", {}); } }, ["Unarchive"])
+        el("div", { class: "banner-head" }, [
+          "🗄 Archived — hidden from the board until unarchived.",
+          el("button", { class: "btn btn-ghost", onClick: function() { runFieldMutation(st.id, "POST", "unarchive", {}); } }, ["Unarchive"])
+        ])
       ]));
     }
 
-    if (st.awaiting) {
-      body.appendChild(el("div", { class: "banner banner-blocked" }, ["Blocked: "]
-        .concat(linkifyStoryIds(st.awaiting, st.id))
-        .concat([el("button", { class: "btn btn-ghost", onClick: function() { runFieldMutation(st.id, "POST", "unblock", null); } }, ["Unblock"])])));
-    } else {
+    // SH-398: derived from the same blockCauses() the card badge reads, so
+    // the drawer can no longer show "Reason for blocking…" beneath a card
+    // that already reads "● blocked (SH-308)" -- the banner now renders
+    // whenever ANY cause is visible, not only when `st.awaiting` is set.
+    var banner = blockBanner(st, !!blockedSet()[st.id]);
+    if (banner) {
+      var bannerHead = banner.headline.slice();
+      if (st.awaiting) {
+        bannerHead.push(el("button", { class: "btn btn-ghost", onClick: function() { runFieldMutation(st.id, "POST", "unblock", null); } }, ["Unblock"]));
+      }
+      var bannerChildren = [el("div", { class: "banner-head" }, bannerHead)];
+      if (banner.reason) {
+        bannerChildren.push(el("div", { class: "banner-body md" }, [renderMarkdown(banner.reason, st.id)]));
+      }
+      body.appendChild(el("div", { class: "banner banner-blocked", title: banner.title }, bannerChildren));
+    }
+    // A relation-only block still needs somewhere to add a note -- shown
+    // whenever there is no reason yet, alongside the banner rather than
+    // instead of it.
+    if (!st.awaiting) {
       body.appendChild(buildBlockForm(st));
     }
 

@@ -1,0 +1,214 @@
+# Board ordering and placement: the "Next" sort, "Completed" sort, and blocked column
+
+Design of record for **SH-407**, "Improve sorting" — three asks against the web
+dashboard's board:
+
+1. A per-column sort option matching the order `story next --count X` would hand
+   this queue out in.
+2. The Done column defaulting to completion order rather than priority.
+3. A blocked story showing in the Blocked column, not wherever its literal `state`
+   happens to be.
+
+## 1. The "Next" sort
+
+### The problem
+
+`COLUMN_SORT_OPTIONS` (`src/web_dashboard.html`) offered Added/Modified/Priority.
+`Priority ↓` *coincidentally* resembles `domain::ready_order` (priority ASC, then
+story number ASC) but is not the same answer: `story next` also excludes epics
+(`!has_children`) and every already-claimed story, and nothing kept the two in
+step — a column sorted "Priority ↓" could show an epic first, which `story next`
+would never offer at all.
+
+### Why the server computes it
+
+The browser cannot call `story next` itself: `/api/v1/invoke` is loopback-only and
+gated on the daemon's master bearer token (`src/api/rpc.rs`), neither of which a
+browser tab can present. Re-implementing `ready_order` and the leaf/claimable
+filters in JavaScript would be a second, divergence-prone copy of a predicate this
+project has already paid for once (SH-240: a second readiness rule written where
+the map was inconvenient). So the server computes the queue once, in the same code
+path `story next` uses, and ships the order.
+
+### The design
+
+`QueryService::next` (`src/service/query.rs`) used to inline its own filter/sort.
+That body is now a private helper, `ready_queue(views, stories, active, phase)`,
+shared by two callers:
+
+- `next(count, phase)` — unchanged behavior, truncates `ready_queue`'s result to
+  `count`.
+- `report_data()` — calls `ready_queue(&views, &stories, active.as_ref(), None)`
+  (every ready leaf, no phase filter) and stores the ids on a new
+  `ReportData.next_ids: Vec<String>`.
+
+`next_ids` reaches the wire on `GET .../data` (`src/api/rest.rs`) as a top-level
+array, alongside the existing `ready_ids`/`blocked_ids`. It is **not** the same set
+as `ready_ids`: `ready_ids` includes epics (used by the ready/blocked badges, where
+excluding epics would be wrong — an epic can legitimately carry the badge) and is
+not sorted by `ready_order` at all (built by iterating a `BTreeMap` keyed by id
+string, so it comes out lexicographic). `next_ids` is the exact, ordered answer
+`story next` would give.
+
+The dashboard reads it through `nextRank(id)` — the id's index in
+`state.data.next_ids`, or `Infinity` if absent. `columnCardCompare`'s `"next"`
+branch treats an unranked card as having no position on this axis at all, sorting
+it after every ranked card **regardless of `dir`** — the same convention
+`"priority"` already established for its own axis (`domain::ready_order`'s fixed
+ascending sense, not reversed by the sort direction), and necessary here for a
+reason `"priority"` never had to handle: `Infinity - Infinity` is `NaN`, an invalid
+`Array.prototype.sort` comparator result, so the unranked/unranked case is handled
+explicitly rather than falling out of the arithmetic. Two *ranked* cards can never
+tie (an array index is unique), so the reversing `* dir` only ever applies there.
+
+The menu gains `Next ↑`/`Next ↓`, offered only on OPEN-superstate columns
+(`columnSortOptionsFor`) — a CLOSED column's contents will never be offered by
+`story next` again, so the option would be permanently degenerate there.
+
+## 2. The "Completed" sort
+
+### The design
+
+A CLOSED column's own default sort changes from
+`DEFAULT_COLUMN_SORT = {key: "priority", dir: -1}` to
+`DEFAULT_CLOSED_COLUMN_SORT = {key: "completed", dir: -1}` — completion order,
+most recently finished first. Priority reads as near-arbitrary for work that is
+already done; "what finished last" reads as a log, which is what a Done column
+actually is.
+
+`"completed"` keys off `story.closed_at` (`src/domain.rs`), already on the wire
+and, until this story, never read by the dashboard. It follows the same-axis,
+`dir`-reversing convention `"modified"`/`"added"` already established (`docs/spec/
+recency-ordering.md`): lexicographic on the RFC3339 string (no `Date` parsing
+needed, the same argument that document already makes for `updated_at`/
+`created_at`), tiebroken by `compareWriteOrder` (`head_global_seq`) then story
+number, both `* dir`.
+
+**The one case neither "Modified" nor "Added" has to handle**: `closed_at` is
+`skip_serializing_if`-omitted for an open story, so it can be `undefined` on the
+JS side. That can only happen on a CLOSED column's own default sort for a legacy
+row with no `closed_at` at all (a row folded before that field existed). An absent
+value sorts **last, regardless of `dir`** — the same "no position on this axis"
+convention `"next"` uses for an unranked card, and for the identical reason: a
+missing value is not a low or high value on the axis, it is the absence of a
+position on it at all, and treating it as an empty string would put it first under
+ascending sort — the opposite of "unset sorts last" every other absent-field
+convention in this file uses. Two absent values tie on the axis (rather than
+short-circuiting to the story-number tiebreak directly) and fall through the
+ordinary `compareWriteOrder`-then-`byNumber` chain: two rows that both lack
+`closed_at` can still disagree on write order, and that tiebreak is no less
+meaningful for them than it is for two rows that tie on a real timestamp.
+
+`head_global_seq` is a story's *most recent* write, not its close event, so this
+tiebreak is a correct total order but only an *approximate* completion ordinal for
+two stories closed in the same second and edited again afterward (a comment added
+post-close, say). Stated here rather than claimed away — no mechanism in this
+story corrects it, because doing so would need a per-event ordinal for the close
+specifically, which no current field carries.
+
+The menu gains `Completed ↑`/`Completed ↓`, offered only on CLOSED-superstate
+columns, for the same reason `"next"` is OPEN-only: an OPEN column's stories have
+no `closed_at` at all, so the option would always degenerate to the tiebreak chain.
+
+### Stale persisted sorts
+
+`columnSortFor(slug)` re-validates a persisted `state.columnSort[slug]` entry
+against `columnSortOptionsFor(slug)` before using it, falling back to the column's
+own default otherwise. This matters because a column's superstate can change after
+a sort was persisted — a project reconfiguring a state from OPEN to CLOSED, for
+instance — and without re-validation a stale `"next"` or `"completed"` entry would
+keep applying to a column that no longer offers it, silently falling through
+`columnCardCompare`'s "no position on this axis" case for every card instead of
+the default a user would actually recognise.
+
+## 3. Blocked stories in the Blocked column
+
+### The mechanism — server-side, one function
+
+`domain::compute_epic_display_state` (SH-165) computed the Web board's column
+override for exactly one case: an epic sitting in the project's neutral default
+open state, with at least one child in the active state, promotes to that active
+state. SH-407 generalizes it to `compute_display_state`, adding a second,
+independent promotion under the same eligibility guard (open, non-draft, sitting
+in the default open state): a story that is itself `!is_ready` — an `awaiting`
+reason, an open `obviated-by` edge, or a `blocked-by` edge onto a story that is
+still open — promotes to `"blocked"`. It reuses `is_ready` itself rather than a
+second implementation of its clauses; the function's own eligibility guard already
+rules out the cases (`state == "blocked"` literally, draft, closed) that would
+otherwise need separate handling.
+
+**Why server-side rather than a board-local JS rule** (council verdict,
+`story show SH-407`, unanimous in round 1): `display_state` is already the single
+mechanism every board renderer reads through the `display_state || story.state`
+idiom — column placement, the state pill and its title, `sortValue`'s `"state"`
+case, `storyLight`'s color, the drag-drop no-op guard, diff animations, and now
+`filteredStories`'s state filter (below). A board-local placement rule would only
+teach `renderBoard` the new fact, leaving every other renderer showing the
+story's literal (now-wrong) state — exactly the divergence SH-277's own council
+was convened to close for the epic case. Tracing a board-local rule's actual
+mechanics surfaces a second, compounding failure it doesn't account for on its
+own: an epic already promoted to "in-progress" by the SH-165 rule keeps a literal
+state equal to the default-open slug (the promotion never touches `story.state`
+itself), so a board-local guard shaped "literal state equals default open" would
+fire on it too, silently overriding the already-shipped in-progress placement.
+
+### Precedence when both promotions apply
+
+An epic can be eligible for both promotions at once: it has an active child (SH-165
+wants "in-progress") and it is itself blocked (SH-407 wants "blocked"). Council
+verdict (`story show SH-407`, unanimous after one round of reasoning that
+reversed one seat's own initial proposal): **blocked wins**. `compute_display_state`
+checks the blocked arm before the active-child arm.
+
+Reasoning: a multi-child epic typically has *some* active child for most of its
+life — a near-permanent, low-information condition — while a structural blocker on
+the epic's own record is the rarer, more actionable fact a viewer needs surfaced.
+It also reaches further than the epic's own card: `storyLight`/`storyRef` color
+every *reference* to a story elsewhere on the board (a blocker chip on someone
+else's card), so letting "in-progress" win would paint a genuinely-stuck epic as
+active everywhere it is cited as a dependency, not only on its own card.
+
+The blocked badge (`report_data`'s `blocked_ids`, and the dashboard's
+`blockedFlag()`) needs no change either way — it already derives purely from
+`is_ready` on the story's own relationships/`awaiting`, with zero reference to
+`has_children` or `display_state`, so it fires independently of which promotion
+wins the column.
+
+**Named limitation, not actioned**: an epic that becomes blocked while a child is
+still active loses its only board-level signal that work continues underneath
+it — there is no progress rollup on the card itself. Visible only by opening the
+drawer or finding the active child directly. Left as a known gap; no mitigation
+was in scope for this story.
+
+### The filter fix adopted with it
+
+`filteredStories`'s state filter matched `st.state` literally. A filter for
+"blocked" would have missed every card SH-407's own promotion just relocated into
+that column, since their literal `state` is still e.g. `todo`. Fixed to read
+`display_state || st.state`, the same expression every other renderer in the file
+uses — adopted into this story under `story help scope-rubric` (the same
+one-line-away defect the promotion itself creates, not a separate story).
+`f.showClosed`'s superstate check is untouched: `display_state` never crosses
+OPEN→CLOSED, so there is nothing for that check to reconcile.
+
+## What guards each piece
+
+| Claim | Pinned by |
+|---|---|
+| `next_ids` is exactly `story next`'s own answer, by construction (shared helper) | `tests/service_query.rs::report_datas_next_ids_agrees_with_next_by_two_different_routes` |
+| `next_ids` excludes a parent the way `story next` does | `tests/service_query.rs::report_datas_next_ids_excludes_parents_the_way_next_does` |
+| The daemon emits `next_ids` on `/data` | `tests/web_test.rs::web_serve_api_data_carries_next_ids` |
+| The dashboard reads the literal wire key (not a hand-typed guess on both sides) | `tests/web_test.rs::web_dashboard_js_reads_the_wire_key_next_ids_actually_serializes_to` |
+| The sort menu offers the right options on the right columns | `tests/web_test.rs`'s SH-305/SH-407 block; `e2e/specs/board-sort.spec.ts` |
+| A story blocked by an open story promotes to "blocked" | `src/domain.rs::a_todo_story_blocked_by_an_open_story_is_promoted_to_blocked`, and end-to-end via `tests/service_query.rs::a_todo_story_blocked_by_an_open_story_shows_a_promoted_display_state` |
+| A closed blocker does not promote | `src/domain.rs::a_blocker_that_is_closed_does_not_promote` |
+| An `awaiting` reason and an `obviated-by` edge each promote on their own | `src/domain.rs::a_todo_story_with_an_awaiting_reason_is_promoted_to_blocked`, `::a_todo_story_with_an_obviated_by_edge_is_promoted_to_blocked` |
+| A draft is never promoted, blocked or otherwise | `src/domain.rs::a_draft_story_is_never_promoted_even_when_blocked` |
+| Blocked wins over an active-child promotion | `src/domain.rs::blocked_wins_over_an_active_child_promotion`, and end-to-end via `tests/service_query.rs::blocked_wins_over_an_active_child_promotion_end_to_end` |
+| `filteredStories` filters by the displayed state, not the literal one | `tests/web_test.rs`'s SH-407 assertion on `filteredStories`'s body |
+
+## As built
+
+No deviations from either council's verdict. Both trails are on `story show
+SH-407` (SH-363: a council's own directory slug resolves on no fresh clone, so it
+is never the citation — the verdict is).
