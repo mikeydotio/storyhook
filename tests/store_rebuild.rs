@@ -583,6 +583,204 @@ fn an_unknown_event_kind_is_retained_reported_and_not_a_divergence() {
     );
 }
 
+/// Writes an event verbatim under `kind`, bypassing every decoder — the only
+/// way this build can put a kind it does not have a variant for into a log.
+fn inject_raw(
+    store: &storyhook::store::SqliteStore,
+    slug: &str,
+    story: StoryNo,
+    seq: i64,
+    global_seq: i64,
+    kind: &str,
+    payload: &str,
+) {
+    let project_id = store
+        .read(|tx| tx.project_by_slug(slug))
+        .unwrap()
+        .unwrap()
+        .id
+        .get();
+    raw(store)
+        .execute(
+            "INSERT INTO events (project_id, story_no, seq, global_seq, kind, at, payload) \
+             SELECT ?1, ?2, ?3, ?4, ?5, '2026-01-01T00:05:00Z', ?6",
+            rusqlite::params![project_id, story.get(), seq, global_seq, kind, payload],
+        )
+        .unwrap();
+}
+
+/// SH-410, at the layer that does the damage.
+///
+/// A story carrying an event this build cannot decode folds to `Ok` — the fold
+/// succeeded on what it could read — and that snapshot silently omits whatever
+/// the undecoded event contributed. `repair_read_model` used to write it over
+/// the persisted row, destroying the newer storyhook's own fold under a report
+/// that said the row had been repaired.
+///
+/// Run for **both** reasons a payload fails to decode, in one test, because the
+/// distinction is deliberately invisible here: an unknown kind and a torn
+/// payload of a known kind make the fold equally partial, and which of the two
+/// it was is a policy question `service::integrity` answers. If this test ever
+/// needs `is_known_event_kind` to pass, the split has leaked into the store.
+#[test]
+fn repair_never_writes_a_row_from_an_incomplete_fold() {
+    for (label, kind, payload) in [
+        (
+            "a kind from the future",
+            UNDECODABLE_KIND,
+            format!("{{\"kind\":\"{UNDECODABLE_KIND}\",\"at\":\"2026-01-01T00:05:00Z\"}}"),
+        ),
+        (
+            "a torn payload of a known kind",
+            "StoryCommentAdded",
+            "{not json at all".to_string(),
+        ),
+    ] {
+        let (_dir, store) = new_store();
+        let project = seed_project(&store, "alpha", "SH");
+        let one = create_story(&store, project, "First", "2026-01-01T00:00:00Z");
+        inject_raw(&store, "alpha", one, 2, 99, kind, &payload);
+
+        // What a *newer* storyhook left behind: a row folded from the whole
+        // history, including the event this build cannot read.
+        raw(&store)
+            .execute(
+                "UPDATE stories SET title = 'folded by a newer storyhook' \
+                 WHERE story_no = ?1",
+                rusqlite::params![one.get()],
+            )
+            .unwrap();
+
+        let report = repair_read_model(&store, project).unwrap();
+        assert_eq!(
+            report.withheld.len(),
+            1,
+            "{label}: the row must be withheld, not rewritten"
+        );
+        assert_eq!(report.withheld[0].0, one, "{label}");
+        assert!(
+            report.rewritten.is_empty(),
+            "{label}: nothing may be rewritten: {:?}",
+            report.rewritten
+        );
+        assert!(
+            report.unrepairable.is_empty(),
+            "{label}: a withheld row is not an unrepairable one — its events fold, \
+             and its row is intact: {:?}",
+            report.unrepairable
+        );
+
+        // The `title` column, which is what the fixture damaged — `put_story`
+        // rewrites the column and the embedded snapshot together, so a repair
+        // that ran would have put this back to what this build can fold.
+        let title = store
+            .read(|tx| tx.stories(project, &StoryQuery::all()))
+            .unwrap()
+            .into_iter()
+            .find(|row| row.story_no == one)
+            .expect("the row is still there")
+            .title;
+        assert_eq!(
+            title, "folded by a newer storyhook",
+            "{label}: the newer storyhook's own fold was destroyed"
+        );
+    }
+}
+
+/// The anti-blinding control for SH-410, at the store layer.
+///
+/// `head_seq` and `head_global_seq` are read from `events.last()` *before*
+/// `partition_known` runs, so they are facts about the log rather than about
+/// the fold. A row behind them is stale whatever this build can decode, and
+/// that must stay a `divergences` entry — the one damage class the withholding
+/// must never hide. This is what fails if someone widens the withholding to
+/// every column.
+#[test]
+fn a_stale_head_is_still_damage_on_a_story_this_build_cannot_fold_whole() {
+    let (_dir, store) = new_store();
+    let project = seed_project(&store, "alpha", "SH");
+    let one = create_story(&store, project, "First", "2026-01-01T00:00:00Z");
+    inject_raw(
+        &store,
+        "alpha",
+        one,
+        2,
+        99,
+        UNDECODABLE_KIND,
+        &format!("{{\"kind\":\"{UNDECODABLE_KIND}\",\"at\":\"2026-01-01T00:05:00Z\"}}"),
+    );
+    // The row was never re-folded, so it still names seq 1 as its head.
+    raw(&store)
+        .execute(
+            "UPDATE stories SET title = 'folded by a newer storyhook' WHERE story_no = ?1",
+            rusqlite::params![one.get()],
+        )
+        .unwrap();
+
+    let diff = diff_read_model(&store, project).unwrap();
+    assert_eq!(
+        diff.divergences
+            .iter()
+            .map(|d| d.field.as_str())
+            .collect::<Vec<_>>(),
+        vec!["head_seq", "head_global_seq"],
+        "staleness is fold-independent and stays damage"
+    );
+    assert!(
+        diff.unvouched.iter().any(|d| d.field == "title"),
+        "the fold-derived disagreement is reported, but not as damage: {:?}",
+        diff.unvouched
+    );
+    assert!(
+        !diff.is_clean(),
+        "a stale head is still something a repair can put right"
+    );
+}
+
+/// A story a newer storyhook wrote *and re-folded* is healthy, and the store
+/// must say so: no divergence, nothing for `is_clean` to complain about.
+///
+/// This is the SH-410 reproduction reduced to the store layer — the case that
+/// used to make a plain `story doctor` exit non-zero against an undamaged
+/// store.
+#[test]
+fn a_row_a_newer_storyhook_folded_whole_is_not_damage() {
+    let (_dir, store) = new_store();
+    let project = seed_project(&store, "alpha", "SH");
+    let one = create_story(&store, project, "First", "2026-01-01T00:00:00Z");
+    inject_raw(
+        &store,
+        "alpha",
+        one,
+        2,
+        99,
+        UNDECODABLE_KIND,
+        &format!("{{\"kind\":\"{UNDECODABLE_KIND}\",\"at\":\"2026-01-01T00:05:00Z\"}}"),
+    );
+    // The newer storyhook folded the whole history, so its row names the whole
+    // history's head — both coordinates included.
+    raw(&store)
+        .execute(
+            "UPDATE stories SET title = 'folded by a newer storyhook', \
+             head_seq = 2, head_global_seq = 99 WHERE story_no = ?1",
+            rusqlite::params![one.get()],
+        )
+        .unwrap();
+
+    let diff = diff_read_model(&store, project).unwrap();
+    assert!(
+        diff.divergences.is_empty(),
+        "an undamaged store must produce no damage: {:?}",
+        diff.divergences
+    );
+    assert!(diff.is_clean(), "and must read as clean");
+    assert!(
+        diff.unvouched.iter().any(|d| d.field == "title"),
+        "the disagreement is still reported, in the channel that does not accuse: {:?}",
+        diff.unvouched
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Repair
 // ---------------------------------------------------------------------------

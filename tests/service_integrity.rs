@@ -3154,3 +3154,227 @@ fn excused() -> Vec<(FindingCode, &'static str)> {
         ),
     ]
 }
+
+/// The state a store is in once a **newer** storyhook has written to it: an
+/// event kind this build cannot decode sits in the log, and the read-model row
+/// reflects that event's contribution — because the binary that wrote it could
+/// fold it.
+///
+/// `inject_unrecognised_kind` alone does not produce this: it re-folds from
+/// what *this* build understands, which is the state after an older binary has
+/// already run over the store. The `put_story` below is the newer binary's own
+/// fold, and it is what this build must not destroy.
+fn visited_by_a_newer_storyhook(fixture: &ServiceFixture, id: &str) {
+    inject_unrecognised_kind(fixture);
+    let project = fixture.project();
+    let story = StoryNo::parse_id("SH", id).expect("a well-formed id");
+    fixture
+        .store()
+        .write(|tx| {
+            let stored = tx.events_for(project, story)?;
+            let head = stored.last().expect("the story has events").seq;
+            let (known, _unknown) = partition_known(story, &stored);
+            let states = tx.state_map(project)?;
+            let mut snapshot = fold_story(id, &known, &states).map_err(StoreError::from)?;
+            snapshot.title = NEWER_TITLE.to_string();
+            tx.put_story(project, &snapshot, head)?;
+            Ok(())
+        })
+        .expect("writing the newer binary's fold");
+}
+
+/// What the unrecognised event contributed, as the newer binary folded it.
+const NEWER_TITLE: &str = "renamed by a newer storyhook";
+
+/// A story's persisted title, straight from the row.
+fn story_title(fixture: &ServiceFixture, id: &str) -> String {
+    let no = StoryNo::parse_id("SH", id).expect("a well-formed id");
+    fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), no))
+        .expect("reading the story")
+        .expect("the story exists")
+        .snapshot
+        .title
+}
+
+// --- SH-410: an incomplete fold is not an oracle ---------------------------
+//
+// A story carrying an event this build cannot decode folds to `Ok` — the fold
+// succeeded on what it could read — and that snapshot silently omits whatever
+// the undecoded events contributed. Comparing a row against it says nothing
+// true, and rewriting the row from it destroys the newer storyhook's own fold.
+//
+// The fixture below is the state that reproduces it, and it is not the state
+// `inject_unrecognised_kind` produces on its own: that helper re-folds from
+// what *this* build knows, which is the store as it stands *after* an older
+// binary has already run over it. The `put_story` in
+// `visited_by_a_newer_storyhook` is the newer binary's own fold, which is what
+// must survive.
+
+/// The row a newer storyhook wrote is still there after `--fix` runs.
+///
+/// The defect as filed: `--fix` reverted the title to this build's partial
+/// fold, reported `Ok`, and headlined it as a repair.
+#[test]
+fn a_newer_storyhooks_row_survives_doctor_fix() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let id = new_story(&ctx, "the title this build can fold");
+    drop(ctx);
+    visited_by_a_newer_storyhook(&fixture, &id);
+
+    fix(&fixture).expect("a row this build cannot vouch for must not fail --fix");
+
+    assert_eq!(
+        story_title(&fixture, &id),
+        NEWER_TITLE,
+        "--fix overwrote a row it cannot fold whole"
+    );
+}
+
+/// A store a newer storyhook wrote is healthy, and `story doctor` must say so.
+///
+/// The half that was not in the filing, and the larger one: the read-only pass
+/// reported two `ReadModelDivergence` findings plus the `UnexaminedStory` they
+/// cascade into, so a plain `story doctor` exited non-zero against an
+/// undamaged store — which is what would send an operator to `--fix` in the
+/// first place.
+#[test]
+fn a_row_this_build_cannot_vouch_for_is_not_a_divergence_finding() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let id = new_story(&ctx, "the title this build can fold");
+    drop(ctx);
+    visited_by_a_newer_storyhook(&fixture, &id);
+
+    assert!(
+        report(&fixture).is_empty(),
+        "a disagreement with a fold this build knows is partial is not damage: {:?}",
+        report(&fixture)
+    );
+}
+
+/// The withholding is reported, and reported as a withholding.
+///
+/// A silent no-op would be its own defect: `--fix` is the command an operator
+/// runs when they already suspect something, so "checked, fine" is the one
+/// answer it must not give for a row it declined to touch.
+#[test]
+fn the_notice_names_the_withheld_fields_and_the_remedy() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let id = new_story(&ctx, "the title this build can fold");
+    drop(ctx);
+    visited_by_a_newer_storyhook(&fixture, &id);
+
+    let notices = examine(&fixture).notices;
+    let row_notice = notices
+        .iter()
+        .find(|notice| notice.contains("left exactly as found"))
+        .unwrap_or_else(|| panic!("no notice about the row itself: {notices:?}"));
+    assert!(
+        row_notice.contains("SH-1")
+            && row_notice.contains("title")
+            && row_notice.contains("StoryPinned")
+            && row_notice.contains("re-run"),
+        "the notice must name the story, the withheld field, the cause and the remedy: \
+         {row_notice}"
+    );
+
+    let message = fix(&fixture).expect("a withheld row must not fail --fix");
+    assert!(
+        message.contains("left exactly as found"),
+        "--fix must account for the row it declined to write: {message}"
+    );
+}
+
+/// `--fix` does not claim a repair it did not make.
+///
+/// Measured before the fix: the headline read "doctor repaired supported
+/// integrity issues" for a run whose only action was overwriting a row it
+/// should not have touched.
+#[test]
+fn fix_does_not_claim_a_repair_it_did_not_make() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let id = new_story(&ctx, "the title this build can fold");
+    drop(ctx);
+    visited_by_a_newer_storyhook(&fixture, &id);
+
+    let message = fix(&fixture).expect("a withheld row must not fail --fix");
+    assert!(
+        message.starts_with("doctor found nothing to fix"),
+        "nothing was repaired, so nothing may be claimed: {message}"
+    );
+}
+
+/// The anti-blinding control: staleness is still damage.
+///
+/// `head_seq`/`head_global_seq` are read from the raw event list *before*
+/// `partition_known` runs, so a row behind them is stale whatever this build
+/// can decode. This is the assertion that fails if someone later widens the
+/// withholding to every column, and it must be green both before and after the
+/// SH-410 change.
+#[test]
+fn a_stale_row_on_a_story_with_a_future_event_is_still_a_finding() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    new_story(&ctx, "the title this build can fold");
+    drop(ctx);
+    inject_unrecognised_kind(&fixture);
+    // Irreparable by construction: the story is withheld from
+    // `repair_read_model`, so `--fix` cannot put this head back however often
+    // it runs. That is the subject of the test, not an omission.
+    fixture.expects_drift();
+    // Put the row's head back where it stood before the injected event, which
+    // is what a row nobody re-folded looks like.
+    Connection::open(fixture.store().path())
+        .expect("opening the store")
+        .execute("UPDATE stories SET head_seq = 1", [])
+        .expect("staling the row");
+
+    let issues = report(&fixture);
+    assert!(
+        issues.iter().any(|issue| issue.contains("head_seq")),
+        "a stale head is fold-independent and stays damage: {issues:?}"
+    );
+}
+
+/// A story with no read-model row is reported, never invented.
+///
+/// `--fix` must not write the incomplete fold in order to make the story
+/// visible: `put_story` stamps the row at the **full** `head_seq`, taken from
+/// the very event that did not decode, so the row would claim to be a fold up
+/// to head and the one column that distinguishes *stale* from *wrong* would be
+/// spent saying something false.
+#[test]
+fn a_missing_row_on_a_story_with_a_future_event_is_reported_and_not_invented() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    new_story(&ctx, "the title this build can fold");
+    drop(ctx);
+    inject_unrecognised_kind(&fixture);
+    // Irreparable by construction — see the sibling test above.
+    fixture.expects_drift();
+    Connection::open(fixture.store().path())
+        .expect("opening the store")
+        .execute("DELETE FROM stories", [])
+        .expect("removing the row");
+
+    let error = fix(&fixture).expect_err("a story with no row is damage --fix cannot repair");
+    assert!(
+        error
+            .to_string()
+            .contains("has events but no read-model row"),
+        "the missing row must be named: {error}"
+    );
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
+            .expect("reading")
+            .is_none(),
+        "--fix invented a row it cannot fold whole"
+    );
+}
