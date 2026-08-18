@@ -3352,6 +3352,30 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (target && target.closest && target.closest("button")) event.preventDefault();
   }
 
+  /** Binds `handler` to `keydown` on `target`.
+   *
+   * The one door for every keydown listener that can see a text field's keys —
+   * the fields themselves, and `document`, whose listeners see every field's
+   * keys on the way up. Everything else in this file listens on a menu, a
+   * button, a card or the notice dock, none of which a user can type into.
+   *
+   * That split is checkable rather than conventional:
+   * `tests/dashboard_enter_submit_guard.rs` enumerates the file's raw
+   * `addEventListener("keydown", …)` calls and requires each receiver to be a
+   * named element that hosts no typing, so a listener hand-wired onto an
+   * `input`, a `textarea` or `document` fails by name.
+   *
+   * A door with nothing behind it would not be worth having; what it is for is
+   * {@link bindEnterSubmit} below, the three hand-written field handlers that
+   * are not submits at all — the drawer title's Enter-blurs, the status row
+   * description's, and the label combobox's Enter/comma/Backspace/Escape — and
+   * the two page-level Escape handlers. Those shapes have nothing else in
+   * common, so anything true of *every* key that reaches a field has exactly
+   * one place to be written. */
+  function bindTypedKeys(target, handler) {
+    target.addEventListener("keydown", handler);
+  }
+
   /** Binds `submit` to Enter on the text input `input`, ignoring auto-repeats.
    *
    * **Every** Enter-submitting text input in this file goes through here, and
@@ -3399,7 +3423,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * mutating submit below takes for itself; neither guard subsumes the other,
    * which is why SH-362 shipped both. */
   function bindEnterSubmit(input, submit) {
-    input.addEventListener("keydown", function(e) {
+    bindTypedKeys(input, function(e) {
       if (e.key !== "Enter") return;
       if (e.repeat) return;
       submit();
@@ -5770,7 +5794,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       renderView();
     });
     document.addEventListener("click", dismissPopoversOnOutsideClick);
-    document.addEventListener("keydown", function(e) { if (e.key === "Escape") closeAllPopovers(); });
+    bindTypedKeys(document, function(e) { if (e.key === "Escape") closeAllPopovers(); });
   }
 
   // ============================================================
@@ -8153,7 +8177,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       if (v && v !== st.title) runFieldMutation(st.id, "PATCH", "", { title: v });
       else input.value = st.title;
     });
-    input.addEventListener("keydown", function(e) { if (e.key === "Enter") input.blur(); });
+    bindTypedKeys(input, function(e) { if (e.key === "Enter") input.blur(); });
     return input;
   }
 
@@ -8322,7 +8346,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       requestAnimationFrame(function() { exitEdit(v); });
       if (v !== (st.description || "")) runFieldMutation(st.id, "PATCH", "", { description: v });
     });
-    textarea.addEventListener("keydown", function(e) {
+    bindTypedKeys(textarea, function(e) {
       if (e.key !== "Escape") return;
       // Stop the drawer's own document-level Escape handler from also
       // closing the whole drawer -- Escape here means "cancel this
@@ -8448,7 +8472,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
     input.addEventListener("click", function(e) { e.stopPropagation(); openPanel(); });
     input.addEventListener("input", openPanel);
-    input.addEventListener("keydown", function(e) {
+    bindTypedKeys(input, function(e) {
       if (e.key === "Enter" || e.key === ",") {
         e.preventDefault();
         addLabel(input.value);
@@ -9755,13 +9779,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var description = el("input", {
       type: "text", value: status.description || "", placeholder: "Description (optional)",
       "aria-label": status.slug + " description",
-      onKeydown: function(e) { if (e.key === "Enter") this.blur(); },
       onBlur: function() {
         var next = this.value.trim();
         if (next === (status.description || "")) return;
         patchStatus(status.slug, { description: next === "" ? null : next }, row);
       }
     }, []);
+    bindTypedKeys(description, function(e) { if (e.key === "Enter") description.blur(); });
     row.appendChild(description);
 
     row.appendChild(el("div", { class: "status-counts" }, [
@@ -11006,7 +11030,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // nothing in the dock stops propagation on the way up.
     $("notice-dock").addEventListener("keydown", refuseAutoRepeatActivation);
     $("drawer-backdrop").addEventListener("click", closeDrawer);
-    document.addEventListener("keydown", function(e) {
+    bindTypedKeys(document, function(e) {
       // SH-175: `create-modal` is deliberately absent here — see the
       // comment above its own listener bindings.
       if (e.key === "Escape") {
