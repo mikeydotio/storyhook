@@ -205,8 +205,8 @@ Usage:
   story comment <id> "<text>"
   story assign <id> <member-id|handle>
   story move <id> <state-slug> [--if-state <expected>] ["<comment>"]
-  story block <id> "<reason>"
-  story unblock <id>
+  story block <id> [--on <blocker>]... ["<reason>"]
+  story unblock <id> [--on <blocker>]...
   story prioritize <id> <critical|high|medium|low|none>
   story label <id> <labels-csv>
   story unlabel <id> <labels-csv>
@@ -413,10 +413,22 @@ pub enum Invocation {
     },
     SetAwaiting {
         id: String,
-        awaiting: String,
+        /// `None` only when `on` is non-empty — `story block <id> --on
+        /// <blocker>` needs no prose at all. Every other caller (REST, TUI,
+        /// MCP, and `story block <id> "<reason>"` with no `--on`) still sets
+        /// this and leaves `on` empty, unchanged from before SH-398.
+        awaiting: Option<String>,
+        /// Stories to record as `blocked-by` edges, atomically with
+        /// `awaiting` — SH-398's `story block <id> --on <blocker> ...`.
+        /// Empty for every caller that predates it.
+        on: Vec<String>,
     },
     ClearAwaiting {
         id: String,
+        /// `blocked-by` edges to remove instead of clearing `awaiting` —
+        /// SH-398's `story unblock <id> --on <blocker> ...`. Empty means the
+        /// pre-existing behaviour: clear the prose reason.
+        on: Vec<String>,
     },
     SetPriority {
         id: String,
@@ -1472,6 +1484,16 @@ static VERB_FLAGS: &[VerbFlags] = &[
         verb: "move",
         subcommand: None,
         flags: &[value("if-state"), value("reason")],
+    },
+    VerbFlags {
+        verb: "block",
+        subcommand: None,
+        flags: &[value("on")],
+    },
+    VerbFlags {
+        verb: "unblock",
+        subcommand: None,
+        flags: &[value("on")],
     },
     VerbFlags {
         verb: "reopen",
@@ -4087,25 +4109,62 @@ fn parse_move(args: &[String]) -> Result<Invocation, AppError> {
     })
 }
 
+const BLOCK_USAGE: &str = "usage: story block <id> [--on <blocker>]... [\"<reason>\"]";
+const UNBLOCK_USAGE: &str = "usage: story unblock <id> [--on <blocker>]...";
+
+/// `story block <id> [--on <blocker>]... ["<reason>"]` (SH-398).
+///
+/// `--on` names a story as the blocker of record — written as a `blocked-by`
+/// edge, which clears itself when that story closes, unlike prose. A reason
+/// is required only when no `--on` was given at all, matching the pre-SH-398
+/// contract for every caller that never learns about `--on`.
 fn parse_block(args: &[String]) -> Result<Invocation, AppError> {
-    if args.len() < 3 {
-        return Err(AppError::Usage(
-            "usage: story block <id> \"<reason>\"".to_string(),
-        ));
+    if args.len() < 2 {
+        return Err(AppError::Usage(BLOCK_USAGE.to_string()));
     }
-    Ok(Invocation::SetAwaiting {
-        id: args[1].clone(),
-        awaiting: join_tokens(&args[2..]),
-    })
+    let id = args[1].clone();
+    let mut on: Vec<String> = Vec::new();
+    let mut reason_start = 2;
+    while reason_start < args.len() && args[reason_start] == "--on" {
+        let value = args
+            .get(reason_start + 1)
+            .ok_or_else(|| AppError::Usage("--on requires a value".to_string()))?;
+        on.push(value.clone());
+        reason_start += 2;
+    }
+    let awaiting = if reason_start < args.len() {
+        Some(join_tokens(&args[reason_start..]))
+    } else {
+        None
+    };
+    if on.is_empty() && awaiting.is_none() {
+        return Err(AppError::Usage(BLOCK_USAGE.to_string()));
+    }
+    Ok(Invocation::SetAwaiting { id, awaiting, on })
 }
 
+/// `story unblock <id> [--on <blocker>]...` (SH-398).
+///
+/// No `--on`: clears the prose `awaiting` reason (pre-SH-398 behaviour).
+/// One or more `--on`: removes just those `blocked-by` edges and leaves
+/// `awaiting` untouched — a story can be unblocked from one dependency while
+/// still waiting on another, or on its own prose reason.
 fn parse_unblock(args: &[String]) -> Result<Invocation, AppError> {
-    if args.len() != 2 {
-        return Err(AppError::Usage("usage: story unblock <id>".to_string()));
+    if args.len() < 2 {
+        return Err(AppError::Usage(UNBLOCK_USAGE.to_string()));
     }
-    Ok(Invocation::ClearAwaiting {
-        id: args[1].clone(),
-    })
+    let id = args[1].clone();
+    let mut on: Vec<String> = Vec::new();
+    let mut index = 2;
+    while index < args.len() && args[index] == "--on" {
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| AppError::Usage("--on requires a value".to_string()))?;
+        on.push(value.clone());
+        index += 2;
+    }
+    expect_no_more(&args[index..], UNBLOCK_USAGE)?;
+    Ok(Invocation::ClearAwaiting { id, on })
 }
 
 fn parse_prioritize(args: &[String]) -> Result<Invocation, AppError> {
@@ -4461,6 +4520,97 @@ mod tests {
     fn unknown_command_errors() {
         let result = parse_invocation(&["SH-1".to_string(), "is".to_string(), "done".to_string()]);
         assert!(result.is_err());
+    }
+
+    // --- `story block`/`story unblock` --on (SH-398) ---
+
+    fn words(args: &[&str]) -> Vec<String> {
+        args.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn block_with_only_a_reason_is_unchanged_from_before_sh_398() {
+        let invocation =
+            parse_invocation(&words(&["block", "SH-1", "waiting", "on", "SH-2"])).unwrap();
+        match invocation {
+            Invocation::SetAwaiting { id, awaiting, on } => {
+                assert_eq!(id, "SH-1");
+                assert_eq!(awaiting.as_deref(), Some("waiting on SH-2"));
+                assert!(on.is_empty());
+            }
+            other => panic!("expected SetAwaiting, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn block_with_only_on_sets_no_reason() {
+        let invocation = parse_invocation(&words(&["block", "SH-1", "--on", "SH-2"])).unwrap();
+        match invocation {
+            Invocation::SetAwaiting { id, awaiting, on } => {
+                assert_eq!(id, "SH-1");
+                assert_eq!(awaiting, None);
+                assert_eq!(on, vec!["SH-2".to_string()]);
+            }
+            other => panic!("expected SetAwaiting, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn block_with_repeated_on_and_a_reason_carries_both() {
+        let invocation = parse_invocation(&words(&[
+            "block", "SH-1", "--on", "SH-2", "--on", "SH-3", "needs", "both",
+        ]))
+        .unwrap();
+        match invocation {
+            Invocation::SetAwaiting { id, awaiting, on } => {
+                assert_eq!(id, "SH-1");
+                assert_eq!(awaiting.as_deref(), Some("needs both"));
+                assert_eq!(on, vec!["SH-2".to_string(), "SH-3".to_string()]);
+            }
+            other => panic!("expected SetAwaiting, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn block_with_neither_reason_nor_on_is_a_usage_error() {
+        assert!(parse_invocation(&words(&["block", "SH-1"])).is_err());
+    }
+
+    #[test]
+    fn block_on_with_no_value_is_a_usage_error() {
+        let error = parse_invocation(&words(&["block", "SH-1", "--on"])).unwrap_err();
+        assert!(error.to_string().contains("--on requires a value"));
+    }
+
+    #[test]
+    fn unblock_with_no_on_clears_the_reason() {
+        let invocation = parse_invocation(&words(&["unblock", "SH-1"])).unwrap();
+        match invocation {
+            Invocation::ClearAwaiting { id, on } => {
+                assert_eq!(id, "SH-1");
+                assert!(on.is_empty());
+            }
+            other => panic!("expected ClearAwaiting, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unblock_with_repeated_on_names_every_blocker() {
+        let invocation =
+            parse_invocation(&words(&["unblock", "SH-1", "--on", "SH-2", "--on", "SH-3"])).unwrap();
+        match invocation {
+            Invocation::ClearAwaiting { id, on } => {
+                assert_eq!(id, "SH-1");
+                assert_eq!(on, vec!["SH-2".to_string(), "SH-3".to_string()]);
+            }
+            other => panic!("expected ClearAwaiting, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unblock_with_a_trailing_word_after_on_is_a_usage_error() {
+        // SH-357: a word that lands nowhere is refused, not silently dropped.
+        assert!(parse_invocation(&words(&["unblock", "SH-1", "--on", "SH-2", "extra"])).is_err());
     }
 
     // --- Type subcommand tests ---

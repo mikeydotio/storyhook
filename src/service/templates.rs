@@ -114,8 +114,12 @@ story graph --blocked-by {prefix}-1   # trace why a story is blocked
 ## During execution
 
 - Before starting: `story move {prefix}-<n> in-progress`
-- When blocked: `story block {prefix}-<n> "reason"`
-- When unblocked: `story unblock {prefix}-<n>`
+- When blocked by another story: `story block {prefix}-<n> --on {prefix}-<blocker> "reason"`
+  — records a real `blocked-by` edge, which clears itself when the blocker
+  closes. A reason alone (no `--on`) is free text that never clears itself;
+  use it only when the blocker genuinely isn't a story.
+- When unblocked: `story unblock {prefix}-<n>` (or `--on {prefix}-<blocker>`
+  to clear just that edge)
 - When done: `story move {prefix}-<n> {done_state} "what was delivered"`
 - What is ready: `story next --count 5`
 - What is blocked: `story list --blocked`
@@ -150,7 +154,7 @@ what still gets filed.
 | Adopt or file a mid-work find | `story help scope-rubric` |
 | Assign a story | `story assign {prefix}-<n> <member>` |
 | Add a label | `story label {prefix}-<n> <label>` |
-| Block a story | `story block {prefix}-<n> "reason"` |
+| Block on another story | `story block {prefix}-<n> --on {prefix}-<blocker> "reason"` |
 | Unblock a story | `story unblock {prefix}-<n>` |
 | Add a relationship | `story relate {prefix}-1 blocks {prefix}-2` |
 | Set several fields | `story set {prefix}-<n> --priority high --state in-progress` |
