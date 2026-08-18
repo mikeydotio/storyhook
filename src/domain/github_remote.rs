@@ -14,13 +14,10 @@
 //!
 //! This repository-identity half used to live in `github::sync_state`,
 //! feature-gated alongside the *sync* config it no longer needs to read
-//! (SH-408 is retiring the sync engine that document belonged to). Its
-//! remaining callers — `pr-check`, `link-pr` — need it on the ungated side of
-//! that boundary, so it moved here.
-//!
-//! `crate::github::sync_state` re-exports [`GithubRepo`] and
-//! [`parse_github_url`] so every caller still inside the gated module keeps
-//! its old import path.
+//! (SH-408 retired the sync engine that document belonged to, and
+//! `sync_state.rs` with it). Its remaining callers — `pr-check`, `link-pr` —
+//! need it on the ungated side of that boundary, so it moved here instead of
+//! surviving as a re-export.
 
 use serde::{Deserialize, Serialize};
 

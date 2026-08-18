@@ -2,7 +2,7 @@
 //! GitHub integration.
 //!
 //! Until SH-408 this module was the story↔GitHub-Issues sync engine's own
-//! service layer: [`GithubSyncService`], the [`SyncStorage`] backed by the
+//! service layer: `GithubSyncService`, the `SyncStorage` backed by the
 //! store, and the remote-reconciliation helper `story project link origin`
 //! ran on restore. That engine is retired; [`RealGithubApiFactory`] is the
 //! one piece [`super::pr_check`] still needs, and it never depended on any

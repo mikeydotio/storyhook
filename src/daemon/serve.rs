@@ -325,9 +325,9 @@ where
             scope.spawn(move || watch_parent(&env, &stop));
         }
         // The unattended GitHub poll (SH-212) — absent entirely without the
-        // `github-sync` feature, the same way `pr_check::run_check`, the
+        // `github-pr` feature, the same way `pr_check::run_check`, the
         // engine it spends its credential on, is unreachable without it.
-        #[cfg(feature = "github-sync")]
+        #[cfg(feature = "github-pr")]
         {
             let stop = Arc::clone(&stop);
             let env = env.clone();

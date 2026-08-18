@@ -887,16 +887,16 @@ pub fn dispatch<S: Store>(
             ctx.story_view(&id)
         }
         Invocation::PrCheck { id } => {
-            #[cfg(feature = "github-sync")]
+            #[cfg(feature = "github-pr")]
             {
                 crate::service::PrLinkService::new(ctx).check(id.as_deref())
             }
-            #[cfg(not(feature = "github-sync"))]
+            #[cfg(not(feature = "github-pr"))]
             {
                 let _ = id;
                 Err(AppError::Usage(
-                    "pr-check requires the `github-sync` feature. \
-                     Rebuild with: cargo install storyhook --features github-sync"
+                    "pr-check requires the `github-pr` feature. \
+                     Rebuild with: cargo install storyhook --features github-pr"
                         .to_string(),
                 ))
             }
@@ -1636,22 +1636,13 @@ fn crashes_ledger_message(ledger: &[crate::daemon::crash::CrashRecord]) -> Strin
 }
 
 /// `story update` — self-update, which touches no project data at all.
+///
+/// Unconditional (SH-408): `src/update.rs` rides `ureq`, which has been an
+/// unconditional dependency since the daemon transport landed, and uses only
+/// `AppError::GithubApi` — nothing behind the `github-pr` feature. It was
+/// gated on that feature purely by accident of history.
 fn update(check: bool, force: bool) -> Result<Response, AppError> {
-    #[cfg(feature = "github-sync")]
-    {
-        crate::update::run(check, force).map(Response::Message)
-    }
-    #[cfg(not(feature = "github-sync"))]
-    {
-        let _ = (check, force);
-        Err(AppError::Usage(
-            "self-update requires the `github-sync` feature. \
-             Reinstall via the official installer \
-             (curl -fsSL https://raw.githubusercontent.com/mikeydotio/storyhook/main/install.sh | sh) \
-             or rebuild with: cargo install storyhook --features github-sync"
-                .to_string(),
-        ))
-    }
+    crate::update::run(check, force).map(Response::Message)
 }
 
 /// The `story phase …` family.

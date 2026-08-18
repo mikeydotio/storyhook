@@ -223,47 +223,50 @@ fn cases() -> Vec<Case> {
         },
     ];
 
-    #[cfg(feature = "github-sync")]
-    cases.extend([
-        Case {
-            variant: "GithubAuth",
-            exit_code: 6,
-            message: "STORYHOOK_GITHUB_TOKEN environment variable is not set",
-            provoke: |env, json| {
-                let project = env.project().build();
-                // `pr_check::run_check` reads the credential before it reads
-                // anything else — no registered origin, no linked pull
-                // request, needs to exist first. Reached before any socket
-                // is opened, so this is offline.
-                //
-                // No `env_remove` here: `TestEnv` clears
-                // `STORYHOOK_GITHUB_TOKEN` from every fixture command it builds
-                // (`CLEARED_VARS`). This row used to carry its own removal,
-                // which was one test compensating locally for a harness-wide
-                // gap — on a developer machine with a real token exported,
-                // every *other* fixture inherited it (SH-153).
-                finish(env.story(project.path()), &["pr-check"], json)
-            },
+    #[cfg(feature = "github-pr")]
+    cases.push(Case {
+        variant: "GithubAuth",
+        exit_code: 6,
+        message: "STORYHOOK_GITHUB_TOKEN environment variable is not set",
+        provoke: |env, json| {
+            let project = env.project().build();
+            // `pr_check::run_check` reads the credential before it reads
+            // anything else — no registered origin, no linked pull
+            // request, needs to exist first. Reached before any socket
+            // is opened, so this is offline.
+            //
+            // No `env_remove` here: `TestEnv` clears
+            // `STORYHOOK_GITHUB_TOKEN` from every fixture command it builds
+            // (`CLEARED_VARS`). This row used to carry its own removal,
+            // which was one test compensating locally for a harness-wide
+            // gap — on a developer machine with a real token exported,
+            // every *other* fixture inherited it (SH-153).
+            finish(env.story(project.path()), &["pr-check"], json)
         },
-        Case {
-            variant: "GithubApi",
-            exit_code: 7,
-            message: "github api:",
-            provoke: |env, json| {
-                // No offline construction site exists — every one needs a
-                // transport error or an HTTP response — so the transport is
-                // made to fail deterministically instead. ureq reads ALL_PROXY
-                // from the environment, and port 1 refuses instantly, so this
-                // is independent of whether the machine has network at all.
-                // `update --check` short-circuits before any download and needs
-                // no project.
-                let dir = scratch_dir();
-                let mut cmd = env.story(dir.path());
-                cmd.env("ALL_PROXY", "http://127.0.0.1:1");
-                finish(cmd, &["update", "--check"], json)
-            },
+    });
+
+    // Not feature-gated: `story update` rides `github-pr` only by accident of
+    // history and became unconditional at the same time this feature was
+    // renamed (SH-408) — `cargo check --no-default-features` must still see
+    // this case exercise the same command a default build does.
+    cases.push(Case {
+        variant: "GithubApi",
+        exit_code: 7,
+        message: "github api:",
+        provoke: |env, json| {
+            // No offline construction site exists — every one needs a
+            // transport error or an HTTP response — so the transport is
+            // made to fail deterministically instead. ureq reads ALL_PROXY
+            // from the environment, and port 1 refuses instantly, so this
+            // is independent of whether the machine has network at all.
+            // `update --check` short-circuits before any download and needs
+            // no project.
+            let dir = scratch_dir();
+            let mut cmd = env.story(dir.path());
+            cmd.env("ALL_PROXY", "http://127.0.0.1:1");
+            finish(cmd, &["update", "--check"], json)
         },
-    ]);
+    });
 
     cases
 }
@@ -495,8 +498,10 @@ fn every_variant_holds_its_exit_code_independent_of_a_live_invocation() {
 /// which list it belongs in.
 #[test]
 fn the_table_covers_every_variant() {
-    /// Compiled out with `--no-default-features`, so they cannot be required.
-    const FEATURE_GATED: &[&str] = &["GithubAuth", "GithubApi"];
+    /// Compiled out with `--no-default-features`, so it cannot be required.
+    /// `GithubApi` is not here: `story update`'s provoke case above is
+    /// unconditional, so every build's table covers it.
+    const FEATURE_GATED: &[&str] = &["GithubAuth"];
 
     let all = [
         AppError::Usage(String::new()),
@@ -513,7 +518,7 @@ fn the_table_covers_every_variant() {
 
     for error in &all {
         let name = variant_name(error);
-        if !cfg!(feature = "github-sync") && FEATURE_GATED.contains(&name) {
+        if !cfg!(feature = "github-pr") && FEATURE_GATED.contains(&name) {
             continue;
         }
         assert!(

@@ -2,7 +2,7 @@
 //! (SH-49).
 //!
 //! The one PR-link operation that talks to GitHub, which is why it is the
-//! one gated behind the `github-sync` feature, the same way the daemon's
+//! one gated behind the `github-pr` feature, the same way the daemon's
 //! background poll is gated (see `invoke::dispatch`). [`super::pr_link`]
 //! documents why `link`/`unlink` are not gated the same way.
 //!

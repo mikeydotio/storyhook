@@ -1,7 +1,7 @@
 use std::env;
 use std::process;
 
-#[cfg(feature = "github-sync")]
+#[cfg(feature = "github-pr")]
 use storyhook::cli::GithubAuthAction;
 use storyhook::cli::{self, DaemonAction, Invocation, StoreAction, WebAction};
 use storyhook::invoke::{HttpInvoker, InvokeRequest, Invoker};
@@ -250,15 +250,15 @@ fn main() {
     // `invoke::dispatch_without_store`'s own refusal for what happens if a
     // `GithubAuth` invocation is ever dispatched any other way.
     if let Invocation::GithubAuth { action } = &invocation {
-        #[cfg(feature = "github-sync")]
+        #[cfg(feature = "github-pr")]
         let result = storyhook::env::Environment::from_process(flags.store_path.as_deref())
             .and_then(|environment| run_github_auth(action, &environment, json));
-        #[cfg(not(feature = "github-sync"))]
+        #[cfg(not(feature = "github-pr"))]
         let result: Result<Response, storyhook::error::AppError> = {
             let _ = action;
             Err(storyhook::error::AppError::Usage(
-                "github-auth requires the `github-sync` feature. Rebuild with: cargo install \
-                 storyhook --features github-sync"
+                "github-auth requires the `github-pr` feature. Rebuild with: cargo install \
+                 storyhook --features github-pr"
                     .to_string(),
             ))
         };
@@ -644,7 +644,7 @@ fn confirm(plan: &storyhook::output::ConfirmationPlan, json: bool, quiet: bool) 
 /// The consent banner prints every time, not only on a fresh grant: `login`
 /// is also how an existing token gets rotated, and the grant it describes is
 /// exactly what is about to be renewed.
-#[cfg(feature = "github-sync")]
+#[cfg(feature = "github-pr")]
 fn ask_github_token(
     json: bool,
 ) -> Result<storyhook::domain::secret::GithubToken, storyhook::error::AppError> {
@@ -681,7 +681,7 @@ fn ask_github_token(
 /// this process. The OS keychain is a machine-level resource, not project
 /// data, so this needs `env` (for the store's own key, which names the
 /// keychain entry) but never a store or the daemon.
-#[cfg(feature = "github-sync")]
+#[cfg(feature = "github-pr")]
 fn run_github_auth(
     action: &GithubAuthAction,
     env: &storyhook::env::Environment,
