@@ -83,7 +83,14 @@ test("typing a block reason during the detail fetch survives the re-render and s
   await expect(reasonInput).toHaveValue("typed before the detail fetch resolved");
 
   await page.locator("#drawer-body button", { hasText: "Block" }).click();
-  await expect(page.locator(".banner-blocked")).toContainText(
+  // `.banner-body`, not the `.banner-blocked` container: since SH-398 the
+  // container's text is its headline and Unblock button concatenated with
+  // the reason, so a container-level toContainText can be satisfied by
+  // text the banner puts there itself. The reason is what this spec is
+  // about, so it is asserted in the element that actually carries it
+  // (SH-416 -- the same shape, left stale, is what made
+  // blocked-drop-reason.spec.ts red).
+  await expect(page.locator(".banner-blocked .banner-body")).toContainText(
     "typed before the detail fetch resolved",
   );
 
