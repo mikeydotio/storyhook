@@ -3352,7 +3352,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (target && target.closest && target.closest("button")) event.preventDefault();
   }
 
-  /** Binds `handler` to `keydown` on `target`.
+  /** Binds `handler` to `keydown` on `target`, refusing every key the user's
+   * input method is still composing.
    *
    * The one door for every keydown listener that can see a text field's keys —
    * the fields themselves, and `document`, whose listeners see every field's
@@ -3371,9 +3372,53 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * description's, and the label combobox's Enter/comma/Backspace/Escape — and
    * the two page-level Escape handlers. Those shapes have nothing else in
    * common, so anything true of *every* key that reaches a field has exactly
-   * one place to be written. */
+   * one place to be written. `event.isComposing` is the one thing so far.
+   *
+   * ## What `isComposing` means, and why nothing below may read a key without it
+   *
+   * Composing text through an input method — Japanese, Chinese, Korean, and
+   * every other IME with a composition step — ends by pressing a key that
+   * *commits* what has been composed. That key arrives here as an ordinary
+   * `keydown`: `key: "Enter"`, `repeat: false`, indistinguishable from a
+   * deliberate submit except for this bit (SH-368). Reading it as a submit
+   * submits the form mid-word, with whatever partial text the composition had
+   * produced; reading Escape as a dismissal throws the surface away while the
+   * user is merely cancelling a mis-typed reading.
+   *
+   * The check gates **every** key, not just the ones a handler below happens to
+   * act on, and that is the correct width rather than a convenient one: while a
+   * composition is open, every keystroke belongs to the input method — Enter
+   * commits, Escape cancels, Backspace and the arrows move within the candidate
+   * — so there is no key this file has any business acting on. Nothing is taken
+   * away by refusing them: the guard does not `preventDefault()`, so the
+   * browser's own handling, and the input method's, proceed untouched. Contrast
+   * {@link bindEnterSubmit}'s own `e.repeat` check below, which must test the
+   * key *first* precisely because a held Backspace is a real affordance being
+   * exercised by a real user (SH-339, SH-362).
+   *
+   * ## Two things this deliberately is not
+   *
+   * It is **not** a `compositionstart`/`compositionend` flag. That shape has to
+   * remember something between events, engines disagree on whether
+   * `compositionend` precedes the committing keydown, and a composition that
+   * ends without firing its end event leaves the flag latched — which is a dead
+   * Enter key across the whole page, with no error and nothing to diagnose.
+   * `isComposing` is a property of the event in hand and cannot get stuck. This
+   * is the same fail-safe argument SH-362's council used to reject a page-wide
+   * capture rule: a duplicate submission is rare, visible and recoverable; a
+   * dead key is none of those.
+   *
+   * It is **not** paired with a `keyCode === 229` fallback for engines predating
+   * `isComposing`. On those, a key the input method is consuming reports
+   * `key: "Process"` rather than `"Enter"`, so every handler below already
+   * declines it by name — and `tests/dashboard_enter_submit_guard.rs` asserts
+   * this file reads keys by name and never by code, a promise worth more than a
+   * redundant second check. */
   function bindTypedKeys(target, handler) {
-    target.addEventListener("keydown", handler);
+    target.addEventListener("keydown", function(e) {
+      if (e.isComposing) return;
+      handler(e);
+    });
   }
 
   /** Binds `submit` to Enter on the text input `input`, ignoring auto-repeats.

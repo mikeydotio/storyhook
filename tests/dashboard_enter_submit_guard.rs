@@ -557,3 +557,62 @@ fn a_keydown_listener_cannot_be_smuggled_in_as_an_element_property() {
          receiver hosts no typing, as an ordinary `addEventListener` call the scan can read"
     );
 }
+
+#[test]
+fn the_composition_guard_is_read_in_exactly_one_place_and_it_is_the_door() {
+    // The behavioural half of SH-368 is `e2e/specs/ime-composition-keys.spec.ts`,
+    // which proves the guard works at all ten surfaces. This is the half that
+    // keeps it a *door* rather than an idiom: one read, inside `bindTypedKeys`,
+    // so a handler cannot acquire its own private copy that a later edit forgets
+    // to keep — the shape every hand-maintained list in this repository has
+    // eventually failed as (SH-136, SH-198, SH-258, SH-260, SH-364).
+    //
+    // A site that genuinely needs its own composition check is not forbidden; it
+    // fails here, and the trade gets re-argued in the open, which is the same
+    // contract `the_dashboard_reads_the_enter_key_by_name_and_not_by_code`
+    // offers for its own spellings.
+    let code = strip_comments(&read("src/web_dashboard.html"));
+    let lines: Vec<&str> = code.lines().collect();
+    let reads: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.contains("isComposing"))
+        .map(|(index, _)| index + 1)
+        .collect();
+
+    assert_eq!(
+        reads.len(),
+        1,
+        "src/web_dashboard.html reads `isComposing` on {} lines ({reads:?}), and there must be \
+         exactly one — inside `bindTypedKeys`, which every listener that can see a field's keys \
+         is registered through. Zero means the guard is gone and a key committing an IME \
+         composition submits the form the user is still typing into (SH-368); more than one \
+         means a handler has taken a private copy, which is a second place to forget",
+        reads.len()
+    );
+
+    let door = lines
+        .iter()
+        .position(|line| line.contains("function bindTypedKeys("))
+        .expect(
+            "src/web_dashboard.html must define `bindTypedKeys` — it is the door every keydown \
+             listener that can see a text field is registered through",
+        );
+    let next_function = lines
+        .iter()
+        .skip(door + 1)
+        .position(|line| line.starts_with("  function "))
+        .map(|offset| door + 1 + offset)
+        .unwrap_or(lines.len());
+
+    assert!(
+        (door + 1..=next_function).contains(&(reads[0] - 1)),
+        "src/web_dashboard.html reads `isComposing` at line {}, which is outside \
+         `bindTypedKeys` (lines {}..{}). The guard belongs to the door: a read anywhere else is \
+         a handler checking for itself, which leaves every handler that did not the defect \
+         SH-368 fixed",
+        reads[0],
+        door + 1,
+        next_function + 1,
+    );
+}
