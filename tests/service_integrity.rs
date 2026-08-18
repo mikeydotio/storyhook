@@ -2716,6 +2716,97 @@ fn a_notice_names_its_story_the_way_the_findings_do() {
     );
 }
 
+/// `story doctor`'s detection layer for SH-398: a story whose `awaiting`
+/// reason names another open story with no `blocked-by` edge recording it.
+/// The authoring-time nudge (`block_notice::warnings`) only fires when the
+/// reason is *written*; this is what still finds a reason typed before that
+/// nudge existed, or edited by hand.
+#[test]
+fn a_prose_reason_naming_an_unlinked_open_story_is_a_notice() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let worker = new_story(&ctx, "worker");
+    let mentioned = new_story(&ctx, "mentioned but not linked");
+    StoryService::new(&ctx)
+        .set_awaiting(&worker, &format!("flake filed as {mentioned}"))
+        .unwrap();
+
+    let notices = examine(&fixture).notices;
+    assert!(
+        notices
+            .iter()
+            .any(|n| n.starts_with(&format!("{worker}'s reason names {mentioned}"))),
+        "{notices:?}"
+    );
+}
+
+/// The sibling positive control: naming the blocker through `--on` (i.e.
+/// `RelationService::block_on`) instead of prose leaves nothing for the
+/// sweep to report.
+#[test]
+fn a_reason_naming_its_own_recorded_blocker_is_not_a_notice() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let worker = new_story(&ctx, "worker");
+    let blocker = new_story(&ctx, "the recorded blocker");
+    RelationService::new(&ctx)
+        .block_on(
+            &worker,
+            std::slice::from_ref(&blocker),
+            Some(&format!("waiting on {blocker}")),
+        )
+        .unwrap();
+
+    let notices = examine(&fixture).notices;
+    assert!(
+        notices.iter().all(|n| !n.contains("reason names")),
+        "{notices:?}"
+    );
+}
+
+/// A reason naming a story that has already closed is not a live gap -- the
+/// mention no longer needs an edge that would clear itself, because there is
+/// nothing left for it to clear against.
+#[test]
+fn a_reason_naming_a_closed_story_is_not_a_notice() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let worker = new_story(&ctx, "worker");
+    let closed = new_story(&ctx, "already closed");
+    StoryService::new(&ctx)
+        .set_state(&closed, "done", None, None, None)
+        .unwrap();
+    StoryService::new(&ctx)
+        .set_awaiting(&worker, &format!("resolved once {closed} lands"))
+        .unwrap();
+
+    let notices = examine(&fixture).notices;
+    assert!(
+        notices.iter().all(|n| !n.contains("reason names")),
+        "{notices:?}"
+    );
+}
+
+/// A healthy project -- no prose reason mentioning any story at all --
+/// contributes nothing, which is the negative control every derived scan in
+/// this project's own doctrine needs (SH-364's own lesson: an oracle that
+/// can only ever say yes is not an oracle).
+#[test]
+fn a_reason_that_mentions_no_story_at_all_is_not_a_notice() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let worker = new_story(&ctx, "worker");
+    StoryService::new(&ctx)
+        .set_awaiting(&worker, "waiting on legal sign-off")
+        .unwrap();
+
+    let notices = examine(&fixture).notices;
+    assert!(
+        notices.iter().all(|n| !n.contains("reason names")),
+        "{notices:?}"
+    );
+}
+
 /// Every code this build can emit is reachable from a fixture.
 ///
 /// Derived over the enum rather than a hand-maintained list, so a check added

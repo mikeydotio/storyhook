@@ -1188,10 +1188,21 @@ fn invocation_corpus() -> Vec<Invocation> {
         },
         Invocation::SetAwaiting {
             id: "SH-1".to_string(),
-            awaiting: "SH-2".to_string(),
+            awaiting: Some("SH-2".to_string()),
+            on: vec!["SH-2".to_string(), "SH-3".to_string()],
+        },
+        Invocation::SetAwaiting {
+            id: "SH-1".to_string(),
+            awaiting: None,
+            on: vec!["SH-2".to_string()],
         },
         Invocation::ClearAwaiting {
             id: "SH-1".to_string(),
+            on: Vec::new(),
+        },
+        Invocation::ClearAwaiting {
+            id: "SH-1".to_string(),
+            on: vec!["SH-2".to_string()],
         },
         Invocation::SetPriority {
             id: "SH-1".to_string(),

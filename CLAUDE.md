@@ -592,6 +592,30 @@ Standing rules for every wave:
   retroactively express it, and the fix is for *absence* to decode as "states nothing,"
   resolved against whatever the reader already believes, never silently promoted to a
   negative answer.
+- **A blocker that is a story is recorded as a story, not as prose about one** (SH-398).
+  `story block <id> "<reason>"` could only ever write a free-text `awaiting` field —
+  `is_ready`'s three block signals (the reserved `blocked` state, an open `blocked-by`/
+  `obviated-by` edge, and `awaiting`) already agreed that only the middle one is a fact
+  the store can act on: it clears itself the instant the blocker closes, is visible from
+  both stories, and `story doctor` can audit it. Prose is inert. An autonomous session
+  blocked SH-394 *on* SH-397 with nothing but a paragraph naming it; there was no edge to
+  clear when SH-397 closed, and the dashboard drawer's banner — gated on `awaiting` alone
+  and rendering `linkifyStoryIds()`'s own mixed array of nodes straight into a
+  `display: flex; align-items: center` container with no wrapping body — rendered that
+  paragraph as a run of narrow, unreadable columns rather than wrapped prose. Fixed on
+  three layers: `story block <id> --on <blocker>...` records the edge and the reason in
+  one transaction (`RelationService::block_on`, `relate()` generalised from one target to
+  N); a nudge (`src/block_notice.rs`) warns — never refuses, since `story block` runs
+  non-interactively — when a written reason names an open story with no edge behind it,
+  wired at every dispatch arm that can set `awaiting` and fenced by a derived door list
+  (`tests/block_notice_paths.rs`) rather than a hand-kept one, the shape SH-136/SH-198/
+  SH-258/SH-260/276 already cost this project; and `story doctor` sweeps the existing
+  backlog for the same gap, since the nudge only fires at authoring time. The dashboard's
+  card badge and drawer banner now derive their blocker/obviator lists from one shared
+  function (`blockCauses`, `src/web_dashboard.html`) rather than each filtering
+  `st.relationships` on its own — the drawer used to be blind to a relation-only block
+  entirely, showing the "add a reason" form beneath a card that already read `● blocked
+  (SH-397)`. Design of record: `docs/spec/blocked-causes.md`.
 - **`.githooks/pre-push` cannot see a merge commit, so nothing certified it — a poller has
   to** (SH-396). `gh pr merge --merge` is a server-side merge: no push happens, so the push
   gate never fires, and this project runs no test CI in GitHub Actions by policy. PR #484

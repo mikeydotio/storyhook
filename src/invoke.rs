@@ -450,13 +450,34 @@ pub fn dispatch<S: Store>(
             StoryService::new(ctx).set_labels(&id, &add, &remove)?;
             ctx.story_view(&id)
         }
-        Invocation::SetAwaiting { id, awaiting } => {
-            StoryService::new(ctx).set_awaiting(&id, &awaiting)?;
-            ctx.story_view(&id)
+        Invocation::SetAwaiting { id, awaiting, on } => {
+            RelationService::new(ctx).block_on(&id, &on, awaiting.as_deref())?;
+            let mut response = ctx.story_view(&id)?;
+            if let Response::Story(view) = &mut response {
+                view.warnings.extend(crate::block_notice::warnings(
+                    ctx,
+                    &id,
+                    awaiting.as_deref(),
+                    &view.story.relationships,
+                ));
+            }
+            Ok(response)
         }
-        Invocation::ClearAwaiting { id } => {
-            StoryService::new(ctx).clear_awaiting(&id)?;
-            ctx.story_view(&id)
+        Invocation::ClearAwaiting { id, on } => {
+            if on.is_empty() {
+                StoryService::new(ctx).clear_awaiting(&id)?;
+            } else {
+                RelationService::new(ctx).unblock_from(&id, &on)?;
+            }
+            let mut response = ctx.story_view(&id)?;
+            if let Response::Story(view) = &mut response {
+                view.warnings
+                    .extend(crate::block_notice::still_blocked_warning(
+                        &id,
+                        &view.story.relationships,
+                    ));
+            }
+            Ok(response)
         }
         Invocation::SetState {
             id,
@@ -472,7 +493,16 @@ pub fn dispatch<S: Store>(
                 if_state.as_deref(),
                 awaiting.as_deref(),
             )?;
-            ctx.story_view(&id)
+            let mut response = ctx.story_view(&id)?;
+            if let Response::Story(view) = &mut response {
+                view.warnings.extend(crate::block_notice::warnings(
+                    ctx,
+                    &id,
+                    awaiting.as_deref(),
+                    &view.story.relationships,
+                ));
+            }
+            Ok(response)
         }
         Invocation::SetFields {
             id,
@@ -499,9 +529,40 @@ pub fn dispatch<S: Store>(
                 story_type,
                 description,
             };
-            StoryService::new(ctx)
-                .set_fields(&id, &edits)
-                .map(Response::Message)
+            // Whether this call itself set `awaiting` -- the nudge belongs to
+            // the edit that set the reason, not to every later `story set`
+            // that leaves it untouched (SH-398). `--blocked` is the named
+            // flag; `--json` is checked structurally rather than by
+            // substring, so a `"blocked"` inside an unrelated field's text
+            // (a description, say) cannot trigger a false nudge.
+            let touches_awaiting = edits.blocked.is_some()
+                || edits.json.as_deref().is_some_and(|raw| {
+                    serde_json::from_str::<serde_json::Value>(raw)
+                        .ok()
+                        .and_then(|v| v.get("blocked").cloned())
+                        .is_some_and(
+                            |v| matches!(&v, serde_json::Value::String(s) if !s.is_empty()),
+                        )
+                });
+            let message = StoryService::new(ctx).set_fields(&id, &edits)?;
+            let warnings = if touches_awaiting {
+                match ctx.story_view(&id)? {
+                    Response::Story(view) => crate::block_notice::warnings(
+                        ctx,
+                        &id,
+                        view.story.awaiting.as_deref(),
+                        &view.story.relationships,
+                    ),
+                    _ => Vec::new(),
+                }
+            } else {
+                Vec::new()
+            };
+            Ok(if warnings.is_empty() {
+                Response::Message(message)
+            } else {
+                Response::MessageWithWarnings(message, warnings)
+            })
         }
         Invocation::BulkUpdate { updates } => StoryService::new(ctx)
             .bulk_update(&updates)
