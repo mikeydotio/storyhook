@@ -245,6 +245,92 @@ whether a margin is wide enough — that took reading each site's production
 deadline, which is what this story actually did — but it kills the shape
 that hides the question a reviewer would otherwise ask.
 
+## The orphan bracket: refuse before the run, reap after it (SH-412)
+
+`scripts/check-no-orphan-servers.sh` brackets `make test` the way
+`gate-receipt.sh` does (`Makefile:144,152-153`), fails when a server this
+worktree's own suite starts is still running (SH-51: a leaked test daemon
+holds a port, and a later run handed that port talks to a stranger's
+registry — 78 of 139 tests down, all spurious 404s), but its two phases
+answer different questions and used to give them the same verdict.
+
+**Preflight has no grace period, and none is correct.** A match here is a
+process that existed *before this run started* — it may be a daemon a
+developer started on purpose, and it makes this run's own verification a lie
+regardless. Refuse, name it, and never kill it: that decision belongs to
+whoever started it.
+
+**A postlude match is a different fact, and used to get the preflight's
+verdict anyway.** On 2026-08-17, every leg of a real `make test` passed
+(rust-suite 873s) and the postlude then refused, naming two daemons with
+etimes 2m16s and 7m39s — both gone within a minute. `make` fail-fasts, so no
+receipt was minted for a suite that had already gone green; the only
+sanctioned path was a 22-minute re-run. That is precisely the pressure SH-306
+was filed for: a gate whose cost is disproportionate to what it proves trains
+the operator toward `SKIP_PREPUSH_TESTS=1`, and this incident used it, twice,
+in the same session that filed SH-412.
+
+The postlude already waited before refusing — a 10-second grace loop, added
+2026-07-29 alongside `STORYHOOK_PARENT_PID` containment, on the theory that a
+daemon "exits when its parent does, but learns by polling, so failing
+immediately would be failing on the defence working." That theory is correct
+but incomplete: `SHUTDOWN_CHECK` (`src/daemon/serve.rs`) — the parent-watch
+poll tick, 250ms — is the *only* bound left in play by the time the postlude
+runs, because every test binary this run started has already exited, and
+`DaemonGuard`'s `STOP_DEADLINE` (15s) and `lifecycle::stop`'s `FORCE_GRACE`
+(2s) are both spent *inside* a test binary's own teardown, before it exits.
+Ten seconds is already 40x `SHUTDOWN_CHECK`. So a survivor of the grace
+period was never "still winding down" — waiting longer cannot fix a case the
+sanctioned shutdown paths already exclude, which is why the fix widens what
+the postlude *does* with a survivor rather than how long it waits for one,
+and why the grace period's value does not move (`ORPHAN_GRACE_SECS`,
+`tests/orphan_check.rs::the_grace_period_is_derived_from_the_parent_watch_tick_it_disproves`
+pins the ratio so it cannot silently drift).
+
+**The postlude now reaps a survivor and certifies the tree, rather than
+refusing.** This is sound specifically *because* the preflight is a hard
+prerequisite of `test` and fails closed on any match — a postlude survivor
+was therefore provably spawned by *this* run, and this run is entitled to
+collect it. SIGTERM, a bounded wait, then SIGKILL, then verify; the postlude
+fails only if something survives SIGKILL, which is a genuinely different
+fact — a process this run cannot even end, not one it merely forgot to. A
+process that exits on its own during the grace window is never reported at
+all: only a process that actually needed a signal is a leak.
+
+**Forensics survive past the run that found them.** The whole reason this
+class was hard to pin down is structural: `scripts/run-tests.sh` deletes its
+isolated data root on `EXIT`, taking a survivor's own portfile and daemon log
+with it, and one macOS process cannot read another's environment — so the
+two specific processes SH-412 measured left no recoverable evidence of what
+they were. The reap now writes what it can see (`ps`'s pid/ppid/pgid/state/
+etime/command) to stderr *and* appends it to a durable, per-day log under
+`$(git rev-parse --git-common-dir)/storyhook/orphan-reports` — the same
+shared, per-clone, never-committed, never-cloned directory `gate-receipt.sh`
+already keeps its receipts in.
+
+**`$1` is now a validated phase, not a dual-purpose free-text label.**
+`preflight` and `postlude` were phases; anything else used to fall through to
+the strict, ungraced check as a free-text label —
+`scripts/capture-baseline.sh` relied on exactly that, passing a descriptive
+string as its own phase argument. A typo'd phase therefore silently became
+the strict check: the wrong verdict for the word actually typed, and this
+story's own failure shape (SH-357's class — an argument that lands nowhere
+must be refused, not misread). The script now takes `preflight | postlude |
+check [label]`; anything else is refused with a usage message, and
+`capture-baseline.sh` calls the explicit `check` form.
+
+Proven the way SH-306 requires a gate to be proven — by provoking it.
+`tests/orphan_check.rs` is the test this script never had: real processes,
+the tracked script reached by symlink from a disposable, git-initialized
+fixture root (never this checkout, never a sibling worktree — `pgrep -f` is
+global on a machine that routinely runs 3-4 concurrent worktree suites at
+once), spawned with the *exact* argv shape `spawn_child`
+(`src/daemon/lifecycle.rs`) builds for a real daemon. That argv choice makes
+every case double as the positive control the SH-113 hazard calls for: a
+pattern that stops matching production's actual shape would mean the
+expected refusal or reap never fires, and the test asserting it would fail
+loudly rather than the suite passing vacuously.
+
 ## Out of scope, named rather than silently dropped
 
 - **Sharing `CARGO_TARGET_DIR` across worktrees.** ~185GB duplicated across
