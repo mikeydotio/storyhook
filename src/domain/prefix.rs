@@ -5,9 +5,9 @@
 //! Until SH-117 **nothing validated a prefix anywhere**. Three sites read one
 //! and applied [`DEFAULT_PREFIX`](crate::service::project::DEFAULT_PREFIX)
 //! through an `unwrap_or_else`, so `story project init --prefix 'hello world'`
-//! was accepted and minted `hello world-1` as a story id — an id
-//! [`looks_like_story_id`](crate::cli) cannot recognize, in a project whose ids
-//! can never be typed back at the CLI that made them.
+//! was accepted and minted `hello world-1` as a story id — one no CLI
+//! argument can spell as a single shell word, in a project whose ids can
+//! never be typed back at the CLI that made them.
 //!
 //! A prefix is the one field in a project that is **not reversible**. A name is
 //! a display string with `rename_project` behind it; a prefix is baked into
@@ -19,12 +19,13 @@
 //!
 //! # The grammar, and where it comes from
 //!
-//! `^[A-Z][A-Z0-9]{0,9}$`, after uppercasing. The shape is not arbitrary: the
-//! CLI recognizes a story id by splitting on the first `-` and requiring the
-//! left half to be ASCII alphanumeric (`looks_like_story_id`, `src/cli.rs`), so
-//! a prefix containing a hyphen, a space or any non-ASCII character produces
-//! ids that parse as something else or as nothing at all. Leading with a letter
-//! keeps `12-3` from being minted, which reads as a range rather than an id.
+//! `^[A-Z][A-Z0-9]{0,9}$`, after uppercasing. The shape is not arbitrary:
+//! [`StoryNo::parse_id`](crate::store::StoryNo::parse_id) recognizes an id by
+//! stripping the known prefix, then requiring what follows to start with `-`,
+//! so a prefix containing a hyphen, a space or any non-ASCII character
+//! produces ids that parse as something else or as nothing at all. Leading
+//! with a letter keeps `12-3` from being minted, which reads as a range
+//! rather than an id.
 //!
 //! # Derivation is a suggestion, never a silent default
 //!

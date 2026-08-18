@@ -147,7 +147,6 @@ pub(super) fn set_prefix(
 /// [`verify_project_is_gone`] can prove the teardown was complete rather than
 /// trusting that it was.
 const PROJECT_SCOPED_TABLES: &[(&str, &str)] = &[
-    ("github_bases", "project_id"),
     ("story_commit_links", "project_id"),
     ("story_pr_links", "project_id"),
     ("story_attachment_blobs", "project_id"),
@@ -246,12 +245,11 @@ fn verify_project_is_gone(conn: &Connection, project: ProjectId) -> Result<(), S
 ///   rewritten `events_reject_delete` abstain. Reversing these two turns a
 ///   working purge into an aborted transaction.
 ///
-/// `github_bases`, `story_labels` and `story_relations` would each be handled
-/// by `ON DELETE CASCADE`. They are listed anyway, and the cascade demoted to a
-/// backstop, so that [`verify_story_is_gone`] can prove the purge was complete
-/// rather than trusting that it was.
+/// `story_labels` and `story_relations` would each be handled by `ON DELETE
+/// CASCADE`. They are listed anyway, and the cascade demoted to a backstop,
+/// so that [`verify_story_is_gone`] can prove the purge was complete rather
+/// than trusting that it was.
 const STORY_SCOPED_TABLES: &[(&str, &str)] = &[
-    ("github_bases", "story_no = ?2"),
     ("story_commit_links", "story_no = ?2"),
     ("story_pr_links", "story_no = ?2"),
     ("story_attachment_blobs", "story_no = ?2"),
@@ -1206,44 +1204,20 @@ pub(super) fn put_settings(
     project: ProjectId,
     settings: &ProjectSettings,
 ) -> Result<(), StoreError> {
-    let github_sync = settings
-        .github_sync
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()?;
     sql(
         conn.execute(
             "INSERT INTO project_settings (project_id, sync_auto_transition, \
-                 doctor_stale_threshold, github_sync) VALUES (?1, ?2, ?3, ?4) \
+                 doctor_stale_threshold) VALUES (?1, ?2, ?3) \
              ON CONFLICT (project_id) DO UPDATE SET \
                  sync_auto_transition = excluded.sync_auto_transition, \
-                 doctor_stale_threshold = excluded.doctor_stale_threshold, \
-                 github_sync = excluded.github_sync",
+                 doctor_stale_threshold = excluded.doctor_stale_threshold",
             params![
                 project.get(),
                 settings.sync_auto_transition,
                 settings.doctor_stale_threshold,
-                github_sync
             ],
         ),
         "writing project settings",
-    )?;
-    Ok(())
-}
-
-pub(super) fn put_github_base(
-    conn: &Connection,
-    project: ProjectId,
-    story: StoryNo,
-    snapshot: &StorySnapshot,
-) -> Result<(), StoreError> {
-    sql(
-        conn.execute(
-            "INSERT INTO github_bases (project_id, story_no, snapshot) VALUES (?1, ?2, ?3) \
-             ON CONFLICT (project_id, story_no) DO UPDATE SET snapshot = excluded.snapshot",
-            params![project.get(), story.get(), serde_json::to_string(snapshot)?],
-        ),
-        "writing a github base",
     )?;
     Ok(())
 }

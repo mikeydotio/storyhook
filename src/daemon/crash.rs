@@ -47,7 +47,7 @@ use crate::store::{ProjectId, ReadOps, Store};
 pub const RETAIN: usize = 7;
 
 /// Every crash-filed story carries this label — what `story doctor crashes`
-/// and the github-sync push filter both key on.
+/// keys on.
 pub const CRASH_LABEL: &str = "crash";
 
 /// Prefix for a crash's fingerprint label (`crash:<8 hex chars>`) — the one

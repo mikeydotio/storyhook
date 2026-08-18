@@ -902,7 +902,6 @@ pub fn tool_for_variant(invocation: &Invocation) -> Option<&'static str> {
         | Invocation::Hooks { .. }
         | Invocation::Scaffold { .. }
         | Invocation::CommitSync { .. }
-        | Invocation::GithubSync { .. }
         | Invocation::LinkPr { .. }
         | Invocation::UnlinkPr { .. }
         | Invocation::PrCheck { .. }

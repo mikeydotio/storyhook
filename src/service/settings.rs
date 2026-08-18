@@ -33,8 +33,8 @@
 //! — the alternative is the read-modify-write through a serialized document
 //! that cost SH-49 a whole field. So a write here must read the existing row,
 //! change one field, and put it back **inside one write transaction**. Building
-//! a fresh `ProjectSettings` compiles, reads naturally, and silently destroys a
-//! configured github-sync document; that pattern is safe in
+//! a fresh `ProjectSettings` compiles, reads naturally, and silently destroys
+//! whatever the other column held; that pattern is safe in
 //! [`migrate`](super::migrate) only because it runs against a row that does not
 //! yet exist.
 
@@ -53,7 +53,6 @@ use super::Ctx;
 enum SettingField {
     SyncAutoTransition,
     DoctorStaleThreshold,
-    GithubSync,
 }
 
 /// One row of the settings registry: everything both the renderer and the
@@ -104,7 +103,7 @@ impl SettingSpec {
 /// Dotted names rather than column names, matching what `story migrate`'s
 /// report already prints. Column names would freeze the schema as public
 /// contract; these can outlive a rename.
-static REGISTRY: [SettingSpec; 3] = [
+static REGISTRY: [SettingSpec; 2] = [
     SettingSpec {
         key: "sync.auto_transition",
         field: SettingField::SyncAutoTransition,
@@ -136,19 +135,6 @@ static REGISTRY: [SettingSpec; 3] = [
         // makes `story doctor` read the value.
         note: Some("no command reads this yet"),
     },
-    SettingSpec {
-        key: "github.sync",
-        field: SettingField::GithubSync,
-        kind: SettingKind::Document,
-        description: "The github-sync document: etags and story-to-issue mappings.",
-        default: None,
-        // Listed and gettable, never writable. It holds etags and mappings that
-        // must agree with `github_bases`, and under `--no-default-features` the
-        // type describing its shape does not exist — so `set` could not
-        // validate what it accepted.
-        managed_by: Some("story github-sync"),
-        note: None,
-    },
 ];
 
 /// Every setting `story project settings` knows, in listing order.
@@ -156,12 +142,6 @@ static REGISTRY: [SettingSpec; 3] = [
 pub fn registry() -> &'static [SettingSpec] {
     &REGISTRY
 }
-
-/// What a [`SettingKind::Document`] reports instead of its contents.
-///
-/// Opaque presence, never a parsed shape: the surface must be a property of the
-/// data model rather than of which cargo features the binary was built with.
-const DOCUMENT_PRESENT: &str = "configured";
 
 /// Reading and writing one project's settings.
 pub struct SettingsService<'ctx, S: Store> {
@@ -313,14 +293,6 @@ fn apply(field: SettingField, settings: &mut ProjectSettings, value: Option<&str
         SettingField::DoctorStaleThreshold => {
             settings.doctor_stale_threshold = value.map(str::to_string);
         }
-        SettingField::GithubSync => {
-            // Unreachable today: `writable` refuses this key for both `set` and
-            // `unset`. Written as a clear rather than as a panic because it is
-            // the correct behaviour if the registry row ever becomes settable —
-            // clearing a document *is* unsetting it, and `set` would still be
-            // caught by `parse`, which has no string form for a document.
-            settings.github_sync = None;
-        }
     }
 }
 
@@ -329,11 +301,6 @@ fn stored(field: SettingField, settings: &ProjectSettings) -> Option<String> {
     match field {
         SettingField::SyncAutoTransition => settings.sync_auto_transition.map(|on| on.to_string()),
         SettingField::DoctorStaleThreshold => settings.doctor_stale_threshold.clone(),
-        // Presence, never the document: see `DOCUMENT_PRESENT`.
-        SettingField::GithubSync => settings
-            .github_sync
-            .as_ref()
-            .map(|_| DOCUMENT_PRESENT.to_string()),
     }
 }
 

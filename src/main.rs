@@ -1,7 +1,7 @@
 use std::env;
 use std::process;
 
-#[cfg(feature = "github-sync")]
+#[cfg(feature = "github-pr")]
 use storyhook::cli::GithubAuthAction;
 use storyhook::cli::{self, DaemonAction, Invocation, StoreAction, WebAction};
 use storyhook::invoke::{HttpInvoker, InvokeRequest, Invoker};
@@ -250,15 +250,15 @@ fn main() {
     // `invoke::dispatch_without_store`'s own refusal for what happens if a
     // `GithubAuth` invocation is ever dispatched any other way.
     if let Invocation::GithubAuth { action } = &invocation {
-        #[cfg(feature = "github-sync")]
+        #[cfg(feature = "github-pr")]
         let result = storyhook::env::Environment::from_process(flags.store_path.as_deref())
             .and_then(|environment| run_github_auth(action, &environment, json));
-        #[cfg(not(feature = "github-sync"))]
+        #[cfg(not(feature = "github-pr"))]
         let result: Result<Response, storyhook::error::AppError> = {
             let _ = action;
             Err(storyhook::error::AppError::Usage(
-                "github-auth requires the `github-sync` feature. Rebuild with: cargo install \
-                 storyhook --features github-sync"
+                "github-auth requires the `github-pr` feature. Rebuild with: cargo install \
+                 storyhook --features github-pr"
                     .to_string(),
             ))
         };
@@ -384,12 +384,12 @@ fn main() {
     // (SH-114). `StoreInvoker` survives as the *executor* both remaining
     // callers use: `api/rpc.rs`, which is the daemon running the work this
     // request is about to travel to, and `tui/app.rs`.
-    // `--deadline` bounds this call and this call alone: `confirm` and
-    // `ask_setup` below block on a human at a terminal, not on storyhook, and
-    // are never wrapped. Cloning `environment` and `cwd` here rather than
-    // moving them is what lets `run` be called more than once — once for the
-    // first attempt, again after a confirmation or a setup answer — each call
-    // getting a fresh, independently timed invocation.
+    // `--deadline` bounds this call and this call alone: `confirm` below
+    // blocks on a human at a terminal, not on storyhook, and is never
+    // wrapped. Cloning `environment` and `cwd` here rather than moving them
+    // is what lets `run` be called more than once — once for the first
+    // attempt, again after a confirmation — each call getting a fresh,
+    // independently timed invocation.
     let run = |request: InvokeRequest| {
         let environment = environment.clone();
         let cwd = cwd.clone();
@@ -415,15 +415,6 @@ fn main() {
                 return;
             }
             Confirmed::CannotAsk(error) => Err(error),
-        },
-        // A first-time `story github-sync` answers with what it found rather
-        // than running it (SH-153's D2) — the same model as
-        // `ConfirmationRequired` above, asked here for the same reason.
-        Ok(Response::SetupRequired(plan)) => match ask_setup(&plan, json, flags.quiet) {
-            AskedSetup::Answered(strategy, mode) => run(request.with_setup_answers(strategy, mode)),
-            // The wizard has already said so, on `out` — nothing else to add.
-            AskedSetup::Cancelled => return,
-            AskedSetup::CannotAsk(error) => Err(error),
         },
         other => other,
     };
@@ -637,62 +628,11 @@ fn confirm(plan: &storyhook::output::ConfirmationPlan, json: bool, quiet: bool) 
     }
 }
 
-/// The answer to a setup-plan prompt.
-enum AskedSetup {
-    Answered(storyhook::cli::SetupStrategy, storyhook::cli::SetupMode),
-    Cancelled,
-    /// There is no terminal to ask, or asking would corrupt the output.
-    CannotAsk(storyhook::error::AppError),
-}
-
-/// Asks the two setup questions a first-time `story github-sync` needs, or
-/// refuses naming `--strategy`/`--mode` — SH-153's D2, the same model
-/// [`confirm`] uses for a destructive command's plan.
-///
-/// Two cases cannot be asked at all, and both are refusals quoting a working
-/// non-interactive command rather than assumptions either way — the same two
-/// `why` clauses [`ask_about_a_new_project`] uses, so the program has one
-/// phrasing for both:
-///
-/// * **`--json`.** The contract is one self-describing document on stdout, and
-///   a prompt corrupts it for every scripted caller.
-/// * **No terminal.** A pipeline, a CI job, an agent.
-fn ask_setup(plan: &storyhook::output::SetupPlan, json: bool, quiet: bool) -> AskedSetup {
-    use std::io::IsTerminal;
-
-    let refuse = |why: &str| -> AskedSetup {
-        AskedSetup::CannotAsk(storyhook::error::AppError::Validation(format!(
-            "`story github-sync` needs somebody to ask, and {why}.\n\n{}",
-            storyhook::output::render_setup_plan(plan),
-        )))
-    };
-    if json {
-        return refuse("--json cannot carry a prompt");
-    }
-    if !std::io::stdin().is_terminal() {
-        return refuse("there is no terminal here");
-    }
-
-    // `--quiet` suppresses successful output, and this is a question — the
-    // same non-effect `confirm` documents for its own prompt.
-    let _ = quiet;
-    let stdin = std::io::stdin();
-    let mut input = stdin.lock();
-    let mut out = std::io::stderr();
-    match storyhook::service::github_setup::ask(plan, &mut input, &mut out) {
-        Ok(storyhook::service::github_setup::Answered::Setup(strategy, mode)) => {
-            AskedSetup::Answered(strategy, mode)
-        }
-        Ok(storyhook::service::github_setup::Answered::Cancelled) => AskedSetup::Cancelled,
-        Err(error) => AskedSetup::CannotAsk(error),
-    }
-}
-
 /// Prompts for a GitHub Personal Access Token, for `story github-auth login`
 /// (SH-212).
 ///
 /// Two cases cannot be asked at all, and both are refusals — the same two
-/// `why` clauses [`ask_setup`] and [`ask_about_a_new_project`] use:
+/// `why` clauses [`ask_about_a_new_project`] uses:
 ///
 /// * **`--json`.** The contract is one self-describing document on stdout,
 ///   and a prompt corrupts it for every scripted caller.
@@ -704,7 +644,7 @@ fn ask_setup(plan: &storyhook::output::SetupPlan, json: bool, quiet: bool) -> As
 /// The consent banner prints every time, not only on a fresh grant: `login`
 /// is also how an existing token gets rotated, and the grant it describes is
 /// exactly what is about to be renewed.
-#[cfg(feature = "github-sync")]
+#[cfg(feature = "github-pr")]
 fn ask_github_token(
     json: bool,
 ) -> Result<storyhook::domain::secret::GithubToken, storyhook::error::AppError> {
@@ -741,7 +681,7 @@ fn ask_github_token(
 /// this process. The OS keychain is a machine-level resource, not project
 /// data, so this needs `env` (for the store's own key, which names the
 /// keychain entry) but never a store or the daemon.
-#[cfg(feature = "github-sync")]
+#[cfg(feature = "github-pr")]
 fn run_github_auth(
     action: &GithubAuthAction,
     env: &storyhook::env::Environment,

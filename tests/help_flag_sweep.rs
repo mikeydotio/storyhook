@@ -71,7 +71,6 @@ const VERBS: &[&[&str]] = &[
     &["scaffold"],
     &["commit-sync"],
     &["sync-git"],
-    &["github-sync"],
     &["plugin"],
     &["show"],
     &["comment"],

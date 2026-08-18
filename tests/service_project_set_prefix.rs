@@ -241,36 +241,6 @@ fn set_prefix_plan_reports_the_same_counts_the_write_later_produces() {
 }
 
 #[test]
-fn set_prefix_rewrites_github_bases_snapshots_too() {
-    let (_dir, store) = new_store();
-    let project = seed_project(&store, "agentics", "HP");
-    let a = create_story(&store, project, "Depends on b", FIXTURE_NOW);
-    let b = create_story(&store, project, "Blocks a", FIXTURE_NOW);
-    link_atomic(&store, project, a, "blocks", b).expect("linking a and b");
-    let base_snapshot = store
-        .read(|tx| tx.story(project, a))
-        .unwrap()
-        .expect("a exists")
-        .snapshot;
-    store
-        .write(|tx| tx.put_github_base(project, a, &base_snapshot))
-        .expect("seeding a merge-base snapshot");
-    let backups = backups_dir();
-
-    service(&store)
-        .set_prefix(project, "AGE", backups.path())
-        .expect("renaming the prefix");
-
-    let base = store
-        .read(|tx| tx.github_base(project, a))
-        .unwrap()
-        .expect("the merge base survives");
-    assert_eq!(base.id, "AGE-1");
-    assert_eq!(base.relationships.len(), 1);
-    assert_eq!(base.relationships[0].other_id, "AGE-2");
-}
-
-#[test]
 fn set_prefix_updates_a_real_checkouts_pointer_file() {
     let (_dir, store) = new_store();
     let project = seed_project(&store, "agentics", "HP");

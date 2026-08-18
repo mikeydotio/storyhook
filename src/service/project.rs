@@ -1425,7 +1425,7 @@ impl<'a, S: Store> ProjectService<'a, S> {
                 .project(project)?
                 .ok_or_else(|| StoreError::NotFound(format!("project {project} does not exist")))?;
             validate_prefix_change(tx, &record, &new_prefix)?;
-            let (stories, relationships, github_bases) = count_prefix_rewrite(tx, project)?;
+            let (stories, relationships) = count_prefix_rewrite(tx, project)?;
             Ok(SetPrefixPlan {
                 slug: record.slug,
                 name: record.name,
@@ -1433,7 +1433,6 @@ impl<'a, S: Store> ProjectService<'a, S> {
                 new_prefix: new_prefix.clone(),
                 stories,
                 relationships,
-                github_bases,
             })
         })?)
     }
@@ -1477,10 +1476,6 @@ impl<'a, S: Store> ProjectService<'a, S> {
     /// * **Every story's read model**, whether or not it had a relationship
     ///   to rewrite — `id` self-heals on any refold, but a story with no
     ///   relationships still needs that refold to happen at all.
-    /// * **Every github-sync merge-base snapshot.** `github_bases` carries
-    ///   its own full `StorySnapshot` JSON with the identical stale-id
-    ///   problem and no event log of its own to fold from, so this is a
-    ///   direct rewrite of the cached document rather than a fold.
     /// * **The linked checkout's pointer file**, best-effort, after the
     ///   store transaction commits — see [`Self::update_checkout_pointer`].
     ///
@@ -1539,7 +1534,6 @@ impl<'a, S: Store> ProjectService<'a, S> {
                 let states = tx.state_map(project)?;
                 let rows = tx.stories(project, &StoryQuery::all())?;
                 let mut relationships = 0usize;
-                let mut github_bases = 0usize;
 
                 for row in &rows {
                     if row.snapshot.relationships.is_empty() {
@@ -1571,16 +1565,6 @@ impl<'a, S: Store> ProjectService<'a, S> {
                             &self.provenance,
                         )?;
                     }
-
-                    if let Some(mut base) = tx.github_base(project, row.story_no)? {
-                        base.id = row.story_no.to_id(&new_prefix);
-                        for relation in &mut base.relationships {
-                            let other_no = StoryNo::parse_id(&old_prefix, &relation.other_id)?;
-                            relation.other_id = other_no.to_id(&new_prefix);
-                        }
-                        tx.put_github_base(project, row.story_no, &base)?;
-                        github_bases += 1;
-                    }
                 }
 
                 Ok(SetPrefixPlan {
@@ -1590,7 +1574,6 @@ impl<'a, S: Store> ProjectService<'a, S> {
                     new_prefix: new_prefix.clone(),
                     stories: rows.len(),
                     relationships,
-                    github_bases,
                 })
             })?;
 
@@ -1709,7 +1692,7 @@ fn validate_prefix_change(
     Ok(())
 }
 
-/// `(stories, relationships, github_bases)` a prefix rewrite would touch.
+/// `(stories, relationships)` a prefix rewrite would touch.
 ///
 /// Used by [`ProjectService::set_prefix_plan`]'s dry run, and only there —
 /// [`ProjectService::set_prefix`]'s own write transaction derives its counts
@@ -1719,17 +1702,13 @@ fn validate_prefix_change(
 fn count_prefix_rewrite(
     tx: &impl ReadOps,
     project: ProjectId,
-) -> Result<(usize, usize, usize), StoreError> {
+) -> Result<(usize, usize), StoreError> {
     let rows = tx.stories(project, &StoryQuery::all())?;
     let mut relationships = 0usize;
-    let mut github_bases = 0usize;
     for row in &rows {
         relationships += row.snapshot.relationships.len();
-        if tx.github_base(project, row.story_no)?.is_some() {
-            github_bases += 1;
-        }
     }
-    Ok((rows.len(), relationships, github_bases))
+    Ok((rows.len(), relationships))
 }
 
 /// The state set a new project starts with.

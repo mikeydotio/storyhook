@@ -535,3 +535,116 @@ fn doctor_json_answers_an_empty_findings_array_when_healthy() {
         "the deprecated key and its successor must not drift apart"
     );
 }
+
+// ---------------------------------------------------------------------------
+// D5 item 3 (SH-408): a close_on_merge link with nothing to check it against
+// ---------------------------------------------------------------------------
+
+/// `refuse_cross_repo` (`PrLinkService::link`) treats "no registered GitHub
+/// origin" as accept rather than refuse — correct for a project that never
+/// had one, but silent for a `close_on_merge` link that used to be validated
+/// by the now-retired sync engine's own comparison (D1 of SH-408). `story
+/// doctor` has to say so, since nothing else will.
+#[test]
+fn doctor_flags_a_close_on_merge_link_with_no_registered_origin_to_check_it_against() {
+    let env = TestEnv::shared();
+    let project = env.project().seed_story("A").build();
+
+    project
+        .run(&["link-pr", "SH-1", "https://github.com/acme/widgets/pull/7"])
+        .success();
+
+    project.run(&["doctor"]).success().stdout(
+        contains("SH-1")
+            .and(contains("close_on_merge"))
+            .and(contains("acme/widgets#7"))
+            .and(contains("no registered GitHub origin"))
+            .and(contains("story project link origin")),
+    );
+}
+
+/// The advisory names every affected story and pluralizes correctly for more
+/// than one.
+#[test]
+fn the_close_on_merge_advisory_names_every_affected_story() {
+    let env = TestEnv::shared();
+    let project = env
+        .project()
+        .seed_story("A")
+        .seed_story("B")
+        .seed_story("C")
+        .build();
+
+    project
+        .run(&["link-pr", "SH-1", "https://github.com/acme/widgets/pull/7"])
+        .success();
+    project
+        .run(&["link-pr", "SH-2", "https://github.com/acme/widgets/pull/8"])
+        .success();
+    // A bookmark, not a close-on-merge link — must not be counted.
+    project
+        .run(&[
+            "link-pr",
+            "SH-3",
+            "https://github.com/acme/widgets/pull/9",
+            "--no-close-on-merge",
+        ])
+        .success();
+
+    project.run(&["doctor"]).success().stdout(
+        contains("SH-1")
+            .and(contains("SH-2"))
+            .and(contains("2 close_on_merge pull request links"))
+            .and(contains("SH-3").not()),
+    );
+}
+
+/// Registering the project's origin restores the check `refuse_cross_repo`
+/// runs on the next `link-pr`, and clears this advisory — it is derived from
+/// the same "nothing registered" state the guard itself reads, not tracked
+/// separately.
+#[test]
+fn the_close_on_merge_advisory_clears_once_the_origin_is_registered() {
+    let env = TestEnv::shared();
+    let project = env.project().seed_story("A").build();
+
+    project
+        .run(&["link-pr", "SH-1", "https://github.com/acme/widgets/pull/7"])
+        .success();
+    project
+        .run(&[
+            "project",
+            "link",
+            "origin",
+            "https://github.com/acme/widgets",
+        ])
+        .success();
+
+    project
+        .run(&["doctor"])
+        .success()
+        .stdout(contains("no registered GitHub origin").not());
+}
+
+/// A link with `close_on_merge: false` (a bookmark) is exactly what
+/// `refuse_cross_repo` never protects, registered origin or not — so it must
+/// never trigger this advisory either.
+#[test]
+fn a_bookmark_link_never_triggers_the_close_on_merge_advisory() {
+    let env = TestEnv::shared();
+    let project = env.project().seed_story("A").build();
+
+    project
+        .run(&[
+            "link-pr",
+            "SH-1",
+            "https://github.com/acme/widgets/pull/7",
+            "--no-close-on-merge",
+        ])
+        .success();
+
+    project
+        .run(&["doctor"])
+        .success()
+        .stdout(contains("no registered GitHub origin").not());
+}
