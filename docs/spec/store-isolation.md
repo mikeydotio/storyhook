@@ -263,7 +263,8 @@ stories into the developer's own.
 Two consequences worth naming: `scripts/check-no-orphan-servers.sh` matches the daemon's
 argv, and a flag now sits between the binary and the verb — a guard that matches nothing
 passes, so its pattern was widened. And a launchd agent for a non-default store carries
-`--store-path`, because its log path is already that store's.
+`--store-path`, because its log path is already that store's — though the *label* that
+plist loaded under stayed machine-wide until As-built item 9, below.
 
 **7. `refuse_temp_project_in_real_store` (SH-95) was not retired, and a "state the fact"
 version of it was tried and reverted.** This design's stated premise for retiring it —
@@ -321,6 +322,38 @@ guard alone, matching the same carve-out `project_creation_target` already draws
 
 No schema migration, no wire change: `ProjectRecord::created_at` already carried what the
 gate needs.
+
+**9. A launchd login agent is keyed too (SH-414).** Every other piece of daemon identity —
+the state directory, the dashboard cookie, the keychain account — derived from
+`StoreLocation::key()` from the start. The launchd label did not: one
+`io.mikey.storyhook.daemon` label served every store, so a non-default install's
+`--store-path` flag (item 6, above) landed at the *same* file a default-store install
+also wrote to, silently replacing whichever agent was there. `daemon::agent::label` closes
+the gap the same way item 2's backups directory does — asymmetric, not symmetric: the
+default store keeps the bare label byte-for-byte, so no plist already loaded into launchd
+needs a migration step, and every other store gets the label plus its own key.
+
+The predicate deciding bare-vs-keyed is **not** `StoreLocation::is_default()`, for exactly
+the reason item 7 above already recorded for a different guard: `is_default()` answers
+relative to whatever `$XDG_DATA_HOME` the *current process* has, so
+`XDG_DATA_HOME=/scratch story daemon install` resolves `is_default() == true` and would
+write the bare label with no `--store-path` flag — but a launchd child, which inherits
+none of this process's environment, would then open the real default store instead.
+`daemon::agent::serves_the_login_default` asks the question item 1's own doctrine already
+answers for the spawned daemon's argv: what would a flagless invocation, with none of this
+process's environment, actually open. Measured rather than assumed
+(`a_store_reached_via_xdg_data_home_still_gets_its_own_label`) — the same discipline item 7
+used to catch the identical substitution failing for a different guard.
+
+One migration seam this asymmetry cannot cover: a machine that had already run
+`--store-path X daemon install` before this change has `X`'s agent sitting at the bare
+label, which now reads as "the default store's own agent." `Health::ServesAnotherStore`
+(`src/daemon/agent.rs`) detects this — the plist's own embedded `--store-path` disagrees
+with the store being asked about — and `story daemon status`/`install`/`uninstall` all
+report it rather than silently treating the stray agent as healthy or overwriting it
+unasked. Per-store labels also remove the accidental self-limiting collision a shared
+label used to provide, so `agent::report` additionally enumerates every other storyhook
+login agent on the machine, named rather than left to accumulate invisibly.
 
 ### Later amendment — the daemon address became a port (SH-253)
 

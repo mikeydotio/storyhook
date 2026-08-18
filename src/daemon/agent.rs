@@ -6,6 +6,21 @@
 //! shell that created it, every build it names, and most reboots — which is
 //! what makes both of this module's halves necessary.
 //!
+//! # A login agent belongs to a store (SH-414)
+//!
+//! [`label`] and [`path`] are functions of the store, not machine-wide
+//! constants: the default store keeps the bare [`LAUNCHD_LABEL`], every other
+//! store gets that label plus its own key
+//! ([`crate::env::StoreLocation::key`]) — the same digest that already names
+//! the daemon state directory, the dashboard's per-store cookie, and the
+//! keychain account. Before this, one label served every store, so installing
+//! a login agent for a named store silently replaced whichever agent — the
+//! default store's, or another named store's — happened to be at that one
+//! label. [`serves_the_login_default`] is the predicate that decides
+//! bare-vs-keyed, and it is deliberately **not**
+//! [`crate::env::StoreLocation::is_default`] — see its own doc for why that
+//! substitution would have left the defect half-open.
+//!
 //! # Why one module owns both directions
 //!
 //! SH-411 gave the plist a *reader* (`story daemon status` reports which binary
@@ -15,14 +30,17 @@
 //! other about nothing, and no test is looking. They live together here, and
 //! [`tests::the_reader_round_trips_the_writer`] is what keeps them honest.
 //!
-//! # Health is not just a `$PATH` comparison
+//! # Health answers two questions, not one
 //!
-//! [`judge`] decides [`Health::Missing`] — the registered binary no longer
-//! exists — **before** `$PATH` is consulted, and independently of it. That
-//! ordering is the point rather than an accident: the machine this whole story
-//! is about is one where `$PATH` names no `story` at all, so a report that
-//! could only compare against `$PATH` would have nothing to say on precisely
-//! the machine that needs it.
+//! [`judge`] decides [`Health::ServesAnotherStore`] — this label's plist
+//! claims a different store than the one being asked about — **before**
+//! [`Health::Missing`] — the registered binary no longer exists — which is in
+//! turn decided **before** `$PATH` is consulted, and independently of it. Both
+//! orderings are the point rather than an accident: a foreign agent's binary
+//! is not this store's business to report on, and the machine SH-411 is about
+//! is one where `$PATH` names no `story` at all, so a report that could only
+//! compare against `$PATH` would have nothing to say on precisely the machine
+//! that needs it.
 
 use std::path::{Path, PathBuf};
 

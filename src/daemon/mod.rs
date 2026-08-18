@@ -5,7 +5,8 @@
 //! multi-project, tailnet-native daemon with a pidfile and a lifecycle — the
 //! rearchitecture promoted it rather than writing a second one.
 //!
-//! * [`agent`] — the launchd login agent's plist, written and read (SH-411).
+//! * [`agent`] — the launchd login agent's plist, written and read (SH-411),
+//!   one per store rather than one machine-wide (SH-414).
 //! * [`backup`] — the daily verified snapshot of the store.
 //! * [`bus`] — the change feed every `/api/events` client subscribes to, fed by
 //!   the request boundary and by a `PRAGMA data_version` poller.
