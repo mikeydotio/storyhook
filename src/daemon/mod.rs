@@ -5,6 +5,7 @@
 //! multi-project, tailnet-native daemon with a pidfile and a lifecycle — the
 //! rearchitecture promoted it rather than writing a second one.
 //!
+//! * [`agent`] — the launchd login agent's plist, written and read (SH-411).
 //! * [`backup`] — the daily verified snapshot of the store.
 //! * [`bus`] — the change feed every `/api/events` client subscribes to, fed by
 //!   the request boundary and by a `PRAGMA data_version` poller.
@@ -29,6 +30,7 @@
 //! * [`watch`] — attributes a store-wide change to specific projects, shared by
 //!   the request boundary and the `data_version` poller (SH-202).
 
+pub mod agent;
 pub mod backup;
 pub mod bus;
 pub mod commands;

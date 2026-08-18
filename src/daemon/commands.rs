@@ -15,17 +15,10 @@
 //! whole rearchitecture is measured against or turn "this machine has not run
 //! a daemon lately" into an integrity failure.
 
-use std::path::PathBuf;
-
+use crate::daemon::agent::{self, LAUNCHD_LABEL};
 use crate::daemon::lifecycle::{self, DaemonInfo};
 use crate::env::Environment;
 use crate::error::AppError;
-
-/// The launchd label for the user agent.
-///
-/// Reverse-DNS under the author's own domain, which is the convention every
-/// other bundle identifier in this ecosystem follows.
-pub const LAUNCHD_LABEL: &str = "io.mikey.storyhook.daemon";
 
 /// Starts a daemon in the background, or reports the one already running.
 ///
@@ -208,60 +201,6 @@ fn offer_token_to_the_clipboard(token: &str) {
     }
 }
 
-/// Where the launchd agent's plist goes.
-fn agent_path(env: &Environment) -> PathBuf {
-    env.home()
-        .join("Library/LaunchAgents")
-        .join(format!("{LAUNCHD_LABEL}.plist"))
-}
-
-/// The launchd agent definition.
-///
-/// `KeepAlive` is deliberately absent. The daemon is *supposed* to exit on a
-/// version-skew restart, and an agent that resurrected it immediately would race
-/// the client that just asked for a newer one. `RunAtLoad` is what this is for:
-/// the dashboard is there after a reboot without anybody running a command.
-fn agent_plist(exe: &std::path::Path, env: &Environment) -> String {
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{LAUNCHD_LABEL}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{exe}</string>
-{store}        <string>daemon</string>
-        <string>--serve</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>ProcessType</key>
-    <string>Background</string>
-    <key>StandardErrorPath</key>
-    <string>{log}</string>
-</dict>
-</plist>
-"#,
-        exe = exe.display(),
-        // A login agent for the default store needs no flag, and leaving it off
-        // keeps the plist identical to the one every existing installation has.
-        // For any other store the flag is required rather than tidy: the log
-        // path below is already this store's, so an agent without it would run
-        // one store's daemon while writing into another's directory.
-        store = if env.store().is_default() {
-            String::new()
-        } else {
-            format!(
-                "        <string>--store-path</string>\n        <string>{}</string>\n",
-                env.store_path().display()
-            )
-        },
-        log = env.daemon_log().display(),
-    )
-}
-
 /// Writes the launchd agent and loads it.
 ///
 /// Idempotent: an existing agent is replaced, because the common reason to run
@@ -277,11 +216,11 @@ pub fn install(env: &Environment) -> Result<String, AppError> {
     }
     let exe = std::env::current_exe()
         .map_err(|e| AppError::Storage(format!("failed to find the running executable: {e}")))?;
-    let path = agent_path(env);
+    let path = agent::path(env);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&path, agent_plist(&exe, env))
+    std::fs::write(&path, agent::plist(&exe, env))
         .map_err(|e| AppError::Storage(format!("failed to write {}: {e}", path.display())))?;
 
     // `bootout` first so a reinstall replaces rather than conflicts; its failure
@@ -309,7 +248,7 @@ pub fn install(env: &Environment) -> Result<String, AppError> {
 
 /// Unloads the launchd agent and removes its plist.
 pub fn uninstall(env: &Environment) -> Result<String, AppError> {
-    let path = agent_path(env);
+    let path = agent::path(env);
     if !path.exists() {
         return Ok("the storyhook daemon is not installed as a launchd agent".to_string());
     }
@@ -364,89 +303,6 @@ mod tests {
         let dir = scratch();
         let env = Environment::at(dir.path());
         assert!(stop(&env, false).expect("stop").contains("not running"));
-    }
-
-    /// **`RunAtLoad` yes, `KeepAlive` no**, and both halves are decisions rather
-    /// than defaults.
-    ///
-    /// It was worth re-taking once the daemon became mandatory (SH-114): an
-    /// optional process that nothing restarts is a choice, and a *required* one
-    /// that nothing restarts sounds like an oversight. It is not, and the
-    /// reasons got stronger rather than weaker.
-    ///
-    /// - **Availability is already self-healing.** Every client calls
-    ///   `lifecycle::ensure`, so a daemon that is not running is started by
-    ///   whoever needs it next. A restarter would be a second mechanism for
-    ///   something that has one.
-    /// - **A restarter is now more dangerous than it was.** `spawn_locked`
-    ///   stands the old daemon down and *then* claims the pidfile, so launchd
-    ///   racing that window turns a deterministic failure into an intermittent
-    ///   one — and since SH-114 that window is on every command's path, not on
-    ///   the subset that chose the daemon.
-    /// - **The version-upgrade race survives verbatim**: an agent that restarts
-    ///   the daemon immediately races the client that just asked it to stop
-    ///   because the binary moved.
-    /// - **`KeepAlive{SuccessfulExit:false}`**, the surgical variant that looks
-    ///   like it avoids all of the above, is the worst of them. It turns "the
-    ///   store is damaged and the daemon cannot open it" — the exact scenario
-    ///   the cannot-start diagnostic exists for — into a respawn loop on
-    ///   launchd's ten-second throttle.
-    #[test]
-    fn the_agent_runs_the_daemon_at_login_and_never_resurrects_it() {
-        let dir = scratch();
-        let env = Environment::at(dir.path());
-        let plist = agent_plist(std::path::Path::new("/usr/local/bin/story"), &env);
-        assert!(plist.contains("<string>daemon</string>"));
-        assert!(plist.contains("<string>--serve</string>"));
-        assert!(plist.contains(LAUNCHD_LABEL));
-        assert!(
-            plist.contains("<key>RunAtLoad</key>"),
-            "the daemon is started at login, so a machine that has just booted \
-             has a dashboard without anybody typing a command: {plist}"
-        );
-        assert!(
-            !plist.contains("KeepAlive"),
-            "and it is never restarted. A restarter races `spawn_locked`'s \
-             stand-down window on every command's path, and the surgical \
-             `SuccessfulExit: false` variant turns a damaged store into a \
-             respawn loop on launchd's ten-second throttle: {plist}"
-        );
-    }
-
-    /// The agent's log path is already this store's. An agent that ran the
-    /// *default* store's daemon while writing into a named store's directory
-    /// would be describing one process and starting another.
-    #[test]
-    fn the_agent_names_a_store_that_is_not_the_default_one() {
-        let dir = scratch();
-        let named = dir.path().join("named.db");
-        let env = Environment::at(dir.path());
-        let default_plist = agent_plist(std::path::Path::new("/usr/local/bin/story"), &env);
-        assert!(
-            !default_plist.contains("--store-path"),
-            "the default store's agent must stay byte-identical to the one every \
-             existing installation has"
-        );
-
-        let env = env.with_store(
-            crate::env::StoreLocation::resolve(
-                Some(&named),
-                &crate::env::StoreVars::default(),
-                dir.path(),
-            )
-            .expect("resolving a named store"),
-        );
-        let plist = agent_plist(std::path::Path::new("/usr/local/bin/story"), &env);
-        assert!(plist.contains("<string>--store-path</string>"), "{plist}");
-        assert!(
-            plist.contains(&format!("<string>{}</string>", env.store_path().display())),
-            "{plist}"
-        );
-    }
-
-    #[test]
-    fn the_agent_label_follows_the_bundle_convention() {
-        assert_eq!(LAUNCHD_LABEL, "io.mikey.storyhook.daemon");
     }
 
     #[test]
