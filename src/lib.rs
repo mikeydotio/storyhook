@@ -28,4 +28,5 @@ pub mod store;
 pub mod token;
 pub mod tui;
 pub mod update;
+pub mod version;
 pub mod web;

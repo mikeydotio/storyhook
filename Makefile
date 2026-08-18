@@ -230,7 +230,12 @@ release-build:
 #
 # Note this does NOT restart a running dashboard daemon; it keeps serving the
 # old code until restarted (see SH-54).
+#
+# Reports the WHOLE `--version` line, not just the bare semver -- SH-406
+# stamps every build with a build id derived from its tracked git content
+# (build.rs), so two installs of the same VERSION distinguish themselves here
+# whenever their tracked content differs.
 install: release-build
 	@mkdir -p "$(INSTALL_DIR)"
 	install -m 755 target/release/story "$(INSTALL_DIR)/story"
-	@echo "Installed story $$("$(INSTALL_DIR)/story" --version | awk '{print $$2}') to $(INSTALL_DIR)/story"
+	@echo "Installed $$("$(INSTALL_DIR)/story" --version) to $(INSTALL_DIR)/story"
