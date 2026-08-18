@@ -89,25 +89,59 @@ pub fn plist(exe: &Path, env: &Environment) -> String {
     )
 }
 
-/// The program a plist's `ProgramArguments` names, or `None` when this parser
-/// does not recognise the document.
+/// Every `<string>` inside the `<array>` that follows
+/// `<key>ProgramArguments</key>`, in document order, or `None` when this
+/// parser does not recognise the document.
 ///
-/// Deliberately narrow: the first `<string>` inside the `<array>` that follows
-/// `<key>ProgramArguments</key>`. A hand-edited plist, or one a future
-/// storyhook wrote in a shape this build has never seen, reads as
-/// [`Health::Unreadable`] and is *reported* rather than guessed at — the SH-312
-/// rule that an unprovable outcome is reported as unprovable, never as a
-/// confident wrong answer. Forgery is not the threat model; anyone who can
-/// hand-write this file can also run `launchctl` directly.
+/// Deliberately narrow, same as the single-element reader it replaces: a
+/// hand-edited plist, or one a future storyhook wrote in a shape this build
+/// has never seen, reads as [`Health::Unreadable`] and is *reported* rather
+/// than guessed at — the SH-312 rule that an unprovable outcome is reported as
+/// unprovable, never as a confident wrong answer. Forgery is not the threat
+/// model; anyone who can hand-write this file can also run `launchctl`
+/// directly.
+///
+/// The one function both [`registered_exe`] and [`registered_store`] read
+/// through, so the array is parsed once rather than twice — a second
+/// hand-rolled scan of the same text is exactly the SH-136 class this module's
+/// own doc already names.
 #[must_use]
-pub fn registered_exe(text: &str) -> Option<PathBuf> {
+pub fn registered_args(text: &str) -> Option<Vec<String>> {
     let after_key = text.split_once("<key>ProgramArguments</key>")?.1;
     let array = after_key.split_once("<array>")?.1;
     // Bound the search to this array, so a malformed document cannot reach into
     // whatever element happens to follow it.
     let array = array.split_once("</array>")?.0;
-    let inner = array.split_once("<string>")?.1.split_once("</string>")?.0;
-    Some(PathBuf::from(xml_unescape(inner)))
+    let mut args = Vec::new();
+    let mut rest = array;
+    while let Some((_, after_open)) = rest.split_once("<string>") {
+        let Some((inner, after_close)) = after_open.split_once("</string>") else {
+            break;
+        };
+        args.push(xml_unescape(inner));
+        rest = after_close;
+    }
+    if args.is_empty() { None } else { Some(args) }
+}
+
+/// The program a plist's `ProgramArguments` names — the first argument — or
+/// `None` when this parser does not recognise the document. See
+/// [`registered_args`] for the narrowness this inherits.
+#[must_use]
+pub fn registered_exe(text: &str) -> Option<PathBuf> {
+    registered_args(text)?.into_iter().next().map(PathBuf::from)
+}
+
+/// The store a plist's `ProgramArguments` names via `--store-path`, or `None`
+/// when the array carries no such flag (the agent serves the login-time
+/// default store) or this parser does not recognise the document. A flag with
+/// no following value reads as `None` rather than panicking — a hand-edited or
+/// truncated plist is exactly the kind of document this reader must survive.
+#[must_use]
+pub fn registered_store(text: &str) -> Option<PathBuf> {
+    let args = registered_args(text)?;
+    let index = args.iter().position(|arg| arg == "--store-path")?;
+    args.get(index + 1).map(PathBuf::from)
 }
 
 /// What this machine's login agent is, and whether it still agrees with the
@@ -451,6 +485,57 @@ mod tests {
             registered_exe("<key>ProgramArguments</key><array></array><string>/nope</string>"),
             None,
             "the search is bounded by the array it started in"
+        );
+    }
+
+    /// The store-path reader round-trips through the same escaping the writer
+    /// uses, including a store path holding XML metacharacters — a live gap
+    /// before this: the value was escaped on write and never unescaped on
+    /// read.
+    #[test]
+    fn the_reader_returns_the_store_the_agent_serves() {
+        let dir = scratch();
+        for raw in ["/tmp/named.db", "/tmp/a & b/named.db", "/tmp/<odd>/named.db"] {
+            let named = PathBuf::from(raw);
+            let env = Environment::at(dir.path()).with_store(
+                crate::env::StoreLocation::resolve(
+                    Some(&named),
+                    &crate::env::StoreVars::default(),
+                    dir.path(),
+                )
+                .expect("resolving a named store"),
+            );
+            let rendered = plist(Path::new("/usr/local/bin/story"), &env);
+            assert_eq!(
+                registered_store(&rendered),
+                Some(env.store_path().to_path_buf()),
+                "the reader must return exactly the store path the writer embedded: {rendered}"
+            );
+        }
+    }
+
+    /// The default store's plist carries no `--store-path` flag at all, so the
+    /// reader must answer `None` rather than misreading the next argument
+    /// (`daemon`) as a store.
+    #[test]
+    fn a_plist_with_no_store_flag_reads_as_serving_no_named_store() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let rendered = plist(Path::new("/usr/local/bin/story"), &env);
+        assert_eq!(registered_store(&rendered), None, "{rendered}");
+    }
+
+    /// A hand-edited or truncated plist can carry the flag with nothing after
+    /// it. The reader must report `None`, never panic on an out-of-bounds
+    /// index.
+    #[test]
+    fn registered_store_ignores_a_flag_with_no_value() {
+        assert_eq!(
+            registered_store(
+                "<key>ProgramArguments</key><array><string>/usr/local/bin/story</string>\
+                 <string>--store-path</string></array>"
+            ),
+            None
         );
     }
 
