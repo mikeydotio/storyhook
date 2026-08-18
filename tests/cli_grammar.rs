@@ -92,9 +92,10 @@ fn move_to_done_archives() {
         .success()
         .stdout(predicate::str::contains("closed_at:"));
 
-    // Archived stories still appear in list with [done] state
+    // SH-409: closed stories are excluded from `list` by default now —
+    // `--include-closed` is what still finds it in `[done]` state.
     story(dir.path())
-        .arg("list")
+        .args(["list", "--include-closed"])
         .assert()
         .success()
         .stdout(predicate::str::contains("[done]"));

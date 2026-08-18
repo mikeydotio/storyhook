@@ -189,6 +189,9 @@ fn build_list(args: &Map<String, Value>) -> Result<Vec<String>, String> {
     push_opt(&mut argv, args, "phase", "--phase");
     push_opt(&mut argv, args, "story_type", "--type");
     push_flag(&mut argv, args, "drafts", "--drafts");
+    push_flag(&mut argv, args, "include_closed", "--include-closed");
+    push_flag(&mut argv, args, "include_archived", "--include-archived");
+    push_flag(&mut argv, args, "all", "--all");
     Ok(argv)
 }
 
@@ -400,6 +403,24 @@ const LIST_FIELDS: &[FieldSpec] = &[
         kind: FieldKind::Bool,
         required: false,
         description: "Only draft stories.",
+    },
+    FieldSpec {
+        name: "include_closed",
+        kind: FieldKind::Bool,
+        required: false,
+        description: "Also show closed, unarchived stories (excluded by default).",
+    },
+    FieldSpec {
+        name: "include_archived",
+        kind: FieldKind::Bool,
+        required: false,
+        description: "Also show archived stories (excluded by default; implies include_closed).",
+    },
+    FieldSpec {
+        name: "all",
+        kind: FieldKind::Bool,
+        required: false,
+        description: "Shorthand for include_closed and include_archived together.",
     },
 ];
 

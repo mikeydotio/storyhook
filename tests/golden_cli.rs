@@ -452,6 +452,13 @@ const LIST: &[&[&str]] = &[
     // Two filters at once: they must intersect, not replace each other.
     &["list", "--state", "todo", "--priority", "critical"],
     &["list", "--type", "normal", "--label", "backend"],
+    // SH-409: the default visibility filter, and the three ways past it.
+    // `--state done` is deliberately *not* one of them — it is already
+    // covered above, and its own message (naming the state, not a flag) is
+    // the whole point of keeping it separate from `--include-closed`.
+    &["list", "--include-closed"],
+    &["list", "--include-archived"],
+    &["list", "--all"],
 ];
 
 #[test]
