@@ -197,7 +197,7 @@ Usage:
   story attachment list <id>
   story attachment remove <id> <n>
   story attachment save <id> <n> <path>
-  story pr-check [<id>]                             (requires the github-sync feature)
+  story pr-check [<id>]                             (requires the github-pr feature)
   story github-auth login|status|logout             (durable credential for unattended pr-check polling)
   story scaffold agents-md|claude-md|cursor-rules
   story help [<command>] [--compact] [--all]

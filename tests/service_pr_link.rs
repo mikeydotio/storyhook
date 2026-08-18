@@ -1,7 +1,7 @@
 //! `PrLinkService::link`/`unlink` — `story link-pr` / `story unlink-pr`
 //! (SH-49).
 //!
-//! Deliberately unconditional (no `#![cfg(feature = "github-sync")]`):
+//! Deliberately unconditional (no `#![cfg(feature = "github-pr")]`):
 //! linking and unlinking a pull request never talk to GitHub, so they must
 //! work whether or not that feature is compiled in — see the module doc on
 //! `storyhook::service::pr_link` and SH-49's council verdict.
@@ -200,13 +200,13 @@ fn unlink_removes_the_row() {
 
 /// The compile-time proof that would have caught the original deviation:
 /// `PrLinkService::link`/`unlink` must be present and callable without the
-/// `github-sync` feature. Only meaningful in a `--no-default-features`
+/// `github-pr` feature. Only meaningful in a `--no-default-features`
 /// build; under the default feature set it is redundant with the tests
 /// above and still passes.
 #[test]
-fn link_and_unlink_work_without_the_github_sync_feature() {
+fn link_and_unlink_work_without_the_github_pr_feature() {
     let fixture = ServiceFixture::new();
-    let id = create(&fixture, "No github-sync feature needed");
+    let id = create(&fixture, "No github-pr feature needed");
     let ctx = fixture.ctx();
     let service = PrLinkService::new(&ctx);
 

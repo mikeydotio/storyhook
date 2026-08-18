@@ -1,16 +1,17 @@
 //! `story link-pr` / `story unlink-pr` — linking GitHub pull requests to
 //! stories (SH-49).
 //!
-//! # Why linking needs no GitHub access, and lives outside `github-sync`
+//! # Why linking needs no GitHub access, and lives outside `github-pr`
 //!
 //! [`PrLinkService::link`] and [`PrLinkService::unlink`] never talk to
 //! GitHub — a PR URL is parsed, not fetched — so they work in every build,
-//! `github-sync` feature or not, and never spend a caller's token. That is a
+//! `github-pr` feature or not, and never spend a caller's token. That is a
 //! deliberate design decision, not an accident of what happened to be easy:
 //! see SH-49's council verdict, "Linking/unlinking is
 //! feature-independent of github-sync — a pure event-sourced fact requiring
-//! no network access." This module and [`crate::domain::pr_url`], which it
-//! depends on, are consequently both ungated.
+//! no network access" (the feature it names is `github-pr` since SH-408
+//! renamed it). This module and [`crate::domain::pr_url`], which it depends
+//! on, are consequently both ungated.
 //!
 //! `story pr-check` — the one operation that does talk to GitHub, to learn
 //! whether a linked pull request merged — lives in the sibling,
@@ -81,7 +82,7 @@ impl<'ctx, S: Store> PrLinkService<'ctx, S> {
     /// type declared elsewhere. Gated the same way `pr_check` is: nothing
     /// outside that feature calls it, and an unused-but-public accessor is
     /// exactly the dead code `#[warn(dead_code)]` exists to catch.
-    #[cfg(feature = "github-sync")]
+    #[cfg(feature = "github-pr")]
     pub(super) fn ctx(&self) -> &'ctx Ctx<'ctx, S> {
         self.ctx
     }
@@ -96,10 +97,10 @@ impl<'ctx, S: Store> PrLinkService<'ctx, S> {
     /// `commit-sync`'s own link stopped refusing a closed story once its
     /// observation-only argument was made explicit; nothing about that
     /// argument reaches this write). Refuses a `close_on_merge: true` link
-    /// whose repository disagrees with the project's configured `github_sync`
-    /// remote — see the module doc — unless the project has none configured,
-    /// in which case there is nothing to validate against and the link is
-    /// accepted as given.
+    /// whose repository matches none of the project's registered GitHub
+    /// remotes — see the module doc — unless the project has none
+    /// registered, in which case there is nothing to validate against and
+    /// the link is accepted as given.
     ///
     /// Re-linking a PR this story already links **upserts**: the new
     /// `close_on_merge` value replaces the old one, which is how a caller
@@ -218,7 +219,7 @@ impl<'ctx, S: Store> PrLinkService<'ctx, S> {
 /// origin` is consequently invisible here even with a perfectly good
 /// `origin` in its working tree — registering it is what makes a project
 /// reachable at all (SH-116), and this reads the same registration.
-pub(super) fn configured_github_repos<S: Store>(
+pub(crate) fn configured_github_repos<S: Store>(
     ctx: &Ctx<'_, S>,
 ) -> Result<Vec<GithubRepo>, AppError> {
     let project = ctx.project();

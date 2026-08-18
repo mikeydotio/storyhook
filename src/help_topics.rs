@@ -796,7 +796,7 @@ Examples:
   story github-auth status    # "a GitHub credential is stored..."
   story github-auth logout    # removes it
 
-Requires the github-sync feature, like `story pr-check` itself.
+Requires the github-pr feature, like `story pr-check` itself.
 
 Related:
   story pr-check      — Check linked pull requests by hand
@@ -2589,7 +2589,6 @@ Examples:
   story --version         # Print the currently installed version
 
 Notes:
-  - Requires the 'github-sync' build feature (enabled by default).
   - Installs into the directory of the current binary; if that directory is
     not writable (e.g. /usr/local/bin), re-run with elevated privileges or use
     the installer at https://github.com/mikeydotio/storyhook.

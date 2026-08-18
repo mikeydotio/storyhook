@@ -15,7 +15,7 @@
 //!   it (SH-287).
 //! * [`github_poll`] — the unattended background poll for merged pull
 //!   requests (SH-212), spending the credential `story github-auth login`
-//!   stored in the OS keychain. `github-sync`-gated: absent entirely from a
+//!   stored in the OS keychain. `github-pr`-gated: absent entirely from a
 //!   build without it.
 //! * [`install_guard`] — what `story daemon install` refuses to give a
 //!   permanent seat on this machine (SH-411).
@@ -37,7 +37,7 @@ pub mod backup;
 pub mod bus;
 pub mod commands;
 pub mod crash;
-#[cfg(feature = "github-sync")]
+#[cfg(feature = "github-pr")]
 pub mod github_poll;
 pub mod http1;
 pub mod install_guard;

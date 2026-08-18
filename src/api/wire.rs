@@ -374,8 +374,10 @@ mod tests {
         assert_eq!(received, request);
     }
 
-    /// A credential the client read has to arrive intact, or `github-sync` is
-    /// back to reading the daemon's environment (SH-153).
+    /// A credential the client read has to arrive intact, or `pr-check` is
+    /// back to reading the daemon's environment (SH-153, originally about
+    /// the now-retired sync engine but load-bearing for every caller of this
+    /// field since).
     #[test]
     fn a_request_carries_its_token_across_the_hop() {
         let token =

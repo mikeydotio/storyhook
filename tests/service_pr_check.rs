@@ -1,9 +1,9 @@
 //! `run_check`/`PrLinkService::check` — `story pr-check` (SH-49).
 //!
-//! Gated on `github-sync`: unlike `tests/service_pr_link.rs`'s `link`/
+//! Gated on `github-pr`: unlike `tests/service_pr_link.rs`'s `link`/
 //! `unlink` tests, everything here talks to (a fake) GitHub.
 
-#![cfg(feature = "github-sync")]
+#![cfg(feature = "github-pr")]
 
 use storyhook::domain::StoryEvent;
 use storyhook::domain::remote::RemoteUrl;

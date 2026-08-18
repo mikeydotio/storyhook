@@ -1,12 +1,12 @@
 //! `daemon::github_poll::tick` — the daemon's unattended GitHub poll (SH-212).
 //!
-//! Gated on `github-sync`, the same as `tests/service_pr_check.rs`, whose
+//! Gated on `github-pr`, the same as `tests/service_pr_check.rs`, whose
 //! `check_closes_the_story_when_a_close_on_merge_link_merges` scenario the
 //! third test here mirrors — driven through `tick` instead of `run_check`
 //! directly, to prove the credential-read-and-iterate wiring between them,
 //! not to re-prove `run_check`'s own merge-detection logic.
 
-#![cfg(feature = "github-sync")]
+#![cfg(feature = "github-pr")]
 
 use std::sync::Arc;
 
