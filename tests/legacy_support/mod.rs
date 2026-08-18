@@ -236,21 +236,26 @@ pub fn custom_config_tree() -> (TempDir, PathBuf) {
 /// Gives a legacy tree the github-sync configuration the pre-rearchitecture
 /// binary kept *beside* `project.toml` (SH-189): `.storyhook/github-sync.toml`,
 /// plus one `.storyhook/github-sync/bases/<id>.json` per story listed in
-/// `based_on`. Returns both, so a test can compare what the store ends up
-/// holding against exactly what the tree held.
+/// `based_on`. Returns both, so a test can compare what it wrote against what
+/// a reader reports finding.
 ///
-/// Written through `storage`'s own writers for the reason
-/// [`custom_config_tree`] gives: a fixture assembled with `fs::write` tests the
-/// fixture's idea of the format rather than the format.
+/// Written directly with `fs::write` rather than through a `storage` helper —
+/// SH-408 retired the sync engine and its rollback-leg writers with it, and
+/// nothing in this binary interprets either file's contents any more (see
+/// [`legacy::LegacyPaths::github_sync_file`]'s own doc comment): the *reader*
+/// this fixture is exercised against only checks presence and counts `*.json`
+/// files, never parses either, so a hand-written fixture is not testing its
+/// own idea of a format the production reader has also stopped caring about.
 ///
 /// Each base deliberately **differs** from the story it belongs to. A merge
-/// base is what github-sync last merged against, not what the story says now,
-/// so a carry that quietly re-derived it from the story's current snapshot
-/// would still look correct against an identical one.
+/// base is what github-sync last merged against, not what the story says now
+/// — nothing left reads it, but the fixture still writes a distinguishable
+/// value so a test can tell "the right file" from "any file."
 pub fn add_github_sync(
     root: &Path,
     based_on: &[&str],
 ) -> (serde_json::Value, BTreeMap<String, StorySnapshot>) {
+    let paths = legacy::LegacyPaths::new(root);
     let mappings: Vec<serde_json::Value> = based_on
         .iter()
         .enumerate()
@@ -267,7 +272,12 @@ pub fn add_github_sync(
         "sync": {"mode": "manual", "last_sync_at": "2026-02-01T00:00:00Z"},
         "mappings": mappings,
     });
-    storage::save_legacy_github_sync(root, &config).expect("writing github-sync.toml");
+    let toml_value: toml::Value = serde_json::from_value(config.clone()).unwrap();
+    std::fs::write(
+        paths.github_sync_file(),
+        toml::to_string_pretty(&toml_value).unwrap(),
+    )
+    .expect("writing github-sync.toml");
 
     let snapshots: BTreeMap<String, StorySnapshot> = storage::load_all_snapshots(root)
         .expect("folding the tree's stories")
@@ -283,7 +293,17 @@ pub fn add_github_sync(
         base.title = format!("{} (as GitHub last saw it)", base.title);
         bases.insert((*id).to_string(), base);
     }
-    storage::save_legacy_github_bases(root, &bases).expect("writing the merge bases");
+    if !bases.is_empty() {
+        let dir = paths.github_bases_dir();
+        std::fs::create_dir_all(&dir).expect("creating github-sync/bases");
+        for (id, base) in &bases {
+            std::fs::write(
+                dir.join(format!("{id}.json")),
+                serde_json::to_string_pretty(base).unwrap(),
+            )
+            .expect("writing a merge base");
+        }
+    }
     (config, bases)
 }
 

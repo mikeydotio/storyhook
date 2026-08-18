@@ -1691,7 +1691,11 @@ cmd_work() {
 # as "eyeball `story graph`'s output ... this is a manual check" — the CLI
 # does not expose raw edges via `story graph`, but `story list --json`
 # already carries every story's own `blocked-by` relationships, which is
-# all a cycle check needs.
+# all a cycle check needs. Bare (no --include-closed): a closed story is
+# never a blocker worth resolving -- `is_ready` already treats a
+# `blocked-by` edge to a closed story as non-blocking -- so SH-409's
+# default exclusion narrows this edge set to exactly the ones a cycle
+# here could actually stall, not fewer.
 _find_blocking_cycles() {
   awk -F'\t' '
     NF == 2 { blocker[NR]=$1; blocked[NR]=$2; nodes[$1]=1; nodes[$2]=1; n=NR }

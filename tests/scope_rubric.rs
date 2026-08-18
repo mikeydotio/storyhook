@@ -26,7 +26,7 @@
 //! Some checks here are deliberately NOT derived over a broad corpus. A blanket
 //! scan for `"story new"` across every help topic or every plugin document was
 //! tried first and rejected: `story new` appears in cross-reference rows on
-//! topics that never offer the filing decision at all (`decompose`, `github-sync`,
+//! topics that never offer the filing decision at all (`decompose`,
 //! `json-format`, `priority-rubric`'s own `Related:` block), and in plugin index
 //! pages (`README.md`, `skills/story/SKILL.md`'s frontmatter) that merely describe
 //! what the command does. A marker precise enough to exclude those false positives

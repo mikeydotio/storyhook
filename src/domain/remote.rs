@@ -17,13 +17,15 @@
 //!
 //! Registration and lookup must normalize *identically*, forever. Two functions
 //! that drift is the entire defect this design exists to prevent — and the drift
-//! was not hypothetical. [`crate::github::sync_state::parse_github_url`] parsed
-//! remote URLs for a different purpose, and because it matched three literal
-//! prefixes it refused `https://user@github.com/owner/repo.git` — a form two
-//! real repositories on that same machine use — while this module accepted it.
-//! One of the two was wrong, and it was not the one with the tests for it.
-//! SH-137 fixed that parser and then deleted it: it calls
-//! [`RemoteUrl::path_on`] now, so there is one grammar in the binary.
+//! was not hypothetical. `github::sync_state::parse_github_url` (deleted with
+//! the sync engine it served, SH-408) parsed remote URLs for a different
+//! purpose, and because it matched three literal prefixes it refused
+//! `https://user@github.com/owner/repo.git` — a form two real repositories on
+//! that same machine use — while this module accepted it. One of the two was
+//! wrong, and it was not the one with the tests for it. SH-137 fixed that
+//! parser to call [`RemoteUrl::path_on`] instead, so there is one grammar in
+//! the binary — see [`crate::domain::github_remote::parse_github_url`] for
+//! where that logic lives today.
 //!
 //! So [`RemoteUrl`] has no public fields and no constructor other than
 //! [`RemoteUrl::normalize`] and the lookup-shaped wrapper around it. A caller
@@ -537,7 +539,8 @@ fn bracketed_host_end(raw: &str) -> Result<Option<usize>, NormalizeError> {
 fn network_key(authority: &str, path: &str, raw: &str) -> Result<String, NormalizeError> {
     // Everything through the last `@` is userinfo. Dropping it is what makes
     // `https://user@github.com/o/r` and `https://github.com/o/r` one identity —
-    // and it is the case the sibling parser in `github::sync_state` gets wrong.
+    // the exact case a GitHub-specific parser once got wrong before SH-137
+    // unified the two grammars (see this module's header).
     let host = match authority.rsplit_once('@') {
         Some((_, host)) => host,
         None => authority,

@@ -1,54 +1,32 @@
 //! Pins the `export`, `import` and `import-project` help topics against the
-//! document and behaviour `story export` actually has (SH-215).
+//! document and behaviour `story export` actually has (SH-215), and the
+//! `list`, `delete` and `archive` topics against `story list`'s visibility
+//! filter (SH-409).
 //!
 //! `tests/help_topic_references.rs` is hermetic by construction — it scans
 //! source text and calls [`storyhook::help_topics::get_help_topic`] directly,
 //! checking only that a topic a message points at *exists*. It has no way to
 //! ask whether a topic's *claims* about a command are still true, which is
 //! exactly how SH-215 happened: `story export`'s document grew from a bare
-//! array of open stories to a ten-key object carrying every story, its
-//! catalog, and (when configured) its settings, remotes and github-sync
-//! state — and the help topic describing it never moved. This file drives the
-//! real CLI and the real [`ProjectExport`] type to check the claims
-//! themselves, so the next field export grows has to update the topic before
-//! this file goes green again.
+//! array of open stories to a multi-key object carrying every story, its
+//! catalog, and (when configured) its settings and remotes — and the help
+//! topic describing it never moved. This file drives the real CLI and the
+//! real [`ProjectExport`] type to check the claims themselves, so the next
+//! field export grows has to update the topic before this file goes green
+//! again.
 
 use std::collections::BTreeMap;
 
-use storyhook::domain::{Member, StateDef, StorySnapshot, SuperState, TypeDef};
+use storyhook::domain::{Member, StateDef, SuperState, TypeDef};
 use storyhook::help_topics::get_help_topic;
 use storyhook::service::transfer::{
     ExportedRemote, ExportedSettings, ExportedStory, ProjectExport,
 };
-use storyhook::service::{NewStoryInput, StoryService};
-use storyhook::store::{ReadOps, Store, StoryNo};
-use storyhook_test_support::{ServiceFixture, TestEnv, scratch_dir};
+use storyhook_test_support::{TestEnv, scratch_dir};
 
 /// A `story` command, using the shared isolated test environment.
 fn story(dir: &std::path::Path) -> assert_cmd::Command {
     TestEnv::shared().story(dir)
-}
-
-/// A real [`StorySnapshot`], taken from a fixture rather than hand-built:
-/// its fields and the invariants `fold_story` maintains between them make a
-/// hand-constructed one a poor stand-in for what an export document actually
-/// carries.
-fn a_real_story_snapshot() -> StorySnapshot {
-    let fixture = ServiceFixture::new();
-    let id = StoryService::new(&fixture.ctx())
-        .create(&NewStoryInput {
-            title: "A story with a github-sync base".to_string(),
-            ..NewStoryInput::default()
-        })
-        .expect("creating a story")
-        .id;
-    let no = StoryNo::parse_id("SH", &id).expect("a well-formed id");
-    fixture
-        .store()
-        .read(|tx| tx.story(fixture.project(), no))
-        .expect("reading the story back")
-        .expect("the story exists")
-        .snapshot
 }
 
 /// Every top-level key a fully-populated [`ProjectExport`] carries must be
@@ -63,9 +41,6 @@ fn a_real_story_snapshot() -> StorySnapshot {
 /// compiler-exhaustive literal cannot.
 #[test]
 fn the_export_topic_names_every_key_the_export_document_carries() {
-    let mut github_bases = BTreeMap::new();
-    github_bases.insert("SH-1".to_string(), a_real_story_snapshot());
-
     let export = ProjectExport {
         schema: 1,
         prefix: Some("TST".to_string()),
@@ -93,8 +68,14 @@ fn the_export_topic_names_every_key_the_export_document_carries() {
             raw: "https://github.com/acme/widgets.git".to_string(),
             registered_at: "2026-01-01T00:00:00Z".to_string(),
         }],
-        github_sync: Some(serde_json::json!({"github": {"owner": "acme", "repo": "widgets"}})),
-        github_bases,
+        // Named explicitly so the literal stays exhaustive (this test's own
+        // point), but never populated: SH-408 retired the engine that
+        // configured either, `export` never writes them from a current
+        // store, and `skip_serializing_if` omits both from the JSON object
+        // below — they carry no claim for the help topic to make (see
+        // `ProjectExport::github_sync`'s own doc comment).
+        github_sync: None,
+        github_bases: BTreeMap::new(),
         stories: vec![ExportedStory {
             id: "TST-1".to_string(),
             events: Vec::new(),
@@ -111,10 +92,10 @@ fn the_export_topic_names_every_key_the_export_document_carries() {
     // Vacuity guard: a fully-populated document that still omitted an
     // optional field would make the assertion below trivially satisfiable.
     assert!(
-        object.len() >= 10,
-        "a fully-populated ProjectExport should carry at least 10 top-level keys \
-         (schema, prefix, states, types, members, settings, remotes, github_sync, \
-         github_bases, stories); found {}: {:?}",
+        object.len() >= 8,
+        "a fully-populated ProjectExport should carry at least 8 top-level keys \
+         (schema, prefix, states, types, members, settings, remotes, stories); \
+         found {}: {:?}",
         object.len(),
         object.keys().collect::<Vec<_>>()
     );
@@ -295,4 +276,144 @@ fn the_import_topic_points_an_export_document_at_the_verb_that_can_read_it() {
         "the import topic must name `story import-project` as where a `story \
          export` document is actually read: {topic}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// SH-409: `story list`'s visibility default and the topics that describe it.
+//
+// SH-215 caught a document describing what `story export` *used to* return;
+// SH-409 is the same class in the opposite direction — three topics
+// (`list`, `delete`, `archive`) already claimed a behaviour `list` did not
+// have (`src/help_topics.rs:308-309`, `:2217`, and `story help delete`'s own
+// "still appears in `story list`" said the opposite of what it now must).
+// Checking a topic's prose against real CLI output once is what stops a
+// future change to the visibility filter from silently re-opening either
+// gap.
+// ---------------------------------------------------------------------------
+
+/// A fresh project with one story of each visibility category. Returns the
+/// project handle; ids are assigned in creation order: SH-1 open, SH-2
+/// closed, SH-3 archived, SH-4 deleted.
+fn project_with_one_of_each_visibility_category() -> storyhook_test_support::Project<'static> {
+    let project = TestEnv::shared().project().build();
+    project.run(&["new", "Open"]).success();
+    project.run(&["new", "Closed"]).success();
+    project.run(&["new", "Archived"]).success();
+    project.run(&["new", "Deleted"]).success();
+    project.run(&["move", "SH-2", "done"]).success();
+    project.run(&["move", "SH-3", "done"]).success();
+    project.run(&["archive", "SH-3"]).success();
+    project
+        .run(&["delete", "SH-4", "no longer needed"])
+        .success();
+    project
+}
+
+fn list_ids(project: &storyhook_test_support::Project<'_>, args: &[&str]) -> Vec<String> {
+    let mut full = vec!["list"];
+    full.extend_from_slice(args);
+    project.json(&full)["stories"]
+        .as_array()
+        .expect("a stories array")
+        .iter()
+        .map(|view| view["story"]["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// The `list` topic's lede claims closed, archived and soft-deleted stories
+/// are excluded by default — this drives the real CLI rather than trusting
+/// the prose, which is exactly the gap SH-409 found (the topic used to claim
+/// this and `list` did not do it).
+#[test]
+fn the_list_topic_matches_lists_actual_default_visibility() {
+    let topic = get_help_topic("list").expect("the list topic exists");
+    assert!(
+        topic.contains("closed") && topic.contains("archived") && topic.contains("soft-deleted"),
+        "the list topic must name all three categories its default excludes: {topic}"
+    );
+
+    let project = project_with_one_of_each_visibility_category();
+    let ids = list_ids(&project, &[]);
+    assert_eq!(
+        ids,
+        ["SH-1"],
+        "closed, archived and deleted must be absent from the default list, \
+         matching what the topic claims: {ids:?}"
+    );
+}
+
+/// Every visibility flag the `list` topic documents must actually be
+/// accepted by the parser, and do what the topic says it does.
+#[test]
+fn the_list_topic_names_working_visibility_flags() {
+    let topic = get_help_topic("list").expect("the list topic exists");
+    for flag in ["--include-closed", "--include-archived", "--all"] {
+        assert!(
+            topic.contains(flag),
+            "the list topic must document {flag}: {topic}"
+        );
+    }
+
+    let project = project_with_one_of_each_visibility_category();
+    assert_eq!(list_ids(&project, &["--include-closed"]), ["SH-1", "SH-2"]);
+    assert_eq!(
+        list_ids(&project, &["--include-archived"]),
+        ["SH-1", "SH-2", "SH-3"],
+        "the topic says --include-archived implies --include-closed"
+    );
+    assert_eq!(list_ids(&project, &["--all"]), ["SH-1", "SH-2", "SH-3"]);
+}
+
+/// The `list` topic says naming a closed state lifts the closed exclusion
+/// but not the archived one — checked against the real archived-and-done
+/// story built above, not just the closed one.
+#[test]
+fn the_list_topic_is_right_about_what_state_lifts() {
+    let topic = get_help_topic("list").expect("the list topic exists");
+    assert!(
+        topic.contains("lifts the") && topic.contains("closed exclusion"),
+        "the list topic must describe the --state lift: {topic}"
+    );
+
+    let project = project_with_one_of_each_visibility_category();
+    let ids = list_ids(&project, &["--state", "done"]);
+    assert_eq!(
+        ids,
+        ["SH-2"],
+        "--state done reveals the plain closed story but not the archived one"
+    );
+}
+
+/// The `delete` topic's own claim, driven against the real CLI: no
+/// visibility flag reaches a deleted story.
+#[test]
+fn the_delete_topic_is_right_that_no_list_flag_reveals_it() {
+    let topic = get_help_topic("delete").expect("the delete topic exists");
+    assert!(
+        topic.to_lowercase().contains("no combination") || topic.to_lowercase().contains("never"),
+        "the delete topic must say list cannot be made to show a deleted story: {topic}"
+    );
+
+    let project = project_with_one_of_each_visibility_category();
+    let ids = list_ids(&project, &["--all"]);
+    assert!(
+        !ids.contains(&"SH-4".to_string()),
+        "SH-4 (deleted) must not appear even under --all: {ids:?}"
+    );
+}
+
+/// The `archive` topic's claim that `story list` excludes an archived story
+/// by default and `--include-archived`/`--all` reveal it.
+#[test]
+fn the_archive_topic_is_right_about_lists_default() {
+    let topic = get_help_topic("archive").expect("the archive topic exists");
+    assert!(
+        topic.contains("--include-archived") && topic.contains("--all"),
+        "the archive topic must name the flags that reveal an archived story \
+         in `story list`: {topic}"
+    );
+
+    let project = project_with_one_of_each_visibility_category();
+    assert!(!list_ids(&project, &[]).contains(&"SH-3".to_string()));
+    assert!(list_ids(&project, &["--include-archived"]).contains(&"SH-3".to_string()));
 }

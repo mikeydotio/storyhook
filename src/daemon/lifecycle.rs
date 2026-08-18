@@ -870,6 +870,41 @@ fn acquire_spawn_lock(path: &Path, deadline: Duration) -> Result<File, AppError>
 }
 
 /// Tells a human at a terminal that this wait is a queue rather than a hang.
+/// Names a login agent that is broken or points somewhere else — on the one
+/// path where that fact has just cost the operator something.
+///
+/// This client is about to *spawn* a daemon, which on a machine whose login
+/// agent works should almost never happen: launchd started one at login and
+/// every client since has found it usable. Reaching here means either this is
+/// the first daemon since boot on a machine with no agent (nothing to say), or
+/// the agent that was supposed to have started one did not. So this fires at
+/// most once per daemon lifetime and essentially never on a healthy machine,
+/// which is what keeps it clear of SH-396's self-noise shape — a gate that
+/// repeats one unchanged fact until nobody reads it.
+///
+/// Three conditions, each load-bearing:
+///
+/// * **It warns and never refuses.** `ensure` is availability plumbing;
+///   refusing to start a daemon over a fact about a *launchd agent* would take
+///   the tracker down for something with no bearing on the daemon this call is
+///   about. That trade — a silent non-start in exchange for a rare wrong
+///   migration — is the one SH-411's council eliminated a whole candidate for.
+/// * **Only the default store.** A client that named its own store has no
+///   stake in the machine's login agent.
+/// * **Only a terminal.** [`crate::invoke::HttpInvoker`] re-enters `ensure`
+///   from inside a live TUI session, and `tests/cli_error_streams.rs` pins
+///   stderr silent on success — the same guard [`announce_waiting`] takes, for
+///   both of the same reasons.
+fn note_stale_login_agent(env: &Environment) {
+    use std::io::IsTerminal;
+    if !env.store().is_default() || !std::io::stderr().is_terminal() {
+        return;
+    }
+    if let Some(said) = crate::daemon::agent::warning(&crate::daemon::agent::health(env)) {
+        eprintln!("warning: {said}");
+    }
+}
+
 fn announce_waiting(path: &Path) {
     use std::io::IsTerminal;
     if std::io::stderr().is_terminal() {
@@ -974,6 +1009,8 @@ fn spawn_locked(env: &Environment) -> Result<DaemonInfo, AppError> {
         let _ = FileExt::unlock(&lock);
         return Err(adopted);
     }
+
+    note_stale_login_agent(env);
 
     let outcome = (|| -> Result<DaemonInfo, AppError> {
         // Something is there that is not ours. Ask it to stand down before
@@ -1341,7 +1378,7 @@ pub const CONTROL_DEADLINE: Duration = Duration::from_secs(5);
 /// removes is *other people's work* from your wait, which is the only thing that
 /// made a per-command number incoherent: the daemon serves one request at a
 /// time, so a naked wall-clock deadline on `story list` would have to be as long
-/// as the longest `github-sync` it might be queued behind, or it would abandon
+/// as the longest `pr-check` it might be queued behind, or it would abandon
 /// healthy work (SH-144).
 ///
 /// # Where the number comes from
@@ -1380,18 +1417,21 @@ pub const SERVED_DEADLINE: Duration = Duration::from_secs(120);
 
 /// The same bound, for the one command whose duration is set off this machine.
 ///
-/// `github-sync` loops per story and per comment against a client that bounds
-/// each call at 30s, so its total is O(stories x comments) x 30s and cannot be
-/// calibrated from local measurement at all. 3600s is **120 consecutive
-/// worst-case calls**: a sync in which that many in a row exhaust their timeout
-/// is throttled or offline, and stopping is the right answer.
+/// `pr-check` loops once per open linked pull request against a client that
+/// bounds each call at 30s, so its total is O(linked PRs) x 30s and cannot be
+/// calibrated from local measurement at all — the same shape the retired
+/// story↔GitHub-Issues sync engine's own O(stories x comments) x 30s total
+/// had (SH-408), and the reason this constant is not renamed away from the
+/// arithmetic that produced it. 3600s is **120 consecutive worst-case
+/// calls**: a check in which that many linked pull requests in a row exhaust
+/// their timeout is throttled or offline, and stopping is the right answer.
 ///
 /// **A longer value, never no value.** An exemption was proposed and rejected:
 /// it would restore the forever-hang this work exists to remove — including a
-/// `github-sync` wedged in a terminal-less `Select::interact()` (SH-153), which
-/// would then never fire at all. One unbounded arm anywhere means the story has
-/// not shipped.
-pub const SYNC_SERVED_DEADLINE: Duration = Duration::from_secs(3600);
+/// credential prompt wedged in a terminal-less `Select::interact()` (SH-153),
+/// which would then never fire at all. One unbounded arm anywhere means the
+/// story has not shipped.
+pub const PR_CHECK_SERVED_DEADLINE: Duration = Duration::from_secs(3600);
 
 /// When a client explains itself to a human who is still waiting.
 ///
@@ -1478,7 +1518,7 @@ pub const GIT_HOOK_DEADLINE: Duration = Duration::from_secs(10);
 /// A type rather than a bare `Duration` so that "no bound" is a value somebody
 /// chose rather than a `None` that reads as "unset". Nothing in storyhook's
 /// **production** code constructs either variant — every command is bounded
-/// by [`SERVED_DEADLINE`] or [`SYNC_SERVED_DEADLINE`], both of which
+/// by [`SERVED_DEADLINE`] or [`PR_CHECK_SERVED_DEADLINE`], both of which
 /// [`crate::event_hooks::HOOK_TIMEOUT_CEILING_SECS`] now makes provably
 /// sufficient (SH-174). This type's sole former producer,
 /// `$STORYHOOK_EXCHANGE_DEADLINE_SECS`, is gone with the gap it existed to
@@ -1502,9 +1542,9 @@ pub enum ExchangeBound {
 /// rather than recomputing a guess it has no way to make correctly for a
 /// project it cannot see.
 ///
-/// `github-sync`'s total is set off this machine (SH-144) and gets its own
+/// `pr-check`'s total is set off this machine (SH-144) and gets its own
 /// constant regardless of hook configuration — its duration is
-/// O(stories × comments) × a 30s per-call client bound, not a function of
+/// O(linked pull requests) × a 30s per-call client bound, not a function of
 /// any one project's hooks. `set-state` and `set-fields` widen by
 /// [`crate::event_hooks::transition_pair_timeout`] instead of the general
 /// case below, because they are the one pair of commands that can fire two
@@ -1520,12 +1560,12 @@ pub enum ExchangeBound {
 /// [`served_deadline_for`], which is what the daemon actually calls.
 #[must_use]
 pub fn served_deadline(command: &str, cwd: &Path) -> Duration {
-    // `pr-check` gets the same long, hook-independent bound as `github-sync`:
-    // its cost is O(linked pull requests) × a per-call client bound, not a
-    // function of any one project's hooks, for the identical reason
-    // `github-sync`'s own duration is set off this machine (SH-144).
-    if command == "github-sync" || command == "pr-check" {
-        return SYNC_SERVED_DEADLINE;
+    // `pr-check`'s cost is O(linked pull requests) × a per-call client
+    // bound, not a function of any one project's hooks — set off this
+    // machine (SH-144), the same reason `PR_CHECK_SERVED_DEADLINE` is its
+    // own constant rather than derived from hook configuration.
+    if command == "pr-check" {
+        return PR_CHECK_SERVED_DEADLINE;
     }
     let allowance = if command == "set-state" || command == "set-fields" {
         crate::event_hooks::transition_pair_timeout(cwd)
@@ -2438,7 +2478,7 @@ mod tests {
         assert!(SPAWN_LOCK_DEADLINE < SERVED_DEADLINE);
         assert!(SERVED_PATIENCE < SERVED_DEADLINE);
         assert!(RECORD_POLL < SERVED_PATIENCE);
-        assert!(SERVED_DEADLINE < SYNC_SERVED_DEADLINE);
+        assert!(SERVED_DEADLINE < PR_CHECK_SERVED_DEADLINE);
 
         // GIT_HOOK_DEADLINE (SH-343): above SPAWN_DEADLINE, or a cold start
         // `await_healthy` itself would accept gets abandoned by the hook that
@@ -2453,28 +2493,24 @@ mod tests {
         // 120 consecutive worst-case GitHub calls, each bounded at 30s by
         // `GithubClient`. Stated as the arithmetic rather than as 3600 so that
         // moving the client's own bound is visible here.
-        assert_eq!(SYNC_SERVED_DEADLINE, 120 * Duration::from_secs(30));
+        assert_eq!(PR_CHECK_SERVED_DEADLINE, 120 * Duration::from_secs(30));
         assert_eq!(SERVED_DEADLINE, Duration::from_secs(120));
         assert_eq!(GIT_HOOK_DEADLINE, Duration::from_secs(10));
     }
 
-    /// Only `github-sync` and `pr-check` get the long bound, with no hooks
-    /// configured — the two commands whose cost is a function of GitHub API
-    /// calls rather than of any one project's hooks.
+    /// Only `pr-check` gets the long bound, with no hooks configured — the
+    /// one command whose cost is a function of GitHub API calls rather than
+    /// of any one project's hooks.
     ///
     /// There is no longer a matching "nothing is ever unbounded" half:
     /// [`served_deadline`] returns a bare [`Duration`], so an unbounded
     /// result is not a value the type can hold, rather than a case a runtime
     /// check has to rule out.
     #[test]
-    fn only_github_sync_gets_the_long_bound_with_no_hooks_configured() {
-        assert_eq!(
-            served_deadline("github-sync", Path::new("/")),
-            SYNC_SERVED_DEADLINE
-        );
+    fn only_pr_check_gets_the_long_bound_with_no_hooks_configured() {
         assert_eq!(
             served_deadline("pr-check", Path::new("/")),
-            SYNC_SERVED_DEADLINE
+            PR_CHECK_SERVED_DEADLINE
         );
         for command in [
             "list",
@@ -2487,6 +2523,10 @@ mod tests {
             "bulk-update",
             "purge",
             "graph",
+            // Retired (SH-408): the verb no longer exists, and this proves it
+            // is no longer special-cased either — an unrecognized command
+            // string gets the ordinary bound, not a stale long one.
+            "github-sync",
             "",
         ] {
             assert_eq!(
@@ -2519,11 +2559,11 @@ mod tests {
             SERVED_DEADLINE + Duration::from_secs(45),
             "the largest configured hook wins, not the one `comment` would actually fire"
         );
-        // Untouched: github-sync's total is set off this machine, not by any
+        // Untouched: pr-check's total is set off this machine, not by any
         // project's hook configuration.
         assert_eq!(
-            served_deadline("github-sync", dir.path()),
-            SYNC_SERVED_DEADLINE
+            served_deadline("pr-check", dir.path()),
+            PR_CHECK_SERVED_DEADLINE
         );
     }
 
@@ -2645,7 +2685,7 @@ mod tests {
     /// had patience for".
     #[test]
     fn a_client_queued_behind_moving_work_waits_however_long_it_takes() {
-        let theirs = serving("github-sync", "not-mine");
+        let theirs = serving("pr-check", "not-mine");
         let inflight = [theirs];
         for hours in [1_u64, 6, 24, 24 * 365] {
             let seen = Observed {
@@ -2706,7 +2746,7 @@ mod tests {
     /// other people's work.
     #[test]
     fn the_deadline_belongs_to_the_record_i_am_queued_behind() {
-        let sync = serving("github-sync", "not-mine");
+        let sync = serving("pr-check", "not-mine");
         let inflight = [sync.clone()];
         // Well past the ordinary bound, nowhere near the sync one.
         let still_waiting = Observed {
@@ -2719,26 +2759,26 @@ mod tests {
         assert_eq!(
             verdict(&still_waiting, None),
             Verdict::Wait,
-            "a frozen github-sync must get the long bound even for a client that sent `list`"
+            "a frozen pr-check must get the long bound even for a client that sent `list`"
         );
         let past_it = Observed {
             mine: "mine",
             inflight: &inflight,
             mine_for: None,
-            since_change: SYNC_SERVED_DEADLINE,
-            total: SYNC_SERVED_DEADLINE,
+            since_change: PR_CHECK_SERVED_DEADLINE,
+            total: PR_CHECK_SERVED_DEADLINE,
         };
         assert_eq!(verdict(&past_it, None), Verdict::GiveUpQueued(vec![sync]));
     }
 
     /// A queued client is bound by the **most patient** deadline in the set,
-    /// never the least — one slow `github-sync` buys every neighbour its
+    /// never the least — one slow `pr-check` buys every neighbour its
     /// hour, because a queued client is behind all of it, not whichever
     /// entry happens to be fastest.
     #[test]
     fn one_slow_entry_in_the_set_buys_every_queued_client_its_patience() {
         let comment = serving("comment", "also-not-mine");
-        let sync = serving("github-sync", "not-mine");
+        let sync = serving("pr-check", "not-mine");
         let inflight = [comment, sync];
         let seen = Observed {
             mine: "mine",
@@ -2817,7 +2857,7 @@ mod tests {
     #[test]
     fn the_override_replaces_every_deadline() {
         let short = Some(ExchangeBound::After(Duration::from_millis(250)));
-        let sync = serving("github-sync", "not-mine");
+        let sync = serving("pr-check", "not-mine");
         let inflight = [sync.clone()];
         let queued = Observed {
             mine: "mine",
@@ -2829,7 +2869,7 @@ mod tests {
         assert_eq!(
             verdict(&queued, short),
             Verdict::GiveUpQueued(vec![sync]),
-            "the override must shorten even the github-sync bound"
+            "the override must shorten even the pr-check bound"
         );
 
         let empty: [CurrentRequest; 0] = [];
@@ -2849,7 +2889,7 @@ mod tests {
     #[test]
     fn the_override_shortens_my_own_deadline_too() {
         let short = Some(ExchangeBound::After(Duration::from_millis(250)));
-        let mine = serving("github-sync", "mine");
+        let mine = serving("pr-check", "mine");
         let inflight = [mine.clone()];
         let seen = Observed {
             mine: "mine",
@@ -3075,7 +3115,7 @@ mod tests {
         );
         ledger_abandoned(
             &env,
-            &[abandoned_request("github-sync", "second")],
+            &[abandoned_request("pr-check", "second")],
             "the second reason",
         );
 
@@ -3143,7 +3183,7 @@ mod tests {
         let dir = scratch();
         let env = Environment::at(dir.path());
         std::fs::create_dir_all(env.daemon_state_dir()).expect("the state dir");
-        publish_inflight(&env, &[abandoned_request("github-sync", "stale-one")]);
+        publish_inflight(&env, &[abandoned_request("pr-check", "stale-one")]);
 
         let inflight = InFlight::new(env.clone());
         inflight.harvest_stale();

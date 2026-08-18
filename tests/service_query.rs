@@ -97,7 +97,9 @@ fn ids(views: &[StoryView]) -> Vec<&str> {
 fn list_sorts_by_story_number() {
     let fixture = ServiceFixture::new();
     twelve_stories(&fixture);
-    let views = query(&fixture, |service| service.list(&ListFilters::default()));
+    let views = query(&fixture, |service| {
+        service.list(&ListFilters::default()).map(|o| o.views)
+    });
     assert_eq!(
         ids(&views),
         [
@@ -342,7 +344,7 @@ fn stale_filters_and_annotates_against_the_injected_clock() {
         ..ListFilters::default()
     };
     let views = query_at(&fixture, "2026-01-05T00:00:00Z", |service| {
-        service.list(&filters)
+        service.list(&filters).map(|outcome| outcome.views)
     });
     assert_eq!(ids(&views), [old.as_str()], "only the untouched story");
 
@@ -358,7 +360,7 @@ fn stale_filters_and_annotates_against_the_injected_clock() {
         ..ListFilters::default()
     };
     let views = query_at(&fixture, "2026-01-05T00:00:00Z", |service| {
-        service.list(&filters)
+        service.list(&filters).map(|outcome| outcome.views)
     });
     let commented = views
         .iter()
@@ -574,7 +576,9 @@ fn stale_never_reports_a_closed_story_however_long_ago_it_closed() {
         stale: Some("1d".into()),
         ..ListFilters::default()
     };
-    let views = query_at(&fixture, JUNE_LATER, |service| service.list(&filters));
+    let views = query_at(&fixture, JUNE_LATER, |service| {
+        service.list(&filters).map(|outcome| outcome.views)
+    });
     assert_eq!(
         ids(&views),
         [open.as_str()],
@@ -646,7 +650,9 @@ fn referenced_by_prs_only_arrives_on_show_not_list() {
         .link(&id, "https://github.com/acme/widgets/pull/7", false)
         .expect("linking a PR");
 
-    let listed = query(&fixture, |service| service.list(&ListFilters::default()));
+    let listed = query(&fixture, |service| {
+        service.list(&ListFilters::default()).map(|o| o.views)
+    });
     let listed_view = listed.iter().find(|v| v.story.id == id).unwrap();
     assert!(
         listed_view.referenced_by.prs.is_empty(),
@@ -676,7 +682,9 @@ fn referenced_by_comment_mentions_only_arrive_on_show_not_list() {
         .comment(&mentioner, &format!("superseded by {mentioned}"))
         .expect("commenting");
 
-    let listed = query(&fixture, |service| service.list(&ListFilters::default()));
+    let listed = query(&fixture, |service| {
+        service.list(&ListFilters::default()).map(|o| o.views)
+    });
     let listed_view = listed.iter().find(|v| v.story.id == mentioned).unwrap();
     assert!(
         listed_view.referenced_by.comment_mentions.is_empty(),
@@ -933,7 +941,7 @@ fn list_filters_are_conjunctive() {
         label: Some("infra".into()),
         ..ListFilters::default()
     };
-    let views = query(&fixture, |service| service.list(&filters));
+    let views = query(&fixture, |service| service.list(&filters).map(|o| o.views));
     assert_eq!(ids(&views), [wanted.as_str()]);
 
     let filters = ListFilters {
@@ -942,13 +950,17 @@ fn list_filters_are_conjunctive() {
         ..ListFilters::default()
     };
     assert!(
-        query(&fixture, |service| service.list(&filters)).is_empty(),
+        query(&fixture, |service| service.list(&filters).map(|o| o.views)).is_empty(),
         "a story must satisfy every filter, not any of them"
     );
 }
 
+/// SH-409: the default excludes closed stories entirely, with `message`
+/// naming the count and the flag that would show them; `--include-closed`
+/// (or an explicit `--state <closed slug>`, which is what the second half of
+/// this test drives) brings them back.
 #[test]
-fn list_includes_archived_and_deleted_stories_unless_a_filter_excludes_them() {
+fn list_excludes_closed_stories_by_default_and_says_so() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     new_story(&ctx, "open");
@@ -957,22 +969,42 @@ fn list_includes_archived_and_deleted_stories_unless_a_filter_excludes_them() {
         .set_state(&closed, "done", None, None, None)
         .expect("closing");
 
-    let all = query(&fixture, |service| service.list(&ListFilters::default()));
-    assert_eq!(ids(&all), ["SH-1", "SH-2"]);
-    assert_eq!(
-        all.iter()
-            .filter(|view| view.story.superstate == SuperState::Closed)
-            .count(),
-        1
+    let default = query(&fixture, |service| service.list(&ListFilters::default()));
+    assert_eq!(ids(&default.views), ["SH-1"], "closed is hidden by default");
+    assert!(
+        default
+            .message
+            .as_deref()
+            .is_some_and(|m| m.contains("1 closed") && m.contains("--include-closed")),
+        "the message names the hidden count and the flag: {:?}",
+        default.message
     );
 
-    let filters = ListFilters {
-        state: Some("done".into()),
-        ..ListFilters::default()
-    };
-    assert_eq!(
-        ids(&query(&fixture, |service| service.list(&filters))),
-        ["SH-2"]
+    let included = query(&fixture, |service| {
+        service.list(&ListFilters {
+            include_closed: true,
+            ..ListFilters::default()
+        })
+    });
+    assert_eq!(ids(&included.views), ["SH-1", "SH-2"]);
+    assert_eq!(included.message, None, "nothing left to explain");
+
+    // An explicit `--state done` is an unambiguous request for a closed
+    // column — it lifts the exclusion on its own, and says why.
+    let by_state = query(&fixture, |service| {
+        service.list(&ListFilters {
+            state: Some("done".into()),
+            ..ListFilters::default()
+        })
+    });
+    assert_eq!(ids(&by_state.views), ["SH-2"]);
+    assert!(
+        by_state
+            .message
+            .as_deref()
+            .is_some_and(|m| m.contains("`done` is a closed state")),
+        "{:?}",
+        by_state.message
     );
 }
 
@@ -988,7 +1020,7 @@ fn an_unparseable_priority_list_filters_nothing() {
         ..ListFilters::default()
     };
     assert_eq!(
-        query(&fixture, |service| service.list(&filters)).len(),
+        query(&fixture, |service| service.list(&filters).map(|o| o.views)).len(),
         2,
         "an all-unparseable list has always listed the whole project"
     );
@@ -999,7 +1031,7 @@ fn an_unparseable_priority_list_filters_nothing() {
         ..ListFilters::default()
     };
     assert_eq!(
-        query(&fixture, |service| service.list(&filters))
+        query(&fixture, |service| service.list(&filters).map(|o| o.views))
             .iter()
             .map(|view| view.story.priority.clone())
             .collect::<Vec<_>>(),

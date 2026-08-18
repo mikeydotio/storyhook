@@ -1013,6 +1013,98 @@ export function cleanUpCreatedStories(projectName: string): void {
 }
 
 /**
+ * Fixtures for the two specs whose subject is what a key press does to a
+ * dashboard form -- `modal-enter-autorepeat.spec.ts` (SH-362, the auto-repeat
+ * bit) and `ime-composition-keys.spec.ts` (SH-368, the composition bit).
+ *
+ * Lifted here when the second file needed them, rather than duplicated, for the
+ * reason the notice helpers above were: two copies of a fixture are two things
+ * that can disagree about what a surface looks like, and the surfaces they open
+ * (the delete modal, the statuses screen, the token modal) are shared product
+ * surfaces rather than either story's own.
+ */
+
+/** The headers a direct API call needs: the suite's bearer token, plus the
+ * `X-Storyhook` header a *mutation* must also carry to clear
+ * `mutation_guard_ok`'s CSRF check (`src/api/admission.rs`). */
+function apiHeaders(): Record<string, string> {
+  return {
+    "X-Storyhook": "1",
+    "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
+  };
+}
+
+/** Opens the shared delete modal on `card` through the drawer footer, and types
+ * `reason` (pass `""` to leave the field for the caller to drive itself). */
+export async function openDeleteModal(
+  page: Page,
+  card: Locator,
+  reason: string,
+): Promise<void> {
+  await card.click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
+  await expect(page.locator("#delete-modal")).toHaveClass(/open/);
+  if (reason) await page.locator("#delete-reason").fill(reason);
+}
+
+/** Opens Settings and drills into `project`'s statuses screen. */
+export async function openStatuses(page: Page, project: string): Promise<void> {
+  await page.locator("#settings-btn").click();
+  await expect(page.locator("#settings-view")).toBeVisible();
+  await page
+    .locator(".settings-table tbody tr", { hasText: project })
+    .getByRole("button", { name: "Statuses" })
+    .click();
+  await expect(page.locator(".settings-head h2")).toHaveText(`Statuses · ${project}`);
+}
+
+/** Removes a scratch status through the API -- it holds no stories, so nothing
+ * moves. Loud on failure, for `cleanUpCreatedStories`'s own reason: a cleanup
+ * that gives up quietly leaves the stray it exists to remove, and the next spec
+ * pays for it. */
+export async function deleteStatus(
+  request: APIRequestContext,
+  project: string,
+  slug: string,
+): Promise<void> {
+  const projectId = await projectSlug(request, project);
+  const resp = await request.delete(
+    `/api/repos/${encodeURIComponent(projectId)}/states/${encodeURIComponent(slug)}`,
+    { headers: apiHeaders(), data: {} },
+  );
+  if (!resp.ok()) {
+    throw new Error(
+      `deleteStatus: DELETE ${slug} answered ${resp.status()}: ${await resp.text()}`,
+    );
+  }
+}
+
+/** Answers the page's first `GET /api/repos` with a 401, so `api()`'s own 401
+ * handler opens the token modal.
+ *
+ * A stubbed *reply*, never stubbed behaviour: the modal that opens, the exchange
+ * it performs and the retry it schedules are all the page's real code. The
+ * alternative -- running with no seeded credential -- is deliberately left to
+ * `loopback-requires-a-token.spec.ts`, which is the one spec in this suite that
+ * authenticates nothing and says so in its own header. */
+export async function refuseTheFirstReposRead(page: Page): Promise<void> {
+  let refused = false;
+  await page.route(/\/api\/repos$/, async (route) => {
+    if (refused || route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    refused = true;
+    await route.fulfill({
+      status: 401,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "token required" }),
+    });
+  });
+}
+
+/**
  * Notice-raising helpers, shared between `notice-dock-geometry.spec.ts` (SH-323)
  * and `notice-announcement.spec.ts` (SH-333). Lifted here rather than duplicated
  * when the second file needed them.

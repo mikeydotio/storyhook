@@ -220,6 +220,17 @@ pub const MIGRATIONS: &[Migration] = &[
         // migration 5's `events_reject_delete` warning does not apply.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 18,
+        name: "drop_github_sync",
+        sql: include_str!("schema/0018_drop_github_sync.sql"),
+        // One `DROP TABLE` of a leaf — nothing references `github_bases`, and
+        // no trigger, index or view names it — and one `ALTER TABLE … DROP
+        // COLUMN`, which SQLite implements by rewriting rows rather than by
+        // rebuilding the table. Nothing is rebuilt, so migration 5's
+        // `events_reject_delete` warning does not apply.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

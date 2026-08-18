@@ -1212,11 +1212,11 @@ fn a_record_a_killed_daemon_left_behind_does_not_survive_the_next_ones_start() {
         &environment,
         &[lifecycle::CurrentRequest {
             request_id: "stale-from-a-killed-daemon".to_string(),
-            command: "github-sync".to_string(),
+            command: "pr-check".to_string(),
             project: Some("stale-project".to_string()),
             pid: 1,
             started_at: "2020-01-01T00:00:00Z".to_string(),
-            served_deadline_secs: lifecycle::SYNC_SERVED_DEADLINE.as_secs(),
+            served_deadline_secs: lifecycle::PR_CHECK_SERVED_DEADLINE.as_secs(),
             cwd: std::path::PathBuf::from("/"),
         }],
     );

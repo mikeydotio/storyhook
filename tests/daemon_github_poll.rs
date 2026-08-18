@@ -1,22 +1,21 @@
 //! `daemon::github_poll::tick` — the daemon's unattended GitHub poll (SH-212).
 //!
-//! Gated on `github-sync`, the same as `tests/service_pr_check.rs`, whose
+//! Gated on `github-pr`, the same as `tests/service_pr_check.rs`, whose
 //! `check_closes_the_story_when_a_close_on_merge_link_merges` scenario the
 //! third test here mirrors — driven through `tick` instead of `run_check`
 //! directly, to prove the credential-read-and-iterate wiring between them,
 //! not to re-prove `run_check`'s own merge-detection logic.
 
-#![cfg(feature = "github-sync")]
+#![cfg(feature = "github-pr")]
 
 use std::sync::Arc;
 
 use keyring_core::CredentialStore;
 use storyhook::daemon::github_poll::tick;
+use storyhook::domain::remote::RemoteUrl;
 use storyhook::domain::secret::GithubToken;
 use storyhook::github::credential_store;
-use storyhook::github::storage::SyncStorage;
-use storyhook::github::sync_state::{GithubRepo, GithubSyncConfig, SyncMode, SyncSettings};
-use storyhook::service::{NewStoryInput, PrLinkService, StoreSyncStorage, StoryService};
+use storyhook::service::{NewStoryInput, PrLinkService, StoryService};
 use storyhook::store::{NewProject, ReadOps, Store, StoryNo, WriteOps};
 use storyhook_test_support::{FakeGithubApiFactory, ServiceFixture, default_states, default_types};
 
@@ -47,7 +46,7 @@ fn a_tick_with_no_stored_credential_does_nothing() {
     );
 }
 
-/// A project with no `github_sync` configured is skipped, not treated as an
+/// A project with no GitHub remote registered is skipped, not treated as an
 /// error that could abort the tick for a sibling project — the same
 /// per-project isolation `run_check` itself already guarantees, exercised
 /// here through the poll path.
@@ -77,21 +76,7 @@ fn a_tick_closes_a_story_whose_linked_pr_merged() {
     credential_store::login(&credential_store, &account, &token()).unwrap();
 
     let ctx = fixture.ctx();
-    StoreSyncStorage::new(&ctx)
-        .save_config(&GithubSyncConfig {
-            github: GithubRepo {
-                owner: "acme".to_string(),
-                repo: "widgets".to_string(),
-            },
-            sync: SyncSettings {
-                mode: SyncMode::Manual,
-                last_sync_at: None,
-                last_full_sync_at: None,
-            },
-            etags: Default::default(),
-            mappings: Vec::new(),
-        })
-        .expect("saving github-sync config");
+    fixture.link_origin("https://github.com/acme/widgets");
 
     let id = StoryService::new(&ctx)
         .create(&NewStoryInput {
@@ -155,21 +140,17 @@ fn one_stored_credential_covers_every_project_in_the_store() {
         fixture.cwd(),
         fixture.env().clone(),
     );
-    StoreSyncStorage::new(&second_ctx)
-        .save_config(&GithubSyncConfig {
-            github: GithubRepo {
-                owner: "other-org".to_string(),
-                repo: "other-repo".to_string(),
-            },
-            sync: SyncSettings {
-                mode: SyncMode::Manual,
-                last_sync_at: None,
-                last_full_sync_at: None,
-            },
-            etags: Default::default(),
-            mappings: Vec::new(),
+    fixture
+        .store()
+        .write(|tx| {
+            tx.link_remote(
+                second_project,
+                &RemoteUrl::normalize("https://github.com/other-org/other-repo")
+                    .expect("a well-formed remote url"),
+                "2026-01-01T00:00:00Z",
+            )
         })
-        .expect("saving github-sync config for the second project");
+        .expect("registering the second project's origin");
     let second_id = StoryService::new(&second_ctx)
         .create(&NewStoryInput {
             title: "In the second project".to_string(),

@@ -53,20 +53,20 @@
 //! carry this leg of the round trip structurally cannot make, and the only one
 //! left.
 //!
-//! **`github.sync` used to be the other one, and this note used to say so.**
-//! It was true when written: `src/service/transfer.rs`'s `ExportedSettings`
-//! argued that a partial carry is worse than none, because the per-story
-//! `github_bases` merge bases had no home in a legacy tree, and restoring
-//! mappings without them makes the next sync treat local as base and file every
-//! stale remote value as an ordinary pull. What changed is the premise. SH-189
-//! found where the pre-rearchitecture binary actually kept both —
-//! `.storyhook/github-sync.toml` and `.storyhook/github-sync/bases/<id>.json`,
-//! beside `project.toml` rather than inside it — and taught the document and
-//! `storage.rs` to carry them in full, so the partial carry the argument
-//! rejected was never the choice. SH-233 taught the remaining leg, `story
-//! migrate`, to read them, and the whole loop carries github-sync end to end:
-//! `github_syncs_configuration_and_its_merge_bases_survive_the_whole_loop`
-//! below is the proof.
+//! **`github.sync` used to be a third one, and this note used to explain the
+//! carry rather than its absence.** SH-189 and SH-233 once made the whole loop
+//! carry it end to end — a partial carry (the blob without its per-story merge
+//! bases) is worse than none, because the next sync would treat local as base
+//! and file every stale remote value as an ordinary pull, so both moved
+//! together on every leg. SH-408 retired the engine that read either side of
+//! that carry, which makes the whole question moot rather than merely
+//! answered differently: `ProjectExport::github_sync`/`github_bases` still
+//! deserialize an *old* document's blob (so a backup from before this story
+//! is not silently corrupted on the way in), but `export` never populates
+//! either from a current store and `story migrate` never carries either out of
+//! a legacy tree — see `ProjectExport::github_sync`'s own doc comment, and
+//! `src/service/migrate.rs`'s D5 report logic, for where the two files a tree
+//! still holding them are *named* instead.
 
 mod legacy_support;
 
@@ -470,37 +470,27 @@ fn a_projects_registered_origins_reach_the_document_but_not_a_rebuilt_legacy_tre
 }
 
 #[test]
-fn github_syncs_configuration_and_its_merge_bases_survive_the_whole_loop() {
-    // The last leg of this round trip to learn about github-sync (SH-233). The
-    // document has carried it since SH-189 and `storage::import_project` writes
-    // it back into a tree, but `story migrate` — the leg that *starts* the loop
-    // — read neither file, so a tree that arrived configured left the store
-    // unconfigured and the whole loop stayed green while losing every mapping.
+fn a_tree_still_holding_github_sync_files_round_trips_without_them() {
+    // SH-233 once made this loop carry github-sync end to end. SH-408 retired
+    // the engine that read either file, so `story migrate` now only *names*
+    // them in its report (`src/service/migrate.rs`'s D5 logic; covered in
+    // `tests/service_migrate.rs`) — the two files themselves are left exactly
+    // where they sit, untouched by anything in this loop, and the round trip
+    // below must not be perturbed by their presence.
     let (_tree, root) = custom_config_tree();
-    let (config, bases) = legacy_support::add_github_sync(&root, &["ADA-1", "ADA-3"]);
+    legacy_support::add_github_sync(&root, &["ADA-1", "ADA-3"]);
 
     assert_round_trips(&root, 4);
 
     let (_store_dir, store, _report) = migrate(&root);
     let document = export(&store);
-    assert_eq!(
-        document.github_sync.as_ref(),
-        Some(&config),
-        "the store the migration produced must hold what the tree was configured with"
-    );
-    assert_eq!(
-        document.github_bases, bases,
-        "including the merge base of an archived story — github-sync's bases are per story, not \
-         per open story"
-    );
+    assert_eq!(document.github_sync, None);
+    assert!(document.github_bases.is_empty());
 
-    // Read back through the legacy exporter rather than by parsing the files
-    // here, for the reason `assert_round_trips` reads settings that way: that
-    // is the reader a reverted binary's equivalent would be.
     let (_dir, rebuilt) = rebuild_legacy_tree(&document);
     let reverted = storage::export_project(&rebuilt).expect("re-exporting the rebuilt tree");
-    assert_eq!(reverted.github_sync.as_ref(), Some(&config));
-    assert_eq!(reverted.github_bases, bases);
+    assert_eq!(reverted.github_sync, None);
+    assert!(reverted.github_bases.is_empty());
 }
 
 /// **The preventative, not the instance.** SH-133 was one setting that could not
@@ -513,20 +503,12 @@ fn github_syncs_configuration_and_its_merge_bases_survive_the_whole_loop() {
 /// settable key inherits this check with no production code depending on the
 /// registry and no list here to remember to update.
 ///
-/// **`github.sync` is excluded by `settable()` itself** — it is
-/// `managed_by: "story github-sync"` and no user writes it directly through
-/// `story project settings set`, which is what this loop actually tests.
-/// That is orthogonal to whether the document *carries* it: since SH-189 it
-/// does, in full, alongside `github_bases` — see
-/// `ProjectExport::github_sync`'s own doc comment, and
-/// `export_project_carries_github_sync_and_bases_from_a_legacy_tree` /
-/// `import_project_writes_github_sync_and_bases_into_a_fresh_legacy_tree` in
-/// `src/storage.rs` for that coverage. If a later story ever makes
-/// `github.sync` user-settable, this test goes red on a change that looks
-/// unrelated — that would still be correct, because a *user-written* value
-/// reaching this loop needs the same registry-driven proof every other
-/// settable key gets, distinct from the carry this note used to conflate it
-/// with.
+/// **`github.sync` no longer has a row in `settings::registry()` at all**
+/// (SH-408 retired the key along with the engine it configured), so this
+/// loop's `SettingKind::Document` guard below is now unreachable in practice
+/// — kept anyway, because the registry-driven proof is exactly what would
+/// catch a *future* document-shaped setting reaching this loop with no home
+/// in a legacy tree, which is the failure mode this test exists to prevent.
 #[test]
 fn every_settable_setting_survives_the_whole_loop() {
     use storyhook::output::SettingKind;

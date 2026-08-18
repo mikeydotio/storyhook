@@ -751,8 +751,8 @@ fn a_table_rebuild_with_foreign_keys_left_on_silently_destroys_child_rows() {
     //
     // `DROP TABLE` fires every child's ON DELETE CASCADE while foreign keys are
     // enforced. Nothing errors, the transaction COMMITs, and the migration
-    // reports success. On the bundled SQLite this empties `story_labels`,
-    // `story_relations` and `github_bases` for every project in the store.
+    // reports success. On the bundled SQLite this empties `story_labels` and
+    // `story_relations` for every project in the store.
     let dir = scratch_dir();
     let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
     store.migrate().unwrap();
