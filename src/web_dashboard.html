@@ -558,11 +558,11 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
    what the card does: the "⋯" actions button (opens this card's own menu),
    and any `.rel-id` reference this card renders for a DIFFERENT story (a
    blocked-by badge, a cleared-blocker chip) -- storyRef()'s own
-   stopPropagation() depends on the click actually reaching it. Both are
-   individually still exposed to the identical race this rule closes for the
-   card body; they need genuine per-target interactivity, so they cannot
-   take pointer-events: none, and are tracked separately rather than fixed
-   here. */
+   stopPropagation() depends on the click actually reaching it. Neither can
+   take pointer-events: none, since both need genuine per-target
+   interactivity this rule can't give them -- SH-399 closed the identical
+   race for these two a different way, at the render layer rather than
+   here: populateCard()'s own doc comment covers it. */
 .card .card-actions-btn, .card .rel-id { pointer-events: auto; }
 .card-id-row { display: flex; align-items: center; gap: 0.3125rem; }
 .card-id { font-family: var(--mono); font-size: 0.6875rem; color: var(--fg-faint); font-weight: 600; }
@@ -5277,9 +5277,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * -> CLOSED`, kept for BLOCKER_CLEARED_DWELL_MS so populateCard() can
    * still render it -- lit its own CLOSED colour, then gone -- for a beat
    * after openBlockers() would already have dropped it. Module state, not
-   * per-render: populateCard() rebuilds a card's children from scratch on
-   * every render (`clear(card)`), so nothing here could survive inside
-   * the DOM itself. */
+   * per-render: `dwellingBlockerIds()`'s own pruning is the only thing
+   * that ever ages an entry out, and it must run whether or not
+   * `populateCard()`'s own conditional rebuild (SH-399) actually touches
+   * the DOM this render -- a card's children can now survive an unrelated
+   * render unchanged, but the wall-clock window a dwell entry is good for
+   * does not, so nothing here can be derived from what the DOM happens to
+   * still show. */
   var clearedBlockers = {};
   var BLOCKER_CLEARED_DWELL_MS = 4000;
 
@@ -6988,7 +6992,78 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * state (drag listeners are bound once in `buildCard` and stay bound
    * regardless — the browser itself refuses to start a drag on an element
    * whose `draggable` attribute is `false`, so nothing needs re-binding
-   * here, only the attribute). */
+   * here, only the attribute).
+   *
+   * The identity attributes above always write; the children below only
+   * ever get destroyed and rebuilt when what they'd render actually
+   * changed (SH-399). Before this, `clear(card)` ran unconditionally, on
+   * EVERY render, including a render that changes nothing about this card
+   * at all (the 25s safety poll, another card's mutation, a different
+   * story's SSE update) — and `.rel-id` (`storyRef()`'s button, opening a
+   * DIFFERENT story's drawer) sits inside these children, individually
+   * punched through `.card * { pointer-events: none }` with `pointer-
+   * events: auto` because it needs real per-target interactivity (its
+   * `stopPropagation()` depends on the click reaching it). A `/data` reply
+   * landing between a real mousedown and mouseup on it destroyed the node
+   * out from under the pointer, and per the UI Events click-dispatch
+   * algorithm a `mousedown` target disconnected before `mouseup` means no
+   * `click` fires anywhere — not even `.card` itself, since `.rel-id`'s own
+   * listener, the only one that would have stopped propagation and reached
+   * a DIFFERENT story, never ran. This is the exact hazard SH-397 named as
+   * the residual its own CSS fix could not close.
+   *
+   * The invariant now: a card's children are destroyed only when what they
+   * render changed. Built into a detached `next`, exactly the way this
+   * function always built directly onto `card`; `next.innerHTML` is
+   * compared against the card's own last-committed serialization
+   * (`card.dataset.rendered`) rather than a hand-built fingerprint string
+   * of "the fields that matter" — this file's other four fingerprint-guard
+   * precedents (`buildFilterDropdown`, `buildColumnsDropdown`,
+   * `renderProjectSelector`, `renderHome`'s repo cards) can fingerprint
+   * their own *argument*, because their argument is their whole input; this
+   * function reaches through `meta()` and `findStory()` into state its own
+   * argument doesn't carry, so only a fingerprint of the *output* can be
+   * complete. A hand-built string here would have to separately enumerate,
+   * and keep enumerating as this function grows: a type's emoji glyph
+   * (`meta().types[]`, independent of `st.story_type`'s slug), an
+   * assignee's display name (`meta().members[]`), a referenced blocker's
+   * own status-light color (`storyLight()` -> `findStory(other).
+   * display_state`), that color's dependence on the blocker's index/role
+   * within `meta().states` (`stateColor()`), and the cleared-blocker dwell
+   * ledger's own time-varying state — exactly the enumeration-drift hazard
+   * class this project has paid for repeatedly (SH-136, SH-198, SH-258,
+   * SH-260/276, SH-364). Settled by council vote, unanimous in the runoff;
+   * the verdict is on SH-399 (SH-363 — cite the story, not the council's
+   * own directory, which resolves on no fresh clone).
+   *
+   * Two invariants the guard itself depends on: `next`'s children move into
+   * `card` via `appendChild` (which preserves listeners), never by
+   * re-assigning the stored string back onto `card`'s own markup property
+   * — this file builds markup from a string nowhere at all (SH-217's own
+   * sink scan, `tests/web_test.rs`), and every piece of user text here (a
+   * title, a label) has only ever reached the DOM as a text node; writing
+   * the stored string back that way would be this guard's own
+   * HTML-injection path.
+   * And `.card-actions-btn`'s handler below resolves `findStory(st.id)` at
+   * click time rather than closing over this render's `v` — the card face
+   * renders neither a story's `state` nor its `description`, so a story
+   * that only moves column or edits its description serializes byte-
+   * identically, and a RETAINED button closing over a stale `v` would
+   * silently offer wrong "Set Status" transitions or a wrongly-gated "Copy
+   * Description" — worse than the click this fix repairs, since it fails
+   * silently rather than visibly. Mirrors `buildCard`'s own `contextmenu`
+   * handler (SH-197), a few lines up.
+   *
+   * What this does NOT close: `reconcileColumnCards`'s own `insertBefore`
+   * reposition kills a click the identical way when a card is moved to a
+   * new position in its column (filed separately, SH-422), and
+   * `ensureColumnShells`'s full-column-set rebuild was already out of
+   * scope for SH-397. Accepted residual, stated rather than left silent: a
+   * card whose OWN rendered content genuinely changes while a press is in
+   * flight over it can still lose that one click — this closes the hazard
+   * for any *unrelated* render landing mid-gesture, which is the common
+   * case, not for a render that changes this exact card at that exact
+   * moment. */
   function populateCard(card, v, ready, blocked, isClosed) {
     var st = v.story;
     var draggable = !isClosed && !state.pending[st.id];
@@ -7015,7 +7090,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     );
     card.style.setProperty("--card-accent", priorityColor(st.priority));
 
-    clear(card);
+    // SH-203's cleared-blocker dwell -- called here, above the guard below,
+    // because its ledger-pruning side effect (dropping an entry once its
+    // dwell window elapses) must run every render regardless of whether
+    // this card's own rebuild is skipped; `dwellingBlockerIds`' own comment
+    // covers the ledger itself.
+    var dwelling = dwellingBlockerIds(st.id, Date.now());
+
+    var next = el("div", {}, []);
     var badge = buildTypeBadge(st.story_type);
     // SH-235: a visible actions affordance, coarse pointers only (see
     // .card-actions-btn's own CSS) -- HTML5 drag-and-drop (this card's own
@@ -7032,13 +7114,21 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // accessibility tree would touch dnd, roving tabindex, FLIP and
     // reconcileColumnCards; recorded as a deliberate trade-off in
     // docs/spec/responsive-dashboard.md rather than done here.
+    //
+    // SH-399: resolves the CURRENT story by id rather than closing over
+    // `v` -- this function's own doc comment states why (`v` can outlive
+    // several renders once its rebuild starts being skipped).
     var cardActionsBtn = el("button", {
       type: "button", class: "card-actions-btn", tabIndex: -1,
       "aria-label": "Actions for " + st.id,
-      onClick: function(e) { e.stopPropagation(); openStoryMenu(e, v, cardActionsBtn); }
+      onClick: function(e) {
+        e.stopPropagation();
+        var current = findStory(st.id);
+        if (current) openStoryMenu(e, current, cardActionsBtn);
+      }
     }, ["⋯"]);
-    card.appendChild(el("div", { class: "card-id-row" }, [badge, el("span", { class: "card-id" }, [st.id]), cardActionsBtn]));
-    card.appendChild(el("div", { class: "card-title" }, [st.title]));
+    next.appendChild(el("div", { class: "card-id-row" }, [badge, el("span", { class: "card-id" }, [st.id]), cardActionsBtn]));
+    next.appendChild(el("div", { class: "card-title" }, [st.title]));
 
     var metaRow = el("div", { class: "card-meta" }, []);
     if ((st.labels || []).length) {
@@ -7050,7 +7140,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (st.assignee) {
       metaRow.appendChild(el("span", { class: "avatar", title: memberName(st.assignee) }, [initials(memberName(st.assignee))]));
     }
-    card.appendChild(metaRow);
+    next.appendChild(metaRow);
 
     var flags = el("div", { class: "card-flags" }, []);
     if (flagDesc) {
@@ -7064,19 +7154,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // these by default — but visible then so an archived card mixed back
     // into a CLOSED column's cards doesn't read as an ordinary closed one.
     if (st.hidden_at) flags.appendChild(el("span", { class: "flag flag-archived" }, ["🗄 archived"]));
-    if (flags.childNodes.length) card.appendChild(flags);
+    if (flags.childNodes.length) next.appendChild(flags);
 
-    // SH-203's cleared-blocker dwell (SH-309 moved the live half of this
-    // row -- every OPEN blocker -- into the badge above, via `blockedFlag`;
-    // this row is now the dwell's home alone, since the badge disappears
-    // the instant the last blocker closes and the dwell chip needs
-    // somewhere to keep being visible). Any blocker still inside its dwell
-    // window (`dwellingBlockerIds`) -- it closed just now, `openBlockers()`
+    // The dwell's rendered half: any blocker still inside its dwell window
+    // (`dwelling`, computed above) -- it closed just now, `openBlockers()`
     // no longer counts it, but the whole point of the dwell is that it
     // stays visible -- lit its own CLOSED colour via `storyLight()`,
     // marked `.blocker-cleared` for the pulse below -- long enough for the
-    // reader to see *which* blocker cleared.
-    var dwelling = dwellingBlockerIds(st.id, Date.now());
+    // reader to see *which* blocker cleared. SH-309 moved the live half of
+    // this row -- every OPEN blocker -- into the badge above, via
+    // `blockedFlag`; this row is now the dwell's home alone.
     if (dwelling.length) {
       var blockersWrap = el("div", { class: "card-blockers" }, []);
       dwelling.forEach(function(id) {
@@ -7084,8 +7171,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         ref.classList.add("blocker-cleared");
         blockersWrap.appendChild(ref);
       });
-      card.appendChild(blockersWrap);
+      next.appendChild(blockersWrap);
     }
+
+    var rendered = next.innerHTML;
+    if (card.dataset.rendered === rendered) return;
+    card.dataset.rendered = rendered;
+    clear(card);
+    while (next.firstChild) card.appendChild(next.firstChild);
   }
 
   function bindColumnDrop(column, targetSlug, isClosed) {
