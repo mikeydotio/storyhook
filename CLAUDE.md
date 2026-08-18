@@ -764,8 +764,10 @@ Standing rules for every wave:
   `is_default`, a `from_version` and a `to_version` it has no business knowing, which is
   lying to a pure function to get an answer out of it (SH-364). Scope is the **machine, not
   the store** — one launchd label machine-wide means an `is_default()`-scoped gate is
-  defeated by one environment variable (the residual is filed as SH-414, not fixed here) —
-  and root refuses ahead of the comparison, not overridable, because under `sudo`'s
+  defeated by one environment variable (closed by SH-414, which keyed the label itself —
+  this gate's own scope stayed the machine regardless, since it refuses over which binary
+  gets a permanent seat, never over which store that binary will serve) — and root refuses
+  ahead of the comparison, not overridable, because under `sudo`'s
   `env_reset` that comparison answers about the wrong user with the confident shape of a
   right answer. **Two candidates were eliminated on measured grounds rather than taste**, and
   both measurements are worth keeping: writing `EnvironmentVariables.PATH` into the plist —

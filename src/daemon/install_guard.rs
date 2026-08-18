@@ -43,14 +43,17 @@
 //! # Scope: the machine, not the store
 //!
 //! `migration_guard` scopes itself to [`crate::env::StoreLocation::is_default`]
-//! because the harm it prevents is *whose schema gets advanced*. This gate must
-//! not, and the reason is structural: there is exactly one launchd label and
-//! one plist path for the whole machine
-//! ([`crate::daemon::agent::LAUNCHD_LABEL`]), so
-//! `STORYHOOK_STORE_PATH=… story daemon install` overwrites *the* login agent.
-//! A store-scoped gate would leave the entire hole open behind one environment
-//! variable. This gate is about which binary gets a permanent seat, never about
-//! which store it will serve.
+//! because the harm it prevents is *whose schema gets advanced* — a fact about
+//! one store. This gate must not, and the durable reason survives SH-414's
+//! per-store launchd label ([`crate::daemon::agent::label`]): a login agent is
+//! a declaration that outlives the run that wrote it, runs at every login
+//! before any terminal exists, and enthrones a *binary*, independent of which
+//! store that binary is later told to serve. `--store-path X story daemon
+//! install` used to overwrite *the* (singular) login agent before SH-414, and
+//! now gives `X` its own — but the binary this gate is refusing to enthrone
+//! is still a fact about the whole machine either way, not about `X`. A
+//! store-scoped gate would still be answering the wrong question: which store
+//! an install is *for* has never been what this gate refuses over.
 //!
 //! # Why the override is a flag
 //!
