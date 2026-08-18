@@ -309,7 +309,7 @@ fn a_backup_preserves_an_event_kind_this_binary_does_not_understand() {
     fixture
         .store()
         .write(|tx| {
-            tx.append_raw_events(
+            let head = tx.append_raw_events(
                 fixture.project(),
                 StoryNo::new(1),
                 storyhook::store::ExpectedSeq::Any,
@@ -322,14 +322,23 @@ fn a_backup_preserves_an_event_kind_this_binary_does_not_understand() {
                 storyhook::store::LinkSource::Replayed,
                 &storyhook::domain::provenance::Provenance::unrecorded(),
             )?;
+            // A raw append leaves the read model's head behind, so the row is
+            // settled here rather than by `repair_read_model` — which is what
+            // this fixture used to call, and which SH-410 stopped doing for a
+            // story exactly like this one: a fold that skipped an event is a
+            // fold nothing may be rewritten from. Both production callers of
+            // `append_raw_events` already do it this way (`service::migrate`,
+            // `service::transfer`), in the same transaction as the append, so
+            // this is now the faithful fixture as well as the working one.
+            let stored = tx.events_for(fixture.project(), StoryNo::new(1))?;
+            let (known, _unknown) = partition_known(StoryNo::new(1), &stored);
+            let states = tx.state_map(fixture.project())?;
+            let snapshot = storyhook::domain::fold_story(&id, &known, &states)
+                .map_err(storyhook::store::StoreError::from)?;
+            tx.put_story(fixture.project(), &snapshot, head)?;
             Ok(())
         })
         .expect("writing a future event");
-    // A raw append leaves the read model's head behind by design; repairing it
-    // is what the store's own oracle is for, and the fixture's drift guard on
-    // the way out would otherwise fail for a reason this test is not about.
-    storyhook::store::repair_read_model(fixture.store(), fixture.project())
-        .expect("repairing the read model");
 
     let ctx = fixture.ctx();
     StoreSyncStorage::new(&ctx).backup(&id).expect("backing up");
