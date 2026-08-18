@@ -61,11 +61,19 @@ blocked=$(new_story "$repo" "Blocked")
 out=$(cd "$repo" && bash "$SCRIPT" list 2>&1)
 assert_eq "$(jqf "$out" '[.stories[].id]|index("'"$blocked"'")')" "null" "blocked: excluded"
 
-# --- a closed story is excluded, and `story list` alone would NOT exclude it ---
+# --- a closed story is excluded ---
 closed=$(new_story "$repo" "Closed")
 (cd "$repo" && story move "$closed" done >/dev/null 2>&1)
+# Fixture sanity: SH-409 gave bare `story list` its own default exclusion of
+# closed stories, so this is no longer the "storyhook does not filter, we do"
+# contrast this comment used to draw -- `--include-closed` is what still
+# finds it there now, and cmd_list's own `--ready`-driven filter (unaffected
+# by SH-409, which touches only list's *bare* default) is what excludes it
+# from the pick list below regardless.
 bare_has=$(cd "$repo" && story list --json | jq --arg id "$closed" '[.stories[]?.story.id]|index($id) != null')
-assert_eq "$bare_has" "true" "fixture sanity: bare \`story list\` really does include closed stories"
+assert_eq "$bare_has" "false" "fixture sanity: bare \`story list\` now excludes closed stories by default (SH-409)"
+included_has=$(cd "$repo" && story list --include-closed --json | jq --arg id "$closed" '[.stories[]?.story.id]|index($id) != null')
+assert_eq "$included_has" "true" "fixture sanity: \`story list --include-closed\` still finds it"
 out=$(cd "$repo" && bash "$SCRIPT" list 2>&1)
 assert_eq "$(jqf "$out" '[.stories[].id]|index("'"$closed"'")')" "null" "closed: excluded"
 

@@ -20,6 +20,7 @@
 
 use std::path::Path;
 
+use storyhook::domain::remote::RemoteUrl;
 use storyhook::domain::{Member, StateDef, SuperState, TypeDef};
 use storyhook::env::Environment;
 use storyhook::service::{Clock, Ctx};
@@ -116,6 +117,20 @@ impl ServiceFixture {
                 )
             })
             .expect("adding a member");
+    }
+
+    /// Registers a git origin on the fixture's project.
+    ///
+    /// The store-backed replacement for `story project link origin`, used by
+    /// every test that needs `pr-check`/`link-pr`'s cross-repo guard to see a
+    /// registered GitHub repository since SH-408 stopped both readers from
+    /// consulting the (deleted) sync-engine config document — they read
+    /// `ReadOps::project_remotes` now, which is exactly what this writes.
+    pub fn link_origin(&self, url: &str) {
+        let remote = RemoteUrl::normalize(url).expect("a well-formed remote url");
+        self.store
+            .write(|tx| tx.link_remote(self.project, &remote, FIXTURE_NOW))
+            .expect("registering an origin");
     }
 
     /// Pins the clock every context this fixture builds will report.

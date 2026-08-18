@@ -12,10 +12,14 @@ fn story(dir: &std::path::Path) -> Command {
     cmd
 }
 
-/// SH-175's council verdict: `story list` never default-excludes anything,
-/// including drafts — they show inline with a `[draft]` badge, and `--drafts`
-/// only ever narrows to drafts-only. This is a deliberate divergence from the
-/// web dashboard's board, which does exclude them by default (a separate
+/// SH-175's council verdict, narrower after SH-409 than it once was: `story
+/// list` no longer shows *everything* by default (closed, archived and
+/// deleted stories are excluded — `tests/story_list_visibility.rs`), but a
+/// draft is specifically exempt — it's an OPEN state, so SH-409's visibility
+/// filter never touches it, and it still shows inline with a `[draft]`
+/// badge rather than being hidden. `--drafts` still only ever narrows to
+/// drafts-only, never hides. This remains a deliberate divergence from the
+/// web dashboard's board, which does exclude drafts by default (a separate
 /// server-side path — `tests/web_test.rs` pins that half).
 #[test]
 fn list_with_no_flags_shows_drafts_inline_with_a_badge() {

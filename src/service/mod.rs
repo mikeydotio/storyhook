@@ -34,14 +34,13 @@ pub mod catalog;
 pub mod config;
 pub mod git;
 pub mod git_links;
-#[cfg(feature = "github-sync")]
+#[cfg(feature = "github-pr")]
 pub mod github;
-pub mod github_setup;
 pub mod grouping;
 pub mod history;
 pub mod integrity;
 pub mod migrate;
-#[cfg(feature = "github-sync")]
+#[cfg(feature = "github-pr")]
 pub mod pr_check;
 pub mod pr_link;
 pub mod project;
@@ -77,8 +76,8 @@ pub use catalog::{
 pub use config::{ConfigService, StateEdit, StateListing};
 pub use git::GitService;
 pub use git_links::{CheckoutLink, GitLinkService, OriginLink, PointerOutcome};
-#[cfg(feature = "github-sync")]
-pub use github::{GithubSyncService, RealGithubApiFactory, StoreSyncStorage};
+#[cfg(feature = "github-pr")]
+pub use github::RealGithubApiFactory;
 pub use grouping::{GroupingService, PhaseCleared};
 pub use integrity::{Examination, FixOutcome, IntegrityService};
 pub use migrate::{MigrationPlan, MigrationReport};

@@ -177,12 +177,7 @@ fn invoke<S: Store>(store: &S, env: &Environment, entry: &Entry<'_>, body: &str)
     }
 
     let command = crate::invoke::invocation_name(&request.invocation);
-    if let Some(conflict) = concurrency_conflict(
-        env,
-        command,
-        request.project.as_ref().map(|p| p.slug()),
-        &request.cwd,
-    ) {
+    if let Some(conflict) = concurrency_conflict(env, command, &request.cwd) {
         return answer(&request.request_id, Err(conflict));
     }
 
@@ -220,27 +215,14 @@ fn invoke<S: Store>(store: &S, env: &Environment, entry: &Entry<'_>, body: &str)
     answer(&request.request_id, result)
 }
 
-/// Refuses a second concurrent `github-sync` for the same project, or a
-/// second concurrent `migrate` of the same directory — the two integrity
-/// holes concurrent dispatch opens (SH-173), closed by one scan of the
-/// in-flight registry rather than by a lock.
+/// Refuses a second concurrent `migrate` of the same directory — the
+/// integrity hole concurrent dispatch opens (SH-173), closed by one scan of
+/// the in-flight registry rather than by a lock.
 ///
-/// `github-sync`'s own compare-and-swap is deliberately disabled
-/// (`crate::service::github`'s own docstring: it reads a story, talks to
-/// GitHub for as long as that takes, and writes back), which was safe only
-/// because serial dispatch made two concurrent syncs of one project
-/// impossible — a duplicated *network* side effect is not rollback-able by
-/// any transaction. `migrate`'s own `refuse_in_linked_worktree`
-/// (`crate::service::migrate`) is a read followed by a mint; two concurrent
-/// migrations of one directory both pass it and mint two projects with the
-/// same prefix and overlapping story numbers.
-///
-/// **`github-sync`'s check is scoped to the project this request explicitly
-/// named** (`--project`/`$STORYHOOK_PROJECT`) — a known gap, not an
-/// oversight: a project resolved from `cwd` by git-remote inference is not
-/// knowable here without a store lookup this admission check runs ahead of,
-/// and a check that sometimes does not fire is still strictly safer than the
-/// unconditional none it replaces.
+/// `migrate`'s own `refuse_in_linked_worktree` (`crate::service::migrate`)
+/// is a read followed by a mint; two concurrent migrations of one directory
+/// both pass it and mint two projects with the same prefix and overlapping
+/// story numbers.
 ///
 /// **`migrate` has no project to scope to at all** — it is what mints one —
 /// so it is scoped to `cwd` instead: two `story migrate` of *different*
@@ -248,32 +230,27 @@ fn invoke<S: Store>(store: &S, env: &Environment, entry: &Entry<'_>, body: &str)
 /// (a global lock was tried first and measurably broke exactly this — two
 /// unrelated fixtures in this project's own test suite, migrating different
 /// scratch directories moments apart, refused each other).
-fn concurrency_conflict(
-    env: &Environment,
-    command: &str,
-    project: Option<&str>,
-    cwd: &Path,
-) -> Option<AppError> {
+///
+/// Once scoped a second command besides `migrate`, when the story↔GitHub-
+/// Issues sync engine's own compare-and-swap was deliberately disabled and
+/// serial dispatch was the only thing making two concurrent syncs of one
+/// project safe — a duplicated *network* side effect is not rollback-able by
+/// any transaction. That engine is retired (SH-408); nothing else needs this
+/// guard, since every other command either transacts or, like `pr-check`,
+/// writes under `ExpectedSeq::Exact` and lets a second concurrent run simply
+/// lose the race rather than corrupt anything.
+fn concurrency_conflict(env: &Environment, command: &str, cwd: &Path) -> Option<AppError> {
     let inflight = lifecycle::read_inflight(env);
-    let conflict = match command {
-        "github-sync" => project.and_then(|project| {
-            inflight
-                .iter()
-                .find(|r| r.command == "github-sync" && r.project.as_deref() == Some(project))
-        }),
-        "migrate" => inflight
-            .iter()
-            .find(|r| r.command == "migrate" && r.cwd == cwd),
-        _ => None,
-    }?;
-    let side_effect = if command == "github-sync" {
-        "duplicate side effects on GitHub that no local transaction can undo"
-    } else {
-        "mint two projects for the same directory"
-    };
+    if command != "migrate" {
+        return None;
+    }
+    let conflict = inflight
+        .iter()
+        .find(|r| r.command == "migrate" && r.cwd == cwd)?;
     Some(AppError::Usage(format!(
         "a `{}` is already running (request {}, started {}); wait for it to finish before \
-         starting another. Two concurrent `{}` runs can {side_effect}.",
+         starting another. Two concurrent `{}` runs can mint two projects for the same \
+         directory.",
         conflict.command, conflict.request_id, conflict.started_at, conflict.command,
     )))
 }
@@ -625,45 +602,11 @@ mod tests {
     }
 
     #[test]
-    fn a_second_github_sync_for_the_same_project_is_refused() {
-        let (_dir, env) = scratch_env();
-        lifecycle::publish_inflight(&env, &[a_running("github-sync", Some("PB"), "/a")]);
-
-        assert!(
-            concurrency_conflict(&env, "github-sync", Some("PB"), Path::new("/b")).is_some(),
-            "a second sync for the same project must be refused, whatever cwd it runs from"
-        );
-    }
-
-    #[test]
-    fn a_github_sync_for_a_different_project_is_not_refused() {
-        let (_dir, env) = scratch_env();
-        lifecycle::publish_inflight(&env, &[a_running("github-sync", Some("PB"), "/a")]);
-
-        assert!(
-            concurrency_conflict(&env, "github-sync", Some("OTHER"), Path::new("/a")).is_none(),
-            "a different project's sync must not be blocked by this one"
-        );
-    }
-
-    /// The documented gap: a project this request did not explicitly name
-    /// (relying on `cwd` inference instead) is not knowable here, so the
-    /// check does not fire for it — still strictly safer than the
-    /// unconditional none it replaces, never worse.
-    #[test]
-    fn a_github_sync_with_no_explicitly_named_project_is_never_checked() {
-        let (_dir, env) = scratch_env();
-        lifecycle::publish_inflight(&env, &[a_running("github-sync", Some("PB"), "/a")]);
-
-        assert!(concurrency_conflict(&env, "github-sync", None, Path::new("/a")).is_none());
-    }
-
-    #[test]
     fn a_second_migrate_of_the_same_directory_is_refused() {
         let (_dir, env) = scratch_env();
         lifecycle::publish_inflight(&env, &[a_running("migrate", None, "/checkout")]);
 
-        assert!(concurrency_conflict(&env, "migrate", None, Path::new("/checkout")).is_some());
+        assert!(concurrency_conflict(&env, "migrate", Path::new("/checkout")).is_some());
     }
 
     /// The regression this check exists to prevent: a global migrate lock
@@ -679,7 +622,7 @@ mod tests {
         lifecycle::publish_inflight(&env, &[a_running("migrate", None, "/checkout-one")]);
 
         assert!(
-            concurrency_conflict(&env, "migrate", None, Path::new("/checkout-two")).is_none(),
+            concurrency_conflict(&env, "migrate", Path::new("/checkout-two")).is_none(),
             "migrating an unrelated directory must never be blocked by this one"
         );
     }
@@ -689,13 +632,12 @@ mod tests {
         let (_dir, env) = scratch_env();
         lifecycle::publish_inflight(&env, &[a_running("comment", Some("PB"), "/a")]);
 
-        assert!(concurrency_conflict(&env, "comment", Some("PB"), Path::new("/a")).is_none());
+        assert!(concurrency_conflict(&env, "comment", Path::new("/a")).is_none());
     }
 
     #[test]
     fn nothing_in_flight_never_conflicts() {
         let (_dir, env) = scratch_env();
-        assert!(concurrency_conflict(&env, "github-sync", Some("PB"), Path::new("/a")).is_none());
-        assert!(concurrency_conflict(&env, "migrate", None, Path::new("/a")).is_none());
+        assert!(concurrency_conflict(&env, "migrate", Path::new("/a")).is_none());
     }
 }

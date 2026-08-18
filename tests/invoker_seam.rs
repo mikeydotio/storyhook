@@ -820,14 +820,18 @@ fn only_comment_and_commit_link_append_to_a_closed_story() {
 /// `.storyhook` is a path literal, and after the flip a production module that
 /// still holds one is a module that still writes into the user's repository.
 ///
-/// `src/github/` was the last place they hid: the sync engine kept its
-/// configuration in `.storyhook/github-sync.toml`, its merge bases in
+/// `src/github/` was the last place they hid: the story↔GitHub-Issues sync
+/// engine (retired, SH-408) kept its configuration in
+/// `.storyhook/github-sync.toml`, its merge bases in
 /// `.storyhook/github-sync/bases/`, and — worst of the three — a pre-sync
 /// backup of every story it was about to rewrite in
 /// `.storyhook/github-sync/backups/`, so a sync dirtied the working tree with
 /// files the user then had to decide whether to commit. All three moved into
-/// the store or the state home behind `SyncStorage`, and this is what keeps
-/// them there.
+/// the store or the state home behind that engine's own `SyncStorage`
+/// abstraction before it — and every literal this test exists to catch —
+/// was deleted with it. What remains (the REST client and the durable
+/// credential `story pr-check`/`story github-auth` share) never held a
+/// `.storyhook` path to begin with; this guards that staying true.
 ///
 /// Scoped to `src/github/` deliberately. The rest of `src/` still names
 /// `.storyhook` in the places it must: the reader, the unmigrated-repository
@@ -851,7 +855,11 @@ fn no_storyhook_path_literal_survives_in_the_github_module() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/github");
     let mut files = Vec::new();
     sources(&root, &mut files);
-    assert!(files.len() > 5, "expected the module, got {}", files.len());
+    assert!(
+        files.len() >= 5,
+        "expected the trimmed module (mod, api, client, types, credential_store), got {}",
+        files.len()
+    );
 
     let mut found = Vec::new();
     for (path, text) in &files {

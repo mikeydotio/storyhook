@@ -136,15 +136,16 @@ pub enum AppError {
     GithubAuth(String),
     #[error("github api: {0}")]
     GithubApi(String),
-    #[error("sync conflict: {0}")]
-    SyncConflict(String),
-    #[error("sync errors: {0}")]
-    SyncErrors(String),
     #[error("state conflict: expected `{0}`, was `{1}`")]
     StateConflict(String, String), // (expected, actual)
 }
 
 impl AppError {
+    /// Exit codes 8 and 10 are permanently retired, not reused: they named
+    /// `SyncConflict`/`SyncErrors`, constructed only by the story↔GitHub-Issues
+    /// sync engine SH-408 retired. Reassigning either number to a new
+    /// variant would make any script or documentation still keyed on the old
+    /// meaning silently wrong instead of simply unreachable.
     pub fn exit_code(&self) -> i32 {
         match self {
             Self::Usage(_) | Self::Validation(_) => 2,
@@ -153,9 +154,7 @@ impl AppError {
             Self::Integrity(_) | Self::Storage(_) => 5,
             Self::GithubAuth(_) => 6,
             Self::GithubApi(_) => 7,
-            Self::SyncConflict(_) => 8,
             Self::StateConflict(..) => 9,
-            Self::SyncErrors(_) => 10,
         }
     }
 
@@ -204,8 +203,6 @@ impl AppError {
             Self::Storage(detail) => Self::Storage(joined(detail)),
             Self::GithubAuth(detail) => Self::GithubAuth(joined(detail)),
             Self::GithubApi(detail) => Self::GithubApi(joined(detail)),
-            Self::SyncConflict(detail) => Self::SyncConflict(joined(detail)),
-            Self::SyncErrors(detail) => Self::SyncErrors(joined(detail)),
             conflict @ Self::StateConflict(..) => conflict,
         }
     }
@@ -277,12 +274,6 @@ pub enum WireError {
     GithubApi {
         detail: String,
     },
-    SyncConflict {
-        detail: String,
-    },
-    SyncErrors {
-        detail: String,
-    },
     StateConflict {
         expected: String,
         actual: String,
@@ -318,12 +309,6 @@ impl From<&AppError> for WireError {
             AppError::GithubApi(detail) => Self::GithubApi {
                 detail: detail.clone(),
             },
-            AppError::SyncConflict(detail) => Self::SyncConflict {
-                detail: detail.clone(),
-            },
-            AppError::SyncErrors(detail) => Self::SyncErrors {
-                detail: detail.clone(),
-            },
             AppError::StateConflict(expected, actual) => Self::StateConflict {
                 expected: expected.clone(),
                 actual: actual.clone(),
@@ -357,8 +342,6 @@ impl From<WireError> for AppError {
             WireError::Storage { detail } => Self::Storage(detail),
             WireError::GithubAuth { detail } => Self::GithubAuth(detail),
             WireError::GithubApi { detail } => Self::GithubApi(detail),
-            WireError::SyncConflict { detail } => Self::SyncConflict(detail),
-            WireError::SyncErrors { detail } => Self::SyncErrors(detail),
             WireError::StateConflict { expected, actual } => Self::StateConflict(expected, actual),
         }
     }
@@ -432,8 +415,6 @@ mod tests {
             AppError::Storage("s".into()),
             AppError::GithubAuth("ga".into()),
             AppError::GithubApi("gp".into()),
-            AppError::SyncConflict("sc".into()),
-            AppError::SyncErrors("se".into()),
             AppError::StateConflict("todo".into(), "done".into()),
         ] {
             let before = error.exit_code();

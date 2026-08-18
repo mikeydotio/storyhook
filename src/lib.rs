@@ -10,7 +10,7 @@ pub mod domain;
 pub mod env;
 pub mod error;
 pub mod event_hooks;
-#[cfg(feature = "github-sync")]
+#[cfg(feature = "github-pr")]
 pub mod github;
 pub mod help_topics;
 pub mod hooks;
@@ -19,6 +19,7 @@ pub mod legacy;
 pub mod mcp;
 pub mod migration_guard;
 pub mod output;
+pub mod path_identity;
 pub mod plugin;
 pub mod priority_notice;
 pub mod service;
@@ -26,6 +27,5 @@ pub mod storage;
 pub mod store;
 pub mod token;
 pub mod tui;
-#[cfg(feature = "github-sync")]
 pub mod update;
 pub mod web;
