@@ -1657,6 +1657,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // never force-reconnected.
   var SSE_STALE_AFTER_MS = intFromQuery("sseStaleAfterMs", 50000);
 
+  // SH-401's press-gate failsafe. Deliberately NOT a bound on how long a human may
+  // hold a button: a timer is the one release that can fire during a *live* press,
+  // and firing there re-opens the very defect the gate closes, for exactly that
+  // press. This is a failsafe on the RELEASE SET instead — under a correct release
+  // set it is unreachable, so its firing is a detector for a hole in that set, never
+  // a recovery from one, and it is reported rather than silent (SH-306). Derived
+  // from the safety poll rather than picked (SH-394): a gate may never hold a paint
+  // back for longer than half the interval at which the board resyncs anyway.
+  var PRESS_GATE_FAILSAFE_MS = intFromQuery("pressGateFailsafeMs", SAFETY_POLL_INTERVAL_MS / 2);
+
   // `api()`'s default timeout for a mutation (any method but GET) — SH-312's
   // council-decided fix. 75s = the daemon's own documented worst case for a
   // write, `event_hooks::HOOK_TIMEOUT_CEILING_SECS` (60s of synchronous
@@ -2682,7 +2692,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           // the next render knows exactly what changed and can animate
           // accordingly. Skipped on the first load of a repo, so opening a
           // repo never animates every card in as if it had just appeared.
-          if (state.data) pendingAnimations = diffSnapshots(state.data, parsed, state.pending);
+          if (state.data) {
+            var arriving = diffSnapshots(state.data, parsed, state.pending);
+            // Unioned, not assigned, so gating renderView() costs nothing: see
+            // unionAnimations()'s own doc comment for why that is provably
+            // harmless, and why this is a no-op outside a press (SH-401).
+            pendingAnimations = pendingAnimations ? unionAnimations(pendingAnimations, arriving) : arriving;
+            if (pressHeld) pressDataArrivals++;
+          }
           // SH-203: an open drawer's relation and referenced-by rows carry
           // a status light (storyRef() -> findStory(), reading state.data)
           // for whichever OTHER story they name -- but renderAll() below
@@ -5314,7 +5331,227 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // RENDER: SHELL
   // ============================================================
 
+  // ============================================================
+  // THE PRESS GATE (SH-401)
+  // ============================================================
+
+  /* Per the UI Events click-dispatch algorithm, if the element under `mousedown`
+     is disconnected from the document before `mouseup`, NO `click` is dispatched
+     anywhere — not even at an ancestor — because the two targets no longer share
+     a common inclusive ancestor. Every renderer below tears its subtree down and
+     rebuilds it, and they run from asynchronous sources (a `/data` reply whose
+     diff reports a change, `handleMutationSuccess`, the drawer's own detail
+     fetch, the dispatch poll), so one landing mid-press destroys the pressed node
+     and the user's click is silently swallowed: no error, nothing to retry
+     against, and — the reason this was filed from the browser suite rather than
+     from a bug report — Playwright reports the gesture as successful, because its
+     hit-target check ran once, before the gesture, against the node that existed
+     then.
+
+     SH-397 closed this for the board by pointing the pointer at a node that
+     survives: `.card` itself is reused by `reconcileColumnCards`, so making its
+     presentational descendants `pointer-events: none` was enough. The drawer has
+     no surviving node — `renderDrawer` does `clear(body)` unconditionally — so
+     that shape structurally cannot help here: the button IS the destroyed node,
+     and delegating to a surviving ancestor changes nothing, because no `click`
+     is dispatched at all.
+
+     So the paint waits instead. While a press is in flight the renderers below
+     defer, and flush once the press can no longer produce a `click`. Only the
+     PAINT is deferred: `state.data` is still replaced on arrival, `boardFetchFloor`
+     still rises, `applyStory` still runs — no handler can read stale data through
+     this gate, it can only see stale pixels for the length of a press.
+
+     Settled by a unanimous three-seat council; `story show SH-401` carries the
+     verdict and the two alternatives it refuted (never the council's own
+     directory, which does not survive worktree teardown — SH-363). Design of
+     record: `docs/spec/render-under-a-press.md`. */
+
+  var pressHeld = false;
+  var pressTarget = null;
+  var pressDeferredOrder = [];
+  var pressDeferred = {};
+  var pressFailsafeTimer = null;
+  var pressReleaseFrame = null;
+  var pressObserver = null;
+  var pressDataArrivals = 0;
+
+  /* What the browser suite reads back. `swallows` is the fence that matters: a
+     removal that disconnects the LIVE press target is a swallowed click in
+     waiting, whatever function did it — `clear()`, a bare `.remove()`, or code
+     written next year — so it is observed rather than derived from a list of
+     call sites. Its limit is the mirror image of a static scan's and is stated
+     rather than glossed: this is complete over removal MECHANISMS and incomplete
+     over SURFACES, since it only ever sees what a run actually exercises. The
+     static half is SH-421. */
+  var pressGateAudit = { swallows: [], failsafes: 0, staleHolds: 0, lastRelease: null };
+  window.__storyhookPressGate = pressGateAudit;
+
+  /** Defers `run` while a press is in flight, answering whether it did.
+   *
+   * Keyed by surface, last writer wins, and what is stored is a thunk that
+   * re-reads live state rather than a captured snapshot — so a flush always
+   * paints the newest world, never a replayed old one, and coalescing several
+   * deferred renders of one surface into a single pass is sound. */
+  function pressDefer(name, run) {
+    if (!pressHeld) return false;
+    if (!Object.prototype.hasOwnProperty.call(pressDeferred, name)) pressDeferredOrder.push(name);
+    pressDeferred[name] = run;
+    return true;
+  }
+
+  function pressSwallowWatch() {
+    if (!window.MutationObserver) return;
+    pressObserver = new MutationObserver(function() {
+      if (!pressTarget || pressTarget.isConnected) return;
+      pressGateAudit.swallows.push(
+        (pressTarget.tagName || "?").toLowerCase() + "." + (pressTarget.className || "")
+      );
+      pressStopWatching();
+    });
+    pressObserver.observe(document.documentElement, { childList: true, subtree: true });
+  }
+
+  function pressStopWatching() {
+    if (!pressObserver) return;
+    pressObserver.disconnect();
+    pressObserver = null;
+  }
+
+  /** Arms the gate. Primary button only: `click` is a primary-button event, so a
+   * secondary or non-primary press has no click to protect — which is why the
+   * context menu needs no carve-out here. It is never gated in the first place. */
+  function holdPress(target) {
+    if (pressHeld) releasePress("superseded");
+    pressHeld = true;
+    pressTarget = target;
+    pressDataArrivals = 0;
+    pressSwallowWatch();
+    pressFailsafeTimer = setTimeout(function() { releasePress("failsafe"); }, PRESS_GATE_FAILSAFE_MS);
+  }
+
+  /** Releases the gate and drains what it held, in the order the surfaces were
+   * first deferred. Idempotent: every trigger calls this, and the ordinary case
+   * is one real release followed by no-ops. */
+  function releasePress(why) {
+    if (!pressHeld) return;
+    pressHeld = false;
+    pressTarget = null;
+    pressStopWatching();
+    if (pressFailsafeTimer !== null) { clearTimeout(pressFailsafeTimer); pressFailsafeTimer = null; }
+    if (pressReleaseFrame !== null) { cancelAnimationFrame(pressReleaseFrame); pressReleaseFrame = null; }
+    pressGateAudit.lastRelease = why;
+    if (why === "failsafe") {
+      pressGateAudit.failsafes++;
+      // A failsafe that fired means a release path nobody has named — a defect in
+      // the release set, not a press that ran long. Loud, per SH-306: a gate that
+      // goes quiet must never read as a clean bill of health.
+      console.warn("storyhook: the press gate's failsafe fired — the release set has a hole");
+    }
+    if (pressDataArrivals > 1) {
+      // Staleness reported as a COUNT of `/data` arrivals rather than a duration,
+      // so no second wall clock enters the product (SH-394).
+      pressGateAudit.staleHolds++;
+      console.warn("storyhook: a press held the paint across " + pressDataArrivals + " /data replies");
+    }
+    var order = pressDeferredOrder;
+    var pending = pressDeferred;
+    pressDeferredOrder = [];
+    pressDeferred = {};
+    for (var i = 0; i < order.length; i++) pending[order[i]]();
+  }
+
+  /* Never released inside the `pointerup` handler. `pointerup` precedes `mouseup`
+     precedes `click`, all in one input task, so a teardown from any handler in
+     that task destroys the click by the identical mechanism this gate exists to
+     prevent — the single most review-invisible way to write this wrong, and the
+     mutation the tests check in both directions. Two rendering opportunities: one
+     is the boundary an input task cannot straddle, the second is stated margin. */
+  function schedulePressRelease() {
+    if (!pressHeld || pressReleaseFrame !== null) return;
+    pressReleaseFrame = requestAnimationFrame(function() {
+      pressReleaseFrame = requestAnimationFrame(function() {
+        pressReleaseFrame = null;
+        releasePress("frame");
+      });
+    });
+  }
+
+  /** Wires the gate. Arming is capture-phase so no `stopPropagation()` can hide a
+   * press from it.
+   *
+   * The release set is ordered by evidence, first one wins:
+   *
+   * - `click`, BUBBLE phase — provably after the pressed control's own listener
+   *   has run. Opportunistic only: this file calls `stopPropagation()` on `click`
+   *   at ten sites, three of which are controls this fix exists to close
+   *   (`.card-actions-btn`, `.rel-id`, `.row-actions-btn`), so a document-level
+   *   listener never hears them. Measured, not assumed — it is why the frame
+   *   fallback below is load-bearing rather than belt.
+   * - `dragstart` — the UA dispatches no `click` for a gesture it has promoted to
+   *   a drag, so there is nothing left to protect. This is what makes native
+   *   HTML5 drag-and-drop a non-problem rather than a carve-out, without
+   *   depending on whether `pointerup`, `pointercancel` or `dragend` arrive.
+   * - `pointercancel`, then two frames after `pointerup`.
+   * - `pointermove` with no buttons down, `blur`, and `visibilitychange`. The last
+   *   is load-bearing rather than defensive: `requestAnimationFrame` does not fire
+   *   in a hidden tab, so a tab backgrounded between `pointerup` and the frame
+   *   release would otherwise strand the drain. */
+  function bindPressGate() {
+    document.addEventListener("pointerdown", function(e) {
+      if (!e.isPrimary || e.button !== 0) return;
+      holdPress(e.target);
+    }, true);
+    document.addEventListener("click", function() { releasePress("click"); });
+    document.addEventListener("dragstart", function() { releasePress("dragstart"); }, true);
+    document.addEventListener("pointercancel", function() { releasePress("pointercancel"); }, true);
+    document.addEventListener("pointerup", schedulePressRelease, true);
+    document.addEventListener("pointermove", function(e) {
+      if (e.buttons === 0) releasePress("buttons");
+    }, true);
+    window.addEventListener("blur", function() { releasePress("blur"); });
+    document.addEventListener("visibilitychange", function() {
+      if (document.hidden) releasePress("hidden");
+    });
+  }
+
+  /** Merges an arriving diff into one still waiting to be painted (SH-401).
+   *
+   * Gating `renderView` would otherwise lose a batch: `pendingAnimations` is
+   * consumed-and-nulled there, so a second reply arriving during one press would
+   * overwrite the first's. Unioning is provably harmless rather than merely
+   * plausible — every consumer was traced. `exited` and `moved` reach no renderer
+   * at all (they are read only by `fetchData`'s own `hasChanges`); `entered` is
+   * read only inside the branch for a node that did not already exist, so a stale
+   * entry is structurally ignored; `changed` is keyed by id, so the newer value
+   * wins. The worst case is one extra decorative flash. Outside a press
+   * `pendingAnimations` is always null here, so this is a no-op on every ordinary
+   * path. */
+  function unionAnimations(prev, next) {
+    var mergedIds = function(a, b) {
+      var seen = {}, out = [];
+      a.concat(b).forEach(function(id) {
+        if (seen[id]) return;
+        seen[id] = true;
+        out.push(id);
+      });
+      return out;
+    };
+    var moved = {};
+    prev.moved.concat(next.moved).forEach(function(m) { moved[m.id] = m; });
+    var changed = {};
+    Object.keys(prev.changed).forEach(function(id) { changed[id] = prev.changed[id]; });
+    Object.keys(next.changed).forEach(function(id) { changed[id] = next.changed[id]; });
+    return {
+      entered: mergedIds(prev.entered, next.entered),
+      exited: mergedIds(prev.exited, next.exited),
+      moved: Object.keys(moved).map(function(id) { return moved[id]; }),
+      changed: changed
+    };
+  }
+
   function renderAll() {
+    if (pressDefer("all", renderAll)) return;
     if (!state.data) return;
     renderFilterOptions();
     renderView();
@@ -5557,6 +5794,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   function renderView() {
+    if (pressDefer("view", renderView)) return;
     var visible = filteredStories();
     var total = state.data ? state.data.stories.length : 0;
     $("filter-count").textContent = total ? (visible.length + " / " + total) : "";
@@ -8151,6 +8389,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   function renderDrawer() {
+    if (pressDefer("drawer", renderDrawer)) return;
     if (!state.drawerId) return;
     var summary = findStory(state.drawerId);
     var full = state.drawerDetail;
@@ -11033,6 +11272,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // ============================================================
 
   function bindShell() {
+    bindPressGate();
     // Before anything is bound, and before anything is open: this is what
     // takes the seven *closed* overlays out of the tab order they have
     // always been in (see `applyOverlayModality()`).
