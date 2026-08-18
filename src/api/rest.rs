@@ -1312,6 +1312,11 @@ mod tests {
     #[test]
     fn creating_a_project_at_a_throwaway_path_in_a_real_store_is_refused() {
         let home = storyhook_test_support::non_temporary_dir("sh117-rest-guard-home");
+        // `non_temporary_dir` removes and recreates `home` on every call
+        // (SH-404's migration guard permits it purely on that account: the
+        // store `open_store` finds here is always fresh, `from_version == 0`,
+        // never on the strength of `Environment::at`'s `is_default() == true`
+        // agreeing with the real default path — it does).
         let env = Environment::at(&home);
         let store = crate::invoke::open_store(&env).expect("opening the store");
         let throwaway = crate::env::canonical_ish(&std::env::temp_dir())
