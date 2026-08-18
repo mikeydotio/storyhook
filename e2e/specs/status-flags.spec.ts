@@ -222,6 +222,47 @@ test("a card blocked by another story names the blocker in its badge, hyperlinke
   await deleteStory(page, blockerTitle);
 });
 
+test("a story blocked only by an open relation shows the drawer banner too, not just the badge (SH-398)", async ({
+  page,
+}) => {
+  // Before SH-398 the drawer banner was gated on `st.awaiting` alone, so a
+  // story blocked purely by a `blocked-by` edge showed the card's badge
+  // ("● blocked (SH-...)") while its own drawer, one click away, offered the
+  // "Reason for blocking…" form as though nothing were blocking it at all.
+  const blockerTitle = "SH-398 banner blindness — the blocker";
+  const workerTitle = "SH-398 banner blindness — the blocked story";
+  await createStory(page, blockerTitle);
+  const blockerId = (await page
+    .locator('.column[data-state="todo"] .card', { hasText: blockerTitle })
+    .getAttribute("data-id"))!;
+  await createStory(page, workerTitle);
+
+  await openDrawer(page, workerTitle);
+  await addRelation(page, "blocked-by", blockerId);
+
+  const banner = page.locator(".banner-blocked");
+  await expect(banner).toBeVisible();
+  await expect(banner.locator(".banner-head")).toContainText(
+    "Blocked by " + blockerId,
+  );
+  // No `awaiting` was ever set, so there is nothing to unblock and no body
+  // paragraph -- the block *form* still renders instead, right below the
+  // banner, so a note can still be added.
+  await expect(banner.locator("button", { hasText: "Unblock" })).toHaveCount(
+    0,
+  );
+  await expect(banner.locator(".banner-body")).toHaveCount(0);
+  await expect(
+    page.locator('input[placeholder="Reason for blocking…"]'),
+  ).toBeVisible();
+
+  await page.locator("#drawer-close").click();
+  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
+
+  await deleteStory(page, workerTitle);
+  await deleteStory(page, blockerTitle);
+});
+
 test("a card blocked by two open stories lists both in its badge, comma-joined", async ({
   page,
 }) => {
