@@ -241,9 +241,6 @@ pub struct SetPrefixPlan {
     /// verbatim from the event that set it and does not re-derive from the
     /// project's current prefix the way a story's own `id` does.
     pub relationships: usize,
-    /// How many github-sync merge-base snapshots carry ids that will be
-    /// rewritten alongside the read model proper.
-    pub github_bases: usize,
 }
 
 /// What a destructive command is about to do, in the shape its own kind of
@@ -546,9 +543,11 @@ pub struct SettingView {
     /// A string rather than a typed JSON value, in every kind — the same
     /// bargain `git config --list` makes, with [`kind`](Self::kind) naming how
     /// to read it. A typed value would buy a `jq` consumer one `tonumber` and
-    /// would tempt [`SettingKind::Document`] into serializing the shape of a
-    /// document whose type does not exist without the `github-sync` cargo
-    /// feature — making the surface a property of the build.
+    /// would tempt [`SettingKind::Document`] into serializing a document's
+    /// shape directly — making the surface a property of whichever feature-
+    /// gated module happens to own that document's type, rather than of the
+    /// data model alone (`story github-sync`'s own document was the case
+    /// that made this concrete, before SH-408 retired it).
     pub value: Option<String>,
     /// Whether [`value`](Self::value) was written, defaulted, or is absent.
     pub source: SettingSource,
@@ -1363,13 +1362,6 @@ pub fn render_set_prefix_plan(plan: &SetPrefixPlan) -> String {
              re-asserting event.\n",
             plan.relationships,
             if plan.relationships == 1 { "" } else { "s" },
-        ));
-    }
-    if plan.github_bases > 0 {
-        body.push_str(&format!(
-            "  {} github-sync merge base{} will be rewritten to match.\n",
-            plan.github_bases,
-            if plan.github_bases == 1 { "" } else { "s" },
         ));
     }
     body.push_str(

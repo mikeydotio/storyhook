@@ -403,13 +403,6 @@ pub trait ReadOps {
         story: StoryNo,
     ) -> Result<Vec<RelationEdge>, StoreError>;
 
-    /// The last snapshot github-sync merged against, if any.
-    fn github_base(
-        &self,
-        project: ProjectId,
-        story: StoryNo,
-    ) -> Result<Option<StorySnapshot>, StoreError>;
-
     /// This story's still-`open` linked pull requests (SH-49), in
     /// `(owner, repo, number)` order.
     ///
@@ -747,14 +740,6 @@ pub trait WriteOps: ReadOps {
         &mut self,
         project: ProjectId,
         settings: &ProjectSettings,
-    ) -> Result<(), StoreError>;
-
-    /// Records the snapshot github-sync should merge against next time.
-    fn put_github_base(
-        &mut self,
-        project: ProjectId,
-        story: StoryNo,
-        snapshot: &StorySnapshot,
     ) -> Result<(), StoreError>;
 
     /// Writes one attachment's bytes (SH-315), replacing any blob already

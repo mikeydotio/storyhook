@@ -86,10 +86,10 @@ delete
 
 set-prefix
   Renames the project's story-id prefix — SH-1 becomes AGE-1 — and
-  rewrites everywhere the old one is embedded: the project row, every
+  rewrites everywhere the old one is embedded: the project row and every
   relationship any of its stories claim (via real compensating events,
-  never a silent edit), and any github-sync merge-base snapshots. If
-  this checkout has one, its .storyhook.toml is updated too.
+  never a silent edit). If this checkout has one, its .storyhook.toml
+  is updated too.
 
   Nothing is deleted; every story, event and comment survives. What
   cannot be undone is the prefix itself: every id already written down
@@ -214,11 +214,6 @@ Settings:
     NOTE: no command reads this yet. You can store a value, and
     'story doctor' will not act on it. The listing says so too.
 
-  github.sync             read-only
-    The github-sync document: etags and story-to-issue mappings. It is
-    listed and readable here, but only 'story github-sync' writes it —
-    its contents have to agree with state this command cannot see.
-
 list reports every setting with the value in force and where that value
 came from:
 
@@ -244,7 +239,6 @@ Examples:
 Related:
   story project      — init, delete and list
   story commit-sync  — What sync.auto_transition governs
-  story github-sync  — What owns the github.sync document
   story set          — Change a STORY's fields, not a project's settings
 "#,
         );
@@ -1037,8 +1031,7 @@ Related:
 Exports the whole project as one JSON document -- not an array. Every
 story, open and closed alike, each with its full event history, plus
 the project's states, types and members, and -- when the project has
-them -- its settings, registered git remotes, and github-sync
-configuration.
+them -- its settings and registered git remotes.
 
 The document's top-level keys:
   schema         the export format version
@@ -1048,8 +1041,6 @@ The document's top-level keys:
   members        the project's members
   settings       user-set settings, absent when none were ever set
   remotes        registered git origins, absent when there are none
-  github_sync    the github-sync configuration, absent until configured
-  github_bases   github-sync merge bases, absent until configured
   stories        every story: id, full event history, and whether it
                  is archived (closed stories are included, not just
                  open ones)
@@ -1082,8 +1073,8 @@ Related:
 
 Restores a whole project from a 'story export' document: every
 story's exact id and full event history, its states, types, members,
-and -- when the document carries them -- its settings, registered git
-remotes, and github-sync configuration.
+and -- when the document carries them -- its settings and registered
+git remotes.
 
 Restores into an EMPTY project only. Run against a directory already
 holding stories and it refuses rather than merging or overwriting.

@@ -607,7 +607,6 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                 new_prefix: "AGE".to_string(),
                 stories: 47,
                 relationships: 12,
-                github_bases: 3,
             }))),
         ),
         (

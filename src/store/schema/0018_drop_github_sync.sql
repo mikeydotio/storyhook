@@ -1,0 +1,86 @@
+-- storyhook store — schema version 18: github-sync's storage is deleted.
+--
+-- `story github-sync` — the story↔GitHub-Issues sync engine — is retired
+-- (SH-408). The pull-request half of the GitHub integration stays: `story
+-- link-pr`/`unlink-pr`, `story pr-check`, `story github-auth` and the
+-- daemon's background poll all survive, and `story_pr_links` (schema 11) is
+-- untouched. What goes is the issue sync, and with it the only two things in
+-- this schema that ever existed to serve it.
+--
+-- ---------------------------------------------------------------------------
+-- `github_bases`
+-- ---------------------------------------------------------------------------
+--
+-- One row per story: the snapshot the sync three-way-merged against. Without
+-- an engine there is no merge, so a base is the last state of a comparison
+-- nothing will ever make again. Nothing reads it, and nothing can — the
+-- previous commit deleted the one function (`SyncStorage::load_base`) that
+-- ever did.
+--
+-- It is a leaf, in the same position `project_paths` was in at migration 8.
+-- Its foreign key points *from* it into `stories(project_id, story_no)`; no
+-- table, index, view or trigger names it, so `DROP TABLE` cascades nothing
+-- and needs no guard. Its `PRIMARY KEY` index goes with the table, so unlike
+-- migration 8 there is no separate `DROP INDEX` worth writing.
+--
+-- ---------------------------------------------------------------------------
+-- `project_settings.github_sync`
+-- ---------------------------------------------------------------------------
+--
+-- The sync's configuration document: `github.owner`/`github.repo`, the sync
+-- mode, HTTP etags, and the story→issue mapping table. Three of those four
+-- die with the engine outright. The fourth — owner/repo — was still
+-- load-bearing for two survivors, `story link-pr`'s cross-repository guard
+-- and `story pr-check`'s repository filter, until the commit before the one
+-- that deleted the engine moved both onto `project_remotes` instead: the
+-- store's actual answer to "which repository is this project?" (schema 6),
+-- written and read by one normalizer.
+--
+-- Translating this column into `project_remotes` rows here was considered
+-- and rejected on two grounds, either sufficient. It would mean parsing a URL
+-- in SQL — a second grammar for project identity, which is the exact defect
+-- SH-137 deleted and schema 6's header exists to prevent. And it could
+-- collide with `idx_project_remotes_normalized`, whose whole job is that an
+-- origin belongs to at most one project: a document naming a repository some
+-- other project already registered would either fail the migration or, under
+-- `INSERT OR IGNORE`, be dropped in silence. So the column is dropped, not
+-- translated.
+--
+-- **What that costs, stated rather than assumed.** A project that had
+-- github-sync configured and never ran `story project link origin` loses the
+-- close-on-merge cross-repository guard until it registers that origin.
+-- Nothing here can register it safely, so nothing here tries. `story doctor`
+-- reports the condition instead — a project holding an open `close_on_merge`
+-- pull-request link and no registered GitHub origin — computed from data
+-- that survives this migration, on every run rather than once
+-- (`invoke::pr_link_needs_a_registered_origin_advice`). The column's own
+-- contents are in the pre-migration backup `migrate::run` takes before any
+-- of this executes (`storyhook-<stamp>-v17.db`), which is where an operator
+-- recovers an owner/repo to re-register by hand.
+--
+-- `ALTER TABLE … DROP COLUMN` arrived in SQLite 3.35.0 and this crate bundles
+-- 3.51.0 (`libsqlite3-sys` 0.30.1). SQLite refuses to drop a column that is a
+-- PRIMARY KEY, carries a UNIQUE constraint, is indexed, or appears in a
+-- CHECK, a foreign key, a generated column, a partial index's WHERE clause, a
+-- trigger or a view. `github_sync` is none of those: `project_settings`'s
+-- primary key is `project_id`, its only CHECK is on `sync_auto_transition`,
+-- the table carries no index of its own, this schema has no views at all, and
+-- its four triggers name `events` and `story_relations`.
+--
+-- ---------------------------------------------------------------------------
+-- What this does not touch
+-- ---------------------------------------------------------------------------
+--
+-- No table is rebuilt. SQLite implements `DROP COLUMN` by editing the schema
+-- and rewriting rows in place, not by the twelve-step create/copy/`DROP
+-- TABLE`/rename dance, so there is no `DROP TABLE` on a *parent* anywhere in
+-- this file and migration 5's warning to its successors — a migration that
+-- rebuilds `stories` must drop `events_reject_delete` first and recreate it
+-- afterwards — does not apply. `foreign_keys_off` stays `false`: that flag
+-- exists only for a migration that rebuilds a table other tables reference.
+-- Dropping a *child* with enforcement left on is safe, and is what migration
+-- 8 already did.
+
+DROP TABLE github_bases;
+
+ALTER TABLE project_settings DROP COLUMN github_sync;

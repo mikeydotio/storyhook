@@ -287,38 +287,34 @@ fn an_empty_write_ahead_log_is_not_an_obstacle() {
 }
 
 #[test]
-fn github_syncs_configuration_and_merge_bases_are_read_out_of_their_own_files() {
-    // SH-233. The reader never looked at either file — `grep` found zero hits —
-    // so `story migrate` wrote `github_sync: None` into every store row it ever
-    // created. The two live *beside* `project.toml` rather than inside it,
-    // which is why reading the project file was not enough.
+fn github_syncs_configuration_and_merge_bases_are_reported_as_presence_and_count() {
+    // SH-408 retired the sync engine: nothing left in this binary interprets
+    // either file, so the reader reports only that they exist and how many
+    // bases there are — see `LegacyProject::github_sync_file_present`'s own
+    // doc comment. Before that, SH-233 is why the reader looks at either file
+    // at all: they live *beside* `project.toml` rather than inside it.
     let (_guard, root) = custom_config_tree();
-    let (config, bases) = legacy_support::add_github_sync(&root, &["ADA-1", "ADA-3"]);
+    legacy_support::add_github_sync(&root, &["ADA-1", "ADA-3"]);
 
     let project = legacy::read_project(&root).expect("reading a github-synced tree");
-    assert_eq!(
-        project.github_sync.as_ref(),
-        Some(&config),
-        "the configuration blob is carried opaquely — the type that describes it lives behind \
-         the `github-sync` cargo feature, and the reader needs none of it to move the bytes"
-    );
-    assert_eq!(
-        project.github_bases, bases,
-        "a merge base belongs to the story github-sync last merged against, not to the story's \
-         current state; a reader that re-derived it would erase exactly what it is for"
-    );
+    assert!(project.github_sync_file_present);
+    assert_eq!(project.github_bases_count, 2);
 }
 
 #[test]
 fn a_tree_that_never_ran_github_sync_reads_back_with_neither() {
     let (_guard, root) = custom_config_tree();
     let project = legacy::read_project(&root).expect("reading");
-    assert_eq!(project.github_sync, None);
-    assert!(project.github_bases.is_empty());
+    assert!(!project.github_sync_file_present);
+    assert_eq!(project.github_bases_count, 0);
 }
 
 #[test]
-fn a_corrupt_github_sync_configuration_is_refused_and_the_file_is_named() {
+fn a_corrupt_github_sync_configuration_is_not_read_only_reported_present() {
+    // Unlike SH-233's engine, the reader no longer parses this file at all
+    // (SH-408) — presence is the whole fact it needs, so a syntactically
+    // invalid `github-sync.toml` is not a reason to refuse a migration that
+    // never reads it.
     let (_guard, root) = custom_config_tree();
     legacy_support::add_github_sync(&root, &["ADA-1"]);
     std::fs::write(
@@ -327,25 +323,14 @@ fn a_corrupt_github_sync_configuration_is_refused_and_the_file_is_named() {
     )
     .unwrap();
 
-    let error = legacy::read_project(&root).expect_err("a corrupt config must not be read past");
-    let message = error.to_string();
-    assert!(
-        message.contains("github-sync.toml"),
-        "the refusal must name the file: {message}"
-    );
-    assert_eq!(
-        storyhook::error::AppError::from(error).exit_code(),
-        5,
-        "a corrupt tree is a storage failure"
-    );
+    let project = legacy::read_project(&root).expect("a corrupt config's contents are never read");
+    assert!(project.github_sync_file_present);
 }
 
 #[test]
-fn a_corrupt_merge_base_is_refused_rather_than_skipped() {
-    // Skipping one would produce the single worst outcome github-sync has: a
-    // story that arrives mapped but baseless, which the next sync cannot tell
-    // from one that has never synced — so it takes local as the base and files
-    // every stale remote field as an ordinary pull.
+fn a_corrupt_merge_base_is_not_read_only_counted() {
+    // Same reasoning as the config file: nothing decodes a base's JSON any
+    // more, so a corrupt one still counts (SH-408).
     let (_guard, root) = custom_config_tree();
     legacy_support::add_github_sync(&root, &["ADA-1"]);
     std::fs::write(
@@ -354,11 +339,8 @@ fn a_corrupt_merge_base_is_refused_rather_than_skipped() {
     )
     .unwrap();
 
-    let error = legacy::read_project(&root).expect_err("a corrupt base must not be skipped");
-    assert!(
-        error.to_string().contains("ADA-1.json"),
-        "the refusal must name the file: {error}"
-    );
+    let project = legacy::read_project(&root).expect("a corrupt base's contents are never read");
+    assert_eq!(project.github_bases_count, 1);
 }
 
 #[test]
@@ -516,11 +498,10 @@ fn the_layout_is_the_one_the_legacy_writer_used() {
     assert_eq!(ours.next_id_file(), theirs.next_id_file());
     assert_eq!(ours.open_stories_dir(), theirs.open_stories_dir());
     assert_eq!(ours.archive_db(), theirs.archive_db());
-    // The two github-sync paths matter most of the four-and-a-half years this
-    // pair will coexist: `storage.rs` is the *writer* on the rollback leg and
-    // this is the reader on the migration leg, so a disagreement here means a
-    // tree written by a rollback is a tree the next migration cannot see the
-    // github-sync configuration of (SH-233).
-    assert_eq!(ours.github_sync_file(), theirs.github_sync_file());
-    assert_eq!(ours.github_bases_dir(), theirs.github_bases_dir());
+    // No `github_sync_file`/`github_bases_dir` comparison any more: SH-408
+    // retired `storage.rs`'s rollback-leg writer along with the engine it
+    // served, so there is no second implementation of either path left to
+    // drift against. `LegacyPaths` keeps its own two methods — the migration
+    // report (D5) still needs to *name* the files a tree carries — but
+    // nothing on the other side of this guard can still disagree with them.
 }

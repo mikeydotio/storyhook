@@ -38,12 +38,11 @@
 mod events;
 mod paths;
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::domain::{Member, StateDef, StorySnapshot, TypeDef};
+use crate::domain::{Member, StateDef, TypeDef};
 use crate::error::AppError;
 
 pub use events::LegacyEvent;
@@ -105,12 +104,11 @@ pub struct LegacyStory {
 
 /// Everything one legacy `.storyhook` tree holds.
 ///
-/// Deliberately wider than [`crate::storage::ProjectExport`]: an export
-/// document carries states, types, members, stories, the project's settings
-/// (SH-133) and github-sync's configuration with its merge bases (SH-189), and a
-/// *tree* also carries the project's creation time and its story-number counter.
-/// A migration that went through the export document alone would drop those two
-/// without saying so.
+/// Deliberately wider than [`crate::service::transfer::ProjectExport`]: an export
+/// document carries states, types, members, stories and the project's
+/// settings (SH-133), and a *tree* also carries the project's creation time
+/// and its story-number counter. A migration that went through the export
+/// document alone would drop those two without saying so.
 #[derive(Clone, Debug)]
 pub struct LegacyProject {
     /// The checkout the tree was read from.
@@ -132,22 +130,22 @@ pub struct LegacyProject {
     pub types: Vec<TypeDef>,
     /// The project's members.
     pub members: Vec<Member>,
-    /// `github-sync.toml`, held opaquely (SH-233).
+    /// Whether `github-sync.toml` exists in this tree — the story↔GitHub-
+    /// Issues sync engine's own configuration, from before it was retired
+    /// (SH-408).
     ///
-    /// The same JSON shape `project_settings.github_sync` stores and a
-    /// [`ProjectExport`](crate::service::transfer::ProjectExport) carries, and
-    /// for the same reason: the type that describes it lives behind the
-    /// `github-sync` cargo feature, and this reader needs no knowledge of it to
-    /// carry the bytes through unchanged.
-    pub github_sync: Option<serde_json::Value>,
-    /// Every per-story merge base under `github-sync/bases/`, keyed by story id
-    /// (SH-233).
+    /// Presence only, not interpreted: nothing left in this binary reads a
+    /// sync configuration, so there is nothing to carry it *into*. The
+    /// migration report names the file so an operator who needs it can go
+    /// read it themselves — see [`super::service::migrate`]'s own doc on
+    /// "nothing is lost quietly."
+    pub github_sync_file_present: bool,
+    /// How many per-story merge base files sit under `github-sync/bases/`.
     ///
-    /// Sparse by nature: only a story github-sync has actually synced has one,
-    /// and a mapped story that has never synced is *legitimately* baseless.
-    /// That is why these are carried rather than re-derived — the two states
-    /// are indistinguishable to the next sync, and only one of them is true.
-    pub github_bases: BTreeMap<String, StorySnapshot>,
+    /// A count, not the bases themselves (SH-408 retired the engine that
+    /// read them) — same reasoning as
+    /// [`github_sync_file_present`](Self::github_sync_file_present).
+    pub github_bases_count: usize,
     /// The `next-id` counter — the number the next `story new` would have used.
     pub next_id: u64,
     /// Every story: open ones first in filename order, then archived ones in id
@@ -207,8 +205,8 @@ pub fn read_project(root: &Path) -> Result<LegacyProject, LegacyError> {
     let states = read_states(&paths)?;
     let types = read_types(&paths)?;
     let members = read_members(&paths)?;
-    let github_sync = read_github_sync(&paths)?;
-    let github_bases = read_github_bases(&paths)?;
+    let github_sync_file_present = paths.github_sync_file().is_file();
+    let github_bases_count = count_github_bases(&paths)?;
     let next_id = read_next_id(&paths)?;
 
     let mut stories = read_open_stories(&paths)?;
@@ -228,8 +226,8 @@ pub fn read_project(root: &Path) -> Result<LegacyProject, LegacyError> {
         states,
         types,
         members,
-        github_sync,
-        github_bases,
+        github_sync_file_present,
+        github_bases_count,
         next_id,
         stories,
     })
@@ -338,85 +336,36 @@ fn read_members(paths: &LegacyPaths) -> Result<Vec<Member>, LegacyError> {
     Ok(members)
 }
 
-/// `github-sync.toml`, converted to JSON and otherwise untouched (SH-233).
+/// How many `*.json` files sit under `github-sync/bases/` — the story↔GitHub-
+/// Issues sync engine's per-story merge bases, from before it was retired
+/// (SH-408).
 ///
-/// A missing file means github-sync was never configured, which is every tree
-/// that never ran `story github-sync`. A file that will not parse is an error
-/// naming it, like every other malformed file here: the mappings inside decide
-/// which GitHub issue each story is, and a migration that shrugged one off
-/// would hand the next sync a project it believes has never been synced.
-///
-/// TOML to JSON through [`toml::Value`], which is the conversion
-/// `storage::save_legacy_github_sync` performs in the other direction on the
-/// rollback leg — so a blob that goes out to a tree and comes back is the same
-/// blob.
-fn read_github_sync(paths: &LegacyPaths) -> Result<Option<serde_json::Value>, LegacyError> {
-    let path = paths.github_sync_file();
-    if !path.is_file() {
-        return Ok(None);
-    }
-    let text = read_to_string(&path)?;
-    let document: toml::Value = toml::from_str(&text).map_err(|error| LegacyError::Malformed {
-        path: path.clone(),
-        detail: error.to_string(),
-    })?;
-    Ok(Some(serde_json::to_value(document).map_err(|error| {
-        LegacyError::Malformed {
-            path,
-            detail: error.to_string(),
-        }
-    })?))
-}
-
-/// Every merge base under `github-sync/bases/`, keyed by story id (SH-233).
-///
-/// A missing directory means nothing has synced yet. A file that is not a
-/// `StorySnapshot` is an error rather than a skip, for the reason the whole
-/// module refuses rather than guesses: the alternative is a story that arrives
-/// mapped with no base, which the next sync cannot tell from one that has
-/// simply never synced.
-fn read_github_bases(paths: &LegacyPaths) -> Result<BTreeMap<String, StorySnapshot>, LegacyError> {
+/// A count, not the bases themselves: nothing left in this binary reads a
+/// `StorySnapshot` out of one, so there is nothing to carry it *into*, and
+/// parsing each file just to discard the result would be work with no
+/// consumer. A missing directory means nothing ever synced, i.e. zero.
+fn count_github_bases(paths: &LegacyPaths) -> Result<usize, LegacyError> {
     let dir = paths.github_bases_dir();
     if !dir.is_dir() {
-        return Ok(BTreeMap::new());
+        return Ok(0);
     }
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir)
-        .map_err(|error| LegacyError::Unreadable {
-            path: dir.clone(),
-            detail: error.to_string(),
-        })?
-        .map(|entry| {
-            entry
-                .map(|entry| entry.path())
-                .map_err(|error| LegacyError::Unreadable {
-                    path: dir.clone(),
-                    detail: error.to_string(),
-                })
-        })
-        .collect::<Result<_, _>>()?;
-    entries.sort();
-
-    let mut bases = BTreeMap::new();
-    for path in entries {
-        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-            continue;
-        }
-        let id = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .ok_or_else(|| LegacyError::Malformed {
-                path: path.clone(),
-                detail: "merge-base filename is not usable as a story id".to_string(),
+    let entries = std::fs::read_dir(&dir).map_err(|error| LegacyError::Unreadable {
+        path: dir.clone(),
+        detail: error.to_string(),
+    })?;
+    let mut count = 0;
+    for entry in entries {
+        let path = entry
+            .map_err(|error| LegacyError::Unreadable {
+                path: dir.clone(),
+                detail: error.to_string(),
             })?
-            .to_string();
-        let text = read_to_string(&path)?;
-        let snapshot = serde_json::from_str(&text).map_err(|error| LegacyError::Malformed {
-            path: path.clone(),
-            detail: error.to_string(),
-        })?;
-        bases.insert(id, snapshot);
+            .path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+            count += 1;
+        }
     }
-    Ok(bases)
+    Ok(count)
 }
 
 /// The `next-id` counter. A missing file means the project never minted a
