@@ -1331,10 +1331,12 @@ fn every_backdrop_overlay_is_wired_into_the_focus_trap() {
 /// card does: `.card-actions-btn` (opens this card's own menu) and `.rel-id`
 /// (a reference to a DIFFERENT story, reachable from a blocked-by badge or a
 /// cleared-blocker chip -- `storyRef()`'s own `stopPropagation()` depends on
-/// the click reaching it). Both remain individually exposed to the identical
-/// hazard this rule closes for the card body -- named in SH-397's own
-/// closing comment, not fenced here, since neither can take
-/// `pointer-events: none` and closing it needs a different shape of fix.
+/// the click reaching it). Neither can take `pointer-events: none`, so
+/// SH-397 left both individually exposed to the identical hazard this rule
+/// closes for the card body -- SH-399 closed it a different way, at the
+/// render layer rather than here: see
+/// `populate_card_skips_its_own_rebuild_when_nothing_it_renders_changed`,
+/// below.
 #[test]
 fn every_presentational_descendant_of_a_card_is_transparent_to_pointer_events() {
     let html = std::fs::read_to_string(
@@ -1378,6 +1380,106 @@ fn every_presentational_descendant_of_a_card_is_transparent_to_pointer_events() 
              wherever it appears inside a card (SH-397)"
         );
     }
+}
+
+/// The text of `function <name>(...) { ... }` in `source`, from just after
+/// the function's own opening brace to its matching closing one, found by
+/// brace-depth counting over the raw bytes -- safe for `populateCard`
+/// (verified below): its body contains no string or comment with a literal
+/// `{` or `}` character, only object-literal and block braces the counter
+/// is meant to see.
+fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
+    let marker = format!("function {name}(");
+    let call_start = source
+        .find(&marker)
+        .unwrap_or_else(|| panic!("no `{marker}` in the dashboard's <script> block"));
+    let open = source[call_start..]
+        .find('{')
+        .map(|i| call_start + i)
+        .unwrap_or_else(|| panic!("`{marker}` has no opening brace"));
+    let mut depth = 0i32;
+    for (offset, byte) in source[open..].bytes().enumerate() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &source[open + 1..open + offset];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("`{marker}`'s opening brace at byte {open} never closes")
+}
+
+/// `populateCard()` skips its own `clear()`+rebuild when nothing it would
+/// render changed (SH-399) -- the conditional rebuild that closes `.rel-id`
+/// and `.card-actions-btn`'s own residual exposure to SH-397's race, since
+/// neither can take `pointer-events: none` (see the doc comment on
+/// `every_presentational_descendant_of_a_card_is_transparent_to_pointer_events`,
+/// above). `e2e/specs/card-ref-click-race.spec.ts` proves the behaviour in a
+/// real browser, deterministically, by forcing the exact race through a
+/// `/data` reply that changes nothing the pressed card renders; this fences
+/// the wiring so a future edit cannot silently reintroduce the
+/// unconditional rebuild.
+///
+/// Two invariants pinned alongside the guard itself, both settled by
+/// council vote (verdict on SH-399, `story show SH-399`; SH-363 -- cite the
+/// story, not the council's own directory, which resolves on no fresh
+/// clone): the comparison is derived from the actual rendered output
+/// (`card.dataset.rendered`), never a hand-built fingerprint of "the fields
+/// that matter" -- this function reaches through `meta()`/`findStory()`
+/// into state its own argument doesn't carry, so a hand-built string could
+/// omit an input with nothing to catch it, the exact enumeration-drift
+/// hazard this project has paid for repeatedly (SH-136, SH-198, SH-258,
+/// SH-260/276, SH-364). And `.card-actions-btn` resolves the current story
+/// by id at click time rather than closing over a render-time snapshot,
+/// mirroring `buildCard`'s own `contextmenu` handler (SH-197) -- without
+/// it, a card whose rebuild is skipped could retain a button silently
+/// acting on stale data, since the card face renders neither a story's
+/// `state` nor its `description`.
+#[test]
+fn populate_card_skips_its_own_rebuild_when_nothing_it_renders_changed() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading src/web_dashboard.html");
+    let body = function_body(script(&html), "populateCard");
+
+    assert!(
+        body.contains("var next = el(\"div\", {}, []);"),
+        "expected populateCard() to build its children into a detached `next` element rather \
+         than appending directly onto `card` -- without it, there is nothing to compare \
+         against `card.dataset.rendered` before mutating the live tree. Body: {body}"
+    );
+    assert!(
+        body.contains("if (card.dataset.rendered === rendered) return;"),
+        "expected populateCard() to skip its clear()+rebuild when `next`'s serialization \
+         matches the card's last-committed one (SH-399) -- without this guard, an unrelated \
+         render (the 25s safety poll, another card's mutation) destroys every child on every \
+         render, including `.rel-id`/`.card-actions-btn`, which are individually exposed to \
+         SH-397's click-swallowing race and cannot take `pointer-events: none`. Body: {body}"
+    );
+    assert!(
+        !body.contains("card.innerHTML"),
+        "expected populateCard() to move `next`'s children into `card` via appendChild, never \
+         by writing the stored serialization back through `card.innerHTML =` -- this file \
+         writes zero `innerHTML =` assignments anywhere else, and every piece of user text \
+         here (a title, a label) has only ever reached the DOM as a text node; writing the \
+         stored string back would be this guard's own HTML-injection path (council decision, \
+         SH-399). Body: {body}"
+    );
+    assert!(
+        body.contains("var current = findStory(st.id);")
+            && body.contains("if (current) openStoryMenu(e, current, cardActionsBtn);"),
+        "expected `.card-actions-btn`'s onClick to resolve the CURRENT story via \
+         `findStory(st.id)` at click time rather than closing over this render's `v` (SH-399, \
+         mirroring buildCard()'s own contextmenu handler, SH-197) -- without it, a button whose \
+         rebuild is now conditional (per the assertion above) can silently act on stale data \
+         once the story it names moves column or changes description, since the card face \
+         renders neither field. Body: {body}"
+    );
 }
 
 /// Every backdrop is shown and hidden through the shared pair, never by hand
@@ -2807,8 +2909,13 @@ fn web_serve_root_html_has_coarse_pointer_actions_buttons() {
 
     // Both buttons reuse openStoryMenu (the same menu right-click opens),
     // not a second implementation that could drift out of step with it.
+    // The card's own button resolves the CURRENT story at click time
+    // (SH-399) rather than closing over this render's `v`, matching
+    // `buildCard`'s own contextmenu handler; the list row's does not need
+    // the same rider, since `populateListRow` still rebuilds unconditionally
+    // (SH-425 tracks bringing the row itself onto the same guard).
     assert!(body.contains("class: \"card-actions-btn\""));
-    assert!(body.contains("openStoryMenu(e, v, cardActionsBtn)"));
+    assert!(body.contains("openStoryMenu(e, current, cardActionsBtn)"));
     assert!(body.contains("class: \"row-actions-btn\""));
     assert!(body.contains("openStoryMenu(e, v, rowActionsBtn)"));
 
