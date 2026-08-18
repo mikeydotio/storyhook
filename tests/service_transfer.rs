@@ -572,32 +572,30 @@ fn the_import_project_arm_reports_a_skipped_remote_as_a_structured_warning() {
 const FROM_THE_FUTURE: &str =
     r#"{"kind":"StoryPinned","at":"2030-01-01T00:00:00Z","z":1,"by":"ada"}"#;
 
-/// Appends `FROM_THE_FUTURE` to story 1 as its second event, then repairs the
-/// read model the raw append deliberately leaves behind.
+/// Appends `FROM_THE_FUTURE` to story 1 as its second event, leaving the row
+/// settled at the whole history's head.
+///
+/// Through `inject_raw_events`, which re-folds the row from whatever still
+/// decodes and stamps it at that head — the same thing both production callers
+/// of `append_raw_events` do in the same transaction as the append
+/// (`service::migrate`, `service::transfer`). This helper used to append raw
+/// and then call `repair_read_model` to settle the head, which SH-410 stopped
+/// doing for a story exactly like this one: a fold that skipped an event is a
+/// fold nothing may be rewritten from. Leaving the head stale also made the
+/// story unwritable — `StoryService::comment` takes its expected seq from the
+/// row, so the next append raised `StateConflict`.
 fn pin_from_the_future(fixture: &ServiceFixture) {
-    fixture
-        .store()
-        .write(|tx| {
-            tx.append_raw_events(
-                fixture.project(),
-                StoryNo::new(1),
-                storyhook::store::ExpectedSeq::Any,
-                &[storyhook::store::RawEvent {
-                    kind: "StoryPinned".to_string(),
-                    at: "2030-01-01T00:00:00Z".to_string(),
-                    payload: FROM_THE_FUTURE.to_string(),
-                }],
-                storyhook::store::LinkSource::Replayed,
-                &storyhook::domain::provenance::Provenance::unrecorded(),
-            )?;
-            Ok(())
-        })
-        .expect("writing an event from the future");
-    // A raw append leaves the read model's head behind by design; the fixture's
-    // drift guard on the way out would otherwise fail for a reason no test here
-    // is about.
-    storyhook::store::repair_read_model(fixture.store(), fixture.project())
-        .expect("repairing the read model");
+    storyhook::store::test_support::inject_raw_events(
+        fixture.store(),
+        fixture.project(),
+        StoryNo::new(1),
+        &[storyhook::store::RawEvent {
+            kind: "StoryPinned".to_string(),
+            at: "2030-01-01T00:00:00Z".to_string(),
+            payload: FROM_THE_FUTURE.to_string(),
+        }],
+    )
+    .expect("writing an event from the future");
 }
 
 /// Every event of story 1 in `store`, as `(seq, kind, payload)`.

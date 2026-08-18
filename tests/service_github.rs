@@ -306,39 +306,24 @@ fn the_catalog_and_the_open_story_list_come_from_the_store() {
 fn a_backup_preserves_an_event_kind_this_binary_does_not_understand() {
     let fixture = ServiceFixture::new();
     let id = create(&fixture, "From the future");
-    fixture
-        .store()
-        .write(|tx| {
-            let head = tx.append_raw_events(
-                fixture.project(),
-                StoryNo::new(1),
-                storyhook::store::ExpectedSeq::Any,
-                &[storyhook::store::RawEvent {
-                    kind: "StoryTeleported".to_string(),
-                    at: "2030-01-01T00:00:00Z".to_string(),
-                    payload: r#"{"kind":"StoryTeleported","at":"2030-01-01T00:00:00Z"}"#
-                        .to_string(),
-                }],
-                storyhook::store::LinkSource::Replayed,
-                &storyhook::domain::provenance::Provenance::unrecorded(),
-            )?;
-            // A raw append leaves the read model's head behind, so the row is
-            // settled here rather than by `repair_read_model` — which is what
-            // this fixture used to call, and which SH-410 stopped doing for a
-            // story exactly like this one: a fold that skipped an event is a
-            // fold nothing may be rewritten from. Both production callers of
-            // `append_raw_events` already do it this way (`service::migrate`,
-            // `service::transfer`), in the same transaction as the append, so
-            // this is now the faithful fixture as well as the working one.
-            let stored = tx.events_for(fixture.project(), StoryNo::new(1))?;
-            let (known, _unknown) = partition_known(StoryNo::new(1), &stored);
-            let states = tx.state_map(fixture.project())?;
-            let snapshot = storyhook::domain::fold_story(&id, &known, &states)
-                .map_err(storyhook::store::StoreError::from)?;
-            tx.put_story(fixture.project(), &snapshot, head)?;
-            Ok(())
-        })
-        .expect("writing a future event");
+    // Through `inject_raw_events`, which re-folds the row and stamps it at the
+    // whole history's head — the same thing both production callers of
+    // `append_raw_events` do in the same transaction as the append
+    // (`service::migrate`, `service::transfer`). This used to append raw and
+    // then call `repair_read_model` to settle the head, which SH-410 stopped
+    // doing for a story exactly like this one: a fold that skipped an event is
+    // a fold nothing may be rewritten from.
+    storyhook::store::test_support::inject_raw_events(
+        fixture.store(),
+        fixture.project(),
+        StoryNo::new(1),
+        &[storyhook::store::RawEvent {
+            kind: "StoryTeleported".to_string(),
+            at: "2030-01-01T00:00:00Z".to_string(),
+            payload: r#"{"kind":"StoryTeleported","at":"2030-01-01T00:00:00Z"}"#.to_string(),
+        }],
+    )
+    .expect("writing a future event");
 
     let ctx = fixture.ctx();
     StoreSyncStorage::new(&ctx).backup(&id).expect("backing up");
