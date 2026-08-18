@@ -1626,23 +1626,47 @@ Related:
 
         m.insert(
             "block",
-            r#"story block <id> "<reason>"
+            r#"story block <id> [--on <blocker>]... ["<reason>"]
 
-Mark a story as blocked with a reason. Blocked stories are excluded
-from 'story next' results and highlighted in listings.
+Mark a story as blocked. Blocked stories are excluded from 'story
+next' results and highlighted in listings.
+
+Two ways to say why, and they behave differently:
+
+  --on <blocker>   Records a `blocked-by` edge onto <blocker> — a
+                    real relationship, visible on both stories, that
+                    CLEARS ITSELF the moment <blocker> closes. Repeat
+                    --on to name more than one blocker.
+
+  "<reason>"        Free text. Never clears itself — you (or
+                    `story unblock`) have to notice and clear it by
+                    hand.
+
+Both may be given together, in one call: the edge and the reason
+commit atomically. A reason is only required when no --on was given
+at all.
+
+If a reason names a story id with no --on recording it as the
+blocker, the response carries a warning saying so — the edge is
+almost always what you meant.
 
 When to use:
-  When external dependencies, decisions, or other factors prevent
-  progress on a story.
+  When another story must finish first, use --on: it is a fact the
+  tool can track and clear automatically. Reach for a bare reason
+  only for something that isn't a story — an external dependency, a
+  pending decision, waiting on a person.
 
 Examples:
-  story block SH-3 "waiting for API access from vendor"
+  story block SH-3 --on SH-9
+  story block SH-3 --on SH-9 "needs SH-9's API before this can start"
   story block SH-7 "needs design review"
 
 Related:
-  story unblock <id>    — Clear the blocked status
-  story list --blocked  — List all blocked stories
-  story list --ready    — List all unblocked stories
+  story unblock <id>            — Clear the blocked status
+  story relate <a> blocked-by <b>
+                                 — Add the edge without touching the reason
+  story list --blocked          — List all blocked stories
+  story list --ready            — List all unblocked stories
 "#,
         );
 
@@ -1651,10 +1675,20 @@ Related:
 
         m.insert(
             "unblock",
-            r#"story unblock <id>
+            r#"story unblock <id> [--on <blocker>]...
 
-Clear the blocked/awaiting status on a story, making it eligible
-for 'story next' again.
+Clear a story's blocked status, making it eligible for 'story next'
+again.
+
+  story unblock <id>              Clears the prose reason (awaiting).
+                                    Leaves any --on edges untouched —
+                                    if one is still open, the response
+                                    warns that the story is still
+                                    blocked.
+  story unblock <id> --on <b>     Removes just the `blocked-by` edge
+                                    onto <b>. Leaves the reason and any
+                                    other edges alone. Repeat --on to
+                                    clear more than one at once.
 
 When to use:
   When the blocking condition has been resolved and the story can
@@ -1662,7 +1696,7 @@ When to use:
 
 Examples:
   story unblock SH-3
-  story unblock SH-7
+  story unblock SH-3 --on SH-9
 
 Related:
   story block <id>     — Mark a story as blocked

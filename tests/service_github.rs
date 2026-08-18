@@ -306,30 +306,24 @@ fn the_catalog_and_the_open_story_list_come_from_the_store() {
 fn a_backup_preserves_an_event_kind_this_binary_does_not_understand() {
     let fixture = ServiceFixture::new();
     let id = create(&fixture, "From the future");
-    fixture
-        .store()
-        .write(|tx| {
-            tx.append_raw_events(
-                fixture.project(),
-                StoryNo::new(1),
-                storyhook::store::ExpectedSeq::Any,
-                &[storyhook::store::RawEvent {
-                    kind: "StoryTeleported".to_string(),
-                    at: "2030-01-01T00:00:00Z".to_string(),
-                    payload: r#"{"kind":"StoryTeleported","at":"2030-01-01T00:00:00Z"}"#
-                        .to_string(),
-                }],
-                storyhook::store::LinkSource::Replayed,
-                &storyhook::domain::provenance::Provenance::unrecorded(),
-            )?;
-            Ok(())
-        })
-        .expect("writing a future event");
-    // A raw append leaves the read model's head behind by design; repairing it
-    // is what the store's own oracle is for, and the fixture's drift guard on
-    // the way out would otherwise fail for a reason this test is not about.
-    storyhook::store::repair_read_model(fixture.store(), fixture.project())
-        .expect("repairing the read model");
+    // Through `inject_raw_events`, which re-folds the row and stamps it at the
+    // whole history's head — the same thing both production callers of
+    // `append_raw_events` do in the same transaction as the append
+    // (`service::migrate`, `service::transfer`). This used to append raw and
+    // then call `repair_read_model` to settle the head, which SH-410 stopped
+    // doing for a story exactly like this one: a fold that skipped an event is
+    // a fold nothing may be rewritten from.
+    storyhook::store::test_support::inject_raw_events(
+        fixture.store(),
+        fixture.project(),
+        StoryNo::new(1),
+        &[storyhook::store::RawEvent {
+            kind: "StoryTeleported".to_string(),
+            at: "2030-01-01T00:00:00Z".to_string(),
+            payload: r#"{"kind":"StoryTeleported","at":"2030-01-01T00:00:00Z"}"#.to_string(),
+        }],
+    )
+    .expect("writing a future event");
 
     let ctx = fixture.ctx();
     StoreSyncStorage::new(&ctx).backup(&id).expect("backing up");

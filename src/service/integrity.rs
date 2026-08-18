@@ -126,8 +126,10 @@ impl<'a, S: Store> IntegrityService<'a, S> {
             findings.extend(drift_issues(&drift, &prefix));
 
             let mut notices = notice_issues(&drift, &prefix);
+            notices.extend(unvouched_row_notices(&drift, &prefix));
             notices.extend(active_state_notice(&states));
             notices.extend(blocked_without_reason_notices(tx, project)?);
+            notices.extend(unlinked_blocker_notices(tx, project)?);
             Ok(Examination { findings, notices })
         })?)
     }
@@ -450,6 +452,48 @@ impl<'a, S: Store> IntegrityService<'a, S> {
                     // "story" in front of it, so `41: …` sat under `SH-41: …`
                     // in one block.
                     .map(|(story, reason)| format!("{}: {reason}", story.to_id(&prefix)))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+        // A row this run deliberately did not rewrite (SH-410). Beside
+        // `unrepairable` rather than inside it: that list is stories whose
+        // events do not fold at all, where nothing may be concluded from the
+        // row; this one is stories whose row is intact and probably better
+        // than this build's own fold of them. Naming the withholding is the
+        // whole remedy — `--fix` is the command an operator runs when they
+        // already suspect something, and a silent no-op reads as "checked,
+        // fine".
+        if !repair.withheld.is_empty() {
+            advice.push(format!(
+                "{} row{} left exactly as found — this build cannot fold {} \
+                 stor{} whole:\n{}",
+                repair.withheld.len(),
+                if repair.withheld.len() == 1 { "" } else { "s" },
+                if repair.withheld.len() == 1 {
+                    "that"
+                } else {
+                    "those"
+                },
+                if repair.withheld.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                },
+                repair
+                    .withheld
+                    .iter()
+                    .map(|(story, unknown)| {
+                        format!(
+                            "{}: {}",
+                            story.to_id(&prefix),
+                            unknown
+                                .iter()
+                                .map(|event| format!("event {} (`{}`)", event.seq, event.kind))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join("\n")
             ));
@@ -1258,6 +1302,74 @@ fn notice_issues(drift: &crate::store::ReadModelDiff, prefix: &str) -> Vec<Strin
         .collect()
 }
 
+/// One line per story whose read-model row this build refused to judge (SH-410).
+///
+/// The companion to [`notice_issues`], and a different subject: that one is
+/// about an *event* this build could not read, this one is about the *row* it
+/// consequently cannot vouch for. A story reaches this list only when its
+/// persisted row actually disagrees with the partial fold — a newer
+/// storyhook's event that changed nothing this build stores produces the event
+/// notice alone, because there is nothing to withhold.
+///
+/// Health-neutral, like every notice. That is not a softening of the verdict:
+/// the disagreement is genuinely unattributable, since the row was very likely
+/// written whole by the newer storyhook that also wrote the undecodable event.
+/// A story whose incompleteness comes from a *torn* payload of a known kind is
+/// separately unhealthy already — [`drift_issues`] mints an `UndecodableEvent`
+/// finding for it — so nothing is lost by reporting the withheld fields here in
+/// both cases.
+fn unvouched_row_notices(drift: &crate::store::ReadModelDiff, prefix: &str) -> Vec<String> {
+    let mut fields: BTreeMap<StoryNo, BTreeSet<String>> = BTreeMap::new();
+    for divergence in &drift.unvouched {
+        fields
+            .entry(divergence.story_no)
+            .or_default()
+            .insert(divergence.field.clone());
+    }
+    for (story, relation, other) in &drift.unvouched_relations {
+        fields
+            .entry(*story)
+            .or_default()
+            .insert(format!("relation `{relation}` to {}", other.to_id(prefix)));
+    }
+
+    let mut causes: BTreeMap<StoryNo, BTreeSet<String>> = BTreeMap::new();
+    for unknown in &drift.unknown_events {
+        causes
+            .entry(unknown.story_no)
+            .or_default()
+            .insert(format!("event {} (`{}`)", unknown.seq, unknown.kind));
+    }
+
+    fields
+        .into_iter()
+        .map(|(story, fields)| {
+            let names: Vec<String> = fields.into_iter().collect();
+            let because = causes
+                .get(&story)
+                .map(|c| c.iter().cloned().collect::<Vec<_>>().join(", "))
+                .unwrap_or_default();
+            format!(
+                "{}: its read-model row was left exactly as found — {} field{} ({}) \
+                 disagree{} with what this build can fold, and it cannot tell which side is \
+                 right, because {} did not decode. Install a storyhook that knows {} and \
+                 re-run `story doctor --fix`.",
+                story.to_id(prefix),
+                names.len(),
+                if names.len() == 1 { "" } else { "s" },
+                names.join(", "),
+                if names.len() == 1 { "s" } else { "" },
+                because,
+                if causes.get(&story).is_some_and(|c| c.len() == 1) {
+                    "it"
+                } else {
+                    "them"
+                },
+            )
+        })
+        .collect()
+}
+
 /// Whether the project has a state `is_claimable` can resolve as "active"
 /// (SH-242), and the advice to give when it does not.
 ///
@@ -1301,6 +1413,34 @@ fn blocked_without_reason_notices(
                  (or `story move {} blocked --reason \"<text>\"` next time) explains why",
                 view.story.id, view.story.id, view.story.id
             )
+        })
+        .collect())
+}
+
+/// A story whose `awaiting` reason names another story with nothing recording
+/// it as a `blocked-by` edge (SH-398) — the detection layer for
+/// [`crate::block_notice`]'s nudge, which only fires at the moment a reason
+/// is written. A prose reason typed before this story existed, or edited by
+/// hand, never passed through that nudge at all; this sweep is what still
+/// finds it, project-wide, one notice per story in [`story_views`]'s own
+/// ordering.
+fn unlinked_blocker_notices(
+    tx: &impl ReadOps,
+    project: ProjectId,
+) -> Result<Vec<String>, AppError> {
+    Ok(story_views(tx, project, false)?
+        .into_iter()
+        .filter_map(|view| {
+            let awaiting = view.story.awaiting.as_deref()?;
+            let mentioned = crate::block_notice::unlinked_mentions_tx(
+                tx,
+                project,
+                &view.story.id,
+                awaiting,
+                &view.story.relationships,
+            )
+            .unwrap_or_default();
+            crate::block_notice::warning(&view.story.id, &mentioned)
         })
         .collect())
 }

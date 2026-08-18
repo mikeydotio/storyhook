@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import {
   cleanUpCreatedStories,
+  deleteBlockedStory,
   deleteStory,
   holdDetailFetch,
   latch,
@@ -88,7 +89,9 @@ test("typing a block reason during the detail fetch survives the re-render and s
 
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
-  await deleteStory(page, title);
+  // SH-407: the typed block reason display-promoted the card into
+  // "blocked" the instant it was recorded, out of "todo".
+  await deleteBlockedStory(page, title);
 });
 
 test("editing the title during the detail fetch survives the re-render without a duplicate save", async ({
@@ -239,5 +242,8 @@ test("choosing a relation kind survives a board refresh that rebuilds the drawer
     blockerId,
   );
 
-  await deleteStory(page, workerTitle);
+  // SH-407: the blocked-by edge display-promoted the worker into "blocked",
+  // out of "todo" -- `workerCard` above is deliberately unscoped by column
+  // for that reason, but cleanup still needs to find it where it now sits.
+  await deleteBlockedStory(page, workerTitle);
 });

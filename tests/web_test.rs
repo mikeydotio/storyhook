@@ -1093,6 +1093,7 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains("function openColumnSortMenu"));
     assert!(body.contains("function columnSortMenuModel"));
     assert!(body.contains("function columnSortFor"));
+    assert!(body.contains("function columnSortOptionsFor"));
     assert!(body.contains(".column-sort-btn"));
     for label in [
         "Added ↑",
@@ -1101,12 +1102,20 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
         "Modified ↓",
         "Priority ↑",
         "Priority ↓",
+        // SH-407: an OPEN column additionally offers "Next" (the order
+        // `story next` would hand this queue out in) and a CLOSED column
+        // "Completed" (`closed_at`) -- see `columnSortOptionsFor`.
+        "Next ↑",
+        "Next ↓",
+        "Completed ↑",
+        "Completed ↓",
     ] {
         assert!(
             body.contains(label),
             "the column sort menu must offer `{label}`"
         );
     }
+    assert!(body.contains("function nextRank"));
     // The global filter-panel sort control SH-128 built is gone outright --
     // SH-305 replaced it, rather than adding the per-column menu alongside
     // it.
@@ -1169,6 +1178,13 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"class: "state-pill""#));
     assert!(body.contains("recorded state is "));
     assert!(body.contains(r#"case "state": return v.display_state || st.state;"#));
+
+    // SH-407: `filteredStories`'s state filter joins the same
+    // `display_state || state` idiom -- it used to be the one deliberate
+    // holdout (filtering by literal state, per SH-277's own comment), which
+    // would have hidden a blocked story from a "blocked" filter now that
+    // compute_display_state can promote it into that column.
+    assert!(body.contains("var shownState = v.display_state || st.state;"));
 
     // SH-217: the markdown renderer -- builds DOM nodes directly (never an
     // HTML string, see the sink-pin assertions above), and its link
@@ -1714,8 +1730,8 @@ fn every_blocked_badge_sentence_comes_from_the_one_deriver() {
     // directly above it, so the scope runs from there through
     // blockedFlag()'s own close rather than blockedFlag()'s bounds alone.
     let refs_start = script
-        .find("function refList(ids) {")
-        .expect("refList(ids), blockedFlag()'s own ref-rendering helper, must exist");
+        .find("function refList(ids, cap) {")
+        .expect("refList(ids, cap), the shared blocker/obviator ref renderer, must exist");
     assert!(
         refs_start < fn_start,
         "refList() must be defined ahead of blockedFlag(), the one place that calls it"
@@ -1725,6 +1741,96 @@ fn every_blocked_badge_sentence_comes_from_the_one_deriver() {
         "blockedFlag()/refList() must build blocker/obviator references with storyRef(), \
          the shared status-light component, not a bespoke element"
     );
+}
+
+/// The drawer's blocked banner comes from `blockBanner()`, and its cause
+/// list from the same `blockCauses()` the card badge reads (SH-398).
+///
+/// A sibling fence to `every_blocked_badge_sentence_comes_from_the_one_
+/// deriver` rather than an extension of it: the banner's own sentences
+/// ("Blocked", "no reason recorded", "cause not shown") are deliberately
+/// worded differently from the badge's ("● blocked", "(no reason)") so the
+/// two fences' literal sets never overlap and neither can go vacuous by
+/// matching the wrong function. Same technique -- find the function by its
+/// exact signature, insist every owned literal falls inside its bounds.
+///
+/// Comment lines (trimmed to start with `*` or `//`) are exempt, for the
+/// same reason the badge's own fence exempts them.
+#[test]
+fn every_blocked_banner_sentence_comes_from_the_one_deriver() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let script = script(&body);
+
+    let cause_start = script
+        .find("function blockCauses(st) {")
+        .expect("blockCauses(st), the shared blocker/obviator deriver, must exist");
+    let fn_start = script
+        .find("function blockBanner(st, isBlocked) {")
+        .expect("blockBanner(st, isBlocked) must exist with this exact signature");
+    assert!(
+        cause_start < fn_start,
+        "blockCauses() must be defined ahead of blockBanner(), one of its two callers"
+    );
+    let close = "\n  }\n";
+    let fn_end = fn_start
+        + script[fn_start..]
+            .find(close)
+            .expect("blockBanner's closing brace")
+        + close.len();
+
+    // Narrower than the badge fence's needles on purpose: `blockedFlag()`'s
+    // own `ariaText` already says "blocked, no reason recorded" for a
+    // different reason (assistive-tech text, not the rendered banner), so a
+    // bare "no reason recorded" would false-positive there. The em dash is
+    // what `blockBanner()` alone prefixes it with.
+    for needle in ["— no reason recorded", "\"Blocked\""] {
+        for (at, _) in script.match_indices(needle) {
+            let line_start = script[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let line = script[line_start..].lines().next().unwrap_or("");
+            if line.trim_start().starts_with('*') || line.trim_start().starts_with("//") {
+                continue;
+            }
+            assert!(
+                at >= fn_start && at < fn_end,
+                "a bare {needle:?} literal outside blockBanner() at script byte {at}: {line:?} \
+                 -- every blocked-banner sentence must be derived from blockCauses(), not \
+                 hand-written a second time"
+            );
+        }
+    }
+
+    // blockCauses() is the one deriver: neither blockedFlag() nor
+    // blockBanner() may read st.relationships for "blocked-by"/"obviated-by"
+    // on their own -- that would let the badge and the banner silently
+    // disagree about which edges block.
+    for (name, needle) in [
+        ("blockedFlag", "function blockedFlag(st, isBlocked) {"),
+        ("blockBanner", "function blockBanner(st, isBlocked) {"),
+    ] {
+        let start = script
+            .find(needle)
+            .unwrap_or_else(|| panic!("{name} must exist"));
+        let close = "\n  }\n";
+        let end = start + script[start..].find(close).expect("closing brace") + close.len();
+        assert!(
+            !script[start..end].contains("relation === \"blocked-by\""),
+            "{name} must read blocker ids through blockCauses(), not filter \
+             st.relationships itself"
+        );
+        assert!(
+            !script[start..end].contains("relation === \"obviated-by\""),
+            "{name} must read obviator ids through blockCauses(), not filter \
+             st.relationships itself"
+        );
+    }
 }
 
 /// The dashboard's `<style>` block, so a selector assertion below cannot
@@ -2972,6 +3078,73 @@ fn web_dashboard_js_reads_the_wire_key_head_global_seq_actually_serializes_to() 
     assert!(
         html.contains(&format!("a.{key}")),
         "compareWriteOrder must read `a.{key}` — the exact key the wire emits"
+    );
+}
+
+/// SH-407: `next_ids` must reach the wire on `/data`, in the exact order
+/// `story next` would hand this queue out in, or the board's "Next" column
+/// sort has nothing to read.
+#[test]
+fn web_serve_api_data_carries_next_ids() {
+    let fixture = served();
+    fixture.seed(&["new", "First"]);
+    fixture.seed(&["new", "Second"]);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    let resp = fixture
+        .agent()
+        .get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    let next_ids: Vec<&str> = json["next_ids"]
+        .as_array()
+        .expect("next_ids must be present and an array")
+        .iter()
+        .map(|v| v.as_str().expect("each id is a string"))
+        .collect();
+    assert_eq!(
+        next_ids,
+        ["SH-1", "SH-2"],
+        "both stories tie on priority, so the order must fall back to ready_order's story-number tiebreak"
+    );
+}
+
+/// SH-407, mirroring `web_dashboard_js_reads_the_wire_key_head_global_seq_actually_serializes_to`
+/// immediately above: `next_ids` is a top-level field, not per-story, so the
+/// dashboard's `nextRank` must read `state.data.next_ids` literally rather
+/// than a hand-typed guess on both sides.
+#[test]
+fn web_dashboard_js_reads_the_wire_key_next_ids_actually_serializes_to() {
+    let fixture = served();
+    fixture.seed(&["new", "Only story"]);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    let resp = fixture
+        .agent()
+        .get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let key = json
+        .as_object()
+        .unwrap()
+        .keys()
+        .find(|k| k.as_str() == "next_ids")
+        .expect("the wire payload must carry a top-level `next_ids` key");
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let html = resp.into_body().read_to_string().unwrap();
+    assert!(
+        html.contains(&format!("data.{key}")),
+        "nextRank must read `state.data.{key}` — the exact key the wire emits"
     );
 }
 

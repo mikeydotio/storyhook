@@ -710,6 +710,7 @@ fn project_data_json<S: Store>(ctx: &Ctx<'_, S>) -> Result<String, AppError> {
                 "drafts": drafts_json,
                 "ready_ids": data.ready_ids,
                 "blocked_ids": data.blocked_ids,
+                "next_ids": data.next_ids,
                 "meta": meta_json(tx, project, &data)?,
             });
             to_json(&response)
@@ -975,7 +976,8 @@ fn route_block_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply 
             200,
             Invocation::SetAwaiting {
                 id: id.to_string(),
-                awaiting,
+                awaiting: Some(awaiting),
+                on: Vec::new(),
             },
         ))
     })()
@@ -1027,7 +1029,14 @@ fn route_unlink_pr_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Re
 }
 
 fn route_unblock_story<S: Store>(ctx: &Ctx<'_, S>, id: &str) -> Reply {
-    reply_with(ctx, 200, Invocation::ClearAwaiting { id: id.to_string() })
+    reply_with(
+        ctx,
+        200,
+        Invocation::ClearAwaiting {
+            id: id.to_string(),
+            on: Vec::new(),
+        },
+    )
 }
 
 /// `POST /api/repos/{id}/story/{story}/reopen` — reopens a closed story. An

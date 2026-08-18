@@ -26,16 +26,18 @@
 //! `next`, `summary`, `report` and `context`'s ready lists rank by
 //! [`domain::ready_order`](crate::domain::ready_order) (priority, then story
 //! number) instead of bare story number — a total order the legacy comparator
-//! did not have (SH-63).
+//! did not have (SH-63). `report_data`'s `next_ids` is the same list, sharing
+//! the same `ready_queue` helper `next` truncates — the web dashboard's board
+//! reads it as the "Next" sort key, since the browser cannot call `story
+//! next` itself (SH-407).
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cli::GraphMode;
 use crate::domain::{
-    self, DependencyGraph, Priority, StateDef, StorySnapshot, SuperState,
-    compute_epic_display_state, compute_integrity_issues, compute_progress,
-    derive_family_relationships, has_children, is_claimable, is_ready, last_activity_type,
-    parse_duration,
+    self, DependencyGraph, Priority, StateDef, StorySnapshot, SuperState, compute_display_state,
+    compute_integrity_issues, compute_progress, derive_family_relationships, has_children,
+    is_claimable, is_ready, last_activity_type, parse_duration,
 };
 use crate::error::AppError;
 use crate::output::{
@@ -379,17 +381,7 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
         let views = self.story_views(false)?;
         let stories = view_map(&views);
         let active = self.active_state()?;
-        let mut ready: Vec<StoryView> = views
-            .into_iter()
-            .filter(|view| {
-                is_claimable(&view.story, &stories, active.as_ref()) && !has_children(&view.story)
-            })
-            .collect();
-        if let Some(phase) = phase {
-            let label = format!("phase:{phase}");
-            ready.retain(|view| view.story.labels.contains(&label));
-        }
-        sort_ready(&mut ready);
+        let mut ready = ready_queue(&views, &stories, active.as_ref(), phase);
         ready.truncate(count);
         Ok(ready)
     }
@@ -441,11 +433,17 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
         // agree.)
         summary.ready_count = ready_ids.len();
 
+        let next_ids = ready_queue(&views, &stories, active.as_ref(), None)
+            .into_iter()
+            .map(|view| view.story.id)
+            .collect();
+
         Ok(ReportData {
             summary,
             stories: views,
             ready_ids,
             blocked_ids,
+            next_ids,
         })
     }
 
@@ -974,7 +972,7 @@ pub fn story_views(
     let display_state: BTreeMap<String, String> = stories
         .values()
         .filter_map(|story| {
-            compute_epic_display_state(story, &stories, &states).map(|s| (story.id.clone(), s))
+            compute_display_state(story, &stories, &states).map(|s| (story.id.clone(), s))
         })
         .collect();
 
@@ -1210,6 +1208,37 @@ fn type_label(story: &StorySnapshot) -> String {
 /// shared by `next`, `summary`, `report` and `context`.
 fn sort_ready(views: &mut [StoryView]) {
     views.sort_by(|a, b| domain::ready_order(&a.story, &b.story));
+}
+
+/// The ready queue `story next` hands out, in full and in order: every leaf
+/// story (`!has_children`) that is claimable, sorted by
+/// [`domain::ready_order`] and optionally filtered to one `phase:<n>` label.
+///
+/// The one implementation behind two callers: [`QueryService::next`], which
+/// truncates it to `count`, and [`QueryService::report_data`], which needs
+/// only the ids in this exact order for the web dashboard's "Next" board
+/// sort (SH-407) — the browser cannot call `story next` itself,
+/// `/api/v1/invoke` being loopback- and master-token-gated
+/// (`src/api/rpc.rs`), so the server computes the queue once and ships the
+/// order rather than the dashboard re-deriving it in JS, a duplicate of
+/// this exact predicate this project has already paid for once (SH-240).
+fn ready_queue(
+    views: &[StoryView],
+    stories: &BTreeMap<String, StorySnapshot>,
+    active: Option<&StateDef>,
+    phase: Option<&str>,
+) -> Vec<StoryView> {
+    let mut ready: Vec<StoryView> = views
+        .iter()
+        .filter(|view| is_claimable(&view.story, stories, active) && !has_children(&view.story))
+        .cloned()
+        .collect();
+    if let Some(phase) = phase {
+        let label = format!("phase:{phase}");
+        ready.retain(|view| view.story.labels.contains(&label));
+    }
+    sort_ready(&mut ready);
+    ready
 }
 
 /// The counting half of `summary` and `report`, which agree on every field.
