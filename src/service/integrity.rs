@@ -128,6 +128,7 @@ impl<'a, S: Store> IntegrityService<'a, S> {
             let mut notices = notice_issues(&drift, &prefix);
             notices.extend(active_state_notice(&states));
             notices.extend(blocked_without_reason_notices(tx, project)?);
+            notices.extend(unlinked_blocker_notices(tx, project)?);
             Ok(Examination { findings, notices })
         })?)
     }
@@ -1301,6 +1302,34 @@ fn blocked_without_reason_notices(
                  (or `story move {} blocked --reason \"<text>\"` next time) explains why",
                 view.story.id, view.story.id, view.story.id
             )
+        })
+        .collect())
+}
+
+/// A story whose `awaiting` reason names another story with nothing recording
+/// it as a `blocked-by` edge (SH-398) — the detection layer for
+/// [`crate::block_notice`]'s nudge, which only fires at the moment a reason
+/// is written. A prose reason typed before this story existed, or edited by
+/// hand, never passed through that nudge at all; this sweep is what still
+/// finds it, project-wide, one notice per story in [`story_views`]'s own
+/// ordering.
+fn unlinked_blocker_notices(
+    tx: &impl ReadOps,
+    project: ProjectId,
+) -> Result<Vec<String>, AppError> {
+    Ok(story_views(tx, project, false)?
+        .into_iter()
+        .filter_map(|view| {
+            let awaiting = view.story.awaiting.as_deref()?;
+            let mentioned = crate::block_notice::unlinked_mentions_tx(
+                tx,
+                project,
+                &view.story.id,
+                awaiting,
+                &view.story.relationships,
+            )
+            .unwrap_or_default();
+            crate::block_notice::warning(&view.story.id, &mentioned)
         })
         .collect())
 }

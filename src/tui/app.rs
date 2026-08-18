@@ -1117,7 +1117,8 @@ fn dispatch(
                 invoker,
                 Invocation::SetAwaiting {
                     id: id.clone(),
-                    awaiting: reason.clone(),
+                    awaiting: Some(reason.clone()),
+                    on: Vec::new(),
                 },
             )
             .map(|_| ());
@@ -1144,7 +1145,14 @@ fn dispatch(
 
         Action::ClearAwaiting { id } => {
             let events_before = snapshot_for_undo(invoker, &id);
-            let result = invoke(invoker, Invocation::ClearAwaiting { id: id.clone() }).map(|_| ());
+            let result = invoke(
+                invoker,
+                Invocation::ClearAwaiting {
+                    id: id.clone(),
+                    on: Vec::new(),
+                },
+            )
+            .map(|_| ());
             match result {
                 Ok(()) => {
                     push_undo(state, format!("{id} unblocked"), id.clone(), events_before);

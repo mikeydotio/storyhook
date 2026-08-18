@@ -2983,7 +2983,11 @@ fn negates(word: &str) -> bool {
 /// Word boundaries as they have always been: the prefix must start the string
 /// or follow a non-alphanumeric byte, and the digits stop at the first
 /// non-digit. `PUSH-123` is not `SH-123`, and `SH-1SH-2` is one id.
-fn ids_in_line(prefix: &str, line: &str) -> Vec<(usize, usize)> {
+///
+/// `pub(crate)`: [`crate::block_notice`] reuses this rather than a second id
+/// regex, so a free-text `awaiting` reason is scanned the same way a comment
+/// body is (SH-398).
+pub(crate) fn ids_in_line(prefix: &str, line: &str) -> Vec<(usize, usize)> {
     let mut found = Vec::new();
     let prefix_bytes = prefix.as_bytes();
     let bytes = line.as_bytes();
