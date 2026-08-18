@@ -15,7 +15,7 @@
 //! whole rearchitecture is measured against or turn "this machine has not run
 //! a daemon lately" into an integrity failure.
 
-use crate::daemon::agent::{self, LAUNCHD_LABEL};
+use crate::daemon::agent;
 use crate::daemon::install_guard;
 use std::path::PathBuf;
 
@@ -104,7 +104,7 @@ pub fn status(env: &Environment) -> Result<String, AppError> {
             lifecycle::describe_paths(env),
             crate::daemon::backup::describe(env),
             crate::daemon::backup::describe_maintenance(env),
-            agent::describe(&agent::health(env))
+            agent::report(env)
         ));
     }
     match lifecycle::read_info(env) {
@@ -130,7 +130,7 @@ pub fn status(env: &Environment) -> Result<String, AppError> {
                 lifecycle::describe_paths(env),
                 crate::daemon::backup::describe(env),
                 crate::daemon::backup::describe_maintenance(env),
-                agent::describe(&agent::health(env))
+                agent::report(env)
             ))
         }
         // The lock is held by something that published nothing. Say so plainly
@@ -138,7 +138,7 @@ pub fn status(env: &Environment) -> Result<String, AppError> {
         None => Ok(format!(
             "a storyhook daemon holds the pidfile but published no portfile\n\n{}\n{}",
             lifecycle::describe_paths(env),
-            agent::describe(&agent::health(env))
+            agent::report(env)
         )),
     }
 }
@@ -222,8 +222,14 @@ fn offer_token_to_the_clipboard(token: &str) {
 /// exists**, which is the only observable that distinguishes a gate placed
 /// ahead of every side effect from one placed a line too low. Both produce the
 /// same exit code and the same message.
+///
+/// `label` travels with the plan rather than being re-derived by `apply` and
+/// `bootstrap_via_launchctl` separately, so the bootout target, the plist
+/// bytes, and the success message are three uses of one fact (SH-136) instead
+/// of three derivations that could drift.
 #[derive(Debug)]
 struct Plan {
+    label: String,
     path: PathBuf,
     contents: String,
 }
@@ -253,7 +259,15 @@ pub fn install(env: &Environment, this_binary: bool) -> Result<String, AppError>
     let running = crate::path_identity::running_exe()
         .ok_or_else(|| AppError::Storage("failed to find the running executable".to_string()))?;
     let inputs = install_guard::gather(user_id(), this_binary, running);
-    apply(&install_plan(env, &inputs)?, &bootstrap_via_launchctl)
+    let message = apply(&install_plan(env, &inputs)?, &bootstrap_via_launchctl)?;
+    // Named at the moment a machine grows past one store, not only when
+    // someone happens to run `status` later.
+    let others = agent::describe_others(env);
+    Ok(if others.is_empty() {
+        message
+    } else {
+        format!("{message}\n\n{others}")
+    })
 }
 
 /// The gate, then the bytes. No side effects.
@@ -265,6 +279,7 @@ fn install_plan(env: &Environment, inputs: &install_guard::Inputs) -> Result<Pla
     let verdict =
         install_guard::decide(inputs).map_err(|refusal| AppError::Usage(refusal.to_string()))?;
     Ok(Plan {
+        label: agent::label(env),
         path: agent::path(env),
         contents: agent::plist(&verdict.enthrone, env),
     })
@@ -275,11 +290,10 @@ fn install_plan(env: &Environment, inputs: &install_guard::Inputs) -> Result<Pla
 /// `load` is a parameter so both failure paths below are testable without
 /// bootstrapping anything into the developer's own login session — a fixture
 /// that ran real `launchctl` would register an agent pointing at the test
-/// binary, under the one label this project owns.
-fn apply(
-    plan: &Plan,
-    load: &dyn Fn(&std::path::Path) -> Result<(), AppError>,
-) -> Result<String, AppError> {
+/// binary, under a label this project owns. It takes the whole [`Plan`],
+/// not just the path, because `bootstrap_via_launchctl` needs the label to
+/// boot out the *right* agent — never always the default store's.
+fn apply(plan: &Plan, load: &dyn Fn(&Plan) -> Result<(), AppError>) -> Result<String, AppError> {
     if let Some(parent) = plan.path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -289,9 +303,10 @@ fn apply(
     let previous = std::fs::read(&plan.path).ok();
     std::fs::write(&plan.path, &plan.contents)
         .map_err(|e| AppError::Storage(format!("failed to write {}: {e}", plan.path.display())))?;
-    match load(&plan.path) {
+    match load(plan) {
         Ok(()) => Ok(format!(
-            "installed the storyhook daemon as a launchd agent ({LAUNCHD_LABEL})\n  {}",
+            "installed the storyhook daemon as a launchd agent ({})\n  {}",
+            plan.label,
             plan.path.display()
         )),
         Err(failure) => Err(undo(&plan.path, previous.as_deref(), failure)),
@@ -301,14 +316,16 @@ fn apply(
 /// `bootout` the old agent, then `bootstrap` the new one.
 ///
 /// `bootout` first so a reinstall replaces rather than conflicts; its failure is
-/// expected when nothing was loaded, so it is ignored.
-fn bootstrap_via_launchctl(path: &std::path::Path) -> Result<(), AppError> {
+/// expected when nothing was loaded, so it is ignored. Both target `plan`'s own
+/// label — never [`agent::LAUNCHD_LABEL`] directly — so a non-default store's install
+/// can never boot out the default store's running agent.
+fn bootstrap_via_launchctl(plan: &Plan) -> Result<(), AppError> {
     let target = format!("gui/{}", user_id());
     let _ = std::process::Command::new("launchctl")
-        .args(["bootout", &format!("{target}/{LAUNCHD_LABEL}")])
+        .args(["bootout", &format!("{target}/{}", plan.label)])
         .output();
     let loaded = std::process::Command::new("launchctl")
-        .args(["bootstrap", &target, &path.to_string_lossy()])
+        .args(["bootstrap", &target, &plan.path.to_string_lossy()])
         .output()
         .map_err(|e| AppError::Storage(format!("failed to run launchctl: {e}")))?;
     if loaded.status.success() {
@@ -316,7 +333,7 @@ fn bootstrap_via_launchctl(path: &std::path::Path) -> Result<(), AppError> {
     }
     Err(AppError::Storage(format!(
         "launchctl refused to load {}: {}",
-        path.display(),
+        plan.path.display(),
         String::from_utf8_lossy(&loaded.stderr).trim()
     )))
 }
@@ -362,19 +379,54 @@ fn undo(path: &std::path::Path, previous: Option<&[u8]>, failure: AppError) -> A
 
 /// Unloads the launchd agent and removes its plist.
 pub fn uninstall(env: &Environment) -> Result<String, AppError> {
+    uninstall_with(env, &bootout_via_launchctl)
+}
+
+/// `unload` is a parameter for the same reason [`apply`]'s `load` is: a
+/// fixture that ran real `launchctl` would touch the developer's own login
+/// session.
+///
+/// Reads the plist before removing it — the reader already exists
+/// ([`agent::health`]) — so a pre-SH-414 leftover (a bare-label agent
+/// actually serving a different store) is named rather than silently
+/// discarded under a report that only ever says "removed".
+fn uninstall_with(env: &Environment, unload: &dyn Fn(&str)) -> Result<String, AppError> {
     let path = agent::path(env);
     if !path.exists() {
         return Ok("the storyhook daemon is not installed as a launchd agent".to_string());
     }
-    let _ = std::process::Command::new("launchctl")
-        .args(["bootout", &format!("gui/{}/{LAUNCHD_LABEL}", user_id())])
-        .output();
+    let note = match agent::health(env) {
+        agent::Health::ServesAnotherStore { serves, .. } => format!(
+            "\n  note: that agent was actually serving {} — if it still needs its own \
+             login agent, run `story --store-path {} daemon install`",
+            serves.display(),
+            serves.display()
+        ),
+        _ => String::new(),
+    };
+    let label = agent::label(env);
+    unload(&label);
     std::fs::remove_file(&path)
         .map_err(|e| AppError::Storage(format!("failed to remove {}: {e}", path.display())))?;
+    let others = agent::describe_others(env);
+    let others = if others.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n{others}")
+    };
     Ok(format!(
-        "removed the storyhook daemon's launchd agent\n  {}",
-        path.display()
+        "removed the storyhook daemon's launchd agent\n  {}{}{}",
+        path.display(),
+        note,
+        others
     ))
+}
+
+/// `bootout` this store's own agent — never always the default store's.
+fn bootout_via_launchctl(label: &str) {
+    let _ = std::process::Command::new("launchctl")
+        .args(["bootout", &format!("gui/{}/{label}", user_id())])
+        .output();
 }
 
 /// This process's user id, which names the launchd domain to load into.
@@ -479,8 +531,8 @@ mod tests {
         let env = Environment::at(dir.path());
         let handed = std::cell::RefCell::new(None);
         let plan = install_plan(&env, &permitting_inputs()).expect("must permit");
-        apply(&plan, &|path| {
-            *handed.borrow_mut() = Some(path.to_path_buf());
+        apply(&plan, &|plan| {
+            *handed.borrow_mut() = Some(plan.path.clone());
             Ok(())
         })
         .expect("install");
@@ -557,5 +609,123 @@ mod tests {
                 .expect("uninstall")
                 .contains("not installed")
         );
+    }
+
+    fn named_store_env(dir: &std::path::Path, file_name: &str) -> Environment {
+        let named = dir.join(file_name);
+        Environment::at(dir).with_store(
+            crate::env::StoreLocation::resolve(
+                Some(&named),
+                &crate::env::StoreVars::default(),
+                dir,
+            )
+            .expect("resolving a named store"),
+        )
+    }
+
+    /// **The defect this story exists to fix.** Before it: `agent::path`
+    /// ignored the store, so installing for a second store overwrote the
+    /// first store's plist with no notice. Never touches the real
+    /// `~/Library/LaunchAgents` or real `launchctl` — `Environment::at`
+    /// fakes `$HOME`, and `apply`'s `load` is an injected closure.
+    #[test]
+    fn installing_for_a_second_store_leaves_the_first_stores_agent_intact() {
+        let dir = scratch();
+        let env_a = Environment::at(dir.path());
+        let plan_a = install_plan(&env_a, &permitting_inputs()).expect("must permit");
+        apply(&plan_a, &|_| Ok(())).expect("install a");
+        let bytes_a = std::fs::read(agent::path(&env_a)).expect("plist a");
+
+        let env_b = named_store_env(dir.path(), "b.db");
+        let plan_b = install_plan(&env_b, &permitting_inputs()).expect("must permit");
+        apply(&plan_b, &|_| Ok(())).expect("install b");
+
+        assert_ne!(
+            agent::path(&env_a),
+            agent::path(&env_b),
+            "the two stores must not share a plist path"
+        );
+        assert_eq!(
+            std::fs::read(agent::path(&env_a)).expect("plist a still there"),
+            bytes_a,
+            "installing for store b must not touch store a's plist"
+        );
+        assert!(agent::path(&env_b).exists());
+    }
+
+    /// The launchctl-only version of the same defect: a `bootstrap_via_
+    /// launchctl` that kept the label hardcoded would write store b's plist
+    /// correctly while unloading store a's *running* agent. `load` here
+    /// records what it was handed rather than touching real `launchctl`.
+    #[test]
+    fn installing_for_a_second_store_never_targets_the_default_label() {
+        let dir = scratch();
+        let env_b = named_store_env(dir.path(), "b.db");
+        let plan_b = install_plan(&env_b, &permitting_inputs()).expect("must permit");
+        let handed = std::cell::RefCell::new(None);
+        apply(&plan_b, &|plan| {
+            *handed.borrow_mut() = Some(plan.label.clone());
+            Ok(())
+        })
+        .expect("install b");
+        assert_eq!(handed.into_inner(), Some(plan_b.label.clone()));
+        assert_ne!(plan_b.label, agent::LAUNCHD_LABEL);
+    }
+
+    /// The mirror of the regression test above, for `uninstall`: removing a
+    /// named store's agent must not touch the default store's.
+    #[test]
+    fn uninstalling_from_a_named_store_leaves_the_default_stores_plist_alone() {
+        let dir = scratch();
+        let env_a = Environment::at(dir.path());
+        let plan_a = install_plan(&env_a, &permitting_inputs()).expect("must permit");
+        apply(&plan_a, &|_| Ok(())).expect("install a");
+        let bytes_a = std::fs::read(agent::path(&env_a)).expect("plist a");
+
+        let env_b = named_store_env(dir.path(), "b.db");
+        let plan_b = install_plan(&env_b, &permitting_inputs()).expect("must permit");
+        apply(&plan_b, &|_| Ok(())).expect("install b");
+
+        uninstall_with(&env_b, &|_| {}).expect("uninstall b");
+
+        assert!(
+            !agent::path(&env_b).exists(),
+            "store b's plist must be gone"
+        );
+        assert!(agent::path(&env_a).exists(), "store a's plist must survive");
+        assert_eq!(
+            std::fs::read(agent::path(&env_a)).expect("plist a still there"),
+            bytes_a
+        );
+    }
+
+    /// The migration seam a council found this fix must handle explicitly:
+    /// a pre-SH-414 `--store-path X daemon install` left X's agent at the
+    /// bare label. `story daemon uninstall` for the default store must say
+    /// which store it was actually serving, not just "removed".
+    #[test]
+    fn uninstalling_a_pre_fix_leftover_names_the_store_it_actually_served() {
+        let dir = scratch();
+        let env_a = Environment::at(dir.path());
+        let other = dir.path().join("other.db");
+        let path = agent::path(&env_a);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("the LaunchAgents dir");
+        std::fs::write(
+            &path,
+            format!(
+                "<key>ProgramArguments</key><array><string>/usr/local/bin/story</string>\
+                 <string>--store-path</string><string>{}</string></array>",
+                other.display()
+            ),
+        )
+        .expect("planting a pre-fix leftover");
+
+        let reported = uninstall_with(&env_a, &|_| {}).expect("uninstall");
+        assert!(reported.contains("removed"), "{reported}");
+        assert!(
+            reported.contains(&other.display().to_string()),
+            "the report must name the store the removed agent actually served: {reported}"
+        );
+        assert!(!path.exists());
     }
 }
