@@ -2014,10 +2014,7 @@ pub fn dispatch_without_store(invocation: Invocation) -> Result<Response, AppErr
                 help_topics::list_topics().join(", ")
             ))),
         },
-        Invocation::Version => Ok(Response::Message(format!(
-            "story {}",
-            env!("CARGO_PKG_VERSION")
-        ))),
+        Invocation::Version => Ok(Response::Message(crate::version::full().to_string())),
         // Self-update touches no project data at all — it replaces the
         // binary. A `story update` that demanded a project would be unusable
         // exactly when it is most wanted: from a shell that is not standing in
