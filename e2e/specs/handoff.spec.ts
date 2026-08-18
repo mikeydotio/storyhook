@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./support";
 import type { APIRequestContext, Page } from "@playwright/test";
 import { cleanUpCreatedStories, openProject, requiredEnv } from "./support";
 

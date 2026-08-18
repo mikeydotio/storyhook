@@ -195,6 +195,30 @@ Standing rules for every wave:
   baseline it is compared against. `tests/timing_assertions.rs` fences the bare-literal shape
   mechanically, in either comparison direction and whether or not the type is qualified;
   it cannot judge whether a margin is wide enough, only that the question was asked by name.
+- **The browser suite's budgets bend to contention; its base budgets do not** (SH-347). A
+  binding user determination, 2026-08-17: "relax the timeouts when machine is under load. If
+  timeout fires, examine load, and if high contention, reset timeout timer (up to a maximum of
+  15 minutes) rather than ending the test." `e2e/load-grace.ts` samples `os.loadavg()[0] /
+  cores` — processor sharing, derived rather than picked, same doctrine as the SH-394 bullet
+  above — and multiplies the test and `expect` budgets by `max(1, ratio)` up to that 15-minute
+  ceiling (`MAX_TEST_TIMEOUT_MS`, expressed as the arithmetic in the user's own sentence, not a
+  bare millisecond literal). Playwright cannot resume a timeout it has already fired, so a
+  per-test watchdog (`support.ts`'s `loadGrace` auto-fixture) samples during the test and calls
+  `testInfo.setTimeout()` *before* the deadline, monotonically, clamped to the ceiling as an
+  **absolute** bound regardless of a spec's own base budget (never a further multiple stacked
+  on an already-large custom timeout like `dispatch.spec.ts`'s). Every extension is reported —
+  stderr and `testInfo.annotations` both — because a grace nobody can see is the SH-306 shape
+  one layer up. At idle the multiplier is exactly 1, so SH-222's measured 15s/5s still hold and
+  a defect still surfaces as fast as it does today; `tests/e2e_load_grace.rs` pins both base
+  constants so raising them takes an argument, and `e2e/specs/load-grace.spec.ts` is what
+  actually executes the policy's arithmetic. A **page-side deadline is a named knob, never a
+  bare literal** (`tests/dashboard_deadline_knobs.rs`): a spec that holds a page-issued request
+  is racing that request's own client-side clock, and must set that deadline past anything the
+  harness can grant a test (`heldReadDeadlineMs()`, `support.ts`) — grace widens the harness's
+  own patience, it does not and must not paper over a mechanism that is not actually reliable
+  (`board-readiness.spec.ts`'s three quarantines stayed quarantined for exactly this reason,
+  once a real full-suite run measured abort delivery itself as unreliable under contention).
+  Design of record: `docs/spec/test-tiers.md`.
 - **`make test` must keep its isolated `STORYHOOK_DATA_DIR`** (`scripts/run-tests.sh`).
   ~45 test files still build fixtures with `tempfile::tempdir()` and inherit the process
   environment; without the override a test run writes into the developer's real store.
@@ -510,11 +534,24 @@ Standing rules for every wave:
   or permanently quarantining the affected assertions (undated debt on the exact
   keyboard-reachability class this suite exists to strengthen); `e2e/specs/support.ts`'s
   `fullKeyboardAccess()` is the one place a spec reads it back to gate the handful of assertions
-  that need real Tab traversal, unconditionally on `chromium`. A handful more tests
-  (`board-readiness.spec.ts`, `duplicate-create.spec.ts`, `drawer-field-mutation-timeout.spec.ts`)
-  are quarantined under `webkit` unconditionally, for an unrelated, not-yet-root-caused gap
-  where WebKit doesn't reliably surface a held or delayed `page.route()` to the page's own XHR
-  handlers within this suite's timeouts (SH-347). `mobile-webkit`'s own first run surfaced a
+  that need real Tab traversal, unconditionally on `chromium`. Three tests in
+  `duplicate-create.spec.ts` and `drawer-field-mutation-timeout.spec.ts` race a client-shrunk
+  `mutationTimeoutMs` against a deliberately delayed `route.fulfill()`, expecting the client to
+  give up first. SH-347 measured, deterministically (`e2e/specs/interception-contract.spec.ts`,
+  reproduces every time at idle, not load-sensitive): **WebKit never enforces
+  `XMLHttpRequest.timeout` on a request Playwright's route-interception layer is holding** — the
+  client silently receives the late reply as an ordinary success instead of ever seeing
+  `ontimeout`. The suspected cause when these were first quarantined ("WebKit doesn't reliably
+  surface a held route to the page's XHR") was itself refuted along the way: a `route.abort()`
+  surfaces to WebKit's `onerror` just as promptly as Chromium's (~4ms, measured). Every
+  page-side `xhr.timeout` in `src/web_dashboard.html` is now a named constant, never a bare
+  literal (`tests/dashboard_deadline_knobs.rs`), and the three a browser spec deliberately holds
+  past are `intFromQuery`-backed knobs a spec sets to `heldReadDeadlineMs()` — twice the running
+  test's own budget, so no page clock the harness can ever grant a test can be the thing that
+  ends an assertion the test means to own. `board-readiness.spec.ts`'s own three quarantines are
+  a separate case, load-sensitive rather than deterministic; see `docs/spec/test-tiers.md`'s "A
+  held request races its own client-side deadline" section for the full mechanism table and the
+  audit of every other hold site in the suite. `mobile-webkit`'s own first run surfaced a
   fourth, since fixed: WebKit ignores `min-height` on a default-appearance `<select>`, so every
   select in the dashboard measured ~23px against the intended 44px coarse-pointer minimum on
   that engine (SH-377). Fixed by giving every `select` an explicit `height` instead of a second
@@ -524,10 +561,11 @@ Standing rules for every wave:
   target test is fully load-bearing again, on every project, with no quarantine left to name.
   The button/link half of that sweep stays a separate test regardless, so a *future* select
   regression still can't take button/link coverage down with it by sharing one selector. Every
-  remaining WebKit quarantine, either
-  shape, is a `test.skip(...)` naming its story in the reason string —
-  `tests/e2e_browser_coverage.rs::every_webkit_quarantine_names_a_story` fails the build on one
-  that doesn't.
+  remaining WebKit quarantine — the `AppleKeyboardUIMode` Tab-order class above, the SH-374
+  clipboard class, and `board-readiness.spec.ts`'s three (abort delivery measured real but not
+  reliably prompt under contention, SH-347) — is a `test.skip(...)` naming its story in the
+  reason string — `tests/e2e_browser_coverage.rs::every_webkit_quarantine_names_a_story` fails
+  the build on one that doesn't.
 - **A hook that annotates must never decide** (SH-355). `githooks(5)`: git ignores a nonzero
   `post-commit`/`post-merge`, but a nonzero `prepare-commit-msg` **aborts the commit** — the
   only one of the three managed hooks whose exit status git actually obeys.
@@ -750,6 +788,31 @@ Standing rules for every wave:
   **restores** the plist it replaced rather than deleting it, since `bootout` has already
   unloaded the working agent by then. Design of record: the module docs on
   `src/daemon/install_guard.rs` and `src/path_identity.rs`.
+- **A postlude match is provably this run's own, and is the gate's to collect — a preflight
+  match is not, and is not** (SH-412). `scripts/check-no-orphan-servers.sh` brackets
+  `make test` (`Makefile:144,152-153`) and used to give both phases the same verdict:
+  refuse. On 2026-08-17 every leg of a real `make test` passed (rust-suite 873s) and the
+  postlude then refused anyway, naming two daemons gone within a minute of being named — no
+  receipt was minted (`make` fail-fasts), so the only sanctioned path was a 22-minute re-run
+  of a suite that had already gone green. That is exactly the pressure SH-306 was filed for,
+  and `SKIP_PREPUSH_TESTS=1` was reached for twice in the session that hit it. The postlude's
+  existing 10-second grace loop (added 2026-07-29) turned out to already be the wrong lever:
+  `SHUTDOWN_CHECK` (`src/daemon/serve.rs`, 250ms) is the *only* bound left in play by postlude
+  time, since every test binary this run started has already exited and every other
+  sanctioned shutdown deadline is spent inside that binary's own teardown, before it exits —
+  so 10s (already 40x `SHUTDOWN_CHECK`) was never "still winding down," and waiting longer
+  cannot fix a case the sanctioned paths already exclude. The fix widens what the postlude
+  *does* instead: it reaps a survivor (SIGTERM, bounded wait, SIGKILL, verify) and certifies
+  the tree, sound specifically because the preflight is a hard prerequisite of `test` and
+  fails closed on any match — so anything the postlude still finds was provably spawned by
+  *this* run. The preflight's own verdict is unchanged: no grace period, no killing, refuse
+  and name it, because a pre-existing match may be a daemon the developer started on purpose
+  and makes this run's own verification a lie regardless. `tests/orphan_check.rs` is the test
+  this script never had — real processes, the tracked script reached by symlink from a
+  disposable fixture root (never this checkout or a sibling worktree, since `pgrep -f` is
+  global on a machine running 3-4 concurrent worktree suites), spawned with the exact argv
+  shape `spawn_child` builds for a real daemon so every case doubles as the SH-113 positive
+  control. Design of record: `docs/spec/test-tiers.md`'s "The orphan bracket" section.
 - **A version string is not a build identity, and a semver bump cannot become one** (SH-406).
   `make install` puts whatever `target/release/story` was just built onto `PATH` under
   whatever `VERSION` already says, so two builds with different capabilities can report the

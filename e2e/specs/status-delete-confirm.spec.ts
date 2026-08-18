@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support";
 import type { APIRequestContext, Locator, Page } from "@playwright/test";
 import {
   onAFrozenClock,

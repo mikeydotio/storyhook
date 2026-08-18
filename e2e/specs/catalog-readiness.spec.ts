@@ -1,6 +1,7 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./support";
 import {
   cleanUpCreatedStories,
+  heldReadDeadlineMs,
   holdUntilRefused,
   projectSlug,
   requiredEnv,
@@ -50,7 +51,7 @@ test("the catalog names its failure instead of reporting an empty store", async 
     (url) => url.pathname === "/api/repos",
   );
   await seedToken(page);
-  await page.goto("/");
+  await page.goto(`/?catalogFetchTimeoutMs=${heldReadDeadlineMs()}`);
 
   const empty = page.locator(".home-empty");
   const label = page.locator("#projsel-label");
@@ -94,7 +95,7 @@ test("a catalog that answers after a failure drops the error where it stands", a
     (url) => url.pathname === "/api/repos",
   );
   await seedToken(page);
-  await page.goto("/");
+  await page.goto(`/?catalogFetchTimeoutMs=${heldReadDeadlineMs()}`);
   repos.refuse();
 
   const empty = page.locator(".home-empty");
@@ -169,7 +170,7 @@ test("a statuses editor whose fetch never answers names the failure", async ({
     page,
     (url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/states`,
   );
-  await page.goto("/");
+  await page.goto(`/?apiGetTimeoutMs=${heldReadDeadlineMs()}`);
   await page.locator("#settings-btn").click();
   await expect(page.locator("#settings-view")).toBeVisible();
   await page
