@@ -35,10 +35,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cli::GraphMode;
 use crate::domain::{
-    self, DependencyGraph, Priority, StateDef, StorySnapshot, SuperState,
-    compute_epic_display_state, compute_integrity_issues, compute_progress,
-    derive_family_relationships, has_children, is_claimable, is_ready, last_activity_type,
-    parse_duration,
+    self, DependencyGraph, Priority, StateDef, StorySnapshot, SuperState, compute_display_state,
+    compute_integrity_issues, compute_progress, derive_family_relationships, has_children,
+    is_claimable, is_ready, last_activity_type, parse_duration,
 };
 use crate::error::AppError;
 use crate::output::{
@@ -915,7 +914,7 @@ pub fn story_views(
     let display_state: BTreeMap<String, String> = stories
         .values()
         .filter_map(|story| {
-            compute_epic_display_state(story, &stories, &states).map(|s| (story.id.clone(), s))
+            compute_display_state(story, &stories, &states).map(|s| (story.id.clone(), s))
         })
         .collect();
 

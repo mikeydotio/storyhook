@@ -83,9 +83,13 @@ pub struct StoryView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<ProgressRollup>,
     /// Where the Web board should place this story's card, when that differs
-    /// from `story.state` (SH-165: an epic with an active child promotes
-    /// here). `None` means "use `story.state`" — the CLI and TUI do exactly
-    /// that today, so this field is additive and changes nothing for them.
+    /// from `story.state`. Two independent promotions
+    /// ([`crate::domain::compute_display_state`]): SH-165, an epic with an
+    /// active child promotes here; SH-407, a story that is itself
+    /// [`!crate::domain::is_ready`](crate::domain::is_ready) promotes to
+    /// `"blocked"`, and wins if both apply at once. `None` means "use
+    /// `story.state`" — the CLI and TUI do exactly that today, so this
+    /// field is additive and changes nothing for them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_state: Option<String>,
     /// The change-feed position of the event this story's row was folded from

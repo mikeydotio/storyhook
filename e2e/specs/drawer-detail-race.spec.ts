@@ -55,6 +55,28 @@ async function createStory(
   ).toBeVisible();
 }
 
+/** Deletes `title`'s "blocked"-column story through the drawer -- same
+ * shape as the imported `deleteStory`, scoped to the Blocked column
+ * instead of todo. SH-407: an awaiting reason or an open blocker
+ * display-promotes a story out of "todo" and into "blocked", which both
+ * of this file's own block/blocked-by tests trigger on their worker
+ * story before cleanup. */
+async function deleteBlockedStory(
+  page: import("@playwright/test").Page,
+  title: string,
+) {
+  const card = page.locator('.column[data-state="blocked"] .card', {
+    hasText: title,
+  });
+  await card.click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
+  await expect(page.locator("#delete-modal")).toHaveClass(/open/);
+  await page.locator("#delete-reason").fill("e2e cleanup");
+  await page.locator("#delete-modal-submit").click();
+  await expect(card).not.toBeVisible();
+}
+
 test("typing a block reason during the detail fetch survives the re-render and still blocks", async ({
   page,
 }) => {
@@ -88,7 +110,9 @@ test("typing a block reason during the detail fetch survives the re-render and s
 
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
-  await deleteStory(page, title);
+  // SH-407: the typed block reason display-promoted the card into
+  // "blocked" the instant it was recorded, out of "todo".
+  await deleteBlockedStory(page, title);
 });
 
 test("editing the title during the detail fetch survives the re-render without a duplicate save", async ({
@@ -239,5 +263,8 @@ test("choosing a relation kind survives a board refresh that rebuilds the drawer
     blockerId,
   );
 
-  await deleteStory(page, workerTitle);
+  // SH-407: the blocked-by edge display-promoted the worker into "blocked",
+  // out of "todo" -- `workerCard` above is deliberately unscoped by column
+  // for that reason, but cleanup still needs to find it where it now sits.
+  await deleteBlockedStory(page, workerTitle);
 });
