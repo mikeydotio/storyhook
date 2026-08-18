@@ -2105,27 +2105,56 @@ pub fn default_type(types: &[TypeDef]) -> Option<TypeDef> {
     types.first().cloned()
 }
 
-/// The state at which an epic's Web-board card should be shown, when that
-/// differs from its own literal [`StorySnapshot::state`] (SH-165).
+/// The state at which a story's Web-board card should be shown, when that
+/// differs from its own literal [`StorySnapshot::state`].
 ///
-/// Mirrors the guard `GitService::record_commit` already applies before an
-/// auto-transition — the SH-165 council verdict extends it to display
-/// promotion rather than inventing a second rule: only a story parked in the
-/// project's neutral default open state (what [`default_open_state`]
-/// resolves to) is eligible, so a state a human deliberately chose —
-/// `blocked`, or any other custom Open state — is never silently overridden.
+/// Two independent promotions, checked in this precedence order — a SH-407
+/// council verdict, recorded on that story (`story show SH-407`): an
+/// epic with children typically has *some* active child for most of its
+/// life, a near-permanent and so low-information condition, while a
+/// structural blocker on the story's own record is the rarer, more
+/// actionable fact — and every renderer that shows a *reference* to this
+/// story elsewhere on the board (a blocker chip on another card) reads
+/// `display_state` too, so painting a genuinely-stuck epic as "active"
+/// would mislead board-wide, not just on its own card.
+///
+/// 1. **Blocked** (SH-407) — `!`[`is_ready`]: an `awaiting` reason, an open
+///    `obviated-by` edge, or a `blocked-by` edge onto a story that is still
+///    open. Reuses `is_ready` itself rather than a second implementation of
+///    its clauses (SH-240 is this project's own account of what duplicating
+///    that predicate costs); its `state == "blocked"` and draft clauses are
+///    moot by the time this runs, since this function's own eligibility
+///    guard below has already ruled both out.
+/// 2. **Active child** (SH-165) — the story `has_children`, and at least
+///    one child sits in the project's active state.
+///
+/// Eligible for either promotion only when [`StorySnapshot::draft`] is
+/// `false` and the story is parked in the project's neutral default open
+/// state (what [`default_open_state`] resolves to) — mirrors the guard
+/// `GitService::record_commit` already applies before an auto-transition,
+/// so a state a human deliberately chose (`blocked`, or any other custom
+/// Open state) is never silently overridden, and a not-yet-published draft
+/// is never display-promoted before anyone decided it should exist.
 /// Returns `None` when no override applies, meaning the caller should fall
 /// back to the story's own `state`.
-pub fn compute_epic_display_state(
+pub fn compute_display_state(
     story: &StorySnapshot,
     all_stories: &BTreeMap<String, StorySnapshot>,
     states: &[StateDef],
 ) -> Option<String> {
-    if !has_children(story) {
+    if story.draft {
         return None;
     }
     let default_open = default_open_state(states)?;
     if story.state != default_open.slug {
+        return None;
+    }
+
+    if !is_ready(story, all_stories) {
+        return Some("blocked".to_string());
+    }
+
+    if !has_children(story) {
         return None;
     }
     let active = active_state(states)?;
@@ -3403,7 +3432,7 @@ mod tests {
     use super::{
         FieldEdit, Priority, REQUIRED_STATES, STATE_ROLE_ACTIVE, StateChanges, StateDef,
         StateUsage, StoryEvent, StoryRelation, StorySnapshot, SuperState, TypeDef, active_state,
-        compute_epic_display_state, compute_progress, default_type, derive_family_relationships,
+        compute_display_state, compute_progress, default_type, derive_family_relationships,
         fold_story, has_children, is_claimable, is_ready, last_activity_type, normalize_labels,
         ready_order, story_number, validate_event_for_append, validate_required_states,
         validate_state_defs, validate_state_defs_for_write, validate_state_slug,
@@ -5755,7 +5784,7 @@ mod tests {
     }
 
     // --- active_state / default_open_state (moved here from service::git by
-    // SH-165, which needed both for compute_epic_display_state below and
+    // SH-165, which needed both for compute_display_state below and
     // found them pure over &[StateDef] with no git dependency) -------------
 
     #[test]
@@ -5850,7 +5879,7 @@ mod tests {
         assert_eq!(default_type(&[]), None);
     }
 
-    // --- compute_epic_display_state (SH-165) -------------------------------
+    // --- compute_display_state (SH-165) -------------------------------
 
     /// A project's default `REQUIRED_STATES` set: `todo`/`in-progress` (role
     /// `active`)/`blocked` all OPEN, `done` CLOSED — what `default_states()`
@@ -5871,7 +5900,7 @@ mod tests {
         let epic = stories.get("SH-1").unwrap();
 
         assert_eq!(
-            compute_epic_display_state(epic, &stories, &conforming_states()),
+            compute_display_state(epic, &stories, &conforming_states()),
             Some("in-progress".to_string())
         );
     }
@@ -5882,7 +5911,7 @@ mod tests {
         let epic = stories.get("SH-1").unwrap();
 
         assert_eq!(
-            compute_epic_display_state(epic, &stories, &conforming_states()),
+            compute_display_state(epic, &stories, &conforming_states()),
             None
         );
     }
@@ -5895,7 +5924,7 @@ mod tests {
         let epic = stories.get("SH-1").unwrap();
 
         assert_eq!(
-            compute_epic_display_state(epic, &stories, &conforming_states()),
+            compute_display_state(epic, &stories, &conforming_states()),
             None,
             "blocked is a deliberate human signal (SH-126); an active child must not paper over it"
         );
@@ -5909,7 +5938,7 @@ mod tests {
         let epic = stories.get("SH-1").unwrap();
 
         assert_eq!(
-            compute_epic_display_state(epic, &stories, &conforming_states()),
+            compute_display_state(epic, &stories, &conforming_states()),
             None,
             "already showing in-progress, so there is nothing to override"
         );
@@ -5924,7 +5953,7 @@ mod tests {
         let epic = stories.get("SH-1").unwrap();
 
         assert_eq!(
-            compute_epic_display_state(epic, &stories, &conforming_states()),
+            compute_display_state(epic, &stories, &conforming_states()),
             None
         );
     }
@@ -5936,7 +5965,7 @@ mod tests {
         let leaf = stories.get("SH-3").unwrap(); // childless, parked in "todo"
 
         assert_eq!(
-            compute_epic_display_state(leaf, &stories, &conforming_states()),
+            compute_display_state(leaf, &stories, &conforming_states()),
             None
         );
     }
@@ -5949,7 +5978,7 @@ mod tests {
         let epic = stories.get("SH-1").unwrap();
 
         assert_eq!(
-            compute_epic_display_state(epic, &stories, &conforming_states()),
+            compute_display_state(epic, &stories, &conforming_states()),
             None,
             "SH-3 is SH-2's child, not SH-1's — compute_progress makes the same direct-only cut"
         );
@@ -5967,7 +5996,7 @@ mod tests {
         ];
 
         assert_eq!(
-            compute_epic_display_state(epic, &stories, &states),
+            compute_display_state(epic, &stories, &states),
             Some("doing".to_string())
         );
     }
@@ -5985,7 +6014,122 @@ mod tests {
             state("done", SuperState::Closed, None),
         ];
 
-        assert_eq!(compute_epic_display_state(epic, &stories, &states), None);
+        assert_eq!(compute_display_state(epic, &stories, &states), None);
+    }
+
+    // --- compute_display_state's blocked arm (SH-407) ---------------------
+
+    #[test]
+    fn a_todo_story_blocked_by_an_open_story_is_promoted_to_blocked() {
+        let mut stories = sample_story_map();
+        stories
+            .get_mut("SH-3")
+            .unwrap()
+            .relationships
+            .push(StoryRelation {
+                relation: "blocked-by".to_string(),
+                other_id: "SH-4".to_string(),
+            });
+        let leaf = stories.get("SH-3").unwrap();
+
+        assert_eq!(
+            compute_display_state(leaf, &stories, &conforming_states()),
+            Some("blocked".to_string())
+        );
+    }
+
+    #[test]
+    fn a_blocker_that_is_closed_does_not_promote() {
+        let mut stories = sample_story_map();
+        stories
+            .get_mut("SH-3")
+            .unwrap()
+            .relationships
+            .push(StoryRelation {
+                relation: "blocked-by".to_string(),
+                other_id: "SH-4".to_string(),
+            });
+        stories.get_mut("SH-4").unwrap().state = "done".to_string();
+        stories.get_mut("SH-4").unwrap().superstate = SuperState::Closed;
+        let leaf = stories.get("SH-3").unwrap();
+
+        assert_eq!(
+            compute_display_state(leaf, &stories, &conforming_states()),
+            None,
+            "a closed blocker does not block (is_ready's own rule) — nothing to promote"
+        );
+    }
+
+    #[test]
+    fn a_todo_story_with_an_awaiting_reason_is_promoted_to_blocked() {
+        let mut stories = sample_story_map();
+        stories.get_mut("SH-3").unwrap().awaiting = Some("vendor API access".to_string());
+        let leaf = stories.get("SH-3").unwrap();
+
+        assert_eq!(
+            compute_display_state(leaf, &stories, &conforming_states()),
+            Some("blocked".to_string())
+        );
+    }
+
+    #[test]
+    fn a_todo_story_with_an_obviated_by_edge_is_promoted_to_blocked() {
+        let mut stories = sample_story_map();
+        stories
+            .get_mut("SH-3")
+            .unwrap()
+            .relationships
+            .push(StoryRelation {
+                relation: "obviated-by".to_string(),
+                other_id: "SH-4".to_string(),
+            });
+        let leaf = stories.get("SH-3").unwrap();
+
+        assert_eq!(
+            compute_display_state(leaf, &stories, &conforming_states()),
+            Some("blocked".to_string())
+        );
+    }
+
+    #[test]
+    fn a_draft_story_is_never_promoted_even_when_blocked() {
+        let mut stories = sample_story_map();
+        stories.get_mut("SH-3").unwrap().awaiting = Some("vendor API access".to_string());
+        stories.get_mut("SH-3").unwrap().draft = true;
+        let leaf = stories.get("SH-3").unwrap();
+
+        assert_eq!(
+            compute_display_state(leaf, &stories, &conforming_states()),
+            None,
+            "a draft is not yet published for anyone to act on (SH-175); it is not \"blocked\", \
+             it simply is not ready to be judged either way"
+        );
+    }
+
+    /// SH-407 council verdict, recorded on that story (`story show SH-407`):
+    /// when a story qualifies for both promotions at once, blocked wins.
+    #[test]
+    fn blocked_wins_over_an_active_child_promotion() {
+        let mut stories = sample_story_map();
+        stories.get_mut("SH-2").unwrap().state = "in-progress".to_string();
+        stories
+            .get_mut("SH-1")
+            .unwrap()
+            .relationships
+            .push(StoryRelation {
+                relation: "blocked-by".to_string(),
+                other_id: "SH-4".to_string(),
+            });
+        let epic = stories.get("SH-1").unwrap();
+
+        assert_eq!(
+            compute_display_state(epic, &stories, &conforming_states()),
+            Some("blocked".to_string()),
+            "an active child is a near-permanent, low-information signal for a multi-child \
+             epic; a structural blocker on the epic's own record is the rarer, more \
+             actionable fact, and every renderer that shows a *reference* to this story \
+             elsewhere on the board reads display_state too"
+        );
     }
 
     // --- ready_order / story_number (SH-63) -------------------------------

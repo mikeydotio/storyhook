@@ -83,9 +83,13 @@ pub struct StoryView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<ProgressRollup>,
     /// Where the Web board should place this story's card, when that differs
-    /// from `story.state` (SH-165: an epic with an active child promotes
-    /// here). `None` means "use `story.state`" — the CLI and TUI do exactly
-    /// that today, so this field is additive and changes nothing for them.
+    /// from `story.state`. Two independent promotions
+    /// ([`crate::domain::compute_display_state`]): SH-165, an epic with an
+    /// active child promotes here; SH-407, a story that is itself
+    /// [`!crate::domain::is_ready`](crate::domain::is_ready) promotes to
+    /// `"blocked"`, and wins if both apply at once. `None` means "use
+    /// `story.state`" — the CLI and TUI do exactly that today, so this
+    /// field is additive and changes nothing for them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_state: Option<String>,
     /// The change-feed position of the event this story's row was folded from
@@ -371,6 +375,16 @@ pub struct ReportData {
     pub stories: Vec<StoryView>,
     pub ready_ids: Vec<String>,
     pub blocked_ids: Vec<String>,
+    /// The ids `story next` would hand out, in the exact order it would hand
+    /// them out — priority ASC, then story number ASC
+    /// ([`crate::domain::ready_order`]), over leaf stories only
+    /// ([`crate::domain::has_children`] excludes an epic). Unlike
+    /// [`Self::ready_ids`] (unsorted, epics included, driving the ready/
+    /// blocked board badges), this is what the web dashboard's "Next" board
+    /// sort needs: the browser cannot reach `story next` itself
+    /// (`/api/v1/invoke` is loopback- and master-token-gated), so the
+    /// server computes the queue once and ships the order (SH-407).
+    pub next_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

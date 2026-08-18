@@ -275,6 +275,32 @@ export async function deleteStory(page: Page, title: string): Promise<void> {
 }
 
 /**
+ * Deletes `title`'s "blocked"-column story through the drawer -- the same
+ * shape as {@link deleteStory}, scoped to the Blocked column instead of
+ * todo. SH-407: a story blocked by an `awaiting` reason or an open
+ * `blocked-by`/`obviated-by` edge display-promotes out of "todo" and into
+ * "blocked", which any spec that blocks its own worker story before
+ * cleanup needs to account for -- three spec files each carried their own
+ * copy of this before it was promoted here.
+ */
+export async function deleteBlockedStory(
+  page: Page,
+  title: string,
+): Promise<void> {
+  const card = page.locator('.column[data-state="blocked"] .card', {
+    hasText: title,
+  });
+  await card.click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
+  await expect(page.locator("#delete-modal")).toHaveClass(/open/);
+  await page.locator("#delete-reason").fill("e2e cleanup");
+  await page.locator("#delete-modal-submit").click();
+  await expect(page.locator("#delete-modal")).not.toHaveClass(/open/);
+  await expect(card).not.toBeVisible();
+}
+
+/**
  * Moves keyboard focus onto the open story context menu's item labelled
  * `label`, using only the keys a user has -- Home, then ArrowDown until it
  * lands.

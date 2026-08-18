@@ -89,6 +89,7 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
+        "display_state": "blocked",
         "head_global_seq": 64,
         "story": {
           "awaiting": "waiting on the benchmark harness",
