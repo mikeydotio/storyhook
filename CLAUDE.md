@@ -938,6 +938,54 @@ Standing rules for every wave:
   under its normal concurrent load. That is a fact about the suite, not the detector, and it
   is the same fact that would block the next release. Design of record:
   `docs/spec/test-tiers.md`.
+- **A click whose target is destroyed before `mouseup` is never dispatched at all, so
+  the paint waits for the press** (SH-401). Per the UI Events click-dispatch
+  algorithm, a `mousedown` target disconnected before `mouseup` fires **no `click`
+  anywhere** — not even at an ancestor — and Playwright reports the gesture
+  *successful*, because its hit-target check ran once, before the gesture, against
+  the node that existed then. SH-397 closed this for the board by pointing the
+  pointer at a node that survives (`.card` is reused by `reconcileColumnCards`, so
+  `pointer-events: none` on its descendants sufficed); the drawer has no surviving
+  node — `renderDrawer` does `clear(body)` unconditionally — so that shape
+  **structurally cannot** be extended: the button *is* the destroyed node, and
+  delegating to a surviving ancestor changes nothing when no click is dispatched.
+  `src/web_dashboard.html`'s press gate defers the **paint** of `renderAll`,
+  `renderView` and `renderDrawer` while a primary-button press is in flight, never
+  the data — `state.data`, `boardFetchFloor` and `applyStory` still land on arrival,
+  so a handler can only ever see stale pixels, never stale state. Three things about
+  it are load-bearing and each was **measured rather than argued**. The release is
+  never taken inside the `pointerup` handler (`pointerup` precedes `mouseup`
+  precedes `click` in one input task, so a teardown there destroys the click by the
+  identical mechanism) — the single most review-invisible way to write this wrong,
+  pinned by a mutation and by a contract spec that measures the ordering the way
+  `interception-contract.spec.ts` measured WebKit's. A document-level bubbling
+  `click` **cannot** be the load-bearing release: this file `stopPropagation()`s
+  `click` at ten sites, three of them controls this fix exists to close
+  (`.card-actions-btn`, `.rel-id`, `.row-actions-btn`), so it is opportunistic and
+  the two-frame fallback carries them. And `dragstart` is a release rather than a
+  carve-out, because the UA dispatches no `click` for a gesture promoted to a drag —
+  which is what makes native HTML5 drag-and-drop a non-problem without depending on
+  whether `pointerup`/`pointercancel`/`dragend` arrive. **The failsafe is not a
+  ceiling on a human**: a wall clock is the only release that can fire during a
+  *live* press, re-opening the defect for exactly that press, so it bounds the
+  **release set** instead — unreachable under a correct one, therefore its firing is
+  a hole detector, reported never silent (SH-306) and derived from
+  `SAFETY_POLL_INTERVAL_MS` never written as a duration (SH-394,
+  `tests/press_gate_failsafe.rs`). Staleness is reported as a **count of `/data`
+  arrivals**, not a duration, so no second wall clock enters the product. Settled by
+  a unanimous three-seat council (`story show SH-401` — never the council's own
+  directory, SH-363), which refuted preserving the pressed node **on the mechanism**
+  (the click target is the common ancestor of the mousedown and *mouseup* targets, so
+  a preserved-but-displaced node yields a click at `#drawer-body` where nothing
+  listens — a click that exists and does nothing, which a "a click fired" test would
+  pass) and rejected reconciling the drawer body as the largest diff for the smallest
+  class, whose own limit is that a genuinely-changed section still destroys its
+  controls — precisely the reported case. The static half of the fence — funnelling
+  the file's bare removal sites through one `detach()` door — was **severed by the
+  winning author's own motion** and is SH-421; what ships here is the runtime half,
+  whose limit is stated rather than glossed: complete over removal *mechanisms*,
+  incomplete over *surfaces*. Design of record:
+  `docs/spec/render-under-a-press.md`.
 - **A threshold test measures a settled box, and compares against its own
   measurement error — never a bare `<`** (SH-420). `responsive.mobile.spec.ts`'s
   tap-target sweep flagged `select#create-priority` as under the 44px
