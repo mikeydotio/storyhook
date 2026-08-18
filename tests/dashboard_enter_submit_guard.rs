@@ -81,6 +81,35 @@
 //! can call `bindEnterSubmit` correctly and still forget its **in-flight
 //! claim**. Layer two is not statically decidable in JavaScript, and this file
 //! does not pretend otherwise.
+//!
+//! ## The second property: one door for every key that reaches a field (SH-368)
+//!
+//! The scan above is keyed to `"Enter"`, which is the right question for a
+//! *submit* and the wrong one for everything else a field's keydown handler
+//! does. SH-368 found four more handlers reading other keys on a text field —
+//! the drawer title's Enter-blurs, the status row description's, the label
+//! combobox's Enter/comma/Backspace/Escape, and the description textarea's
+//! Escape-reverts — plus the two page-level Escape handlers on `document`,
+//! which see every field's keys on the way up. None of them submits anything,
+//! so none of them was ever in the first scan's sight.
+//!
+//! [`every_keydown_listener_that_can_see_a_field_goes_through_bind_typed_keys`]
+//! is the fence for that wider class, and it is keyed to the **receiver** of
+//! each raw `addEventListener("keydown", …)` rather than to any key name: an
+//! element a user can type into, or `document`, must be bound through
+//! `bindTypedKeys`, while a menu, a button, a card or the notice dock may bind
+//! directly because nothing composed can reach it. A receiver is admitted by
+//! naming it and saying why it hosts no typing — the same "list of exceptions,
+//! not a list of sites" shape as `ALLOWED` above, and the same failure mode: a
+//! new `input.addEventListener("keydown", …)` is on nobody's list and fails by
+//! name.
+//!
+//! Its own knowingly-traded limit is the mirror of the Enter scan's: it reads
+//! the receiver's **spelling**, so a text field held in a variable named
+//! something else would pass. That is why the receiver list is a list of
+//! *specific names already in the file* rather than a rule like "not `input`" —
+//! an unfamiliar receiver fails and gets read by a human, which is the only
+//! mechanism available for a question no scan can answer.
 
 use std::path::PathBuf;
 
@@ -349,4 +378,182 @@ fn the_dashboard_reads_the_enter_key_by_name_and_not_by_code() {
              that these spellings are absent"
         );
     }
+}
+
+/// Why a keydown listener may be wired straight onto its receiver instead of
+/// going through `bindTypedKeys`: the receiver's spelling, and what makes it
+/// impossible for an in-progress IME composition to reach it.
+struct Receiver {
+    /// The expression the listener is registered on, verbatim, as it appears
+    /// left of `.addEventListener("keydown"`.
+    name: &'static str,
+    /// Why nothing typed can reach it — quoted in the failure message, so a
+    /// reader who trips this test learns the distinction rather than the line.
+    reason: &'static str,
+}
+
+/// Every receiver allowed to bind `keydown` directly.
+///
+/// `document` is deliberately absent: a page-level listener sees the keys of
+/// whichever field has focus, on the way up, so it is on the typing side of
+/// this line and belongs behind the door with the fields.
+const DIRECT_KEYDOWN_RECEIVERS: &[Receiver] = &[
+    Receiver {
+        name: "target",
+        reason: "`bindTypedKeys` itself — the one door, and the only listener in \
+                 this file registered on a receiver it does not know",
+    },
+    Receiver {
+        name: "storyMenuNode",
+        reason: "the story context menu: a `role=\"menu\"` of buttons, none of \
+                 which accepts text",
+    },
+    Receiver {
+        name: "storySubmenuNode",
+        reason: "the story context menu's submenu — the same, one level down",
+    },
+    Receiver {
+        name: "columnSortMenuNode",
+        reason: "the column sort menu — the same shape again",
+    },
+    Receiver {
+        name: "container",
+        reason: "the board column's roving-focus card container: the focused \
+                 element is a card, which hosts no composition",
+    },
+    Receiver {
+        name: "view",
+        reason: "the drawer description's read-only view, which Enter/Space swap \
+                 for the textarea — the textarea itself is bound through the door",
+    },
+    Receiver {
+        name: "btn",
+        reason: "the project selector's own button",
+    },
+    Receiver {
+        name: "menu",
+        reason: "the project selector's menu of buttons",
+    },
+    Receiver {
+        name: "$(\"notice-dock\")",
+        reason: "the notice dock, `refuseAutoRepeatActivation`'s only mount — a \
+                 stack of dismiss buttons",
+    },
+];
+
+/// Every 1-based line of dashboard code registering a `keydown` listener
+/// directly, paired with the receiver it registers on.
+fn direct_keydown_bindings() -> Vec<(usize, String)> {
+    strip_comments(&read("src/web_dashboard.html"))
+        .lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let (receiver, _) = line.split_once(".addEventListener(\"keydown\"")?;
+            Some((index + 1, receiver.trim().to_string()))
+        })
+        .collect()
+}
+
+#[test]
+fn every_keydown_listener_that_can_see_a_field_goes_through_bind_typed_keys() {
+    let offenders: Vec<(usize, String)> = direct_keydown_bindings()
+        .into_iter()
+        .filter(|(_, receiver)| {
+            !DIRECT_KEYDOWN_RECEIVERS
+                .iter()
+                .any(|allowed| allowed.name == receiver)
+        })
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "src/web_dashboard.html binds `keydown` directly on a receiver this test does not \
+         recognise, at:\n{}\n\n\
+         A listener that can see a text field's keys — one bound on the field itself, or on \
+         `document`, which sees every field's keys as they bubble — must be registered through \
+         `bindTypedKeys(target, handler)`, which refuses events the user's input method is still \
+         composing (SH-368: an Enter that commits a composition submitted six dashboard forms \
+         mid-word). Binding directly is only for a receiver nothing composed can reach, and the \
+         ones this file already has are:\n{}\n\n\
+         If the receiver above genuinely hosts no typing, it needs an entry naming that property \
+         — not an exemption.",
+        offenders
+            .iter()
+            .map(|(number, receiver)| format!(
+                "  src/web_dashboard.html:{number}: {receiver}.addEventListener(\"keydown\", …)"
+            ))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        DIRECT_KEYDOWN_RECEIVERS
+            .iter()
+            .map(|allowed| format!("  {:?} — {}", allowed.name, allowed.reason))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+}
+
+#[test]
+fn the_receiver_scan_still_finds_the_bindings_it_is_supposed_to() {
+    // The positive control, for the reason the Enter scan already states: a
+    // scan that found nothing satisfies the assertion above perfectly. The
+    // door's own binding is the fixture-free anchor — it is the one line that
+    // must exist for `bindTypedKeys` to be a door at all.
+    let bindings = direct_keydown_bindings();
+    assert!(
+        bindings.len() >= 8,
+        "the scan found only {} direct `keydown` bindings in src/web_dashboard.html, fewer than \
+         the menu and roving-focus receivers alone — the comment stripper or the predicate has \
+         stopped seeing code, and this file is reporting a clean tree it never read",
+        bindings.len()
+    );
+    assert!(
+        bindings.iter().any(|(_, receiver)| receiver == "target"),
+        "the scan did not find `bindTypedKeys`'s own `target.addEventListener(\"keydown\", …)` — \
+         either the door has been renamed and this file was not updated with it, or the scan is \
+         measuring something other than this file's code"
+    );
+}
+
+#[test]
+fn a_hand_wired_field_listener_is_rejected_however_its_receiver_is_named() {
+    // The mutation check, run against the four receivers SH-368 actually
+    // converted plus the `document` one, rather than an invented name. Every
+    // one of these was in the file before that story and would have to be
+    // rejected if it came back.
+    for receiver in ["input", "textarea", "document", "description", "field"] {
+        let line = format!("{receiver}.addEventListener(\"keydown\", function(e) {{ act(e); }});");
+        assert!(
+            !DIRECT_KEYDOWN_RECEIVERS
+                .iter()
+                .any(|allowed| allowed.name == receiver),
+            "{receiver:?} was accepted as a direct `keydown` receiver — a text field, or \
+             `document`, has been admitted to a list whose whole subject is receivers that host \
+             no typing"
+        );
+        assert!(
+            strip_comments(&line).contains(".addEventListener(\"keydown\""),
+            "the stripper removed {line:?}, which is code — a scan that cannot see this line \
+             cannot report it"
+        );
+    }
+}
+
+#[test]
+fn a_keydown_listener_cannot_be_smuggled_in_as_an_element_property() {
+    // The receiver scan reads `x.addEventListener("keydown", …)` and nothing
+    // else, so `el()`'s own `on*` props are a second door it cannot see:
+    // `el("input", { onKeydown: … })` registers a listener through
+    // `node.addEventListener(key.slice(2).toLowerCase(), value)`, spelling
+    // neither the receiver nor the event where any scan above would find them.
+    // SH-368 removed the one site that used it (the status row's description
+    // field); this keeps it removed. Lowercased before matching because `el()`
+    // lowercases too, so `onKeyDown` and `onKEYDOWN` are the same door.
+    let code = strip_comments(&read("src/web_dashboard.html")).to_lowercase();
+    assert!(
+        !code.contains("onkeydown"),
+        "src/web_dashboard.html registers a `keydown` listener through an `el()` property or an \
+         `onkeydown` assignment, which `every_keydown_listener_that_can_see_a_field_goes_through_\
+         bind_typed_keys` cannot see. Write it as `bindTypedKeys(node, handler)` — or, if the \
+         receiver hosts no typing, as an ordinary `addEventListener` call the scan can read"
+    );
 }
