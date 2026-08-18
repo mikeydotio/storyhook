@@ -1174,6 +1174,63 @@ export async function awaitNoOverlay(page: Page): Promise<void> {
   );
 }
 
+/** Waits until no CSS animation or transition is still running under `root`,
+ * then answers `locator`'s bounding box (SH-420, SH-401).
+ *
+ * A spec that drives a pointer by coordinate — `page.mouse.move/down/up`
+ * rather than `locator.click()`, which is the only way to put a re-render
+ * *between* mousedown and mouseup — aims at a box it read earlier. If the
+ * surface is still moving when that read happens, the coordinates name where
+ * the control *was*: the drawer alone slides in over `transition: transform
+ * 0.2s`, so a box read the instant `#drawer` gains `open` is off by most of
+ * the drawer's own width. That is SH-420's finding ("a threshold test
+ * measures a settled box") one axis over — there a moving box produced a
+ * wrong *measurement*, here it produces a press on the wrong *element*.
+ *
+ * The settle test is `getAnimations({ subtree: true })` filtered to
+ * `running`, exactly as SH-420's own sweep does — polled rather than slept
+ * against, per this suite's standing objection to a magic-number wait. The
+ * residual race SH-420 names applies here unchanged: this board polls and
+ * re-animates cards, so a live poll can restart an animation at any moment.
+ * Scoped to `root` rather than the document for that reason — the drawer's
+ * own transition is what a drawer spec must wait out, and an unrelated card
+ * animating on the board behind it is not this spec's business. */
+export async function settledBoundingBox(
+  root: Locator,
+  locator: Locator,
+): Promise<{ x: number; y: number; width: number; height: number }> {
+  await expect
+    .poll(
+      async () =>
+        root.evaluate((node) =>
+          node
+            .getAnimations({ subtree: true })
+            .filter((a) => a.playState === "running")
+            .map((a) => {
+              const effect = a.effect as KeyframeEffect | null;
+              const target = effect && effect.target ? effect.target.tagName : "?";
+              return `${
+                (a as unknown as { animationName?: string }).animationName ||
+                (a as unknown as { transitionProperty?: string }).transitionProperty ||
+                "animation"
+              } on ${target}`;
+            }),
+        ),
+      {
+        message:
+          "animations under this surface never settled, so a coordinate-driven " +
+          "press would aim at a moving box (SH-420/SH-401)",
+      },
+    )
+    .toEqual([]);
+
+  const box = await locator.boundingBox();
+  if (!box) {
+    throw new Error("the element to press has no bounding box");
+  }
+  return box;
+}
+
 /** Creates a story with both a title and a description (so Copy Description has
  * something to copy) and returns its id.
  *
