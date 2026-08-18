@@ -44,6 +44,19 @@
 # rather than reading as a silent all-clear — SH-306's own lesson about a
 # gate that fails without saying so, one layer up.
 #
+# WHY EACH COMMENT ALSO CARRIES `main`'s BROWSER-TIER DISTANCE (SH-418).
+# `make test` -- what this script runs -- is the merge gate, and it
+# deliberately skips the browser suite (SH-394). So a CERTIFIED verdict here
+# says nothing whatever about the dashboard, and until SH-418 nothing else
+# said anything about it either between releases. One extra line, rendered by
+# `scripts/browser-status.sh`, states how far `main` is from the last tree the
+# browser suite certified -- so the reader about to click merge is told what
+# this gate does NOT cover, at the moment it matters, rather than inferring
+# full coverage from a green line. It is a distance, never a boolean: a dead
+# browser poller and a red `main` both read as a number that grows, which is
+# the SH-306 rule (silence is never a pass) applied to the tier this script
+# does not run.
+#
 # WHY THIS SCRIPT HAS NO AUTOMATED TEST. `scripts/merge-preflight.sh` — the
 # part that decides correctness — has an exhaustive real-git suite
 # (tests/merge_gate.rs), because that is where a wrong answer would be a
@@ -137,6 +150,36 @@ upsert_comment() {
     fi
 }
 
+# One sentence naming how far `main` is from the last browser-certified tree.
+# Rendered once per pass, not per PR: it is a fact about `main`, identical in
+# every comment, and `browser-status.sh` walks history to answer it.
+browser_line() {
+    local out state behind certified certified_at
+    out="$(bash scripts/browser-status.sh origin/main 2>/dev/null)"
+    state="$(printf '%s\n' "$out" | sed -n 's/^state=//p')"
+    behind="$(printf '%s\n' "$out" | sed -n 's/^behind=//p')"
+    certified="$(printf '%s\n' "$out" | sed -n 's/^certified=//p')"
+    certified_at="$(printf '%s\n' "$out" | sed -n 's/^certified_at=//p')"
+    case "$state" in
+    current)
+        printf 'green on this exact tip (certified %s)' "${certified_at:-unknown}"
+        ;;
+    behind)
+        printf 'last green %s first-parent commit(s) back, at `%s` (certified %s)' \
+            "${behind:-?}" "${certified:0:9}" "${certified_at:-unknown}"
+        ;;
+    never)
+        printf 'NEVER — no tree in this history has passed the browser suite'
+        ;;
+    *)
+        printf 'unknown — `scripts/browser-status.sh` could not answer'
+        ;;
+    esac
+}
+
+browser_status_line="$(browser_line)"
+note "browser tier on main: $browser_status_line"
+
 prs="$(gh pr list --state open --json number --jq '.[].number' 2>/dev/null)"
 if [ -z "$prs" ]; then
     note "no open PRs — nothing to reconcile"
@@ -161,6 +204,7 @@ for pr in $prs; do
 ### Merge-gate poller
 
 **Result:** CONFLICT — does not merge cleanly onto \`main\`
+**Browser tier on \`main\`:** $browser_status_line
 **Last checked:** $now UTC
 
 _Automated check from \`scripts/merge-watch.sh\` (SH-396). Rebase this branch onto \`main\` to clear it._"
@@ -173,6 +217,7 @@ _Automated check from \`scripts/merge-watch.sh\` (SH-396). Rebase this branch on
 
 **Result:** CERTIFIED — this merge tree has a real \`make test\` receipt
 **Merge tree:** \`$tree\`
+**Browser tier on \`main\`:** $browser_status_line
 **Last checked:** $now UTC
 
 _Merging now lands a tree \`.githooks/pre-push\` already recognizes. Automated check from \`scripts/merge-watch.sh\` (SH-396)._"
@@ -195,6 +240,7 @@ _Merging now lands a tree \`.githooks/pre-push\` already recognizes. Automated c
 
 **Result:** CERTIFIED — \`make test\` just passed against this merge tree
 **Merge tree:** \`$tree\`
+**Browser tier on \`main\`:** $browser_status_line
 **Last checked:** $now UTC
 
 _Merging now lands a tree \`.githooks/pre-push\` already recognizes. Automated check from \`scripts/merge-watch.sh\` (SH-396)._"
@@ -208,6 +254,7 @@ _Merging now lands a tree \`.githooks/pre-push\` already recognizes. Automated c
 **Result:** RED — \`make test\` failed against this merge tree
 **Merge tree:** \`$tree\`
 **Last leg:** ${reached:-unknown — see the tail below}
+**Browser tier on \`main\`:** $browser_status_line
 **Last checked:** $now UTC
 
 <details><summary>tail of the failing run</summary>

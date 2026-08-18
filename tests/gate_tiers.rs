@@ -108,6 +108,77 @@ fn test_full_runs_the_browser_suite_and_test_defers_it_loudly() {
     );
 }
 
+/// `make test`'s deferral must say how long the browser tier has gone unrun,
+/// not merely that this run skipped it (SH-418).
+///
+/// SH-394 added the named deferral so the reduced gate "can never silently
+/// read as full coverage". It said the browser suite was skipped and nothing
+/// about whether it had ever run — the same silence, one tier up, which is
+/// exactly the gap SH-418 was filed for. This is the only place that fact is
+/// collected with **no bootstrap**: `make browser-watch` and `make
+/// merge-watch` both want a per-machine timer, and every session runs `make
+/// test` before every push regardless.
+///
+/// The report must never gate — a merge gate that failed on the release
+/// tier's staleness would undo the split SH-394 measured — and `test-full`
+/// must not carry it, because there the suite is about to actually run.
+#[test]
+fn the_merge_gates_deferral_reports_how_stale_the_browser_tier_is() {
+    let gate = dry_run("test");
+    let full = dry_run("test-full");
+
+    let deferral = gate
+        .iter()
+        .find(|l| l.contains("leg.sh") && l.contains("--skipped"))
+        .unwrap_or_else(|| panic!("make test must print a named deferral:\n{gate:#?}"));
+
+    assert!(
+        deferral.contains("scripts/browser-status.sh"),
+        "the deferral must also report the browser tier's staleness, else it \
+         says only that THIS run skipped it — the SH-418 silence. Line was:\n{deferral}"
+    );
+    assert!(
+        deferral.contains("|| true"),
+        "reporting staleness must never fail the merge gate, or the reduced \
+         gate starts depending on the release tier. Line was:\n{deferral}"
+    );
+    assert!(
+        !full.iter().any(|l| l.contains("scripts/browser-status.sh")),
+        "make test-full runs the suite itself, so a stale reading there would \
+         be noise measured moments before it stops being true:\n{full:#?}"
+    );
+}
+
+/// The detection layer's own two targets must reach their scripts (SH-418).
+///
+/// `make test-full` is the release gate, and until SH-418 nothing ran it
+/// between releases — measured: 109 receipts on this machine, zero at `tier
+/// full`. `browser-watch` is what runs it on a cadence and `browser-status`
+/// is what reports the distance when nothing has. A target that stopped
+/// invoking its script would restore the exact silence this story ended, and
+/// would do it without failing anything — the SH-306 shape, one tier up.
+///
+/// This is a WIRING fence and claims nothing more: it proves the targets
+/// reach the scripts, never that the scripts are right.
+/// `tests/browser_gate.rs` is what provokes the behaviour, against real git.
+#[test]
+fn the_browser_tier_detection_targets_reach_their_scripts() {
+    let watch = dry_run("browser-watch");
+    let status = dry_run("browser-status");
+
+    assert!(
+        watch.iter().any(|l| l.contains("scripts/browser-watch.sh")),
+        "make browser-watch must invoke scripts/browser-watch.sh, dry run was:\n{watch:#?}"
+    );
+    assert!(
+        status
+            .iter()
+            .any(|l| l.contains("scripts/browser-status.sh")),
+        "make browser-status must invoke scripts/browser-status.sh, dry run \
+         was:\n{status:#?}"
+    );
+}
+
 /// The receipt each tier writes must name that tier — `full` from
 /// `test-full`, `gate` from `test` — and neither tier may write the other's.
 #[test]
