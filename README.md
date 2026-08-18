@@ -305,7 +305,7 @@ story epic show <id>
 story epic create "<title>"
 story epic add <epic-id> <story-id>
 
-story list [--state <slug>] [--assignee <member>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts]
+story list [--state <slug>] [--assignee <member>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts] [--unassessed] [--include-closed] [--include-archived] [--all]
 story next [--count <n>] [--phase <N>] [--claim]
 story summary
 story report [--html]

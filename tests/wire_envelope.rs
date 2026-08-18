@@ -1151,6 +1151,8 @@ fn invocation_corpus() -> Vec<Invocation> {
             story_type: Some("bug".to_string()),
             drafts: true,
             unassessed: false,
+            include_closed: true,
+            include_archived: false,
         },
         Invocation::Search {
             query: "trait".to_string(),
