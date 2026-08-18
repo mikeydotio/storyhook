@@ -162,6 +162,9 @@ Usage:
              [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>]
              [--drafts]                                (narrows to drafts only)
              [--unassessed]                            (narrows to stories nobody has assessed)
+             [--include-closed]                        (also show closed, unarchived stories)
+             [--include-archived]                      (also show archived stories; implies --include-closed)
+             [--all]                                   (--include-closed --include-archived)
   story next [--count <n>] [--phase <N>] [--claim]
   story summary
   story report [--html]
@@ -332,6 +335,13 @@ pub enum Invocation {
         /// `--priority none`, which also matches every story parked there on
         /// purpose.
         unassessed: bool,
+        /// `--include-closed` (SH-409): widens the default OPEN-only
+        /// visibility to also show closed, unarchived stories.
+        include_closed: bool,
+        /// `--include-archived` (SH-409): widens the default visibility to
+        /// also show archived (`story hide`d) stories. Implies
+        /// `include_closed`.
+        include_archived: bool,
     },
     Search {
         query: String,
@@ -1468,6 +1478,9 @@ static VERB_FLAGS: &[VerbFlags] = &[
             bare("ready"),
             bare("drafts"),
             bare("unassessed"),
+            bare("include-closed"),
+            bare("include-archived"),
+            bare("all"),
         ],
     },
     VerbFlags {
@@ -2637,8 +2650,10 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
     let mut story_type = None;
     let mut drafts = false;
     let mut unassessed = false;
+    let mut include_closed = false;
+    let mut include_archived = false;
     let mut index = 1;
-    let usage = "usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts] [--unassessed]";
+    let usage = "usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts] [--unassessed] [--include-closed] [--include-archived] [--all]";
 
     while index < args.len() {
         match args[index].as_str() {
@@ -2725,6 +2740,24 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
                 drafts = true;
                 index += 1;
             }
+            "--include-closed" => {
+                include_closed = true;
+                index += 1;
+            }
+            "--include-archived" => {
+                include_archived = true;
+                index += 1;
+            }
+            "--all" => {
+                // Sugar, collapsed here rather than carried as its own
+                // `Invocation::List` field: `--all` and
+                // `--include-closed --include-archived` must parse to the
+                // exact same `Invocation`, which a third field could only
+                // drift from.
+                include_closed = true;
+                include_archived = true;
+                index += 1;
+            }
             _ => {
                 return Err(AppError::Usage(usage.to_string()));
             }
@@ -2746,6 +2779,8 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
         story_type,
         drafts,
         unassessed,
+        include_closed,
+        include_archived,
     })
 }
 

@@ -1116,7 +1116,20 @@ fn render_human(response: &Response) -> String {
             warnings,
         } => {
             if stories.is_empty() {
-                return "no stories found\n".to_string();
+                let mut body = String::new();
+                // SH-409: `list --label X` matching only archived stories is
+                // exactly the case where this note matters most — it must
+                // survive the empty-result early return, not just the
+                // populated one below.
+                if let Some(msg) = msg {
+                    body.push_str(msg);
+                    body.push('\n');
+                }
+                body.push_str("no stories found\n");
+                for warning in warnings {
+                    body.push_str(&format!("warning: {warning}\n"));
+                }
+                return body;
             }
 
             let mut body = String::new();
@@ -1162,12 +1175,25 @@ fn render_human(response: &Response) -> String {
                 } else {
                     ""
                 };
+                // SH-409: `list` excludes archived (hidden) stories by
+                // default now, so a story that reaches this render arm
+                // carrying `hidden_at` only got here via `--include-archived`
+                // / `--all`, or via `story search` (which still shows
+                // everything) — either way it needs a badge distinguishing it
+                // from a plain closed one, which `story show` already had
+                // (rendered as `archived: <timestamp>` there) but `list`
+                // never did.
+                let archived = if story.story.hidden_at.is_some() {
+                    " [archived]"
+                } else {
+                    ""
+                };
                 // SH-175: shown inline rather than excluded by default — see
                 // the council verdict on SH-175 for why `list` diverges from
                 // the web board here.
                 let draft = if story.story.draft { " [draft]" } else { "" };
                 body.push_str(&format!(
-                    "{} [{}]{}{} {}{}{}{}{}{}{}\n",
+                    "{} [{}]{}{} {}{}{}{}{}{}{}{}\n",
                     story.story.id,
                     story.story.state,
                     priority,
@@ -1176,6 +1202,7 @@ fn render_human(response: &Response) -> String {
                     progress_summary,
                     labels,
                     deleted,
+                    archived,
                     draft,
                     flagged,
                     stale

@@ -306,14 +306,19 @@ Related:
             r#"story list [filters]
 
 List open stories with optional filters. Returns all open stories by
-default. Combine multiple filters to narrow results.
+default: closed, archived and soft-deleted stories are excluded, with
+a message naming what was hidden and which flag would show it. Combine
+multiple filters to narrow results.
 
 When to use:
   When you need to browse or filter the backlog. For the single best
   task to work on next, use 'story next' instead.
 
 Filters:
-  --state <slug>          Filter by state (e.g., todo, in-progress)
+  --state <slug>          Filter by state (e.g., todo, in-progress).
+                           Naming a closed state (e.g. done) lifts the
+                           closed exclusion for this call, but not the
+                           archived one.
   --assignee <id>         Filter by assignee member ID or GitHub handle
   --priority <levels>     Comma-separated: critical,high,medium,low,none
   --label <labels>        Comma-separated label filter
@@ -326,9 +331,20 @@ Filters:
   --updated-after <date>  Stories updated after ISO date
   --drafts                Only draft stories (they otherwise show inline
                            with a [draft] badge — see 'story help new')
+  --unassessed            Only stories nobody has ever set a priority on
+  --include-closed        Also show closed, unarchived stories
+  --include-archived      Also show archived ('story archive'd) stories;
+                           implies --include-closed
+  --all                   --include-closed --include-archived together
+
+A soft-deleted story (see 'story help delete') is never shown by 'list',
+under any combination of the flags above — 'story search' and 'story
+show' still find one.
 
 Examples:
-  story list                          # All open stories
+  story list                          # Open stories, closed/archived hidden
+  story list --include-closed         # Also show closed, unarchived ones
+  story list --all                    # Everything except deleted
   story list --ready                  # Unblocked, ready to work on
   story list --phase 1                # Stories in phase 1
   story list --priority critical,high # Only critical and high priority
@@ -338,10 +354,11 @@ Examples:
 
 Related:
   story help priority-rubric — What the five --priority levels mean
+  story help archive — What "archived" means here
   story next     — Get the highest-priority ready story
   story publish  — Make a draft live
   story summary  — Aggregate counts by state and priority
-  story search   — Full-text search across stories
+  story search   — Full-text search across stories, including hidden ones
 "#,
         );
 
@@ -1296,6 +1313,11 @@ Commands returning a story list ("stories" field):
   story import [file]          -> "stories": [StoryView, ...]
   story decompose <file>       -> "stories": [StoryView, ...]
 
+  story list also carries "message" whenever its default visibility filter
+  (or an explicit --state naming a closed slug) changed what's in "stories"
+  — e.g. "3 closed stories match but are not shown — add --include-closed
+  or --all". Omitted when there is nothing to say.
+
 Commands returning a summary ("summary" field):
   story summary               -> "summary": SummaryView
   story report                -> "summary": SummaryView
@@ -2248,12 +2270,13 @@ Related:
             "archive",
             r#"story archive <id>
 
-Hide a closed story from the primary UI (the dashboard board/list, and
-the default view here and in the TUI). Refuses an open story — only an
-already-closed one can be archived. Fully reversible: `story unarchive`
-undoes it, and reopening an archived story (`story reopen`/`story move`
-into an open state) clears the archived flag too, since an open story
-cannot read as archived.
+Hide a closed story from the primary UI: the dashboard board/list, the
+TUI, and 'story list' here, whose own default excludes it too unless
+you pass '--include-archived' or '--all'. Refuses an open story — only
+an already-closed one can be archived. Fully reversible: `story
+unarchive` undoes it, and reopening an archived story (`story reopen`/
+`story move` into an open state) clears the archived flag too, since an
+open story cannot read as archived.
 
 Archiving is a display preference layered on top of "closed", not a
 second kind of closing: a story's state and superstate are unchanged.
@@ -2351,9 +2374,10 @@ Related:
 Soft-delete a story with a required reason. The story is archived with
 a deletion flag — never truly lost — and its superstate becomes CLOSED,
 so it no longer counts as open, ready, or a blocker for other stories.
-Like any closed story it still appears in `story list` (marked deleted)
-and can be found via search; `--json`/`show` expose "deleted": true and
-"deleted_reason": "<reason>".
+Unlike an ordinarily closed story, no combination of `story list`'s
+visibility flags shows a deleted one — `story search` and `story show`
+are the way to find it; both expose "deleted": true and
+"deleted_reason": "<reason>" under `--json`.
 
 When to use:
   For duplicate, erroneous, or abandoned stories.
