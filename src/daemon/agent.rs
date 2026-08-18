@@ -26,20 +26,63 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::env::Environment;
+use crate::env::{Environment, StoreLocation};
 use crate::path_identity;
 
 /// The launchd label for the user agent.
 ///
 /// Reverse-DNS under the author's own domain, which is the convention every
-/// other bundle identifier in this ecosystem follows.
+/// other bundle identifier in this ecosystem follows. The **bare** form,
+/// carried by the store [`serves_the_login_default`] reports true for — see
+/// [`label`] for the store-keyed form every other store gets.
 pub const LAUNCHD_LABEL: &str = "io.mikey.storyhook.daemon";
+
+/// Whether a launchd-started `story daemon --serve` — no flags, none of this
+/// process's environment — would open `env`'s store.
+///
+/// **Not** [`StoreLocation::is_default`]. That predicate is `self.path ==
+/// self.default_path`, and `default_path` is computed from whatever
+/// `$XDG_DATA_HOME` *this process* happens to have
+/// (`StoreLocation::resolve`), so `XDG_DATA_HOME=/scratch story daemon
+/// install`, run interactively, resolves a store at
+/// `/scratch/storyhook/store.db` with `is_default()` **true** — and a launchd
+/// child, which inherits none of this process's environment, would then open
+/// `$HOME/.local/share/storyhook/store.db` instead: a different store than
+/// the one just installed for. This is measured, not assumed — this project's
+/// own CLAUDE.md doctrine — by [`tests::a_store_reached_via_xdg_data_home_
+/// still_gets_its_own_label`], and it is a pre-existing gap in [`plist`]'s
+/// `--store-path` arm this same predicate closes, not a new one this fix
+/// introduces.
+///
+/// `StoreLocation::for_home` performs the identical resolution `resolve` does
+/// with no XDG override — precisely what launchd hands the agent.
+#[must_use]
+fn serves_the_login_default(env: &Environment) -> bool {
+    env.store_path() == StoreLocation::for_home(env.home()).path()
+}
+
+/// This store's launchd label: the bare [`LAUNCHD_LABEL`] for the store a
+/// login agent would open with no flags, [`LAUNCHD_LABEL`] plus this store's
+/// own key for any other — the same digest that already names the daemon
+/// state directory, the dashboard's per-store cookie, and the keychain
+/// account ([`StoreLocation::key`]).
+///
+/// No existing installation is touched: the login-time default's label is
+/// unchanged, byte-for-byte, from every plist this project has ever written.
+#[must_use]
+pub fn label(env: &Environment) -> String {
+    if serves_the_login_default(env) {
+        LAUNCHD_LABEL.to_string()
+    } else {
+        format!("{LAUNCHD_LABEL}.{}", env.store().key())
+    }
+}
 
 /// Where the launchd agent's plist goes.
 pub fn path(env: &Environment) -> PathBuf {
     env.home()
         .join("Library/LaunchAgents")
-        .join(format!("{LAUNCHD_LABEL}.plist"))
+        .join(format!("{}.plist", label(env)))
 }
 
 /// The launchd agent definition.
@@ -55,7 +98,7 @@ pub fn plist(exe: &Path, env: &Environment) -> String {
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>{LAUNCHD_LABEL}</string>
+    <string>{label}</string>
     <key>ProgramArguments</key>
     <array>
         <string>{exe}</string>
@@ -71,13 +114,17 @@ pub fn plist(exe: &Path, env: &Environment) -> String {
 </dict>
 </plist>
 "#,
+        label = label(env),
         exe = xml_escape(&exe.display().to_string()),
-        // A login agent for the default store needs no flag, and leaving it off
-        // keeps the plist identical to the one every existing installation has.
-        // For any other store the flag is required rather than tidy: the log
-        // path below is already this store's, so an agent without it would run
-        // one store's daemon while writing into another's directory.
-        store = if env.store().is_default() {
+        // A login agent for the store a launchd child would open with no
+        // flags needs no flag itself, and leaving it off keeps that store's
+        // plist identical to the one every existing installation has. For any
+        // other store the flag is required rather than tidy: the log path
+        // below is already this store's, so an agent without it would run one
+        // store's daemon while writing into another's directory. The same
+        // predicate drives both this decision and `label`'s, so a plist can
+        // never carry a bare label with a flag or a keyed label without one.
+        store = if serves_the_login_default(env) {
             String::new()
         } else {
             format!(
@@ -428,6 +475,123 @@ mod tests {
     #[test]
     fn the_agent_label_follows_the_bundle_convention() {
         assert_eq!(LAUNCHD_LABEL, "io.mikey.storyhook.daemon");
+    }
+
+    #[test]
+    fn the_default_stores_label_is_the_bare_one() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        assert_eq!(label(&env), LAUNCHD_LABEL);
+    }
+
+    #[test]
+    fn a_named_store_gets_its_own_label_and_its_own_plist_path() {
+        let dir = scratch();
+        let named = dir.path().join("named.db");
+        let env = Environment::at(dir.path()).with_store(
+            crate::env::StoreLocation::resolve(
+                Some(&named),
+                &crate::env::StoreVars::default(),
+                dir.path(),
+            )
+            .expect("resolving a named store"),
+        );
+        assert_eq!(
+            label(&env),
+            format!("{LAUNCHD_LABEL}.{}", env.store().key())
+        );
+        assert_ne!(path(&env), path(&Environment::at(dir.path())));
+    }
+
+    /// Two different non-default stores must never collide on one label — the
+    /// exact defect a shared label produced.
+    #[test]
+    fn two_named_stores_get_different_labels() {
+        let dir = scratch();
+        let a = dir.path().join("a.db");
+        let b = dir.path().join("b.db");
+        let vars = crate::env::StoreVars::default();
+        let env_a = Environment::at(dir.path()).with_store(
+            crate::env::StoreLocation::resolve(Some(&a), &vars, dir.path())
+                .expect("resolving store a"),
+        );
+        let env_b = Environment::at(dir.path()).with_store(
+            crate::env::StoreLocation::resolve(Some(&b), &vars, dir.path())
+                .expect("resolving store b"),
+        );
+        assert_ne!(label(&env_a), label(&env_b));
+    }
+
+    /// A plist's declared `Label` and its filename must always agree — `launchctl
+    /// bootstrap` targets the file, `bootout`/`kickstart`/`print` target the
+    /// label, and a disagreement makes an install "succeed" while its own
+    /// uninstall silently fails to unload it.
+    #[test]
+    fn the_plist_names_the_label_its_filename_carries() {
+        let dir = scratch();
+        let named = dir.path().join("named.db");
+        for env in [
+            Environment::at(dir.path()),
+            Environment::at(dir.path()).with_store(
+                crate::env::StoreLocation::resolve(
+                    Some(&named),
+                    &crate::env::StoreVars::default(),
+                    dir.path(),
+                )
+                .expect("resolving a named store"),
+            ),
+        ] {
+            let rendered = plist(Path::new("/usr/local/bin/story"), &env);
+            let file_stem = path(&env)
+                .file_stem()
+                .expect("a plist filename")
+                .to_string_lossy()
+                .to_string();
+            assert_eq!(file_stem, label(&env));
+            assert!(
+                rendered.contains(&format!("<string>{}</string>", label(&env))),
+                "{rendered}"
+            );
+        }
+    }
+
+    /// The predicate a store reaches the login default through must not be
+    /// `StoreLocation::is_default()` — see [`serves_the_login_default`]'s own
+    /// doc. Measured here rather than only argued: a store named solely via
+    /// `$XDG_DATA_HOME` reads `is_default() == true` (both sides of that
+    /// comparison are computed from the same overridden variable), yet a
+    /// launchd child — which inherits none of this process's environment —
+    /// would open the *true* default instead. This store must therefore still
+    /// get its own keyed label and its own `--store-path` flag, exactly as a
+    /// `--store-path`-flagged store does.
+    #[test]
+    fn a_store_reached_via_xdg_data_home_still_gets_its_own_label() {
+        let dir = scratch();
+        let xdg = dir.path().join("xdg");
+        std::fs::create_dir_all(&xdg).expect("the xdg data home");
+        let vars = crate::env::StoreVars {
+            xdg_data_home: Some(xdg),
+            ..Default::default()
+        };
+        let env = Environment::at(dir.path()).with_store(
+            crate::env::StoreLocation::resolve(None, &vars, dir.path())
+                .expect("resolving via XDG_DATA_HOME"),
+        );
+        assert!(
+            env.store().is_default(),
+            "is_default() is fooled by $XDG_DATA_HOME by construction — that is the whole point of this test"
+        );
+        assert_ne!(
+            label(&env),
+            LAUNCHD_LABEL,
+            "a store reached only via $XDG_DATA_HOME is not what a launchd child would open with no flags"
+        );
+        let rendered = plist(Path::new("/usr/local/bin/story"), &env);
+        assert!(
+            rendered.contains("<string>--store-path</string>"),
+            "the agent must carry --store-path, or a launchd child would silently open the \
+             true default instead: {rendered}"
+        );
     }
 
     /// The pin that says the escaping fix is invisible to every installation
