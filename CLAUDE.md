@@ -631,6 +631,18 @@ Standing rules for every wave:
   are the precedent rather than the counter-example: mocking `gh`'s behaviour would validate
   the mock, not the integration, so it is verified by hand against this repo's own live PRs
   instead.
+- **`display_state` answers "where does this card render" for any story, not just an
+  epic's** (SH-407). `domain::compute_display_state` (renamed from
+  `compute_epic_display_state`) now carries two independent promotions under one
+  eligibility guard — a story in the project's neutral default open state, non-draft —
+  and blocked wins when both apply: SH-165's original (an epic with an active child
+  promotes to the active state) and SH-407's addition (a story that is itself
+  `!is_ready` promotes to `"blocked"`). Every renderer that reads
+  `display_state || story.state` inherits a fix here for free, which is the whole
+  reason SH-407 chose to extend this field rather than add a second, board-local
+  placement rule — see `docs/spec/board-ordering-and-placement.md` for the design and
+  the two council verdicts it was decided by (`story show SH-407`, SH-363: never the
+  council's own directory, which resolves on no fresh clone).
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
