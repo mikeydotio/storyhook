@@ -97,20 +97,31 @@ test("submitting a reason on drop moves the card and records it", async ({
   });
   await expect(card).toBeVisible();
   // SH-309: an awaiting reason is itself a cause, quoted in the badge's
-  // parenthetical -- plain text, not linkified (unlike the drawer's own
-  // `.banner-blocked`, asserted below), since a reason is free text a
-  // reader wrote, not a relationship record.
+  // parenthetical, since a reason is free text a reader wrote, not a
+  // relationship record. (The drawer's own banner body DOES linkify a
+  // reason's story ids -- pinned by blocked-banner-layout.spec.ts, which
+  // uses an id this project actually holds. The id here carries a foreign
+  // prefix on purpose, so it stays literal text on every surface.)
   await expect(card.locator(".flag-blocked")).toHaveText(
     '● blocked ("waiting on SH-9")',
   );
 
   await card.click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
-  // `.banner-blocked` also carries an "Unblock" button, so this checks the
-  // reason text is present rather than asserting the element's full text.
-  await expect(page.locator(".banner-blocked")).toContainText(
-    "Blocked: waiting on SH-9",
-  );
+  // SH-398 split the banner into `.banner-head` -- the headline plus the
+  // Unblock button -- above `.banner-body`, the reason as rendered
+  // markdown; there is no "Blocked: <reason>" text run joining the two any
+  // more (docs/spec/blocked-causes.md, "The dashboard"). So each half is
+  // asserted where it actually lives. Asserting the container instead
+  // concatenates them into "BlockedUnblockwaiting on SH-9" -- which is
+  // what left this spec red on main from SH-398 until SH-416.
+  const banner = page.locator(".banner-blocked");
+  await expect(banner.locator(".banner-head")).toContainText("Blocked");
+  // This story HAS an awaiting reason, so the Unblock button renders --
+  // the complement of status-flags.spec.ts's relation-only banner, which
+  // asserts the same button is absent and that there is no body at all.
+  await expect(banner.locator("button", { hasText: "Unblock" })).toBeVisible();
+  await expect(banner.locator(".banner-body")).toHaveText("waiting on SH-9");
   await page.locator("#drawer-close").click();
 
   await deleteStory(page, title);
