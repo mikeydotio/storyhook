@@ -108,6 +108,36 @@ fn test_full_runs_the_browser_suite_and_test_defers_it_loudly() {
     );
 }
 
+/// The detection layer's own two targets must reach their scripts (SH-418).
+///
+/// `make test-full` is the release gate, and until SH-418 nothing ran it
+/// between releases — measured: 109 receipts on this machine, zero at `tier
+/// full`. `browser-watch` is what runs it on a cadence and `browser-status`
+/// is what reports the distance when nothing has. A target that stopped
+/// invoking its script would restore the exact silence this story ended, and
+/// would do it without failing anything — the SH-306 shape, one tier up.
+///
+/// This is a WIRING fence and claims nothing more: it proves the targets
+/// reach the scripts, never that the scripts are right.
+/// `tests/browser_gate.rs` is what provokes the behaviour, against real git.
+#[test]
+fn the_browser_tier_detection_targets_reach_their_scripts() {
+    let watch = dry_run("browser-watch");
+    let status = dry_run("browser-status");
+
+    assert!(
+        watch.iter().any(|l| l.contains("scripts/browser-watch.sh")),
+        "make browser-watch must invoke scripts/browser-watch.sh, dry run was:\n{watch:#?}"
+    );
+    assert!(
+        status
+            .iter()
+            .any(|l| l.contains("scripts/browser-status.sh")),
+        "make browser-status must invoke scripts/browser-status.sh, dry run \
+         was:\n{status:#?}"
+    );
+}
+
 /// The receipt each tier writes must name that tier — `full` from
 /// `test-full`, `gate` from `test` — and neither tier may write the other's.
 #[test]
