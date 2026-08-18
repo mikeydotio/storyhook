@@ -99,6 +99,26 @@ pub struct RebuiltStory {
     pub unknown_events: Vec<UnknownEventDiagnostic>,
 }
 
+impl RebuiltStory {
+    /// Whether every event this story has was folded into
+    /// [`snapshot`](Self::snapshot).
+    ///
+    /// When this is false the snapshot is still `Ok` — the fold succeeded on
+    /// what it could read — but it is a fold of *some* of the story, and
+    /// nothing may be concluded from a comparison against it (SH-410). The
+    /// store deliberately does not ask **why** an event was skipped: a kind
+    /// from the future and a torn payload of a known kind make the fold
+    /// equally partial, and which of the two it was is a policy question
+    /// [`crate::service::IntegrityService`] answers with
+    /// [`crate::domain::is_known_event_kind`]. Keeping that question out of
+    /// here is what keeps SH-185's damage-versus-data-from-the-future split in
+    /// one place.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.unknown_events.is_empty()
+    }
+}
+
 /// [`Divergence::field`] for the whole embedded snapshot — the column
 /// `service::query::story_map` builds every story-level integrity check from.
 ///
@@ -106,6 +126,27 @@ pub struct RebuiltStory {
 /// [`ReadModelDiff::unattested`], which singles it out of the rest, cannot come
 /// to mean different columns by the same string.
 const SNAPSHOT_FIELD: &str = "snapshot";
+
+/// What a comparison's *rebuilt* side was derived from.
+///
+/// The distinction only matters for a story whose fold is incomplete
+/// ([`RebuiltStory::is_complete`]), and there it decides everything: a value
+/// this build folded from a subset of the events proves nothing about the row,
+/// while a value read straight off the event list proves exactly as much as it
+/// always did.
+///
+/// [`rebuild`] reads `head_seq` and `head_global_seq` from `events.last()`
+/// **before** [`partition_known`] runs, so those two are facts about the log
+/// rather than about the fold. A row behind them is stale whatever this build
+/// can decode, which is the one damage class SH-410's withholding must not
+/// blind the doctor to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Basis {
+    /// Derived from the raw event list, independently of what folded.
+    Events,
+    /// Derived from the folded snapshot, and therefore only as complete as it.
+    Fold,
+}
 
 /// One disagreement between the persisted read model and the events.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -141,6 +182,32 @@ pub struct ReadModelDiff {
     /// event, and only the layer that writes events can add it. Reported as
     /// `(claimant, relation, other)`.
     pub asymmetric_relations: Vec<(StoryNo, String, StoryNo)>,
+    /// Disagreements this build is **not entitled to call damage** (SH-410).
+    ///
+    /// Same shape as [`divergences`](Self::divergences), and computed by the
+    /// same comparison — the difference is who the disagreement is evidence
+    /// against. These belong to a story whose fold is incomplete
+    /// ([`RebuiltStory::is_complete`]), so the rebuilt side is a fold of only
+    /// part of the history and the persisted row may well be the *more*
+    /// authoritative artifact: written whole by the newer storyhook that also
+    /// wrote the event this build cannot read.
+    ///
+    /// They are a separate vector rather than a flag on `Divergence` because
+    /// every reader of `divergences` draws a conclusion from it —
+    /// [`is_clean`](Self::is_clean), [`unattested`](Self::unattested),
+    /// `service::integrity`'s `drift_issues`, and the `touched` set that mints
+    /// `--fix`'s headline. A filter would have to be remembered at each, which
+    /// is the drift this project has already paid for five times (SH-136,
+    /// SH-198, SH-258, SH-260/276, SH-364). Routing at the point of
+    /// construction makes all four correct with nothing to remember.
+    pub unvouched: Vec<Divergence>,
+    /// Asymmetric edges claimed by a story whose fold is incomplete.
+    ///
+    /// [`asymmetric_relations`](Self::asymmetric_relations) is what
+    /// [`has_integrity_issues`](Self::has_integrity_issues) answers on, and the
+    /// missing half of an edge may be exactly the event this build could not
+    /// decode. Reported, never counted as damage.
+    pub unvouched_relations: Vec<(StoryNo, String, StoryNo)>,
 }
 
 impl ReadModelDiff {
@@ -258,6 +325,19 @@ pub struct RepairReport {
     pub repaired: ReadModelDiff,
     /// Stories that could not be repaired because their events do not fold.
     pub unrepairable: Vec<(StoryNo, String)>,
+    /// Stories whose row was deliberately **left as found** (SH-410), with the
+    /// events that made this build's fold of them incomplete.
+    ///
+    /// Not [`unrepairable`](Self::unrepairable), and the distinction is the
+    /// whole point: an unrepairable story's events do not fold at all, so there
+    /// is no trustworthy row and nothing may be concluded from the one sitting
+    /// there. A withheld story's row is intact and is very likely *more*
+    /// authoritative than this build's fold — written whole by the newer
+    /// storyhook that also wrote the event this build cannot read. Since
+    /// [`unattested`](Self::unattested) is by definition the set the doctor's
+    /// story-level checks may assert nothing from, filing a withheld story
+    /// there would skip the checks that are still perfectly valid on it.
+    pub withheld: Vec<(StoryNo, Vec<UnknownEventDiagnostic>)>,
 }
 
 impl RepairReport {
@@ -388,8 +468,10 @@ pub fn diff_rebuilt(
         .collect();
 
     let mut diff = ReadModelDiff::default();
-    let (expected_edges, asymmetric) = relation_closure(rebuilt, &prefix);
-    diff.asymmetric_relations = asymmetric;
+    let closure = relation_closure(rebuilt, &prefix);
+    let expected_edges = closure.edges;
+    diff.asymmetric_relations = closure.asymmetric;
+    diff.unvouched_relations = closure.unvouched;
     let mut seen = BTreeSet::new();
 
     for story in rebuilt {
@@ -408,21 +490,32 @@ pub fn diff_rebuilt(
             continue;
         };
 
-        let mut report = |field: &str, persisted: String, rebuilt: String| {
-            if persisted != rebuilt {
-                diff.divergences.push(Divergence {
-                    story_no: story.story_no,
-                    field: field.to_string(),
-                    persisted,
-                    rebuilt,
-                });
+        // Where a disagreement is filed, not whether it is computed (SH-410).
+        // Every comparison still runs; a `Basis::Fold` one on a story whose
+        // fold is incomplete is evidence of nothing, so it is reported as
+        // unvouched rather than as damage.
+        let vouched = story.is_complete();
+        let mut report = |field: &str, persisted: String, rebuilt: String, basis: Basis| {
+            if persisted == rebuilt {
+                return;
+            }
+            let divergence = Divergence {
+                story_no: story.story_no,
+                field: field.to_string(),
+                persisted,
+                rebuilt,
+            };
+            if vouched || basis == Basis::Events {
+                diff.divergences.push(divergence);
+            } else {
+                diff.unvouched.push(divergence);
             }
         };
 
-        for (field, persisted, rebuilt) in
+        for (field, persisted, rebuilt, basis) in
             column_comparisons(row, expected, story.head_seq, story.head_global_seq)?
         {
-            report(field, persisted, rebuilt);
+            report(field, persisted, rebuilt, basis);
         }
 
         let persisted_edges: BTreeSet<String> = tx
@@ -440,6 +533,10 @@ pub fn diff_rebuilt(
                 .into_iter()
                 .collect::<Vec<_>>()
                 .join(" "),
+            // The expected edge set is the closure of the *folded* snapshots'
+            // claims, so an undecoded event that adds a relation is missing
+            // from it.
+            Basis::Fold,
         );
     }
 
@@ -486,7 +583,7 @@ fn column_comparisons(
     expected: &StorySnapshot,
     rebuilt_head: EventSeq,
     rebuilt_head_global: GlobalSeq,
-) -> Result<Vec<(&'static str, String, String)>, StoreError> {
+) -> Result<Vec<(&'static str, String, String, Basis)>, StoreError> {
     let StoryRow {
         // Not compared, and the only field that is not: this is the key the row
         // was looked up by, so any comparison against it holds by construction.
@@ -515,7 +612,12 @@ fn column_comparisons(
     } = row;
 
     Ok(vec![
-        ("head_seq", head_seq.to_string(), rebuilt_head.to_string()),
+        (
+            "head_seq",
+            head_seq.to_string(),
+            rebuilt_head.to_string(),
+            Basis::Events,
+        ),
         // `put_story` derives this column from `events` in the same SQL
         // statement that writes it, so it can only diverge from a rebuild if
         // something wrote the row outside `put_story` — a raw migration, a hand
@@ -526,35 +628,46 @@ fn column_comparisons(
             "head_global_seq",
             head_global_seq.to_string(),
             rebuilt_head_global.to_string(),
+            Basis::Events,
         ),
-        ("title", title.clone(), expected.title.clone()),
-        ("state", state.clone(), expected.state.clone()),
+        ("title", title.clone(), expected.title.clone(), Basis::Fold),
+        ("state", state.clone(), expected.state.clone(), Basis::Fold),
         (
             "superstate",
             superstate.as_str().to_string(),
             expected.superstate.as_str().to_string(),
+            Basis::Fold,
         ),
         (
             "priority",
             priority.as_str().to_string(),
             expected.priority.as_str().to_string(),
+            Basis::Fold,
         ),
         (
             "story_type",
             optional(story_type.as_deref()),
             optional(expected.story_type.as_deref()),
+            Basis::Fold,
         ),
         (
             "assignee",
             optional(assignee.as_deref()),
             optional(expected.assignee.as_deref()),
+            Basis::Fold,
         ),
         (
             "awaiting",
             optional(awaiting.as_deref()),
             optional(expected.awaiting.as_deref()),
+            Basis::Fold,
         ),
-        ("deleted", deleted.to_string(), expected.deleted.to_string()),
+        (
+            "deleted",
+            deleted.to_string(),
+            expected.deleted.to_string(),
+            Basis::Fold,
+        ),
         // `archived` has no counterpart in the snapshot: it is *defined* as
         // "has a close timestamp", and a schema CHECK holds it there. This
         // compares the flag against that definition.
@@ -562,26 +675,31 @@ fn column_comparisons(
             "archived",
             archived.to_string(),
             expected.closed_at.is_some().to_string(),
+            Basis::Fold,
         ),
         (
             "created_at",
             created_at.clone(),
             expected.created_at.clone(),
+            Basis::Fold,
         ),
         (
             "updated_at",
             updated_at.clone(),
             expected.updated_at.clone(),
+            Basis::Fold,
         ),
         (
             "closed_at",
             optional(closed_at.as_deref()),
             optional(expected.closed_at.as_deref()),
+            Basis::Fold,
         ),
         (
             "description",
             optional(description.as_deref()),
             optional(expected.description.as_deref()),
+            Basis::Fold,
         ),
         // Neither column has a schema CHECK tying it to anything else (SH-43,
         // SH-175 respectively) — the fold and the service layer are the only
@@ -595,8 +713,14 @@ fn column_comparisons(
             "hidden_at",
             optional(hidden_at.as_deref()),
             optional(expected.hidden_at.as_deref()),
+            Basis::Fold,
         ),
-        ("draft", draft.to_string(), expected.draft.to_string()),
+        (
+            "draft",
+            draft.to_string(),
+            expected.draft.to_string(),
+            Basis::Fold,
+        ),
         (
             "labels",
             labels.join(","),
@@ -608,6 +732,7 @@ fn column_comparisons(
                 .into_iter()
                 .collect::<Vec<_>>()
                 .join(","),
+            Basis::Fold,
         ),
         // The snapshot column against the snapshot the events produce: this is
         // what catches a change to a field that has no column of its own, such
@@ -616,6 +741,7 @@ fn column_comparisons(
             SNAPSHOT_FIELD,
             serde_json::to_string(snapshot)?,
             serde_json::to_string(expected)?,
+            Basis::Fold,
         ),
     ])
 }
@@ -626,6 +752,20 @@ fn column_comparisons(
 /// itself be interrupted into a half-repaired state. Stories whose events do
 /// not fold are left alone and reported: overwriting them with a guess would
 /// destroy the evidence.
+///
+/// # A fold that is *incomplete* is a guess in exactly that sense (SH-410)
+///
+/// A story carrying an event this build cannot decode folds to `Ok` — the fold
+/// succeeded on what it could read — and the result silently omits whatever
+/// the undecoded events contributed. Writing that over the persisted row
+/// destroys the newer storyhook's own fold, under an exit status that says the
+/// row was repaired. Those stories are withheld
+/// ([`RepairReport::withheld`]) and no `put_story` runs for them.
+///
+/// The store never asks *why* an event would not decode: an unknown kind and a
+/// torn payload of a known kind make the fold equally partial. Which of the two
+/// it was is a policy question, and it stays in `service::integrity`, which is
+/// the only layer that calls [`crate::domain::is_known_event_kind`].
 pub fn repair_read_model<S: Store>(
     store: &S,
     project: ProjectId,
@@ -642,7 +782,18 @@ pub fn repair_read_model<S: Store>(
             ..RepairReport::default()
         };
         for story in rebuilt {
+            let complete = story.is_complete();
             match story.snapshot {
+                // Deliberately not written: see this function's own doc
+                // comment. `head_seq` is the trap that makes a "helpful"
+                // partial write worse than none — `put_story` would stamp the
+                // row at the FULL head, taken from the very event that did not
+                // decode, so the row would claim to be a fold up to head and
+                // the one column that tells *stale* from *wrong* would be
+                // spent saying something false.
+                Ok(_) if !complete => {
+                    report.withheld.push((story.story_no, story.unknown_events));
+                }
                 Ok(snapshot) => {
                     tx.put_story(project, &snapshot, story.head_seq)?;
                     report.rewritten.push(story.story_no);
@@ -673,12 +824,35 @@ fn optional(value: Option<&str>) -> String {
 /// The claims only one end makes are reported separately: symmetric in the
 /// table, asymmetric in the history, and only an event can fix that.
 type EdgeSets = BTreeMap<StoryNo, BTreeSet<String>>;
-fn relation_closure(
-    rebuilt: &[RebuiltStory],
-    prefix: &str,
-) -> (EdgeSets, Vec<(StoryNo, String, StoryNo)>) {
+
+/// What [`relation_closure`] answers.
+///
+/// A struct rather than a tuple because [`asymmetric`](Self::asymmetric) and
+/// [`unvouched`](Self::unvouched) have the identical type and opposite
+/// meanings — one is damage, the other is explicitly not — so a positional
+/// return would let a swap compile.
+struct RelationClosure {
+    /// The edge set each story's history implies, inverses included.
+    edges: EdgeSets,
+    /// Edges only one end claims, where the other end's history is one this
+    /// build read whole.
+    asymmetric: Vec<(StoryNo, String, StoryNo)>,
+    /// Edges only one end claims, where the *other* end carries an event this
+    /// build could not decode — which may be the very event claiming the
+    /// inverse (SH-410).
+    unvouched: Vec<(StoryNo, String, StoryNo)>,
+}
+fn relation_closure(rebuilt: &[RebuiltStory], prefix: &str) -> RelationClosure {
     let mut claims: BTreeSet<(StoryNo, String, StoryNo)> = BTreeSet::new();
+    // The ends whose histories this build read only part of. An edge is
+    // asymmetric because one end's history does not claim the inverse — and a
+    // history with an undecoded event in it may claim exactly that, in the
+    // event this build could not read (SH-410).
+    let mut incomplete: BTreeSet<StoryNo> = BTreeSet::new();
     for story in rebuilt {
+        if !story.is_complete() {
+            incomplete.insert(story.story_no);
+        }
         let Ok(snapshot) = &story.snapshot else {
             continue;
         };
@@ -691,6 +865,7 @@ fn relation_closure(
 
     let mut edges: EdgeSets = BTreeMap::new();
     let mut asymmetric = Vec::new();
+    let mut unvouched = Vec::new();
     for (story_no, relation, other) in &claims {
         edges
             .entry(*story_no)
@@ -704,8 +879,20 @@ fn relation_closure(
             .or_default()
             .insert(format!("{inverse}:{story_no}"));
         if !claims.contains(&(*other, inverse.to_string(), *story_no)) {
-            asymmetric.push((*story_no, relation.clone(), *other));
+            // Keyed on the end that is *missing* its half, not on the claimant:
+            // a claimant whose own fold is incomplete still made the claim this
+            // build can see, and an end that decodes cleanly and does not claim
+            // the inverse genuinely does not claim it.
+            if incomplete.contains(other) {
+                unvouched.push((*story_no, relation.clone(), *other));
+            } else {
+                asymmetric.push((*story_no, relation.clone(), *other));
+            }
         }
     }
-    (edges, asymmetric)
+    RelationClosure {
+        edges,
+        asymmetric,
+        unvouched,
+    }
 }
