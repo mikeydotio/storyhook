@@ -226,6 +226,16 @@ fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).to_string()
 }
 
+/// The ceiling a "this must not wait out any grace period" assertion checks
+/// against — half of `ORPHAN_GRACE_SECS` itself (`orphan_grace_secs`, below),
+/// never a bare literal (`tests/timing_assertions.rs`'s own rule, SH-394): the
+/// claim being disproved is specifically that the fast path does not consume
+/// the grace loop, so the ceiling has to be defined in terms of that loop's
+/// own length, not an unrelated guess at "fast."
+fn no_grace_period_ceiling() -> std::time::Duration {
+    std::time::Duration::from_secs(orphan_grace_secs() / 2)
+}
+
 fn pid_alive(pid: u32) -> bool {
     Command::new("kill")
         .args(["-0", &pid.to_string()])
@@ -335,7 +345,7 @@ fn preflight_refuses_a_live_match_immediately_and_does_not_kill_it() {
         "the refusal must name the phase it fired in\nstderr: {err}"
     );
     assert!(
-        elapsed < std::time::Duration::from_secs(2),
+        elapsed < no_grace_period_ceiling(),
         "the preflight must refuse immediately, with no grace period — took {elapsed:?}"
     );
     assert!(
@@ -360,7 +370,7 @@ fn a_clean_fixture_passes_every_phase_quickly() {
             stderr(&out)
         );
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(2),
+            start.elapsed() < no_grace_period_ceiling(),
             "phase {phase} must not wait out any grace period when nothing matches"
         );
     }
