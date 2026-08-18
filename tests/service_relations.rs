@@ -668,6 +668,213 @@ fn deleting_a_related_story_leaves_both_halves_recorded() {
     assert_eq!(relations(&fixture, &b), [("blocked-by".to_string(), a)]);
 }
 
+// --- block_on / unblock_from (SH-398) ---------------------------------------
+
+#[test]
+fn block_on_writes_every_edge_and_the_reason_in_one_call() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let worker = new_story(&ctx, "worker");
+    let blocker_a = new_story(&ctx, "blocker a");
+    let blocker_b = new_story(&ctx, "blocker b");
+
+    RelationService::new(&ctx)
+        .block_on(
+            &worker,
+            &[blocker_a.clone(), blocker_b.clone()],
+            Some("needs both"),
+        )
+        .unwrap();
+
+    let mut edges = relations(&fixture, &worker);
+    edges.sort();
+    assert_eq!(
+        edges,
+        [
+            ("blocked-by".to_string(), blocker_a.clone()),
+            ("blocked-by".to_string(), blocker_b.clone()),
+        ]
+    );
+    assert_eq!(
+        snapshot(&fixture, &worker).awaiting.as_deref(),
+        Some("needs both")
+    );
+    assert_eq!(
+        relations(&fixture, &blocker_a),
+        [("blocks".to_string(), worker.clone())]
+    );
+    assert_eq!(
+        relations(&fixture, &blocker_b),
+        [("blocks".to_string(), worker)]
+    );
+}
+
+#[test]
+fn block_on_with_no_reason_sets_no_awaiting() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let worker = new_story(&ctx, "worker");
+    let blocker = new_story(&ctx, "blocker");
+
+    RelationService::new(&ctx)
+        .block_on(&worker, &[blocker], None)
+        .unwrap();
+
+    assert_eq!(snapshot(&fixture, &worker).awaiting, None);
+}
+
+#[test]
+fn block_on_with_a_missing_blocker_writes_nothing_at_all() {
+    // The whole point of one transaction: a rejected call must not leave the
+    // real blocker's edge, or the subject's reason, half-written.
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let worker = new_story(&ctx, "worker");
+    let real_blocker = new_story(&ctx, "a real blocker");
+
+    let error = RelationService::new(&ctx)
+        .block_on(
+            &worker,
+            &[real_blocker.clone(), "SH-999".to_string()],
+            Some("would have been the reason"),
+        )
+        .unwrap_err();
+    assert!(matches!(error, AppError::NotFound(_)));
+
+    assert_eq!(relations(&fixture, &worker), []);
+    assert_eq!(snapshot(&fixture, &worker).awaiting, None);
+    assert_eq!(relations(&fixture, &real_blocker), []);
+}
+
+#[test]
+fn block_on_naming_the_subject_itself_is_refused_and_writes_nothing() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let worker = new_story(&ctx, "worker");
+
+    let error = RelationService::new(&ctx)
+        .block_on(&worker, std::slice::from_ref(&worker), Some("reason"))
+        .unwrap_err();
+    assert_eq!(
+        validation_message(error),
+        "stories cannot relate to themselves"
+    );
+    assert_eq!(relations(&fixture, &worker), []);
+    assert_eq!(snapshot(&fixture, &worker).awaiting, None);
+}
+
+#[test]
+fn block_on_repeated_with_the_same_blocker_does_not_duplicate_the_edge() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let worker = new_story(&ctx, "worker");
+    let blocker = new_story(&ctx, "blocker");
+
+    let service = RelationService::new(&ctx);
+    service
+        .block_on(
+            &worker,
+            std::slice::from_ref(&blocker),
+            Some("first reason"),
+        )
+        .unwrap();
+    service
+        .block_on(
+            &worker,
+            std::slice::from_ref(&blocker),
+            Some("second reason"),
+        )
+        .unwrap();
+
+    assert_eq!(
+        relations(&fixture, &worker),
+        [("blocked-by".to_string(), blocker.clone())]
+    );
+    assert_eq!(
+        relations(&fixture, &blocker),
+        [("blocks".to_string(), worker.clone())]
+    );
+    // The reason itself is a plain overwrite, same as `set_awaiting`.
+    assert_eq!(
+        snapshot(&fixture, &worker).awaiting.as_deref(),
+        Some("second reason")
+    );
+}
+
+#[test]
+fn block_on_with_a_duplicate_blocker_in_one_call_writes_the_edge_once() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let worker = new_story(&ctx, "worker");
+    let blocker = new_story(&ctx, "blocker");
+
+    RelationService::new(&ctx)
+        .block_on(&worker, &[blocker.clone(), blocker.clone()], None)
+        .unwrap();
+
+    assert_eq!(
+        relations(&fixture, &worker),
+        [("blocked-by".to_string(), blocker.clone())]
+    );
+    assert_eq!(
+        relations(&fixture, &blocker),
+        [("blocks".to_string(), worker)]
+    );
+}
+
+#[test]
+fn unblock_from_removes_just_the_named_edge_leaving_the_rest_alone() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let worker = new_story(&ctx, "worker");
+    let blocker_a = new_story(&ctx, "blocker a");
+    let blocker_b = new_story(&ctx, "blocker b");
+
+    let service = RelationService::new(&ctx);
+    service
+        .block_on(
+            &worker,
+            &[blocker_a.clone(), blocker_b.clone()],
+            Some("still true"),
+        )
+        .unwrap();
+
+    service
+        .unblock_from(&worker, std::slice::from_ref(&blocker_a))
+        .unwrap();
+
+    assert_eq!(
+        relations(&fixture, &worker),
+        [("blocked-by".to_string(), blocker_b.clone())]
+    );
+    assert_eq!(relations(&fixture, &blocker_a), []);
+    assert_eq!(
+        relations(&fixture, &blocker_b),
+        [("blocks".to_string(), worker.clone())]
+    );
+    // unblock_from never touches the reason -- that is bare `story unblock`'s
+    // job (StoryService::clear_awaiting).
+    assert_eq!(
+        snapshot(&fixture, &worker).awaiting.as_deref(),
+        Some("still true")
+    );
+}
+
+#[test]
+fn unblock_from_an_edge_that_is_not_there_is_a_no_op() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let worker = new_story(&ctx, "worker");
+    let never_a_blocker = new_story(&ctx, "unrelated");
+
+    RelationService::new(&ctx)
+        .unblock_from(&worker, std::slice::from_ref(&never_a_blocker))
+        .unwrap();
+
+    assert_eq!(relations(&fixture, &worker), []);
+    assert_eq!(relations(&fixture, &never_a_blocker), []);
+}
+
 // --- the drift guard itself ------------------------------------------------
 
 #[test]

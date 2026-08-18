@@ -1,6 +1,7 @@
 #![recursion_limit = "256"]
 
 pub mod api;
+pub mod block_notice;
 pub mod cli;
 pub mod clipboard;
 pub mod daemon;
