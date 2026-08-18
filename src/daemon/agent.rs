@@ -411,10 +411,7 @@ pub fn describe(health: &Health) -> String {
             plist.display()
         ),
         Health::ServesAnotherStore {
-            plist,
-            exe,
-            serves,
-            ..
+            plist, exe, serves, ..
         } => format!(
             "login agent  {}\n             runs {}\n             ! serves {} instead of this \
              store — run `story --store-path {} daemon install` first if it still needs its \
@@ -488,9 +485,7 @@ fn others(env: &Environment) -> Vec<OtherAgent> {
                 && candidate
                     .file_name()
                     .and_then(|name| name.to_str())
-                    .is_some_and(|name| {
-                        name.starts_with(LAUNCHD_LABEL) && name.ends_with(".plist")
-                    })
+                    .is_some_and(|name| name.starts_with(LAUNCHD_LABEL) && name.ends_with(".plist"))
         })
         .map(|plist| {
             let text = std::fs::read_to_string(&plist).ok();
@@ -860,7 +855,11 @@ mod tests {
     #[test]
     fn the_reader_returns_the_store_the_agent_serves() {
         let dir = scratch();
-        for raw in ["/tmp/named.db", "/tmp/a & b/named.db", "/tmp/<odd>/named.db"] {
+        for raw in [
+            "/tmp/named.db",
+            "/tmp/a & b/named.db",
+            "/tmp/<odd>/named.db",
+        ] {
             let named = PathBuf::from(raw);
             let env = Environment::at(dir.path()).with_store(
                 crate::env::StoreLocation::resolve(
@@ -1215,7 +1214,10 @@ mod tests {
             ),
         );
         let said = describe_others(&env);
-        assert!(said.contains("other login agents on this machine"), "{said}");
+        assert!(
+            said.contains("other login agents on this machine"),
+            "{said}"
+        );
         assert!(said.contains(&named.display().to_string()), "{said}");
         assert!(said.contains("/usr/local/bin/story"), "{said}");
     }
