@@ -357,7 +357,7 @@ story token revoke <name>
 story daemon start [--port <PORT>]
 story daemon stop [--force]
 story daemon status
-story daemon install
+story daemon install [--this-binary]
 story daemon uninstall
 story daemon token
 story store new <path>

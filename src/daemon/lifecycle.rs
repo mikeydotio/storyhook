@@ -870,6 +870,41 @@ fn acquire_spawn_lock(path: &Path, deadline: Duration) -> Result<File, AppError>
 }
 
 /// Tells a human at a terminal that this wait is a queue rather than a hang.
+/// Names a login agent that is broken or points somewhere else — on the one
+/// path where that fact has just cost the operator something.
+///
+/// This client is about to *spawn* a daemon, which on a machine whose login
+/// agent works should almost never happen: launchd started one at login and
+/// every client since has found it usable. Reaching here means either this is
+/// the first daemon since boot on a machine with no agent (nothing to say), or
+/// the agent that was supposed to have started one did not. So this fires at
+/// most once per daemon lifetime and essentially never on a healthy machine,
+/// which is what keeps it clear of SH-396's self-noise shape — a gate that
+/// repeats one unchanged fact until nobody reads it.
+///
+/// Three conditions, each load-bearing:
+///
+/// * **It warns and never refuses.** `ensure` is availability plumbing;
+///   refusing to start a daemon over a fact about a *launchd agent* would take
+///   the tracker down for something with no bearing on the daemon this call is
+///   about. That trade — a silent non-start in exchange for a rare wrong
+///   migration — is the one SH-411's council eliminated a whole candidate for.
+/// * **Only the default store.** A client that named its own store has no
+///   stake in the machine's login agent.
+/// * **Only a terminal.** [`crate::invoke::HttpInvoker`] re-enters `ensure`
+///   from inside a live TUI session, and `tests/cli_error_streams.rs` pins
+///   stderr silent on success — the same guard [`announce_waiting`] takes, for
+///   both of the same reasons.
+fn note_stale_login_agent(env: &Environment) {
+    use std::io::IsTerminal;
+    if !env.store().is_default() || !std::io::stderr().is_terminal() {
+        return;
+    }
+    if let Some(said) = crate::daemon::agent::warning(&crate::daemon::agent::health(env)) {
+        eprintln!("warning: {said}");
+    }
+}
+
 fn announce_waiting(path: &Path) {
     use std::io::IsTerminal;
     if std::io::stderr().is_terminal() {
@@ -974,6 +1009,8 @@ fn spawn_locked(env: &Environment) -> Result<DaemonInfo, AppError> {
         let _ = FileExt::unlock(&lock);
         return Err(adopted);
     }
+
+    note_stale_login_agent(env);
 
     let outcome = (|| -> Result<DaemonInfo, AppError> {
         // Something is there that is not ours. Ask it to stand down before
