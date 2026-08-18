@@ -316,10 +316,10 @@ Standing rules for every wave:
   running process also writes is racing that process, whether or not the mutation looks like it
   targets a static one. `tests/portfile_fixture_hygiene.rs` fences the specific class — a
   portfile write that follows a daemon start, in the same function, must carry the guard — over
-  a coarser file-level design rejected by unanimous council vote (`.council/
-  sh-345-portfile-fixture-hygiene-fence/`, gitignored) because the two files that have ever
-  doctored a portfile are already permanently "compliant" by that coarser measure, so it could
-  only ever have caught a hypothetical third file.
+  a coarser file-level design rejected by unanimous council vote (`story show SH-345`, never
+  the council's own directory — SH-363) because the two files that have ever doctored a
+  portfile are already permanently "compliant" by that coarser measure, so it could only ever
+  have caught a hypothetical third file.
 - **A `pub` item with no caller is invisible to `dead_code`, so a test has to find it**
   (SH-198). `get_timeline` sat on `GithubClient` with zero call sites anywhere in `src/`
   or `tests/`, and the compiler never warned: `dead_code` only fires for an item
