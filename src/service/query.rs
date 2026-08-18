@@ -79,13 +79,34 @@ pub struct ListFilters {
     /// `--type <slug>`, or the literal `none` for stories with no type.
     pub story_type: Option<String>,
     /// `--drafts` (SH-175): narrows to drafts only. Drafts are otherwise
-    /// shown inline in the default `list` output — this never *hides*
-    /// anything the way it would if it were a default exclusion.
+    /// shown inline in the default `list` output — a draft is OPEN, so
+    /// SH-409's closed/archived/deleted visibility filter never touches it,
+    /// and this flag still never *hides* anything on its own the way it
+    /// would if it were a default exclusion.
     pub drafts: bool,
     /// `--unassessed` (SH-359): narrows to stories whose priority nobody has
     /// ever chosen. Not the same as `--priority none`, which also returns every
     /// story deliberately parked there — the distinction this flag exists for.
     pub unassessed: bool,
+    /// `--include-closed` (SH-409): widens the default OPEN-only visibility to
+    /// also show CLOSED-superstate stories that are not archived (hidden).
+    /// Implied by [`include_archived`](Self::include_archived) — an archived
+    /// story is always closed too, since [`domain::fold_story`] clears
+    /// `hidden_at` the instant a story reopens.
+    pub include_closed: bool,
+    /// `--include-archived` (SH-409): widens the default visibility to also
+    /// show hidden (`story archive`d) stories. Implies
+    /// [`include_closed`](Self::include_closed).
+    pub include_archived: bool,
+}
+
+/// What `story list` (SH-409) returns: the visible stories, plus a note when
+/// the default visibility filter (or an explicit `--state <closed slug>`)
+/// changed what showed up.
+#[derive(Clone, Debug, Default)]
+pub struct ListOutcome {
+    pub views: Vec<StoryView>,
+    pub message: Option<String>,
 }
 
 /// Answers every read-only question about a project.
@@ -160,10 +181,11 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
             .project(self.project)?
             .ok_or_else(|| AppError::Storage(format!("project {} does not exist", self.project)))?;
         // `.draft(false)` (SH-175): the web board is a curated "what's
-        // actionable" view — it already excludes archived stories — and
-        // the council verdict on SH-175 keeps that curation separate
-        // from `story list`'s general-purpose, nothing-hidden-by-default
-        // contract rather than routing both through the same filter.
+        // actionable" view, and the council verdict on SH-175 keeps that
+        // curation separate from `story list`'s own filter chain rather than
+        // routing both through the same one — `list` (SH-409) now excludes
+        // closed/archived/deleted by default too, but independently, via its
+        // own `is_visible` pass, not this query.
         let story_rows = self.tx.stories(
             self.project,
             &StoryQuery::all().archived(false).draft(false),
@@ -198,7 +220,14 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
     /// Filters are applied in the legacy order and are conjunctive. `--stale`
     /// is last because it also *annotates* the survivors with
     /// [`StaleInfo`], which costs one event read per remaining story.
-    pub fn list(&self, filters: &ListFilters) -> Result<Vec<StoryView>, AppError> {
+    ///
+    /// Visibility (SH-409) is applied *after* every other filter, over the
+    /// same conjunctive result: a caller who also passed `--label CLI` sees
+    /// counts of hidden stories that carry that label, not every hidden
+    /// story in the project. Deleted stories never survive it, under any
+    /// combination of `--include-closed`/`--include-archived`/`--all` — the
+    /// CLI grammar has no flag that reaches [`is_visible`]'s `deleted` guard.
+    pub fn list(&self, filters: &ListFilters) -> Result<ListOutcome, AppError> {
         let mut views = self.story_views(false)?;
         let stories = view_map(&views);
 
@@ -278,7 +307,36 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
         }
 
         sort_story_views(&mut views);
-        Ok(views)
+
+        // Naming a closed state is an unambiguous request for it — refusing
+        // (or silently returning nothing) would be a worse answer than
+        // showing it and saying why. Only the closed exclusion lifts: a
+        // hidden (archived) story named by `--state` still needs
+        // `--include-archived`, matching the dashboard's own Done column,
+        // which shows closed cards but keeps archived ones behind a toggle.
+        let lifted_state = match &filters.state {
+            Some(slug) if !filters.include_closed && !filters.include_archived => {
+                let states = self.tx.states(self.project)?;
+                states
+                    .iter()
+                    .find(|def| &def.slug == slug)
+                    .filter(|def| def.super_state == SuperState::Closed)
+                    .map(|_| slug.as_str())
+            }
+            _ => None,
+        };
+        let show_closed =
+            filters.include_closed || filters.include_archived || lifted_state.is_some();
+        let show_archived = filters.include_archived;
+
+        let (visible, hidden): (Vec<StoryView>, Vec<StoryView>) = views
+            .into_iter()
+            .partition(|view| is_visible(&view.story, show_closed, show_archived));
+
+        Ok(ListOutcome {
+            views: visible,
+            message: build_visibility_message(lifted_state, &hidden),
+        })
     }
 
     /// `story search <query>` — case-insensitive substring match on the
@@ -1036,6 +1094,102 @@ fn bare_view(story: StorySnapshot) -> StoryView {
         // above. `None` tells a comparator to fall back to its previous
         // tiebreak (SH-336).
         head_global_seq: None,
+    }
+}
+
+/// Whether a story survives `story list`'s default visibility filter
+/// (SH-409).
+///
+/// A soft-deleted story is never visible here, regardless of
+/// `show_closed`/`show_archived` — there is no flag in the CLI grammar that
+/// reaches this `deleted` guard, by design; `story search` (and `story show`)
+/// remain the way to find one. An archived (hidden) story is a *subset* of
+/// closed stories, not a sibling category — [`domain::fold_story`] clears
+/// `hidden_at` the instant a story's superstate resolves back to OPEN — so
+/// `show_archived` alone, without `show_closed`, still has to reveal it.
+fn is_visible(story: &StorySnapshot, show_closed: bool, show_archived: bool) -> bool {
+    if story.deleted {
+        return false;
+    }
+    match story.superstate {
+        SuperState::Open => true,
+        SuperState::Closed => {
+            if story.hidden_at.is_some() {
+                show_archived
+            } else {
+                show_closed
+            }
+        }
+    }
+}
+
+/// Builds `story list`'s `message` (SH-409): why closed stories showed up
+/// (only when an explicit `--state <closed slug>` is what lifted the
+/// exclusion, named by `lifted_state`) and what the default hid, in counts
+/// that already reflect every other filter the caller passed — `hidden` is
+/// the post-filter, pre-visibility remainder, so a hidden count next to
+/// `--label CLI` counts only hidden stories that carry that label.
+///
+/// `None` when there is nothing to say: no lift happened and nothing was
+/// hidden. Every other combination collapses onto one `; `-joined line
+/// rather than a clause per condition, so `--json` and human output both
+/// get one sentence to render instead of a growing list of them.
+fn build_visibility_message(lifted_state: Option<&str>, hidden: &[StoryView]) -> Option<String> {
+    let mut closed = 0usize;
+    let mut archived = 0usize;
+    let mut deleted = 0usize;
+    for view in hidden {
+        if view.story.deleted {
+            deleted += 1;
+        } else if view.story.hidden_at.is_some() {
+            archived += 1;
+        } else {
+            closed += 1;
+        }
+    }
+
+    let mut parts = Vec::new();
+    if let Some(slug) = lifted_state {
+        parts.push(format!(
+            "including closed stories: `{slug}` is a closed state"
+        ));
+    }
+
+    let hidden_count = closed + archived;
+    if hidden_count > 0 {
+        let mut clauses = Vec::new();
+        if closed > 0 {
+            clauses.push(format!("{closed} closed"));
+        }
+        if archived > 0 {
+            clauses.push(format!("{archived} archived"));
+        }
+        let flags = match (closed > 0, archived > 0) {
+            (true, true) => "--include-closed, --include-archived or --all",
+            (true, false) => "--include-closed or --all",
+            (false, true) => "--include-archived or --all",
+            (false, false) => unreachable!("hidden_count > 0 implies closed or archived is set"),
+        };
+        parts.push(format!(
+            "{} stor{} match but {} not shown — add {flags}",
+            clauses.join(" and "),
+            if hidden_count == 1 { "y" } else { "ies" },
+            if hidden_count == 1 { "is" } else { "are" },
+        ));
+    }
+
+    if deleted > 0 {
+        parts.push(format!(
+            "{deleted} deleted stor{} not listed (story search finds {})",
+            if deleted == 1 { "y is" } else { "ies are" },
+            if deleted == 1 { "it" } else { "them" },
+        ));
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("; "))
     }
 }
 

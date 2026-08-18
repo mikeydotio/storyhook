@@ -609,6 +609,8 @@ pub fn dispatch<S: Store>(
             story_type,
             drafts,
             unassessed,
+            include_closed,
+            include_archived,
         } => {
             let filters = ListFilters {
                 state,
@@ -625,10 +627,12 @@ pub fn dispatch<S: Store>(
                 story_type,
                 drafts,
                 unassessed,
+                include_closed,
+                include_archived,
             };
-            query(ctx, |service| service.list(&filters)).map(|views| Response::Stories {
-                views,
-                message: None,
+            query(ctx, |service| service.list(&filters)).map(|outcome| Response::Stories {
+                views: outcome.views,
+                message: outcome.message,
                 warnings: Vec::new(),
             })
         }

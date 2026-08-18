@@ -119,6 +119,9 @@ fn story_list_matches_the_equivalent_cli_invocation() {
             ("phase", json!("1")),
             ("story_type", json!("epic")),
             ("drafts", json!(true)),
+            ("include_closed", json!(true)),
+            ("include_archived", json!(true)),
+            ("all", json!(true)),
         ]),
     );
     let via_cli = cli::parse_invocation(&argv(&[
@@ -144,6 +147,9 @@ fn story_list_matches_the_equivalent_cli_invocation() {
         "--type",
         "epic",
         "--drafts",
+        "--include-closed",
+        "--include-archived",
+        "--all",
     ]))
     .unwrap();
     assert_eq!(via_tool, via_cli);
