@@ -482,6 +482,19 @@ Standing rules for every wave:
   it retracts and re-stamps `closed_at` and fires live `StateChange` hooks, falsifying an
   audit trail in order to salvage one — and rejected running an unreleased daemon against
   the live store, which would migrate it past what the installed binary can read.
+  **When** was settled separately, by user determination on SH-371: the verdict goes on its
+  story the moment the council concludes, never deferred to the end of the work. The gate
+  that story was filed for — teardown refuses to remove a worktree holding a `DECISION.md`
+  whose verdict is not yet on its story — was declined on the determination's own grounds:
+  recording at the close of the council is the whole of the mechanism, best effort by
+  design, and a teardown that beats it is urgent by construction, the story being abandoned,
+  re-filed or fast-tracked, so that loss is accepted rather than defended against. A warning
+  at teardown was rejected too, for the SH-226 reason. Nothing observes this rule, which is
+  precisely why the moment it names has to be the earliest one available rather than the
+  last — and why the timing is now written where an agent actually reads it rather than only
+  here: both autonomous charters (`plugin/claude-code/bin/story.sh`) say *before you resume
+  the work*, pinned in `test-dispatch-auto.sh` and, as a span inertness may not be bought by
+  deleting, in `test-charter-inert.sh`.
 - **A column the oracle forgot is a column nothing watches — so the compiler checks the
   struct and a damage test checks the comparison** (SH-365). `diff_rebuilt` is `story
   doctor`'s only oracle over the `stories` read model, and it reached the columns through

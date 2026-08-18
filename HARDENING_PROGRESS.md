@@ -72,8 +72,10 @@ file and the plan above. Read the plan, then:
    summary` are the live status. **Record before closing**, so a reader who
    opens the story never finds a `done` with no account of what happened.
 
-   Say what shipped, what was decided and why (link the council directory when
-   one was convened), what was filed rather than folded in, any deviation from
+   Say what shipped, what was decided and why (a council verdict is cited as
+   `story show <id>` — never by the council's own directory, which does not
+   survive this cycle's worktree teardown, SH-363), what was filed rather than
+   folded in, any deviation from
    this procedure, and any gate trouble — including how long a wedge lasted.
    The bar is unchanged: enough that someone with no memory of the session can
    tell what happened and why, without reading the diff.
@@ -246,8 +248,12 @@ obeying next time.
 
 **Autonomy — never ask the user anything.** For any decision without one
 obviously correct answer, invoke the `council:council-vote` skill and implement
-its verdict, recording question and verdict as a `story comment`. That also
-satisfies CLAUDE.md's requirement for approval of a type-system proposal.
+its verdict, recording question and verdict as a `story comment` **the moment
+the council concludes** — before you resume the work, never at the end of the
+cycle (SH-371): the council writes its own trail into this cycle's worktree,
+which the teardown step above reclaims, so a verdict left there and nowhere else
+is gone. That also satisfies CLAUDE.md's requirement for approval of a
+type-system proposal.
 
 **On failure:** `story move <id> todo`, comment what blocked it, `story block`
 if genuinely stuck, and freshen. The account of a failed cycle is the same
