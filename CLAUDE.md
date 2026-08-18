@@ -843,8 +843,16 @@ Standing rules for every wave:
   that only grows, and silence is `never` rather than a quiet pass. A marker file recording
   the last outcome was proposed and declined as a second notion of "certified"; the per-day
   log `browser-watch.sh` does write is forensics in SH-412's shape, read by no gate. The
-  distance is surfaced by `make browser-status` and as one line in every `merge-watch.sh` PR
-  comment — naming what that gate does **not** cover, in front of whoever is about to merge.
+  distance is surfaced three ways, and the load-bearing one needs **no bootstrap**: every
+  `make test` prints it directly after `leg.sh --skipped e2e`. That deferral existed so the
+  reduced gate could never read as full coverage, and it said only that *this run* skipped the
+  browser suite, never that no run ever hadn't — SH-418's own silence sitting inside SH-394's
+  cure for it. It never gates (`|| true`; a merge gate failing on the release tier's staleness
+  would undo the split SH-394 measured) and is absent from `test-full`, where the suite is
+  about to run. The other two are `make browser-status` and one line in every `merge-watch.sh`
+  PR comment — naming what that gate does **not** cover, in front of whoever is about to
+  merge. This matters because `browser-watch` and `merge-watch` both want a per-machine timer
+  and neither had one on the machine that filed this.
   The whole decision lives in the reader on purpose, which is the lesson taken from
   `merge-watch.sh` carrying no test at all: `tests/browser_gate.rs` provokes it against real
   git with receipts from the production writer, mutation-checked (tier comparison loosened →

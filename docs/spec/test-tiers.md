@@ -270,13 +270,37 @@ there is.
 behind is too far" would be a bare literal about one machine's cadence on one
 day, which this document already refuses for test budgets.
 
-Three places collect it:
+Four places collect it:
 
 | Where | What it says |
 |---|---|
+| **every `make test`**, on the e2e deferral line | how long the browser tier has gone unrun — see below |
 | `make browser-status` | the full reading, exit 0 current / 1 behind / 2 never / 3 unresolvable ref |
 | every `merge-watch.sh` PR comment | one line — the tier that gate does **not** cover, in front of whoever is about to click merge |
 | `$(git rev-parse --git-common-dir)/storyhook/browser-watch-reports/<date>.log` | one line per pass, forensics only |
+
+**The first of those is the one that needs no bootstrap, and it is where
+SH-394's own anti-silence line had the same gap one tier up.** `scripts/leg.sh
+--skipped e2e` existed so the reduced gate "can never silently read as full
+coverage" — but it said only that *this run* skipped the browser suite, and
+nothing about whether any run ever hadn't. `make test` now follows it with
+`browser-status.sh`:
+
+```
+leg e2e: SKIPPED — not part of this tier. Run `make test-full` to include it.
+browser-status: never — no tree in origin/main's 642-commit first-parent
+  history has ever passed the browser suite. Run 'make browser-watch'.
+```
+
+Three properties of that line are deliberate and all three are pinned by
+`tests/gate_tiers.rs::the_merge_gates_deferral_reports_how_stale_the_browser_
+tier_is` (mutation-checked in both directions). It **never gates** — `|| true`,
+because a merge gate that failed on the release tier's staleness would undo the
+split SH-394 measured. It is **absent from `test-full`**, where the suite is
+about to run and a stale reading would be noise measured moments before it
+stops being true. And it is on the path **every session already takes**: `make
+browser-watch` and `make merge-watch` both want a per-machine timer, and on the
+machine that filed this story neither had one.
 
 That last one is **not** the marker the council declined, and the distinction is
 load-bearing: nothing reads it to decide whether a tree is certified and no gate

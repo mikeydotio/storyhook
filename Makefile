@@ -43,6 +43,18 @@
 # one. `scripts/leg.sh` is what makes the OTHER direction loud too: when
 # `make test` runs without it, the deferral is printed and named, never
 # silent.
+#
+# That deferral says the browser suite was skipped; until SH-418 it said
+# nothing about whether it had EVER run, which is precisely the silence it
+# exists to prevent — one tier up. It is now followed by
+# `scripts/browser-status.sh`, which names how far `main` is from the last
+# tree the browser suite certified. This is the one place that fact is
+# collected with NO bootstrap at all: `make browser-watch` and
+# `make merge-watch` both want a per-machine timer nobody has installed yet,
+# whereas every session runs `make test` before every push. It never gates —
+# `|| true`, because a merge gate that failed on the release tier's staleness
+# would undo the split SH-394 measured — and it is deliberately absent from
+# the `test-full` branch, where the suite is about to actually run.
 
 .PHONY: test test-full build fmt lint clippy check release-build install check-no-orphan-servers e2e-install e2e merge-watch browser-watch browser-status
 
@@ -148,7 +160,7 @@ test: check-no-orphan-servers
 	@bash scripts/leg.sh rust-suite -- bash scripts/run-tests.sh -- --test-threads=4
 	bash scripts/leg.sh build -- cargo build
 	PATH="$(CURDIR)/target/debug:$$PATH" bash scripts/leg.sh plugin -- bash plugin/claude-code/tests/run-tests.sh
-	$(if $(E2E),bash scripts/leg.sh e2e -- bash scripts/run-e2e.sh,@bash scripts/leg.sh --skipped e2e)
+	$(if $(E2E),bash scripts/leg.sh e2e -- bash scripts/run-e2e.sh,@bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true)
 	@bash scripts/check-no-orphan-servers.sh postlude
 	@bash scripts/gate-receipt.sh postlude $(if $(E2E),full,gate)
 
