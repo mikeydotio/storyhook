@@ -25,6 +25,17 @@
 //! carries nothing — a pointer that fails silently is worse than the dead path it
 //! replaced, which at least failed loudly.
 //!
+//! **A continuation is a fact about text, not about comments** (SH-376). The wrap rule
+//! originally required the next line to resume behind a comment leader, which is true of
+//! every source comment and of no prose at all: a markdown bullet wraps behind two
+//! spaces, a paragraph behind nothing. A citation whose slug went to the next line of a
+//! `.md` file was therefore not exempted but *invisible* — never collected, so never
+//! reported — and one sat in this repository's own CLAUDE.md, in the bullet stating
+//! SH-345's precedent, passing this scan for as long as the scan has existed. What the
+//! leader requirement was really protecting is one case, and [`marker_stands_alone`]
+//! now states that case directly: a marker that is the whole of its line is an entry in
+//! a list, and the line beneath it is the next entry rather than the rest of a slug.
+//!
 //! Derived over `git ls-files`, in the style of `tests/dead_public_surface.rs` and
 //! `tests/store_isolation.rs`, rather than from a list of the sites that do this — a
 //! hand-maintained list is exactly what let ten dead items accumulate in SH-198.
@@ -71,14 +82,9 @@ fn is_slug_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-'
 }
 
-/// A continuation line with its leading whitespace and comment leader removed, or
-/// `None` if it carries no leader.
-///
-/// The leader is **required**, and that is the whole guard against over-reaching. A
-/// citation wraps inside a comment block, so the next line always carries one; an
-/// ignore-file entry sitting directly beneath a bare marker does not, and joining
-/// those two would invent a citation nobody wrote.
-fn resume_after_leader(line: &str) -> Option<&str> {
+/// A line with its leading whitespace and comment leader removed, or `None` if it
+/// carries no leader.
+fn strip_comment_leader(line: &str) -> Option<&str> {
     let trimmed = line.trim_start();
     COMMENT_LEADERS
         .iter()
@@ -86,19 +92,49 @@ fn resume_after_leader(line: &str) -> Option<&str> {
         .map(str::trim_start)
 }
 
+/// Whether the marker is the whole of `line` — an entry in a list rather than a
+/// citation inside a sentence.
+///
+/// This is the guard against over-reaching, and it asks about the marker's own line
+/// rather than the one beneath it (SH-376). An ignore file's rules are one per line
+/// and cannot wrap, so a marker standing alone never begins a wrapped citation and
+/// the line under it is the next rule, not the rest of a slug. Every other line is
+/// text that wraps.
+fn marker_stands_alone(line: &str) -> bool {
+    strip_comment_leader(line)
+        .unwrap_or_else(|| line.trim_start())
+        .trim_end()
+        == MARKER
+}
+
+/// The text a wrapped citation resumes from on `line`, or `None` if this line cannot
+/// continue one.
+///
+/// A comment wraps behind a leader; prose wraps behind nothing at all — a markdown
+/// bullet's continuation carries only indentation, and a paragraph's not even that.
+/// Requiring a leader was therefore never a rule about continuations but about
+/// comments, and it made a wrapped citation in prose structurally invisible (SH-376).
+/// `leaderless` is passed when [`marker_stands_alone`] is false, which is the
+/// condition that still keeps two adjacent ignore entries from being read as one
+/// citation.
+fn resume(line: &str, leaderless: bool) -> Option<&str> {
+    strip_comment_leader(line).or_else(|| leaderless.then(|| line.trim_start()))
+}
+
 /// Every council citation in one file's text.
 ///
 /// A slug may be broken across lines — this corpus wraps them at a hyphen and, once,
 /// immediately after the slash — so collection continues onto the next line when the
-/// slug so far is empty or ends in a hyphen *and* that line resumes behind a comment
-/// leader. Both conditions are load-bearing: without the first, a marker followed by
-/// unrelated prose would absorb it; without the second, two adjacent ignore-file
-/// entries would be read as one wrapped citation.
+/// slug so far is empty or ends in a hyphen *and* that line may continue a citation at
+/// all ([`resume`]). Both conditions are load-bearing: without the first, a marker
+/// followed by unrelated prose would absorb it; without the second, two adjacent
+/// ignore-file entries would be read as one wrapped citation.
 fn citations(text: &str) -> Vec<Citation> {
     let lines: Vec<&str> = text.lines().collect();
     let mut found = Vec::new();
 
     for (index, line) in lines.iter().enumerate() {
+        let leaderless_continuation = !marker_stands_alone(line);
         let mut search_from = 0;
         while let Some(offset) = line[search_from..].find(MARKER) {
             let after = search_from + offset + MARKER.len();
@@ -113,7 +149,9 @@ fn citations(text: &str) -> Vec<Citation> {
 
             while consumed_to_end_of_line
                 && (slug.is_empty() || slug.ends_with('-'))
-                && let Some(resumed) = lines.get(next).and_then(|l| resume_after_leader(l))
+                && let Some(resumed) = lines
+                    .get(next)
+                    .and_then(|l| resume(l, leaderless_continuation))
             {
                 let continued: String = resumed.chars().take_while(|c| is_slug_char(*c)).collect();
                 if continued.is_empty() {
@@ -233,8 +271,8 @@ fn the_analyzer_reads_every_citation_shape_this_corpus_has_written() {
     assert_eq!(
         citations(&adjacent_entries),
         vec![],
-        "two ignore entries are not one wrapped citation — the continuation rule \
-         requires a comment leader precisely so this cannot be misread"
+        "two ignore entries are not one wrapped citation — the marker stands alone on \
+         its line here, which is precisely what stops this being misread"
     );
 
     let no_slash = ".council is a jq path expression, not a directory\n";
@@ -281,6 +319,55 @@ fn the_analyzer_reads_every_citation_shape_this_corpus_has_written() {
         }],
         "one site in this corpus broke the line immediately after the slash, so an \
          empty slug so far must still continue onto a leader-bearing next line"
+    );
+
+    let wrapped_in_indented_prose = format!(
+        "  a coarser file-level design rejected by unanimous council vote (`{MARKER}\n  \
+         sh-345-portfile-fixture-hygiene-fence/`, gitignored) because the two files\n"
+    );
+    assert_eq!(
+        citations(&wrapped_in_indented_prose),
+        vec![Citation {
+            line: 1,
+            slug: "sh-345-portfile-fixture-hygiene-fence".to_string(),
+        }],
+        "prose wraps behind nothing but indentation, so a citation in a CLAUDE.md bullet \
+         has no comment leader to resume behind — this exact one sat in this repository's \
+         own standing rules, passing this scan, until SH-376"
+    );
+
+    let wrapped_in_unindented_prose =
+        format!("The verdict was recorded at {MARKER}\nsh49-linked-prs/DECISION.md.\n");
+    assert_eq!(
+        citations(&wrapped_in_unindented_prose),
+        vec![Citation {
+            line: 1,
+            slug: "sh49-linked-prs".to_string()
+        }],
+        "a paragraph at column zero wraps the same way an indented bullet does; \
+         indentation is not what makes a line a continuation"
+    );
+
+    let hyphen_wrapped_in_prose = format!(
+        "  one contract, two surfaces ({MARKER}sh-304-dashboard-notification-\n  \
+         contract/DECISION.md):\n"
+    );
+    assert_eq!(
+        citations(&hyphen_wrapped_in_prose),
+        vec![Citation {
+            line: 1,
+            slug: "sh-304-dashboard-notification-contract".to_string(),
+        }],
+        "the hyphen wrap and the leaderless wrap are independent, and a citation may \
+         need both at once"
+    );
+
+    let indented_entry_beneath_an_entry = format!("{MARKER}\n  .freshen/\n");
+    assert_eq!(
+        citations(&indented_entry_beneath_an_entry),
+        vec![],
+        "what says 'list entry, not sentence' is the marker standing alone on its own \
+         line — indenting the line beneath it does not turn the pair into a citation"
     );
 
     let two_on_one_line =
