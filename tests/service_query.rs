@@ -744,6 +744,53 @@ fn a_blocked_epic_keeps_its_display_state_even_with_an_active_child() {
     );
 }
 
+/// SH-407: a story sitting in `todo` with an open `blocked-by` edge onto a
+/// still-open story display-promotes to "blocked" — the same field, and the
+/// same eligibility guard, `an_epic_in_todo_with_an_active_child_shows_a_
+/// promoted_display_state` above exercises for the SH-165 arm.
+#[test]
+fn a_todo_story_blocked_by_an_open_story_shows_a_promoted_display_state() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let blocked = new_story(&ctx, "blocked story");
+    let blocker = new_story(&ctx, "its blocker");
+    RelationService::new(&ctx)
+        .relate(&blocked, "blocked-by", &blocker, false)
+        .expect("relating");
+
+    let shown = query(&fixture, |service| service.show(&blocked));
+    assert_eq!(
+        shown.story.state, "todo",
+        "the story's own recorded state is untouched"
+    );
+    assert_eq!(shown.display_state.as_deref(), Some("blocked"));
+}
+
+/// SH-407 council verdict, recorded on that story (`story show SH-407`):
+/// an epic eligible for BOTH promotions at once — an active child, and an
+/// open blocker on the epic's own record — shows "blocked", not
+/// "in-progress".
+#[test]
+fn blocked_wins_over_an_active_child_promotion_end_to_end() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let epic = new_story(&ctx, "epic");
+    let child = new_story(&ctx, "child");
+    let blocker = new_story(&ctx, "epic's own blocker");
+    RelationService::new(&ctx)
+        .relate(&epic, "parent-of", &child, false)
+        .expect("relating");
+    RelationService::new(&ctx)
+        .relate(&epic, "blocked-by", &blocker, false)
+        .expect("relating");
+    StoryService::new(&ctx)
+        .set_state(&child, "in-progress", None, None, None)
+        .expect("moving the child");
+
+    let shown = query(&fixture, |service| service.show(&epic));
+    assert_eq!(shown.display_state.as_deref(), Some("blocked"));
+}
+
 #[test]
 fn next_offers_leaves_only_and_honours_count_and_phase() {
     let fixture = ServiceFixture::new();

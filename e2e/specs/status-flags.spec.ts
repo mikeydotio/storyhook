@@ -116,6 +116,28 @@ async function addRelation(
   await expect(page.locator(".rel-row", { hasText: otherId })).toBeVisible();
 }
 
+/** Deletes `title`'s "blocked"-column story through the drawer -- the same
+ * shape as the imported `deleteStory`, scoped to the Blocked column
+ * instead of todo. SH-407: a story blocked by an `awaiting` reason or an
+ * open blocker/obviator display-promotes out of "todo" and into "blocked",
+ * so every test in this file that blocks its own worker story needs this
+ * variant for cleanup rather than the todo-scoped shared helper. */
+async function deleteBlockedStory(
+  page: import("@playwright/test").Page,
+  title: string,
+) {
+  const card = page.locator('.column[data-state="blocked"] .card', {
+    hasText: title,
+  });
+  await card.click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
+  await expect(page.locator("#delete-modal")).toHaveClass(/open/);
+  await page.locator("#delete-reason").fill("e2e cleanup");
+  await page.locator("#delete-modal-submit").click();
+  await expect(card).not.toBeVisible();
+}
+
 test("a ready card carries no flag badge on the board", async ({ page }) => {
   const title = "SH-168 status flags — ready card";
   await createStory(page, title);
@@ -135,7 +157,9 @@ test("a blocked card still carries the red blocked flag badge on the board", asy
   await createStory(page, title);
   await blockStory(page, title, "e2e: exercising the blocked flag");
 
-  const card = page.locator('.column[data-state="todo"] .card', {
+  // SH-407: an awaiting reason display-promotes the card out of "todo" and
+  // into "blocked" -- the badge lives on it wherever it now sits.
+  const card = page.locator('.column[data-state="blocked"] .card', {
     hasText: title,
   });
   // SH-309: an awaiting reason with no other cause now quotes the reason
@@ -147,7 +171,7 @@ test("a blocked card still carries the red blocked flag badge on the board", asy
     '● blocked ("e2e: exercising the blocked flag")',
   );
 
-  await deleteStory(page, title);
+  await deleteBlockedStory(page, title);
 });
 
 test("a ready row has no colored left border in the list view", async ({
@@ -180,7 +204,7 @@ test("a blocked row keeps its red left border in the list view", async ({
   await expect(row).toHaveCSS("border-left-width", "3px");
 
   await page.locator('#view-toggle button[data-view="board"]').click();
-  await deleteStory(page, title);
+  await deleteBlockedStory(page, title);
 });
 
 test("a card blocked by another story names the blocker in its badge, hyperlinked (SH-307/SH-308)", async ({
@@ -199,7 +223,9 @@ test("a card blocked by another story names the blocker in its badge, hyperlinke
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
-  const workerCard = page.locator('.column[data-state="todo"] .card', {
+  // SH-407: an open blocked-by edge display-promotes the worker out of
+  // "todo" and into "blocked".
+  const workerCard = page.locator('.column[data-state="blocked"] .card', {
     hasText: workerTitle,
   });
   const badge = workerCard.locator(".flag-blocked");
@@ -218,7 +244,7 @@ test("a card blocked by another story names the blocker in its badge, hyperlinke
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
-  await deleteStory(page, workerTitle);
+  await deleteBlockedStory(page, workerTitle);
   await deleteStory(page, blockerTitle);
 });
 
@@ -244,7 +270,8 @@ test("a card blocked by two open stories lists both in its badge, comma-joined",
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
-  const workerCard = page.locator('.column[data-state="todo"] .card', {
+  // SH-407: display-promoted out of "todo" and into "blocked".
+  const workerCard = page.locator('.column[data-state="blocked"] .card', {
     hasText: workerTitle,
   });
   // Exact-string, not "contains both ids": ordering comes from the store's
@@ -255,7 +282,7 @@ test("a card blocked by two open stories lists both in its badge, comma-joined",
     "● blocked (" + blockerAId + ", " + blockerBId + ")",
   );
 
-  await deleteStory(page, workerTitle);
+  await deleteBlockedStory(page, workerTitle);
   await deleteStory(page, blockerATitle);
   await deleteStory(page, blockerBTitle);
 });
@@ -281,16 +308,18 @@ test("a card blocked by both an open story and an awaiting reason names both cau
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
-  // `story block` sets `awaiting` without moving the story's state
-  // (`route_block_story`), so the card stays in "todo".
-  const workerCard = page.locator('.column[data-state="todo"] .card', {
+  // `story block` sets `awaiting` without moving the story's own recorded
+  // state (`route_block_story`) -- but SH-407's display_state promotion
+  // still relocates the card to "blocked" on the board, same as the
+  // blocked-by edge above does on its own.
+  const workerCard = page.locator('.column[data-state="blocked"] .card', {
     hasText: workerTitle,
   });
   await expect(workerCard.locator(".flag-blocked")).toHaveText(
     '● blocked (' + blockerId + ', "waiting on legal")',
   );
 
-  await deleteStory(page, workerTitle);
+  await deleteBlockedStory(page, workerTitle);
   await deleteStory(page, blockerTitle);
 });
 
@@ -310,13 +339,16 @@ test("a card obviated by another story names it as obviated in the badge", async
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
-  const workerCard = page.locator('.column[data-state="todo"] .card', {
+  // SH-407: an obviated-by edge display-promotes the worker into "blocked"
+  // too -- `is_ready` treats it as unconditionally blocking, same as a
+  // blocked-by edge.
+  const workerCard = page.locator('.column[data-state="blocked"] .card', {
     hasText: workerTitle,
   });
   await expect(workerCard.locator(".flag-blocked")).toHaveText(
     "● blocked (obviated by " + obviatorId + ")",
   );
 
-  await deleteStory(page, workerTitle);
+  await deleteBlockedStory(page, workerTitle);
   await deleteStory(page, obviatorTitle);
 });

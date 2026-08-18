@@ -1179,6 +1179,13 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains("recorded state is "));
     assert!(body.contains(r#"case "state": return v.display_state || st.state;"#));
 
+    // SH-407: `filteredStories`'s state filter joins the same
+    // `display_state || state` idiom -- it used to be the one deliberate
+    // holdout (filtering by literal state, per SH-277's own comment), which
+    // would have hidden a blocked story from a "blocked" filter now that
+    // compute_display_state can promote it into that column.
+    assert!(body.contains("var shownState = v.display_state || st.state;"));
+
     // SH-217: the markdown renderer -- builds DOM nodes directly (never an
     // HTML string, see the sink-pin assertions above), and its link
     // scheme allowlist by name so a future edit that widens it is a

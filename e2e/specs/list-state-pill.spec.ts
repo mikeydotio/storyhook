@@ -19,7 +19,7 @@ import {
  *
  * `tests/web_test.rs` pins the source text and the CSS rules exist; this
  * is the layer that proves a browser actually renders the promoted word
- * for an epic `compute_epic_display_state` (SH-165) has promoted, and
+ * for an epic `compute_display_state` (SH-165) has promoted, and
  * actually resolves a semantic colour rather than merely referencing one.
  *
  * This spec creates and deletes its own stories rather than touching the
@@ -127,7 +127,7 @@ test("an epic's list pill shows the state its card actually sits in, not its own
     (el) => getComputedStyle(el).backgroundColor,
   );
 
-  // Promotes the epic's display_state to in-progress (compute_epic_display_state,
+  // Promotes the epic's display_state to in-progress (compute_display_state,
   // SH-165) without touching its own literal `state`, which stays `todo`.
   await page.locator('#view-toggle button[data-view="board"]').click();
   await moveToState(page, childTitle, "in-progress");
