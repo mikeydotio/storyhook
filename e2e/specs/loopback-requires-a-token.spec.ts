@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./support";
 import { cleanUpCreatedStories, openProject, requiredEnv } from "./support";
 
 const DASHBOARD_NAMED_TOKEN = requiredEnv("DASHBOARD_NAMED_TOKEN");

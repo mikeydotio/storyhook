@@ -245,6 +245,260 @@ whether a margin is wide enough — that took reading each site's production
 deadline, which is what this story actually did — but it kills the shape
 that hides the question a reviewer would otherwise ask.
 
+## Load grace in the browser suite (SH-347)
+
+A binding user determination, 2026-08-17, verbatim: *"relax the timeouts
+when machine is under load. If timeout fires, examine load, and if high
+contention, reset timeout timer (up to a maximum of 15 minutes) rather than
+ending the test."* This is a standing capability of the browser suite, not a
+per-spec workaround, and it sits beside the timing-ceiling rule above as its
+qualified sibling: that rule is about *not widening a bare number*; this one
+is about *not ending a test on a machine that is doing more than it usually
+does*. Neither licenses the other — a ceiling still has to derive from the
+deadline it disproves, and grace still has to be reported, never silent.
+
+**Why "reset the timer" has to mean "extend it pre-emptively."** Playwright
+enforces a test's timeout in the runner itself; once it fires, the test is
+torn down and there is no hook that runs after that point. The only lever is
+`testInfo.setTimeout()`, and it only works *before* the deadline arrives. So
+"reset the timer rather than end the test" is implemented as: sample
+contention continuously, and grant more time before the clock can run out —
+never in response to a timeout that has already happened, because by then
+there is nothing left to reset.
+
+**Two layers**, both in `e2e/load-grace.ts` and consumers of it:
+
+1. **Config-evaluation scaling** (`e2e/playwright.config.ts`) grades the two
+   SH-222 budgets — `timeout: 15_000` and `expect: { timeout: 5_000 }` —
+   once per project run (`scripts/run-e2e.sh` invokes Playwright once per
+   project). This is the *only* way to grace `expect.timeout` at all; it
+   cannot be retuned mid-run once a project starts.
+2. **A per-test watchdog** (the `loadGrace` auto-use fixture in
+   `e2e/specs/support.ts`) samples every 500ms during a running test and
+   calls `testInfo.setTimeout()` before its own deadline, monotonically —
+   a grant is never retracted, because a test already mid-flight has no way
+   to know it no longer needs the room. This is the layer that reacts to
+   contention arriving *mid-test*, which config-evaluation-time scaling
+   cannot see. It adopts a spec's own `test.setTimeout()` (e.g.
+   `dispatch.spec.ts`'s multiple of `DISPATCH_COMPLETION_TIMEOUT`) as its
+   base the moment one appears, so it only ever *adds* grace on top of a
+   budget a spec already asked for — and it clamps to the user's ceiling as
+   an **absolute** bound on the result, not a multiplier applied to
+   whatever base happened to be in effect, so a spec with an already-large
+   custom budget cannot be stretched past 15 minutes just because grace was
+   computed as a multiplier of it.
+
+**The contention signal**: `os.loadavg()[0] / cores()` — processor sharing.
+A ratio of 1.0 means exactly as many runnable threads as logical cores, the
+point past which a thread that owned a whole core at idle now shares it, and
+wall clock stretches roughly in proportion. Below 1.0, nothing is contending
+and the multiplier is exactly 1 — every budget is bit-identical to SH-222's
+own numbers, so **a real defect still surfaces exactly as fast as it does
+today on an idle machine.** Above 1.0, the multiplier tracks the ratio
+directly (`Math.max(1, ratio)`) rather than a curve fitted to the three
+Chromium-only data points already in the config's own comment — derived, not
+tuned, the same doctrine the timing-ceiling rule above already states for a
+production deadline. Known imprecision, stated rather than hidden: a
+one-minute load average under- and over-reacts at the edges of a load burst.
+Both directions are the safe direction here — grace only ever grants
+patience, never withholds it.
+
+**The ceiling's own provenance**: `MAX_TEST_TIMEOUT_MS = 15 * 60_000` is a
+**recorded human tolerance, not a measurement** — the user's own words,
+above, expressed as the arithmetic in that sentence rather than a raw
+millisecond literal with none. `tests/e2e_load_grace.rs` pins the exact
+expression so a future edit that changes it has to change the words in this
+section too.
+
+**An assertion that proves a bound states its own timeout; the config
+default is patience, not proof.** Grading the harness's own defaults never
+weakens a single assertion that exists to *prove* a deadline — every one of
+those already states its own `{ timeout: N }` (`DATA_DELAY_MS * 3`,
+`GONE_TIMEOUT`, `DISPATCH_COMPLETION_TIMEOUT`), untouched by either layer.
+The two graced numbers only ever govern how long the harness is willing to
+*wait* for something it expects to become true.
+
+**Reported, never silent** — the SH-306 shape one layer up, a gate whose
+verdict depends on state it never reported: one line at config-evaluation
+time naming the measured load, ratio, and chosen budgets; one line on stderr
+per watchdog extension, naming the test, the sampled ratio, and the new
+budget; one `testInfo.annotations` entry per extension, landing in the
+JSON/HTML reporters. `tests/e2e_load_grace.rs::an_extension_is_never_silent`
+fences the watchdog's own call site for both.
+
+**The cost, admitted rather than hidden**: at SH-222's own mid measurement
+(load ≈44 on 10 cores, ratio ≈4.4) the multiplier is 4.4× — a 66-second test
+budget against a *measured* 8.6-second worst case. That is deliberately more
+patience than the measurement says is needed; the ceiling, not the
+multiplier, is what bounds it. A genuinely wedged test can now burn up to 15
+minutes instead of 15 seconds before it is reported. `E2E_LOAD_GRACE=0` is
+the kill switch, for a run that specifically wants today's bare SH-222
+numbers regardless of load.
+
+**What this buys, and what it does not.** Grace is patience, not a fix — it
+lets a test that would have passed on more time actually get that time,
+which is what the user's determination asks for. It cannot make an
+assertion that is structurally wrong become right, and does not substitute
+for the mechanism work below.
+
+## A held request races its own client-side deadline (SH-347)
+
+Six e2e tests were quarantined under the `webkit` Playwright project on an
+unconfirmed hypothesis: that WebKit does not reliably surface a
+held-then-aborted or held-then-delayed `page.route()` interception to the
+page's own XHR handlers. `e2e/specs/interception-contract.spec.ts` measured
+the actual engine contract directly, on both `chromium` and `webkit`, rather
+than continuing to guess from the symptom:
+
+- **A route held indefinitely**: Chromium's `xhr.timeout` fires `ontimeout`
+  on schedule. WebKit's never fires at all — the client-side deadline is
+  simply never observed while a request sits in Playwright's interception
+  layer.
+- **A route held then `route.abort()`ed**: both engines surface `onerror` to
+  the page within single-digit milliseconds of the abort. WebKit surfaces an
+  abort just as promptly as Chromium — the original hypothesis, as stated,
+  is refuted.
+- **A route held then delivered late, past the client's own shrunk
+  deadline**: Chromium's `ontimeout` fires as configured. WebKit's never
+  fires — the client silently receives the late reply as an ordinary
+  successful response instead.
+
+**The real mechanism for the three tests that shrink `mutationTimeoutMs` and
+race a delayed `route.fulfill()`** (`duplicate-create.spec.ts`,
+`drawer-field-mutation-timeout.spec.ts` ×2) is now confirmed to the byte,
+deterministically — not load-sensitive, reproduces every time at idle:
+**WebKit does not enforce `XMLHttpRequest.timeout` on a request Playwright's
+route-interception layer is holding.** The entire premise these three tests
+were built on — "the client gives up first, so the write's outcome is
+genuinely ambiguous to it" — cannot occur on WebKit, because the client
+never gives up; it just receives the late reply as a normal success.
+
+**The rule that falls out, stated plainly**: a spec that holds a page-issued
+request across its own assertions is racing that request's own client-side
+deadline, and must set that deadline explicitly past anything the harness
+can grant a test — never leave it as whatever hardcoded literal the
+production code happens to carry. `src/web_dashboard.html`'s five
+`xhr.timeout` assignments are all named constants now
+(`tests/dashboard_deadline_knobs.rs` fences the bare-literal shape), and the
+three a browser spec actually holds past are `intFromQuery`-backed knobs
+(`boardFetchTimeoutMs`, `catalogFetchTimeoutMs`, `apiGetTimeoutMs`) a spec
+sets to `heldReadDeadlineMs()` (`e2e/specs/support.ts`) — twice the running
+test's own timeout, so no page clock this harness can ever grant a test can
+be the thing that ends an assertion the test means to own.
+
+**`board-readiness.spec.ts`'s three tests are a separate case, deliberately
+NOT resolved the same way**: their held route is aborted, not delayed, and
+the page's own clock has since been removed from the race entirely — yet a
+real full-suite WebKit run (a council-decided plan, `interception-
+contract.spec.ts`'s Probe D) measured a single held route's abort *not*
+reflected on screen within 12 seconds, while the two-route shape saw it in
+~3ms in the identical run. Abort delivery is real but not reliably prompt
+under contention, and one green sample for the two-route shape against a
+same-run sibling failure does not meet the bar to lift either. All three
+stay quarantined, with the measured (not hypothesized) reason in each
+`test.skip`'s own string — the general lesson is that even a *structurally
+sound* interception mechanism (abort, proven prompt at idle) can still be
+unreliable once the machine is doing enough else at once, which is exactly
+the condition load-grace exists to give a test room to survive, not to paper
+over a mechanism that is not actually reliable.
+
+## The audit (a floor, not a ceiling, per the story's own words)
+
+| Site | Held request | Client-side clock raced | Verdict |
+|---|---|---|---|
+| `board-readiness.spec.ts` ×3 (`holdDataFor`/abort) | `/data` | none (WebKit never arms it while held) | quarantined — abort itself unreliable under real load (Probe D) |
+| `catalog-readiness.spec.ts` ×3 (`holdUntilRefused`) | `/api/repos`, `/states` | `fetchReposOnce`/`api()` GET defaults | knobbed |
+| `deep-link.spec.ts` ×2, `drawer-open-race.spec.ts` (`holdFetch`) | `/data` | `fetchData` | knobbed (not on the story's own list) |
+| `board-readiness.spec.ts:736`, `dispatch-log.spec.ts:252` | aborted immediately, never held | none | clear |
+| `duplicate-create.spec.ts:58`, `story-context-menu-priority.spec.ts:291` | held to the *test's* own release | `MUTATION_TIMEOUT_MS` (75s ≫ any test budget) | clear |
+| `modal-enter-autorepeat.spec.ts:158` | held to the test's own release | same | clear |
+
+## The orphan bracket: refuse before the run, reap after it (SH-412)
+
+`scripts/check-no-orphan-servers.sh` brackets `make test` the way
+`gate-receipt.sh` does (`Makefile:144,152-153`), fails when a server this
+worktree's own suite starts is still running (SH-51: a leaked test daemon
+holds a port, and a later run handed that port talks to a stranger's
+registry — 78 of 139 tests down, all spurious 404s), but its two phases
+answer different questions and used to give them the same verdict.
+
+**Preflight has no grace period, and none is correct.** A match here is a
+process that existed *before this run started* — it may be a daemon a
+developer started on purpose, and it makes this run's own verification a lie
+regardless. Refuse, name it, and never kill it: that decision belongs to
+whoever started it.
+
+**A postlude match is a different fact, and used to get the preflight's
+verdict anyway.** On 2026-08-17, every leg of a real `make test` passed
+(rust-suite 873s) and the postlude then refused, naming two daemons with
+etimes 2m16s and 7m39s — both gone within a minute. `make` fail-fasts, so no
+receipt was minted for a suite that had already gone green; the only
+sanctioned path was a 22-minute re-run. That is precisely the pressure SH-306
+was filed for: a gate whose cost is disproportionate to what it proves trains
+the operator toward `SKIP_PREPUSH_TESTS=1`, and this incident used it, twice,
+in the same session that filed SH-412.
+
+The postlude already waited before refusing — a 10-second grace loop, added
+2026-07-29 alongside `STORYHOOK_PARENT_PID` containment, on the theory that a
+daemon "exits when its parent does, but learns by polling, so failing
+immediately would be failing on the defence working." That theory is correct
+but incomplete: `SHUTDOWN_CHECK` (`src/daemon/serve.rs`) — the parent-watch
+poll tick, 250ms — is the *only* bound left in play by the time the postlude
+runs, because every test binary this run started has already exited, and
+`DaemonGuard`'s `STOP_DEADLINE` (15s) and `lifecycle::stop`'s `FORCE_GRACE`
+(2s) are both spent *inside* a test binary's own teardown, before it exits.
+Ten seconds is already 40x `SHUTDOWN_CHECK`. So a survivor of the grace
+period was never "still winding down" — waiting longer cannot fix a case the
+sanctioned shutdown paths already exclude, which is why the fix widens what
+the postlude *does* with a survivor rather than how long it waits for one,
+and why the grace period's value does not move (`ORPHAN_GRACE_SECS`,
+`tests/orphan_check.rs::the_grace_period_is_derived_from_the_parent_watch_tick_it_disproves`
+pins the ratio so it cannot silently drift).
+
+**The postlude now reaps a survivor and certifies the tree, rather than
+refusing.** This is sound specifically *because* the preflight is a hard
+prerequisite of `test` and fails closed on any match — a postlude survivor
+was therefore provably spawned by *this* run, and this run is entitled to
+collect it. SIGTERM, a bounded wait, then SIGKILL, then verify; the postlude
+fails only if something survives SIGKILL, which is a genuinely different
+fact — a process this run cannot even end, not one it merely forgot to. A
+process that exits on its own during the grace window is never reported at
+all: only a process that actually needed a signal is a leak.
+
+**Forensics survive past the run that found them.** The whole reason this
+class was hard to pin down is structural: `scripts/run-tests.sh` deletes its
+isolated data root on `EXIT`, taking a survivor's own portfile and daemon log
+with it, and one macOS process cannot read another's environment — so the
+two specific processes SH-412 measured left no recoverable evidence of what
+they were. The reap now writes what it can see (`ps`'s pid/ppid/pgid/state/
+etime/command) to stderr *and* appends it to a durable, per-day log under
+`$(git rev-parse --git-common-dir)/storyhook/orphan-reports` — the same
+shared, per-clone, never-committed, never-cloned directory `gate-receipt.sh`
+already keeps its receipts in.
+
+**`$1` is now a validated phase, not a dual-purpose free-text label.**
+`preflight` and `postlude` were phases; anything else used to fall through to
+the strict, ungraced check as a free-text label —
+`scripts/capture-baseline.sh` relied on exactly that, passing a descriptive
+string as its own phase argument. A typo'd phase therefore silently became
+the strict check: the wrong verdict for the word actually typed, and this
+story's own failure shape (SH-357's class — an argument that lands nowhere
+must be refused, not misread). The script now takes `preflight | postlude |
+check [label]`; anything else is refused with a usage message, and
+`capture-baseline.sh` calls the explicit `check` form.
+
+Proven the way SH-306 requires a gate to be proven — by provoking it.
+`tests/orphan_check.rs` is the test this script never had: real processes,
+the tracked script reached by symlink from a disposable, git-initialized
+fixture root (never this checkout, never a sibling worktree — `pgrep -f` is
+global on a machine that routinely runs 3-4 concurrent worktree suites at
+once), spawned with the *exact* argv shape `spawn_child`
+(`src/daemon/lifecycle.rs`) builds for a real daemon. That argv choice makes
+every case double as the positive control the SH-113 hazard calls for: a
+pattern that stops matching production's actual shape would mean the
+expected refusal or reap never fires, and the test asserting it would fail
+loudly rather than the suite passing vacuously.
+
 ## Out of scope, named rather than silently dropped
 
 - **Sharing `CARGO_TARGET_DIR` across worktrees.** ~185GB duplicated across

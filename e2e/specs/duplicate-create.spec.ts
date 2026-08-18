@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./support";
 import { cleanUpCreatedStories, openProject, seedToken } from "./support";
 
 /**
@@ -103,15 +103,18 @@ test("a slow but successful create is reported honestly, not as a failure", asyn
   browserName,
 }) => {
   // The client's own shrunk XHR timeout is expected to fire before the
-  // deliberately delayed `route.fulfill()` below lands -- reliable under
-  // Chromium, not under WebKit here, likely a Playwright/WebKit driver
-  // interaction rather than an `api()` bug (plain, engine-agnostic XHR
-  // code). Not yet root caused to the byte -- SH-347 owns that, alongside
-  // the same shape in `drawer-field-mutation-timeout.spec.ts` and
-  // `board-readiness.spec.ts`.
+  // deliberately delayed `route.fulfill()` below lands. Measured, not
+  // hypothesized (SH-347's `interception-contract.spec.ts` probes A and C,
+  // and this exact test run deterministically against a temporarily-lifted
+  // quarantine): WebKit does not enforce `XMLHttpRequest.timeout` on a
+  // request Playwright's route interception layer is holding -- the client
+  // silently receives the late reply as an ordinary 200 instead of ever
+  // seeing `ontimeout`. Reproduces every time, at idle, not load-sensitive --
+  // a genuine engine/driver contract gap, not a flake. Chromium's `ontimeout`
+  // fires correctly and stays fully load-bearing.
   test.skip(
     browserName === "webkit",
-    "WebKit doesn't reliably surface a delayed route's timeout to the page's XHR (SH-347)",
+    "WebKit never fires XMLHttpRequest.ontimeout on a request held by Playwright route interception -- measured, deterministic (SH-347)",
   );
   const title = `SH-312 honest timeout ${Date.now()}`;
   const shrunkTimeoutMs = 300;
@@ -138,8 +141,17 @@ test("a slow but successful create is reported honestly, not as a failure", asyn
     // `ontimeout` fires on the client before this reply is delivered.
     const response = await route.fetch();
     await new Promise((resolve) => setTimeout(resolve, shrunkTimeoutMs + 500));
-    await route.fulfill({ response });
-    markRouteDone();
+    // Unconditional (SH-347): a route.fulfill() delivered after the client
+    // has abandoned the request can throw (the "Fetch response has been
+    // disposed" failure this test's own comment above already names) --
+    // `finally` is what stops that from stranding the closing `await
+    // routeDone` below, the same pairing discipline `onAFrozenClock`
+    // enforces for the page clock.
+    try {
+      await route.fulfill({ response });
+    } finally {
+      markRouteDone();
+    }
   });
 
   await page.goto(`/?mutationTimeoutMs=${shrunkTimeoutMs}`);
