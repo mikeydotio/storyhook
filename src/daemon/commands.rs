@@ -688,7 +688,10 @@ mod tests {
 
         uninstall_with(&env_b, &|_| {}).expect("uninstall b");
 
-        assert!(!agent::path(&env_b).exists(), "store b's plist must be gone");
+        assert!(
+            !agent::path(&env_b).exists(),
+            "store b's plist must be gone"
+        );
         assert!(agent::path(&env_a).exists(), "store a's plist must survive");
         assert_eq!(
             std::fs::read(agent::path(&env_a)).expect("plist a still there"),
