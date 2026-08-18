@@ -182,7 +182,9 @@ Standing rules for every wave:
   routinely longer" true, and the dashboard is a feature of storyhook, not the tool itself.
   `.githooks/pre-push` accepts a receipt from either tier and names which one it found;
   `scripts/release.sh` requires `test-full` and refuses `--skip-gate` outside
-  `--local-only`. Design of record: [`docs/spec/test-tiers.md`](docs/spec/test-tiers.md).
+  `--local-only`, and since SH-418 `make browser-watch` is what runs the release tier
+  *between* releases — see that bullet below, because for the whole life of this split
+  nothing did. Design of record: [`docs/spec/test-tiers.md`](docs/spec/test-tiers.md).
 - **A wall-clock ceiling on a test must derive from the deadline it disproves, never a bare
   literal** (SH-394). `assert!(elapsed < Duration::from_secs(2), ...)` states two things at
   once — that some production deadline was not spent, and an opinion about how fast that
@@ -813,6 +815,49 @@ Standing rules for every wave:
   global on a machine running 3-4 concurrent worktree suites), spawned with the exact argv
   shape `spawn_child` builds for a real daemon so every case doubles as the SH-113 positive
   control. Design of record: `docs/spec/test-tiers.md`'s "The orphan bracket" section.
+- **A tier nothing ever runs is a tier nothing ever proved** (SH-418). SH-394 moved the
+  browser suite out of the merge gate and into the release gate, correctly; nothing then
+  ran the release gate *between* releases. Measured when this was filed: **109 receipts in
+  this clone's store and zero carrying `tier full`** — SH-394 built that line to
+  distinguish the tiers and for the whole life of the split nothing had ever asked the
+  stronger question. SH-416 is the case (a restructured drawer banner left
+  `blocked-drop-reason.spec.ts` asserting the shape it replaced; it merged behind a green
+  `make test` and was found by an unrelated story running the suite incidentally). This is
+  SH-306 one tier up: the coverage existed and was correct, and a check whose verdict
+  nobody collects is operationally identical to one that did not run. **The trigger is the
+  tip tree's own certification state, never a path diff** — a three-seat council rejected
+  the story's own leading candidate unanimously on the first ballot (`story show SH-418`,
+  per SH-363), because a change to `src/web.rs` or `src/daemon/**` can break a browser spec
+  with neither `src/web_dashboard.html` nor `e2e/` in its diff, so a path predicate
+  under-triggers by construction *and* is the hand-kept-list shape SH-136/SH-198/SH-258/
+  SH-260/276/SH-360 already cost this project five times. `scripts/browser-watch.sh` runs
+  `make test-full` when `origin/main`'s tip tree carries no `full` receipt, in **its own**
+  persistent worktree under a pid-checked lock — not folded into `merge-watch.sh`'s pass,
+  decided on measurement: `main` took 11/24/16/9 merges on 2026-08-15..18 and the browser
+  leg measured **1454s (24.2 minutes)** here, so sharing that script's 1-3 minute reconcile
+  cadence would starve SH-396's merge gate for hours a day. **No second store, and no
+  cached marker**: a green pass writes an ordinary `tier full` receipt through the same
+  `gate-receipt.sh postlude`, and `scripts/browser-status.sh` computes staleness *per read*
+  as first-parent distance back to the nearest full-certified ancestor — so a dead poller, a
+  red `main`, and a machine that has never run the suite are three readings of one number
+  that only grows, and silence is `never` rather than a quiet pass. A marker file recording
+  the last outcome was proposed and declined as a second notion of "certified"; the per-day
+  log `browser-watch.sh` does write is forensics in SH-412's shape, read by no gate. The
+  distance is surfaced by `make browser-status` and as one line in every `merge-watch.sh` PR
+  comment — naming what that gate does **not** cover, in front of whoever is about to merge.
+  The whole decision lives in the reader on purpose, which is the lesson taken from
+  `merge-watch.sh` carrying no test at all: `tests/browser_gate.rs` provokes it against real
+  git with receipts from the production writer, mutation-checked (tier comparison loosened →
+  3 of 10 red; `--first-parent` dropped → 1; the poller's command array changed to
+  `make test` → 1), and `browser-watch.sh --plan` prints the very array the run path
+  executes so "this poller runs the FULL tier" is pinned without mocking `make`. **What the
+  first real run found is recorded in the spec rather than smoothed over:** `never` across
+  641 first-parent commits, and a `make test-full` that went RED with 7 browser failures (1
+  chromium, 6 webkit) — every one already filed as a load-sensitivity story (SH-401, SH-419,
+  SH-349, SH-375, SH-378), so a `full` receipt is currently unobtainable on this machine
+  under its normal concurrent load. That is a fact about the suite, not the detector, and it
+  is the same fact that would block the next release. Design of record:
+  `docs/spec/test-tiers.md`.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
