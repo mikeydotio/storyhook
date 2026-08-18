@@ -738,7 +738,18 @@ pub enum DaemonAction {
     /// Report whether one is running, and where.
     Status,
     /// Register a launchd agent so the daemon starts at login.
-    Install,
+    Install {
+        /// Register the running binary even when it is not the `story` this
+        /// machine's `$PATH` resolves — `--this-binary`.
+        ///
+        /// The way through
+        /// [`crate::daemon::install_guard::Refusal::Disagrees`] and
+        /// [`Unconfirmable`](crate::daemon::install_guard::Refusal::Unconfirmable),
+        /// and deliberately **not** a way through
+        /// [`Root`](crate::daemon::install_guard::Refusal::Root): it answers
+        /// which binary, never which user.
+        this_binary: bool,
+    },
     /// Remove that agent.
     Uninstall,
     /// Print the running daemon's bearer token (SH-50) — the value a caller
@@ -1618,6 +1629,19 @@ static VERB_FLAGS: &[VerbFlags] = &[
     // — one shared entry rather than per-subcommand ones, matching this
     // table's existing looseness for `daemon`: `parse_daemon` itself is what
     // actually refuses a flag on the wrong subcommand.
+    // Scoped to `install` on purpose. `declared_flags` prefers a
+    // `(verb, Some(subcommand))` entry over the verb's own, so declaring
+    // `--this-binary` here rather than on the `daemon` row is what makes every
+    // sibling subcommand refuse it *by construction* rather than by a list
+    // somebody has to remember to keep (SH-136's class). It is also the one
+    // residual `tests/trailing_arguments.rs` names as its own blind spot — that
+    // scan drops every `-`-prefixed word — so `tests/daemon_install_flag.rs`
+    // proves the scoping instead.
+    VerbFlags {
+        verb: "daemon",
+        subcommand: Some("install"),
+        flags: &[bare("this-binary")],
+    },
     VerbFlags {
         verb: "daemon",
         subcommand: None,
@@ -3718,7 +3742,7 @@ fn parse_store(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
     let usage = "usage: story daemon start [--port <PORT>] | stop [--force] | status | \
-                 install | uninstall | token";
+                 install [--this-binary] | uninstall | token";
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -3744,8 +3768,11 @@ fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
             DaemonAction::Status
         }
         "install" => {
-            expect_no_more(&args[2..], usage)?;
-            DaemonAction::Install
+            let this_binary = matches!(&args[2..], [flag] if flag == "--this-binary");
+            if !this_binary {
+                expect_no_more(&args[2..], usage)?;
+            }
+            DaemonAction::Install { this_binary }
         }
         "uninstall" => {
             expect_no_more(&args[2..], usage)?;
