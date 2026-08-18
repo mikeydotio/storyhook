@@ -67,6 +67,42 @@ fn project(env: &TestEnv) -> Project<'_> {
     env.project().seed_story("A real story").build()
 }
 
+/// Plants a plist at the bare label naming `exe`, carrying `--store-path
+/// store` — the exact shape a pre-SH-414 `--store-path store daemon install`
+/// wrote. Deliberately beside [`plant_agent`] rather than a parameter added to
+/// it, so every existing call site stays byte-identical.
+fn plant_agent_for_store(env: &TestEnv, exe: &str, store: &std::path::Path) -> std::path::PathBuf {
+    let dir = env.home().join("Library/LaunchAgents");
+    std::fs::create_dir_all(&dir).expect("the LaunchAgents directory");
+    let path = dir.join(format!("{LABEL}.plist"));
+    std::fs::write(
+        &path,
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{exe}</string>
+        <string>--store-path</string>
+        <string>{}</string>
+        <string>daemon</string>
+        <string>--serve</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
+"#,
+            store.display()
+        ),
+    )
+    .expect("planting a foreign-store agent");
+    path
+}
+
 /// The reported state a machine registered from a worktree is left in: the
 /// agent names a binary that is gone, and nothing else would ever say so.
 #[test]
@@ -168,4 +204,125 @@ fn status_reports_a_plist_it_cannot_read() {
         said.contains("cannot find a program in that plist"),
         "{said}"
     );
+}
+
+/// The migration seam a council found this fix must handle explicitly: a
+/// pre-SH-414 `--store-path X daemon install` left `X`'s agent at the bare
+/// label, which now means "the default store's own agent". `status` for the
+/// default store must name the foreign store and both remedies, never report
+/// `Health::Agrees` for an agent silently serving somebody else.
+#[test]
+fn status_reports_a_login_agent_that_serves_another_store() {
+    let env = TestEnv::isolated();
+    let project = project(&env);
+    let other = env.home().join("other-project/store.db");
+    plant_agent_for_store(&env, "/usr/local/bin/story", &other);
+
+    let reported = project
+        .story()
+        .args(["daemon", "status"])
+        .output()
+        .expect("status");
+    let said = String::from_utf8_lossy(&reported.stdout).to_string();
+    assert!(said.contains("login agent"), "{said}");
+    assert!(
+        said.contains(&other.display().to_string()),
+        "the report must name the store the agent actually serves: {said}"
+    );
+    assert!(
+        said.contains("story --store-path"),
+        "and the remedy that gives the foreign store its own agent: {said}"
+    );
+    assert!(
+        !said.contains("$PATH runs"),
+        "a foreign agent's binary is not this store's business to report on: {said}"
+    );
+}
+
+/// The negative control for the test above: this store's own agent, correctly
+/// installed, must never be reported as foreign.
+#[test]
+fn status_does_not_report_this_stores_own_agent_as_foreign() {
+    let env = TestEnv::isolated();
+    let project = project(&env);
+    plant_agent(&env, "/usr/local/bin/story");
+
+    let reported = project
+        .story()
+        .args(["daemon", "status"])
+        .output()
+        .expect("status");
+    let said = String::from_utf8_lossy(&reported.stdout).to_string();
+    assert!(
+        !said.contains("actually serves"),
+        "this store's own correctly-labeled agent must not read as foreign: {said}"
+    );
+}
+
+/// Per-store labels remove the accidental self-limiting collision a shared
+/// label used to provide — a second install no longer replaces the first, it
+/// coexists. Enumeration is the visibility that stops that from being
+/// invisible: `status` for this store must also name a sibling agent
+/// installed for another one.
+#[test]
+fn status_names_other_storyhook_login_agents_on_this_machine() {
+    let env = TestEnv::isolated();
+    let project = project(&env);
+    plant_agent(&env, "/usr/local/bin/story");
+    let other_store = env.home().join("other-project/store.db");
+    let dir = env.home().join("Library/LaunchAgents");
+    std::fs::write(
+        dir.join(format!("{LABEL}.deadbeefdeadbeef.plist")),
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{LABEL}.deadbeefdeadbeef</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/story</string>
+        <string>--store-path</string>
+        <string>{}</string>
+        <string>daemon</string>
+        <string>--serve</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
+"#,
+            other_store.display()
+        ),
+    )
+    .expect("planting a sibling agent");
+
+    let reported = project
+        .story()
+        .args(["daemon", "status"])
+        .output()
+        .expect("status");
+    let said = String::from_utf8_lossy(&reported.stdout).to_string();
+    assert!(
+        said.contains("other login agents on this machine"),
+        "{said}"
+    );
+    assert!(said.contains(&other_store.display().to_string()), "{said}");
+}
+
+/// The negative control: with only this store's own agent installed,
+/// enumeration says nothing.
+#[test]
+fn status_names_no_other_agents_when_there_are_none() {
+    let env = TestEnv::isolated();
+    let project = project(&env);
+    plant_agent(&env, "/usr/local/bin/story");
+
+    let reported = project
+        .story()
+        .args(["daemon", "status"])
+        .output()
+        .expect("status");
+    let said = String::from_utf8_lossy(&reported.stdout).to_string();
+    assert!(!said.contains("other login agents"), "{said}");
 }
