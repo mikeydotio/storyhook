@@ -90,16 +90,17 @@ preflight_state="$git_dir/storyhook-gate-preflight"
 # Untracked files are excluded on purpose: `target/`, `e2e/node_modules` and
 # the suite's own scratch output are not what is being certified, and `git add
 # -A` is forbidden here for the same reason.
+#
+# Extracted to `scripts/tracked-tree.sh` when SH-406 gave this primitive a
+# second caller (`build.rs`, which stamps every build with this value).
+# Invoked as a subprocess rather than sourced — see that file's header for the
+# council verdict this follows and why: it turns both callers onto one
+# process contract (stdout carries the oid, a nonzero exit means "no
+# answer"), provable end to end the same way `tests/push_gate.rs` already
+# proves this script, rather than an in-process sourcing relationship a test
+# could only pin by static inspection.
 tracked_tree() {
-    local idx tree
-    idx="$(mktemp -t storyhook-gate-index.XXXXXX)" || return 1
-    rm -f "$idx"
-    GIT_INDEX_FILE="$idx" git read-tree HEAD 2>/dev/null || { rm -f "$idx"; return 1; }
-    GIT_INDEX_FILE="$idx" git add -u -- :/ 2>/dev/null || { rm -f "$idx"; return 1; }
-    tree="$(GIT_INDEX_FILE="$idx" git write-tree 2>/dev/null)" || { rm -f "$idx"; return 1; }
-    rm -f "$idx"
-    [ -n "$tree" ] || return 1
-    printf '%s\n' "$tree"
+    "$(dirname "${BASH_SOURCE[0]}")/tracked-tree.sh"
 }
 
 case "$phase" in
