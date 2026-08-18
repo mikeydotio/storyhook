@@ -4,13 +4,9 @@ use ureq::Agent;
 
 use crate::error::AppError;
 
-use super::types::{
-    CreateIssueRequest, GithubComment, GithubIssue, PullRequestStatus, UpdateIssueRequest,
-};
+use super::types::PullRequestStatus;
 
 const API_BASE: &str = "https://api.github.com";
-const PER_PAGE: u32 = 100;
-const LOW_RATE_LIMIT_THRESHOLD: u64 = 50;
 
 /// GitHub REST API client wrapping ureq.
 pub struct GithubClient {
@@ -54,33 +50,12 @@ impl GithubClient {
             .header("X-GitHub-Api-Version", "2022-11-28")
     }
 
-    /// Build a POST request with common headers.
-    fn post(&self, path: &str) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
-        let url = format!("{API_BASE}{path}");
-        self.agent
-            .post(&url)
-            .header("Authorization", &format!("Bearer {}", self.token))
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "storyhook")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-    }
-
-    /// Build a PATCH request with common headers.
-    fn patch(&self, path: &str) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
-        let url = format!("{API_BASE}{path}");
-        self.agent
-            .patch(&url)
-            .header("Authorization", &format!("Bearer {}", self.token))
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "storyhook")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-    }
-
     /// Check rate limit headers and warn when remaining calls are low.
     fn check_rate_limit(
         &self,
         response: &ureq::http::Response<ureq::Body>,
     ) -> Result<(), AppError> {
+        const LOW_RATE_LIMIT_THRESHOLD: u64 = 50;
         if let Some(remaining) = response.headers().get("x-ratelimit-remaining")
             && let Ok(s) = remaining.to_str()
             && let Ok(n) = s.parse::<u64>()
@@ -125,235 +100,11 @@ impl GithubClient {
     // Public API
     // -----------------------------------------------------------------------
 
-    /// Validate the token by fetching repository metadata.
-    pub fn validate_token(&self) -> Result<(), AppError> {
-        let path = format!("/repos/{}/{}", self.owner, self.repo);
-        let mut response = self
-            .get(&path)
-            .call()
-            .map_err(|e| AppError::GithubApi(e.to_string()))?;
-
-        let status = response.status().as_u16();
-        if status == 401 {
-            return Err(AppError::GithubAuth(
-                "invalid or expired GitHub token".into(),
-            ));
-        }
-        if !response.status().is_success() {
-            return Err(self.handle_error_status(status, &mut response));
-        }
-        self.check_rate_limit(&response)?;
-        // Drain the body so the connection can be reused
-        let _ = response.body_mut().read_to_string();
-        Ok(())
-    }
-
-    /// List issues for the repository, with optional `since` filter and state.
-    ///
-    /// Automatically paginates and filters out pull requests.
-    pub fn list_issues(
-        &self,
-        since: Option<&str>,
-        state: &str,
-    ) -> Result<Vec<GithubIssue>, AppError> {
-        let mut all_issues = Vec::new();
-        let mut page: u32 = 1;
-
-        loop {
-            let path = format!("/repos/{}/{}/issues", self.owner, self.repo);
-            let mut req = self
-                .get(&path)
-                .query("state", state)
-                .query("per_page", PER_PAGE.to_string())
-                .query("page", page.to_string())
-                .query("sort", "updated")
-                .query("direction", "asc");
-
-            if let Some(since_val) = since {
-                req = req.query("since", since_val);
-            }
-
-            let mut response = req.call().map_err(|e| AppError::GithubApi(e.to_string()))?;
-
-            let status = response.status().as_u16();
-            if !response.status().is_success() {
-                return Err(self.handle_error_status(status, &mut response));
-            }
-            self.check_rate_limit(&response)?;
-
-            let issues: Vec<GithubIssue> = response
-                .body_mut()
-                .read_json()
-                .map_err(|e| AppError::GithubApi(format!("failed to parse issues: {e}")))?;
-
-            let count = issues.len();
-
-            // Filter out pull requests — GitHub's issue endpoint includes them
-            all_issues.extend(issues.into_iter().filter(|i| !i.is_pull_request()));
-
-            if count < PER_PAGE as usize {
-                break;
-            }
-            page += 1;
-        }
-
-        Ok(all_issues)
-    }
-
-    /// Get a single issue by number.
-    pub fn get_issue(&self, number: u64) -> Result<GithubIssue, AppError> {
-        let path = format!("/repos/{}/{}/issues/{number}", self.owner, self.repo);
-        let mut response = self
-            .get(&path)
-            .call()
-            .map_err(|e| AppError::GithubApi(e.to_string()))?;
-
-        let status = response.status().as_u16();
-        if !response.status().is_success() {
-            return Err(self.handle_error_status(status, &mut response));
-        }
-        self.check_rate_limit(&response)?;
-
-        let issue: GithubIssue = response
-            .body_mut()
-            .read_json()
-            .map_err(|e| AppError::GithubApi(format!("failed to parse issue: {e}")))?;
-
-        Ok(issue)
-    }
-
-    /// Create a new issue.
-    pub fn create_issue(&self, req: &CreateIssueRequest) -> Result<GithubIssue, AppError> {
-        let path = format!("/repos/{}/{}/issues", self.owner, self.repo);
-        let mut response = self
-            .post(&path)
-            .send_json(req)
-            .map_err(|e| AppError::GithubApi(e.to_string()))?;
-
-        let status = response.status().as_u16();
-        if !response.status().is_success() {
-            return Err(self.handle_error_status(status, &mut response));
-        }
-        self.check_rate_limit(&response)?;
-
-        let issue: GithubIssue = response
-            .body_mut()
-            .read_json()
-            .map_err(|e| AppError::GithubApi(format!("failed to parse created issue: {e}")))?;
-
-        Ok(issue)
-    }
-
-    /// Update an existing issue.
-    pub fn update_issue(
-        &self,
-        number: u64,
-        req: &UpdateIssueRequest,
-    ) -> Result<GithubIssue, AppError> {
-        let path = format!("/repos/{}/{}/issues/{number}", self.owner, self.repo);
-        let mut response = self
-            .patch(&path)
-            .send_json(req)
-            .map_err(|e| AppError::GithubApi(e.to_string()))?;
-
-        let status = response.status().as_u16();
-        if !response.status().is_success() {
-            return Err(self.handle_error_status(status, &mut response));
-        }
-        self.check_rate_limit(&response)?;
-
-        let issue: GithubIssue = response
-            .body_mut()
-            .read_json()
-            .map_err(|e| AppError::GithubApi(format!("failed to parse updated issue: {e}")))?;
-
-        Ok(issue)
-    }
-
-    /// List comments on an issue, with optional `since` filter.
-    pub fn list_comments(
-        &self,
-        issue_number: u64,
-        since: Option<&str>,
-    ) -> Result<Vec<GithubComment>, AppError> {
-        let mut all_comments = Vec::new();
-        let mut page: u32 = 1;
-
-        loop {
-            let path = format!(
-                "/repos/{}/{}/issues/{issue_number}/comments",
-                self.owner, self.repo
-            );
-            let mut req = self
-                .get(&path)
-                .query("per_page", PER_PAGE.to_string())
-                .query("page", page.to_string());
-
-            if let Some(since_val) = since {
-                req = req.query("since", since_val);
-            }
-
-            let mut response = req.call().map_err(|e| AppError::GithubApi(e.to_string()))?;
-
-            let status = response.status().as_u16();
-            if !response.status().is_success() {
-                return Err(self.handle_error_status(status, &mut response));
-            }
-            self.check_rate_limit(&response)?;
-
-            let comments: Vec<GithubComment> = response
-                .body_mut()
-                .read_json()
-                .map_err(|e| AppError::GithubApi(format!("failed to parse comments: {e}")))?;
-
-            let count = comments.len();
-            all_comments.extend(comments);
-
-            if count < PER_PAGE as usize {
-                break;
-            }
-            page += 1;
-        }
-
-        Ok(all_comments)
-    }
-
-    /// Create a comment on an issue.
-    pub fn create_comment(&self, issue_number: u64, body: &str) -> Result<GithubComment, AppError> {
-        let path = format!(
-            "/repos/{}/{}/issues/{issue_number}/comments",
-            self.owner, self.repo
-        );
-
-        #[derive(serde::Serialize)]
-        struct CommentBody<'a> {
-            body: &'a str,
-        }
-
-        let mut response = self
-            .post(&path)
-            .send_json(&CommentBody { body })
-            .map_err(|e| AppError::GithubApi(e.to_string()))?;
-
-        let status = response.status().as_u16();
-        if !response.status().is_success() {
-            return Err(self.handle_error_status(status, &mut response));
-        }
-        self.check_rate_limit(&response)?;
-
-        let comment: GithubComment = response
-            .body_mut()
-            .read_json()
-            .map_err(|e| AppError::GithubApi(format!("failed to parse created comment: {e}")))?;
-
-        Ok(comment)
-    }
-
     /// Get a single pull request's merge/close status by number (SH-49).
     ///
-    /// `GET /repos/{owner}/{repo}/pulls/{number}` — the same shape as
-    /// `get_issue`, since GitHub's REST API treats a pull request as an issue
-    /// with a `pulls` endpoint of its own.
+    /// `GET /repos/{owner}/{repo}/pulls/{number}` — the same shape as an
+    /// issue lookup, since GitHub's REST API treats a pull request as an
+    /// issue with a `pulls` endpoint of its own.
     pub fn get_pull_request(&self, number: u64) -> Result<PullRequestStatus, AppError> {
         let path = format!("/repos/{}/{}/pulls/{number}", self.owner, self.repo);
         let mut response = self

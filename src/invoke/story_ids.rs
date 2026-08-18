@@ -218,7 +218,7 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
             std::iter::once(id).chain(on.iter_mut()).collect()
         }
         Invocation::BulkUpdate { updates } => updates.iter_mut().map(|(id, _)| id).collect(),
-        Invocation::GithubSync { id, .. } | Invocation::PrCheck { id } => id.iter_mut().collect(),
+        Invocation::PrCheck { id } => id.iter_mut().collect(),
 
         Invocation::Phase { action } => match action {
             PhaseAction::Add { id, .. } | PhaseAction::Remove { id } => vec![id],
@@ -290,7 +290,6 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::ConflictSide;
 
     /// Drives a bare `1` through every id position and returns what came back,
     /// with a fake expansion so the assertions read as text rather than as
@@ -335,17 +334,6 @@ mod tests {
                     updates: vec![("1".into(), "done".into()), ("1".into(), "todo".into())],
                 },
                 2,
-            ),
-            (
-                "github-sync",
-                Invocation::GithubSync {
-                    id: Some("1".into()),
-                    dry_run: false,
-                    resolve: Some(ConflictSide::Local),
-                    strategy: None,
-                    mode: None,
-                },
-                1,
             ),
             (
                 "link-pr",

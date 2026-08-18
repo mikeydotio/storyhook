@@ -477,16 +477,10 @@ impl MigrationPlan {
             // `github_sync` stood at `None` here until SH-233, whatever the
             // tree held — so a user migrating a github-synced project lost
             // every issue mapping, silently, and the first sync afterwards read
-            // as an ordinary first setup. It travels verbatim, and it is
-            // deliberately *not* reconciled against this checkout's git remote
-            // the way a restore's is (`service::github::
-            // reconcile_restored_github_remote`): a restore lands a document in
-            // a checkout that may be a fork or a relocated clone, while a
-            // migration's destination *is* its source, so the owner/repo in the
-            // blob is the one the legacy tool derived from this very
-            // repository. Genuine drift — a repository renamed since — is
-            // `story doctor`'s `github_remote_advice`, which re-asks the
-            // question on every run rather than once.
+            // as an ordinary first setup. It travels verbatim; nothing
+            // interprets or reconciles its contents against this checkout's
+            // git remote any more, since the sync engine that would have is
+            // retired (SH-408).
             tx.put_settings(
                 project,
                 &ProjectSettings {

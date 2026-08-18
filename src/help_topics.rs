@@ -767,7 +767,6 @@ Note: Previously named 'sync-git'. The old name still works as an alias.
 
 Related:
   story hooks install    — Auto-sync via git hooks
-  story github-sync      — Sync stories with GitHub Issues
   story handoff          — End-of-session summary
 "#,
         );
@@ -776,95 +775,15 @@ Related:
         m.insert("sync-git", m["commit-sync"]);
 
         m.insert(
-            "github-sync",
-            r#"story github-sync [<id>] [--dry-run] [--resolve local|remote]
-                   [--strategy import-all|match-titles|push-only|future-only]
-                   [--mode manual|off]
-
-Sync stories with GitHub Issues bidirectionally. Pulls remote changes
-and pushes local changes using three-way merge. Requires the
-STORYHOOK_GITHUB_TOKEN environment variable to be set with a GitHub
-Personal Access Token.
-
-When to use:
-  After making local story changes you want reflected on GitHub, or
-  to pull in changes made on GitHub (comments, state changes, etc.).
-
-Examples:
-  story github-sync                  # Full project sync
-  story github-sync SH-1            # Sync a single story
-  story github-sync --dry-run       # Preview changes without applying
-  story github-sync SH-1 --resolve remote   # Take GitHub's side of SH-1
-
-First time on a project:
-  A project that has never run github-sync is asked how to handle the
-  initial sync, interactively -- or, non-interactively (a script, a
-  pipe, --json), told to say so up front:
-
-    story github-sync --strategy future-only --mode manual
-
-  strategy:
-    import-all      import every open issue as a local story
-    match-titles    link stories to issues whose titles match exactly
-    push-only       push local stories to GitHub, import nothing
-    future-only     sync only changes from now on (the wizard's default)
-
-  mode:
-    manual          run 'story github-sync' explicitly (the wizard's default)
-    off             disable sync for this project
-
-  --strategy and --mode must be given together for this first sync, and
-  --strategy never applies to a project that is already configured.
-
-Changing the mode later:
-  story github-sync --mode manual|off
-
-  On a project that is already configured, --mode alone (no --strategy,
-  no <id>) changes the stored mode instead of syncing -- the way to
-  turn a disabled project back on, or to repair one still carrying a
-  mode this build refuses to run under. Needs no GitHub token: it
-  writes the stored configuration and nothing else.
-
-Conflicts:
-  When both sides changed one field to different values, storyhook
-  applies everything else, prints all three values, and exits 8 without
-  deciding. Nothing is chosen for you, and nothing is lost: the
-  merge base holds the disputed field, so the same conflict is still
-  there next time rather than GitHub quietly winning. Answer it with
-  --resolve on that one story, or set the field to the same value on
-  both sides and re-run.
-
-  --resolve needs an explicit <id>. A whole-sync resolution would decide
-  conflicts you have not read.
-
-Configuration (per project, in the store):
-  sync_mode = "manual"    # off | manual
-
-  Note: "auto" is not offered, and a project still carrying it -- from
-  before the rearchitecture, which deleted the code that ran it -- is
-  refused rather than silently treated as manual, naming the repair:
-  `story github-sync --mode manual` (or --mode off). Honest auto-sync
-  means a GitHub call on the tail of every story-modifying command, in
-  the daemon as well as locally — a feature with a failure policy and a
-  timeout to design, not a switch to flip.
-
-Related:
-  story commit-sync  — Link git commits to stories
-  story doctor       — Check project health including sync status
-"#,
-        );
-
-        m.insert(
             "github-auth",
             r#"story github-auth login|status|logout
 
 Manage the durable GitHub credential the daemon's background poll uses
 to check linked pull requests unattended (SH-212). Separate from the
-STORYHOOK_GITHUB_TOKEN environment variable `story github-sync` and
-`story pr-check` read per invocation: this one is stored once, in your
-OS keychain (macOS Keychain, or the Secret Service on Linux), and
-spent by the daemon on a five-minute timer with nobody typing a
-command.
+STORYHOOK_GITHUB_TOKEN environment variable `story pr-check` reads per
+invocation: this one is stored once, in your OS keychain (macOS
+Keychain, or the Secret Service on Linux), and spent by the daemon on
+a five-minute timer with nobody typing a command.
 
 login    Prompts for a GitHub Personal Access Token (always
          interactive — there is no non-interactive form) and stores it.
@@ -888,7 +807,6 @@ Requires the github-sync feature, like `story pr-check` itself.
 Related:
   story pr-check      — Check linked pull requests by hand
   story link-pr        — Link a pull request to a story
-  story github-sync    — The other GitHub credential, read per invocation
 "#,
         );
 
@@ -1069,7 +987,7 @@ Tools:
 
 What is not here:
   This is a curated slice of the CLI's full surface, not a 1:1 mirror of it
-  — verbs like 'story decompose', 'story github-sync', and anything
+  — verbs like 'story decompose', 'story pr-check', and anything
   destructive enough to ask a human to confirm (like 'story purge') are not
   exposed as tools. Use the CLI directly for those.
 
@@ -2918,7 +2836,6 @@ BULK & INTEGRATION
   story import [file]             Bulk-create from JSON
   story export                    Whole project, one JSON doc
   story commit-sync               Link git commits to stories
-  story github-sync               Bidirectional GitHub Issues sync
   story handoff                   End-of-session summary document
 
 PROJECT MANAGEMENT

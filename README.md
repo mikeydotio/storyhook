@@ -334,7 +334,6 @@ story hooks test <event_type>
 story scaffold agents-md|claude-md|cursor-rules
 story commit-sync [--since <duration>]
 story sync-git [--since <duration>]           # alias of commit-sync
-story github-sync [<id>] [--dry-run] [--resolve local|remote] [--strategy import-all|match-titles|push-only|future-only] [--mode manual|off]
 story link-pr <id> <url> [--no-close-on-merge]
 story unlink-pr <id> <url>
 story attachment add <id> <path> [--name <text>]

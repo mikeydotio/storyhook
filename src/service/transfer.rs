@@ -193,11 +193,11 @@ impl From<crate::store::ProjectRemoteRecord> for ExportedRemote {
 /// carries them too. Both halves move together on every leg, which is what the
 /// argument was ever asking for.
 ///
-/// One field the blob holds is still checkout-specific:
-/// `github.owner`/`github.repo`, which only the setup wizard re-derives.
-/// [`crate::service::github::reconcile_restored_github_remote`] corrects it
-/// after a restore, and `story doctor`'s `github_remote_advice` re-asks on
-/// every run for the cases it cannot answer.
+/// One field the blob held was still checkout-specific:
+/// `github.owner`/`github.repo`. The sync engine that re-derived and
+/// corrected it after a restore is retired (SH-408); nothing interprets
+/// this document's contents any more, only counts and reports its presence
+/// — see [`import_project`]'s carry of it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ExportedSettings {
     /// The `[sync]` table, absent when nothing in it is set.

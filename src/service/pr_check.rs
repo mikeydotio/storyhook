@@ -75,7 +75,7 @@ pub fn run_check<S: Store>(
     factory: &dyn GithubApiFactory,
     id: Option<&str>,
 ) -> Result<Response, AppError> {
-    let token = crate::github::initial::require_github_token(ctx.github_token())?;
+    let token = crate::github::require_github_token(ctx.github_token())?;
     let project = ctx.project();
 
     // Read fresh, every call — see the module doc's check. A link linked
