@@ -706,6 +706,7 @@ fn project_data_json<S: Store>(ctx: &Ctx<'_, S>) -> Result<String, AppError> {
                 "drafts": drafts_json,
                 "ready_ids": data.ready_ids,
                 "blocked_ids": data.blocked_ids,
+                "next_ids": data.next_ids,
                 "meta": meta_json(tx, project, &data)?,
             });
             to_json(&response)
