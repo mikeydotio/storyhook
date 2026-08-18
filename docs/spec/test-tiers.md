@@ -174,6 +174,214 @@ integration, and SH-263 and SH-345 are the recorded cost of exactly that gap.
 Verified by hand against this repo's own live PRs instead, each time the
 script changes.
 
+## Something has to run the release tier between releases (SH-418)
+
+Everything above tells you what the two tiers *are*. It does not say what runs
+the expensive one. Until SH-418 the answer was: a human who chose to, and
+`scripts/release.sh`. Nothing else, ever. So a dashboard change could
+invalidate a browser spec, merge behind a correctly-green `make test`, and sit
+red indefinitely — with the first person to find out being whoever tried to cut
+a release, at which point it blocked one.
+
+**SH-416 is the measured case**, not a hypothesis. SH-398 restructured the
+drawer's blocked banner and left `blocked-drop-reason.spec.ts` asserting the
+shape it replaced. That merged. It was found by SH-368 running the browser
+suite as an incidental regression check on unrelated work. Between those two
+points every `make test` was green and every push and merge was correctly
+certified — the gates were all working, and none of them was looking.
+
+**And the state of the machine says it plainly.** When SH-418 was filed there
+were **109 receipts in this clone's store and zero carrying `tier full`**: 33
+said `tier gate`, 76 predated the tier line. SH-394 built that line in order to
+distinguish the tiers, and for the whole life of the split nothing had ever
+asked the stronger question.
+
+This is SH-306's rule one tier up. The coverage existed and was correct — the
+spec caught the drift the instant it ran. A check whose verdict nobody ever
+collects is operationally identical to a check that did not run.
+
+### The trigger is the tree's own certification state, never a path diff
+
+The story proposed running the browser tier for a merge tree whose diff touches
+`src/web_dashboard.html` or `e2e/`. **A three-seat council rejected that
+unanimously on the first ballot** (devops, architecture, QA — the verdict is on
+the story: `story show SH-418`, per SH-363, never a council directory that
+resolves on no fresh clone). Two reasons, and both are general:
+
+- **A path predicate under-triggers by construction.** A change to `src/web.rs`
+  or `src/daemon/**` can break a browser spec with neither of those paths in its
+  diff — the dashboard's JavaScript talks to a Rust HTTP surface, and
+  `run-e2e.sh` seeds its fixtures with the real `story` binary. A trigger that
+  is wrong in the *quiet* direction is the defect this story is about.
+- **It is a hand-kept list.** SH-136, SH-198, SH-258, SH-260/276 and SH-360 are
+  five recorded cases of exactly that shape drifting.
+
+The trigger is instead: **does `origin/main`'s tip tree already carry a `tier
+full` receipt?** Derived from content, so it re-arms on every merge whatever
+that merge touched; free to evaluate (a file stat); and self-coalescing — a
+burst of merges collapses into one run against the newest tip rather than one
+run each. It also *upgrades* the `gate` receipt `merge-watch.sh` already wrote
+for that same tree, which `gate-receipt.sh postlude` explicitly permits.
+
+### Its own worktree and its own lock, not `merge-watch.sh`'s pass
+
+Also the council's, and decided on two measurements rather than taste:
+
+| Measured | Value |
+|---|---|
+| Merges into `main` per day (2026-08-15 … 08-18) | 11, 24, 16, 9 |
+| The browser leg, four Playwright projects, this machine under concurrent load | **1454s (24.2 min)** |
+| The same run's merge-gate legs (fmt 2s, clippy 44s, rust-suite 495s, build 19s, plugin 93s) | 653s total |
+
+Folding a 24-minute browser leg into `merge-watch.sh`'s 1-3 minute reconcile
+pass would starve SH-396's merge gate for hours a day at that merge rate. So
+`scripts/browser-watch.sh` owns `$(git rev-parse
+--git-common-dir)/storyhook/browser-watch-worktree` and takes a lock before it
+runs. The lock is a directory (`mkdir(2)` is the atomic primitive available
+everywhere this runs; macOS ships no `flock(1)`), and its staleness is decided
+by a **fact** — whether the recorded pid is still alive — never by a timeout,
+which would be a bare literal about how long a browser suite is allowed to take
+(the rule this document already states one section down).
+
+### The verdict is collected from the store that already carries it
+
+No second notion of "certified" was introduced. A green pass writes an ordinary
+`tier full` receipt through the same `gate-receipt.sh postlude` every push uses;
+`.githooks/pre-push` and `scripts/merge-preflight.sh` keep accepting either tier
+with **no change to how they read it**. What is new is a reader that
+discriminates.
+
+`scripts/browser-status.sh` walks `main` back — `--first-parent`, because a
+commit a merge brought in was never `main`'s own content — to the nearest tree
+carrying a `full` receipt, and reports **commits-behind and age, or `never`**.
+
+**Distance, computed per read, and deliberately not a cached marker.** A
+marker file recording the last outcome was proposed (it answers the real
+ambiguity: a receipt's absence alone cannot distinguish "never tried" from
+"tried and failed") and was declined, because it is a second store to be wrong
+about the world, for a fact the tree-keyed store can already state. Distance
+answers the same question from the store itself, and answers it on **one scale
+that only grows**: a poller that has died, a `main` that has been red all day,
+and a machine that has never run the suite are three readings of the same
+number. Silence is never a pass — it is `never`, which is the largest reading
+there is.
+
+**No staleness threshold.** The reader reports; it does not judge. "How far
+behind is too far" would be a bare literal about one machine's cadence on one
+day, which this document already refuses for test budgets.
+
+Four places collect it:
+
+| Where | What it says |
+|---|---|
+| **every `make test`**, on the e2e deferral line | how long the browser tier has gone unrun — see below |
+| `make browser-status` | the full reading, exit 0 current / 1 behind / 2 never / 3 unresolvable ref |
+| every `merge-watch.sh` PR comment | one line — the tier that gate does **not** cover, in front of whoever is about to click merge |
+| `$(git rev-parse --git-common-dir)/storyhook/browser-watch-reports/<date>.log` | one line per pass, forensics only |
+
+**The first of those is the one that needs no bootstrap, and it is where
+SH-394's own anti-silence line had the same gap one tier up.** `scripts/leg.sh
+--skipped e2e` existed so the reduced gate "can never silently read as full
+coverage" — but it said only that *this run* skipped the browser suite, and
+nothing about whether any run ever hadn't. `make test` now follows it with
+`browser-status.sh`:
+
+```
+leg e2e: SKIPPED — not part of this tier. Run `make test-full` to include it.
+browser-status: never — no tree in origin/main's 642-commit first-parent
+  history has ever passed the browser suite. Run 'make browser-watch'.
+```
+
+Three properties of that line are deliberate and all three are pinned by
+`tests/gate_tiers.rs::the_merge_gates_deferral_reports_how_stale_the_browser_
+tier_is` (mutation-checked in both directions). It **never gates** — `|| true`,
+because a merge gate that failed on the release tier's staleness would undo the
+split SH-394 measured. It is **absent from `test-full`**, where the suite is
+about to run and a stale reading would be noise measured moments before it
+stops being true. And it is on the path **every session already takes**: `make
+browser-watch` and `make merge-watch` both want a per-machine timer, and on the
+machine that filed this story neither had one.
+
+That last one is **not** the marker the council declined, and the distinction is
+load-bearing: nothing reads it to decide whether a tree is certified and no gate
+consults it. It exists because a pass that found a red suite should leave
+evidence after the scrollback is gone — the same shape, and the same directory
+family, as the orphan reap's per-day log (SH-412).
+
+### What is fenced, and what is deliberately not
+
+`tests/browser_gate.rs` provokes the reader against **real git**, with every
+receipt written by the production `gate-receipt.sh` and never hand-forged — the
+control `tests/merge_gate.rs` and `tests/push_gate.rs` already require, because
+a hand-written receipt proves the reader's file format rather than the
+producer's behaviour. Ten cases, mutation-checked in both directions:
+
+- the tier comparison loosened from `= "full"` to "a receipt exists" → **3 of 10
+  red**;
+- `--first-parent` dropped from the walk → **1 of 10 red**;
+- `browser-watch.sh`'s command array changed to `make test` → **1 of 10 red**.
+
+The positive control is
+`a_full_tier_receipt_on_the_tip_reads_as_current`: without it, every `never`
+assertion could pass for the wrong reason if the fixture's certification path
+silently stopped working (SH-364).
+
+**The decision lives entirely in the reader, on purpose.**
+`scripts/browser-watch.sh` asks `browser-status.sh` and obeys it. That is the
+lesson taken from `merge-watch.sh`, which carries no automated test because
+mocking `gh` would validate the mock (SH-263, SH-345): the answer was not to
+accept a second untested decision but to move the decision somewhere testable.
+What is left in `browser-watch.sh` is fetch, lock, checkout, exec. The one fact
+about it a test *can* pin without mocking `make` is pinned —
+`browser-watch.sh --plan` prints the very command array the run path executes,
+so `the_pass_a_poller_would_run_is_the_full_tier_not_the_merge_gate` cannot
+drift from what runs.
+
+`tests/gate_tiers.rs::the_browser_tier_detection_targets_reach_their_scripts` is
+a **wiring** fence and claims nothing more: a `make` target that stopped
+invoking its script would restore the exact silence this story ended, without
+failing anything.
+
+### Bootstrap, per machine, as ever
+
+Two steps this document describes rather than performs, the same posture `make
+e2e-install` and `make merge-watch` already take:
+
+1. **A timer.** `make browser-watch` runs one pass and exits. It wants a
+   *coarse* recurrence — the leg is 24 minutes — not `merge-watch`'s 1-3
+   minutes; the lock is what makes an over-eager timer harmless rather than
+   catastrophic.
+2. **`make e2e-install` inside the poller worktree**, once. `e2e/node_modules`
+   is gitignored, so a fresh worktree has none. `browser-watch.sh` refuses with
+   that exact command rather than running it (a network fetch writing a shared
+   browser cache outside the repo is a thing to opt into), and refuses **before**
+   spending the Rust legs — `make test-full` runs the browser leg last, so an
+   unprovisioned worktree would otherwise fail at the final line after ten
+   minutes of work.
+
+### As built: the first real reading, and what it found
+
+Recorded because it is the honest state of the thing and a later reader will
+otherwise assume better:
+
+- The first `browser-status.sh` run over this repo answered **`never` across
+  641 first-parent commits**. The story's claim was not an estimate.
+- The first `make test-full` run in SH-418's own worktree was **RED**: the merge
+  gate's legs all passed and the browser leg failed with **7 failures — 1
+  `chromium`, 6 `webkit`** (`mobile-chromium` and `mobile-webkit` passed). Every
+  one maps onto an **already-open** load-sensitivity story — SH-401, SH-419,
+  SH-349, SH-375, SH-378 — rather than an unfiled regression; one failure was a
+  `page.goto` timing out at 26661ms, i.e. after load grace had already widened
+  it.
+
+The consequence is worth stating plainly rather than discovering later: **on
+this machine, under the concurrent load it normally carries, a `full` receipt is
+currently unobtainable.** That is a fact about the suite, not about the
+detector — and it is the same fact that would block the next release, which is
+exactly what SH-418 said would happen. A poller will report a growing distance
+until those stories land. That reading is correct, and it is the first time the
+number has ever been visible.
+
 ## The timing-ceiling rule
 
 A wall-clock ceiling states that some deadline *D* was not spent. It is only

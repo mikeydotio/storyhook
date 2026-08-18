@@ -43,8 +43,20 @@
 # one. `scripts/leg.sh` is what makes the OTHER direction loud too: when
 # `make test` runs without it, the deferral is printed and named, never
 # silent.
+#
+# That deferral says the browser suite was skipped; until SH-418 it said
+# nothing about whether it had EVER run, which is precisely the silence it
+# exists to prevent — one tier up. It is now followed by
+# `scripts/browser-status.sh`, which names how far `main` is from the last
+# tree the browser suite certified. This is the one place that fact is
+# collected with NO bootstrap at all: `make browser-watch` and
+# `make merge-watch` both want a per-machine timer nobody has installed yet,
+# whereas every session runs `make test` before every push. It never gates —
+# `|| true`, because a merge gate that failed on the release tier's staleness
+# would undo the split SH-394 measured — and it is deliberately absent from
+# the `test-full` branch, where the suite is about to actually run.
 
-.PHONY: test test-full build fmt lint clippy check release-build install check-no-orphan-servers e2e-install e2e merge-watch
+.PHONY: test test-full build fmt lint clippy check release-build install check-no-orphan-servers e2e-install e2e merge-watch browser-watch browser-status
 
 # Where `make install` puts the binary. Mirrors install.sh's default and its
 # STORYHOOK_INSTALL_DIR override so both entry points agree; a one-off can
@@ -148,7 +160,7 @@ test: check-no-orphan-servers
 	@bash scripts/leg.sh rust-suite -- bash scripts/run-tests.sh -- --test-threads=4
 	bash scripts/leg.sh build -- cargo build
 	PATH="$(CURDIR)/target/debug:$$PATH" bash scripts/leg.sh plugin -- bash plugin/claude-code/tests/run-tests.sh
-	$(if $(E2E),bash scripts/leg.sh e2e -- bash scripts/run-e2e.sh,@bash scripts/leg.sh --skipped e2e)
+	$(if $(E2E),bash scripts/leg.sh e2e -- bash scripts/run-e2e.sh,@bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true)
 	@bash scripts/check-no-orphan-servers.sh postlude
 	@bash scripts/gate-receipt.sh postlude $(if $(E2E),full,gate)
 
@@ -192,6 +204,38 @@ e2e:
 # something this target does for you.
 merge-watch:
 	bash scripts/merge-watch.sh
+
+# The browser tier's detection layer (SH-418).
+#
+# `make test-full` is the release gate, and until SH-418 nothing ran it
+# between releases: the browser suite ran when a human chose to and when
+# `scripts/release.sh` demanded it, so a dashboard regression could merge and
+# sit red until it blocked a release. Measured when this landed: 109 receipts
+# in this machine's store, ZERO carrying `tier full`.
+#
+# `browser-watch` is ONE pass — if `origin/main`'s tip tree has no `tier full`
+# receipt, it runs `make test-full` against that tip in its own persistent
+# worktree, under a lock, and the ordinary `gate-receipt.sh` postlude
+# certifies it. Like `merge-watch`, it installs no timer of its own; the
+# recurrence is a per-machine bootstrap step. Unlike `merge-watch`, it wants a
+# COARSE one: the browser leg measured 1454s (24.2 minutes) here, so a pass
+# is the wrong shape for a 1-3 minute cadence and has its own lock to prove
+# it. Its worktree needs `make e2e-install` run in it once; the script refuses
+# with that command rather than running it, and refuses BEFORE spending the
+# Rust legs.
+#
+# `browser-status` reports how far `main` is from the last tree the browser
+# suite certified — commits-behind and age, or `never`. Read-only,
+# millisecond-cheap, no cached marker anywhere: distance is computed from the
+# receipt store per read, so a poller that has died, a `main` that is red, and
+# a machine that has never run the suite are three readings on one scale that
+# only grows. `scripts/merge-watch.sh` quotes it into every PR comment, so the
+# fact sits in front of whoever is about to merge.
+browser-watch:
+	bash scripts/browser-watch.sh
+
+browser-status:
+	@bash scripts/browser-status.sh
 
 # Fails if a test-spawned server from this worktree is still running. Never
 # looks at the installed dashboard daemon on :3456 — that one is production.
