@@ -882,22 +882,27 @@ fn acquire_spawn_lock(path: &Path, deadline: Duration) -> Result<File, AppError>
 /// which is what keeps it clear of SH-396's self-noise shape — a gate that
 /// repeats one unchanged fact until nobody reads it.
 ///
-/// Three conditions, each load-bearing:
+/// Two conditions, each load-bearing:
 ///
 /// * **It warns and never refuses.** `ensure` is availability plumbing;
 ///   refusing to start a daemon over a fact about a *launchd agent* would take
 ///   the tracker down for something with no bearing on the daemon this call is
 ///   about. That trade — a silent non-start in exchange for a rare wrong
 ///   migration — is the one SH-411's council eliminated a whole candidate for.
-/// * **Only the default store.** A client that named its own store has no
-///   stake in the machine's login agent.
 /// * **Only a terminal.** [`crate::invoke::HttpInvoker`] re-enters `ensure`
 ///   from inside a live TUI session, and `tests/cli_error_streams.rs` pins
 ///   stderr silent on success — the same guard [`announce_waiting`] takes, for
 ///   both of the same reasons.
+///
+/// No longer gated on the default store (SH-414): `health(env)` now reads
+/// *that store's own* login agent, so a `--store-path` client at a terminal
+/// has exactly the stake a store-scoped guard would have denied it. Before
+/// SH-414 every non-default store's agent shared the default store's label,
+/// so this guard reporting on someone else's agent would have been reporting
+/// on the very agent it was told to ignore.
 fn note_stale_login_agent(env: &Environment) {
     use std::io::IsTerminal;
-    if !env.store().is_default() || !std::io::stderr().is_terminal() {
+    if !std::io::stderr().is_terminal() {
         return;
     }
     if let Some(said) = crate::daemon::agent::warning(&crate::daemon::agent::health(env)) {
