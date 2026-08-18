@@ -22,17 +22,22 @@ pub mod prefix;
 /// printing themselves.
 ///
 /// Here rather than under `github` because `src/github` is gated on the
-/// `github-sync` feature while the envelope carries the field in every build —
-/// the same reason [`ConflictSide`](crate::cli::ConflictSide) lives in `cli`.
+/// `github-pr` feature while the envelope carries the field in every build —
+/// see this module's own doc comment.
 pub mod secret;
 
 /// Parses a GitHub pull request URL — the one piece of `story link-pr`
-/// GitHub knowledge that must work with the `github-sync` feature off.
+/// GitHub knowledge that must work with the `github-pr` feature off.
 ///
 /// Here rather than under `github` for the same reason [`secret`] is: `src/
 /// github` is gated and `PrLinkService::link`/`unlink` are not, by design
 /// (SH-49, whose council verdict that story carries).
 pub mod pr_url;
+
+/// Recognizes a registered git remote as a GitHub repository — the sibling
+/// grammar to [`pr_url`], moved here out of the feature-gated `github` module
+/// once `story pr-check`/`story link-pr` became its only callers (SH-408).
+pub mod github_remote;
 
 /// Who wrote an event — the daemon-derived command, and the caller-declared
 /// actor beside it (SH-246).
@@ -636,7 +641,7 @@ pub enum StoryEvent {
         /// [`StoryPrUnlinked`](Self::StoryPrUnlinked) matches against.
         url: String,
         /// The repository owner, case-folded (see
-        /// `github::sync_state::parse_pr_url`).
+        /// [`crate::domain::pr_url::parse_pr_url`]).
         owner: String,
         /// The repository name, case-folded.
         repo: String,

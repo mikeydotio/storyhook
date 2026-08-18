@@ -239,11 +239,7 @@ fn the_listing_names_every_key_and_says_which_values_are_defaults() {
     assert!(out.status.success(), "listing settings should succeed");
     let text = String::from_utf8_lossy(&out.stdout);
 
-    for key in [
-        "sync.auto_transition",
-        "doctor.stale_threshold",
-        "github.sync",
-    ] {
+    for key in ["sync.auto_transition", "doctor.stale_threshold"] {
         assert!(
             text.contains(key),
             "`{key}` is missing from the listing:\n{text}"
@@ -275,21 +271,6 @@ fn the_listing_says_plainly_that_the_stale_threshold_is_not_read_yet() {
     );
 }
 
-/// The read-only key says who owns it, so a user who wants to change it knows
-/// where to go rather than only that they may not.
-#[test]
-fn the_listing_names_the_command_that_owns_the_github_document() {
-    let env = TestEnv::shared();
-    let project = env.project().build();
-
-    let out = settings(&project, &["list"]);
-    let text = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        text.contains("story github-sync"),
-        "`github.sync` must name its owning command:\n{text}"
-    );
-}
-
 /// `--json` carries the source as a field rather than as English inside a
 /// message, which is the whole reason this verb got a typed response.
 #[test]
@@ -302,7 +283,7 @@ fn json_reports_the_source_as_a_field_a_script_can_read() {
     let settings = listing["settings"]
         .as_array()
         .expect("`--json` must carry a settings array");
-    assert_eq!(settings.len(), 3);
+    assert_eq!(settings.len(), 2);
 
     let sync = &settings[0];
     assert_eq!(sync["key"], "sync.auto_transition");
@@ -320,11 +301,6 @@ fn json_reports_the_source_as_a_field_a_script_can_read() {
             .expect("the inert key carries a note")
             .contains("no command reads this yet")
     );
-
-    let github = &settings[2];
-    assert_eq!(github["key"], "github.sync");
-    assert_eq!(github["settable"], false);
-    assert_eq!(github["managed_by"], "story github-sync");
 }
 
 /// A write answers with the value it wrote, so the user sees what took effect
@@ -362,20 +338,6 @@ fn an_unknown_key_is_refused_with_exit_two_and_names_the_real_ones() {
     assert!(
         stderr.contains("sync.auto_transition"),
         "the refusal must point at the key the user meant: {stderr}"
-    );
-}
-
-#[test]
-fn writing_the_github_document_is_refused_and_names_its_owner() {
-    let env = TestEnv::shared();
-    let project = env.project().build();
-
-    let out = settings(&project, &["set", "github.sync", "{}"]);
-    assert_eq!(out.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("story github-sync"),
-        "the refusal must say where the value does come from: {stderr}"
     );
 }
 
@@ -490,11 +452,7 @@ fn the_settings_topic_separates_the_three_things_called_config() {
         text.contains(".storyhook.toml"),
         "the topic must say what `.storyhook.toml` is instead:\n{text}"
     );
-    for key in [
-        "sync.auto_transition",
-        "doctor.stale_threshold",
-        "github.sync",
-    ] {
+    for key in ["sync.auto_transition", "doctor.stale_threshold"] {
         assert!(
             text.contains(key),
             "the topic must document `{key}`:\n{text}"

@@ -17,7 +17,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 
 use crate::domain::provenance::{ActorLabel, Provenance};
 use crate::domain::remote::RemoteUrl;
-use crate::domain::{Member, StateDef, StoryEvent, StorySnapshot, TypeDef};
+use crate::domain::{Member, StateDef, StoryEvent, TypeDef};
 use crate::store::error::StoreError;
 use crate::store::ids::{EventSeq, GlobalSeq, ProjectId, StoryNo};
 use crate::store::types::{
@@ -339,29 +339,25 @@ pub(super) fn settings(
 ) -> Result<ProjectSettings, StoreError> {
     let row = one(
         conn,
-        "SELECT sync_auto_transition, doctor_stale_threshold, github_sync \
+        "SELECT sync_auto_transition, doctor_stale_threshold \
          FROM project_settings WHERE project_id = ?1",
         params![project.get()],
         |row| {
             Ok((
                 row.get::<_, Option<bool>>(0)?,
                 row.get::<_, Option<String>>(1)?,
-                row.get::<_, Option<String>>(2)?,
             ))
         },
         "reading settings",
     )?;
     // A project with no settings row has no settings — not an error. What a
     // default means belongs to the caller, which is the layer that has one.
-    let Some((sync_auto_transition, doctor_stale_threshold, github_sync)) = row else {
+    let Some((sync_auto_transition, doctor_stale_threshold)) = row else {
         return Ok(ProjectSettings::default());
     };
     Ok(ProjectSettings {
         sync_auto_transition,
         doctor_stale_threshold,
-        github_sync: github_sync
-            .map(|text| serde_json::from_str(&text))
-            .transpose()?,
     })
 }
 
@@ -1004,27 +1000,6 @@ pub(super) fn relations_to(
         "reading inbound relations",
     )?;
     collect(rows, "reading inbound relations")
-}
-
-// ---------------------------------------------------------------------------
-// GitHub bases
-// ---------------------------------------------------------------------------
-
-pub(super) fn github_base(
-    conn: &Connection,
-    project: ProjectId,
-    story: StoryNo,
-) -> Result<Option<StorySnapshot>, StoreError> {
-    let json = one(
-        conn,
-        "SELECT snapshot FROM github_bases WHERE project_id = ?1 AND story_no = ?2",
-        params![project.get(), story.get()],
-        |row| row.get::<_, String>(0),
-        "reading a github base",
-    )?;
-    json.map(|text| serde_json::from_str(&text))
-        .transpose()
-        .map_err(StoreError::from)
 }
 
 // ---------------------------------------------------------------------------

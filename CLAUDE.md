@@ -591,7 +591,10 @@ Standing rules for every wave:
   general form travels beyond this one field: a message format that predates a distinction cannot
   retroactively express it, and the fix is for *absence* to decode as "states nothing,"
   resolved against whatever the reader already believes, never silently promoted to a
-  negative answer.
+  negative answer. **The mechanism this bullet describes is retired** — `story
+  github-sync`, `github::field_map`, and the `github_bases` table are all gone (SH-408) —
+  but the precedent stays as the case that first proved the general form, for the next
+  message format this project ever widens.
 - **A blocker that is a story is recorded as a story, not as prose about one** (SH-398).
   `story block <id> "<reason>"` could only ever write a free-text `awaiting` field —
   `is_ready`'s three block signals (the reserved `blocked` state, an open `blocked-by`/
@@ -705,6 +708,48 @@ Standing rules for every wave:
   pins that case rather than leaving it implicit. The refusal message deliberately does not
   point at `story update` — an unreleased migration has no release to update *to*, and that
   dead end is SH-405's own defect; repeating it here would ship it twice.
+- **A declaration outlives the doubt that wrote it, so absence refuses where a claim
+  about this run permits** (SH-411). `story daemon install` wrote a launchd agent naming
+  `current_exe()` verbatim and loaded it, checking nothing: a worktree's debug build became
+  the machine's persistent login daemon, and because a launchd-started process inherits
+  launchd's own minimal `PATH` — which never contains `story` — SH-404's guard took its
+  fail-open branch for *exactly* that daemon at every launch. SH-404's failure mode survived
+  SH-404's own fix, for any daemon launchd starts, in silence. `daemon::install_guard` is the
+  write-side twin's twin, in SH-404's seam shape but with **opposite `None` semantics**, and
+  the asymmetry is the doctrine: `migration_guard` permits when `$PATH` names no `story`
+  because in that instant nothing is provably at risk, while an install writes something that
+  outlives every binary on the machine, so absence there means *"I cannot confirm this is the
+  one you run"* — SH-372's rule that absence is resolved against what the reader already
+  believes, never promoted to a negative answer. The two guards therefore share the **fact**
+  (`path_identity`, one `$PATH` resolver, the SH-136 rule) and never the **judgement**;
+  sharing `decide` would have forced the install caller to invent a `store_path`, an
+  `is_default`, a `from_version` and a `to_version` it has no business knowing, which is
+  lying to a pure function to get an answer out of it (SH-364). Scope is the **machine, not
+  the store** — one launchd label machine-wide means an `is_default()`-scoped gate is
+  defeated by one environment variable (the residual is filed as SH-414, not fixed here) —
+  and root refuses ahead of the comparison, not overridable, because under `sudo`'s
+  `env_reset` that comparison answers about the wrong user with the confident shape of a
+  right answer. **Two candidates were eliminated on measured grounds rather than taste**, and
+  both measurements are worth keeping: writing `EnvironmentVariables.PATH` into the plist —
+  the obvious fix, and the one the story filed first — was rejected 3-0 including by its own
+  author, because `event_hooks::fire_hook` spawns `sh -c` with no `env_clear`, so a `PATH` in
+  the plist silently changes what every user hook and every `git`/`gh`/`tailscale`/`claude` a
+  login daemon resolves, and a frozen snapshot converts a rare wrong migration into a common
+  silent non-start whose only evidence is a log the next client command rotates away. And the
+  plist records the **`$PATH` spelling** on agreement rather than `current_exe()`, settled by
+  measuring rather than counting votes: `current_exe()` on macOS returns the invocation
+  spelling, not the realpath, so the common case was already right and only a directly-invoked
+  version-pinned path needed correcting — a plist outlives the build it names (SH-239). The
+  gate sits ahead of **every** side effect and `tests/daemon_install_flag.rs`'s sibling list
+  is derived from the parser's own usage string, but the load-bearing test is the one whose
+  `load` closure panics if reached: `install()` used to write the plist and *then* be able to
+  fail, and `RunAtLoad` honours a plist in `~/Library/LaunchAgents` whether or not anything
+  bootstrapped it, so a gate one line too low is indistinguishable from a correct one in the
+  exit code, in the message, and in every row of the truth table — the only observable that
+  separates them is whether the file is absent afterwards. A failed `bootstrap` now
+  **restores** the plist it replaced rather than deleting it, since `bootout` has already
+  unloaded the working agent by then. Design of record: the module docs on
+  `src/daemon/install_guard.rs` and `src/path_identity.rs`.
 - **A postlude match is provably this run's own, and is the gate's to collect — a preflight
   match is not, and is not** (SH-412). `scripts/check-no-orphan-servers.sh` brackets
   `make test` (`Makefile:144,152-153`) and used to give both phases the same verdict:

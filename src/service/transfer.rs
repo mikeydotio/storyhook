@@ -88,32 +88,26 @@ pub struct ProjectExport {
     /// its directories.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remotes: Vec<ExportedRemote>,
-    /// The github-sync configuration blob, held exactly as the store holds it —
-    /// opaque JSON, never the typed `GithubSyncConfig` — absent when github-sync
-    /// has never been configured for this project (SH-189).
+    /// The github-sync configuration blob a **pre-SH-408** export document
+    /// carried, opaque JSON, never the typed `GithubSyncConfig`.
     ///
-    /// A sibling field, not a member of [`ExportedSettings`]: that type's own
-    /// doc comment explains why `github.sync` deliberately does *not* travel
-    /// through it (SH-133), and extending it here would make that explanation
-    /// false the moment this field shipped. Opaque rather than
-    /// `GithubSyncConfig` because that type — and everything that would be
-    /// needed to interpret it — lives behind the `github-sync` cargo feature,
-    /// while this module and this document compile unconditionally; a bare
-    /// `serde_json::Value` is exactly what [`crate::store::ProjectSettings`]
-    /// already stores it as, so no interpretation happens on the way through.
+    /// A tombstone: the sync engine is retired and the store no longer holds
+    /// this at all, so [`export`](TransferService::export) never populates it
+    /// — the field exists solely so a document written by an older binary
+    /// still deserializes instead of failing, and so [`import_project`] can
+    /// *report* that it found and discarded one (`ImportOutcome::
+    /// discarded_github_sync`) rather than silently dropping it, per this
+    /// project's "an absent field is not a stated value" doctrine (SH-372)
+    /// run in reverse — a *present* field in an old document must not vanish
+    /// unremarked either.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_sync: Option<serde_json::Value>,
-    /// Every story's github-sync merge base, keyed by story id — the last
-    /// snapshot github-sync merged against for that story, if any (SH-189).
+    /// Every story's github-sync merge base, keyed by story id, that a
+    /// **pre-SH-408** export document carried.
     ///
-    /// Carried in full alongside [`github_sync`](Self::github_sync) rather than
-    /// dropped the way SH-133 dropped both: a restore carrying the
-    /// configuration blob without its bases is indistinguishable from a
-    /// legitimate first sync, and `sync_single_story` treats a missing base as
-    /// "merge against local" — silently filing every stale remote edit as an
-    /// ordinary pull. A story absent from this map after a restore is exactly
-    /// as baseless as it was before the export that produced it; nothing here
-    /// manufactures a new ambiguous state.
+    /// A tombstone alongside [`github_sync`](Self::github_sync) for the same
+    /// reason: nothing writes it any more, and nothing merges against it —
+    /// `import_project` only counts its presence before discarding it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub github_bases: BTreeMap<String, StorySnapshot>,
     /// Every story, open ones first.
@@ -193,11 +187,11 @@ impl From<crate::store::ProjectRemoteRecord> for ExportedRemote {
 /// carries them too. Both halves move together on every leg, which is what the
 /// argument was ever asking for.
 ///
-/// One field the blob holds is still checkout-specific:
-/// `github.owner`/`github.repo`, which only the setup wizard re-derives.
-/// [`crate::service::github::reconcile_restored_github_remote`] corrects it
-/// after a restore, and `story doctor`'s `github_remote_advice` re-asks on
-/// every run for the cases it cannot answer.
+/// One field the blob held was still checkout-specific:
+/// `github.owner`/`github.repo`. The sync engine that re-derived and
+/// corrected it after a restore is retired (SH-408); nothing interprets
+/// this document's contents any more, only counts and reports its presence
+/// — see [`import_project`]'s carry of it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ExportedSettings {
     /// The `[sync]` table, absent when nothing in it is set.
@@ -586,7 +580,6 @@ impl<'ctx, S: Store> TransferService<'ctx, S> {
             let prefix = project_prefix(tx, project)?;
             let mut open = Vec::new();
             let mut archived = Vec::new();
-            let mut github_bases = BTreeMap::new();
             for row in tx.stories(project, &StoryQuery::all())? {
                 // `row.story_no` is the authoritative column — allocated by
                 // `allocate_story_no` and never re-derived from text. Reparsing
@@ -619,11 +612,6 @@ impl<'ctx, S: Store> TransferService<'ctx, S> {
                     archived: row.archived,
                     attachment_blobs,
                 };
-                // Every story's github-sync base, not just open ones — an
-                // archived story can still carry a base from before it closed.
-                if let Some(base) = tx.github_base(project, story_no)? {
-                    github_bases.insert(row.snapshot.id.clone(), base);
-                }
                 if row.archived {
                     archived.push(exported);
                 } else {
@@ -650,10 +638,13 @@ impl<'ctx, S: Store> TransferService<'ctx, S> {
                     .into_iter()
                     .map(ExportedRemote::from)
                     .collect(),
-                // See `ProjectExport::github_sync`'s own doc comment for why
-                // this rides opaquely rather than through `ExportedSettings`.
-                github_sync: stored.github_sync,
-                github_bases,
+                // Never populated: the store no longer holds either (SH-408).
+                // Both fields survive on the type itself only as tombstones,
+                // so that a document written by an older binary is *reported*
+                // on import rather than silently dropped — see
+                // `ProjectExport::github_sync`'s own doc comment.
+                github_sync: None,
+                github_bases: BTreeMap::new(),
                 stories: open,
             })
         })?)
@@ -762,6 +753,10 @@ pub struct ImportOutcome {
     /// Every remote the document named that this restore did **not**
     /// register, because another project already holds it.
     pub skipped_remotes: Vec<SkippedRemote>,
+    /// Whether the document carried a pre-SH-408 `github_sync` blob or
+    /// `github_bases` merge-base table — either one discarded, since the
+    /// store holds neither any more.
+    pub discarded_github_sync: bool,
 }
 
 /// One origin [`import_project`] left unregistered, and who already holds it.
@@ -864,33 +859,13 @@ pub fn import_project<S: Store>(
     // lock for as long as the disk takes.
     let existing_pointer = read_pointer(&root)?;
 
-    // Before the transaction opens, not inside it: `github_bases` has a live
-    // foreign key to `stories(project_id, story_no)`, so a base naming a story
-    // absent from this same document is a structural defect in the document
-    // itself — not an ordinary expected conflict like a remote already held
-    // elsewhere (`SkippedRemote`). Catching it here fails the whole restore
-    // loud and names every offending id, rather than letting `put_github_base`
-    // trip a bare constraint violation mid-transaction with no attribution to
-    // which base caused it.
-    let known_story_ids: BTreeSet<&str> = export
-        .stories
-        .iter()
-        .map(|story| story.id.as_str())
-        .collect();
-    let orphan_bases: Vec<&str> = export
-        .github_bases
-        .keys()
-        .map(String::as_str)
-        .filter(|id| !known_story_ids.contains(id))
-        .collect();
-    if !orphan_bases.is_empty() {
-        return Err(AppError::Validation(format!(
-            "this export document is malformed: it carries a github-sync merge base for \
-             {} which {} not among its stories",
-            orphan_bases.join(", "),
-            if orphan_bases.len() == 1 { "is" } else { "are" }
-        )));
-    }
+    // Neither field is written to the store any more (SH-408) — see
+    // `ProjectExport::github_sync`'s own doc comment — so there is nothing
+    // left to validate a `github_bases` key against and nothing for
+    // `import-project` to do with either but report that a pre-SH-408
+    // document carried them (`ImportOutcome::discarded_github_sync`, set
+    // below).
+    let discarded_github_sync = export.github_sync.is_some() || !export.github_bases.is_empty();
 
     // A pointer whose uuid this store lacks is adopted verbatim by the create
     // branch below (SH-190) rather than replaced with a fresh one — so a
@@ -975,12 +950,7 @@ pub fn import_project<S: Store>(
         for member in &export.members {
             tx.put_member(project, member)?;
         }
-        apply_settings(
-            tx,
-            project,
-            export.settings.as_ref(),
-            export.github_sync.as_ref(),
-        )?;
+        apply_settings(tx, project, export.settings.as_ref())?;
 
         let mut skipped_remotes = Vec::new();
         for remote in &export.remotes {
@@ -1065,13 +1035,6 @@ pub fn import_project<S: Store>(
             let id = story_no.to_id(&prefix);
             let snapshot = fold_story(&id, &known, &states)?;
             tx.put_story(project, &snapshot, head)?;
-            // After `put_story`, not before: `github_bases` has a live foreign
-            // key to `stories(project_id, story_no)`. The pre-transaction
-            // orphan check above already guarantees every key here names a
-            // story this loop writes, so this can never miss.
-            if let Some(base) = export.github_bases.get(&id) {
-                tx.put_github_base(project, story_no, base)?;
-            }
             // The sha256 is recomputed from the restored bytes rather than
             // carried in the document: a restore that recomputes it is
             // self-healing against any mismatch the backup captured, and
@@ -1115,6 +1078,7 @@ pub fn import_project<S: Store>(
     Ok(ImportOutcome {
         stories: export.stories.len(),
         skipped_remotes,
+        discarded_github_sync,
     })
 }
 
@@ -1134,9 +1098,8 @@ fn exported_prefix(prefix: &str) -> Option<String> {
 }
 
 /// A slug-keyed view of an ordered state list.
-/// Applies a document's settings and github-sync blob to the project it is
-/// being restored into, leaving every column the document does not carry
-/// alone.
+/// Applies a document's settings to the project it is being restored into,
+/// leaving every column the document does not carry alone.
 ///
 /// **Read, modify, write — not a fresh row.** [`WriteOps::put_settings`] writes
 /// every column, and `import-project` can be restoring *into a project that
@@ -1147,37 +1110,27 @@ fn exported_prefix(prefix: &str) -> Option<String> {
 /// field destroying the field — and it is the reason `store::ProjectSettings`
 /// is columns rather than a blob in the first place.
 ///
-/// A document carrying neither settings nor a github-sync blob writes nothing
-/// at all, rather than writing emptiness: restoring a backup taken before
-/// either existed must not clear what the project it lands in already has.
+/// A document carrying no settings writes nothing at all, rather than writing
+/// emptiness: restoring a backup taken before any existed must not clear what
+/// the project it lands in already has.
 ///
-/// `github_sync` here is a **verbatim copy**, not a reconciled one — this
-/// function runs unconditionally inside the restore transaction and knows
-/// nothing about the destination checkout's own git remote. Re-deriving
-/// `github.owner`/`github.repo` against it happens afterward, once the
-/// transaction has committed, in the `github-sync`-feature-gated
-/// reconciliation step (SH-189) — see that step's own doc comment for why it
-/// cannot happen here.
+/// Does not take a `github_sync` blob: `store::ProjectSettings` no longer has
+/// a column for one (SH-408). A pre-SH-408 document's blob is reported by
+/// [`import_project`], not applied here.
 fn apply_settings(
     tx: &mut impl WriteOps,
     project: ProjectId,
     settings: Option<&ExportedSettings>,
-    github_sync: Option<&serde_json::Value>,
 ) -> Result<(), StoreError> {
-    if settings.is_none() && github_sync.is_none() {
+    let Some(settings) = settings else {
         return Ok(());
-    }
+    };
     let mut row = tx.settings(project)?;
-    if let Some(settings) = settings {
-        if let Some(auto_transition) = settings.auto_transition() {
-            row.sync_auto_transition = Some(auto_transition);
-        }
-        if let Some(threshold) = settings.stale_threshold() {
-            row.doctor_stale_threshold = Some(threshold.to_string());
-        }
+    if let Some(auto_transition) = settings.auto_transition() {
+        row.sync_auto_transition = Some(auto_transition);
     }
-    if let Some(github_sync) = github_sync {
-        row.github_sync = Some(github_sync.clone());
+    if let Some(threshold) = settings.stale_threshold() {
+        row.doctor_stale_threshold = Some(threshold.to_string());
     }
     tx.put_settings(project, &row)
 }

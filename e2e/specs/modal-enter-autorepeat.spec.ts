@@ -1,11 +1,14 @@
 import { test, expect } from "@playwright/test";
-import type { APIRequestContext, Page, Route } from "@playwright/test";
+import type { Page, Route } from "@playwright/test";
 import {
   cleanUpCreatedStories,
   createStory,
+  deleteStatus,
   holdKey,
+  openDeleteModal,
   openProject,
-  projectSlug,
+  openStatuses,
+  refuseTheFirstReposRead,
   requiredEnv,
   seedToken,
 } from "./support";
@@ -587,20 +590,6 @@ test("a held Enter on a focused submit button issues exactly one request", async
 // Fixtures
 // ============================================================
 
-/** Opens the shared delete modal on `card` through the drawer footer, and types
- * `reason` (pass `""` to leave the field for the test to drive itself). */
-async function openDeleteModal(
-  page: Page,
-  card: import("@playwright/test").Locator,
-  reason: string,
-): Promise<void> {
-  await card.click();
-  await expect(page.locator("#drawer")).toHaveClass(/open/);
-  await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
-  await expect(page.locator("#delete-modal")).toHaveClass(/open/);
-  if (reason) await page.locator("#delete-reason").fill(reason);
-}
-
 /** Dispatches one synthetic Enter keydown at `selector`, with the `repeat` bit
  * set as asked.
  *
@@ -623,59 +612,4 @@ async function dispatchEnter(page: Page, selector: string, repeat: boolean): Pro
   // One macrotask, so the handler's synchronous work — and any request it
   // started — has certainly happened before the caller reads a count.
   await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
-}
-
-/** Answers the page's first `GET /api/repos` with a 401, so `api()`'s own 401
- * handler opens the token modal.
- *
- * A stubbed *reply*, never stubbed behaviour: the modal that opens, the exchange
- * it performs and the retry it schedules are all the page's real code. The
- * alternative — running with no seeded credential — is deliberately left to
- * `loopback-requires-a-token.spec.ts`, which is the one spec in this suite that
- * authenticates nothing and says so in its own header. */
-async function refuseTheFirstReposRead(page: Page): Promise<void> {
-  let refused = false;
-  await page.route(/\/api\/repos$/, async (route) => {
-    if (refused || route.request().method() !== "GET") {
-      await route.continue();
-      return;
-    }
-    refused = true;
-    await route.fulfill({
-      status: 401,
-      contentType: "application/json",
-      body: JSON.stringify({ error: "token required" }),
-    });
-  });
-}
-
-async function openStatuses(page: Page, project: string): Promise<void> {
-  await page.locator("#settings-btn").click();
-  await expect(page.locator("#settings-view")).toBeVisible();
-  await page
-    .locator(".settings-table tbody tr", { hasText: project })
-    .getByRole("button", { name: "Statuses" })
-    .click();
-  await expect(page.locator(".settings-head h2")).toHaveText(`Statuses · ${project}`);
-}
-
-/** Removes a scratch status through the API — it holds no stories, so nothing
- * moves. Loud on failure, for `cleanUpCreatedStories`'s own reason: a cleanup
- * that gives up quietly leaves the stray it exists to remove, and the next spec
- * pays for it. */
-async function deleteStatus(
-  request: APIRequestContext,
-  project: string,
-  slug: string,
-): Promise<void> {
-  const projectId = await projectSlug(request, project);
-  const resp = await request.delete(
-    `/api/repos/${encodeURIComponent(projectId)}/states/${encodeURIComponent(slug)}`,
-    { headers: AUTH_HEADERS, data: {} },
-  );
-  if (!resp.ok()) {
-    throw new Error(
-      `deleteStatus: DELETE ${slug} answered ${resp.status()}: ${await resp.text()}`,
-    );
-  }
 }

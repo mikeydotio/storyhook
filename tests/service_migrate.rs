@@ -763,98 +763,41 @@ fn a_projects_settings_travel_with_it() {
 }
 
 #[test]
-fn a_configured_github_syncs_mappings_and_merge_bases_travel_with_the_tree() {
-    // SH-233. `story export`/`story import-project` carry github-sync in full
-    // (SH-189), and `story migrate` — the one-way road out of a real legacy
-    // tree — carried none of it: the store row was written `github_sync: None`
-    // whatever the tree held. A user migrating a github-synced project lost
-    // every issue mapping and every merge base, and the report said nothing, so
-    // the first `story github-sync` afterwards read as an ordinary first setup.
+fn a_configured_github_syncs_files_are_named_but_not_migrated() {
+    // SH-233 taught `story migrate` to carry github-sync into the store; SH-408
+    // retired the engine that would have read it back out, so there is nothing
+    // left to carry it *into*. The tree is left exactly as it was found, and
+    // the report says so by naming both files — the D5 doctrine that nothing a
+    // migration declines to carry goes missing quietly.
     let (_tree, root) = custom_config_tree();
-    let (config, bases) = legacy_support::add_github_sync(&root, &["ADA-1", "ADA-2"]);
+    legacy_support::add_github_sync(&root, &["ADA-1", "ADA-2"]);
 
-    let (_dir, store, report) = migrate(&root);
-    let (settings, stored_bases) = store
-        .read(|tx| {
-            let project = tx.projects()?.first().unwrap().id;
-            let mut stored = BTreeMap::new();
-            for id in ["ADA-1", "ADA-2", "ADA-3", "ADA-4"] {
-                let story_no = storyhook::store::StoryNo::parse_id("ADA", id).unwrap();
-                if let Some(base) = tx.github_base(project, story_no)? {
-                    stored.insert(id.to_string(), base);
-                }
-            }
-            Ok((tx.settings(project)?, stored))
-        })
-        .expect("reading");
+    let (_dir, _store, report) = migrate(&root);
 
-    assert_eq!(
-        settings.github_sync.as_ref(),
-        Some(&config),
-        "the configuration blob must arrive verbatim — the mappings in it are what stops the \
-         next sync filing every story as a new issue"
-    );
-    assert_eq!(
-        stored_bases, bases,
-        "and every merge base with it: a mapped story whose base was lost is indistinguishable \
-         from one that has never synced, so the next sync treats local as base and files every \
-         stale remote field as an ordinary pull"
+    let rendered = report.render();
+    assert!(
+        rendered.contains("github-sync.toml") && rendered.contains("github-sync/bases"),
+        "the report must name both files a tree still carrying github-sync configuration \
+         holds: {rendered}"
     );
     assert!(
-        report
-            .render()
-            .contains("github.sync = configured, with 2 merge bases"),
-        "the report is the migration's inventory of what the tree turned out to be configured \
-         with, and github-sync was the one setting missing from it: {}",
-        report.render()
+        rendered.contains("2 merge bases") && rendered.contains("NOT migrated"),
+        "and say how many bases and that migration declined to carry them (SH-408): {rendered}"
     );
 }
 
 #[test]
 fn a_tree_that_never_configured_github_sync_arrives_with_none_of_it() {
-    // The other half: nothing is fabricated for a tree that has no
-    // `github-sync.toml`, and the report stays silent rather than printing a
-    // line about a setting the project does not have.
+    // Nothing is fabricated for a tree that has no `github-sync.toml`, and the
+    // report stays silent rather than printing a line about a setting the
+    // project does not have.
     let (_tree, root) = custom_config_tree();
-    let (_dir, store, report) = migrate(&root);
+    let (_dir, _store, report) = migrate(&root);
 
-    let settings = store
-        .read(|tx| tx.settings(tx.projects()?.first().unwrap().id))
-        .expect("reading");
-    assert_eq!(settings.github_sync, None);
     assert!(
-        !report.render().contains("github.sync"),
+        !report.render().contains("github-sync"),
         "a project with no github-sync configured must not be told about one: {}",
         report.render()
-    );
-}
-
-#[test]
-fn a_merge_base_for_a_story_the_tree_does_not_hold_is_refused_by_name() {
-    // The store's `github_bases` rows carry a live foreign key to
-    // `stories(project_id, story_no)`, so a base naming a story this tree does
-    // not hold cannot be written at all. Refused up front and named, the way
-    // `import-project` refuses an orphan base in an export document — letting
-    // it reach `put_github_base` would trip a bare constraint violation
-    // mid-transaction with nothing saying which file caused it.
-    let (_tree, root) = custom_config_tree();
-    legacy_support::add_github_sync(&root, &["ADA-1"]);
-    let stray = std::fs::read_to_string(root.join(".storyhook/github-sync/bases/ADA-1.json"))
-        .expect("reading the base just written");
-    std::fs::write(
-        root.join(".storyhook/github-sync/bases/ADA-99.json"),
-        stray.replace("ADA-1", "ADA-99"),
-    )
-    .expect("writing an orphan base");
-
-    let message = refusal(&root);
-    assert!(
-        message.contains("ADA-99"),
-        "the refusal must name the offending base: {message}"
-    );
-    assert!(
-        message.contains("github-sync"),
-        "and say which part of the tree it came from: {message}"
     );
 }
 

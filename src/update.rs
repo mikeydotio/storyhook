@@ -2,8 +2,10 @@
 //!
 //! Mirrors the download/extract flow of `install.sh` (same GitHub release assets
 //! and URLs), but replaces the *currently running* binary rather than a fixed
-//! install directory. Compiled only under the `github-sync` feature, which pulls
-//! in `ureq` for HTTPS.
+//! install directory. Unconditional (SH-408): it used `ureq`, which rode the
+//! sync engine's cargo feature purely by accident of history, and `ureq` has
+//! been an unconditional dependency of this crate since the daemon transport
+//! landed — this module uses nothing else that feature gates.
 
 use std::fs;
 use std::io::ErrorKind;

@@ -490,12 +490,6 @@ impl Environment {
         self.per_store_state().join("backups")
     }
 
-    /// Where github-sync keeps its pre-write backups. Sited like
-    /// [`Self::backups_dir`], and for the same reason.
-    pub fn github_backups_dir(&self) -> PathBuf {
-        self.per_store_state().join("github-sync/backups")
-    }
-
     /// Where a rare, maintainer-invoked, store-wide rewrite — `story project
     /// set-prefix` is the first — takes its own safety snapshot before
     /// writing.
@@ -874,7 +868,6 @@ mod tests {
         );
         assert!(!named.store().is_default());
         assert_ne!(named.backups_dir(), default.backups_dir());
-        assert_ne!(named.github_backups_dir(), default.github_backups_dir());
         assert_ne!(
             named.maintenance_backups_dir(),
             default.maintenance_backups_dir()
@@ -891,7 +884,6 @@ mod tests {
     fn the_maintenance_backup_directory_is_not_the_pruned_one() {
         let env = Environment::at("/tmp/storyhook-env-test");
         assert_ne!(env.maintenance_backups_dir(), env.backups_dir());
-        assert_ne!(env.maintenance_backups_dir(), env.github_backups_dir());
     }
 
     /// The default store keeps the port a bookmarked dashboard names; anything

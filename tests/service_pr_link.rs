@@ -1,7 +1,7 @@
 //! `PrLinkService::link`/`unlink` — `story link-pr` / `story unlink-pr`
 //! (SH-49).
 //!
-//! Deliberately unconditional (no `#![cfg(feature = "github-sync")]`):
+//! Deliberately unconditional (no `#![cfg(feature = "github-pr")]`):
 //! linking and unlinking a pull request never talk to GitHub, so they must
 //! work whether or not that feature is compiled in — see the module doc on
 //! `storyhook::service::pr_link` and SH-49's council verdict.
@@ -11,7 +11,7 @@
 use storyhook::domain::StoryEvent;
 use storyhook::error::AppError;
 use storyhook::service::{NewStoryInput, PrLinkService, StoryService};
-use storyhook::store::{ProjectSettings, ReadOps, Store, WriteOps};
+use storyhook::store::{ReadOps, Store};
 use storyhook_test_support::ServiceFixture;
 
 fn create(fixture: &ServiceFixture, title: &str) -> String {
@@ -24,27 +24,12 @@ fn create(fixture: &ServiceFixture, title: &str) -> String {
         .id
 }
 
-/// Configures the fixture's project to sync with `owner/repo`, writing the
-/// raw settings JSON document directly rather than through
-/// `github-sync`'s (gated) `StoreSyncStorage`/`GithubSyncConfig` — this file
-/// must build without that feature.
+/// Registers `https://github.com/{owner}/{repo}` as the fixture's origin —
+/// `ServiceFixture::link_origin` under the hood, which is what
+/// `configured_github_repos` (`PrLinkService`'s cross-repo guard) reads
+/// since SH-408.
 fn configure_remote(fixture: &ServiceFixture, owner: &str, repo: &str) {
-    let project = fixture.project();
-    fixture
-        .store()
-        .write(|tx| {
-            tx.put_settings(
-                project,
-                &ProjectSettings {
-                    github_sync: Some(serde_json::json!({
-                        "github": { "owner": owner, "repo": repo },
-                        "sync": { "mode": "manual" },
-                    })),
-                    ..ProjectSettings::default()
-                },
-            )
-        })
-        .expect("writing project settings");
+    fixture.link_origin(&format!("https://github.com/{owner}/{repo}"));
 }
 
 const URL: &str = "https://github.com/acme/widgets/pull/7";
@@ -128,32 +113,49 @@ fn link_allows_a_cross_repo_url_when_close_on_merge_is_false() {
         .expect("a close_on_merge: false link to another repository is a legitimate bookmark");
 }
 
+/// SH-408's membership design: a project may have more than one registered
+/// GitHub remote (a fork-and-upstream project, or one mid-move), and a
+/// `close_on_merge` link is accepted against **any** of them, not refused
+/// for ambiguity — see `storyhook::service::pr_link`'s module doc and the
+/// council verdict it cites.
 #[test]
-fn link_rejects_a_cross_repo_url_against_a_malformed_settings_document() {
-    // A settings document missing the fields `configured_remote` needs (here,
-    // `repo`) is treated the same as "nothing configured" — a no-op pass,
-    // not a refusal and not an error. `refuse_cross_repo` is not the layer
-    // that reports a malformed document.
+fn link_accepts_a_close_on_merge_url_matching_any_of_several_registered_repos() {
     let fixture = ServiceFixture::new();
-    let project = fixture.project();
-    fixture
-        .store()
-        .write(|tx| {
-            tx.put_settings(
-                project,
-                &ProjectSettings {
-                    github_sync: Some(serde_json::json!({ "github": { "owner": "acme" } })),
-                    ..ProjectSettings::default()
-                },
-            )
-        })
-        .expect("writing a malformed settings document");
-    let id = create(&fixture, "Malformed settings document");
+    configure_remote(&fixture, "acme", "widgets");
+    configure_remote(&fixture, "acme", "widgets-upstream");
+    let id = create(&fixture, "Second registered repo");
     let ctx = fixture.ctx();
 
     PrLinkService::new(&ctx)
-        .link(&id, URL, true)
-        .expect("a malformed settings document must not be treated as a refusal");
+        .link(&id, "https://github.com/acme/widgets-upstream/pull/9", true)
+        .expect("a close_on_merge link matching the SECOND registered repo must be accepted");
+}
+
+/// The refusal, when it fires with several repositories registered, names
+/// all of them — not just one — so the message tells the caller what would
+/// have been accepted.
+#[test]
+fn link_rejects_a_cross_repo_url_and_names_every_registered_repo() {
+    let fixture = ServiceFixture::new();
+    configure_remote(&fixture, "acme", "widgets");
+    configure_remote(&fixture, "acme", "widgets-upstream");
+    let id = create(&fixture, "Cross-repo with two registered");
+    let ctx = fixture.ctx();
+
+    let error = PrLinkService::new(&ctx)
+        .link(
+            &id,
+            "https://github.com/someone-else/other-repo/pull/3",
+            true,
+        )
+        .expect_err("a close_on_merge link to neither registered repo must be refused");
+    match error {
+        AppError::Validation(message) => {
+            assert!(message.contains("acme/widgets"), "{message}");
+            assert!(message.contains("acme/widgets-upstream"), "{message}");
+        }
+        other => panic!("expected a Validation error, got {other:?}"),
+    }
 }
 
 #[test]
@@ -198,13 +200,13 @@ fn unlink_removes_the_row() {
 
 /// The compile-time proof that would have caught the original deviation:
 /// `PrLinkService::link`/`unlink` must be present and callable without the
-/// `github-sync` feature. Only meaningful in a `--no-default-features`
+/// `github-pr` feature. Only meaningful in a `--no-default-features`
 /// build; under the default feature set it is redundant with the tests
 /// above and still passes.
 #[test]
-fn link_and_unlink_work_without_the_github_sync_feature() {
+fn link_and_unlink_work_without_the_github_pr_feature() {
     let fixture = ServiceFixture::new();
-    let id = create(&fixture, "No github-sync feature needed");
+    let id = create(&fixture, "No github-pr feature needed");
     let ctx = fixture.ctx();
     let service = PrLinkService::new(&ctx);
 

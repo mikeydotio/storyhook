@@ -3,6 +3,15 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Removed
+- retire `story github-sync` — the story↔GitHub-Issues sync engine, its issue-body
+  metadata block, and its setup wizard. `story link-pr`/`unlink-pr`, `story
+  pr-check` and `story github-auth` are unaffected and now resolve the GitHub
+  repository from the project's registered git origin instead. The `github-sync`
+  cargo feature is renamed `github-pr` (SH-408)
+
 ## [v2.1.1] - 2026-08-13
 
 ### Fixed

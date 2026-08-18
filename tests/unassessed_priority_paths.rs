@@ -91,7 +91,7 @@ fn story_created_sites(files: &[(String, String)], allowed: &[(&str, &str)]) -> 
 /// `state_set_funnel.rs` exempt it: that layer declares and implements
 /// storage, and its conformance suite writes deliberately degenerate
 /// histories through it to prove what the storage layer guarantees.
-const ALLOWED: [(&str, &str); 6] = [
+const ALLOWED: [(&str, &str); 5] = [
     (
         "src/domain.rs",
         "the event enum's own definition, fold_story's match arm (event_kind, \
@@ -125,14 +125,6 @@ const ALLOWED: [(&str, &str); 6] = [
         "src/daemon/watch.rs",
         "test-only fixtures inside #[cfg(test)] mod tests, feeding \
          ChangeWatcher::notice -- not a production creation door",
-    ),
-    (
-        "src/github/mod.rs",
-        "create_story_from_issue calls sync.create_story, which is \
-         StoreSyncStorage::create_story -> StoryService::create -- the same \
-         creation_events door as above, not a second write site. \
-         run_sync_with reads back priority_assessed for every pulled story and \
-         warns (SH-358)",
     ),
 ];
 
@@ -263,10 +255,6 @@ fn creates_a_story_that_could_land_unassessed(invocation: &Invocation) -> bool {
         | Invocation::Hooks { .. }
         | Invocation::Scaffold { .. }
         | Invocation::CommitSync { .. }
-        // Creates stories on GitHub's behalf, but through the same
-        // creation_events door -- and run_sync_with warns on its own answer
-        // (SH-358). Not a second decision point for this classification.
-        | Invocation::GithubSync { .. }
         | Invocation::LinkPr { .. }
         | Invocation::UnlinkPr { .. }
         | Invocation::PrCheck { .. }
