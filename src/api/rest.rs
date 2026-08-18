@@ -663,16 +663,20 @@ fn project_data_json<S: Store>(ctx: &Ctx<'_, S>) -> Result<String, AppError> {
             let data = query.report_data()?;
 
             // Soft-deleted stories are excluded here rather than in `report_data` —
-            // `story report`/`story list` intentionally still surface them (marked
-            // deleted), but the dashboard has no such treatment and would otherwise
-            // show them as live cards in whichever column matches their last state.
+            // `story report` intentionally still surfaces them (marked deleted), and
+            // even `story list` (SH-409) reaches them under a different door
+            // (`story search`) — but the dashboard has no such treatment and would
+            // otherwise show them as live cards in whichever column matches their
+            // last state.
             //
             // Drafts (SH-175) are excluded from `stories` the same way, and for a
-            // parallel reason: the board is a curated "what's actionable" view, and
-            // the council verdict on SH-175 keeps `story list`'s "show everything"
-            // contract from leaking into it. They are not dropped, only routed —
-            // every non-deleted draft lands in `drafts_json` below instead, which is
-            // what powers the Drafts popover and its count badge.
+            // parallel reason: the board is a curated "what's actionable" view,
+            // deliberately its own filter chain rather than `story list`'s — SH-175's
+            // council verdict kept the two separate before `list` had a default
+            // exclusion of its own to converge with, and SH-409 didn't revisit that.
+            // They are not dropped, only routed — every non-deleted draft lands in
+            // `drafts_json` below instead, which is what powers the Drafts popover and
+            // its count badge.
             let stories_json: Vec<serde_json::Value> = data
                 .stories
                 .iter()

@@ -305,7 +305,7 @@ story epic show <id>
 story epic create "<title>"
 story epic add <epic-id> <story-id>
 
-story list [--state <slug>] [--assignee <member>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts]
+story list [--state <slug>] [--assignee <member>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts] [--unassessed] [--include-closed] [--include-archived] [--all]
 story next [--count <n>] [--phase <N>] [--claim]
 story summary
 story report [--html]
@@ -334,7 +334,6 @@ story hooks test <event_type>
 story scaffold agents-md|claude-md|cursor-rules
 story commit-sync [--since <duration>]
 story sync-git [--since <duration>]           # alias of commit-sync
-story github-sync [<id>] [--dry-run] [--resolve local|remote] [--strategy import-all|match-titles|push-only|future-only] [--mode manual|off]
 story link-pr <id> <url> [--no-close-on-merge]
 story unlink-pr <id> <url>
 story attachment add <id> <path> [--name <text>]
@@ -357,7 +356,7 @@ story token revoke <name>
 story daemon start [--port <PORT>]
 story daemon stop [--force]
 story daemon status
-story daemon install
+story daemon install [--this-binary]
 story daemon uninstall
 story daemon token
 story store new <path>

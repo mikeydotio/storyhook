@@ -86,10 +86,10 @@ delete
 
 set-prefix
   Renames the project's story-id prefix — SH-1 becomes AGE-1 — and
-  rewrites everywhere the old one is embedded: the project row, every
+  rewrites everywhere the old one is embedded: the project row and every
   relationship any of its stories claim (via real compensating events,
-  never a silent edit), and any github-sync merge-base snapshots. If
-  this checkout has one, its .storyhook.toml is updated too.
+  never a silent edit). If this checkout has one, its .storyhook.toml
+  is updated too.
 
   Nothing is deleted; every story, event and comment survives. What
   cannot be undone is the prefix itself: every id already written down
@@ -214,11 +214,6 @@ Settings:
     NOTE: no command reads this yet. You can store a value, and
     'story doctor' will not act on it. The listing says so too.
 
-  github.sync             read-only
-    The github-sync document: etags and story-to-issue mappings. It is
-    listed and readable here, but only 'story github-sync' writes it —
-    its contents have to agree with state this command cannot see.
-
 list reports every setting with the value in force and where that value
 came from:
 
@@ -244,7 +239,6 @@ Examples:
 Related:
   story project      — init, delete and list
   story commit-sync  — What sync.auto_transition governs
-  story github-sync  — What owns the github.sync document
   story set          — Change a STORY's fields, not a project's settings
 "#,
         );
@@ -306,14 +300,19 @@ Related:
             r#"story list [filters]
 
 List open stories with optional filters. Returns all open stories by
-default. Combine multiple filters to narrow results.
+default: closed, archived and soft-deleted stories are excluded, with
+a message naming what was hidden and which flag would show it. Combine
+multiple filters to narrow results.
 
 When to use:
   When you need to browse or filter the backlog. For the single best
   task to work on next, use 'story next' instead.
 
 Filters:
-  --state <slug>          Filter by state (e.g., todo, in-progress)
+  --state <slug>          Filter by state (e.g., todo, in-progress).
+                           Naming a closed state (e.g. done) lifts the
+                           closed exclusion for this call, but not the
+                           archived one.
   --assignee <id>         Filter by assignee member ID or GitHub handle
   --priority <levels>     Comma-separated: critical,high,medium,low,none
   --label <labels>        Comma-separated label filter
@@ -326,9 +325,20 @@ Filters:
   --updated-after <date>  Stories updated after ISO date
   --drafts                Only draft stories (they otherwise show inline
                            with a [draft] badge — see 'story help new')
+  --unassessed            Only stories nobody has ever set a priority on
+  --include-closed        Also show closed, unarchived stories
+  --include-archived      Also show archived ('story archive'd) stories;
+                           implies --include-closed
+  --all                   --include-closed --include-archived together
+
+A soft-deleted story (see 'story help delete') is never shown by 'list',
+under any combination of the flags above — 'story search' and 'story
+show' still find one.
 
 Examples:
-  story list                          # All open stories
+  story list                          # Open stories, closed/archived hidden
+  story list --include-closed         # Also show closed, unarchived ones
+  story list --all                    # Everything except deleted
   story list --ready                  # Unblocked, ready to work on
   story list --phase 1                # Stories in phase 1
   story list --priority critical,high # Only critical and high priority
@@ -338,10 +348,11 @@ Examples:
 
 Related:
   story help priority-rubric — What the five --priority levels mean
+  story help archive — What "archived" means here
   story next     — Get the highest-priority ready story
   story publish  — Make a draft live
   story summary  — Aggregate counts by state and priority
-  story search   — Full-text search across stories
+  story search   — Full-text search across stories, including hidden ones
 "#,
         );
 
@@ -750,7 +761,6 @@ Note: Previously named 'sync-git'. The old name still works as an alias.
 
 Related:
   story hooks install    — Auto-sync via git hooks
-  story github-sync      — Sync stories with GitHub Issues
   story handoff          — End-of-session summary
 "#,
         );
@@ -759,95 +769,15 @@ Related:
         m.insert("sync-git", m["commit-sync"]);
 
         m.insert(
-            "github-sync",
-            r#"story github-sync [<id>] [--dry-run] [--resolve local|remote]
-                   [--strategy import-all|match-titles|push-only|future-only]
-                   [--mode manual|off]
-
-Sync stories with GitHub Issues bidirectionally. Pulls remote changes
-and pushes local changes using three-way merge. Requires the
-STORYHOOK_GITHUB_TOKEN environment variable to be set with a GitHub
-Personal Access Token.
-
-When to use:
-  After making local story changes you want reflected on GitHub, or
-  to pull in changes made on GitHub (comments, state changes, etc.).
-
-Examples:
-  story github-sync                  # Full project sync
-  story github-sync SH-1            # Sync a single story
-  story github-sync --dry-run       # Preview changes without applying
-  story github-sync SH-1 --resolve remote   # Take GitHub's side of SH-1
-
-First time on a project:
-  A project that has never run github-sync is asked how to handle the
-  initial sync, interactively -- or, non-interactively (a script, a
-  pipe, --json), told to say so up front:
-
-    story github-sync --strategy future-only --mode manual
-
-  strategy:
-    import-all      import every open issue as a local story
-    match-titles    link stories to issues whose titles match exactly
-    push-only       push local stories to GitHub, import nothing
-    future-only     sync only changes from now on (the wizard's default)
-
-  mode:
-    manual          run 'story github-sync' explicitly (the wizard's default)
-    off             disable sync for this project
-
-  --strategy and --mode must be given together for this first sync, and
-  --strategy never applies to a project that is already configured.
-
-Changing the mode later:
-  story github-sync --mode manual|off
-
-  On a project that is already configured, --mode alone (no --strategy,
-  no <id>) changes the stored mode instead of syncing -- the way to
-  turn a disabled project back on, or to repair one still carrying a
-  mode this build refuses to run under. Needs no GitHub token: it
-  writes the stored configuration and nothing else.
-
-Conflicts:
-  When both sides changed one field to different values, storyhook
-  applies everything else, prints all three values, and exits 8 without
-  deciding. Nothing is chosen for you, and nothing is lost: the
-  merge base holds the disputed field, so the same conflict is still
-  there next time rather than GitHub quietly winning. Answer it with
-  --resolve on that one story, or set the field to the same value on
-  both sides and re-run.
-
-  --resolve needs an explicit <id>. A whole-sync resolution would decide
-  conflicts you have not read.
-
-Configuration (per project, in the store):
-  sync_mode = "manual"    # off | manual
-
-  Note: "auto" is not offered, and a project still carrying it -- from
-  before the rearchitecture, which deleted the code that ran it -- is
-  refused rather than silently treated as manual, naming the repair:
-  `story github-sync --mode manual` (or --mode off). Honest auto-sync
-  means a GitHub call on the tail of every story-modifying command, in
-  the daemon as well as locally — a feature with a failure policy and a
-  timeout to design, not a switch to flip.
-
-Related:
-  story commit-sync  — Link git commits to stories
-  story doctor       — Check project health including sync status
-"#,
-        );
-
-        m.insert(
             "github-auth",
             r#"story github-auth login|status|logout
 
 Manage the durable GitHub credential the daemon's background poll uses
 to check linked pull requests unattended (SH-212). Separate from the
-STORYHOOK_GITHUB_TOKEN environment variable `story github-sync` and
-`story pr-check` read per invocation: this one is stored once, in your
-OS keychain (macOS Keychain, or the Secret Service on Linux), and
-spent by the daemon on a five-minute timer with nobody typing a
-command.
+STORYHOOK_GITHUB_TOKEN environment variable `story pr-check` reads per
+invocation: this one is stored once, in your OS keychain (macOS
+Keychain, or the Secret Service on Linux), and spent by the daemon on
+a five-minute timer with nobody typing a command.
 
 login    Prompts for a GitHub Personal Access Token (always
          interactive — there is no non-interactive form) and stores it.
@@ -866,12 +796,11 @@ Examples:
   story github-auth status    # "a GitHub credential is stored..."
   story github-auth logout    # removes it
 
-Requires the github-sync feature, like `story pr-check` itself.
+Requires the github-pr feature, like `story pr-check` itself.
 
 Related:
   story pr-check      — Check linked pull requests by hand
   story link-pr        — Link a pull request to a story
-  story github-sync    — The other GitHub credential, read per invocation
 "#,
         );
 
@@ -1052,7 +981,7 @@ Tools:
 
 What is not here:
   This is a curated slice of the CLI's full surface, not a 1:1 mirror of it
-  — verbs like 'story decompose', 'story github-sync', and anything
+  — verbs like 'story decompose', 'story pr-check', and anything
   destructive enough to ask a human to confirm (like 'story purge') are not
   exposed as tools. Use the CLI directly for those.
 
@@ -1102,8 +1031,7 @@ Related:
 Exports the whole project as one JSON document -- not an array. Every
 story, open and closed alike, each with its full event history, plus
 the project's states, types and members, and -- when the project has
-them -- its settings, registered git remotes, and github-sync
-configuration.
+them -- its settings and registered git remotes.
 
 The document's top-level keys:
   schema         the export format version
@@ -1113,8 +1041,6 @@ The document's top-level keys:
   members        the project's members
   settings       user-set settings, absent when none were ever set
   remotes        registered git origins, absent when there are none
-  github_sync    the github-sync configuration, absent until configured
-  github_bases   github-sync merge bases, absent until configured
   stories        every story: id, full event history, and whether it
                  is archived (closed stories are included, not just
                  open ones)
@@ -1147,8 +1073,8 @@ Related:
 
 Restores a whole project from a 'story export' document: every
 story's exact id and full event history, its states, types, members,
-and -- when the document carries them -- its settings, registered git
-remotes, and github-sync configuration.
+and -- when the document carries them -- its settings and registered
+git remotes.
 
 Restores into an EMPTY project only. Run against a directory already
 holding stories and it refuses rather than merging or overwriting.
@@ -1295,6 +1221,11 @@ Commands returning a story list ("stories" field):
   story next --count <n>      -> "stories": [StoryView, ...]
   story import [file]          -> "stories": [StoryView, ...]
   story decompose <file>       -> "stories": [StoryView, ...]
+
+  story list also carries "message" whenever its default visibility filter
+  (or an explicit --state naming a closed slug) changed what's in "stories"
+  — e.g. "3 closed stories match but are not shown — add --include-closed
+  or --all". Omitted when there is nothing to say.
 
 Commands returning a summary ("summary" field):
   story summary               -> "summary": SummaryView
@@ -2248,12 +2179,13 @@ Related:
             "archive",
             r#"story archive <id>
 
-Hide a closed story from the primary UI (the dashboard board/list, and
-the default view here and in the TUI). Refuses an open story — only an
-already-closed one can be archived. Fully reversible: `story unarchive`
-undoes it, and reopening an archived story (`story reopen`/`story move`
-into an open state) clears the archived flag too, since an open story
-cannot read as archived.
+Hide a closed story from the primary UI: the dashboard board/list, the
+TUI, and 'story list' here, whose own default excludes it too unless
+you pass '--include-archived' or '--all'. Refuses an open story — only
+an already-closed one can be archived. Fully reversible: `story
+unarchive` undoes it, and reopening an archived story (`story reopen`/
+`story move` into an open state) clears the archived flag too, since an
+open story cannot read as archived.
 
 Archiving is a display preference layered on top of "closed", not a
 second kind of closing: a story's state and superstate are unchanged.
@@ -2351,9 +2283,10 @@ Related:
 Soft-delete a story with a required reason. The story is archived with
 a deletion flag — never truly lost — and its superstate becomes CLOSED,
 so it no longer counts as open, ready, or a blocker for other stories.
-Like any closed story it still appears in `story list` (marked deleted)
-and can be found via search; `--json`/`show` expose "deleted": true and
-"deleted_reason": "<reason>".
+Unlike an ordinarily closed story, no combination of `story list`'s
+visibility flags shows a deleted one — `story search` and `story show`
+are the way to find it; both expose "deleted": true and
+"deleted_reason": "<reason>" under `--json`.
 
 When to use:
   For duplicate, erroneous, or abandoned stories.
@@ -2656,7 +2589,6 @@ Examples:
   story --version         # Print the currently installed version
 
 Notes:
-  - Requires the 'github-sync' build feature (enabled by default).
   - Installs into the directory of the current binary; if that directory is
     not writable (e.g. /usr/local/bin), re-run with elevated privileges or use
     the installer at https://github.com/mikeydotio/storyhook.
@@ -2894,7 +2826,6 @@ BULK & INTEGRATION
   story import [file]             Bulk-create from JSON
   story export                    Whole project, one JSON doc
   story commit-sync               Link git commits to stories
-  story github-sync               Bidirectional GitHub Issues sync
   story handoff                   End-of-session summary document
 
 PROJECT MANAGEMENT

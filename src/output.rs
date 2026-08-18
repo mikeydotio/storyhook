@@ -241,9 +241,6 @@ pub struct SetPrefixPlan {
     /// verbatim from the event that set it and does not re-derive from the
     /// project's current prefix the way a story's own `id` does.
     pub relationships: usize,
-    /// How many github-sync merge-base snapshots carry ids that will be
-    /// rewritten alongside the read model proper.
-    pub github_bases: usize,
 }
 
 /// What a destructive command is about to do, in the shape its own kind of
@@ -336,24 +333,6 @@ impl ConfirmationPlan {
     pub fn requires_typed_confirmation(&self) -> bool {
         !matches!(self, Self::Undelete(_) | Self::HideState(_))
     }
-}
-
-/// What a first-time `story github-sync` found, before anything is asked or
-/// written — the payload of [`Response::SetupRequired`] (SH-153's D2).
-///
-/// **No issue or story titles.** A private repository's titles must not fan
-/// out into a `--json` document a script may log — the same secret-hygiene
-/// rule that keeps a credential out of a document at rest in the first place.
-/// Counts and identity only; `exact_match_count` is what "match stories to
-/// issues by title" would link if chosen, computed in advance so the count is
-/// part of the decision rather than a surprise after it.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SetupPlan {
-    pub owner: String,
-    pub repo: String,
-    pub local_story_count: usize,
-    pub open_issue_count: usize,
-    pub exact_match_count: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -564,9 +543,11 @@ pub struct SettingView {
     /// A string rather than a typed JSON value, in every kind — the same
     /// bargain `git config --list` makes, with [`kind`](Self::kind) naming how
     /// to read it. A typed value would buy a `jq` consumer one `tonumber` and
-    /// would tempt [`SettingKind::Document`] into serializing the shape of a
-    /// document whose type does not exist without the `github-sync` cargo
-    /// feature — making the surface a property of the build.
+    /// would tempt [`SettingKind::Document`] into serializing a document's
+    /// shape directly — making the surface a property of whichever feature-
+    /// gated module happens to own that document's type, rather than of the
+    /// data model alone (`story github-sync`'s own document was the case
+    /// that made this concrete, before SH-408 retired it).
     pub value: Option<String>,
     /// Whether [`value`](Self::value) was written, defaulted, or is absent.
     pub source: SettingSource,
@@ -737,19 +718,6 @@ pub enum Response {
     /// single object rather than a collection, and the enum's other variants
     /// should not all pay for its size.
     Project(Box<ProjectView>),
-    /// A first-time `story github-sync` found something to ask about, and is
-    /// returned *instead of* running it — the same model as
-    /// [`ConfirmationRequired`](Self::ConfirmationRequired): nothing has been
-    /// written, and the caller either states `--strategy`/`--mode` up front or
-    /// is asked (SH-153's D2).
-    ///
-    /// **Under `--json` this is not rendered as this variant at all.** The CLI
-    /// converts it to the exit-2 error envelope before it ever reaches
-    /// [`render_response`]: a scripted caller must not read `"result": "ok"`
-    /// for a run that configured nothing. This variant's own JSON rendering
-    /// exists for the one other consumer that calls `render_response` with
-    /// `json: true` directly — the dashboard's REST layer.
-    SetupRequired(Box<SetupPlan>),
 }
 
 #[derive(Serialize)]
@@ -1081,10 +1049,6 @@ fn render_json(response: &Response) -> String {
             "result": "confirmation-required",
             "plan": plan.as_ref(),
         })),
-        Response::SetupRequired(plan) => serde_json::to_string_pretty(&serde_json::json!({
-            "result": "setup-required",
-            "plan": plan.as_ref(),
-        })),
     }
     .expect("response should serialize");
 
@@ -1116,7 +1080,20 @@ fn render_human(response: &Response) -> String {
             warnings,
         } => {
             if stories.is_empty() {
-                return "no stories found\n".to_string();
+                let mut body = String::new();
+                // SH-409: `list --label X` matching only archived stories is
+                // exactly the case where this note matters most — it must
+                // survive the empty-result early return, not just the
+                // populated one below.
+                if let Some(msg) = msg {
+                    body.push_str(msg);
+                    body.push('\n');
+                }
+                body.push_str("no stories found\n");
+                for warning in warnings {
+                    body.push_str(&format!("warning: {warning}\n"));
+                }
+                return body;
             }
 
             let mut body = String::new();
@@ -1162,12 +1139,25 @@ fn render_human(response: &Response) -> String {
                 } else {
                     ""
                 };
+                // SH-409: `list` excludes archived (hidden) stories by
+                // default now, so a story that reaches this render arm
+                // carrying `hidden_at` only got here via `--include-archived`
+                // / `--all`, or via `story search` (which still shows
+                // everything) — either way it needs a badge distinguishing it
+                // from a plain closed one, which `story show` already had
+                // (rendered as `archived: <timestamp>` there) but `list`
+                // never did.
+                let archived = if story.story.hidden_at.is_some() {
+                    " [archived]"
+                } else {
+                    ""
+                };
                 // SH-175: shown inline rather than excluded by default — see
                 // the council verdict on SH-175 for why `list` diverges from
                 // the web board here.
                 let draft = if story.story.draft { " [draft]" } else { "" };
                 body.push_str(&format!(
-                    "{} [{}]{}{} {}{}{}{}{}{}{}\n",
+                    "{} [{}]{}{} {}{}{}{}{}{}{}{}\n",
                     story.story.id,
                     story.story.state,
                     priority,
@@ -1176,6 +1166,7 @@ fn render_human(response: &Response) -> String {
                     progress_summary,
                     labels,
                     deleted,
+                    archived,
                     draft,
                     flagged,
                     stale
@@ -1255,7 +1246,6 @@ fn render_human(response: &Response) -> String {
         Response::StoryLog { id, title, entries } => render_story_log(id, title, entries),
         Response::Project(view) => render_project(view),
         Response::ConfirmationRequired(plan) => render_confirmation_plan(plan),
-        Response::SetupRequired(plan) => render_setup_plan(plan),
     }
 }
 
@@ -1374,13 +1364,6 @@ pub fn render_set_prefix_plan(plan: &SetPrefixPlan) -> String {
             if plan.relationships == 1 { "" } else { "s" },
         ));
     }
-    if plan.github_bases > 0 {
-        body.push_str(&format!(
-            "  {} github-sync merge base{} will be rewritten to match.\n",
-            plan.github_bases,
-            if plan.github_bases == 1 { "" } else { "s" },
-        ));
-    }
     body.push_str(
         "  Free-text description and comment bodies are left untouched: any of them that \
          quote an old-prefix id will keep quoting it.\n",
@@ -1390,57 +1373,6 @@ pub fn render_set_prefix_plan(plan: &SetPrefixPlan) -> String {
          browser tab — stops resolving. This cannot be undone.\n",
         plan.old_prefix
     ));
-    body
-}
-
-/// What a first-time `story github-sync` found, in prose — shown before the
-/// question, whether that question is asked interactively or answered by a
-/// refusal naming `--strategy`/`--mode`.
-///
-/// The counts come first, above the remedy, because they are what decides
-/// which remedy to type: `import-all` is a different-sized commitment against
-/// three open issues than against three hundred.
-#[must_use]
-pub fn render_setup_plan(plan: &SetupPlan) -> String {
-    let mut body = String::new();
-    body.push_str(&format!(
-        "`story github-sync` has never run for {}/{}.\n\n",
-        plan.owner, plan.repo
-    ));
-    body.push_str(&format!(
-        "  {} local {}\n",
-        plan.local_story_count,
-        if plan.local_story_count == 1 {
-            "story"
-        } else {
-            "stories"
-        }
-    ));
-    body.push_str(&format!(
-        "  {} open GitHub {}\n",
-        plan.open_issue_count,
-        if plan.open_issue_count == 1 {
-            "issue"
-        } else {
-            "issues"
-        }
-    ));
-    body.push_str(&format!(
-        "  {} would match by title\n",
-        plan.exact_match_count
-    ));
-    body.push('\n');
-    body.push_str("Nothing has been written.\n\n");
-    body.push_str("Choose a strategy and a mode:\n\n");
-    body.push_str("  strategy:\n");
-    body.push_str("    import-all     import every open issue as a local story\n");
-    body.push_str("    match-titles   link stories to issues whose titles match exactly\n");
-    body.push_str("    push-only      push local stories to GitHub, import nothing\n");
-    body.push_str("    future-only    sync only changes from now on\n");
-    body.push_str("  mode:\n");
-    body.push_str("    manual         run `story github-sync` explicitly\n");
-    body.push_str("    off            disable sync for this project\n\n");
-    body.push_str("  story github-sync --strategy <strategy> --mode <mode>\n");
     body
 }
 

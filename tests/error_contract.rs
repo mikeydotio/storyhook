@@ -71,23 +71,12 @@ fn forms_may_run_together(variant: &str) -> bool {
 
 /// Every variant reachable through the CLI.
 ///
-/// `SyncConflict` and `SyncErrors` are absent for a reason that changed with
-/// SH-152 (`SyncConflict`) and SH-159 (`SyncErrors`) and is worth stating
-/// precisely. `SyncConflict` used to be constructed nowhere at all; it is now
-/// what `github-sync` answers with when a merge conflict is left undecided.
-/// `SyncErrors` is what it answers with when one or more individual stories
-/// failed to sync. Provoking either here needs a live GitHub issue reached
-/// through this file's `provoke: fn(&TestEnv, bool) -> std::process::Output`,
-/// i.e. a real `story` subprocess. SH-158 gave `GithubClient` a trait seam
-/// (`github::api::GithubApi`), which is what makes both variants provokable
-/// *in-process*, calling `github::run_sync_with` directly against a fake the
-/// way `github::outcome_tests` and the tests beside it do — but nothing wires
-/// that seam into the subprocess this file's rows spawn, so both stay
-/// *reachable* and not *provokable here*, which is what [`UNPROVOKABLE`]
-/// means. Their exit codes are held by
-/// [`unreachable_variants_still_hold_their_exit_codes`], their refusal text by
-/// `github::outcome_tests`, and [`the_table_covers_every_variant`] is what
-/// stops either being forgotten.
+/// `SyncConflict` and `SyncErrors` no longer exist: they named what
+/// `story github-sync` answered with on an undecided merge conflict (SH-152)
+/// and a per-story sync failure (SH-159), and the sync engine that
+/// constructed them is retired (SH-408) along with the two exit codes it
+/// held — see `AppError::exit_code`'s own doc comment for why 8 and 10 stay
+/// permanently unallocated rather than being reused.
 fn cases() -> Vec<Case> {
     let mut cases = vec![
         Case {
@@ -234,64 +223,50 @@ fn cases() -> Vec<Case> {
         },
     ];
 
-    #[cfg(feature = "github-sync")]
-    cases.extend([
-        Case {
-            variant: "GithubAuth",
-            exit_code: 6,
-            message: "STORYHOOK_GITHUB_TOKEN environment variable is not set",
-            provoke: |env, json| {
-                let project = env.project().build();
-                // The config must exist first: without it `github-sync` runs
-                // initial setup, which fails on the missing remote (Validation)
-                // or blocks on an interactive prompt. It is a column now, not
-                // `.storyhook/github-sync.toml` — same configuration, one
-                // storage model down.
-                let store = project.open_store();
-                let id = project.project_id(&store);
-                {
-                    use storyhook::store::{ReadOps as _, Store as _, WriteOps as _};
-                    store
-                        .write(|tx| {
-                            let mut settings = tx.settings(id)?;
-                            settings.github_sync = Some(serde_json::json!({
-                                "github": { "owner": "acme", "repo": "widgets" },
-                                "sync": { "mode": "manual" },
-                            }));
-                            tx.put_settings(id, &settings)
-                        })
-                        .expect("writing the github-sync config");
-                }
-                // Reached before any socket is opened, so this is offline.
-                //
-                // No `env_remove` here any more: `TestEnv` clears
-                // `STORYHOOK_GITHUB_TOKEN` from every fixture command it builds
-                // (`CLEARED_VARS`). This row used to carry its own removal,
-                // which was one test compensating locally for a harness-wide
-                // gap — on a developer machine with a real token exported,
-                // every *other* fixture inherited it (SH-153).
-                finish(env.story(project.path()), &["github-sync"], json)
-            },
+    #[cfg(feature = "github-pr")]
+    cases.push(Case {
+        variant: "GithubAuth",
+        exit_code: 6,
+        message: "STORYHOOK_GITHUB_TOKEN environment variable is not set",
+        provoke: |env, json| {
+            let project = env.project().build();
+            // `pr_check::run_check` reads the credential before it reads
+            // anything else — no registered origin, no linked pull
+            // request, needs to exist first. Reached before any socket
+            // is opened, so this is offline.
+            //
+            // No `env_remove` here: `TestEnv` clears
+            // `STORYHOOK_GITHUB_TOKEN` from every fixture command it builds
+            // (`CLEARED_VARS`). This row used to carry its own removal,
+            // which was one test compensating locally for a harness-wide
+            // gap — on a developer machine with a real token exported,
+            // every *other* fixture inherited it (SH-153).
+            finish(env.story(project.path()), &["pr-check"], json)
         },
-        Case {
-            variant: "GithubApi",
-            exit_code: 7,
-            message: "github api:",
-            provoke: |env, json| {
-                // No offline construction site exists — every one needs a
-                // transport error or an HTTP response — so the transport is
-                // made to fail deterministically instead. ureq reads ALL_PROXY
-                // from the environment, and port 1 refuses instantly, so this
-                // is independent of whether the machine has network at all.
-                // `update --check` short-circuits before any download and needs
-                // no project.
-                let dir = scratch_dir();
-                let mut cmd = env.story(dir.path());
-                cmd.env("ALL_PROXY", "http://127.0.0.1:1");
-                finish(cmd, &["update", "--check"], json)
-            },
+    });
+
+    // Not feature-gated: `story update` rides `github-pr` only by accident of
+    // history and became unconditional at the same time this feature was
+    // renamed (SH-408) — `cargo check --no-default-features` must still see
+    // this case exercise the same command a default build does.
+    cases.push(Case {
+        variant: "GithubApi",
+        exit_code: 7,
+        message: "github api:",
+        provoke: |env, json| {
+            // No offline construction site exists — every one needs a
+            // transport error or an HTTP response — so the transport is
+            // made to fail deterministically instead. ureq reads ALL_PROXY
+            // from the environment, and port 1 refuses instantly, so this
+            // is independent of whether the machine has network at all.
+            // `update --check` short-circuits before any download and needs
+            // no project.
+            let dir = scratch_dir();
+            let mut cmd = env.story(dir.path());
+            cmd.env("ALL_PROXY", "http://127.0.0.1:1");
+            finish(cmd, &["update", "--check"], json)
         },
-    ]);
+    });
 
     cases
 }
@@ -487,12 +462,14 @@ fn every_error_variant_holds_its_contract() {
 
 /// The exit codes themselves, asserted directly on the enum.
 ///
-/// Covers `SyncConflict` and `SyncErrors`, which no test can provoke offline,
-/// and gives every other variant a second, invocation-independent witness: if
-/// a refactor renumbers a code, this fails even for a variant whose trigger
-/// has moved.
+/// Gives every variant a second, invocation-independent witness: if a
+/// refactor renumbers a code, this fails even for a variant whose trigger
+/// has moved. Exit codes 8 and 10 named `SyncConflict`/`SyncErrors`, which
+/// no test could provoke offline; both are retired with the sync engine
+/// that constructed them (SH-408), and their codes stay unallocated rather
+/// than renumbered — see `AppError::exit_code`'s own doc comment.
 #[test]
-fn unreachable_variants_still_hold_their_exit_codes() {
+fn every_variant_holds_its_exit_code_independent_of_a_live_invocation() {
     let expected = [
         (AppError::Usage(String::new()), 2),
         (AppError::Validation(String::new()), 2),
@@ -502,9 +479,7 @@ fn unreachable_variants_still_hold_their_exit_codes() {
         (AppError::Storage(String::new()), 5),
         (AppError::GithubAuth(String::new()), 6),
         (AppError::GithubApi(String::new()), 7),
-        (AppError::SyncConflict(String::new()), 8),
         (AppError::StateConflict(String::new(), String::new()), 9),
-        (AppError::SyncErrors(String::new()), 10),
     ];
     for (error, code) in &expected {
         assert_eq!(
@@ -516,21 +491,17 @@ fn unreachable_variants_still_hold_their_exit_codes() {
     }
 }
 
-/// Every variant is either exercised by [`cases`] or listed as unreachable.
+/// Every variant is exercised by [`cases`].
 ///
 /// The guard that matters is [`variant_name`]: its `match` is exhaustive, so an
 /// eleventh `AppError` variant stops this file compiling until someone decides
 /// which list it belongs in.
 #[test]
 fn the_table_covers_every_variant() {
-    /// Raised by `github-sync` on an undecided conflict (SH-152) or a
-    /// per-story sync failure (SH-159), but neither is reproducible in this
-    /// file: both need a GitHub issue reached through the API client, which
-    /// has no test seam wired into the subprocess this file spawns. Move
-    /// either into [`cases`] with a real invocation once one exists.
-    const UNPROVOKABLE: &[&str] = &["SyncConflict", "SyncErrors"];
-    /// Compiled out with `--no-default-features`, so they cannot be required.
-    const FEATURE_GATED: &[&str] = &["GithubAuth", "GithubApi"];
+    /// Compiled out with `--no-default-features`, so it cannot be required.
+    /// `GithubApi` is not here: `story update`'s provoke case above is
+    /// unconditional, so every build's table covers it.
+    const FEATURE_GATED: &[&str] = &["GithubAuth"];
 
     let all = [
         AppError::Usage(String::new()),
@@ -541,23 +512,13 @@ fn the_table_covers_every_variant() {
         AppError::Storage(String::new()),
         AppError::GithubAuth(String::new()),
         AppError::GithubApi(String::new()),
-        AppError::SyncConflict(String::new()),
         AppError::StateConflict(String::new(), String::new()),
-        AppError::SyncErrors(String::new()),
     ];
     let covered: Vec<&str> = cases().iter().map(|case| case.variant).collect();
 
     for error in &all {
         let name = variant_name(error);
-        if UNPROVOKABLE.contains(&name) {
-            assert!(
-                !covered.contains(&name),
-                "{name} is listed unprovokable but the table provokes it — delete \
-                 it from UNPROVOKABLE"
-            );
-            continue;
-        }
-        if !cfg!(feature = "github-sync") && FEATURE_GATED.contains(&name) {
+        if !cfg!(feature = "github-pr") && FEATURE_GATED.contains(&name) {
             continue;
         }
         assert!(
@@ -581,9 +542,7 @@ fn variant_name(error: &AppError) -> &'static str {
         AppError::Storage(_) => "Storage",
         AppError::GithubAuth(_) => "GithubAuth",
         AppError::GithubApi(_) => "GithubApi",
-        AppError::SyncConflict(_) => "SyncConflict",
         AppError::StateConflict(..) => "StateConflict",
-        AppError::SyncErrors(_) => "SyncErrors",
     }
 }
 

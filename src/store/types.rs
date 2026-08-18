@@ -437,15 +437,6 @@ pub struct ProjectSettings {
     pub sync_auto_transition: Option<bool>,
     /// `doctor.stale_threshold` — a duration string such as `14d`.
     pub doctor_stale_threshold: Option<String>,
-    /// The github-sync document, held as JSON.
-    ///
-    /// The one deliberate blob in the schema, for two reasons: it is a nested,
-    /// optional, feature-gated document (`etags`, `mappings`) whose shape
-    /// belongs to `src/github/`, and modelling it as columns would couple the
-    /// store to the `github-sync` cargo feature. Held as
-    /// [`serde_json::Value`] rather than as a string so a round trip cannot
-    /// silently reformat it.
-    pub github_sync: Option<serde_json::Value>,
 }
 
 /// How [`crate::store::ReadOps::stories`] orders its results.

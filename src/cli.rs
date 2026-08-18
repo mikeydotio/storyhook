@@ -162,6 +162,9 @@ Usage:
              [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>]
              [--drafts]                                (narrows to drafts only)
              [--unassessed]                            (narrows to stories nobody has assessed)
+             [--include-closed]                        (also show closed, unarchived stories)
+             [--include-archived]                      (also show archived stories; implies --include-closed)
+             [--all]                                   (--include-closed --include-archived)
   story next [--count <n>] [--phase <N>] [--claim]
   story summary
   story report [--html]
@@ -188,14 +191,13 @@ Usage:
   story update [--check] [--force]                 (self-update the story binary)
   story hooks install|uninstall|list|test <event_type>
   story commit-sync [--since <duration>]
-  story github-sync [<id>] [--dry-run] [--resolve local|remote]
   story link-pr <id> <url> [--no-close-on-merge]    (link a GitHub pull request to a story)
   story unlink-pr <id> <url>
   story attachment add <id> <path> [--name <text>]  (attach an image to a story)
   story attachment list <id>
   story attachment remove <id> <n>
   story attachment save <id> <n> <path>
-  story pr-check [<id>]                             (requires the github-sync feature)
+  story pr-check [<id>]                             (requires the github-pr feature)
   story github-auth login|status|logout             (durable credential for unattended pr-check polling)
   story scaffold agents-md|claude-md|cursor-rules
   story help [<command>] [--compact] [--all]
@@ -332,6 +334,13 @@ pub enum Invocation {
         /// `--priority none`, which also matches every story parked there on
         /// purpose.
         unassessed: bool,
+        /// `--include-closed` (SH-409): widens the default OPEN-only
+        /// visibility to also show closed, unarchived stories.
+        include_closed: bool,
+        /// `--include-archived` (SH-409): widens the default visibility to
+        /// also show archived (`story hide`d) stories. Implies
+        /// `include_closed`.
+        include_archived: bool,
     },
     Search {
         query: String,
@@ -553,20 +562,6 @@ pub enum Invocation {
     CommitSync {
         since: Option<String>,
     },
-    GithubSync {
-        id: Option<String>,
-        dry_run: bool,
-        /// Which side of every conflict this run meets wins, if the caller has
-        /// said. `None` is not "guess" — it is the reason the run refuses.
-        resolve: Option<ConflictSide>,
-        /// The initial-sync strategy, if the caller has said in advance.
-        /// `None` on an unconfigured project means "ask" — SH-153's D2.
-        strategy: Option<SetupStrategy>,
-        /// The sync mode to save, if the caller has said in advance. Answers
-        /// the same question as `strategy` and must be given together with
-        /// it, or not at all.
-        mode: Option<SetupMode>,
-    },
     /// `story link-pr <id> <url> [--no-close-on-merge]` — links a GitHub pull
     /// request to a story (SH-49). Never touches GitHub: parsing a URL and
     /// recording a link needs no network access, so this arm runs in every
@@ -585,9 +580,8 @@ pub enum Invocation {
     },
     /// `story pr-check [<id>]` — asks GitHub about every (or, with an id, one
     /// story's) open linked pull request, closing a story whose merged link
-    /// asked to be closed on merge. Feature-gated behind `github-sync`, like
-    /// [`GithubSync`](Self::GithubSync): this is the one PR-link operation
-    /// that spends a GitHub credential.
+    /// asked to be closed on merge. Feature-gated: this is the one PR-link
+    /// operation that spends a GitHub credential.
     PrCheck {
         id: Option<String>,
     },
@@ -738,7 +732,18 @@ pub enum DaemonAction {
     /// Report whether one is running, and where.
     Status,
     /// Register a launchd agent so the daemon starts at login.
-    Install,
+    Install {
+        /// Register the running binary even when it is not the `story` this
+        /// machine's `$PATH` resolves — `--this-binary`.
+        ///
+        /// The way through
+        /// [`crate::daemon::install_guard::Refusal::Disagrees`] and
+        /// [`Unconfirmable`](crate::daemon::install_guard::Refusal::Unconfirmable),
+        /// and deliberately **not** a way through
+        /// [`Root`](crate::daemon::install_guard::Refusal::Root): it answers
+        /// which binary, never which user.
+        this_binary: bool,
+    },
     /// Remove that agent.
     Uninstall,
     /// Print the running daemon's bearer token (SH-50) — the value a caller
@@ -808,13 +813,12 @@ pub enum ProjectAction {
     /// the ordinary selector names the project, this names only the new
     /// prefix.
     ///
-    /// Rewrites the project row, every relationship any of its stories claim
-    /// (a story's own rendered `id` self-heals on refold; `other_id` does
-    /// not, and is rewritten by real compensating events), and any
-    /// github-sync merge-base snapshots. Free-text description and comment
-    /// bodies are deliberately left alone — there is no grammar in this
-    /// codebase for a story-id reference inside prose, so rewriting one
-    /// would be a guess dressed up as a fact.
+    /// Rewrites the project row and every relationship any of its stories
+    /// claim (a story's own rendered `id` self-heals on refold; `other_id`
+    /// does not, and is rewritten by real compensating events). Free-text
+    /// description and comment bodies are deliberately left alone — there is
+    /// no grammar in this codebase for a story-id reference inside prose, so
+    /// rewriting one would be a guess dressed up as a fact.
     SetPrefix {
         /// The prefix every id renders under from this point on.
         new_prefix: String,
@@ -998,48 +1002,6 @@ pub enum SettingsAction {
         /// The dotted name.
         key: String,
     },
-}
-
-/// Which side of a github-sync conflict the caller has chosen.
-///
-/// The wire form of `github::conflict::Resolution`, and separate from it on
-/// purpose: this enum is part of the request envelope and must exist in every
-/// build, while the merge engine that acts on it lives behind the
-/// `github-sync` feature.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ConflictSide {
-    /// Keep what this machine has, and push it to GitHub.
-    Local,
-    /// Take what GitHub has.
-    Remote,
-}
-
-/// The initial-sync strategy for a github-sync project that has never been
-/// configured, stated up front rather than picked from a menu the daemon
-/// cannot show (SH-153's D2).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum SetupStrategy {
-    ImportAll,
-    MatchTitles,
-    PushOnly,
-    FutureOnly,
-}
-
-/// The sync mode a fresh setup should save, stated up front.
-///
-/// Not `github::sync_state::SyncMode`: that type lives behind the
-/// `github-sync` feature, and this flag's value must exist in every build —
-/// the same reason [`ConflictSide`] is not `github::conflict::Resolution`.
-/// `auto` is unspellable on purpose: nothing implements it (SH-68), and
-/// offering a mode nothing acts on is the defect `github::initial`'s own
-/// `MODE_OPTIONS` already exists to avoid.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SetupMode {
-    Manual,
-    Off,
 }
 
 /// The `story store …` subcommands.
@@ -1457,6 +1419,9 @@ static VERB_FLAGS: &[VerbFlags] = &[
             bare("ready"),
             bare("drafts"),
             bare("unassessed"),
+            bare("include-closed"),
+            bare("include-archived"),
+            bare("all"),
         ],
     },
     VerbFlags {
@@ -1551,16 +1516,6 @@ static VERB_FLAGS: &[VerbFlags] = &[
         flags: &[value("since")],
     },
     VerbFlags {
-        verb: "github-sync",
-        subcommand: None,
-        flags: &[
-            bare("dry-run"),
-            value("resolve"),
-            value("strategy"),
-            value("mode"),
-        ],
-    },
-    VerbFlags {
         verb: "link-pr",
         subcommand: None,
         flags: &[bare("no-close-on-merge")],
@@ -1618,6 +1573,19 @@ static VERB_FLAGS: &[VerbFlags] = &[
     // — one shared entry rather than per-subcommand ones, matching this
     // table's existing looseness for `daemon`: `parse_daemon` itself is what
     // actually refuses a flag on the wrong subcommand.
+    // Scoped to `install` on purpose. `declared_flags` prefers a
+    // `(verb, Some(subcommand))` entry over the verb's own, so declaring
+    // `--this-binary` here rather than on the `daemon` row is what makes every
+    // sibling subcommand refuse it *by construction* rather than by a list
+    // somebody has to remember to keep (SH-136's class). It is also the one
+    // residual `tests/trailing_arguments.rs` names as its own blind spot — that
+    // scan drops every `-`-prefixed word — so `tests/daemon_install_flag.rs`
+    // proves the scoping instead.
+    VerbFlags {
+        verb: "daemon",
+        subcommand: Some("install"),
+        flags: &[bare("this-binary")],
+    },
     VerbFlags {
         verb: "daemon",
         subcommand: None,
@@ -1953,7 +1921,6 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "hooks" => parse_hooks(args),
         "scaffold" => parse_scaffold(args),
         "commit-sync" | "sync-git" => parse_commit_sync(args),
-        "github-sync" => parse_github_sync(args),
         "link-pr" => parse_link_pr(args),
         "unlink-pr" => parse_unlink_pr(args),
         "attachment" => parse_attachment(args),
@@ -2613,8 +2580,10 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
     let mut story_type = None;
     let mut drafts = false;
     let mut unassessed = false;
+    let mut include_closed = false;
+    let mut include_archived = false;
     let mut index = 1;
-    let usage = "usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts] [--unassessed]";
+    let usage = "usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts] [--unassessed] [--include-closed] [--include-archived] [--all]";
 
     while index < args.len() {
         match args[index].as_str() {
@@ -2701,6 +2670,24 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
                 drafts = true;
                 index += 1;
             }
+            "--include-closed" => {
+                include_closed = true;
+                index += 1;
+            }
+            "--include-archived" => {
+                include_archived = true;
+                index += 1;
+            }
+            "--all" => {
+                // Sugar, collapsed here rather than carried as its own
+                // `Invocation::List` field: `--all` and
+                // `--include-closed --include-archived` must parse to the
+                // exact same `Invocation`, which a third field could only
+                // drift from.
+                include_closed = true;
+                include_archived = true;
+                index += 1;
+            }
             _ => {
                 return Err(AppError::Usage(usage.to_string()));
             }
@@ -2722,6 +2709,8 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
         story_type,
         drafts,
         unassessed,
+        include_closed,
+        include_archived,
     })
 }
 
@@ -3360,102 +3349,6 @@ fn parse_commit_sync(args: &[String]) -> Result<Invocation, AppError> {
     Ok(Invocation::CommitSync { since })
 }
 
-fn parse_github_sync(args: &[String]) -> Result<Invocation, AppError> {
-    let mut id = None;
-    let mut dry_run = false;
-    let mut resolve = None;
-    let mut strategy = None;
-    let mut mode = None;
-    let mut index = 1;
-    let usage = "usage: story github-sync [<id>] [--dry-run] [--resolve local|remote] \
-                 [--strategy import-all|match-titles|push-only|future-only] \
-                 [--mode manual|off]";
-    while index < args.len() {
-        match args[index].as_str() {
-            "--dry-run" => {
-                dry_run = true;
-                index += 1;
-            }
-            "--resolve" => {
-                let side = args.get(index + 1).ok_or_else(|| {
-                    AppError::Usage(format!("--resolve needs `local` or `remote`\n{usage}"))
-                })?;
-                resolve = Some(match side.as_str() {
-                    "local" => ConflictSide::Local,
-                    "remote" => ConflictSide::Remote,
-                    other => {
-                        return Err(AppError::Usage(format!(
-                            "--resolve takes `local` or `remote`, not `{other}`\n{usage}"
-                        )));
-                    }
-                });
-                index += 2;
-            }
-            "--strategy" => {
-                let value = args.get(index + 1).ok_or_else(|| {
-                    AppError::Usage(format!(
-                        "--strategy needs import-all, match-titles, push-only or future-only\n{usage}"
-                    ))
-                })?;
-                strategy = Some(match value.as_str() {
-                    "import-all" => SetupStrategy::ImportAll,
-                    "match-titles" => SetupStrategy::MatchTitles,
-                    "push-only" => SetupStrategy::PushOnly,
-                    "future-only" => SetupStrategy::FutureOnly,
-                    other => {
-                        return Err(AppError::Usage(format!(
-                            "--strategy takes import-all, match-titles, push-only or \
-                             future-only, not `{other}`\n{usage}"
-                        )));
-                    }
-                });
-                index += 2;
-            }
-            "--mode" => {
-                let value = args.get(index + 1).ok_or_else(|| {
-                    AppError::Usage(format!("--mode needs `manual` or `off`\n{usage}"))
-                })?;
-                mode = Some(match value.as_str() {
-                    "manual" => SetupMode::Manual,
-                    "off" => SetupMode::Off,
-                    "auto" => {
-                        return Err(AppError::Usage(format!(
-                            "--mode auto is not implemented -- storyhook never syncs on its \
-                             own (SH-68)\n{usage}"
-                        )));
-                    }
-                    other => {
-                        return Err(AppError::Usage(format!(
-                            "--mode takes `manual` or `off`, not `{other}`\n{usage}"
-                        )));
-                    }
-                });
-                index += 2;
-            }
-            arg if looks_like_story_id(arg) => {
-                id = Some(arg.to_string());
-                index += 1;
-            }
-            _ => {
-                return Err(AppError::Usage(usage.to_string()));
-            }
-        }
-    }
-    // `--resolve` without an `<id>`, `--strategy`/`--mode` given alone or on an
-    // already-configured project: none of these are refused here. The rule
-    // lives in `github::run_sync_with`, which is the one gate every door passes
-    // through — this parser, the dashboard, the TUI and a hand-built
-    // `InvokeRequest`. A copy here would be a second place for it to drift out
-    // of.
-    Ok(Invocation::GithubSync {
-        id,
-        dry_run,
-        resolve,
-        strategy,
-        mode,
-    })
-}
-
 fn parse_link_pr(args: &[String]) -> Result<Invocation, AppError> {
     let usage = "usage: story link-pr <id> <url> [--no-close-on-merge]";
     if args.len() < 3 || args.len() > 4 {
@@ -3718,7 +3611,7 @@ fn parse_store(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
     let usage = "usage: story daemon start [--port <PORT>] | stop [--force] | status | \
-                 install | uninstall | token";
+                 install [--this-binary] | uninstall | token";
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -3744,8 +3637,11 @@ fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
             DaemonAction::Status
         }
         "install" => {
-            expect_no_more(&args[2..], usage)?;
-            DaemonAction::Install
+            let this_binary = matches!(&args[2..], [flag] if flag == "--this-binary");
+            if !this_binary {
+                expect_no_more(&args[2..], usage)?;
+            }
+            DaemonAction::Install { this_binary }
         }
         "uninstall" => {
             expect_no_more(&args[2..], usage)?;
@@ -3964,36 +3860,6 @@ fn parse_token(args: &[String]) -> Result<Invocation, AppError> {
         other => Err(AppError::Usage(format!(
             "unknown token action: {other}. {usage}"
         ))),
-    }
-}
-
-/// Whether `s` is *shaped* like a story id: `PREFIX-DIGITS` (`SH-1`, `API-42`)
-/// or a bare number (`5`).
-///
-/// Shape only, and that is all it can be. Which project a prefix belongs to,
-/// and whether a number names a story that exists, need the selected project's
-/// prefix and the store — neither of which a parser has. Those are
-/// [`StoryRef::classify`](crate::store::StoryRef)'s questions, asked once the
-/// project is determined.
-///
-/// One caller: [`parse_github_sync`], which is the only parser that has to tell
-/// an id positional from a typo'd flag. It is deliberately *looser* than the id
-/// grammar — `007` and `0` pass here — because every other verb takes its
-/// positional unjudged and reports `story `007` not found` from the store. A
-/// parser that were stricter would make one verb answer a usage error where the
-/// rest answer not-found, which is exactly the inconsistency SH-118 found: this
-/// predicate required a hyphen, so `story github-sync 1` exited 2 with a usage
-/// line while `story show 1` exited 3.
-fn looks_like_story_id(s: &str) -> bool {
-    if let Some(pos) = s.find('-') {
-        let prefix = &s[..pos];
-        let suffix = &s[pos + 1..];
-        !prefix.is_empty()
-            && prefix.chars().all(|c| c.is_ascii_alphanumeric())
-            && !suffix.is_empty()
-            && suffix.chars().all(|c| c.is_ascii_digit())
-    } else {
-        !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())
     }
 }
 
@@ -4459,45 +4325,7 @@ fn join_tokens(tokens: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{EpicAction, Invocation, TypeAction, looks_like_story_id, parse_invocation};
-
-    /// The defect SH-118 left behind: `github-sync` was the one verb whose id
-    /// positional had to contain a hyphen, so a bare integer fell through to
-    /// the "unknown token" arm and became a *usage* error — exit 2 — while
-    /// every other verb accepted the token and answered from the store.
-    #[test]
-    fn github_sync_takes_a_bare_integer_as_its_id() {
-        let invocation = parse_invocation(&["github-sync".to_string(), "5".to_string()]).unwrap();
-        match invocation {
-            Invocation::GithubSync { id, .. } => assert_eq!(id.as_deref(), Some("5")),
-            other => panic!("expected a GithubSync invocation, got {other:?}"),
-        }
-    }
-
-    /// …and the token still has to look like an id, so a typo is still refused
-    /// rather than silently becoming one.
-    #[test]
-    fn github_sync_still_refuses_a_token_that_is_no_kind_of_id() {
-        for token in ["--dry-runn", "nonsense", "-5", "5x"] {
-            assert!(
-                parse_invocation(&["github-sync".to_string(), token.to_string()]).is_err(),
-                "`story github-sync {token}` should still be a usage error"
-            );
-        }
-    }
-
-    #[test]
-    fn the_id_shape_predicate_covers_both_forms() {
-        for id in ["SH-1", "API-42", "1", "5", "007", "0"] {
-            assert!(looks_like_story_id(id), "`{id}` is shaped like an id");
-        }
-        for not_id in ["", "-", "SH-", "-1", "SH-x", "5x", "nonsense", "--dry-run"] {
-            assert!(
-                !looks_like_story_id(not_id),
-                "`{not_id}` is not shaped like an id"
-            );
-        }
-    }
+    use super::{EpicAction, Invocation, TypeAction, parse_invocation};
 
     #[test]
     fn routes_move_command() {
@@ -5251,189 +5079,6 @@ mod tests {
         fn an_argument_in_the_subcommand_slot_falls_back_to_the_verb() {
             let flags = declared_flags(&argv(&["move", "SH-1", "done"])).expect("move declares");
             assert!(flags.iter().any(|flag| flag.name == "if-state"));
-        }
-    }
-
-    /// `story github-sync --resolve …` — SH-152's answer to a conflict.
-    mod github_sync_resolve {
-        use super::super::{ConflictSide, Invocation, parse_invocation};
-
-        fn parse(args: &[&str]) -> Result<Invocation, crate::error::AppError> {
-            parse_invocation(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>())
-        }
-
-        #[test]
-        fn a_sync_with_no_resolution_is_the_ordinary_case() {
-            assert_eq!(
-                parse(&["github-sync"]).expect("parses"),
-                Invocation::GithubSync {
-                    id: None,
-                    dry_run: false,
-                    resolve: None,
-                    strategy: None,
-                    mode: None,
-                }
-            );
-        }
-
-        #[test]
-        fn both_sides_parse_against_a_named_story() {
-            for (word, side) in [
-                ("local", ConflictSide::Local),
-                ("remote", ConflictSide::Remote),
-            ] {
-                assert_eq!(
-                    parse(&["github-sync", "SH-1", "--resolve", word]).expect("parses"),
-                    Invocation::GithubSync {
-                        id: Some("SH-1".to_string()),
-                        dry_run: false,
-                        resolve: Some(side),
-                        strategy: None,
-                        mode: None,
-                    }
-                );
-            }
-        }
-
-        /// The parser's job is the *shape*. Whether a resolution without a
-        /// story is allowed is a rule about the sync, and it lives in
-        /// `github::run_sync_with` so that the dashboard and a hand-built
-        /// request meet it too — `tests/github_sync_conflicts.rs` is where the
-        /// refusal is pinned.
-        #[test]
-        fn a_resolution_without_a_story_parses_and_is_refused_deeper_down() {
-            assert_eq!(
-                parse(&["github-sync", "--resolve", "local"]).expect("parses"),
-                Invocation::GithubSync {
-                    id: None,
-                    dry_run: false,
-                    resolve: Some(ConflictSide::Local),
-                    strategy: None,
-                    mode: None,
-                }
-            );
-        }
-
-        #[test]
-        fn a_side_that_is_not_a_side_is_refused_by_name() {
-            let error =
-                parse(&["github-sync", "SH-1", "--resolve", "theirs"]).expect_err("refuses");
-            assert!(error.to_string().contains("theirs"), "{error}");
-        }
-
-        #[test]
-        fn a_resolution_with_nothing_after_it_says_what_it_wanted() {
-            let error = parse(&["github-sync", "SH-1", "--resolve"]).expect_err("refuses");
-            let message = error.to_string();
-            assert!(message.contains("local"), "{message}");
-            assert!(message.contains("remote"), "{message}");
-        }
-    }
-
-    /// `story github-sync --strategy … --mode …` — SH-153's D2. The parser's
-    /// job is the shape; whether the pair is allowed together, alone, or on an
-    /// already-configured project is `github::run_sync_with`'s rule, same as
-    /// `--resolve`'s.
-    mod github_sync_setup_flags {
-        use super::super::{Invocation, SetupMode, SetupStrategy, parse_invocation};
-
-        fn parse(args: &[&str]) -> Result<Invocation, crate::error::AppError> {
-            parse_invocation(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>())
-        }
-
-        #[test]
-        fn every_strategy_word_parses() {
-            for (word, strategy) in [
-                ("import-all", SetupStrategy::ImportAll),
-                ("match-titles", SetupStrategy::MatchTitles),
-                ("push-only", SetupStrategy::PushOnly),
-                ("future-only", SetupStrategy::FutureOnly),
-            ] {
-                assert_eq!(
-                    parse(&["github-sync", "--strategy", word, "--mode", "manual"])
-                        .expect("parses"),
-                    Invocation::GithubSync {
-                        id: None,
-                        dry_run: false,
-                        resolve: None,
-                        strategy: Some(strategy),
-                        mode: Some(SetupMode::Manual),
-                    }
-                );
-            }
-        }
-
-        #[test]
-        fn both_mode_words_parse() {
-            for (word, mode) in [("manual", SetupMode::Manual), ("off", SetupMode::Off)] {
-                assert_eq!(
-                    parse(&["github-sync", "--strategy", "future-only", "--mode", word])
-                        .expect("parses"),
-                    Invocation::GithubSync {
-                        id: None,
-                        dry_run: false,
-                        resolve: None,
-                        strategy: Some(SetupStrategy::FutureOnly),
-                        mode: Some(mode),
-                    }
-                );
-            }
-        }
-
-        /// `auto` is refused by name, not silently accepted and dropped —
-        /// nothing implements it (SH-68).
-        #[test]
-        fn mode_auto_is_refused_by_name() {
-            let error = parse(&["github-sync", "--strategy", "future-only", "--mode", "auto"])
-                .expect_err("refuses");
-            assert!(error.to_string().contains("SH-68"), "{error}");
-        }
-
-        #[test]
-        fn an_unknown_strategy_word_is_refused_by_name() {
-            let error = parse(&["github-sync", "--strategy", "guess", "--mode", "manual"])
-                .expect_err("refuses");
-            assert!(error.to_string().contains("guess"), "{error}");
-        }
-
-        #[test]
-        fn an_unknown_mode_word_is_refused_by_name() {
-            let error = parse(&[
-                "github-sync",
-                "--strategy",
-                "future-only",
-                "--mode",
-                "guess",
-            ])
-            .expect_err("refuses");
-            assert!(error.to_string().contains("guess"), "{error}");
-        }
-
-        /// The parser accepts either flag alone: whether that pairing is
-        /// allowed is `run_sync_with`'s rule, pinned in
-        /// `tests/github_sync_setup.rs`.
-        #[test]
-        fn either_flag_alone_parses_and_is_refused_deeper_down() {
-            assert_eq!(
-                parse(&["github-sync", "--strategy", "future-only"]).expect("parses"),
-                Invocation::GithubSync {
-                    id: None,
-                    dry_run: false,
-                    resolve: None,
-                    strategy: Some(SetupStrategy::FutureOnly),
-                    mode: None,
-                }
-            );
-            assert_eq!(
-                parse(&["github-sync", "--mode", "manual"]).expect("parses"),
-                Invocation::GithubSync {
-                    id: None,
-                    dry_run: false,
-                    resolve: None,
-                    strategy: None,
-                    mode: Some(SetupMode::Manual),
-                }
-            );
         }
     }
 

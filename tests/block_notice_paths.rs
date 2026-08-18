@@ -74,7 +74,6 @@ fn sets_awaiting(invocation: &Invocation) -> bool {
         | Invocation::Hooks { .. }
         | Invocation::Scaffold { .. }
         | Invocation::CommitSync { .. }
-        | Invocation::GithubSync { .. }
         | Invocation::LinkPr { .. }
         | Invocation::UnlinkPr { .. }
         | Invocation::PrCheck { .. }

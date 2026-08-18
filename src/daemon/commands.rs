@@ -15,17 +15,13 @@
 //! whole rearchitecture is measured against or turn "this machine has not run
 //! a daemon lately" into an integrity failure.
 
+use crate::daemon::agent::{self, LAUNCHD_LABEL};
+use crate::daemon::install_guard;
 use std::path::PathBuf;
 
 use crate::daemon::lifecycle::{self, DaemonInfo};
 use crate::env::Environment;
 use crate::error::AppError;
-
-/// The launchd label for the user agent.
-///
-/// Reverse-DNS under the author's own domain, which is the convention every
-/// other bundle identifier in this ecosystem follows.
-pub const LAUNCHD_LABEL: &str = "io.mikey.storyhook.daemon";
 
 /// Starts a daemon in the background, or reports the one already running.
 ///
@@ -93,13 +89,22 @@ pub fn stop(env: &Environment, force: bool) -> Result<String, AppError> {
 }
 
 /// Reports whether a daemon is running, and what it is.
+///
+/// The login agent is described in **every** branch, the not-running one
+/// included — that branch is precisely where a deleted or misdirected agent
+/// exe is the likeliest cause of what the reader came to ask about, and
+/// "there is no daemon, and the agent that should have started one names a
+/// binary that is gone" is the answer it owes. [`agent::describe`] renders
+/// every state, including the ones [`agent::warning`] stays quiet about: a
+/// reader who came to look is owed the whole answer.
 pub fn status(env: &Environment) -> Result<String, AppError> {
     if !lifecycle::is_live(env) {
         return Ok(format!(
-            "storyhook daemon is not running\n\n{}\n{}\n{}",
+            "storyhook daemon is not running\n\n{}\n{}\n{}\n{}",
             lifecycle::describe_paths(env),
             crate::daemon::backup::describe(env),
-            crate::daemon::backup::describe_maintenance(env)
+            crate::daemon::backup::describe_maintenance(env),
+            agent::describe(&agent::health(env))
         ));
     }
     match lifecycle::read_info(env) {
@@ -117,21 +122,23 @@ pub fn status(env: &Environment) -> Result<String, AppError> {
                 )
             };
             Ok(format!(
-                "storyhook daemon {} running at {} (PID {}){}\n\n{}\n{}\n{}",
+                "storyhook daemon {} running at {} (PID {}){}\n\n{}\n{}\n{}\n{}",
                 info.version,
                 info.dashboard_url(),
                 info.pid,
                 staleness,
                 lifecycle::describe_paths(env),
                 crate::daemon::backup::describe(env),
-                crate::daemon::backup::describe_maintenance(env)
+                crate::daemon::backup::describe_maintenance(env),
+                agent::describe(&agent::health(env))
             ))
         }
         // The lock is held by something that published nothing. Say so plainly
         // rather than reporting "not running", which would be false.
         None => Ok(format!(
-            "a storyhook daemon holds the pidfile but published no portfile\n\n{}",
-            lifecycle::describe_paths(env)
+            "a storyhook daemon holds the pidfile but published no portfile\n\n{}\n{}",
+            lifecycle::describe_paths(env),
+            agent::describe(&agent::health(env))
         )),
     }
 }
@@ -208,65 +215,33 @@ fn offer_token_to_the_clipboard(token: &str) {
     }
 }
 
-/// Where the launchd agent's plist goes.
-fn agent_path(env: &Environment) -> PathBuf {
-    env.home()
-        .join("Library/LaunchAgents")
-        .join(format!("{LAUNCHD_LABEL}.plist"))
-}
-
-/// The launchd agent definition.
+/// What an install would do, once the gate has permitted it.
 ///
-/// `KeepAlive` is deliberately absent. The daemon is *supposed* to exit on a
-/// version-skew restart, and an agent that resurrected it immediately would race
-/// the client that just asked for a newer one. `RunAtLoad` is what this is for:
-/// the dashboard is there after a reboot without anybody running a command.
-fn agent_plist(exe: &std::path::Path, env: &Environment) -> String {
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{LAUNCHD_LABEL}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{exe}</string>
-{store}        <string>daemon</string>
-        <string>--serve</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>ProcessType</key>
-    <string>Background</string>
-    <key>StandardErrorPath</key>
-    <string>{log}</string>
-</dict>
-</plist>
-"#,
-        exe = exe.display(),
-        // A login agent for the default store needs no flag, and leaving it off
-        // keeps the plist identical to the one every existing installation has.
-        // For any other store the flag is required rather than tidy: the log
-        // path below is already this store's, so an agent without it would run
-        // one store's daemon while writing into another's directory.
-        store = if env.store().is_default() {
-            String::new()
-        } else {
-            format!(
-                "        <string>--store-path</string>\n        <string>{}</string>\n",
-                env.store_path().display()
-            )
-        },
-        log = env.daemon_log().display(),
-    )
+/// Separated from [`apply`] so the decision is a pure function of the
+/// environment: a test can provoke a refusal and then assert that **no file
+/// exists**, which is the only observable that distinguishes a gate placed
+/// ahead of every side effect from one placed a line too low. Both produce the
+/// same exit code and the same message.
+#[derive(Debug)]
+struct Plan {
+    path: PathBuf,
+    contents: String,
 }
 
 /// Writes the launchd agent and loads it.
 ///
 /// Idempotent: an existing agent is replaced, because the common reason to run
 /// this twice is that the binary moved.
-pub fn install(env: &Environment) -> Result<String, AppError> {
+///
+/// `this_binary` carries `--this-binary` — see [`install_guard`] for what it
+/// overrides and, deliberately, what it does not.
+///
+/// # Errors
+///
+/// [`AppError::Usage`] when [`install_guard::decide`] refuses, or off macOS.
+/// [`AppError::Storage`] when the plist cannot be written or `launchctl`
+/// refuses it.
+pub fn install(env: &Environment, this_binary: bool) -> Result<String, AppError> {
     if !cfg!(target_os = "macos") {
         return Err(AppError::Usage(
             "`story daemon install` registers a launchd agent, which is macOS only. \
@@ -275,17 +250,59 @@ pub fn install(env: &Environment) -> Result<String, AppError> {
                 .to_string(),
         ));
     }
-    let exe = std::env::current_exe()
-        .map_err(|e| AppError::Storage(format!("failed to find the running executable: {e}")))?;
-    let path = agent_path(env);
-    if let Some(parent) = path.parent() {
+    let running = crate::path_identity::running_exe()
+        .ok_or_else(|| AppError::Storage("failed to find the running executable".to_string()))?;
+    let inputs = install_guard::gather(user_id(), this_binary, running);
+    apply(&install_plan(env, &inputs)?, &bootstrap_via_launchctl)
+}
+
+/// The gate, then the bytes. No side effects.
+///
+/// # Errors
+///
+/// [`AppError::Usage`] carrying [`install_guard::Refusal`]'s whole message.
+fn install_plan(env: &Environment, inputs: &install_guard::Inputs) -> Result<Plan, AppError> {
+    let verdict =
+        install_guard::decide(inputs).map_err(|refusal| AppError::Usage(refusal.to_string()))?;
+    Ok(Plan {
+        path: agent::path(env),
+        contents: agent::plist(&verdict.enthrone, env),
+    })
+}
+
+/// Writes the plist and hands it to launchd.
+///
+/// `load` is a parameter so both failure paths below are testable without
+/// bootstrapping anything into the developer's own login session — a fixture
+/// that ran real `launchctl` would register an agent pointing at the test
+/// binary, under the one label this project owns.
+fn apply(
+    plan: &Plan,
+    load: &dyn Fn(&std::path::Path) -> Result<(), AppError>,
+) -> Result<String, AppError> {
+    if let Some(parent) = plan.path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&path, agent_plist(&exe, env))
-        .map_err(|e| AppError::Storage(format!("failed to write {}: {e}", path.display())))?;
+    // Read before writing: `bootout` below unloads whatever is there, so a
+    // failure past this point has already cost the operator their working
+    // agent. See `undo`.
+    let previous = std::fs::read(&plan.path).ok();
+    std::fs::write(&plan.path, &plan.contents)
+        .map_err(|e| AppError::Storage(format!("failed to write {}: {e}", plan.path.display())))?;
+    match load(&plan.path) {
+        Ok(()) => Ok(format!(
+            "installed the storyhook daemon as a launchd agent ({LAUNCHD_LABEL})\n  {}",
+            plan.path.display()
+        )),
+        Err(failure) => Err(undo(&plan.path, previous.as_deref(), failure)),
+    }
+}
 
-    // `bootout` first so a reinstall replaces rather than conflicts; its failure
-    // is expected when nothing was loaded, so it is ignored.
+/// `bootout` the old agent, then `bootstrap` the new one.
+///
+/// `bootout` first so a reinstall replaces rather than conflicts; its failure is
+/// expected when nothing was loaded, so it is ignored.
+fn bootstrap_via_launchctl(path: &std::path::Path) -> Result<(), AppError> {
     let target = format!("gui/{}", user_id());
     let _ = std::process::Command::new("launchctl")
         .args(["bootout", &format!("{target}/{LAUNCHD_LABEL}")])
@@ -294,22 +311,58 @@ pub fn install(env: &Environment) -> Result<String, AppError> {
         .args(["bootstrap", &target, &path.to_string_lossy()])
         .output()
         .map_err(|e| AppError::Storage(format!("failed to run launchctl: {e}")))?;
-    if !loaded.status.success() {
-        return Err(AppError::Storage(format!(
-            "launchctl refused to load {}: {}",
-            path.display(),
-            String::from_utf8_lossy(&loaded.stderr).trim()
-        )));
+    if loaded.status.success() {
+        return Ok(());
     }
-    Ok(format!(
-        "installed the storyhook daemon as a launchd agent ({LAUNCHD_LABEL})\n  {}",
-        path.display()
-    ))
+    Err(AppError::Storage(format!(
+        "launchctl refused to load {}: {}",
+        path.display(),
+        String::from_utf8_lossy(&loaded.stderr).trim()
+    )))
+}
+
+/// Puts the machine back the way it was after `launchctl` refused, and says
+/// which way that was.
+///
+/// **Restoring rather than deleting is the point.** By the time `load` fails,
+/// the new plist is already on disk and `bootout` has already unloaded whatever
+/// was running — and `RunAtLoad` means launchd honours a plist in
+/// `~/Library/LaunchAgents` at the next login whether or not anything
+/// bootstrapped it. So leaving the new file behind makes a *failed* install a
+/// durable one, and plain removal silently uninstalls a previously working
+/// agent nobody asked to lose. Errors travel with context; this one names what
+/// happened to the file.
+fn undo(path: &std::path::Path, previous: Option<&[u8]>, failure: AppError) -> AppError {
+    let note = match previous {
+        Some(bytes) => match std::fs::write(path, bytes) {
+            Ok(()) => "\n\nThe agent that was there before has been put back, but launchd has \
+                       already unloaded it — run `story daemon install` again once launchctl is \
+                       happy."
+                .to_string(),
+            Err(e) => format!(
+                "\n\nThe agent that was there before could NOT be put back ({e}); {} now holds \
+                 the new plist, which launchd will honour at the next login.",
+                path.display()
+            ),
+        },
+        None => match std::fs::remove_file(path) {
+            Ok(()) => "\n\nNothing was left behind.".to_string(),
+            Err(e) => format!(
+                "\n\nThe plist could not be removed ({e}); {} will be honoured at the next \
+                 login even though launchctl refused it now.",
+                path.display()
+            ),
+        },
+    };
+    match failure {
+        AppError::Storage(message) => AppError::Storage(format!("{message}{note}")),
+        other => other,
+    }
 }
 
 /// Unloads the launchd agent and removes its plist.
 pub fn uninstall(env: &Environment) -> Result<String, AppError> {
-    let path = agent_path(env);
+    let path = agent::path(env);
     if !path.exists() {
         return Ok("the storyhook daemon is not installed as a launchd agent".to_string());
     }
@@ -325,7 +378,10 @@ pub fn uninstall(env: &Environment) -> Result<String, AppError> {
 }
 
 /// This process's user id, which names the launchd domain to load into.
-fn user_id() -> u32 {
+///
+/// Also what [`install_guard`] decides root on, so the guard and the domain the
+/// install targets are two readings of one fact rather than two facts (SH-136).
+pub fn user_id() -> u32 {
     // SAFETY: `getuid` takes no arguments, cannot fail, and cannot be made to
     // touch memory this process does not own.
     #[cfg(unix)]
@@ -366,87 +422,130 @@ mod tests {
         assert!(stop(&env, false).expect("stop").contains("not running"));
     }
 
-    /// **`RunAtLoad` yes, `KeepAlive` no**, and both halves are decisions rather
-    /// than defaults.
+    fn permitting_inputs() -> install_guard::Inputs {
+        let story = crate::path_identity::InstalledStory {
+            spelling: PathBuf::from("/home/dev/.local/bin/story"),
+            canonical: PathBuf::from("/home/dev/.local/bin/story"),
+        };
+        install_guard::Inputs {
+            uid: 501,
+            running: story.clone(),
+            installed_story: Some(story),
+            this_binary: false,
+        }
+    }
+
+    fn refusing_inputs() -> install_guard::Inputs {
+        let mut inputs = permitting_inputs();
+        inputs.running = crate::path_identity::InstalledStory {
+            spelling: PathBuf::from("/home/dev/repo/target/debug/story"),
+            canonical: PathBuf::from("/home/dev/repo/target/debug/story"),
+        };
+        inputs
+    }
+
+    /// **The test this fix would ship broken without.**
     ///
-    /// It was worth re-taking once the daemon became mandatory (SH-114): an
-    /// optional process that nothing restarts is a choice, and a *required* one
-    /// that nothing restarts sounds like an oversight. It is not, and the
-    /// reasons got stronger rather than weaker.
+    /// A gate placed one line *below* `fs::write` is indistinguishable from a
+    /// correct one in the exit code, in the printed message, and in every row
+    /// of `install_guard::decide`'s truth table. The only observable that
+    /// separates them is whether the file is absent afterwards — and it has to
+    /// be absent, because `RunAtLoad` means launchd honours a plist sitting in
+    /// `~/Library/LaunchAgents` at the next login whether or not anything ever
+    /// bootstrapped it. A refusal that left the file behind would be a
+    /// successful install wearing an error message.
     ///
-    /// - **Availability is already self-healing.** Every client calls
-    ///   `lifecycle::ensure`, so a daemon that is not running is started by
-    ///   whoever needs it next. A restarter would be a second mechanism for
-    ///   something that has one.
-    /// - **A restarter is now more dangerous than it was.** `spawn_locked`
-    ///   stands the old daemon down and *then* claims the pidfile, so launchd
-    ///   racing that window turns a deterministic failure into an intermittent
-    ///   one — and since SH-114 that window is on every command's path, not on
-    ///   the subset that chose the daemon.
-    /// - **The version-upgrade race survives verbatim**: an agent that restarts
-    ///   the daemon immediately races the client that just asked it to stop
-    ///   because the binary moved.
-    /// - **`KeepAlive{SuccessfulExit:false}`**, the surgical variant that looks
-    ///   like it avoids all of the above, is the worst of them. It turns "the
-    ///   store is damaged and the daemon cannot open it" — the exact scenario
-    ///   the cannot-start diagnostic exists for — into a respawn loop on
-    ///   launchd's ten-second throttle.
+    /// `load` panics rather than returning an error, so this also proves
+    /// `launchctl` is never reached — which is what makes the test safe to run
+    /// here at all, under the one launchd label this project owns.
     #[test]
-    fn the_agent_runs_the_daemon_at_login_and_never_resurrects_it() {
+    fn a_refused_install_writes_no_plist_and_never_reaches_launchctl() {
         let dir = scratch();
         let env = Environment::at(dir.path());
-        let plist = agent_plist(std::path::Path::new("/usr/local/bin/story"), &env);
-        assert!(plist.contains("<string>daemon</string>"));
-        assert!(plist.contains("<string>--serve</string>"));
-        assert!(plist.contains(LAUNCHD_LABEL));
+        let refused = install_plan(&env, &refusing_inputs()).expect_err("must refuse");
+        assert!(matches!(refused, AppError::Usage(_)), "{refused:?}");
         assert!(
-            plist.contains("<key>RunAtLoad</key>"),
-            "the daemon is started at login, so a machine that has just booted \
-             has a dashboard without anybody typing a command: {plist}"
-        );
-        assert!(
-            !plist.contains("KeepAlive"),
-            "and it is never restarted. A restarter races `spawn_locked`'s \
-             stand-down window on every command's path, and the surgical \
-             `SuccessfulExit: false` variant turns a damaged store into a \
-             respawn loop on launchd's ten-second throttle: {plist}"
+            !agent::path(&env).exists(),
+            "a refusal must leave no plist: RunAtLoad honours one at the next login \
+             whether or not launchctl ever loaded it"
         );
     }
 
-    /// The agent's log path is already this store's. An agent that ran the
-    /// *default* store's daemon while writing into a named store's directory
-    /// would be describing one process and starting another.
+    /// The control. Without it, the test above passes equally well for a
+    /// command that refuses everything.
     #[test]
-    fn the_agent_names_a_store_that_is_not_the_default_one() {
+    fn a_permitted_install_writes_the_plist_and_hands_launchd_that_path() {
         let dir = scratch();
-        let named = dir.path().join("named.db");
         let env = Environment::at(dir.path());
-        let default_plist = agent_plist(std::path::Path::new("/usr/local/bin/story"), &env);
-        assert!(
-            !default_plist.contains("--store-path"),
-            "the default store's agent must stay byte-identical to the one every \
-             existing installation has"
+        let handed = std::cell::RefCell::new(None);
+        let plan = install_plan(&env, &permitting_inputs()).expect("must permit");
+        apply(&plan, &|path| {
+            *handed.borrow_mut() = Some(path.to_path_buf());
+            Ok(())
+        })
+        .expect("install");
+        assert!(agent::path(&env).exists());
+        assert_eq!(
+            handed.into_inner().as_deref(),
+            Some(agent::path(&env).as_path())
         );
-
-        let env = env.with_store(
-            crate::env::StoreLocation::resolve(
-                Some(&named),
-                &crate::env::StoreVars::default(),
-                dir.path(),
-            )
-            .expect("resolving a named store"),
-        );
-        let plist = agent_plist(std::path::Path::new("/usr/local/bin/story"), &env);
-        assert!(plist.contains("<string>--store-path</string>"), "{plist}");
-        assert!(
-            plist.contains(&format!("<string>{}</string>", env.store_path().display())),
-            "{plist}"
+        let written = std::fs::read_to_string(agent::path(&env)).expect("the plist");
+        assert_eq!(
+            agent::registered_exe(&written),
+            Some(PathBuf::from("/home/dev/.local/bin/story")),
+            "the plist must name the path the gate enthroned"
         );
     }
 
+    /// A failed `bootstrap` must not leave the machine holding a plist launchd
+    /// refused — `RunAtLoad` would honour it at the next login regardless.
     #[test]
-    fn the_agent_label_follows_the_bundle_convention() {
-        assert_eq!(LAUNCHD_LABEL, "io.mikey.storyhook.daemon");
+    fn a_failed_bootstrap_leaves_no_plist_behind() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let plan = install_plan(&env, &permitting_inputs()).expect("must permit");
+        let failed = apply(&plan, &|_| {
+            Err(AppError::Storage(
+                "launchctl refused to load it".to_string(),
+            ))
+        })
+        .expect_err("must fail");
+        assert!(failed.to_string().contains("launchctl"), "{failed}");
+        assert!(!agent::path(&env).exists());
+        assert!(
+            failed.to_string().contains("Nothing was left behind"),
+            "the error must say what happened to the file: {failed}"
+        );
+    }
+
+    /// And it must not *delete* one either. By the time the load fails,
+    /// `bootout` has already unloaded whatever was running, so removing the
+    /// file would silently uninstall a working agent nobody asked to lose.
+    #[test]
+    fn a_failed_bootstrap_restores_the_agent_it_replaced() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let path = agent::path(&env);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("the LaunchAgents dir");
+        std::fs::write(&path, b"the agent that was already working").expect("seeding");
+
+        let plan = install_plan(&env, &permitting_inputs()).expect("must permit");
+        let failed = apply(&plan, &|_| {
+            Err(AppError::Storage(
+                "launchctl refused to load it".to_string(),
+            ))
+        })
+        .expect_err("must fail");
+
+        assert_eq!(
+            std::fs::read(&path).expect("the plist"),
+            b"the agent that was already working",
+            "a launchctl hiccup must not become an uninstall nobody asked for"
+        );
+        assert!(
+            failed.to_string().contains("put back"),
+            "and the error must say so, rather than reporting only the load failure: {failed}"
+        );
     }
 
     #[test]

@@ -113,7 +113,7 @@ fn delete_excludes_story_from_next_and_list_ready() {
 }
 
 #[test]
-fn delete_marks_deleted_story_in_plain_list() {
+fn delete_removes_story_from_list_under_every_visibility_flag() {
     let dir = tempdir().unwrap();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
@@ -129,11 +129,25 @@ fn delete_marks_deleted_story_in_plain_list() {
         .assert()
         .success();
 
-    // Like any closed story, a deleted one still appears in the default
-    // `list` (there is no default open-only filter) — but it must be
-    // clearly marked so it doesn't read as live work.
+    // SH-409: a deleted story is never listed, under any combination of the
+    // visibility flags — there is no flag that reaches it, by design.
+    // `story search` (and `story show`) remain the way to find one, and
+    // `[deleted]` is still the badge that marks it there.
+    for args in [
+        ["list"].as_slice(),
+        &["list", "--include-closed"],
+        &["list", "--include-archived"],
+        &["list", "--all"],
+    ] {
+        story(dir.path())
+            .args(args)
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("SH-1").not());
+    }
+
     story(dir.path())
-        .arg("list")
+        .args(["search", "Duplicate"])
         .assert()
         .success()
         .stdout(predicate::str::contains("SH-1"))

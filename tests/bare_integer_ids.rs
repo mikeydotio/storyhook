@@ -26,7 +26,7 @@ use storyhook_test_support::TestEnv;
 /// is closed: a verb missing from here is a verb the rule was never asked
 /// about. `block` and `unblock` are how `SetAwaiting` and `ClearAwaiting` are
 /// spelled at the CLI; `delete`, `reopen` and `purge` need a story in a
-/// particular state and have their own test below; `github-sync` needs a GitHub
+/// particular state and have their own test below; `pr-check` needs a GitHub
 /// token and is covered at the parser, which is the only place it was ever
 /// broken.
 fn id_verbs() -> Vec<Vec<&'static str>> {

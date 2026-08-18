@@ -1,103 +1,34 @@
-//! The seam between the sync engine and GitHub itself.
+//! The seam between `story pr-check` and GitHub itself.
 //!
-//! [`GithubApi`] names exactly the 7 calls the pull phase, the push phase and
-//! initial setup make against a GitHub repository — mirroring
-//! [`super::storage::SyncStorage`]'s own rationale: a trait names what the
-//! engine needs, not everything the concrete client can do. [`GithubClient`]
-//! stays the only production implementation, unchanged, and now offers
-//! nothing beyond these 7 calls: SH-158 left a `get_timeline` off the trait
-//! for lack of any caller, and SH-198 deleted it outright — remote-change
-//! detection went with `list_issues`'s `since` filter and
-//! [`super::diff::three_way_merge`], never the GitHub timeline API the
-//! original design (`.planning/IDEA.md`) had named instead.
+//! [`GithubApi`] once named the 7 calls the story-to-issue sync engine's
+//! pull phase, push phase and initial setup made against a GitHub
+//! repository, plus [`get_pull_request`](GithubApi::get_pull_request), the
+//! one `story pr-check` makes. SH-408 retired that engine; this trait keeps
+//! only the call that survived it. [`GithubClient`] stays the only
+//! production implementation.
 //!
-//! `dyn`, not a generic parameter, for the same reason `SyncStorage` is: this
-//! is a network-bound command whose cost is measured in HTTP round trips, so
-//! monomorphizing the engine per implementation buys nothing.
+//! `dyn`, not a generic parameter: this is a network-bound command whose
+//! cost is measured in HTTP round trips, so monomorphizing the caller per
+//! implementation buys nothing.
 //!
-//! [`GithubApiFactory`] exists because owner/repo are not known at either of
-//! [`super::run_sync_with`]'s or [`super::initial::run_initial_setup`]'s
-//! point of call — one reads them from stored config, the other from a
-//! freshly detected git remote — so neither function can be handed a
-//! ready-built [`GithubApi`]. Both take a factory instead and build the
-//! client once owner/repo are in hand, exactly where each already calls
-//! `GithubClient::new`. [`crate::service::RealGithubApiFactory`] is the
-//! production implementation; `storyhook_test_support::FakeGithubApiFactory`
-//! is the test one.
+//! [`GithubApiFactory`] exists because owner/repo are not known at
+//! [`crate::service::pr_check::run_check`]'s point of call — it groups a
+//! run's matching links by repository and builds one client per group.
+//! [`crate::service::github::RealGithubApiFactory`] is the production
+//! implementation; `storyhook_test_support::FakeGithubApiFactory` is the
+//! test one.
 
 use super::client::GithubClient;
-use super::types::{
-    CreateIssueRequest, GithubComment, GithubIssue, PullRequestStatus, UpdateIssueRequest,
-};
+use super::types::PullRequestStatus;
 use crate::error::AppError;
 
-/// The 7 GitHub REST calls the sync engine makes, plus [`get_pull_request`]
-/// (SH-49), the one `story pr-check` makes.
-///
-/// [`get_pull_request`]: GithubApi::get_pull_request
+/// The one GitHub REST call `story pr-check` makes (SH-49).
 pub trait GithubApi {
-    /// Validates the credential by fetching repository metadata.
-    fn validate_token(&self) -> Result<(), AppError>;
-
-    /// Lists issues, with optional `since` filter and state.
-    fn list_issues(&self, since: Option<&str>, state: &str) -> Result<Vec<GithubIssue>, AppError>;
-
-    /// Gets a single issue by number.
-    fn get_issue(&self, number: u64) -> Result<GithubIssue, AppError>;
-
-    /// Creates a new issue.
-    fn create_issue(&self, req: &CreateIssueRequest) -> Result<GithubIssue, AppError>;
-
-    /// Updates an existing issue.
-    fn update_issue(&self, number: u64, req: &UpdateIssueRequest) -> Result<GithubIssue, AppError>;
-
-    /// Lists comments on an issue, with optional `since` filter.
-    fn list_comments(
-        &self,
-        issue_number: u64,
-        since: Option<&str>,
-    ) -> Result<Vec<GithubComment>, AppError>;
-
-    /// Creates a comment on an issue.
-    fn create_comment(&self, issue_number: u64, body: &str) -> Result<GithubComment, AppError>;
-
-    /// Gets a single pull request's merge/close status by number (SH-49).
+    /// Gets a single pull request's merge/close status by number.
     fn get_pull_request(&self, number: u64) -> Result<PullRequestStatus, AppError>;
 }
 
 impl GithubApi for GithubClient {
-    fn validate_token(&self) -> Result<(), AppError> {
-        self.validate_token()
-    }
-
-    fn list_issues(&self, since: Option<&str>, state: &str) -> Result<Vec<GithubIssue>, AppError> {
-        self.list_issues(since, state)
-    }
-
-    fn get_issue(&self, number: u64) -> Result<GithubIssue, AppError> {
-        self.get_issue(number)
-    }
-
-    fn create_issue(&self, req: &CreateIssueRequest) -> Result<GithubIssue, AppError> {
-        self.create_issue(req)
-    }
-
-    fn update_issue(&self, number: u64, req: &UpdateIssueRequest) -> Result<GithubIssue, AppError> {
-        self.update_issue(number, req)
-    }
-
-    fn list_comments(
-        &self,
-        issue_number: u64,
-        since: Option<&str>,
-    ) -> Result<Vec<GithubComment>, AppError> {
-        self.list_comments(issue_number, since)
-    }
-
-    fn create_comment(&self, issue_number: u64, body: &str) -> Result<GithubComment, AppError> {
-        self.create_comment(issue_number, body)
-    }
-
     fn get_pull_request(&self, number: u64) -> Result<PullRequestStatus, AppError> {
         self.get_pull_request(number)
     }
