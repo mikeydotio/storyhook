@@ -766,10 +766,20 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .label-chip button:hover { color: var(--danger); }
 .inline-add { display: flex; gap: 0.375rem; margin-top: 0.5rem; }
 .inline-add input, .inline-add select { flex: 1; padding: 0.3125rem 0.5rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg); font-size: var(--control-font-xs); }
-.banner { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.625rem; border-radius: var(--radius-sm); font-size: 0.8125rem; }
+/* A column, not a row (SH-398): `.banner-head` is the one-line row (icon-
+   ish lead text, blocker chips, the trailing button); `.banner-body` is
+   ordinary flowed prose beneath it. Before this, `.banner` itself was the
+   flex row and a multi-sentence reason -- `linkifyStoryIds()`'s own mixed
+   array of text nodes and `storyRef()` elements -- became one anonymous
+   flex item per fragment, each only as wide as its own text, so a long
+   reason rendered as a run of narrow vertical columns rather than wrapped
+   prose. `.banner-archived` has no body and still reads as one line. */
+.banner { display: flex; flex-direction: column; gap: 0.375rem; padding: 0.5rem 0.625rem; border-radius: var(--radius-sm); font-size: 0.8125rem; }
+.banner-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.banner-body { overflow-wrap: anywhere; }
 .banner-blocked { background: var(--danger-soft); color: var(--danger); }
 .banner-archived { background: var(--bg-raised); color: var(--fg-muted); }
-.banner button { margin-left: auto; }
+.banner-head button { margin-left: auto; }
 .comments { display: flex; flex-direction: column; gap: 0.625rem; }
 .comment { background: var(--bg-sunken); border-radius: var(--radius-sm); padding: 0.5rem 0.625rem; font-size: 0.8125rem; }
 .comment-meta { font-size: 0.6875rem; color: var(--fg-faint); margin-bottom: 0.1875rem; }
@@ -6136,21 +6146,42 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * refs plus a reason still has a chance of fitting `.card-flags`' wrap. */
   var AWAITING_FLAG_TRUNCATE = 40;
 
-  /** Renders `ids` as a comma-joined run of `storyRef()`s for the blocked
-   * badge's parenthetical, capped at `BLOCKED_FLAG_REF_CAP`. Commas are
+  /** Renders `ids` as a comma-joined run of `storyRef()`s, capped at `cap`
+   * (default `BLOCKED_FLAG_REF_CAP`, the badge's own limit). Commas are
    * real text nodes rather than `.flag`'s own `gap` -- a dropped separator
    * has to be visible to a `toHaveText` assertion, not merely to `.flag`'s
-   * layout, or nothing would ever catch losing one. */
-  function refList(ids) {
+   * layout, or nothing would ever catch losing one.
+   *
+   * `blockBanner()` calls this with `cap: ids.length` -- the drawer has the
+   * width the card does not, so its banner names every blocker rather than
+   * folding the rest into a "+N" (SH-398). */
+  function refList(ids, cap) {
+    var effectiveCap = cap === undefined ? BLOCKED_FLAG_REF_CAP : cap;
     var nodes = [];
-    ids.slice(0, BLOCKED_FLAG_REF_CAP).forEach(function(id, i) {
+    ids.slice(0, effectiveCap).forEach(function(id, i) {
       if (i > 0) nodes.push(", ");
       nodes.push(storyRef(id));
     });
-    if (ids.length > BLOCKED_FLAG_REF_CAP) {
-      nodes.push(", +" + (ids.length - BLOCKED_FLAG_REF_CAP));
+    if (ids.length > effectiveCap) {
+      nodes.push(", +" + (ids.length - effectiveCap));
     }
     return nodes;
+  }
+
+  /** The two relationship-derived causes a story can be blocked for, read
+   * directly off `st.relationships` -- the one place [`blockedFlag`] (the
+   * card badge) and [`blockBanner`] (the drawer banner, SH-398) both derive
+   * from, so the two surfaces cannot silently disagree about which edges
+   * count. See `openBlockers()`'s own doc for the resolvability gap this
+   * inherits: an edge onto a draft or soft-deleted story blocks server-side
+   * but is invisible here. */
+  function blockCauses(st) {
+    return {
+      blockerIds: openBlockers(st).map(function(r) { return r.other_id; }),
+      obviatorIds: (st.relationships || [])
+        .filter(function(r) { return r.relation === "obviated-by"; })
+        .map(function(r) { return r.other_id; })
+    };
   }
 
   /** Every sentence the blocked badge can say, derived in one place (SH-309)
@@ -6208,15 +6239,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var causes = [];
     var ariaParts = [];
 
-    var blockerIds = openBlockers(st).map(function(r) { return r.other_id; });
+    var derived = blockCauses(st);
+    var blockerIds = derived.blockerIds;
     if (blockerIds.length) {
       causes.push(refList(blockerIds));
       ariaParts.push("blocked by " + blockerIds.join(", "));
     }
 
-    var obviatorIds = (st.relationships || [])
-      .filter(function(r) { return r.relation === "obviated-by"; })
-      .map(function(r) { return r.other_id; });
+    var obviatorIds = derived.obviatorIds;
     if (obviatorIds.length) {
       causes.push(["obviated by "].concat(refList(obviatorIds)));
       ariaParts.push("obviated by " + obviatorIds.join(", "));
@@ -6259,6 +6289,62 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       children: children,
       title: reasonTitle,
       ariaText: "blocked (" + ariaParts.join(", ") + ")"
+    };
+  }
+
+  /** The drawer's blocked banner, derived from [`blockCauses`] the same way
+   * [`blockedFlag`] is (SH-398) -- so the two surfaces cannot disagree about
+   * *which* edges block, only about how much room each has to say so. Two
+   * differences from the badge, both because the drawer has the width the
+   * card does not: blocker/obviator chips are never capped
+   * (`refList(ids, ids.length)`), and an `awaiting` reason renders as its
+   * own paragraph (`reason`, left for the caller to pass through
+   * `renderMarkdown()`) instead of a truncated quoted fragment.
+   *
+   * Returns `null` under the exact condition `blockedFlag` does -- nothing
+   * this client can see blocks the story -- so `renderDrawer` can fall back
+   * to the block *form* the same way it always has. Returns `{ headline,
+   * reason, title }` otherwise: `headline` is a mixed array of strings and
+   * `storyRef()` nodes for `.banner-head`, `reason` is the raw `awaiting`
+   * text (or `null`), and `title` is set only on the two causeless
+   * fallbacks -- the same "no reason recorded" / "cause not shown" gap
+   * `blockedFlag`'s own doc explains, told here in a full sentence rather
+   * than a hover-only one since the banner has room to just say it. */
+  function blockBanner(st, isBlocked) {
+    var derived = blockCauses(st);
+    var blockerIds = derived.blockerIds;
+    var obviatorIds = derived.obviatorIds;
+    var hasEdges = blockerIds.length > 0 || obviatorIds.length > 0;
+
+    if (!hasEdges && !st.awaiting) {
+      if (!isBlocked) return null;
+      if (st.state === "blocked") {
+        return {
+          headline: ["Blocked — no reason recorded"],
+          reason: null,
+          title: "No awaiting reason recorded — add one below."
+        };
+      }
+      return {
+        headline: ["Blocked"],
+        reason: null,
+        title: "Blocked by something this board can't resolve — open the story for details."
+      };
+    }
+
+    var headline = ["Blocked"];
+    if (blockerIds.length) {
+      headline.push(" by ");
+      headline = headline.concat(refList(blockerIds, blockerIds.length));
+    }
+    if (obviatorIds.length) {
+      headline.push(blockerIds.length ? ", obviated by " : " obviated by ");
+      headline = headline.concat(refList(obviatorIds, obviatorIds.length));
+    }
+    return {
+      headline: headline,
+      reason: st.awaiting || null,
+      title: null
     };
   }
 
@@ -7738,16 +7824,33 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
     if (st.hidden_at) {
       body.appendChild(el("div", { class: "banner banner-archived" }, [
-        "🗄 Archived — hidden from the board until unarchived.",
-        el("button", { class: "btn btn-ghost", onClick: function() { runFieldMutation(st.id, "POST", "unarchive", {}); } }, ["Unarchive"])
+        el("div", { class: "banner-head" }, [
+          "🗄 Archived — hidden from the board until unarchived.",
+          el("button", { class: "btn btn-ghost", onClick: function() { runFieldMutation(st.id, "POST", "unarchive", {}); } }, ["Unarchive"])
+        ])
       ]));
     }
 
-    if (st.awaiting) {
-      body.appendChild(el("div", { class: "banner banner-blocked" }, ["Blocked: "]
-        .concat(linkifyStoryIds(st.awaiting, st.id))
-        .concat([el("button", { class: "btn btn-ghost", onClick: function() { runFieldMutation(st.id, "POST", "unblock", null); } }, ["Unblock"])])));
-    } else {
+    // SH-398: derived from the same blockCauses() the card badge reads, so
+    // the drawer can no longer show "Reason for blocking…" beneath a card
+    // that already reads "● blocked (SH-308)" -- the banner now renders
+    // whenever ANY cause is visible, not only when `st.awaiting` is set.
+    var banner = blockBanner(st, !!blockedSet()[st.id]);
+    if (banner) {
+      var bannerHead = banner.headline.slice();
+      if (st.awaiting) {
+        bannerHead.push(el("button", { class: "btn btn-ghost", onClick: function() { runFieldMutation(st.id, "POST", "unblock", null); } }, ["Unblock"]));
+      }
+      var bannerChildren = [el("div", { class: "banner-head" }, bannerHead)];
+      if (banner.reason) {
+        bannerChildren.push(el("div", { class: "banner-body md" }, [renderMarkdown(banner.reason, st.id)]));
+      }
+      body.appendChild(el("div", { class: "banner banner-blocked", title: banner.title }, bannerChildren));
+    }
+    // A relation-only block still needs somewhere to add a note -- shown
+    // whenever there is no reason yet, alongside the banner rather than
+    // instead of it.
+    if (!st.awaiting) {
       body.appendChild(buildBlockForm(st));
     }
 
