@@ -116,6 +116,71 @@ caret would still need its own disabled/hover/focus treatment and a matching
 explicit `height` needed none of that: WebKit's native chevron, native disabled
 rendering, and native focus ring are all kept, on every engine.
 
+**What the sweep measures, and when (SH-420).** The sweep walks
+`getBoundingClientRect()` — the box composited through the live ancestor
+transform chain, which is what a finger is actually aimed at, and the reason
+`offsetHeight` was rejected as the measure (it is transform-blind, so a target
+halved by a `scale()` would report its intended size forever). Two consequences
+had to be handled explicitly.
+
+*It waits for the surface to stop moving.* The sweep used to measure
+immediately after `toHaveClass(/open/)`, a few milliseconds into a 0.15s
+transition: `.modal` animates `translate(-50%, -46%)` → `translate(-50%, -50%)`,
+`.drawer` animates `translateX(100%)` → `translateX(0)` over 0.2s. Measured over
+six openings of the create modal on `mobile-webkit`, settled, the three selects
+sit at 336.5 / 415 / 493.5 every time — every coordinate on the 1/128 grid,
+every height exactly 44, zero variance; mid-transition, not one coordinate was
+dyadic and one iteration reproduced SH-420 outright. An interpolated percentage
+is the only thing on this surface that puts a non-dyadic offset into a
+coordinate at all. `settleAndReadTapMin` therefore polls
+`getAnimations({ subtree: true })` on the **swept root** — never `document`,
+which would block a sweep of one surface on a toast animating elsewhere. This
+reaches a class no tolerance could: `.card.entering` interpolates from
+`scale(0.97)`, so a 44px target inside an entering card measures 42.71 —
+**1.3px** under, forty thousand times the float32 residue below.
+
+*It compares against the bound on its own measurement error, not a bare `<`.*
+WebKit returns rect coordinates as float32 (measured: `Math.fround(r.top) ===
+r.top`), and `height` is `bottom - top`. When the two endpoints land in
+different binades — 468 in [256,512), 512 in [512,1024) — they round on grids a
+factor of two apart and their difference misses the specified height by one
+ulp. Swept across 64 consecutive sub-ulp offsets, a control specified at exactly
+44px read **under** the minimum at 16 of them, over it at 16, exactly at it at
+32. An element is therefore flagged only when its shortfall exceeds
+`(|a| + |b|) * 2**-24`, the bound on a difference of two correctly-rounded
+float32 endpoints (each within half an ulp, and `ulp(x) <= |x| * 2**-23`). At
+those coordinates that is 5.8e-5 CSS px — roughly 1.8e-4 device px at dpr 3,
+four orders of magnitude below one device pixel. It is a statement about the
+instrument's precision, not a relaxation of the criterion. `shortBy` travels
+with every report and the 1dp rounding is gone, because that rounding is what
+let this gate print `height: 44` directly beneath "measure under the 44px
+coarse-pointer minimum" — a message contradicting its own verdict.
+
+Device-pixel quantization (`Math.round(v*dpr)/dpr`) was the leading alternative
+and was **rejected on measurement**: it errs in both directions. At Pixel 7's
+dpr of 2.625, `44 * 2.625 = 115.5` sits exactly on a rounding boundary, so an
+exact-44px box's one-ulp residue rounds down and is reported as 43.81 — a false
+positive manufactured by the fix; and at dpr 3 it silently passes anything in
+[43.8333, 44). The threshold itself is no longer the literal 44 in the sweep: it
+is read from what `--tap-min` computes to in a real coarse-pointer engine (which
+`web_test.rs`'s stylesheet grep cannot establish) and pinned to 44 there, so
+lowering the token fails this suite rather than quietly lowering its bar.
+
+**What this narrows, stated rather than left to be discovered.** After settling,
+the sweep asserts nothing about a target's size *while* it animates. A control
+that is undersized only mid-transition is out of coverage. That is the promise
+this suite should make — a user taps a settled control — but it is narrower than
+what the bare walk accidentally claimed. The residual race is real rather than
+hypothetical: the same measurement caught five animations already running again
+on one iteration's settled read, because the dashboard polls and re-animates
+cards; the failure message names it so the next reader does not re-derive it.
+
+Decided by a three-seat council (accessibility, QA, challenger). Ballot 2-1, but
+the substance was unanimous — every seat, including the author of the proposal
+that lost, described this same merged design. `story show SH-420` carries the
+verdict; per SH-363 no tracked file names the council's own directory, which
+survives no fresh clone.
+
 ### Overlay widths (D5)
 
 `.toast-stack`/`.dispatch-history` both read `max-width: min(<rem-ceiling>,

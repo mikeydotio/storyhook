@@ -912,6 +912,41 @@ Standing rules for every wave:
   under its normal concurrent load. That is a fact about the suite, not the detector, and it
   is the same fact that would block the next release. Design of record:
   `docs/spec/test-tiers.md`.
+- **A threshold test measures a settled box, and compares against its own
+  measurement error — never a bare `<`** (SH-420). `responsive.mobile.spec.ts`'s
+  tap-target sweep flagged `select#create-priority` as under the 44px
+  coarse-pointer minimum while its own error message printed `height: 44`. Two
+  independent defects, and the smaller one was the one that got filed. WebKit
+  returns `getBoundingClientRect()` coordinates as **float32** (measured:
+  `Math.fround(r.top) === r.top`), and `height` is `bottom - top`; when the two
+  endpoints land in different binades — 468 in [256,512), 512 in [512,1024) —
+  they round on grids a factor of two apart and their difference misses the
+  specified height by one ulp. Across 64 consecutive sub-ulp offsets a control
+  specified at exactly 44px read under the minimum at 16, over it at 16, and
+  exactly at it at 32: the gate was decided by float noise. But the residue only
+  exists because the sweep measured a **moving** box — it walked a few
+  milliseconds into `.modal`'s 0.15s `translate(-50%,-46%)`→`translate(-50%,-50%)`.
+  Settled, six openings put the three selects at 336.5/415/493.5 every time,
+  every coordinate dyadic, every height exactly 44, zero variance. The story had
+  ruled the transition out on the grounds that "a translation cannot change a
+  descendant's measured height", which is the **wrong test**: a translation is
+  exactly what moves the two endpoints onto different rounding grids. Settling
+  is the larger half, and reaches a class no tolerance could — `.card.entering`
+  interpolates from `scale(0.97)`, so a 44px target inside an entering card
+  measures **42.71**, 1.3px under. The comparison still carries a bound, as
+  belt to the braces: `(|a|+|b|) * 2**-24`, derived from the coordinates the
+  browser reported rather than chosen (SH-394's rule, one axis over from wall
+  clocks). Device-pixel quantization was the leading alternative and lost **on
+  measurement, in both directions**: at Pixel 7's dpr 2.625, `44*2.625 = 115.5`
+  sits on a rounding boundary and a one-ulp residue is reported as 43.81 — a
+  false positive manufactured by the fix — while at dpr 3 it silently passes
+  anything in [43.8333, 44). **The filed reproduction no longer fires at all**,
+  because ordinary layout drift moved the box off the boundary, which is why the
+  regression tests **construct** the straddle (64 sub-ulp offsets, 0/64 flagged
+  at the minimum and 64/64 one pixel under) rather than waiting for it to recur;
+  `tests/tap_target_comparison.rs` is a **wiring** fence in SH-360's exact sense
+  and its own module doc says so. Design of record:
+  `docs/spec/responsive-dashboard.md`'s "Tap targets (D3)".
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
