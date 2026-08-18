@@ -1,7 +1,9 @@
-import { test, expect, type APIRequestContext } from "@playwright/test";
+import { test, expect } from "./support";
+import type { APIRequestContext } from "@playwright/test";
 import {
   activateBehindOverlay,
   cleanUpCreatedStories,
+  heldReadDeadlineMs,
   holdUntilRefused,
   openProject,
   projectSlug,
@@ -470,10 +472,13 @@ test("a popover opened moments after a navigation is not hidden by the previous 
  * `slowData` above. A timer ends its window when the machine gets round to it,
  * which is fine for a spec that only asserts what is on screen *during* the
  * window; these have to assert the transition, so the boundary has to be the
- * test's. The one clock left is the page's own `xhr.timeout = 8000`, which
- * settles a held request whether or not a test asks it to — so everything
- * asserted before `refuse()` runs on an 8s budget, four times the window the
- * tests above act inside.
+ * test's. It used to not be: the page's own `xhr.timeout = 8000`
+ * (`fetchData()`) settled a held request whether or not a test asked it to,
+ * so everything asserted before `refuse()` ran on an 8s budget, four times
+ * the window the tests above act inside — a real, if load-sensitive, race
+ * (SH-347). Each test below now sets `boardFetchTimeoutMs` past anything
+ * this harness can ever grant a test (`heldReadDeadlineMs()`, `./support`),
+ * so the boundary really is the test's now, not the page's clock racing it.
  */
 
 /** Holds every `/data` read for `slug` in flight until `refuse()` is called.
@@ -500,23 +505,31 @@ test("a project whose data never arrives names the failure, once there is one to
   request,
   browserName,
 }) => {
-  // Same class as the two `holdDataFor`-based tests below: WebKit doesn't
-  // reliably surface a held route's `abort()` to the page's XHR within this
-  // suite's timeouts. Load-sensitive rather than deterministic -- this
-  // specific test has not been observed failing, but its sibling at :555
-  // (the identical single-route hold-then-refuse shape) has, intermittently,
-  // in a full-suite run though never in isolation. Quarantined alongside it
-  // rather than left as a test that could flake on some future run and fail
-  // the gate unpredictably. SH-347 owns the root cause.
+  // Same class as the two `holdDataFor`-based tests below. SH-347's own idle
+  // probes (interception-contract.spec.ts, probe B) refuted the original
+  // "WebKit doesn't reliably surface an abort" hypothesis -- ~4ms, same as
+  // Chromium. But re-measured under a REAL full-suite WebKit run
+  // (interception-contract.spec.ts, probe D1, the council-decided plan
+  // recorded on this story): a single held route's abort was NOT reflected
+  // on screen within 12 seconds of `refuse()`, even though the real
+  // navigation/render/click work leading up to it took only ~120ms --
+  // against probe D2's ~3ms for the two-route shape in the *same* run.
+  // Abort delivery is real but not reliably prompt under contention; this
+  // file's own former page-clock race (`xhr.timeout = 8000`, since removed
+  // by `boardFetchTimeoutMs`) is not the whole story either. Per the
+  // council's own verdict, an unreliable-under-load result keeps the
+  // quarantine rather than lifting it on an idle measurement alone.
   test.skip(
     browserName === "webkit",
-    "WebKit doesn't reliably surface a held route's abort to the page's XHR (SH-347)",
+    "Abort delivery measured NOT reliably prompt under real full-suite WebKit contention (SH-347, council Probe D)",
   );
   await seedDraft(request, "Alpha Project", DRAFT_TITLE);
   await seedToken(page);
   const slug = await projectSlug(page.request, "Alpha Project");
   const alphaData = await holdDataFor(page, slug);
-  await page.goto(`/?project=${encodeURIComponent(slug)}`);
+  await page.goto(
+    `/?project=${encodeURIComponent(slug)}&boardFetchTimeoutMs=${heldReadDeadlineMs()}`,
+  );
 
   await expect(page.locator("#board-view")).toBeVisible();
   await page.locator("#drafts-btn").click();
@@ -570,21 +583,30 @@ test("a project that answers after a failure drops the error where it stands", a
   request,
   browserName,
 }) => {
-  // WebKit doesn't reliably surface a held route's `abort()` to the page's
-  // XHR within this suite's timeouts -- observed here intermittently in a
-  // full-suite run (a fresh isolated run of this test alone passes every
-  // time), likely a Playwright/WebKit driver interaction rather than a
-  // `fetchData()` bug (plain, engine-agnostic XHR code). Not yet root caused
-  // to the byte -- SH-347 owns that, alongside the same shape in this file's
-  // other two `holdDataFor`-based tests.
+  // Observed intermittently in a full-suite run (a fresh isolated run of
+  // this test alone passes every time), never reproduced in isolation --
+  // and re-measured, not merely re-hypothesized, since. SH-347's own idle
+  // probes (interception-contract.spec.ts, probe B) refuted the original
+  // "WebKit doesn't reliably surface an abort" hypothesis (~4ms, same as
+  // Chromium). But a REAL full-suite WebKit run (probe D1, the
+  // council-decided plan recorded on this story) found a single held
+  // route's abort NOT reflected on screen within 12s of `refuse()`, against
+  // ~3ms for the two-route shape (probe D2) in that same run. Abort
+  // delivery is real but not reliably prompt under contention -- this
+  // file's own former page-clock race is not the whole explanation either
+  // (`boardFetchTimeoutMs` removed it and the flake still isn't proven
+  // gone). An unreliable-under-load result keeps the quarantine per the
+  // council's own verdict.
   test.skip(
     browserName === "webkit",
-    "WebKit doesn't reliably surface a held route's abort to the page's XHR (SH-347)",
+    "Abort delivery measured NOT reliably prompt under real full-suite WebKit contention (SH-347, council Probe D)",
   );
   await seedToken(page);
   const slug = await projectSlug(page.request, "Alpha Project");
   const alphaData = await holdDataFor(page, slug);
-  await page.goto(`/?project=${encodeURIComponent(slug)}`);
+  await page.goto(
+    `/?project=${encodeURIComponent(slug)}&boardFetchTimeoutMs=${heldReadDeadlineMs()}`,
+  );
 
   await expect(page.locator("#board-view")).toBeVisible();
   await page.locator("#drafts-btn").click();
@@ -613,16 +635,21 @@ test("one project's failure is not carried into the next project's loading windo
   page,
   browserName,
 }) => {
-  // Same class as this file's other two `holdDataFor`-based tests, quarantined
-  // alongside them: WebKit doesn't reliably surface a held route's `abort()`
-  // to the page's XHR within this suite's timeouts. This test holds TWO
-  // routes open at once (`holdDataFor` for both Alpha and Beta, only one ever
-  // refused), which may make it more exposed than its single-route siblings,
-  // but the failure is load-sensitive rather than confined to this shape --
-  // not yet root caused to the byte. SH-347 owns that.
+  // Same class as this file's other two `holdDataFor`-based tests,
+  // quarantined alongside them. This test holds TWO routes open at once
+  // (`holdDataFor` for both Alpha and Beta, only one ever refused). SH-347's
+  // own re-measurement under a real full-suite WebKit run (probe D2, the
+  // council-decided plan recorded on this story) actually saw THIS shape's
+  // abort reflected in ~3ms -- as fast as idle -- in the very same run
+  // where the single-route shape (probe D1, this file's other two tests)
+  // did not surface within 12s. One green sample for this shape, against a
+  // sibling failure in the identical run, does not meet the council's own
+  // bar for lifting (N consecutive green legs, stated honestly) -- kept
+  // quarantined pending more runs, with the asymmetric result recorded
+  // rather than acted on from a single sample.
   test.skip(
     browserName === "webkit",
-    "WebKit doesn't reliably surface a held route's abort while a second route stays open (SH-347)",
+    "One green full-suite sample for this shape (3ms) against a same-run sibling failure -- below the bar to lift (SH-347, council Probe D2)",
   );
   await seedToken(page);
   const alpha = await projectSlug(page.request, "Alpha Project");
@@ -631,7 +658,9 @@ test("one project's failure is not carried into the next project's loading windo
   // Beta's reads are held and never refused, so its own window stays open for
   // the assertions below rather than resolving out from under them.
   await holdDataFor(page, beta);
-  await page.goto(`/?project=${encodeURIComponent(alpha)}`);
+  await page.goto(
+    `/?project=${encodeURIComponent(alpha)}&boardFetchTimeoutMs=${heldReadDeadlineMs()}`,
+  );
 
   await expect(page.locator("#board-view")).toBeVisible();
   await page.locator("#drafts-btn").click();

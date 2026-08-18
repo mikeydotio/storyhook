@@ -1673,6 +1673,27 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // silently reopening the same race.
   var MUTATION_TIMEOUT_MS = intFromQuery("mutationTimeoutMs", 75000);
 
+  // `fetchData()`'s own read deadline (SH-347) -- named and overridable for
+  // the same reason `mutationTimeoutMs` is: a browser spec that deliberately
+  // holds this read across assertions is racing this exact clock, and an
+  // unnamed literal is a race no test can see coming. Default unchanged --
+  // this is a knob, not a behaviour change.
+  var BOARD_FETCH_TIMEOUT_MS = intFromQuery("boardFetchTimeoutMs", 8000);
+  // `fetchReposOnce()`'s own read deadline (SH-347), same reasoning.
+  var CATALOG_FETCH_TIMEOUT_MS = intFromQuery("catalogFetchTimeoutMs", 8000);
+  // `api()`'s own default timeout for a GET (SH-347) -- distinct from
+  // `MUTATION_TIMEOUT_MS` above, which only ever governs a non-GET. Reads
+  // through `api()` are cheap and idempotent (SH-312's own comment on that
+  // function explains why a short default costs nothing but an extra poll),
+  // but a spec that holds one of them (`catalog-readiness.spec.ts`'s
+  // `/states` fetch) is racing this clock the same way.
+  var API_GET_TIMEOUT_MS = intFromQuery("apiGetTimeoutMs", 10000);
+  // `submitTokenModal()`'s own POST /token deadline (SH-347). Named, not a
+  // query knob: nothing in the browser suite holds this route today, so
+  // there is no race for a test to set past -- but a bare literal here is
+  // the same silent-race risk the moment one does.
+  var TOKEN_EXCHANGE_TIMEOUT_MS = 10000;
+
   var PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3, none: 4 };
 
   // ============================================================
@@ -2556,7 +2577,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
             xhr.setRequestHeader(name, opts.headers[name]);
           });
         }
-        xhr.timeout = opts.timeoutMs || (method === "GET" ? 10000 : MUTATION_TIMEOUT_MS);
+        xhr.timeout = opts.timeoutMs || (method === "GET" ? API_GET_TIMEOUT_MS : MUTATION_TIMEOUT_MS);
         xhr.onreadystatechange = function() {
           if (xhr.readyState !== 4) return;
           var parsed = null;
@@ -2638,7 +2659,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // instead of depending on Sec-Fetch-Site, which a plain-http tailnet
     // origin never gets from the browser at all.
     xhr.setRequestHeader("X-Storyhook", "1");
-    xhr.timeout = 8000;
+    xhr.timeout = BOARD_FETCH_TIMEOUT_MS;
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
       // Below the floor — a newer reply has already been applied, or a write
@@ -2871,7 +2892,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     xhr.open("GET", "/api/repos", true);
     // SH-319: see the identical comment in fetchData().
     xhr.setRequestHeader("X-Storyhook", "1");
-    xhr.timeout = 8000;
+    xhr.timeout = CATALOG_FETCH_TIMEOUT_MS;
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
       // Below the floor — a newer reply has already been applied. Nothing is
@@ -4049,7 +4070,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     xhr.open("POST", "/token", true);
     xhr.setRequestHeader("X-Storyhook", "1");
     xhr.setRequestHeader("X-Storyhook-Token", value);
-    xhr.timeout = 10000;
+    xhr.timeout = TOKEN_EXCHANGE_TIMEOUT_MS;
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
       // Released once, ahead of every status arm below, because this is a raw
