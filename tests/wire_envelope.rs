@@ -18,10 +18,10 @@
 //! pins that a hop through JSON changes neither.
 
 use storyhook::cli::{
-    AbandonedAction, Attach, AttachmentAction, ConflictSide, CrashesAction, DaemonAction,
-    EpicAction, GithubAuthAction, GraphMode, HistoryAction, HooksAction, Invocation, MemberInput,
+    AbandonedAction, Attach, AttachmentAction, CrashesAction, DaemonAction, EpicAction,
+    GithubAuthAction, GraphMode, HistoryAction, HooksAction, Invocation, MemberInput,
     NewProjectRequest, NewProjectSpec, PhaseAction, PluginAction, ProjectAction, SettingsAction,
-    SetupMode, SetupStrategy, StateAction, StoreAction, TokenAction, TypeAction, WebAction,
+    StateAction, StoreAction, TokenAction, TypeAction, WebAction,
 };
 use storyhook::domain::finding::{Finding, FindingCode, FindingData};
 use storyhook::domain::{
@@ -32,8 +32,8 @@ use storyhook::error::{AppError, IntegrityDetail, WireError};
 use storyhook::output::{
     BlockedChainView, ConfirmationPlan, DeletePlan, GraphOverview, GraphView, PhaseView,
     ProjectSnapshotView, PurgePlan, ReferencedBy, Response, SetPrefixPlan, SettingKind,
-    SettingSource, SettingView, SetupPlan, StaleInfo, StoryView, SummaryView, UndeletePlan,
-    render_error, render_response,
+    SettingSource, SettingView, StaleInfo, StoryView, SummaryView, UndeletePlan, render_error,
+    render_response,
 };
 use storyhook::store::{GlobalSeq, PrLink};
 
@@ -626,16 +626,6 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                 deleted_reason: None,
             }))),
         ),
-        (
-            "setup_required",
-            Response::SetupRequired(Box::new(SetupPlan {
-                owner: "acme".to_string(),
-                repo: "widgets".to_string(),
-                local_story_count: 12,
-                open_issue_count: 30,
-                exact_match_count: 4,
-            })),
-        ),
     ]
 }
 
@@ -736,11 +726,10 @@ fn the_response_corpus_covers_every_variant() {
             Response::StoryLog { .. } => "story_log",
             Response::ConfirmationRequired(_) => "confirmation_required",
             Response::Project(_) => "project",
-            Response::SetupRequired(_) => "setup_required",
         }
     }
 
-    const EVERY_VARIANT: [&str; 17] = [
+    const EVERY_VARIANT: [&str; 16] = [
         "message",
         "message_with_warnings",
         "story",
@@ -757,7 +746,6 @@ fn the_response_corpus_covers_every_variant() {
         "story_log",
         "confirmation_required",
         "project",
-        "setup_required",
     ];
 
     let mut covered: Vec<&str> = response_corpus()
@@ -800,7 +788,6 @@ fn response_variants_travel_as_snake_case_keys() {
         ("raw_json", "raw_json"),
         ("confirmation_required", "confirmation_required"),
         ("project_full", "project"),
-        ("setup_required", "setup_required"),
     ];
     let corpus = response_corpus();
     for (label, key) in expected {
@@ -871,9 +858,7 @@ fn error_corpus() -> Vec<AppError> {
         // wire form that carried the rendered message would double the prefix.
         AppError::GithubAuth("token expired".to_string()),
         AppError::GithubApi("422 Unprocessable Entity".to_string()),
-        AppError::SyncConflict("remote moved SH-1 to `done`".to_string()),
         AppError::StateConflict("todo".to_string(), "in-progress".to_string()),
-        AppError::SyncErrors("SH-1: 404 not found".to_string()),
     ]
 }
 
@@ -890,9 +875,7 @@ fn variant_name(error: &AppError) -> &'static str {
         AppError::Storage(_) => "Storage",
         AppError::GithubAuth(_) => "GithubAuth",
         AppError::GithubApi(_) => "GithubApi",
-        AppError::SyncConflict(_) => "SyncConflict",
         AppError::StateConflict(..) => "StateConflict",
-        AppError::SyncErrors(_) => "SyncErrors",
     }
 }
 
@@ -905,7 +888,7 @@ fn the_error_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        11,
+        9,
         "every AppError variant needs a row in `error_corpus`; found {names:?}"
     );
 }
@@ -1001,9 +984,7 @@ fn error_variants_travel_under_a_kind_tag() {
             "storage",
             "github_auth",
             "github_api",
-            "sync_conflict",
             "state_conflict",
-            "sync_errors",
         ]
     );
 }
@@ -1384,38 +1365,6 @@ fn invocation_corpus() -> Vec<Invocation> {
         Invocation::CommitSync {
             since: Some("7d".to_string()),
         },
-        Invocation::GithubSync {
-            id: Some("SH-1".to_string()),
-            dry_run: true,
-            resolve: Some(ConflictSide::Local),
-            strategy: None,
-            mode: None,
-        },
-        // Both sides of `--resolve`, and its absence — which is not a default
-        // but the state that makes a conflicting sync refuse (SH-152).
-        Invocation::GithubSync {
-            id: Some("SH-1".to_string()),
-            dry_run: false,
-            resolve: Some(ConflictSide::Remote),
-            strategy: None,
-            mode: None,
-        },
-        Invocation::GithubSync {
-            id: None,
-            dry_run: false,
-            resolve: None,
-            strategy: None,
-            mode: None,
-        },
-        // `--strategy`/`--mode`, stated together — the only shape that is not
-        // a refusal (SH-153's D2).
-        Invocation::GithubSync {
-            id: None,
-            dry_run: false,
-            resolve: None,
-            strategy: Some(SetupStrategy::MatchTitles),
-            mode: Some(SetupMode::Off),
-        },
         Invocation::LinkPr {
             id: "SH-1".to_string(),
             url: "https://github.com/acme/widgets/pull/7".to_string(),
@@ -1656,7 +1605,6 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Hooks { .. } => "Hooks",
         Invocation::Scaffold { .. } => "Scaffold",
         Invocation::CommitSync { .. } => "CommitSync",
-        Invocation::GithubSync { .. } => "GithubSync",
         Invocation::LinkPr { .. } => "LinkPr",
         Invocation::UnlinkPr { .. } => "UnlinkPr",
         Invocation::PrCheck { .. } => "PrCheck",
@@ -1689,7 +1637,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        64,
+        63,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

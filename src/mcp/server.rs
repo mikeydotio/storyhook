@@ -184,11 +184,6 @@ impl McpServer {
                  terminal if you are certain.",
                 plan.headline(),
             ))),
-            Ok(Response::SetupRequired(_)) => Ok(error_result(
-                "this action needs first-time interactive setup that the `story` CLI would ask \
-                 about. This tool does not support that flow, so nothing was changed. Run the \
-                 equivalent `story` command from a terminal to complete setup once.",
-            )),
             Ok(response) => Ok(json!({
                 "content": [{ "type": "text", "text": output::render_response(&response, true, false) }],
                 "isError": false,
