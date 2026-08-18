@@ -1,5 +1,12 @@
-import { test, expect } from "@playwright/test";
-import { holdFetch, openProject, projectSlug, requiredEnv, seedToken } from "./support";
+import { test, expect } from "./support";
+import {
+  heldReadDeadlineMs,
+  holdFetch,
+  openProject,
+  projectSlug,
+  requiredEnv,
+  seedToken,
+} from "./support";
 
 /**
  * Exercises SH-197's `?project=<slug>&story=<id>` deep link against a real
@@ -197,7 +204,9 @@ async function openDrawerOverSettings(
     { sealOnHold: true },
   );
 
-  await page.goto(`/?project=${alpha}&story=${ALPHA_STORY_ID}`);
+  await page.goto(
+    `/?project=${alpha}&story=${ALPHA_STORY_ID}&boardFetchTimeoutMs=${heldReadDeadlineMs()}`,
+  );
   await held.taken;
 
   await page.locator("#settings-btn").click();
@@ -274,7 +283,9 @@ test("a deep link pending for one project is not consumed by a different project
     { sealOnHold: true },
   );
 
-  await page.goto(`/?project=${alpha}&story=${ALPHA_STORY_ID}`);
+  await page.goto(
+    `/?project=${alpha}&story=${ALPHA_STORY_ID}&boardFetchTimeoutMs=${heldReadDeadlineMs()}`,
+  );
   await held.taken;
 
   await page.locator("#projsel-btn").click();

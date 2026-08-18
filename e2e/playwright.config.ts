@@ -1,4 +1,11 @@
 import { defineConfig, devices } from "@playwright/test";
+import {
+  BASE_EXPECT_TIMEOUT_MS,
+  BASE_TEST_TIMEOUT_MS,
+  describeGrace,
+  gracedBudget,
+  loadGraceEnabled,
+} from "./load-grace";
 
 /**
  * Config for the dashboard's browser suite.
@@ -18,6 +25,16 @@ if (!baseURL) {
       "`npx playwright test` directly would otherwise default to nothing " +
       "and fail every spec with a connection error.",
   );
+}
+
+// One line, at config-evaluation time, naming exactly what load was measured
+// and what budgets it produced -- a grace nobody can see is the SH-306 shape
+// one layer up (SH-347). Skipped along with grace itself under
+// `E2E_LOAD_GRACE=0`, since there is nothing to report in that case.
+if (loadGraceEnabled()) {
+  console.error(describeGrace());
+} else {
+  console.error("load-grace: disabled (E2E_LOAD_GRACE=0) -- using SH-222's bare budgets");
 }
 
 /**
@@ -63,8 +80,20 @@ export default defineConfig({
   // any budget, `openProject()` in specs/support.ts) and one was a closed
   // story stranded in a shared fixture. Raising it would have hidden both
   // for exactly as long as the next machine was slower.
-  timeout: 15_000,
-  expect: { timeout: 5_000 },
+  //
+  // Graced by measured contention (SH-347, `./load-grace`) rather than
+  // fixed: at this machine's own idle load the multiplier is exactly 1, so
+  // both numbers below are bit-identical to the two SH-222 literals above
+  // whenever nothing is contending for the machine -- this sampling adds no
+  // patience an idle run didn't already have. Sampled once per project
+  // (`scripts/run-e2e.sh` invokes Playwright once per project), which is
+  // also the only way `expect.timeout` can be graced at all: it cannot be
+  // retuned mid-run, unlike the per-test watchdog in `specs/support.ts`
+  // that grants the *test* budget more room as a run goes on.
+  timeout: loadGraceEnabled() ? gracedBudget(BASE_TEST_TIMEOUT_MS) : BASE_TEST_TIMEOUT_MS,
+  expect: {
+    timeout: loadGraceEnabled() ? gracedBudget(BASE_EXPECT_TIMEOUT_MS) : BASE_EXPECT_TIMEOUT_MS,
+  },
   use: {
     baseURL,
     trace: "retain-on-failure",
