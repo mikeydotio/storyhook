@@ -163,6 +163,11 @@ interface MeasuredTarget {
   describe: string;
   width: number;
   height: number;
+  /** How far under `minPx` the shorter axis fell, past the representation
+   * bound. Always > 0 for a reported target -- it is the evidence for the
+   * verdict, and the reason `width`/`height` are no longer rounded before
+   * being reported (SH-420). */
+  shortBy: number;
 }
 
 /**
@@ -172,6 +177,33 @@ interface MeasuredTarget {
  * targets to (see `--tap-min` in `web_dashboard.html`). Zero-size boxes
  * (`display: none`, an unopened popover) are excluded -- a hidden control
  * cannot be mis-tapped.
+ *
+ * SH-420: the comparison is not a bare `<`. WebKit returns rect coordinates
+ * as float32 (measured: `Math.fround(r.top) === r.top` for every select on
+ * this surface), and `height` is `bottom - top`. When those two endpoints
+ * land in different binades -- 468 in [256,512), 512 in [512,1024) -- they
+ * round on grids that differ by a factor of two, and their difference misses
+ * the specified height by up to one ulp. A control specified at exactly 44px
+ * then measures 43.999969482421875, and `< 44` decides the gate on float
+ * noise: swept across 64 consecutive sub-ulp offsets, an exact-44px control
+ * read under the minimum at 16 of them, over it at 16, and exactly at it at
+ * 32.
+ *
+ * So an element is flagged only when its shortfall exceeds the bound on that
+ * error. A correctly-rounded float32 endpoint sits at most half an ulp from
+ * the true value and `ulp(x) <= |x| * 2**-23`, so a difference of two of them
+ * carries at most `(|a| + |b|) * 2**-24`. That is an upper bound on the
+ * instrument's precision, derived from the coordinates the browser actually
+ * reported -- not a chosen epsilon, and not a relaxation of the criterion.
+ * At the coordinates above it is 5.8e-5 CSS px, roughly 1.8e-4 device px at
+ * this profile's dpr of 3: four orders of magnitude below one device pixel,
+ * and below anything that can be painted, let alone mis-tapped.
+ *
+ * `shortBy` travels with the report, and `width`/`height` are no longer
+ * rounded to 1dp on the way out. That rounding is what let this gate print
+ * `height: 44` directly beneath the words "measure under the 44px
+ * coarse-pointer minimum" -- an error message contradicting its own verdict,
+ * which under SH-306's doctrine is a gate a reader cannot act on.
  */
 async function findSmallTargets(
   root: Locator,
@@ -186,7 +218,18 @@ async function findSmallTargets(
         (typeof el.className === "string" && el.className.trim()
           ? `.${el.className.trim().split(/\s+/).join(".")}`
           : "");
-      const out: { describe: string; width: number; height: number }[] = [];
+      // float32 carries 24 significand bits (23 stored, plus the implicit
+      // leading 1), so a correctly-rounded endpoint is within `|x| * 2**-24`
+      // of the truth and a difference of two is within the sum.
+      const FLOAT32_SIGNIFICAND_BITS = 24;
+      const representationError = (a: number, b: number) =>
+        (Math.abs(a) + Math.abs(b)) * Math.pow(2, -FLOAT32_SIGNIFICAND_BITS);
+      const out: {
+        describe: string;
+        width: number;
+        height: number;
+        shortBy: number;
+      }[] = [];
       for (const el of Array.from(node.querySelectorAll(selector))) {
         // SH-217: a link inside rendered markdown (a description or a
         // comment body) sits inline within a sentence or block of
@@ -198,11 +241,14 @@ async function findSmallTargets(
         if (el.tagName === "A" && el.closest(".md")) continue;
         const r = el.getBoundingClientRect();
         if (r.width === 0 && r.height === 0) continue;
-        if (r.width < minPx || r.height < minPx) {
+        const shortWidth = minPx - r.width - representationError(r.left, r.right);
+        const shortHeight = minPx - r.height - representationError(r.top, r.bottom);
+        if (shortWidth > 0 || shortHeight > 0) {
           out.push({
             describe: desc(el),
-            width: Math.round(r.width * 10) / 10,
-            height: Math.round(r.height * 10) / 10,
+            width: r.width,
+            height: r.height,
+            shortBy: Math.max(shortWidth, shortHeight),
           });
         }
       }
@@ -639,17 +685,372 @@ test("every select meets the coarse-pointer tap-target minimum", async ({ page }
   await sweepTapTargets(page, "select");
 });
 
+/**
+ * SH-420's behaviour fence for the representation bound, and the reason the
+ * bound is falsifiable at all in this repo.
+ *
+ * The filed reproduction is gone: a full `mobile-webkit responsive.mobile`
+ * run is green today, because ordinary layout drift moved the create modal's
+ * third select off the binade boundary it happened to straddle when the bug
+ * was reported. Waiting for it to drift back is not a test. So this
+ * constructs the straddle instead, at the coordinates it was measured at --
+ * a control whose box spans 468 to 512, the boundary between the 2**-15 and
+ * 2**-14 float32 grids -- and walks the host through 64 consecutive sub-ulp
+ * translations.
+ *
+ * Both directions are asserted, which is the whole point: the control sized
+ * AT the minimum must never be reported at any of the 64 offsets, and a
+ * control 1px under it must be reported at every one of them. A bound that
+ * is too tight fails the first; one that swallowed real shortfalls, or that
+ * had the wrong sign, fails the second.
+ *
+ * Against the bare `<` this replaced, the at-minimum control is reported at
+ * 16 of the 64 offsets (and reads OVER the minimum at another 16), which is
+ * this test's RED.
+ */
+test("a control sized exactly at the minimum is never reported, at any sub-pixel offset", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+
+  // 2**-15 is one ulp on the finer of the two grids the straddling box spans;
+  // 64 steps of it walk two full ulps of the coarser one, so every rounding
+  // phase either endpoint can take is visited.
+  const ULP_AT_LOWER_BINADE = Math.pow(2, -15);
+  const OFFSETS = 64;
+
+  await page.evaluate((minPx) => {
+    const host = document.createElement("div");
+    host.id = "sh420-fixture";
+    host.style.cssText =
+      "position:fixed;left:0;top:0;width:390px;height:1px;pointer-events:none;";
+    const make = (id: string, height: number) => {
+      const el = document.createElement("select");
+      el.id = id;
+      // `top: 468px` puts the box at 468..(468+height), straddling 512 --
+      // the boundary between the two float32 grids. `min-height: 0` so the
+      // sheet's own `select` rule cannot raise the deliberately-short one.
+      el.style.cssText =
+        "position:absolute;left:0;top:468px;width:200px;min-height:0;height:" +
+        height +
+        "px;";
+      return el;
+    };
+    host.appendChild(make("sh420-at-min", minPx));
+    host.appendChild(make("sh420-under-min", minPx - 1));
+    document.body.appendChild(host);
+  }, COARSE_TAP_MIN);
+
+  const host = page.locator("#sh420-fixture");
+  const atMinReported: number[] = [];
+  const underMinReported: number[] = [];
+  for (let i = 0; i < OFFSETS; i++) {
+    await host.evaluate((node, ty) => {
+      (node as HTMLElement).style.transform = "translateY(" + ty + "px)";
+    }, i * ULP_AT_LOWER_BINADE);
+    const small = await findSmallTargets(host, "select", COARSE_TAP_MIN);
+    const ids = small.map((t) => t.describe);
+    if (ids.some((d) => d.includes("sh420-at-min"))) atMinReported.push(i);
+    if (ids.some((d) => d.includes("sh420-under-min"))) underMinReported.push(i);
+  }
+  await host.evaluate((node) => node.remove());
+
+  expect(
+    atMinReported,
+    "a control sized exactly at the " +
+      COARSE_TAP_MIN +
+      "px minimum was reported as under it at these sub-ulp offsets -- the " +
+      "comparison is being decided by float32 noise rather than by anything a " +
+      "finger could miss (SH-420)",
+  ).toEqual([]);
+  expect(
+    underMinReported.length,
+    "a control 1px under the " +
+      COARSE_TAP_MIN +
+      "px minimum must be reported at every offset; if it is not, the " +
+      "representation bound has swallowed a real shortfall",
+  ).toBe(OFFSETS);
+});
+
+/**
+ * SH-420: the sweep's own positive control, planted on the surface the bug
+ * was reported on -- inside the create modal, under its live
+ * `translate(-50%, -50%)`, rather than in a synthetic host.
+ *
+ * `expectNoSmallTargets` can only ever assert an empty list, so on its own it
+ * is indistinguishable from a walk that silently stopped finding anything.
+ * This proves the walk still bites after the settle wait and the
+ * representation bound were added: a control 1px short is caught, and the one
+ * beside it sized exactly at the minimum is not.
+ */
+test("the tap-target sweep still catches a genuinely undersized control in the modal", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await page.locator("#new-story-btn").click();
+  await expect(page.locator("#create-modal")).toHaveClass(/open/);
+
+  await page.evaluate((minPx) => {
+    const body = document.querySelector("#create-modal .modal-body")!;
+    const probes: [string, number][] = [
+      ["sh420-probe-at-min", minPx],
+      ["sh420-probe-under-min", minPx - 1],
+    ];
+    for (const [id, height] of probes) {
+      const el = document.createElement("button");
+      el.id = id;
+      el.style.cssText = "min-height:0;height:" + height + "px;width:200px;";
+      body.appendChild(el);
+    }
+  }, COARSE_TAP_MIN);
+
+  const modal = page.locator("#create-modal");
+  const minPx = await settleAndReadTapMin(modal, "the create-story modal");
+  const reported = (await findSmallTargets(modal, "button", minPx)).map(
+    (t) => t.describe,
+  );
+
+  expect(
+    reported.filter((d) => d.includes("sh420-probe-under-min")).length,
+    "a button 1px under the minimum, planted in the modal, must be reported",
+  ).toBe(1);
+  expect(
+    reported.filter((d) => d.includes("sh420-probe-at-min")),
+    "the button sized exactly at the minimum, planted beside it under the same " +
+      "transform, must not be",
+  ).toEqual([]);
+});
+
+/**
+ * SH-420: the settle wait's own red-green, and the class it reaches that no
+ * tolerance could.
+ *
+ * `.card.entering` runs `card-enter`, which interpolates from
+ * `scale(0.97) translateY(-4px)`. A 44px tap target measured while its card
+ * is entering reads 44 * 0.97 = 42.68 -- **1.3px** under the minimum. That is
+ * forty thousand times the float32 residue the rest of this fix is about, so
+ * no representation bound can absorb it; only measuring a settled card can.
+ * It is a false red waiting to happen on the release tier, and the reason
+ * settling is the larger half of SH-420 rather than a tidy-up beside it.
+ *
+ * The animation is deliberately slowed for the duration of this test rather
+ * than raced at its natural 0.22s: a fixture that has to win a race against
+ * a real animation is a fixture that passes vacuously whenever it loses.
+ * Slowing it is the fixture's own fixed cost, paid once, and it makes both
+ * directions deterministic -- the assertion below never has to guess whether
+ * the card was still moving when the sweep ran, because it checks.
+ */
+test("a tap target inside a card that is still animating in is not reported", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+
+  // Long enough that the sweep cannot accidentally start after the card has
+  // settled, which is the only way this test could pass without meaning it.
+  const SLOWED_ENTER_SECONDS = 3;
+  await page.addStyleTag({
+    content: `.card.entering { animation-duration: ${SLOWED_ENTER_SECONDS}s !important; }`,
+  });
+
+  const title = "SH-420 entering card";
+  await createStory(page, title);
+
+  const column = page.locator('.column[data-state="todo"]');
+  // The premise, asserted rather than assumed: a card really is mid-flight,
+  // and its targets really do measure under the minimum right now. Without
+  // this, a future change that stopped animating cards would leave the test
+  // passing while proving nothing.
+  const enteringNow = await column.evaluate((node) =>
+    node
+      .getAnimations({ subtree: true })
+      .filter((a) => a.playState === "running").length,
+  );
+  expect(
+    enteringNow,
+    "the entering card's animation must still be running when the sweep " +
+      "starts, or this test proves nothing about settling",
+  ).toBeGreaterThan(0);
+  const midFlight = await findSmallTargets(column, "button, a[href]", COARSE_TAP_MIN);
+  expect(
+    midFlight.length,
+    "a scaled-down card really should read as undersized mid-flight -- if it " +
+      "does not, `card-enter` no longer scales and this test's premise is gone",
+  ).toBeGreaterThan(0);
+
+  // And the sweep, which settles first, sees none of it.
+  await expectNoSmallTargets(column, "the board's todo column", "button, a[href]");
+
+  await deleteStory(page, title);
+});
+
+/**
+ * SH-420: the settle wait is scoped to the swept root's subtree, not to the
+ * document. A toast, a card flash or a dispatch-history row animating
+ * elsewhere on the page has nothing to do with whether the modal has stopped
+ * moving, and a document-wide wait would hold the sweep up for it -- trading
+ * a rare false red for a rare false hang.
+ *
+ * Asserted by state rather than by a clock: the decoy is still running after
+ * the sweep returns. A document-wide wait could not produce that outcome --
+ * it would have blocked until the decoy finished, or timed out.
+ */
+test("the settle wait ignores an animation running outside the swept surface", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await page.locator("#new-story-btn").click();
+  await expect(page.locator("#create-modal")).toHaveClass(/open/);
+
+  // Long enough that it cannot plausibly finish during the sweep, and finite
+  // so a failure leaves nothing running behind it.
+  const DECOY_SECONDS = 600;
+  await page.evaluate((seconds) => {
+    const decoy = document.createElement("div");
+    decoy.id = "sh420-decoy";
+    decoy.style.cssText = "position:fixed;left:0;bottom:0;width:1px;height:1px;";
+    document.body.appendChild(decoy);
+    decoy.animate([{ opacity: 1 }, { opacity: 0 }], { duration: seconds * 1000 });
+  }, DECOY_SECONDS);
+
+  await expectNoSmallTargets(
+    page.locator("#create-modal"),
+    "the create-story modal (with an unrelated animation in flight)",
+    "select",
+  );
+
+  const decoyStillRunning = await page.evaluate(
+    () =>
+      document
+        .getElementById("sh420-decoy")!
+        .getAnimations()
+        .filter((a) => a.playState === "running").length,
+  );
+  expect(
+    decoyStillRunning,
+    "the sweep must not have waited for an animation outside the surface it " +
+      "was measuring; if this is 0, the decoy ran to completion and the wait " +
+      "is document-wide (SH-420)",
+  ).toBe(1);
+});
+
+/**
+ * The value `--tap-min` must resolve to under a coarse pointer. Kept as a
+ * literal HERE on purpose, and only here: this is the promise itself, not a
+ * tolerance around it. `tests/web_test.rs` greps the stylesheet for the two
+ * declarations; `settleAndReadTapMin` below reads what a real coarse-pointer
+ * engine actually computes, which the grep cannot do, and refuses to sweep
+ * against anything else -- so weakening the token can never quietly weaken
+ * this sweep instead of failing it.
+ */
+const COARSE_TAP_MIN = 44;
+
+/**
+ * Waits for `root` to stop moving, then reads the minimum to hold it to.
+ *
+ * SH-420: the sweep used to measure immediately after `toHaveClass(/open/)`,
+ * which is a few milliseconds into a 0.15s transition -- so it walked a box
+ * that was still in flight. `.modal` animates `translate(-50%, -46%)` to
+ * `translate(-50%, -50%)`; `.drawer` animates `translateX(100%)` to
+ * `translateX(0)` over 0.2s. Measured over six openings of the create modal
+ * on `mobile-webkit`: settled, the three selects sit at 336.5 / 415 / 493.5
+ * every single time, every coordinate on the 1/128 grid, every height
+ * exactly 44, zero variance. Mid-transition, not one coordinate was dyadic,
+ * the values wandered run to run, and one iteration reproduced SH-420's
+ * failure outright. An interpolated percentage is the only thing on this
+ * surface that puts a non-dyadic offset into a float32 coordinate at all.
+ *
+ * The story had ruled this out on the grounds that the transform is a pure
+ * translate and "a translation cannot change a descendant's measured
+ * height". That is the wrong test: a translation is exactly what changes the
+ * float32 residue of `top` and `bottom`, because it is what moves them onto
+ * different rounding grids.
+ *
+ * This is the larger half of SH-420's fix, and it reaches a class no
+ * tolerance could: `.card.entering` runs `card-enter`, which scales to 0.97,
+ * so a 44px target measured inside an entering card reads ~42.68 -- 1.3px
+ * under, which no float32-scale bound can absorb and which would land as a
+ * false red on the release tier.
+ *
+ * **Scoped to `root`'s own subtree, never `document`** -- an unrelated toast
+ * or card flash elsewhere on the page (0.18s-0.9s, all finite) would
+ * otherwise hold up a sweep it has nothing to do with. `getAnimations` with
+ * `subtree: true` includes the element itself, which is what matters here:
+ * on every surface this sweeps, the transform in flight is on the swept root
+ * (`#create-modal`, `#drawer`) rather than above it.
+ *
+ * **What this narrows, stated rather than discovered:** after settling, the
+ * sweep asserts nothing about a target's size WHILE it animates. A control
+ * that is undersized only mid-transition is out of coverage. That is the
+ * promise this suite should be making -- a user taps a settled control --
+ * but it is narrower than what the bare walk accidentally claimed.
+ *
+ * The residual race is real rather than hypothetical: the same measurement
+ * caught five animations already running again on one iteration's settled
+ * read, because the dashboard polls and re-animates cards. It is named in
+ * the failure message so the next reader does not have to re-derive it.
+ */
+async function settleAndReadTapMin(
+  root: Locator,
+  surface: string,
+): Promise<number> {
+  await expect
+    .poll(
+      async () =>
+        root.evaluate((node) =>
+          node
+            .getAnimations({ subtree: true })
+            .filter((a) => a.playState === "running")
+            .map((a) => {
+              const effect = a.effect as KeyframeEffect | null;
+              const target = effect && effect.target ? effect.target.tagName : "?";
+              return `${(a as unknown as { animationName?: string }).animationName ||
+                (a as unknown as { transitionProperty?: string }).transitionProperty ||
+                "animation"} on ${target}`;
+            }),
+        ),
+      {
+        message:
+          `${surface}: animations under this surface never settled, so the ` +
+          "sweep would measure a moving box (SH-420). A live poll can restart " +
+          "card animations at any moment -- if this is flaking rather than " +
+          "hanging, that is the residual race, not a new defect.",
+      },
+    )
+    .toEqual([]);
+
+  const minPx = await root.evaluate(() =>
+    parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue("--tap-min"),
+    ),
+  );
+  expect(
+    minPx,
+    "--tap-min must compute to the coarse-pointer minimum in a coarse-pointer " +
+      "engine; the stylesheet declaring it is not evidence that it resolved",
+  ).toBe(COARSE_TAP_MIN);
+  return minPx;
+}
+
 /** Asserts `findSmallTargets` reports nothing under `root` for `selector`,
- * at the coarse-pointer 44px minimum. */
+ * at the coarse-pointer minimum `--tap-min` actually resolves to, once
+ * `root` has stopped moving (SH-420). */
 async function expectNoSmallTargets(
   root: Locator,
   surface: string,
   selector: string,
 ): Promise<void> {
-  const small = await findSmallTargets(root, selector, 44);
+  const minPx = await settleAndReadTapMin(root, surface);
+  const small = await findSmallTargets(root, selector, minPx);
   expect(
     small,
-    `${surface}: these tap targets measure under the 44px coarse-pointer minimum`,
+    `${surface}: these tap targets measure under the ${minPx}px coarse-pointer minimum`,
   ).toEqual([]);
 }
 
