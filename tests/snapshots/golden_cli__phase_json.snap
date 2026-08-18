@@ -116,6 +116,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
+          "display_state": "blocked",
           "head_global_seq": 63,
           "story": {
             "awaiting": null,

@@ -218,7 +218,9 @@ silently lost if the badge had swallowed it behind a single `blocked[st.id]` gat
 Colouring `.state-pill` turned out to need a prerequisite fix first, not just new CSS.
 Every other renderer in the file already read `display_state || state` — the board's
 column placement, the drag-drop no-op guard, the render diff, and this story's own
-`storyLight()` — specifically so a display-promoted epic (`compute_epic_display_state`,
+`storyLight()` — specifically so a display-promoted epic (`compute_display_state`,
+named `compute_epic_display_state` at the time this story shipped and generalized to
+its current name by SH-407, which added a second promotion beside the epic one below —
 SH-165: an active child pulls a `todo` epic's *card* into `in-progress` without
 touching its own literal `state`) never disagrees with the column its card actually
 sits in. `populateListRow` was the one holdout, reading the literal `st.state` in two
@@ -228,9 +230,15 @@ story's own reasoning cares about, so both were fixed to read `display_state || 
 first, each shipping its own e2e proof, ahead of the colour commit (two hats). The
 promoted pill also carries a `title` naming the literal recorded state, so the table
 never silently disagrees with `story show`. The state *filter* (`filteredStories`)
-keeps reading the literal state on purpose — filters and rendering have always been
-two separate rules in this file, and this only completes the rendering half for the
-list view.
+kept reading the literal state on purpose at the time — filters and rendering were a
+deliberate two-rule split in this file — until SH-407 gave `compute_display_state` a
+second promotion (a story blocked on its own record, not just an epic with an active
+child) that a literal-state filter would have hidden from a "blocked" filter the
+instant it fired: the card visibly sits in the Blocked column but a filter reading
+`st.state` alone would still see `todo` and drop it. `filteredStories` now reads
+`display_state || st.state` too, closing that gap by extending the same rule rather
+than inventing a third one; see `docs/spec/board-ordering-and-placement.md` for the
+full SH-407 design.
 
 The colour itself is carried by a `--state-color` custom property — the same idiom
 `.card`'s own `--card-accent` uses — because one write has to drive three things at
