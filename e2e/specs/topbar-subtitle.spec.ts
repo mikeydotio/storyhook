@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./support";
 import { openProject, seedToken } from "./support";
 
 /**

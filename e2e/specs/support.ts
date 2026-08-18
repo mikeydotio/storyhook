@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test as base } from "@playwright/test";
 import type {
   APIRequestContext,
   APIResponse,
@@ -7,6 +7,85 @@ import type {
   Request,
   Route,
 } from "@playwright/test";
+import { contention, gracedTestBudget, loadGraceEnabled } from "../load-grace";
+
+export { expect };
+
+/** How often the load-grace watchdog (below) re-samples contention during a
+ * running test. Sub-second so a burst that begins mid-test is caught with
+ * room to extend the deadline before it arrives, not so tight that the
+ * sampling itself is a meaningful cost against a 15s+ test budget. */
+const LOAD_GRACE_SAMPLE_INTERVAL_MS = 500;
+
+/**
+ * The load-grace watchdog (SH-347's user determination, 2026-08-17: "relax
+ * the timeouts when machine is under load... reset timeout timer... rather
+ * than ending the test"). An auto-use fixture, applied to every test that
+ * imports `test` from this file rather than from `@playwright/test`
+ * directly (`tests/e2e_load_grace.rs` fences that every tracked spec does).
+ *
+ * Samples contention every {@link LOAD_GRACE_SAMPLE_INTERVAL_MS} and calls
+ * `testInfo.setTimeout()` *before* the deadline can fire -- Playwright has no
+ * hook that runs after a test's timeout has already torn it down, so "reset
+ * the timer" can only mean "extend it pre-emptively." Monotonic: a grant is
+ * never retracted, even if contention subsides, because a test already
+ * mid-flight has no way to know it no longer needs the room. Adopts a spec's
+ * own `test.setTimeout()` (e.g. `dispatch.spec.ts`'s multiple of
+ * `DISPATCH_COMPLETION_TIMEOUT`) as its base the moment one is seen, so this
+ * watchdog only ever ADDS grace on top of whatever budget a spec already
+ * asked for, never replaces it.
+ *
+ * Every extension is reported on two channels -- `test.info().annotations`
+ * (machine-readable, lands in the JSON/HTML reporters) and stderr (visible
+ * under the `list` reporter this suite runs with) -- because a grace nobody
+ * can see is the SH-306 shape one layer up: a gate whose verdict depends on
+ * state it never reported.
+ */
+export const test = base.extend<{ loadGrace: void }>({
+  loadGrace: [
+    async ({}, use, testInfo) => {
+      if (!loadGraceEnabled()) {
+        await use();
+        return;
+      }
+      // The un-graced floor: the budget the spec or config actually asked
+      // for, before any load-driven grace is layered on top. Only updates
+      // when `testInfo.timeout` changes to something this watchdog did NOT
+      // just set itself -- i.e. the spec called its own `test.setTimeout()`
+      // -- which is a rebase, not grace, and must never be logged as though
+      // it were. Read `wantMs` fresh from THIS floor every tick, never from
+      // the watchdog's own last grant: computing it from the last grant
+      // would multiply an already-graced number by the ratio again on every
+      // tick, compounding exponentially for as long as contention stays
+      // above 1 instead of converging to one stable, ratio-appropriate
+      // value.
+      let floorMs = testInfo.timeout;
+      let grantedMs = testInfo.timeout;
+      const timer = setInterval(() => {
+        if (testInfo.timeout !== grantedMs) {
+          floorMs = testInfo.timeout;
+          grantedMs = testInfo.timeout;
+        }
+        const ratio = contention();
+        const wantMs = gracedTestBudget(floorMs, ratio);
+        if (wantMs <= grantedMs) return;
+        testInfo.setTimeout(wantMs);
+        const line =
+          `load-grace: extended "${testInfo.title}" to ${wantMs}ms ` +
+          `(contention=${ratio.toFixed(2)}, floor=${floorMs}ms, was ${grantedMs}ms)`;
+        grantedMs = wantMs;
+        process.stderr.write(`${line}\n`);
+        testInfo.annotations.push({ type: "load-grace", description: line });
+      }, LOAD_GRACE_SAMPLE_INTERVAL_MS);
+      try {
+        await use();
+      } finally {
+        clearInterval(timer);
+      }
+    },
+    { auto: true },
+  ],
+});
 
 /**
  * Shared across every spec since SH-187: every `/api/**` route requires the
@@ -59,6 +138,20 @@ export function requiredEnv(name: string): string {
  */
 export function fullKeyboardAccess(): boolean {
   return process.env.E2E_FULL_KEYBOARD_ACCESS === "1";
+}
+
+/**
+ * A page-side read deadline (`?boardFetchTimeoutMs=`, `?catalogFetchTimeoutMs=`,
+ * `?apiGetTimeoutMs=` -- `src/web_dashboard.html`) that cannot fire inside any
+ * test this harness will run, for a spec that holds one of those reads across
+ * its own assertions (SH-347). Derived from the running test's own timeout
+ * rather than a fresh guessed number, so a held read is provably outlived by
+ * the harness itself: no test can outrun `test.info().timeout`, so a page
+ * clock at twice that can never be the thing that ends an assertion. Call
+ * from inside a running test, after `test.info()` has a real value.
+ */
+export function heldReadDeadlineMs(): number {
+  return test.info().timeout * 2;
 }
 
 /**
