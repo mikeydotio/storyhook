@@ -1093,6 +1093,7 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains("function openColumnSortMenu"));
     assert!(body.contains("function columnSortMenuModel"));
     assert!(body.contains("function columnSortFor"));
+    assert!(body.contains("function columnSortOptionsFor"));
     assert!(body.contains(".column-sort-btn"));
     for label in [
         "Added ↑",
@@ -1101,12 +1102,20 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
         "Modified ↓",
         "Priority ↑",
         "Priority ↓",
+        // SH-407: an OPEN column additionally offers "Next" (the order
+        // `story next` would hand this queue out in) and a CLOSED column
+        // "Completed" (`closed_at`) -- see `columnSortOptionsFor`.
+        "Next ↑",
+        "Next ↓",
+        "Completed ↑",
+        "Completed ↓",
     ] {
         assert!(
             body.contains(label),
             "the column sort menu must offer `{label}`"
         );
     }
+    assert!(body.contains("function nextRank"));
     // The global filter-panel sort control SH-128 built is gone outright --
     // SH-305 replaced it, rather than adding the per-column menu alongside
     // it.
@@ -2972,6 +2981,73 @@ fn web_dashboard_js_reads_the_wire_key_head_global_seq_actually_serializes_to() 
     assert!(
         html.contains(&format!("a.{key}")),
         "compareWriteOrder must read `a.{key}` — the exact key the wire emits"
+    );
+}
+
+/// SH-407: `next_ids` must reach the wire on `/data`, in the exact order
+/// `story next` would hand this queue out in, or the board's "Next" column
+/// sort has nothing to read.
+#[test]
+fn web_serve_api_data_carries_next_ids() {
+    let fixture = served();
+    fixture.seed(&["new", "First"]);
+    fixture.seed(&["new", "Second"]);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    let resp = fixture
+        .agent()
+        .get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    let next_ids: Vec<&str> = json["next_ids"]
+        .as_array()
+        .expect("next_ids must be present and an array")
+        .iter()
+        .map(|v| v.as_str().expect("each id is a string"))
+        .collect();
+    assert_eq!(
+        next_ids,
+        ["SH-1", "SH-2"],
+        "both stories tie on priority, so the order must fall back to ready_order's story-number tiebreak"
+    );
+}
+
+/// SH-407, mirroring `web_dashboard_js_reads_the_wire_key_head_global_seq_actually_serializes_to`
+/// immediately above: `next_ids` is a top-level field, not per-story, so the
+/// dashboard's `nextRank` must read `state.data.next_ids` literally rather
+/// than a hand-typed guess on both sides.
+#[test]
+fn web_dashboard_js_reads_the_wire_key_next_ids_actually_serializes_to() {
+    let fixture = served();
+    fixture.seed(&["new", "Only story"]);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    let resp = fixture
+        .agent()
+        .get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let key = json
+        .as_object()
+        .unwrap()
+        .keys()
+        .find(|k| k.as_str() == "next_ids")
+        .expect("the wire payload must carry a top-level `next_ids` key");
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let html = resp.into_body().read_to_string().unwrap();
+    assert!(
+        html.contains(&format!("data.{key}")),
+        "nextRank must read `state.data.{key}` — the exact key the wire emits"
     );
 }
 

@@ -26,7 +26,10 @@
 //! `next`, `summary`, `report` and `context`'s ready lists rank by
 //! [`domain::ready_order`](crate::domain::ready_order) (priority, then story
 //! number) instead of bare story number — a total order the legacy comparator
-//! did not have (SH-63).
+//! did not have (SH-63). `report_data`'s `next_ids` is the same list, sharing
+//! the same `ready_queue` helper `next` truncates — the web dashboard's board
+//! reads it as the "Next" sort key, since the browser cannot call `story
+//! next` itself (SH-407).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -373,11 +376,17 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
         // agree.)
         summary.ready_count = ready_ids.len();
 
+        let next_ids = ready_queue(&views, &stories, active.as_ref(), None)
+            .into_iter()
+            .map(|view| view.story.id)
+            .collect();
+
         Ok(ReportData {
             summary,
             stories: views,
             ready_ids,
             blocked_ids,
+            next_ids,
         })
     }
 
@@ -1052,8 +1061,14 @@ fn sort_ready(views: &mut [StoryView]) {
 /// story (`!has_children`) that is claimable, sorted by
 /// [`domain::ready_order`] and optionally filtered to one `phase:<n>` label.
 ///
-/// The one implementation behind `story next`'s own filter/sort, extracted
-/// so a second caller can share it without duplicating the predicate.
+/// The one implementation behind two callers: [`QueryService::next`], which
+/// truncates it to `count`, and [`QueryService::report_data`], which needs
+/// only the ids in this exact order for the web dashboard's "Next" board
+/// sort (SH-407) — the browser cannot call `story next` itself,
+/// `/api/v1/invoke` being loopback- and master-token-gated
+/// (`src/api/rpc.rs`), so the server computes the queue once and ships the
+/// order rather than the dashboard re-deriving it in JS, a duplicate of
+/// this exact predicate this project has already paid for once (SH-240).
 fn ready_queue(
     views: &[StoryView],
     stories: &BTreeMap<String, StorySnapshot>,

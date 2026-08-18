@@ -813,6 +813,58 @@ fn report_data_treats_the_blocked_state_as_not_ready() {
     assert!(!report.ready_ids.contains(&id));
 }
 
+/// SH-407: `report_data().next_ids` is the same queue `story next` hands
+/// out, in the same order — both routes share one `ready_queue` helper
+/// (`src/service/query.rs`), so this is an equality pin in the style of
+/// `summary_and_report_agree_about_the_ready_count_by_two_different_routes`
+/// above, guarding against the two ever being computed independently again.
+/// Priorities are assigned out of creation order so a passing assertion
+/// proves the order came from `ready_order`, not from insertion order.
+#[test]
+fn report_datas_next_ids_agrees_with_next_by_two_different_routes() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let low = new_story(&ctx, "low");
+    let critical = new_story(&ctx, "critical");
+    let medium = new_story(&ctx, "medium");
+    StoryService::new(&ctx)
+        .set_priority(&low, "low")
+        .expect("prioritizing");
+    StoryService::new(&ctx)
+        .set_priority(&critical, "critical")
+        .expect("prioritizing");
+    StoryService::new(&ctx)
+        .set_priority(&medium, "medium")
+        .expect("prioritizing");
+
+    let next = query(&fixture, |service| service.next(usize::MAX, None));
+    let report = query(&fixture, |service| service.report_data());
+    let next_ids: Vec<String> = next.into_iter().map(|view| view.story.id).collect();
+
+    assert_eq!(next_ids, [critical.as_str(), medium.as_str(), low.as_str()]);
+    assert_eq!(report.next_ids, next_ids);
+}
+
+/// SH-407: `next_ids` excludes a parent the same way `story next` does —
+/// `ready_queue`'s `!has_children` filter applies to both callers, so an
+/// epic never appears in the dashboard's "Next" sort even though it is
+/// itself `is_claimable` and therefore does appear in `ready_ids`.
+#[test]
+fn report_datas_next_ids_excludes_parents_the_way_next_does() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let epic = new_story(&ctx, "epic");
+    let child = new_story(&ctx, "child");
+    RelationService::new(&ctx)
+        .relate(&epic, "parent-of", &child, false)
+        .expect("relating");
+
+    let report = query(&fixture, |service| service.report_data());
+    assert!(report.ready_ids.contains(&epic));
+    assert!(!report.next_ids.contains(&epic));
+    assert!(report.next_ids.contains(&child));
+}
+
 #[test]
 fn list_filters_are_conjunctive() {
     let fixture = ServiceFixture::new();
