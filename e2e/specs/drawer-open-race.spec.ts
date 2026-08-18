@@ -1,8 +1,9 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./support";
 import {
   cleanUpCreatedStories,
   createStory,
   deleteStory,
+  heldReadDeadlineMs,
   holdFetch,
   openProject,
   projectSlug,
@@ -47,7 +48,11 @@ import {
 
 test.beforeEach(async ({ page }) => {
   await seedToken(page);
-  await page.goto("/");
+  // `boardFetchTimeoutMs` past this suite's own maximum patience (SH-347):
+  // the one test below that holds `/data` must not race the page's own read
+  // deadline for that hold. Harmless for the sibling test, which never holds
+  // anything.
+  await page.goto(`/?boardFetchTimeoutMs=${heldReadDeadlineMs()}`);
 });
 
 cleanUpCreatedStories("Alpha Project");
