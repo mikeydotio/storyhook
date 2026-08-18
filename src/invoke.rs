@@ -213,35 +213,6 @@ impl InvokeRequest {
         }
         self
     }
-
-    /// The same request, with its setup answers already given.
-    ///
-    /// The second half of the two-step SH-153's D2 defines: the first
-    /// invocation answers [`Response::SetupRequired`] and writes nothing, the
-    /// client asks the user, and this is what carries the answer back. The
-    /// invocation is otherwise untouched — same story id, same `dry_run`,
-    /// same `resolve`.
-    ///
-    /// A request carrying anything other than `GithubSync` is returned
-    /// unchanged, which is what makes this safe to call unconditionally —
-    /// the same shape [`forced`](Self::forced) has.
-    #[must_use]
-    pub fn with_setup_answers(
-        mut self,
-        strategy: crate::cli::SetupStrategy,
-        mode: crate::cli::SetupMode,
-    ) -> Self {
-        if let Invocation::GithubSync {
-            strategy: s,
-            mode: m,
-            ..
-        } = &mut self.invocation
-        {
-            *s = Some(strategy);
-            *m = Some(mode);
-        }
-        self
-    }
 }
 
 /// Executes storyhook commands.
@@ -900,33 +871,6 @@ pub fn dispatch<S: Store>(
                 )))
             }
         },
-        Invocation::GithubSync {
-            id,
-            dry_run,
-            resolve,
-            strategy,
-            mode,
-        } => {
-            #[cfg(feature = "github-sync")]
-            {
-                crate::service::GithubSyncService::new(ctx).sync(
-                    id.as_deref(),
-                    dry_run,
-                    resolve,
-                    strategy,
-                    mode,
-                )
-            }
-            #[cfg(not(feature = "github-sync"))]
-            {
-                let _ = (id, dry_run, resolve, strategy, mode);
-                Err(AppError::Usage(
-                    "github-sync requires the `github-sync` feature. \
-                     Rebuild with: cargo install storyhook --features github-sync"
-                        .to_string(),
-                ))
-            }
-        }
         Invocation::CommitSync { since } => GitService::new(ctx)
             .commit_sync(since.as_deref())
             .map(Response::Message),
@@ -943,16 +887,16 @@ pub fn dispatch<S: Store>(
             ctx.story_view(&id)
         }
         Invocation::PrCheck { id } => {
-            #[cfg(feature = "github-sync")]
+            #[cfg(feature = "github-pr")]
             {
                 crate::service::PrLinkService::new(ctx).check(id.as_deref())
             }
-            #[cfg(not(feature = "github-sync"))]
+            #[cfg(not(feature = "github-pr"))]
             {
                 let _ = id;
                 Err(AppError::Usage(
-                    "pr-check requires the `github-sync` feature. \
-                     Rebuild with: cargo install storyhook --features github-sync"
+                    "pr-check requires the `github-pr` feature. \
+                     Rebuild with: cargo install storyhook --features github-pr"
                         .to_string(),
                 ))
             }
@@ -1471,13 +1415,6 @@ fn set_prefix_message(outcome: &SetPrefixOutcome) -> String {
             if plan.relationships == 1 { "" } else { "s" },
         ));
     }
-    if plan.github_bases > 0 {
-        lines.push(format!(
-            "  rewrote   {} github-sync merge base{}",
-            plan.github_bases,
-            if plan.github_bases == 1 { "" } else { "s" },
-        ));
-    }
     lines.push(format!("  backup    {}", outcome.backup_path.display()));
     match &outcome.pointer_updated {
         PointerUpdate::NoCheckout => {}
@@ -1589,10 +1526,9 @@ fn dispatch_doctor_abandoned(action: AbandonedAction) -> Result<Response, AppErr
 }
 
 /// What `story doctor abandoned` prints: every entry, with the recovery this
-/// codebase can actually recommend for its kind of work — `github-sync` may
-/// have made partial progress against GitHub itself and is safest re-run;
-/// anything else changed local data at most, and `story show`/`story list`
-/// answer whether it landed.
+/// codebase can actually recommend for its kind of work — it may or may not
+/// have written locally, and `story show`/`story list` answer whether it
+/// landed.
 fn abandoned_ledger_message(ledger: &[crate::daemon::lifecycle::AbandonedRequest]) -> String {
     if ledger.is_empty() {
         return "no abandoned commands.".to_string();
@@ -1604,13 +1540,8 @@ fn abandoned_ledger_message(ledger: &[crate::daemon::lifecycle::AbandonedRequest
         if ledger.len() == 1 { "" } else { "s" }
     );
     for entry in ledger {
-        let recovery = if entry.request.command == "github-sync" {
-            "may have made partial progress against GitHub itself; re-running it is safe \
-             and picks up where it left off"
-        } else {
-            "may or may not have written locally; `story show`/`story list` on the story \
-             it named answers whether it landed"
-        };
+        let recovery = "may or may not have written locally; `story show`/`story list` on the \
+                         story it named answers whether it landed";
         body.push_str(&format!(
             "  {}  `{}`{}\n    started {}, abandoned {}\n    {}\n    {}\n\n",
             entry.request.request_id,
@@ -1705,22 +1636,13 @@ fn crashes_ledger_message(ledger: &[crate::daemon::crash::CrashRecord]) -> Strin
 }
 
 /// `story update` — self-update, which touches no project data at all.
+///
+/// Unconditional (SH-408): `src/update.rs` rides `ureq`, which has been an
+/// unconditional dependency since the daemon transport landed, and uses only
+/// `AppError::GithubApi` — nothing behind the `github-pr` feature. It was
+/// gated on that feature purely by accident of history.
 fn update(check: bool, force: bool) -> Result<Response, AppError> {
-    #[cfg(feature = "github-sync")]
-    {
-        crate::update::run(check, force).map(Response::Message)
-    }
-    #[cfg(not(feature = "github-sync"))]
-    {
-        let _ = (check, force);
-        Err(AppError::Usage(
-            "self-update requires the `github-sync` feature. \
-             Reinstall via the official installer \
-             (curl -fsSL https://raw.githubusercontent.com/mikeydotio/storyhook/main/install.sh | sh) \
-             or rebuild with: cargo install storyhook --features github-sync"
-                .to_string(),
-        ))
-    }
+    crate::update::run(check, force).map(Response::Message)
 }
 
 /// The `story phase …` family.
@@ -2287,29 +2209,28 @@ pub fn dispatch_unscoped_with_stdin<S: Store>(
                 &export,
                 legacy_links,
             )?;
-            // Best-effort, run only once the restore has committed — not part
-            // of the same transaction, and only meaningful when both the
-            // document carried a github-sync configuration and this build can
-            // interpret it (SH-189). See the function's own doc comment for
-            // why it cannot run any earlier or live in `import_project`
-            // itself.
-            #[cfg(feature = "github-sync")]
-            crate::service::github::reconcile_restored_github_remote(store, root)?;
             let message = format!("imported project with {} stories", outcome.stories);
-            if outcome.skipped_remotes.is_empty() {
+            let mut warnings: Vec<String> = outcome
+                .skipped_remotes
+                .iter()
+                .map(|skipped| {
+                    format!(
+                        "`{}` is already registered to project `{}`; not re-registered by \
+                         this restore",
+                        skipped.url, skipped.holder
+                    )
+                })
+                .collect();
+            if outcome.discarded_github_sync {
+                warnings.push(
+                    "this document carries a pre-retirement github-sync configuration and/or \
+                     merge-base table; github-sync is retired (SH-408), so neither was restored"
+                        .to_string(),
+                );
+            }
+            if warnings.is_empty() {
                 Ok(Response::Message(message))
             } else {
-                let warnings = outcome
-                    .skipped_remotes
-                    .iter()
-                    .map(|skipped| {
-                        format!(
-                            "`{}` is already registered to project `{}`; not re-registered by \
-                             this restore",
-                            skipped.url, skipped.holder
-                        )
-                    })
-                    .collect();
                 Ok(Response::MessageWithWarnings(message, warnings))
             }
         }
@@ -2436,7 +2357,7 @@ pub fn reads_stdin(invocation: &Invocation) -> bool {
 #[must_use]
 pub fn needs_github_token(invocation: &Invocation) -> bool {
     match invocation {
-        Invocation::GithubSync { .. } | Invocation::PrCheck { .. } => true,
+        Invocation::PrCheck { .. } => true,
         // `LinkPr`/`UnlinkPr` never call GitHub — a PR URL is parsed, not
         // fetched — so they spend no credential, unlike `PrCheck` above.
         Invocation::LinkPr { .. } | Invocation::UnlinkPr { .. } => false,
@@ -2749,7 +2670,6 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Hooks { .. } => "hooks",
         Invocation::Scaffold { .. } => "scaffold",
         Invocation::CommitSync { .. } => "commit-sync",
-        Invocation::GithubSync { .. } => "github-sync",
         Invocation::LinkPr { .. } => "link-pr",
         Invocation::UnlinkPr { .. } => "unlink-pr",
         Invocation::PrCheck { .. } => "pr-check",
@@ -2892,7 +2812,7 @@ impl HttpInvoker {
     /// belonging to the command the record *names*.
     ///
     /// So **queued time is unbounded by construction**. A client behind a long
-    /// `github-sync` waits exactly as long as that sync takes, because the
+    /// `pr-check` waits exactly as long as that check takes, because the
     /// record keeps moving; it is charged only for silence. That is the whole
     /// reason this is not the global deadline the old comment here correctly
     /// refused: the daemon serves one request at a time, so a wall-clock bound
@@ -3674,7 +3594,6 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Hooks { .. }
         | Invocation::Scaffold { .. }
         | Invocation::CommitSync { .. }
-        | Invocation::GithubSync { .. }
         | Invocation::LinkPr { .. }
         | Invocation::UnlinkPr { .. }
         | Invocation::PrCheck { .. }
@@ -4069,12 +3988,12 @@ fn doctor_advice<S: Store>(
     let mut advice = notices;
     advice.extend(orphan_advice(&orphans));
     advice.extend(origin_advice(&origins));
-    advice.extend(github_remote_advice(ctx)?);
     advice.extend(abandoned_advice(ctx.env()));
     advice.extend(crash_advice(ctx.env()));
     advice.extend(pointer_origin_advice(ctx)?);
     advice.extend(pointer_prefix_advice(ctx)?);
     advice.extend(legacy_link_advice(ctx)?);
+    advice.extend(pr_link_needs_a_registered_origin_advice(ctx)?);
     Ok(advice)
 }
 
@@ -4143,92 +4062,10 @@ fn deregistered_message(forgotten: &[crate::service::OrphanedRegistration]) -> S
     out
 }
 
-/// What `story doctor` says about a github-synced project whose configured
-/// target repository does not match this checkout's own git remote (SH-189).
-///
-/// Replaces the old `backup_advice`, which warned that `story export` did not
-/// carry github-sync's configuration at all — SH-189 made that carry
-/// complete, so that warning went false and this is what took its place: not
-/// "does a backup carry this" but "does the configured `github.owner`/
-/// `github.repo` still name *this* checkout's repository". That question
-/// matters most right after a restore into a fork or a relocated clone — the
-/// one case [`crate::service::github::reconcile_restored_github_remote`]
-/// cannot always answer for certain, since it runs best-effort at restore
-/// time and a checkout may not have `origin` set yet — but it is evaluated
-/// fresh on every `story doctor` run rather than left as a one-shot flag, so
-/// drift introduced at any point (an `origin` changed later, a document
-/// restored by an older binary) is still caught.
-///
-/// Advisory, like [`origin_advice`], and for the same reason: nothing is
-/// broken, the project works, and a non-zero exit would make `doctor` red for
-/// every github-synced project whose checkout simply has no `origin` yet.
-///
-/// Under `--no-default-features` this reads *presence* only, the same
-/// fallback its `backup_advice` predecessor used: the type describing the
-/// document's shape, and the git-remote detector that would confirm or
-/// refute it, do not exist in that build.
-fn github_remote_advice<S: Store>(ctx: &Ctx<'_, S>) -> Result<Vec<String>, AppError> {
-    #[cfg(feature = "github-sync")]
-    {
-        let document = ctx
-            .store()
-            .read(|tx| Ok(tx.settings(ctx.project())?.github_sync))?;
-        let Some(document) = document else {
-            return Ok(Vec::new());
-        };
-        let Ok(config) =
-            serde_json::from_value::<crate::github::sync_state::GithubSyncConfig>(document)
-        else {
-            // Not this advisory's failure to report: an unparseable blob is
-            // exactly what `story github-sync` itself will refuse on, loudly,
-            // the next time it runs — nothing silent about it either way.
-            return Ok(Vec::new());
-        };
-        let detected = crate::github::sync_state::detect_github_remote(ctx.cwd())?;
-        Ok(match detected {
-            Some(detected)
-                if detected.owner == config.github.owner && detected.repo == config.github.repo =>
-            {
-                Vec::new()
-            }
-            Some(detected) => vec![format!(
-                "github-sync is configured for `{}/{}`, but this checkout's `origin` points at \
-                 `{}/{}` — the next `story github-sync` will push there, not to this \
-                 checkout's own repository. This is common right after a restore into a fork \
-                 or a relocated clone; confirm which repository is intended before syncing.",
-                config.github.owner, config.github.repo, detected.owner, detected.repo,
-            )],
-            None => vec![format!(
-                "github-sync is configured for `{}/{}`, but this checkout has no GitHub \
-                 `origin` to confirm that against — common right after a restore, before `git \
-                 remote add origin` runs. The configured repository has not been verified for \
-                 this checkout.",
-                config.github.owner, config.github.repo,
-            )],
-        })
-    }
-    #[cfg(not(feature = "github-sync"))]
-    {
-        let configured = ctx
-            .store()
-            .read(|tx| Ok(tx.settings(ctx.project())?.github_sync.is_some()))?;
-        if !configured {
-            return Ok(Vec::new());
-        }
-        Ok(vec![
-            "github-sync is configured, but this build (--no-default-features) cannot verify \
-             its target repository against this checkout's git remote. Rebuild with the \
-             `github-sync` feature to check."
-                .to_string(),
-        ])
-    }
-}
-
 /// What `story doctor` says when the abandoned-command ledger is not empty
 /// (SH-173).
 ///
-/// Advisory rather than an integrity failure, for the same reason
-/// [`github_remote_advice`] is: an abandoned command *may* have landed — a forced
+/// Advisory rather than an integrity failure: an abandoned command *may* have landed — a forced
 /// shutdown does not roll anything back, it only stops confirming — so a
 /// non-zero exit here would tell a script something is broken when the most
 /// likely truth is that nothing is. `story doctor abandoned` is where the
@@ -4324,6 +4161,69 @@ fn legacy_link_advice<S: Store>(ctx: &Ctx<'_, S>) -> Result<Vec<String>, AppErro
          cannot tell the two apart and will not guess which.",
         found.len(),
         if found.len() == 1 { "" } else { "s" },
+    ));
+    Ok(lines)
+}
+
+/// What `story doctor` says about a project holding a `close_on_merge` pull
+/// request link that no registered GitHub origin can validate (D1 of SH-408).
+///
+/// `PrLinkService::link`'s `refuse_cross_repo` guard compares a
+/// `close_on_merge` link's repository against
+/// [`configured_github_repos`](crate::service::pr_link::configured_github_repos)
+/// — the project's *registered* origins — and, finding none registered,
+/// treats "nothing configured" as accept rather than refuse. That is the
+/// right default for a project that never had a GitHub remote, but SH-408's
+/// own behaviour-change audit named the project it is silent for: one that
+/// had `github-sync` configured before this story and so was never walked
+/// through `story project link origin` — its `close_on_merge` links used to
+/// be protected by the retired sync engine's own comparison, and after this
+/// story that protection is gone with no signal that it went.
+///
+/// Advisory rather than an integrity failure, and never repaired by
+/// `--fix`: the fix is `story project link origin <url>`, an operator
+/// decision this command cannot make on anyone's behalf.
+fn pr_link_needs_a_registered_origin_advice<S: Store>(
+    ctx: &Ctx<'_, S>,
+) -> Result<Vec<String>, AppError> {
+    let configured = crate::service::pr_link::configured_github_repos(ctx)?;
+    if !configured.is_empty() {
+        return Ok(Vec::new());
+    }
+    let links = ctx.store().read(|tx| tx.open_pr_links(ctx.project()))?;
+    let closing: Vec<_> = links
+        .into_iter()
+        .filter(|(_, link)| link.close_on_merge)
+        .collect();
+    if closing.is_empty() {
+        return Ok(Vec::new());
+    }
+    let prefix = ctx
+        .store()
+        .read(|tx| tx.project(ctx.project()))?
+        .map(|project| project.prefix)
+        .unwrap_or_default();
+    let mut lines: Vec<String> = closing
+        .iter()
+        .map(|(story_no, link)| {
+            format!(
+                "`{}` has a close_on_merge link to `{}/{}#{}` that no registered origin can be \
+                 checked against",
+                story_no.to_id(&prefix),
+                link.owner,
+                link.repo,
+                link.number,
+            )
+        })
+        .collect();
+    lines.push(format!(
+        "{} close_on_merge pull request link{} with no registered GitHub origin to check {} \
+         repository against — a merge on the wrong repository could close the wrong story with \
+         nothing to catch it. Register this project's origin with `story project link origin \
+         <url>` to restore the check.",
+        closing.len(),
+        if closing.len() == 1 { "" } else { "s" },
+        if closing.len() == 1 { "its" } else { "their" },
     ));
     Ok(lines)
 }
@@ -4725,7 +4625,7 @@ mod creates_a_project_tests {
         }
     }
 
-    /// **Only `github-sync` spends a credential**, and the check that says so is
+    /// **Only `pr-check` spends a credential**, and the check that says so is
     /// exhaustive over `Invocation` rather than defaulted.
     ///
     /// The positive half is the point of SH-153. The negative half is worth a
@@ -4733,14 +4633,8 @@ mod creates_a_project_tests {
     /// and an envelope that carries a secret it has no use for is a secret in a
     /// place nobody thought about.
     #[test]
-    fn only_github_sync_carries_a_credential() {
-        assert!(needs_github_token(&Invocation::GithubSync {
-            id: None,
-            dry_run: false,
-            resolve: None,
-            strategy: None,
-            mode: None,
-        }));
+    fn only_pr_check_carries_a_credential() {
+        assert!(needs_github_token(&Invocation::PrCheck { id: None }));
         for invocation in [
             Invocation::Summary,
             Invocation::Version,
@@ -4883,13 +4777,7 @@ mod project_creation_target_tests {
             Invocation::Project {
                 action: ProjectAction::Show,
             },
-            Invocation::GithubSync {
-                id: None,
-                dry_run: false,
-                resolve: None,
-                strategy: None,
-                mode: None,
-            },
+            Invocation::PrCheck { id: None },
             Invocation::Daemon {
                 action: DaemonAction::Status,
             },

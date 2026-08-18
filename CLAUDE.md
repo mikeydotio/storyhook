@@ -591,7 +591,10 @@ Standing rules for every wave:
   general form travels beyond this one field: a message format that predates a distinction cannot
   retroactively express it, and the fix is for *absence* to decode as "states nothing,"
   resolved against whatever the reader already believes, never silently promoted to a
-  negative answer.
+  negative answer. **The mechanism this bullet describes is retired** — `story
+  github-sync`, `github::field_map`, and the `github_bases` table are all gone (SH-408) —
+  but the precedent stays as the case that first proved the general form, for the next
+  message format this project ever widens.
 - **A blocker that is a story is recorded as a story, not as prose about one** (SH-398).
   `story block <id> "<reason>"` could only ever write a free-text `awaiting` field —
   `is_ready`'s three block signals (the reserved `blocked` state, an open `blocked-by`/

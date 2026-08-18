@@ -3,7 +3,7 @@
 //!
 //! # Why this lives in `domain` rather than `github`
 //!
-//! `src/github/` is compiled only under the `github-sync` feature, but
+//! `src/github/` is compiled only under the `github-pr` feature, but
 //! `story link-pr`/`unlink-pr` are feature-independent by design: a PR URL is
 //! parsed, not fetched, so linking and unlinking never spend a network call
 //! or a caller's token and must work in every build. The binding council
@@ -17,20 +17,20 @@
 //! surfaces depend on belongs with the domain, not with one gated consumer
 //! of it.
 //!
-//! `crate::github::sync_state` re-exports this function so every existing
-//! caller inside the gated module keeps its old import path.
+//! [`crate::domain::github_remote`] sits beside this module for the same
+//! reason — see its own doc comment.
 
 use crate::error::AppError;
 
 /// The one host a pull request URL can name.
 ///
-/// A private duplicate of `crate::github::sync_state::GITHUB_HOST` — that
-/// copy is feature-gated and this one is not, and threading a shared
-/// constant across the feature boundary is not worth it for a value that
-/// will never change. Matched by **whole-host equality**, never a suffix,
-/// for the identical reason `sync_state`'s copy documents: a hardcoded
-/// `api.github.com` client must never be pointed at a same-named public
-/// repository on a lookalike host.
+/// A private duplicate of [`crate::domain::github_remote`]'s own copy — that
+/// module documents the same choice: threading a shared constant across two
+/// files that already agree on its value is not worth it for one that will
+/// never change. Matched by **whole-host equality**, never a suffix, for the
+/// identical reason that copy documents: a hardcoded `api.github.com` client
+/// must never be pointed at a same-named public repository on a lookalike
+/// host.
 const GITHUB_HOST: &str = "github.com";
 
 /// Parses a GitHub pull request web URL into `(owner, repo, number)`, or
@@ -38,7 +38,7 @@ const GITHUB_HOST: &str = "github.com";
 ///
 /// # A different grammar from `parse_github_url`
 ///
-/// `crate::github::sync_state::parse_github_url` reads a *git remote* —
+/// [`crate::domain::github_remote::parse_github_url`] reads a *git remote* —
 /// every scheme `git clone` accepts, including the scp-like
 /// `[user@]github.com:owner/repo` form, and a path that is exactly
 /// `owner/repo`. A pull request URL is never a clone target: it is always a

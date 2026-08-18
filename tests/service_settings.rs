@@ -11,32 +11,23 @@
 //! codes, and the end-to-end proof that a written setting changes what
 //! `story commit-sync` does.
 //!
-//! # Why nothing here is `#[cfg(feature = "github-sync")]`
-//!
-//! The `github.sync` key must render identically with and without that cargo
-//! feature: the column is unconditional (`store::types::ProjectSettings`) while
-//! `GithubSyncConfig` is feature-gated, so a surface that changed with the
-//! build would be reporting a property of the compiler rather than of the data.
-//! Every test below therefore writes the github document *through the store*
-//! rather than through `GithubSyncService`, which is what lets them compile —
-//! and assert the same thing — in both builds.
+//! A third key, `github.sync`, lived in this registry until SH-408 retired the
+//! sync engine it configured. Its own coverage — presence-only reporting, and
+//! the read-modify-write hazard around a column no longer here to corrupt —
+//! went with it rather than being carried as a test for a key that no longer
+//! exists.
 
-use serde_json::json;
 use storyhook::error::AppError;
 use storyhook::output::{SettingKind, SettingSource};
 use storyhook::service::{SettingsService, settings_registry};
-use storyhook::store::{ProjectSettings, ReadOps, Store, WriteOps};
+use storyhook::store::{ProjectSettings, ReadOps, Store};
 use storyhook_test_support::ServiceFixture;
 
-/// The three keys the registry is expected to hold, in order.
+/// The two keys the registry is expected to hold, in order.
 ///
 /// Written out rather than derived from the registry so that *deleting* a key
 /// is a failing test rather than a silently smaller loop.
-const KEYS: [&str; 3] = [
-    "sync.auto_transition",
-    "doctor.stale_threshold",
-    "github.sync",
-];
+const KEYS: [&str; 2] = ["sync.auto_transition", "doctor.stale_threshold"];
 
 /// A value the given kind accepts, for a test that must write *something*
 /// without caring what.
@@ -54,19 +45,6 @@ fn stored(fixture: &ServiceFixture) -> ProjectSettings {
         .store()
         .read(|tx| tx.settings(fixture.project()))
         .expect("reading the settings row")
-}
-
-/// Installs a github-sync document without going through `GithubSyncService`,
-/// so this works in a `--no-default-features` build too.
-fn install_github_document(fixture: &ServiceFixture, document: serde_json::Value) {
-    fixture
-        .store()
-        .write(|tx| {
-            let mut settings = tx.settings(fixture.project())?;
-            settings.github_sync = Some(document);
-            tx.put_settings(fixture.project(), &settings)
-        })
-        .expect("installing a github-sync document");
 }
 
 // ---------------------------------------------------------------------------
@@ -159,58 +137,12 @@ fn the_listing_is_every_registered_key_in_order() {
 
 /// `put_settings` rewrites every column unconditionally, by design. So a `set`
 /// that builds a fresh `ProjectSettings` instead of reading the existing row
-/// destroys the github-sync document — silently, on the first write, and only
-/// for users who had configured it.
+/// destroys whatever a neighbouring column held — silently, on the first
+/// write. The github-sync document this test used to guard was one instance
+/// of that hazard (SH-49) — retired with the column itself (SH-408); the
+/// hazard is general, so the next test keeps the coverage over the two
+/// columns that remain.
 ///
-/// The comparison is on the stored `serde_json::Value` rather than on a parsed
-/// config, so it holds in a `--no-default-features` build and would catch a
-/// re-serialization that changed nothing but key order.
-#[test]
-fn setting_an_unrelated_key_leaves_the_github_document_byte_identical() {
-    let fixture = ServiceFixture::new();
-    let document = json!({
-        "github": { "owner": "acme", "repo": "widgets" },
-        "sync": { "mode": "auto", "last_sync_at": "2026-03-30T12:00:00Z" },
-        "etags": { "issues": "abc123" },
-        "mappings": [{ "story_id": "SH-1", "issue_number": 42 }],
-    });
-    install_github_document(&fixture, document.clone());
-
-    let ctx = fixture.ctx();
-    SettingsService::new(&ctx)
-        .set("sync.auto_transition", "false")
-        .expect("setting an unrelated key");
-
-    assert_eq!(
-        stored(&fixture).github_sync,
-        Some(document),
-        "the github-sync document did not survive a write to another key"
-    );
-}
-
-/// `unset` runs the same read-modify-write and carries the same hazard.
-#[test]
-fn unsetting_an_unrelated_key_leaves_the_github_document_byte_identical() {
-    let fixture = ServiceFixture::new();
-    let document = json!({ "etags": { "issues": "abc123" } });
-    install_github_document(&fixture, document.clone());
-
-    let ctx = fixture.ctx();
-    let service = SettingsService::new(&ctx);
-    service
-        .set("doctor.stale_threshold", "14d")
-        .expect("setting a duration");
-    service
-        .unset("doctor.stale_threshold")
-        .expect("clearing a duration");
-
-    assert_eq!(
-        stored(&fixture).github_sync,
-        Some(document),
-        "the github-sync document did not survive an unset of another key"
-    );
-}
-
 /// The other direction of the same invariant: two writable keys must not
 /// clobber each other either.
 #[test]
@@ -307,49 +239,6 @@ fn unsetting_an_unwritten_key_is_a_no_op() {
 
     assert_eq!(view.source, SettingSource::Unset);
     assert_eq!(stored(&fixture).doctor_stale_threshold, None);
-}
-
-// ---------------------------------------------------------------------------
-// The github key: presence, never shape
-// ---------------------------------------------------------------------------
-
-/// The github document is reported as opaque presence. Serializing its shape
-/// would make the surface a property of the build, because the type that
-/// describes that shape does not exist without the cargo feature.
-#[test]
-fn the_github_key_reports_presence_and_never_the_document_itself() {
-    let fixture = ServiceFixture::new();
-    install_github_document(&fixture, json!({ "etags": { "issues": "abc123" } }));
-
-    let ctx = fixture.ctx();
-    let view = SettingsService::new(&ctx)
-        .get("github.sync")
-        .expect("getting the github key");
-
-    assert_eq!(view.kind, SettingKind::Document);
-    assert_eq!(view.source, SettingSource::Set);
-    assert!(!view.settable);
-    assert_eq!(view.managed_by.as_deref(), Some("story github-sync"));
-    let value = view
-        .value
-        .as_deref()
-        .expect("a configured document is present");
-    assert!(
-        !value.contains("abc123") && !value.contains("etags"),
-        "the github document leaked into the settings surface: {value}"
-    );
-}
-
-#[test]
-fn an_absent_github_document_reports_unset() {
-    let fixture = ServiceFixture::new();
-    let ctx = fixture.ctx();
-    let view = SettingsService::new(&ctx)
-        .get("github.sync")
-        .expect("getting the github key");
-
-    assert_eq!(view.source, SettingSource::Unset);
-    assert_eq!(view.value, None);
 }
 
 // ---------------------------------------------------------------------------

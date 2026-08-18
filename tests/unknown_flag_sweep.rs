@@ -316,7 +316,6 @@ fn every_declared_flag_is_accepted_by_its_verb() {
         (&["doctor"], "--fix", None),
         (&["handoff"], "--since", Some("1d")),
         (&["commit-sync"], "--since", Some("1d")),
-        (&["github-sync"], "--dry-run", None),
         (&["graph"], "--critical-path", None),
         (&["graph"], "--parallel-groups", None),
         (&["graph"], "--blocked-by", Some("SH-1")),

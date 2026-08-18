@@ -113,10 +113,6 @@ fn build(path: &Path) {
                 &storyhook::store::ProjectSettings {
                     sync_auto_transition: Some(true),
                     doctor_stale_threshold: Some("14d".into()),
-                    github_sync: Some(serde_json::json!({
-                        "github": {"owner": "mikeydotio", "repo": "storyhook"},
-                        "sync": {"mode": "manual"}
-                    })),
                 },
             )?;
 
@@ -177,8 +173,6 @@ fn build(path: &Path) {
                 tx.put_story(project, &snapshot, head)?;
             }
 
-            let base = tx.story(project, StoryNo::new(1))?.unwrap().snapshot;
-            tx.put_github_base(project, StoryNo::new(1), &base)?;
             Ok(())
         })
         .unwrap();
@@ -212,6 +206,40 @@ fn build(path: &Path) {
         )
         .unwrap();
     }
+
+    // `project_settings.github_sync` and `github_bases` in raw SQL: both are
+    // migration 1 artifacts that migration 18 drops (SH-408), and the writers
+    // that used to fill them — `WriteOps::put_settings`'s `github_sync` column,
+    // `WriteOps::put_github_base` — are gone with the engine that owned them.
+    // This fixture is *v1*, where both still exist, so a migration-forward
+    // test needs at least one populated row of each to prove migration 18
+    // actually drops something rather than dropping nothing.
+    conn.execute(
+        "UPDATE project_settings SET github_sync = ?1 \
+         WHERE project_id = (SELECT id FROM projects WHERE slug = 'fixture')",
+        rusqlite::params![
+            serde_json::json!({
+                "github": {"owner": "mikeydotio", "repo": "storyhook"},
+                "sync": {"mode": "manual"}
+            })
+            .to_string()
+        ],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO github_bases (project_id, story_no, snapshot) \
+         VALUES ((SELECT id FROM projects WHERE slug = 'fixture'), 1, ?1)",
+        rusqlite::params![
+            conn.query_row(
+                "SELECT snapshot FROM stories WHERE project_id = \
+                 (SELECT id FROM projects WHERE slug = 'fixture') AND story_no = 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+        ],
+    )
+    .unwrap();
 }
 
 #[test]

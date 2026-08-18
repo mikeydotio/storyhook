@@ -16,13 +16,12 @@
 //! credential in every one of those. [`GithubToken`] is the same bytes with the
 //! printing removed.
 //!
-//! # This module is deliberately not behind `github-sync`
+//! # This module is deliberately not behind `github-pr`
 //!
-//! `src/github` is gated (`lib.rs:11`) and this is not, for the same reason
-//! [`ConflictSide`](crate::cli::ConflictSide) is not: the envelope has to carry
-//! the field in **every** build, while only a `github-sync` build has an engine
-//! to spend it in. A gated type here would make `--no-default-features` fail to
-//! compile the wire.
+//! `src/github` is gated (`lib.rs:11`) and this is not: the envelope has to
+//! carry the field in **every** build, while only a `github-pr` build has
+//! anything (`pr-check`, `github-auth`) to spend it on. A gated type here
+//! would make `--no-default-features` fail to compile the wire.
 
 use std::fmt;
 

@@ -258,7 +258,7 @@ fn ensure_gives_up_on_a_spawn_lock_somebody_else_holds() {
 /// # Why this is not simply `timeout_global`
 ///
 /// The three calls above have no legitimate slow case, so a flat deadline is
-/// right for them. This one does: it carries an import, a `github-sync`, an
+/// right for them. This one does: it carries an import, a `pr-check`, an
 /// event hook the user configured. The daemon also serves **one request at a
 /// time**, so a client's wall clock includes however long somebody else's
 /// command takes — which means a flat deadline here would have to be as long as
@@ -721,24 +721,24 @@ mod exchange {
     }
 
     /// The deadline belongs to the command in the record, so a frozen
-    /// `github-sync` is waited on far longer than a frozen `comment`.
+    /// `pr-check` is waited on far longer than a frozen `comment`.
     #[test]
-    fn a_frozen_github_sync_is_waited_on_longer_than_anything_else() {
+    fn a_frozen_pr_check_is_waited_on_longer_than_anything_else() {
         let dir = storyhook_test_support::scratch_dir();
         let env = Environment::at(dir.path());
         let peer = SilentPeer::bind();
         let info = peer.as_daemon();
         publish(
             &env,
-            "github-sync",
-            storyhook::daemon::lifecycle::SYNC_SERVED_DEADLINE.as_secs(),
+            "pr-check",
+            storyhook::daemon::lifecycle::PR_CHECK_SERVED_DEADLINE.as_secs(),
         );
 
         let (tx, rx) = std::sync::mpsc::channel();
         let waiting = env.clone();
         std::thread::spawn(move || {
             // No override at all: the production deadlines apply, so the record
-            // naming `github-sync` buys an hour.
+            // naming `pr-check` buys an hour.
             let _ = tx.send(HttpInvoker::send(
                 &waiting,
                 &info,
@@ -752,7 +752,7 @@ mod exchange {
 
         assert!(
             rx.recv_timeout(Duration::from_secs(3)).is_err(),
-            "a frozen github-sync must not be given up on at the ordinary bound"
+            "a frozen pr-check must not be given up on at the ordinary bound"
         );
     }
 }
