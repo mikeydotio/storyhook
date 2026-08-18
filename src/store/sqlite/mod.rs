@@ -769,14 +769,6 @@ macro_rules! impl_read_ops {
                 read::relations_to(&self.conn, project, story)
             }
 
-            fn github_base(
-                &self,
-                project: ProjectId,
-                story: StoryNo,
-            ) -> Result<Option<StorySnapshot>, StoreError> {
-                read::github_base(&self.conn, project, story)
-            }
-
             fn open_pr_links_for_story(
                 &self,
                 project: ProjectId,
@@ -940,15 +932,6 @@ impl WriteOps for SqliteWriteTx<'_> {
         settings: &ProjectSettings,
     ) -> Result<(), StoreError> {
         write::put_settings(&self.conn, project, settings)
-    }
-
-    fn put_github_base(
-        &mut self,
-        project: ProjectId,
-        story: StoryNo,
-        snapshot: &StorySnapshot,
-    ) -> Result<(), StoreError> {
-        write::put_github_base(&self.conn, project, story, snapshot)
     }
 
     fn put_attachment_blob(

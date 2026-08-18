@@ -1415,13 +1415,6 @@ fn set_prefix_message(outcome: &SetPrefixOutcome) -> String {
             if plan.relationships == 1 { "" } else { "s" },
         ));
     }
-    if plan.github_bases > 0 {
-        lines.push(format!(
-            "  rewrote   {} github-sync merge base{}",
-            plan.github_bases,
-            if plan.github_bases == 1 { "" } else { "s" },
-        ));
-    }
     lines.push(format!("  backup    {}", outcome.backup_path.display()));
     match &outcome.pointer_updated {
         PointerUpdate::NoCheckout => {}
@@ -2226,20 +2219,27 @@ pub fn dispatch_unscoped_with_stdin<S: Store>(
                 legacy_links,
             )?;
             let message = format!("imported project with {} stories", outcome.stories);
-            if outcome.skipped_remotes.is_empty() {
+            let mut warnings: Vec<String> = outcome
+                .skipped_remotes
+                .iter()
+                .map(|skipped| {
+                    format!(
+                        "`{}` is already registered to project `{}`; not re-registered by \
+                         this restore",
+                        skipped.url, skipped.holder
+                    )
+                })
+                .collect();
+            if outcome.discarded_github_sync {
+                warnings.push(
+                    "this document carries a pre-retirement github-sync configuration and/or \
+                     merge-base table; github-sync is retired (SH-408), so neither was restored"
+                        .to_string(),
+                );
+            }
+            if warnings.is_empty() {
                 Ok(Response::Message(message))
             } else {
-                let warnings = outcome
-                    .skipped_remotes
-                    .iter()
-                    .map(|skipped| {
-                        format!(
-                            "`{}` is already registered to project `{}`; not re-registered by \
-                             this restore",
-                            skipped.url, skipped.holder
-                        )
-                    })
-                    .collect();
                 Ok(Response::MessageWithWarnings(message, warnings))
             }
         }
@@ -4002,6 +4002,7 @@ fn doctor_advice<S: Store>(
     advice.extend(pointer_origin_advice(ctx)?);
     advice.extend(pointer_prefix_advice(ctx)?);
     advice.extend(legacy_link_advice(ctx)?);
+    advice.extend(pr_link_needs_a_registered_origin_advice(ctx)?);
     Ok(advice)
 }
 
@@ -4169,6 +4170,69 @@ fn legacy_link_advice<S: Store>(ctx: &Ctx<'_, S>) -> Result<Vec<String>, AppErro
          cannot tell the two apart and will not guess which.",
         found.len(),
         if found.len() == 1 { "" } else { "s" },
+    ));
+    Ok(lines)
+}
+
+/// What `story doctor` says about a project holding a `close_on_merge` pull
+/// request link that no registered GitHub origin can validate (D1 of SH-408).
+///
+/// `PrLinkService::link`'s `refuse_cross_repo` guard compares a
+/// `close_on_merge` link's repository against
+/// [`configured_github_repos`](crate::service::pr_link::configured_github_repos)
+/// — the project's *registered* origins — and, finding none registered,
+/// treats "nothing configured" as accept rather than refuse. That is the
+/// right default for a project that never had a GitHub remote, but SH-408's
+/// own behaviour-change audit named the project it is silent for: one that
+/// had `github-sync` configured before this story and so was never walked
+/// through `story project link origin` — its `close_on_merge` links used to
+/// be protected by the retired sync engine's own comparison, and after this
+/// story that protection is gone with no signal that it went.
+///
+/// Advisory rather than an integrity failure, and never repaired by
+/// `--fix`: the fix is `story project link origin <url>`, an operator
+/// decision this command cannot make on anyone's behalf.
+fn pr_link_needs_a_registered_origin_advice<S: Store>(
+    ctx: &Ctx<'_, S>,
+) -> Result<Vec<String>, AppError> {
+    let configured = crate::service::pr_link::configured_github_repos(ctx)?;
+    if !configured.is_empty() {
+        return Ok(Vec::new());
+    }
+    let links = ctx.store().read(|tx| tx.open_pr_links(ctx.project()))?;
+    let closing: Vec<_> = links
+        .into_iter()
+        .filter(|(_, link)| link.close_on_merge)
+        .collect();
+    if closing.is_empty() {
+        return Ok(Vec::new());
+    }
+    let prefix = ctx
+        .store()
+        .read(|tx| tx.project(ctx.project()))?
+        .map(|project| project.prefix)
+        .unwrap_or_default();
+    let mut lines: Vec<String> = closing
+        .iter()
+        .map(|(story_no, link)| {
+            format!(
+                "`{}` has a close_on_merge link to `{}/{}#{}` that no registered origin can be \
+                 checked against",
+                story_no.to_id(&prefix),
+                link.owner,
+                link.repo,
+                link.number,
+            )
+        })
+        .collect();
+    lines.push(format!(
+        "{} close_on_merge pull request link{} with no registered GitHub origin to check {} \
+         repository against — a merge on the wrong repository could close the wrong story with \
+         nothing to catch it. Register this project's origin with `story project link origin \
+         <url>` to restore the check.",
+        closing.len(),
+        if closing.len() == 1 { "" } else { "s" },
+        if closing.len() == 1 { "its" } else { "their" },
     ));
     Ok(lines)
 }

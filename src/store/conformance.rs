@@ -712,12 +712,12 @@ macro_rules! store_conformance_suite {
             }
 
             #[test]
-            fn purging_a_story_takes_its_labels_and_its_github_base() {
-                // Both would be handled by `ON DELETE CASCADE`. The purge
-                // clears them explicitly and then verifies, so a seventh
-                // story-scoped table added later and forgotten fails loudly
-                // rather than orphaning its rows under a number nothing will
-                // ever hand out again.
+            fn purging_a_story_takes_its_labels() {
+                // Would be handled by `ON DELETE CASCADE`. The purge clears
+                // it explicitly and then verifies, so a story-scoped table
+                // added later and forgotten fails loudly rather than
+                // orphaning its rows under a number nothing will ever hand
+                // out again.
                 let f = <$fixture>::create();
                 let project = seed(f.store(), "alpha", "SH");
                 let doomed = new_story(f.store(), project, "Created in error");
@@ -732,15 +732,12 @@ macro_rules! store_conformance_suite {
                     }],
                 )
                 .unwrap();
-                let base = snapshot(f.store(), project, doomed);
-                f.store()
-                    .write(|tx| tx.put_github_base(project, doomed, &base))
-                    .unwrap();
 
                 f.store().write(|tx| tx.purge_story(project, doomed)).unwrap();
 
                 assert!(
-                    f.store().read(|tx| tx.github_base(project, doomed)).unwrap().is_none()
+                    f.store().read(|tx| tx.story(project, doomed)).unwrap().is_none(),
+                    "the read-model row, and its labels with it, is gone"
                 );
             }
 
@@ -3654,33 +3651,6 @@ macro_rules! store_conformance_suite {
                 );
             }
 
-            #[test]
-            fn the_github_sync_document_round_trips_unchanged() {
-                let f = <$fixture>::create();
-                let project = seed(f.store(), "alpha", "SH");
-                let document = serde_json::json!({
-                    "github": {"owner": "mikeydotio", "repo": "storyhook"},
-                    "sync": {"mode": "auto", "last_sync_at": "2026-01-01T00:00:00Z"},
-                    "etags": {"issues": "W/\"abc\""},
-                    "mappings": [{"story_id": "SH-1", "issue_number": 7,
-                                  "last_synced_at": "2026-01-01T00:00:00Z"}]
-                });
-                let settings = ProjectSettings {
-                    github_sync: Some(document.clone()),
-                    ..ProjectSettings::default()
-                };
-                f.store()
-                    .write(|tx| tx.put_settings(project, &settings))
-                    .unwrap();
-                assert_eq!(
-                    f.store()
-                        .read(|tx| tx.settings(project))
-                        .unwrap()
-                        .github_sync,
-                    Some(document)
-                );
-            }
-
             /// Every setting written every time, from the caller's value. The
             /// pattern this rules out is read-modify-write of a serialized
             /// document, which is how SH-49 destroyed a field the struct in
@@ -3692,7 +3662,6 @@ macro_rules! store_conformance_suite {
                 let full = ProjectSettings {
                     sync_auto_transition: Some(true),
                     doctor_stale_threshold: Some("14d".into()),
-                    github_sync: Some(serde_json::json!({"sync": {"mode": "manual"}})),
                 };
                 f.store()
                     .write(|tx| tx.put_settings(project, &full))
@@ -3704,58 +3673,6 @@ macro_rules! store_conformance_suite {
                     .write(|tx| tx.put_settings(project, &cleared))
                     .unwrap();
                 assert_eq!(f.store().read(|tx| tx.settings(project)).unwrap(), cleared);
-            }
-
-            #[test]
-            fn a_github_base_round_trips() {
-                let f = <$fixture>::create();
-                let project = seed(f.store(), "alpha", "SH");
-                let story = new_story(f.store(), project, "First");
-                let base = snapshot(f.store(), project, story);
-                f.store()
-                    .write(|tx| tx.put_github_base(project, story, &base))
-                    .unwrap();
-                assert_eq!(
-                    f.store().read(|tx| tx.github_base(project, story)).unwrap(),
-                    Some(base)
-                );
-            }
-
-            #[test]
-            fn a_story_with_no_github_base_reads_back_as_nothing() {
-                let f = <$fixture>::create();
-                let project = seed(f.store(), "alpha", "SH");
-                let story = new_story(f.store(), project, "First");
-                assert!(
-                    f.store()
-                        .read(|tx| tx.github_base(project, story))
-                        .unwrap()
-                        .is_none()
-                );
-            }
-
-            #[test]
-            fn writing_a_github_base_twice_replaces_it() {
-                let f = <$fixture>::create();
-                let project = seed(f.store(), "alpha", "SH");
-                let story = new_story(f.store(), project, "First");
-                let first = snapshot(f.store(), project, story);
-                f.store()
-                    .write(|tx| tx.put_github_base(project, story, &first))
-                    .unwrap();
-                let mut second = first.clone();
-                second.title = "Renamed".into();
-                f.store()
-                    .write(|tx| tx.put_github_base(project, story, &second))
-                    .unwrap();
-                assert_eq!(
-                    f.store()
-                        .read(|tx| tx.github_base(project, story))
-                        .unwrap()
-                        .unwrap()
-                        .title,
-                    "Renamed"
-                );
             }
 
             // ===============================================================
@@ -4311,28 +4228,6 @@ macro_rules! store_conformance_suite {
             }
 
             #[test]
-            fn isolation_github_bases() {
-                let f = <$fixture>::create();
-                let (alpha, beta) = twin_projects(f.store());
-                let base = snapshot(f.store(), alpha, StoryNo::new(1));
-                f.store()
-                    .write(|tx| tx.put_github_base(alpha, StoryNo::new(1), &base))
-                    .unwrap();
-                assert!(
-                    f.store()
-                        .read(|tx| tx.github_base(alpha, StoryNo::new(1)))
-                        .unwrap()
-                        .is_some()
-                );
-                assert!(
-                    f.store()
-                        .read(|tx| tx.github_base(beta, StoryNo::new(1)))
-                        .unwrap()
-                        .is_none()
-                );
-            }
-
-            #[test]
             fn isolation_story_numbers_are_allocated_independently() {
                 let f = <$fixture>::create();
                 let (alpha, beta) = twin_projects(f.store());
@@ -4558,7 +4453,6 @@ macro_rules! store_conformance_suite {
                 let settings = ProjectSettings {
                     sync_auto_transition: Some(true),
                     doctor_stale_threshold: Some("14d".into()),
-                    github_sync: Some(serde_json::json!({"sync": {"mode": "off"}})),
                 };
                 f.store()
                     .write(|tx| tx.put_settings(project, &settings))

@@ -813,13 +813,12 @@ pub enum ProjectAction {
     /// the ordinary selector names the project, this names only the new
     /// prefix.
     ///
-    /// Rewrites the project row, every relationship any of its stories claim
-    /// (a story's own rendered `id` self-heals on refold; `other_id` does
-    /// not, and is rewritten by real compensating events), and any
-    /// github-sync merge-base snapshots. Free-text description and comment
-    /// bodies are deliberately left alone — there is no grammar in this
-    /// codebase for a story-id reference inside prose, so rewriting one
-    /// would be a guess dressed up as a fact.
+    /// Rewrites the project row and every relationship any of its stories
+    /// claim (a story's own rendered `id` self-heals on refold; `other_id`
+    /// does not, and is rewritten by real compensating events). Free-text
+    /// description and comment bodies are deliberately left alone — there is
+    /// no grammar in this codebase for a story-id reference inside prose, so
+    /// rewriting one would be a guess dressed up as a fact.
     SetPrefix {
         /// The prefix every id renders under from this point on.
         new_prefix: String,

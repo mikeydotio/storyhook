@@ -8,49 +8,25 @@
 //! checking only that a topic a message points at *exists*. It has no way to
 //! ask whether a topic's *claims* about a command are still true, which is
 //! exactly how SH-215 happened: `story export`'s document grew from a bare
-//! array of open stories to a ten-key object carrying every story, its
-//! catalog, and (when configured) its settings, remotes and github-sync
-//! state — and the help topic describing it never moved. This file drives the
-//! real CLI and the real [`ProjectExport`] type to check the claims
-//! themselves, so the next field export grows has to update the topic before
-//! this file goes green again.
+//! array of open stories to a multi-key object carrying every story, its
+//! catalog, and (when configured) its settings and remotes — and the help
+//! topic describing it never moved. This file drives the real CLI and the
+//! real [`ProjectExport`] type to check the claims themselves, so the next
+//! field export grows has to update the topic before this file goes green
+//! again.
 
 use std::collections::BTreeMap;
 
-use storyhook::domain::{Member, StateDef, StorySnapshot, SuperState, TypeDef};
+use storyhook::domain::{Member, StateDef, SuperState, TypeDef};
 use storyhook::help_topics::get_help_topic;
 use storyhook::service::transfer::{
     ExportedRemote, ExportedSettings, ExportedStory, ProjectExport,
 };
-use storyhook::service::{NewStoryInput, StoryService};
-use storyhook::store::{ReadOps, Store, StoryNo};
-use storyhook_test_support::{ServiceFixture, TestEnv, scratch_dir};
+use storyhook_test_support::{TestEnv, scratch_dir};
 
 /// A `story` command, using the shared isolated test environment.
 fn story(dir: &std::path::Path) -> assert_cmd::Command {
     TestEnv::shared().story(dir)
-}
-
-/// A real [`StorySnapshot`], taken from a fixture rather than hand-built:
-/// its fields and the invariants `fold_story` maintains between them make a
-/// hand-constructed one a poor stand-in for what an export document actually
-/// carries.
-fn a_real_story_snapshot() -> StorySnapshot {
-    let fixture = ServiceFixture::new();
-    let id = StoryService::new(&fixture.ctx())
-        .create(&NewStoryInput {
-            title: "A story with a github-sync base".to_string(),
-            ..NewStoryInput::default()
-        })
-        .expect("creating a story")
-        .id;
-    let no = StoryNo::parse_id("SH", &id).expect("a well-formed id");
-    fixture
-        .store()
-        .read(|tx| tx.story(fixture.project(), no))
-        .expect("reading the story back")
-        .expect("the story exists")
-        .snapshot
 }
 
 /// Every top-level key a fully-populated [`ProjectExport`] carries must be
@@ -65,9 +41,6 @@ fn a_real_story_snapshot() -> StorySnapshot {
 /// compiler-exhaustive literal cannot.
 #[test]
 fn the_export_topic_names_every_key_the_export_document_carries() {
-    let mut github_bases = BTreeMap::new();
-    github_bases.insert("SH-1".to_string(), a_real_story_snapshot());
-
     let export = ProjectExport {
         schema: 1,
         prefix: Some("TST".to_string()),
@@ -95,8 +68,14 @@ fn the_export_topic_names_every_key_the_export_document_carries() {
             raw: "https://github.com/acme/widgets.git".to_string(),
             registered_at: "2026-01-01T00:00:00Z".to_string(),
         }],
-        github_sync: Some(serde_json::json!({"github": {"owner": "acme", "repo": "widgets"}})),
-        github_bases,
+        // Named explicitly so the literal stays exhaustive (this test's own
+        // point), but never populated: SH-408 retired the engine that
+        // configured either, `export` never writes them from a current
+        // store, and `skip_serializing_if` omits both from the JSON object
+        // below — they carry no claim for the help topic to make (see
+        // `ProjectExport::github_sync`'s own doc comment).
+        github_sync: None,
+        github_bases: BTreeMap::new(),
         stories: vec![ExportedStory {
             id: "TST-1".to_string(),
             events: Vec::new(),
@@ -113,10 +92,10 @@ fn the_export_topic_names_every_key_the_export_document_carries() {
     // Vacuity guard: a fully-populated document that still omitted an
     // optional field would make the assertion below trivially satisfiable.
     assert!(
-        object.len() >= 10,
-        "a fully-populated ProjectExport should carry at least 10 top-level keys \
-         (schema, prefix, states, types, members, settings, remotes, github_sync, \
-         github_bases, stories); found {}: {:?}",
+        object.len() >= 8,
+        "a fully-populated ProjectExport should carry at least 8 top-level keys \
+         (schema, prefix, states, types, members, settings, remotes, stories); \
+         found {}: {:?}",
         object.len(),
         object.keys().collect::<Vec<_>>()
     );
