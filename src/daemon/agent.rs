@@ -170,6 +170,22 @@ pub enum Health {
     Agrees { plist: PathBuf, exe: PathBuf },
 }
 
+/// One read of the login agent's plist, with nothing judged yet.
+///
+/// A named struct rather than a positional argument list, deliberately: this
+/// project has a standing rule against exactly that shape
+/// (`tests/read_model_column_coverage.rs`'s own precedent, SH-365 — swap two
+/// same-typed positional arguments and every call site still compiles, every
+/// value still wrong). Named fields make a swap visible in the diff, and a
+/// future field (a store comparison, say) has an obvious place to land rather
+/// than a sixth positional parameter.
+struct Reading {
+    plist: PathBuf,
+    found: bool,
+    exe: Option<PathBuf>,
+    exe_exists: bool,
+}
+
 /// Reads this machine's agent and judges it.
 #[must_use]
 pub fn health(env: &Environment) -> Health {
@@ -177,13 +193,13 @@ pub fn health(env: &Environment) -> Health {
     let text = std::fs::read_to_string(&plist_path).ok();
     let exe = text.as_deref().and_then(registered_exe);
     let exists = exe.as_deref().is_some_and(Path::exists);
-    judge(
-        plist_path,
-        text.is_some(),
+    let reading = Reading {
+        plist: plist_path,
+        found: text.is_some(),
         exe,
-        exists,
-        path_identity::installed_story(),
-    )
+        exe_exists: exists,
+    };
+    judge(reading, path_identity::installed_story())
 }
 
 /// The whole truth table, pure so it can be read as one.
@@ -192,14 +208,14 @@ pub fn health(env: &Environment) -> Health {
 /// function does no I/O — the same split [`crate::migration_guard::decide`]
 /// draws, and for the same reason.
 #[must_use]
-fn judge(
-    plist: PathBuf,
-    plist_exists: bool,
-    exe: Option<PathBuf>,
-    exe_exists: bool,
-    installed: Option<path_identity::InstalledStory>,
-) -> Health {
-    if !plist_exists {
+fn judge(reading: Reading, installed: Option<path_identity::InstalledStory>) -> Health {
+    let Reading {
+        plist,
+        found,
+        exe,
+        exe_exists,
+    } = reading;
+    if !found {
         return Health::NotInstalled;
     }
     let Some(exe) = exe else {
@@ -552,10 +568,19 @@ mod tests {
         PathBuf::from("/home/dev/Library/LaunchAgents/io.mikey.storyhook.daemon.plist")
     }
 
+    fn reading(found: bool, exe: Option<&str>, exe_exists: bool) -> Reading {
+        Reading {
+            plist: plist_path(),
+            found,
+            exe: exe.map(PathBuf::from),
+            exe_exists,
+        }
+    }
+
     #[test]
     fn judge_reports_no_plist_as_not_installed() {
         assert_eq!(
-            judge(plist_path(), false, None, false, None),
+            judge(reading(false, None, false), None),
             Health::NotInstalled
         );
     }
@@ -563,7 +588,7 @@ mod tests {
     #[test]
     fn judge_reports_an_unparseable_plist() {
         assert_eq!(
-            judge(plist_path(), true, None, false, None),
+            judge(reading(true, None, false), None),
             Health::Unreadable {
                 plist: plist_path()
             }
@@ -577,7 +602,7 @@ mod tests {
     fn judge_reports_a_deleted_binary_without_consulting_path() {
         let exe = PathBuf::from("/gone/story");
         assert_eq!(
-            judge(plist_path(), true, Some(exe.clone()), false, None),
+            judge(reading(true, Some("/gone/story"), false), None),
             Health::Missing {
                 plist: plist_path(),
                 exe
@@ -589,7 +614,7 @@ mod tests {
     fn judge_reports_an_unconfirmable_agent_when_path_names_no_story() {
         let exe = PathBuf::from("/usr/local/bin/story");
         assert_eq!(
-            judge(plist_path(), true, Some(exe.clone()), true, None),
+            judge(reading(true, Some("/usr/local/bin/story"), true), None),
             Health::Unconfirmable {
                 plist: plist_path(),
                 exe
@@ -602,10 +627,7 @@ mod tests {
         let exe = PathBuf::from("/usr/local/bin/story");
         assert_eq!(
             judge(
-                plist_path(),
-                true,
-                Some(exe.clone()),
-                true,
+                reading(true, Some("/usr/local/bin/story"), true),
                 Some(installed("/usr/local/bin/story", "/usr/local/bin/story"))
             ),
             Health::Agrees {
@@ -623,10 +645,7 @@ mod tests {
         let exe = PathBuf::from("/repo/target/debug/story");
         assert_eq!(
             judge(
-                plist_path(),
-                true,
-                Some(exe.clone()),
-                true,
+                reading(true, Some("/repo/target/debug/story"), true),
                 Some(installed(
                     "/home/dev/.local/bin/story",
                     "/home/dev/.local/bin/story"
