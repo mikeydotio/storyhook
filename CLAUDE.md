@@ -705,6 +705,31 @@ Standing rules for every wave:
   pins that case rather than leaving it implicit. The refusal message deliberately does not
   point at `story update` — an unreleased migration has no release to update *to*, and that
   dead end is SH-405's own defect; repeating it here would ship it twice.
+- **A postlude match is provably this run's own, and is the gate's to collect — a preflight
+  match is not, and is not** (SH-412). `scripts/check-no-orphan-servers.sh` brackets
+  `make test` (`Makefile:144,152-153`) and used to give both phases the same verdict:
+  refuse. On 2026-08-17 every leg of a real `make test` passed (rust-suite 873s) and the
+  postlude then refused anyway, naming two daemons gone within a minute of being named — no
+  receipt was minted (`make` fail-fasts), so the only sanctioned path was a 22-minute re-run
+  of a suite that had already gone green. That is exactly the pressure SH-306 was filed for,
+  and `SKIP_PREPUSH_TESTS=1` was reached for twice in the session that hit it. The postlude's
+  existing 10-second grace loop (added 2026-07-29) turned out to already be the wrong lever:
+  `SHUTDOWN_CHECK` (`src/daemon/serve.rs`, 250ms) is the *only* bound left in play by postlude
+  time, since every test binary this run started has already exited and every other
+  sanctioned shutdown deadline is spent inside that binary's own teardown, before it exits —
+  so 10s (already 40x `SHUTDOWN_CHECK`) was never "still winding down," and waiting longer
+  cannot fix a case the sanctioned paths already exclude. The fix widens what the postlude
+  *does* instead: it reaps a survivor (SIGTERM, bounded wait, SIGKILL, verify) and certifies
+  the tree, sound specifically because the preflight is a hard prerequisite of `test` and
+  fails closed on any match — so anything the postlude still finds was provably spawned by
+  *this* run. The preflight's own verdict is unchanged: no grace period, no killing, refuse
+  and name it, because a pre-existing match may be a daemon the developer started on purpose
+  and makes this run's own verification a lie regardless. `tests/orphan_check.rs` is the test
+  this script never had — real processes, the tracked script reached by symlink from a
+  disposable fixture root (never this checkout or a sibling worktree, since `pgrep -f` is
+  global on a machine running 3-4 concurrent worktree suites), spawned with the exact argv
+  shape `spawn_child` builds for a real daemon so every case doubles as the SH-113 positive
+  control. Design of record: `docs/spec/test-tiers.md`'s "The orphan bracket" section.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
