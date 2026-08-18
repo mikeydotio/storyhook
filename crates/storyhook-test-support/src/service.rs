@@ -42,6 +42,13 @@ pub struct ServiceFixture {
     cwd: TempDir,
     clock: Clock,
     env: Environment,
+    /// Set by [`ServiceFixture::expects_drift`]; disarms the drop-time check.
+    ///
+    /// Atomic rather than a `Cell` because two concurrency tests share a
+    /// `&ServiceFixture` across `thread::scope` (`tests/service_story.rs`,
+    /// `tests/service_config.rs`), and a `Cell` would make the whole fixture
+    /// `!Sync`.
+    drift_expected: std::sync::atomic::AtomicBool,
     _dir: TempDir,
 }
 
@@ -88,6 +95,7 @@ impl ServiceFixture {
             cwd: scratch_dir(),
             clock: Clock::Fixed(FIXTURE_NOW.to_string()),
             env,
+            drift_expected: std::sync::atomic::AtomicBool::new(false),
             _dir: dir,
         }
     }
@@ -157,6 +165,25 @@ impl ServiceFixture {
         std::fs::write(dir.join("hooks.toml"), contents).expect("writing hooks.toml");
     }
 
+    /// Disarms the drop-time drift check for a test whose subject *is*
+    /// irreparable drift.
+    ///
+    /// Nearly every fixture here damages the read model and then repairs it, so
+    /// the drop-time check is the guarantee that a test which forgot to repair
+    /// says so. A handful cannot repair by construction: a story carrying an
+    /// event this build cannot decode is withheld from `repair_read_model`
+    /// entirely (SH-410), so a stale or missing row on one stays diverged
+    /// however many times `--fix` runs — that is the behaviour under test, not
+    /// a test that forgot.
+    ///
+    /// Deliberately explicit and deliberately narrow: it names the exemption at
+    /// the call site, where a reader can weigh it, rather than making the whole
+    /// check opt-in.
+    pub fn expects_drift(&self) {
+        self.drift_expected
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Fails unless the read model still matches a fresh fold of the events.
     ///
     /// Called automatically on drop; public so a test can also assert it at a
@@ -185,7 +212,11 @@ impl Default for ServiceFixture {
 
 impl Drop for ServiceFixture {
     fn drop(&mut self) {
-        if std::thread::panicking() {
+        if std::thread::panicking()
+            || self
+                .drift_expected
+                .load(std::sync::atomic::Ordering::Relaxed)
+        {
             return;
         }
         self.assert_no_drift();
