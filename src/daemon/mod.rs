@@ -17,6 +17,8 @@
 //!   requests (SH-212), spending the credential `story github-auth login`
 //!   stored in the OS keychain. `github-sync`-gated: absent entirely from a
 //!   build without it.
+//! * [`install_guard`] — what `story daemon install` refuses to give a
+//!   permanent seat on this machine (SH-411).
 //! * [`http1`] — the HTTP/1.1 connection layer: parsing, framing, and every
 //!   deadline and cap a peer socket is held to (SH-177).
 //! * [`lifecycle`] — the portfile, the pidfile lock, and auto-spawn.
@@ -38,6 +40,7 @@ pub mod crash;
 #[cfg(feature = "github-sync")]
 pub mod github_poll;
 pub mod http1;
+pub mod install_guard;
 pub mod lifecycle;
 pub mod serve;
 pub mod subscribe;
