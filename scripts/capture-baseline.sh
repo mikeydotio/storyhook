@@ -688,7 +688,7 @@ done <"$WORK/binaries.tsv"
 # A test binary that leaks a server poisons every later run (SH-51), and the
 # timing pass just ran web_test outside the Makefile's own bracket. Catch it
 # here rather than letting census run 1 fail for a reason that looks like a flake.
-bash scripts/check-no-orphan-servers.sh "baseline timing pass"
+bash scripts/check-no-orphan-servers.sh check "baseline timing pass"
 
 # ---------------------------------------------------------------------------
 # Flake census — N consecutive `make test` runs
