@@ -73,6 +73,17 @@ for marker in \
   esac
 done
 
+# SH-371: the verdict is recorded when the council CONCLUDES, not at the end of
+# the work. The council writes its trail into a directory this worktree owns, so
+# a verdict deferred to the end-of-story comment is lost outright when the
+# worktree is reclaimed first. The user determination on SH-371 accepts that loss
+# rather than gating teardown on it -- which is sound only while the charter
+# actually names the earlier moment, so these pin it.
+assert_contains "$prompt" "the moment the council concludes" \
+  "auto+council-on: the verdict is recorded when the council concludes"
+assert_contains "$prompt" "before you resume the work" \
+  "auto+council-on: recording the verdict precedes resuming the work"
+
 # --- SH-219: with no council reachable, the SOLO charter renders instead —
 #     every shared obligation still present, council-vote named nowhere. ---
 solo_out=$(STORY_COUNCIL=off dry --auto)
@@ -95,6 +106,14 @@ for marker in \
     *) fail_test "auto+council-off: solo prompt missing charter obligation [$marker]" ;;
   esac
 done
+
+# SH-371: the two charters must never drift on an obligation they share. A solo
+# decision leaves no trail on disk at all, so it is gone with the session unless
+# it is commented at the moment it is made.
+assert_contains "$solo_prompt" "the moment you decide" \
+  "auto+council-off: the solo decision is recorded when it is made"
+assert_contains "$solo_prompt" "before you resume the work" \
+  "auto+council-off: recording the decision precedes resuming the work"
 case "$solo_prompt" in
   *"council-vote"*) fail_test "auto+council-off: solo prompt still names council-vote" ;;
 esac
