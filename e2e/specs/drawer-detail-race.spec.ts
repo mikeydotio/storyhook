@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import {
   cleanUpCreatedStories,
+  deleteBlockedStory,
   deleteStory,
   holdDetailFetch,
   latch,
@@ -53,28 +54,6 @@ async function createStory(
   await expect(
     page.locator('.column[data-state="todo"] .card', { hasText: title }),
   ).toBeVisible();
-}
-
-/** Deletes `title`'s "blocked"-column story through the drawer -- same
- * shape as the imported `deleteStory`, scoped to the Blocked column
- * instead of todo. SH-407: an awaiting reason or an open blocker
- * display-promotes a story out of "todo" and into "blocked", which both
- * of this file's own block/blocked-by tests trigger on their worker
- * story before cleanup. */
-async function deleteBlockedStory(
-  page: import("@playwright/test").Page,
-  title: string,
-) {
-  const card = page.locator('.column[data-state="blocked"] .card', {
-    hasText: title,
-  });
-  await card.click();
-  await expect(page.locator("#drawer")).toHaveClass(/open/);
-  await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
-  await expect(page.locator("#delete-modal")).toHaveClass(/open/);
-  await page.locator("#delete-reason").fill("e2e cleanup");
-  await page.locator("#delete-modal-submit").click();
-  await expect(card).not.toBeVisible();
 }
 
 test("typing a block reason during the detail fetch survives the re-render and still blocks", async ({

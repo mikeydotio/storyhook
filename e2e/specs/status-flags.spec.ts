@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import {
   cleanUpCreatedStories,
+  deleteBlockedStory,
   deleteStory,
   openProject,
   seedToken,
@@ -116,28 +117,6 @@ async function addRelation(
   await expect(page.locator(".rel-row", { hasText: otherId })).toBeVisible();
 }
 
-/** Deletes `title`'s "blocked"-column story through the drawer -- the same
- * shape as the imported `deleteStory`, scoped to the Blocked column
- * instead of todo. SH-407: a story blocked by an `awaiting` reason or an
- * open blocker/obviator display-promotes out of "todo" and into "blocked",
- * so every test in this file that blocks its own worker story needs this
- * variant for cleanup rather than the todo-scoped shared helper. */
-async function deleteBlockedStory(
-  page: import("@playwright/test").Page,
-  title: string,
-) {
-  const card = page.locator('.column[data-state="blocked"] .card', {
-    hasText: title,
-  });
-  await card.click();
-  await expect(page.locator("#drawer")).toHaveClass(/open/);
-  await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
-  await expect(page.locator("#delete-modal")).toHaveClass(/open/);
-  await page.locator("#delete-reason").fill("e2e cleanup");
-  await page.locator("#delete-modal-submit").click();
-  await expect(card).not.toBeVisible();
-}
-
 test("a ready card carries no flag badge on the board", async ({ page }) => {
   const title = "SH-168 status flags — ready card";
   await createStory(page, title);
@@ -244,6 +223,49 @@ test("a card blocked by another story names the blocker in its badge, hyperlinke
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
+  await deleteBlockedStory(page, workerTitle);
+  await deleteStory(page, blockerTitle);
+});
+
+test("a story blocked only by an open relation shows the drawer banner too, not just the badge (SH-398)", async ({
+  page,
+}) => {
+  // Before SH-398 the drawer banner was gated on `st.awaiting` alone, so a
+  // story blocked purely by a `blocked-by` edge showed the card's badge
+  // ("● blocked (SH-...)") while its own drawer, one click away, offered the
+  // "Reason for blocking…" form as though nothing were blocking it at all.
+  const blockerTitle = "SH-398 banner blindness — the blocker";
+  const workerTitle = "SH-398 banner blindness — the blocked story";
+  await createStory(page, blockerTitle);
+  const blockerId = (await page
+    .locator('.column[data-state="todo"] .card', { hasText: blockerTitle })
+    .getAttribute("data-id"))!;
+  await createStory(page, workerTitle);
+
+  await openDrawer(page, workerTitle);
+  await addRelation(page, "blocked-by", blockerId);
+
+  const banner = page.locator(".banner-blocked");
+  await expect(banner).toBeVisible();
+  await expect(banner.locator(".banner-head")).toContainText(
+    "Blocked by " + blockerId,
+  );
+  // No `awaiting` was ever set, so there is nothing to unblock and no body
+  // paragraph -- the block *form* still renders instead, right below the
+  // banner, so a note can still be added.
+  await expect(banner.locator("button", { hasText: "Unblock" })).toHaveCount(
+    0,
+  );
+  await expect(banner.locator(".banner-body")).toHaveCount(0);
+  await expect(
+    page.locator('input[placeholder="Reason for blocking…"]'),
+  ).toBeVisible();
+
+  await page.locator("#drawer-close").click();
+  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
+
+  // SH-407: the blocked-by edge display-promoted the worker into "blocked",
+  // out of "todo".
   await deleteBlockedStory(page, workerTitle);
   await deleteStory(page, blockerTitle);
 });

@@ -1730,8 +1730,8 @@ fn every_blocked_badge_sentence_comes_from_the_one_deriver() {
     // directly above it, so the scope runs from there through
     // blockedFlag()'s own close rather than blockedFlag()'s bounds alone.
     let refs_start = script
-        .find("function refList(ids) {")
-        .expect("refList(ids), blockedFlag()'s own ref-rendering helper, must exist");
+        .find("function refList(ids, cap) {")
+        .expect("refList(ids, cap), the shared blocker/obviator ref renderer, must exist");
     assert!(
         refs_start < fn_start,
         "refList() must be defined ahead of blockedFlag(), the one place that calls it"
@@ -1741,6 +1741,96 @@ fn every_blocked_badge_sentence_comes_from_the_one_deriver() {
         "blockedFlag()/refList() must build blocker/obviator references with storyRef(), \
          the shared status-light component, not a bespoke element"
     );
+}
+
+/// The drawer's blocked banner comes from `blockBanner()`, and its cause
+/// list from the same `blockCauses()` the card badge reads (SH-398).
+///
+/// A sibling fence to `every_blocked_badge_sentence_comes_from_the_one_
+/// deriver` rather than an extension of it: the banner's own sentences
+/// ("Blocked", "no reason recorded", "cause not shown") are deliberately
+/// worded differently from the badge's ("● blocked", "(no reason)") so the
+/// two fences' literal sets never overlap and neither can go vacuous by
+/// matching the wrong function. Same technique -- find the function by its
+/// exact signature, insist every owned literal falls inside its bounds.
+///
+/// Comment lines (trimmed to start with `*` or `//`) are exempt, for the
+/// same reason the badge's own fence exempts them.
+#[test]
+fn every_blocked_banner_sentence_comes_from_the_one_deriver() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let script = script(&body);
+
+    let cause_start = script
+        .find("function blockCauses(st) {")
+        .expect("blockCauses(st), the shared blocker/obviator deriver, must exist");
+    let fn_start = script
+        .find("function blockBanner(st, isBlocked) {")
+        .expect("blockBanner(st, isBlocked) must exist with this exact signature");
+    assert!(
+        cause_start < fn_start,
+        "blockCauses() must be defined ahead of blockBanner(), one of its two callers"
+    );
+    let close = "\n  }\n";
+    let fn_end = fn_start
+        + script[fn_start..]
+            .find(close)
+            .expect("blockBanner's closing brace")
+        + close.len();
+
+    // Narrower than the badge fence's needles on purpose: `blockedFlag()`'s
+    // own `ariaText` already says "blocked, no reason recorded" for a
+    // different reason (assistive-tech text, not the rendered banner), so a
+    // bare "no reason recorded" would false-positive there. The em dash is
+    // what `blockBanner()` alone prefixes it with.
+    for needle in ["— no reason recorded", "\"Blocked\""] {
+        for (at, _) in script.match_indices(needle) {
+            let line_start = script[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let line = script[line_start..].lines().next().unwrap_or("");
+            if line.trim_start().starts_with('*') || line.trim_start().starts_with("//") {
+                continue;
+            }
+            assert!(
+                at >= fn_start && at < fn_end,
+                "a bare {needle:?} literal outside blockBanner() at script byte {at}: {line:?} \
+                 -- every blocked-banner sentence must be derived from blockCauses(), not \
+                 hand-written a second time"
+            );
+        }
+    }
+
+    // blockCauses() is the one deriver: neither blockedFlag() nor
+    // blockBanner() may read st.relationships for "blocked-by"/"obviated-by"
+    // on their own -- that would let the badge and the banner silently
+    // disagree about which edges block.
+    for (name, needle) in [
+        ("blockedFlag", "function blockedFlag(st, isBlocked) {"),
+        ("blockBanner", "function blockBanner(st, isBlocked) {"),
+    ] {
+        let start = script
+            .find(needle)
+            .unwrap_or_else(|| panic!("{name} must exist"));
+        let close = "\n  }\n";
+        let end = start + script[start..].find(close).expect("closing brace") + close.len();
+        assert!(
+            !script[start..end].contains("relation === \"blocked-by\""),
+            "{name} must read blocker ids through blockCauses(), not filter \
+             st.relationships itself"
+        );
+        assert!(
+            !script[start..end].contains("relation === \"obviated-by\""),
+            "{name} must read obviator ids through blockCauses(), not filter \
+             st.relationships itself"
+        );
+    }
 }
 
 /// The dashboard's `<style>` block, so a selector assertion below cannot

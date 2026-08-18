@@ -193,11 +193,9 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
     match invocation {
         Invocation::Show { id }
         | Invocation::Log { id }
-        | Invocation::ClearAwaiting { id }
         | Invocation::Comment { id, .. }
         | Invocation::Assign { id, .. }
         | Invocation::SetState { id, .. }
-        | Invocation::SetAwaiting { id, .. }
         | Invocation::SetPriority { id, .. }
         | Invocation::SetLabels { id, .. }
         | Invocation::Reopen { id, .. }
@@ -213,6 +211,12 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         | Invocation::UnlinkPr { id, .. } => vec![id],
 
         Invocation::Relate { a, b, .. } => vec![a, b],
+        // `on` names blockers just as `Relate::b` names a relation target — a
+        // bare `story block SH-1 --on 9` must expand `9` the same way
+        // `story relate SH-1 blocked-by 9` does (SH-398).
+        Invocation::SetAwaiting { id, on, .. } | Invocation::ClearAwaiting { id, on } => {
+            std::iter::once(id).chain(on.iter_mut()).collect()
+        }
         Invocation::BulkUpdate { updates } => updates.iter_mut().map(|(id, _)| id).collect(),
         Invocation::GithubSync { id, .. } | Invocation::PrCheck { id } => id.iter_mut().collect(),
 

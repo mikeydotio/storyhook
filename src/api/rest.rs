@@ -972,7 +972,8 @@ fn route_block_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply 
             200,
             Invocation::SetAwaiting {
                 id: id.to_string(),
-                awaiting,
+                awaiting: Some(awaiting),
+                on: Vec::new(),
             },
         ))
     })()
@@ -1024,7 +1025,14 @@ fn route_unlink_pr_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Re
 }
 
 fn route_unblock_story<S: Store>(ctx: &Ctx<'_, S>, id: &str) -> Reply {
-    reply_with(ctx, 200, Invocation::ClearAwaiting { id: id.to_string() })
+    reply_with(
+        ctx,
+        200,
+        Invocation::ClearAwaiting {
+            id: id.to_string(),
+            on: Vec::new(),
+        },
+    )
 }
 
 /// `POST /api/repos/{id}/story/{story}/reopen` — reopens a closed story. An
@@ -1313,6 +1321,11 @@ mod tests {
     #[test]
     fn creating_a_project_at_a_throwaway_path_in_a_real_store_is_refused() {
         let home = storyhook_test_support::non_temporary_dir("sh117-rest-guard-home");
+        // `non_temporary_dir` removes and recreates `home` on every call
+        // (SH-404's migration guard permits it purely on that account: the
+        // store `open_store` finds here is always fresh, `from_version == 0`,
+        // never on the strength of `Environment::at`'s `is_default() == true`
+        // agreeing with the real default path — it does).
         let env = Environment::at(&home);
         let store = crate::invoke::open_store(&env).expect("opening the store");
         let throwaway = crate::env::canonical_ish(&std::env::temp_dir())

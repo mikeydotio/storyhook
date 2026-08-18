@@ -391,3 +391,61 @@ test("both notice surfaces still keep the same headline vocabulary announced", a
   const toastText = await page.locator("#toast-stack .toast").first().textContent();
   expect(toastText).toContain(COPY_HEADLINES[0]);
 });
+
+/**
+ * SH-367 — "Dismiss all" discloses what it destroys, as a HYBRID.
+ *
+ * The bar used to announce only "All notices dismissed", and
+ * `dismissAllDispatchHistory`'s comment justified that silence: the toast pile
+ * MIXES a server-backed dispatch failure with copy, deep-link and mutation
+ * errors that have no record anywhere, so promising recovery would be a
+ * comforting falsehood. The premise was correct; the conclusion was not.
+ * Silence over a mixed state is itself read as "none of these survive" — which
+ * is SH-312's rule broken in the other direction, a mixed outcome reported as
+ * a uniform one.
+ *
+ * The shape is SH-361's own `retention.forgotten` amendment applied one
+ * surface over: the RULE sentence is unconditional and rendered always,
+ * *because a rule cannot be wrong*; the clause that points somewhere is
+ * conditional on this pile actually holding something that surface will have.
+ *
+ * Both branches are asserted here. A pin on only the dispatch case would pass
+ * against a build that pointed every reader at the Dispatch log, including the
+ * reader who just cleared three clipboard failures that are in no log at all —
+ * which is the exact falsehood this design exists to avoid.
+ */
+test("Dismiss all states the retention rule always, and points at the log only when there is something in it", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await keepNotices(page);
+  await openProject(page, "Alpha Project");
+
+  // Branch 1: client-only notices. Nothing here survives, and the
+  // announcement must not imply otherwise.
+  const title = "SH-367 — dismiss-all disclosure";
+  await createStory(page, title);
+  await raiseDurableNotices(page, title, 2);
+
+  await page.locator("#toast-dismiss-all").click();
+  const announcer = page.locator("#notice-dock-status");
+  await expect(announcer).toContainText("Dismissed notices are not kept.");
+  await expect(announcer).not.toContainText("Dispatch log");
+
+  // Branch 2: a genuinely MIXED pile — one dispatch failure the daemon keeps,
+  // beside a clipboard failure it does not. That mixture is the case this
+  // whole design is about, and it needs two notices anyway: the bar is hidden
+  // below `NOTICE_DISMISS_ALL_THRESHOLD` (2), so a lone refusal cannot be
+  // bulk-dismissed at all.
+  //
+  // `DispatchRegistry::finish` has no `auto` filter, so this ATTENDED refusal
+  // is in `GET /api/dispatch-log` exactly as an unattended one would be.
+  await raiseAttendedRefusal(page, "SH-367 refusal for the mixed pile");
+  await raiseDurableNotices(page, title, 1);
+  await expect(page.locator("#toast-stack .toast")).toHaveCount(2);
+
+  await page.locator("#toast-dismiss-all").click();
+  await expect(announcer).toContainText("Dismissed notices are not kept.");
+  await expect(announcer).toContainText("Dispatch log under Settings");
+});
