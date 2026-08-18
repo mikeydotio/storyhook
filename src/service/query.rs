@@ -321,17 +321,7 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
         let views = self.story_views(false)?;
         let stories = view_map(&views);
         let active = self.active_state()?;
-        let mut ready: Vec<StoryView> = views
-            .into_iter()
-            .filter(|view| {
-                is_claimable(&view.story, &stories, active.as_ref()) && !has_children(&view.story)
-            })
-            .collect();
-        if let Some(phase) = phase {
-            let label = format!("phase:{phase}");
-            ready.retain(|view| view.story.labels.contains(&label));
-        }
-        sort_ready(&mut ready);
+        let mut ready = ready_queue(&views, &stories, active.as_ref(), phase);
         ready.truncate(count);
         Ok(ready)
     }
@@ -1056,6 +1046,31 @@ fn type_label(story: &StorySnapshot) -> String {
 /// shared by `next`, `summary`, `report` and `context`.
 fn sort_ready(views: &mut [StoryView]) {
     views.sort_by(|a, b| domain::ready_order(&a.story, &b.story));
+}
+
+/// The ready queue `story next` hands out, in full and in order: every leaf
+/// story (`!has_children`) that is claimable, sorted by
+/// [`domain::ready_order`] and optionally filtered to one `phase:<n>` label.
+///
+/// The one implementation behind `story next`'s own filter/sort, extracted
+/// so a second caller can share it without duplicating the predicate.
+fn ready_queue(
+    views: &[StoryView],
+    stories: &BTreeMap<String, StorySnapshot>,
+    active: Option<&StateDef>,
+    phase: Option<&str>,
+) -> Vec<StoryView> {
+    let mut ready: Vec<StoryView> = views
+        .iter()
+        .filter(|view| is_claimable(&view.story, stories, active) && !has_children(&view.story))
+        .cloned()
+        .collect();
+    if let Some(phase) = phase {
+        let label = format!("phase:{phase}");
+        ready.retain(|view| view.story.labels.contains(&label));
+    }
+    sort_ready(&mut ready);
+    ready
 }
 
 /// The counting half of `summary` and `report`, which agree on every field.
