@@ -3198,7 +3198,6 @@ fn story_title(fixture: &ServiceFixture, id: &str) -> String {
         .title
 }
 
-
 // --- SH-410: an incomplete fold is not an oracle ---------------------------
 //
 // A story carrying an event this build cannot decode folds to `Ok` — the fold
@@ -3365,7 +3364,9 @@ fn a_missing_row_on_a_story_with_a_future_event_is_reported_and_not_invented() {
 
     let error = fix(&fixture).expect_err("a story with no row is damage --fix cannot repair");
     assert!(
-        error.to_string().contains("has events but no read-model row"),
+        error
+            .to_string()
+            .contains("has events but no read-model row"),
         "the missing row must be named: {error}"
     );
     assert!(

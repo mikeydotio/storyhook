@@ -612,7 +612,12 @@ fn column_comparisons(
     } = row;
 
     Ok(vec![
-        ("head_seq", head_seq.to_string(), rebuilt_head.to_string(), Basis::Events),
+        (
+            "head_seq",
+            head_seq.to_string(),
+            rebuilt_head.to_string(),
+            Basis::Events,
+        ),
         // `put_story` derives this column from `events` in the same SQL
         // statement that writes it, so it can only diverge from a rebuild if
         // something wrote the row outside `put_story` — a raw migration, a hand
@@ -657,7 +662,12 @@ fn column_comparisons(
             optional(expected.awaiting.as_deref()),
             Basis::Fold,
         ),
-        ("deleted", deleted.to_string(), expected.deleted.to_string(), Basis::Fold),
+        (
+            "deleted",
+            deleted.to_string(),
+            expected.deleted.to_string(),
+            Basis::Fold,
+        ),
         // `archived` has no counterpart in the snapshot: it is *defined* as
         // "has a close timestamp", and a schema CHECK holds it there. This
         // compares the flag against that definition.
@@ -705,7 +715,12 @@ fn column_comparisons(
             optional(expected.hidden_at.as_deref()),
             Basis::Fold,
         ),
-        ("draft", draft.to_string(), expected.draft.to_string(), Basis::Fold),
+        (
+            "draft",
+            draft.to_string(),
+            expected.draft.to_string(),
+            Basis::Fold,
+        ),
         (
             "labels",
             labels.join(","),

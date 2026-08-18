@@ -470,8 +470,16 @@ impl<'a, S: Store> IntegrityService<'a, S> {
                  stor{} whole:\n{}",
                 repair.withheld.len(),
                 if repair.withheld.len() == 1 { "" } else { "s" },
-                if repair.withheld.len() == 1 { "that" } else { "those" },
-                if repair.withheld.len() == 1 { "y" } else { "ies" },
+                if repair.withheld.len() == 1 {
+                    "that"
+                } else {
+                    "those"
+                },
+                if repair.withheld.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                },
                 repair
                     .withheld
                     .iter()
