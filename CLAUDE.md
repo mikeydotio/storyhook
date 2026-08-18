@@ -316,10 +316,10 @@ Standing rules for every wave:
   running process also writes is racing that process, whether or not the mutation looks like it
   targets a static one. `tests/portfile_fixture_hygiene.rs` fences the specific class — a
   portfile write that follows a daemon start, in the same function, must carry the guard — over
-  a coarser file-level design rejected by unanimous council vote (`.council/
-  sh-345-portfile-fixture-hygiene-fence/`, gitignored) because the two files that have ever
-  doctored a portfile are already permanently "compliant" by that coarser measure, so it could
-  only ever have caught a hypothetical third file.
+  a coarser file-level design rejected by unanimous council vote (`story show SH-345`, never
+  the council's own directory — SH-363) because the two files that have ever doctored a
+  portfile are already permanently "compliant" by that coarser measure, so it could only ever
+  have caught a hypothetical third file.
 - **A `pub` item with no caller is invisible to `dead_code`, so a test has to find it**
   (SH-198). `get_timeline` sat on `GithubClient` with zero call sites anywhere in `src/`
   or `tests/`, and the compiler never warned: `dead_code` only fires for an item
@@ -495,6 +495,17 @@ Standing rules for every wave:
   here: both autonomous charters (`plugin/claude-code/bin/story.sh`) say *before you resume
   the work*, pinned in `test-dispatch-auto.sh` and, as a span inertness may not be bought by
   deleting, in `test-charter-inert.sh`.
+  **The scanner's own first blind spot was this file** (SH-376). Its wrap rule required
+  the next line to resume behind a comment leader — which every source comment carries and
+  no prose does: a markdown bullet wraps behind two spaces, a paragraph behind nothing. A
+  citation whose slug went to the next line of a `.md` file was therefore never collected
+  at all — not exempted, invisible — and reported as a clean tree; one had been sitting in
+  the SH-345 bullet above for as long as the rule has existed. What the leader requirement
+  was really protecting is a single case, now stated where the fact lives rather than by
+  proxy: a marker that is the whole of its own line is an entry in a list, an ignore
+  file's rules being one per line and unable to wrap, so the line beneath it is the next
+  rule and not the rest of a slug. Indentation is deliberately not the test — an
+  unindented paragraph wraps too.
 - **A column the oracle forgot is a column nothing watches — so the compiler checks the
   struct and a damage test checks the comparison** (SH-365). `diff_rebuilt` is `story
   doctor`'s only oracle over the `stories` read model, and it reached the columns through
