@@ -171,6 +171,47 @@ fn the_one_describer_distinguishes_no_reply_from_a_refusal() {
     );
 }
 
+/// `describeFailure`'s `status === 0` branch (above) is only honest if
+/// **both** of `api()`'s no-reply signals actually produce `status: 0` —
+/// SH-347's council found nothing here proved that `xhr.onerror` and
+/// `xhr.ontimeout` are wired identically, only that the *renderer* branches
+/// correctly on whichever status it is handed. This is that missing half:
+/// the funnel itself, not just what happens after it.
+#[test]
+fn api_funnels_onerror_and_ontimeout_into_the_same_no_reply_status() {
+    let source = dashboard();
+
+    let attempt = source
+        .split_once("function attempt() {")
+        .expect(
+            "`api()`'s inner `attempt()` is where `xhr.onerror`/`xhr.ontimeout` are wired. If it \
+             was renamed, rename it here too — this test is what stops the two handlers drifting \
+             apart from each other.",
+        )
+        .1;
+    let body: String = attempt.chars().take(2000).collect();
+
+    let onerror = body
+        .split_once("xhr.onerror = function()")
+        .map(|(_, rest)| rest.chars().take(120).collect::<String>())
+        .unwrap_or_else(|| panic!("api()'s attempt() must assign xhr.onerror"));
+    let ontimeout = body
+        .split_once("xhr.ontimeout = function()")
+        .map(|(_, rest)| rest.chars().take(120).collect::<String>())
+        .unwrap_or_else(|| panic!("api()'s attempt() must assign xhr.ontimeout"));
+
+    assert!(
+        onerror.contains("refuse({ status: 0"),
+        "api()'s xhr.onerror must call refuse({{ status: 0, ... }}) -- found: {onerror:?}"
+    );
+    assert!(
+        ontimeout.contains("refuse({ status: 0"),
+        "api()'s xhr.ontimeout must call refuse({{ status: 0, ... }}) -- found: {ontimeout:?}. \
+         A timeout that funnelled anywhere else would make describeFailure's status===0 branch \
+         prove nothing about the one outcome (a client-side timeout) SH-312 exists to cover."
+    );
+}
+
 /// A positive control: the scan must be capable of failing.
 ///
 /// A predicate that silently stopped matching would report a clean tree
