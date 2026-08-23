@@ -202,6 +202,7 @@ Usage:
   story scaffold agents-md|claude-md|cursor-rules
   story help [<command>] [--compact] [--all]
   story plugin install|uninstall <claude|codex>
+  story plugin run codex -- <helper-command> [args...]  (internal stable Codex launcher)
   story show <id>
   story log <id>
   story comment <id> "<text>"
@@ -704,8 +705,20 @@ pub enum HistoryAction {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PluginAction {
-    Install { target: String },
-    Uninstall { target: String },
+    Install {
+        target: String,
+    },
+    Uninstall {
+        target: String,
+    },
+    /// Run the installed provider plugin's deterministic helper through the
+    /// stable `story` binary. The Codex integration's unversioned launcher is
+    /// the intended caller; handling this in the client keeps the helper's
+    /// stdout, stderr, exit status, cwd, and terminal environment intact.
+    Run {
+        target: String,
+        args: Vec<String>,
+    },
 }
 
 /// `story daemon …`.
@@ -3537,11 +3550,12 @@ fn parse_help(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_plugin(args: &[String]) -> Result<Invocation, AppError> {
-    const USAGE: &str = "usage: story plugin install|uninstall <claude|codex>";
-    if args.len() != 3 {
+    const USAGE: &str = "usage: story plugin install|uninstall <claude|codex> | story plugin run codex -- <helper-command> [args...]";
+    let Some(action) = args.get(1).map(String::as_str) else {
         return Err(AppError::Usage(USAGE.to_string()));
-    }
-    match args[1].as_str() {
+    };
+    match action {
+        "install" | "uninstall" if args.len() != 3 => Err(AppError::Usage(USAGE.to_string())),
         "install" => Ok(Invocation::Plugin {
             action: PluginAction::Install {
                 target: args[2].clone(),
@@ -3550,6 +3564,13 @@ fn parse_plugin(args: &[String]) -> Result<Invocation, AppError> {
         "uninstall" => Ok(Invocation::Plugin {
             action: PluginAction::Uninstall {
                 target: args[2].clone(),
+            },
+        }),
+        "run" if args.len() < 4 => Err(AppError::Usage(USAGE.to_string())),
+        "run" => Ok(Invocation::Plugin {
+            action: PluginAction::Run {
+                target: args[2].clone(),
+                args: args[3..].to_vec(),
             },
         }),
         other => Err(AppError::Usage(format!(
@@ -4324,7 +4345,7 @@ fn join_tokens(tokens: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{EpicAction, Invocation, TypeAction, parse_invocation};
+    use super::{EpicAction, Invocation, PluginAction, TypeAction, parse_invocation};
 
     #[test]
     fn routes_move_command() {
@@ -4347,6 +4368,30 @@ mod tests {
     fn unknown_command_errors() {
         let result = parse_invocation(&["SH-1".to_string(), "is".to_string(), "done".to_string()]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn plugin_run_preserves_helper_flags_after_the_terminator() {
+        let invocation = parse_invocation(&words(&[
+            "plugin",
+            "run",
+            "codex",
+            "--",
+            "dispatch",
+            "SH-9",
+            "--agent=codex",
+            "--auto",
+        ]))
+        .unwrap();
+        assert_eq!(
+            invocation,
+            Invocation::Plugin {
+                action: PluginAction::Run {
+                    target: "codex".to_string(),
+                    args: words(&["dispatch", "SH-9", "--agent=codex", "--auto"]),
+                }
+            }
+        );
     }
 
     // --- `story block`/`story unblock` --on (SH-398) ---

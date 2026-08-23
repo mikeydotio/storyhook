@@ -11,17 +11,28 @@ story plugin install claude
 story plugin install codex
 ```
 
+The Codex installer also creates `~/.codex/storyhook/story.sh` and a dedicated
+`~/.codex/rules/storyhook.rules`. Skills call that unversioned launcher rather than their
+versioned cache copy. The launcher delegates through `story plugin run codex`, which asks
+Codex for the exact enabled plugin version on every invocation; upgrades therefore do not
+stale the rule. The generated rule allows only `bash` plus the exact launcher path, is
+verified with `codex execpolicy check`, and takes effect after Codex restarts. Bare `bash`
+is never allowlisted.
+
 The former plugin target `claude-code` remains accepted for install and uninstall as a
 deprecated, warned compatibility alias. New dispatch interfaces accept only `claude` and
 `codex`.
 
 Codex development installs register the repository marketplace and then add the plugin,
-equivalent to:
+using the following Codex commands internally:
 
 ```bash
 codex plugin marketplace add /absolute/path/to/storyhook
 codex plugin add story@storyhook
 ```
+
+Running only those two low-level commands skips the launcher/rule lifecycle; use
+`story plugin install codex` for the complete supported installation.
 
 The Codex manifest declares the shared skills and intentionally has no explicit `hooks`
 field because the current validator rejects it. Current installed-plugin discovery loads
@@ -56,6 +67,12 @@ which always emits exactly **one JSON object** on stdout carrying `ok` and a
 human-readable `display`. The model routes and renders; it never drives `story`,
 `git`, or `tmux` itself. That is what keeps behavior testable: the bash suite
 exercises the real logic, and the prose can't quietly diverge from it.
+
+On Claude, `<story-helper>` is the packaged `bin/story.sh`. On Codex it is the stable
+`~/.codex/storyhook/story.sh` launcher installed by the CLI. That one provider-specific
+indirection is a sandbox boundary: command rules match exact prefixes, while Codex plugin
+cache paths include the version. The launcher dynamically resolves the enabled cache entry
+and then runs the same packaged helper, preserving the one-JSON-object contract.
 
 `bin/story.sh` accepts seventeen subcommands:
 

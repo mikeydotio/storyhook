@@ -125,13 +125,35 @@ story plugin install codex
 ```
 
 It detects the current checkout during development and otherwise registers
-`mikeydotio/storyhook`. To perform the same development setup manually, register this
-checkout as a local marketplace and add the plugin through Codex:
+`mikeydotio/storyhook`. It also installs an unversioned launcher at
+`~/.codex/storyhook/story.sh` and a dedicated rule at
+`~/.codex/rules/storyhook.rules`. The rule allows only `bash` followed by that exact
+launcher path; it never allowlists bare `bash`. The launcher resolves Codex's currently
+enabled Storyhook plugin version on every call, so cachebuster/version changes do not stale
+the rule.
+
+The installer verifies the rule with `codex execpolicy check`. Restart Codex afterward:
+rules are loaded at startup. You can inspect the exact decision yourself:
+
+```bash
+codex execpolicy check --pretty \
+  --rules ~/.codex/rules/storyhook.rules \
+  -- bash ~/.codex/storyhook/story.sh context
+```
+
+See the [official Codex rules documentation](https://learn.chatgpt.com/docs/agent-configuration/rules)
+for rule precedence and additional policy files.
+
+For low-level development diagnosis, the marketplace half can be reproduced manually by
+registering this checkout and adding the plugin through Codex:
 
 ```bash
 codex plugin marketplace add /absolute/path/to/storyhook
 codex plugin add story@storyhook
 ```
+
+Those low-level Codex commands do not install the Storyhook launcher or rule; finish with
+`story plugin install codex` before invoking helper-backed skills.
 
 Start a fresh Codex conversation after installing. Invoke a skill explicitly with the
 host's skill selector or describe the Storyhook workflow in natural language; activation
@@ -215,7 +237,8 @@ To remove a Codex marketplace installation created from a local checkout:
 story plugin uninstall codex
 ```
 
-This removes only `story@storyhook` and the `storyhook` marketplace through Codex.
+This removes `story@storyhook`, the `storyhook` marketplace, and Storyhook's managed stable
+launcher and rule. Unrelated or user-authored files are preserved.
 
 ## Quick start
 

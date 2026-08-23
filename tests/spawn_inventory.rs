@@ -118,6 +118,11 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // constructor uses null streams and `.status()`, so the more restrictive
     // classification covers every call made through it.
     ("src/plugin.rs", "target.executable(", Kind::Reads),
+    // `plugin::run_helper` — the Codex stable-launcher bridge. The helper
+    // inherits the caller's streams and is waited to completion with
+    // `.status()`, so there is no output pipe whose EOF a descendant could
+    // withhold.
+    ("src/plugin.rs", "\"bash\"", Kind::Waited),
     ("src/tui/app.rs", "&editor_cmd", Kind::Waited),
     ("src/update.rs", "\"tar\"", Kind::Waited),
     ("src/update.rs", "staged", Kind::Waited),
