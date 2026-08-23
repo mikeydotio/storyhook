@@ -10,13 +10,13 @@ resolution, the active-role state transition, and the start comment — lives in
 `bash "<story-helper>" work [story-id]`. **Route and render — never call
 `story` yourself for the steps below.**
 
-## Resolve packaged files
+## Resolve packaged files and helper
 
-Take the absolute directory containing this loaded `SKILL.md` as `<skill-dir>`. Resolve
-`<plugin-root>` as the normalized absolute path `<skill-dir>/../..`, and resolve
-`<story-helper>` as `<plugin-root>/bin/story.sh`. Substitute the absolute path for every
-placeholder below and shell-quote it. Never resolve packaged files from the user's current
-working directory.
+Take the absolute directory containing this loaded `SKILL.md` as `<skill-dir>` and resolve
+`<plugin-root>` as the normalized absolute path `<skill-dir>/../..`. Load
+`<plugin-root>/references/helper-command.md` and follow it to resolve `<story-helper>`.
+Substitute absolute paths for every placeholder below and shell-quote them. Never resolve
+packaged files from the user's current working directory.
 
 ## Steps
 

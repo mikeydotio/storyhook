@@ -1406,6 +1406,12 @@ fn invocation_corpus() -> Vec<Invocation> {
                 target: "claude".to_string(),
             },
         },
+        Invocation::Plugin {
+            action: PluginAction::Run {
+                target: "codex".to_string(),
+                args: vec!["context".to_string()],
+            },
+        },
         Invocation::Web {
             action: WebAction::Start { port: Some(3456) },
         },

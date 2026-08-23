@@ -621,6 +621,9 @@ pub fn dispatch<S: Store>(
             match action {
                 PluginAction::Install { target } => service.install_plugin(&target),
                 PluginAction::Uninstall { target } => service.uninstall_plugin(&target),
+                PluginAction::Run { .. } => Err(AppError::Storage(
+                    "internal: `story plugin run` reached the daemon".to_string(),
+                )),
             }
             .map(Response::Message)
         }
@@ -2138,6 +2141,9 @@ pub fn dispatch_unscoped_with_stdin<S: Store>(
         Invocation::Plugin { action } => match action {
             PluginAction::Install { target } => system::install_plugin(&target, root),
             PluginAction::Uninstall { target } => system::uninstall_plugin(&target, root),
+            PluginAction::Run { .. } => Err(AppError::Storage(
+                "internal: `story plugin run` reached the daemon".to_string(),
+            )),
         }
         .map(Response::Message),
         // Reached only when no project could be resolved. `claude-md` and
