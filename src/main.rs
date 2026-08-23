@@ -225,6 +225,21 @@ fn main() {
         Asked::Cancelled => return,
     };
 
+    // The Codex integration's stable, unversioned launcher delegates here.
+    // Run before opening a store or contacting the daemon: the packaged
+    // helper owns that work itself, and its exact JSON streams and exit status
+    // are part of the skill contract.
+    if let Invocation::Plugin {
+        action: storyhook::cli::PluginAction::Run { target, args },
+    } = &invocation
+    {
+        match storyhook::plugin::run_helper(target, args) {
+            Ok(status) if status.success() => return,
+            Ok(status) => process::exit(status.code().unwrap_or(1)),
+            Err(error) => fail(&error, json),
+        }
+    }
+
     // `store new` names the store it creates, and is the one command that must
     // not resolve the ambient one first — see `invoke::create_store`.
     if let Invocation::Store {
