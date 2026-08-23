@@ -174,6 +174,68 @@ integration, and SH-263 and SH-345 are the recorded cost of exactly that gap.
 Verified by hand against this repo's own live PRs instead, each time the
 script changes.
 
+## The push gate narrowed to `main`/`master`, so work ships before it is tested (SH-429)
+
+Once the SH-396 section above was true — `merge-preflight.sh`/`merge-watch.sh`
+are what actually decide whether content reaches `main`, unconditionally,
+regardless of what any push carried — a second fact followed that this
+project had not yet acted on: `.githooks/pre-push` refusing an *ordinary
+feature-branch push* for lacking a receipt was gating content that was never,
+on its own, the thing landing on `main`. It cost real wall-clock all the same:
+`make test` runs 495s+ on the machine that actually runs it (measured this
+story, three-to-four concurrent worktree suites), so every session paid that
+cost **before its work ever left the machine**, on every branch, whether or
+not that branch was ever going near `main` directly.
+
+**The decision:** `.githooks/pre-push` now refuses only a direct push to
+`main` or `master` with no receipt — defence in depth behind the org's
+`protect-main` ruleset, which already blocks direct pushes there by policy.
+Every other ref is *reported*, never refused: which tier's receipt the tree
+carries, or that it carries none, and that `scripts/merge-preflight.sh` is
+what actually decides whether this content may land. The autonomous dispatch
+charter (`plugins/story/bin/story.sh`'s `PROMPT_TPL`/`AUTO_PROMPT_TAIL`)
+changed to match: commit, push, and open the PR *before* running the test
+suite, so work is preserved on the remote even if testing turns something up
+— then run `make test` and merge only once it passes, since the merge gate
+still requires it.
+
+**Why this is sound and not merely convenient.** Nothing about `main`'s actual
+protection moved: `merge-preflight.sh` still refuses a merge tree with no
+`gate`/`full` receipt exactly as it always has. What moved is *when* a
+session pays the suite's wall-clock cost relative to
+when its work becomes durable: pushing first means a crash, a context
+compaction, or a session hitting a hard stop mid-test no longer risks losing
+commits that were never given a chance to leave the machine. A push that is
+merely *reported* as unreceipted is not a weaker claim about `main`'s safety
+than a push that was *refused* for the same reason — both leave the tree
+exactly as untested as it was; only the party who finds out, and when, has
+changed.
+
+**What stays a hard refusal, and why the line is drawn there.** A direct push
+to `main`/`master` is categorically different: unlike a feature branch, its
+content does not pass through `merge-preflight.sh` on the way in (there is no
+merge — it *is* `main` already). The org ruleset already blocks this by
+policy, so in the ordinary case this refusal never fires; it exists for the
+case where policy is misconfigured, bypassed, or the ruleset is not the layer
+actually enforcing it (e.g. a fork, a mirror, or a future repo that adopts
+this hook without the ruleset). A tool-level check that assumes the platform
+check is always present is exactly the single point of failure SH-306's
+family of stories keeps finding.
+
+**`tests/push_gate.rs`** provokes the split directly rather than inspecting
+it: `push_branch` provokes the new non-`main` report-not-refuse path (a
+fresh, receipt-less branch push must still succeed and must still move the
+remote ref — SH-306's own doctrine that the remote ref, not the exit code, is
+the load-bearing assertion), while the renamed
+`a_push_to_main_with_no_receipt_is_refused_and_the_remote_does_not_move`
+keeps pinning the surviving refusal. Mutation-checked in both directions:
+forcing every ref to be treated as protected turns exactly the one new
+report-path test red; making the `main`/`master` case arm unreachable (so
+nothing is ever refused) turns every test whose assertion depends on that
+refusal red. Full counts and case names are in the test file's own module
+doc, updated with this change rather than left to drift (the SH-136/SH-198/
+SH-258/SH-260-276/SH-360 doctrine applied to a doc comment, not just code).
+
 ## Something has to run the release tier between releases (SH-418)
 
 Everything above tells you what the two tiers *are*. It does not say what runs
