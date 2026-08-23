@@ -250,7 +250,7 @@ fn post_git_shs_own_deadline_stays_at_or_under_git_hook_deadline() {
         .collect::<Vec<_>>()
         .join("\n");
     let deadline = deadline_arg(&functional).unwrap_or_else(|| {
-        panic!("plugin/claude-code/hooks/post-git.sh must declare its own --deadline")
+        panic!("plugins/story/hooks/post-git.sh must declare its own --deadline")
     });
     assert!(
         deadline <= GIT_HOOK_DEADLINE.as_secs(),

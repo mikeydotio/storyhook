@@ -158,7 +158,7 @@ fn every_scaffolded_instruction_file_points_at_the_rubric() {
 
 #[test]
 fn every_plugin_document_that_offers_a_level_points_at_the_rubric() {
-    let silent: Vec<String> = tracked("plugin/claude-code/**/*.md")
+    let silent: Vec<String> = tracked("plugins/story/**/*.md")
         .into_iter()
         .filter(|(_, text)| offers_a_level(text) && !text.contains(POINTER))
         .map(|(path, _)| path)

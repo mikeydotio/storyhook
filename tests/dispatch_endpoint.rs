@@ -579,6 +579,10 @@ fn a_script_below_the_required_protocol_is_refused_before_any_handle_exists() {
         body.contains("story plugin install claude-code"),
         "the 500 must name the remedy: {body}"
     );
+    assert!(
+        body.contains("story plugin install codex"),
+        "the 500 must list the Codex remedy too: {body}"
+    );
 
     // No handle was ever minted -- confirmed the same way an_unknown_handle_is_404
     // confirms it: any id polls 404, because try_start() is never reached

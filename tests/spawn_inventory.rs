@@ -112,7 +112,12 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // temporary files rather than pipes, so there is no pipe for a descendant to
     // hold and nothing for the caller to wait on.
     ("src/event_hooks.rs", "\"sh\"", Kind::Waited),
-    ("src/plugin.rs", "\"claude\"", Kind::Reads),
+    // `plugin::run_provider` — the selected provider CLI (`claude` or `codex`).
+    // Classified as `Reads` because install/uninstall captures both streams to
+    // report the provider's exact failure. The availability probe sharing this
+    // constructor uses null streams and `.status()`, so the more restrictive
+    // classification covers every call made through it.
+    ("src/plugin.rs", "target.executable(", Kind::Reads),
     ("src/tui/app.rs", "&editor_cmd", Kind::Waited),
     ("src/update.rs", "\"tar\"", Kind::Waited),
     ("src/update.rs", "staged", Kind::Waited),
