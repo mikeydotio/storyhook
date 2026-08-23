@@ -1,21 +1,38 @@
 #!/usr/bin/env bash
 #
-# The push gate — SH-306.
+# The push gate — SH-306, narrowed by SH-429.
 #
-# Refuses to push a tree that `make test` has not certified. Git runs this hook
-# itself, synchronously, with no timeout and no interest in whether the push was
-# typed, scripted, backgrounded or issued by an agent — which is the whole
-# reason the gate lives here now. Its predecessor was a Claude Code `PreToolUse`
-# hook that got SIGTERMed at its own 900-second ceiling, after which the push
-# proceeded ungated and unannounced; six of eight logs on that machine ended at
-# exactly 900s over three days.
+# Git runs this hook itself, synchronously, with no timeout and no interest in
+# whether the push was typed, scripted, backgrounded or issued by an agent —
+# which is the whole reason the gate lives here rather than in a Claude Code
+# `PreToolUse` hook (SH-306's original: a 900-second ceiling after which the
+# push proceeded ungated and unannounced, six of eight logs on that machine
+# ending at exactly 900s over three days).
 #
-# This hook does no work. It asks whether the tree being pushed has a receipt
-# and answers in milliseconds. `scripts/gate-receipt.sh` is what writes one, as
-# the last line of `make test` or `make test-full` (SH-394). Either receipt
-# passes this gate — the reduced `gate` tier protecting `main` is the entire
-# reason the split exists — but the tier is named on the way through so a push
-# that skipped the browser suite never looks the same as one that didn't.
+# WHAT CHANGED (SH-429). This hook used to REFUSE any push whose tree carried
+# no `gate-receipt.sh` receipt, for every ref. But since SH-396, that refusal
+# was already certifying a fact that does not decide what reaches `main`:
+# `gh pr merge --merge` is a server-side merge that never triggers a local
+# push hook at all, and a merge tree is a two-parent combination this hook has
+# never even seen — `scripts/merge-preflight.sh` (run by `scripts/merge-
+# watch.sh`) is what actually gates a merge, unconditionally, regardless of
+# what any push carried. So making an ordinary feature-branch push wait on a
+# multi-minute suite was gating content that was never, on its own, the thing
+# landing — while doing nothing to make the merge itself safer.
+#
+# This hook now REPORTS on every non-`main`/`master` ref (which tier's receipt
+# it found, or that it found none — never refuses) and REFUSES ONLY a direct
+# push to `main` or `master` with no receipt, as defence in depth behind the
+# org's `protect-main` ruleset (which already blocks direct pushes there by
+# policy; this is a second, independent no). `scripts/merge-preflight.sh`
+# remains the actual enforcement point for everything that reaches `main`
+# through a PR merge, which is the overwhelming majority of pushes.
+#
+# `scripts/gate-receipt.sh` is what writes a receipt, as the last line of
+# `make test` / `make test-full` (SH-394) — or `make test-changed` (SH-429),
+# once that tier exists. Any receipt is reported by its tier so a push that
+# skipped work never looks the same as one that didn't; `merge-preflight.sh`
+# is what decides which tiers are strong enough to actually merge.
 #
 # Bypasses, both deliberate and both documented in CLAUDE.md:
 #   SKIP_PREPUSH_TESTS=1   announced loudly here (a silent bypass is the same
@@ -35,7 +52,7 @@ receipts="$common_dir/storyhook/gate-receipts"
 refused=0
 unreceipted_commits=""
 
-while read -r local_ref local_sha _remote_ref remote_sha; do
+while read -r local_ref local_sha remote_ref remote_sha; do
     [ -n "${local_sha:-}" ] || continue
 
     # An all-zero local sha is a ref DELETION. It ships no content, so there is
@@ -52,12 +69,29 @@ while read -r local_ref local_sha _remote_ref remote_sha; do
         continue
     }
 
+    # `remote_ref` — the ref being updated on the remote, e.g. `refs/heads/
+    # main` — is what decides eligibility for a hard refusal; `main`/`master`
+    # only. Every other branch still has to pass through `merge-preflight.sh`
+    # to leave, which is where the real gate now lives (SH-429).
+    branch="${remote_ref#refs/heads/}"
+    is_protected_branch=0
+    case "$branch" in
+    main | master) is_protected_branch=1 ;;
+    esac
+
     if [ ! -f "$receipts/$tree" ]; then
-        echo "pre-push: REFUSED — $local_ref (tree $tree) has no green receipt." >&2
-        echo "  Nothing certifies that this content passes. Run 'make test'; its" >&2
-        echo "  last step writes the receipt. Bypass deliberately with" >&2
-        echo "  SKIP_PREPUSH_TESTS=1 or --no-verify if this is a docs-only push." >&2
-        refused=1
+        if [ "$is_protected_branch" = 1 ]; then
+            echo "pre-push: REFUSED — $local_ref (tree $tree) has no green receipt and $remote_ref is a protected branch." >&2
+            echo "  Nothing certifies that this content passes. Run 'make test'; its" >&2
+            echo "  last step writes the receipt. Bypass deliberately with" >&2
+            echo "  SKIP_PREPUSH_TESTS=1 or --no-verify if this is a docs-only push." >&2
+            refused=1
+        else
+            echo "pre-push: $local_ref (tree $tree) has no green receipt — reported, not refused (SH-429)." >&2
+            echo "  This push is not what gates $remote_ref reaching main: since SH-396 a" >&2
+            echo "  merge is a server-side operation this hook never sees, so" >&2
+            echo "  scripts/merge-preflight.sh decides that. Run 'make test' before merging." >&2
+        fi
         continue
     fi
 
