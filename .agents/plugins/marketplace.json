@@ -1,0 +1,20 @@
+{
+  "name": "storyhook",
+  "interface": {
+    "displayName": "Storyhook"
+  },
+  "plugins": [
+    {
+      "name": "story",
+      "source": {
+        "source": "local",
+        "path": "./plugins/story"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

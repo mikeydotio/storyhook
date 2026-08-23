@@ -493,7 +493,7 @@ fn a_future_dated_commit_never_sustains_the_advisory() {
 // ---------------------------------------------------------------------------
 
 /// **The second syncer.** Storyhook ships one itself:
-/// `plugin/claude-code/hooks/post-git.sh` runs `story commit-sync --since 1h
+/// `plugins/story/hooks/post-git.sh` runs `story commit-sync --since 1h
 /// --quiet` after every Claude-driven commit, merge and push. A user's own hands
 /// do the same thing.
 ///

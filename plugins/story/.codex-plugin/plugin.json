@@ -1,0 +1,32 @@
+{
+  "name": "story",
+  "version": "0.6.0+codex.20260822212042",
+  "description": "Dependency-aware project management and lifecycle workflows for coding agents through the Storyhook CLI.",
+  "author": {
+    "name": "mikeydotio",
+    "url": "https://github.com/mikeydotio"
+  },
+  "homepage": "https://github.com/mikeydotio/storyhook",
+  "repository": "https://github.com/mikeydotio/storyhook",
+  "license": "MIT",
+  "keywords": [
+    "coding-agents",
+    "project-management",
+    "storyhook",
+    "work-tracking"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Storyhook",
+    "shortDescription": "Track and complete dependency-aware project work.",
+    "longDescription": "Use Storyhook to plan, claim, track, triage, and hand off project work from coding-agent conversations.",
+    "developerName": "mikeydotio",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/mikeydotio/storyhook",
+    "defaultPrompt": "Show the highest-priority ready Storyhook work and help me complete it."
+  }
+}

@@ -407,7 +407,7 @@ fn an_unknown_plugin_target_is_rejected_before_anything_is_touched() {
     for target in ["vscode", "emacs", ""] {
         let error = service.install_plugin(target).unwrap_err();
         assert!(matches!(error, AppError::Usage(_)), "{error:?}");
-        assert!(message(error).contains("Supported: claude-code"));
+        assert!(message(error).contains("Supported: claude-code, codex"));
 
         let error = service.uninstall_plugin(target).unwrap_err();
         assert!(matches!(error, AppError::Usage(_)), "{error:?}");

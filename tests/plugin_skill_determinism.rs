@@ -59,8 +59,8 @@ fn tracked_skill_and_reference_docs(root: &Path) -> Vec<(String, String)> {
             "ls-files",
             "-z",
             "--",
-            "plugin/claude-code/skills/*/SKILL.md",
-            "plugin/claude-code/references/*.md",
+            "plugins/story/skills/*/SKILL.md",
+            "plugins/story/references/*.md",
         ])
         .output()
         .expect("listing this repository's tracked skill/reference docs");
@@ -89,7 +89,7 @@ fn tracked_skill_and_reference_docs(root: &Path) -> Vec<(String, String)> {
     // `dead_public_surface.rs`'s own header warns about.
     assert!(
         files.len() >= 10,
-        "expected at least 10 tracked skill/reference docs under plugin/claude-code/, found {} \
+        "expected at least 10 tracked skill/reference docs under plugins/story/, found {} \
          -- the `git ls-files` pathspec is probably broken, not the tree",
         files.len()
     );
@@ -171,4 +171,70 @@ fn no_skill_or_reference_teaches_the_double_nested_json_shape() {
          skill has to explain the CLI's own nesting:\n{}",
         offenders.join("\n")
     );
+}
+
+#[test]
+fn shared_skills_and_references_are_provider_neutral() {
+    let docs = tracked_skill_and_reference_docs(repo_root());
+    let forbidden = ["CLAUDE_PLUGIN_ROOT", "ARGUMENTS", "AskUserQuestion"];
+    let mut offenders = Vec::new();
+
+    for (file, text) in &docs {
+        for (idx, line) in text.lines().enumerate() {
+            for token in forbidden {
+                if line.contains(token) {
+                    offenders.push(format!("{file}:{}: {token}", idx + 1));
+                }
+            }
+            if line.contains("`/story") || line.contains(" /story ") {
+                offenders.push(format!("{file}:{}: user-facing slash invocation", idx + 1));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "shared skill material contains a provider-only variable, tool, or invocation; put a \
+         genuinely provider-specific exception under plugins/story/adapters instead:\n{}",
+        offenders.join("\n")
+    );
+}
+
+#[test]
+fn every_skill_uses_common_frontmatter() {
+    let skills_root = repo_root().join("plugins/story/skills");
+    let mut checked = 0;
+
+    for entry in std::fs::read_dir(&skills_root).expect("listing packaged skills") {
+        let entry = entry.expect("reading a packaged skill entry");
+        let path = entry.path().join("SKILL.md");
+        if !path.is_file() {
+            continue;
+        }
+        checked += 1;
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+        let mut parts = text.splitn(3, "---");
+        assert_eq!(
+            parts.next(),
+            Some(""),
+            "{} must start with YAML",
+            path.display()
+        );
+        let frontmatter = parts
+            .next()
+            .unwrap_or_else(|| panic!("{} has no YAML frontmatter", path.display()));
+        let keys: Vec<&str> = frontmatter
+            .lines()
+            .filter_map(|line| line.split_once(':').map(|(key, _)| key.trim()))
+            .collect();
+        assert_eq!(
+            keys,
+            ["name", "description"],
+            "{} must use the Claude/Codex common-denominator frontmatter",
+            path.display()
+        );
+    }
+
+    assert_eq!(checked, 10, "the shared package must expose all ten skills");
 }
