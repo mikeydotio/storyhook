@@ -1,7 +1,7 @@
 //! The dashboard's dispatch endpoint (SH-50).
 //!
 //! `POST /api/repos/{project}/story/{id}/dispatch` runs the same
-//! `plugin/claude-code/bin/story.sh dispatch` the CLI's `/story do` uses:
+//! `plugins/story/bin/story.sh dispatch` the CLI's `/story do` uses:
 //! a git worktree, a tmux window, an agent started in plan mode on the
 //! story. `GET .../dispatch/{handle}` polls the outcome. This is
 //! deliberately not a reimplementation of dispatch inside the daemon — the
@@ -109,6 +109,29 @@ pub const RETAIN_FINISHED: usize = 32;
 /// as [`Retention::seconds`].
 pub const RETAIN_FOR: Duration = Duration::from_secs(30 * 60);
 
+/// The agent host one dispatch launches through the shared Storyhook helper.
+///
+/// `claude` is intentionally the public token rather than the product's
+/// longer `claude-code` name. The helper preserves that older spelling only
+/// on its pre-existing environment compatibility seam; new HTTP and argv
+/// contracts accept and emit the canonical values here.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DispatchAgent {
+    #[default]
+    Claude,
+    Codex,
+}
+
+impl DispatchAgent {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+        }
+    }
+}
+
 /// The most stdout or stderr this module reads back from a dispatch child.
 ///
 /// Bounds memory against a runaway script within the timeout window above;
@@ -118,7 +141,7 @@ const MAX_CAPTURE_BYTES: u64 = 64 * 1024;
 
 /// The taxonomy behind a non-[`Ok`](DispatchState::Ok) terminal
 /// [`DispatchRecord`] (SH-232) — read by [`classify`] from `story.sh`'s own
-/// `reason` field (`refuse`/`refuse_with`, `plugin/claude-code/lib/
+/// `reason` field (`refuse`/`refuse_with`, `plugins/story/lib/
 /// session.sh`) instead of leaving it reachable only by parsing
 /// [`DispatchRecord::payload`]. A plain `fail()` refusal (no claim word, not
 /// ready — see `story.sh`'s own guard order) carries no `reason` field at
@@ -226,6 +249,11 @@ pub struct DispatchRecord {
     pub project: String,
     /// The story id this dispatch was asked to act on.
     pub story: String,
+    /// Which provider the shared dispatch helper was told to launch. Missing
+    /// in records persisted by older daemons, which therefore deserialize as
+    /// Claude — the only provider those daemons could have launched.
+    #[serde(default)]
+    pub agent: DispatchAgent,
     /// Whether this dispatch runs `story.sh`'s autonomous charter (SH-208):
     /// plan approval is still the one human interaction, but everything
     /// past it — council-voting open questions, merging its own PR, closing
@@ -460,10 +488,11 @@ impl DispatchRegistry {
     /// later, deduped `POST` asked for — a caller that cares must poll
     /// `auto` on the handle it gets back, not assume it matches its own
     /// request.
-    fn try_start(
+    fn try_start_for_agent(
         &self,
         project: &str,
         story: &str,
+        agent: DispatchAgent,
         auto: bool,
         started_at: String,
     ) -> StartOutcome {
@@ -482,6 +511,7 @@ impl DispatchRegistry {
                     handle: handle.clone(),
                     project: project.to_string(),
                     story: story.to_string(),
+                    agent,
                     auto,
                     state: DispatchState::Running,
                     started_at,
@@ -499,6 +529,17 @@ impl DispatchRegistry {
         StartOutcome::Started(handle)
     }
 
+    #[cfg(test)]
+    fn try_start(
+        &self,
+        project: &str,
+        story: &str,
+        auto: bool,
+        started_at: String,
+    ) -> StartOutcome {
+        self.try_start_for_agent(project, story, DispatchAgent::Claude, auto, started_at)
+    }
+
     /// A copy of `handle`'s record, or `None` if it never existed or has
     /// aged out.
     fn get(&self, handle: &str) -> Option<DispatchRecord> {
@@ -508,6 +549,22 @@ impl DispatchRegistry {
             .entries
             .get(handle)
             .map(|entry| entry.record.clone())
+    }
+
+    /// Returns the current attempt for `story`, if any. This read happens
+    /// before provider-specific helper resolution on a repeated POST: an
+    /// already-running Claude attempt must still be reusable when a later
+    /// caller asks for Codex on a machine where only the Claude plugin is
+    /// installed (and vice versa). `try_start_for_agent` remains the atomic
+    /// authority after resolution, closing the race between this advisory
+    /// read and a concurrent first request.
+    fn running_handle(&self, story: &str) -> Option<String> {
+        self.inner
+            .lock()
+            .expect("dispatch registry lock")
+            .running_by_story
+            .get(story)
+            .cloned()
     }
 
     /// Records `handle`'s outcome and releases its story back to the
@@ -708,7 +765,7 @@ fn load_dispatch_history(env: &Environment) -> Vec<DispatchRecord> {
 }
 
 /// A project slug or story id, validated against the shape `story.sh` itself
-/// requires (`valid_story_id`, `plugin/claude-code/bin/story.sh`):
+/// requires (`valid_story_id`, `plugins/story/bin/story.sh`):
 /// non-empty, alphanumeric first character, alphanumeric/hyphen/underscore
 /// after. Rejects path traversal and whitespace at the one boundary where
 /// a URL segment becomes a shell argument.
@@ -845,7 +902,11 @@ pub fn intercept(
                 Ok(auto) => auto,
                 Err(reply) => return Some(reply),
             };
-            Some(handle_post(project, story, auto, env, bus, registry))
+            let agent = match parse_agent(query) {
+                Ok(agent) => agent,
+                Err(reply) => return Some(reply),
+            };
+            Some(handle_post(project, story, agent, auto, env, bus, registry))
         }
         (Method::Get, 7) => Some(handle_get(segments[6], registry)),
         _ => Some(text_reply(405, "Method Not Allowed")),
@@ -916,7 +977,7 @@ fn handle_log(
     Reply::new(200, "application/json", body).no_cache()
 }
 
-/// Parses the dispatch endpoint's one query parameter, `auto` (SH-208).
+/// Parses the dispatch endpoint's `auto` query parameter (SH-208).
 ///
 /// Absent is `false`, not a refusal — a caller that has never heard of
 /// `--auto` (every non-dashboard caller, and the dashboard's own plain
@@ -945,6 +1006,41 @@ fn parse_auto(query: Option<&str>) -> Result<bool, Reply> {
     }
 }
 
+/// Parses the canonical `agent=claude|codex` dispatch option.
+///
+/// Absence preserves the endpoint's pre-SH-436 behavior: Claude. A repeated
+/// key is rejected even when both values agree, because silently choosing one
+/// from an ambiguous request would make the record look more authoritative
+/// than the request was. `claude-code` is not accepted here: that compatibility
+/// alias predates this API and remains confined to the helper environment and
+/// plugin install target where removing it would break an existing caller.
+fn parse_agent(query: Option<&str>) -> Result<DispatchAgent, Reply> {
+    let values = query
+        .into_iter()
+        .flat_map(|query| query.split('&'))
+        .filter_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            (key == "agent").then_some(value)
+        })
+        .collect::<Vec<_>>();
+    if values.len() > 1 {
+        return Err(text_reply(
+            400,
+            "dispatch: `agent` may be specified only once",
+        ));
+    }
+    match values.first().copied() {
+        None | Some("claude") => Ok(DispatchAgent::Claude),
+        Some("codex") => Ok(DispatchAgent::Codex),
+        Some(value) => Err(text_reply(
+            400,
+            format!(
+                "dispatch: unrecognized `agent` value `{value}` — use `agent=claude` or `agent=codex`"
+            ),
+        )),
+    }
+}
+
 /// `POST /api/repos/{project}/story/{id}/dispatch`.
 ///
 /// Resolving the dispatch script is the one check made synchronously,
@@ -961,16 +1057,20 @@ fn parse_auto(query: Option<&str>) -> Result<bool, Reply> {
 fn handle_post(
     project: &str,
     story: &str,
+    agent: DispatchAgent,
     auto: bool,
     env: &Environment,
     bus: &ChangeBus,
     registry: &Arc<DispatchRegistry>,
 ) -> Reply {
-    let script = match resolve_dispatch_script() {
+    if let Some(handle) = registry.running_handle(story) {
+        return accepted(&handle, registry);
+    }
+    let script = match resolve_dispatch_script(agent) {
         Ok(script) => script,
         Err(message) => return text_reply(500, message),
     };
-    match registry.try_start(project, story, auto, env.now()) {
+    match registry.try_start_for_agent(project, story, agent, auto, env.now()) {
         StartOutcome::AtCapacity => text_reply(
             429,
             format!("{MAX_RUNNING} dispatches are already running — wait for one to finish"),
@@ -983,6 +1083,7 @@ fn handle_post(
                 script,
                 project.to_string(),
                 story.to_string(),
+                agent,
                 auto,
                 env.clone(),
                 bus.clone(),
@@ -1023,7 +1124,8 @@ type Classification = (
     Option<DispatchReason>,
 );
 
-/// Spawns `script --project <project> dispatch <story> [--auto]` on a
+/// Spawns `script --project <project> dispatch <story> --agent=<agent>
+/// [--auto]` on a
 /// detached thread and records its outcome when it finishes. Never touches
 /// the store: everything this needs travels in its arguments.
 #[allow(clippy::too_many_arguments)]
@@ -1033,12 +1135,13 @@ fn spawn_dispatch(
     script: PathBuf,
     project: String,
     story: String,
+    agent: DispatchAgent,
     auto: bool,
     env: Environment,
     bus: ChangeBus,
 ) {
     std::thread::spawn(move || {
-        let classification = run_child(&script, &project, &story, auto, &env);
+        let classification = run_child(&script, &project, &story, agent, auto, &env);
         registry.finish(&handle, &story, env.now(), classification);
         // Lets an open dashboard tab refresh without polling this endpoint
         // itself — the story moved to in-progress (or didn't), and the
@@ -1165,6 +1268,7 @@ fn run_child(
     script: &Path,
     project: &str,
     story: &str,
+    agent: DispatchAgent,
     auto: bool,
     env: &Environment,
 ) -> Classification {
@@ -1253,12 +1357,12 @@ fn run_child(
         .arg("--project")
         .arg(project)
         .arg("dispatch")
-        .arg(story);
+        .arg(story)
+        .arg(format!("--agent={}", agent.as_str()));
     if auto {
-        // The one argument this endpoint adds to story.sh's own dispatch
-        // argv (SH-208) — everything else about the child is identical
-        // between the two modes; `story.sh` itself is what swaps the
-        // handoff prompt for the autonomous charter on seeing this flag.
+        // `story.sh` itself swaps the handoff prompt for the autonomous
+        // charter on seeing this flag; provider selection above is
+        // independent, so all four agent/mode combinations share this path.
         command.arg("--auto");
     }
     // Clears whatever this daemon inherited from whoever spawned it and
@@ -1389,13 +1493,13 @@ fn read_capture(mut file: std::fs::File) -> String {
 }
 
 /// The daemon<->script argv contract [`resolve_dispatch_script`] requires of
-/// whichever `story.sh` it resolves (SH-196). `plugin/claude-code/bin/
+/// whichever `story.sh` it resolves (SH-196). `plugins/story/bin/
 /// story.sh` declares the contract it implements in its own
 /// `DISPATCH_PROTOCOL` constant; bump both together, and see that
 /// constant's doc comment for the rule on when a bump is actually needed.
 pub const REQUIRED_DISPATCH_PROTOCOL: u32 = 1;
 
-/// Locates `plugin/claude-code/bin/story.sh`, in order:
+/// Locates `plugins/story/bin/story.sh`, in order:
 ///
 /// 1. `$STORYHOOK_DISPATCH_SCRIPT` — an operator's own override, and how
 ///    every test in this tree points dispatch at a stub.
@@ -1419,11 +1523,12 @@ pub const REQUIRED_DISPATCH_PROTOCOL: u32 = 1;
 /// that predates the argv shape this daemon invokes it with is exactly as
 /// wrong to run as one that cannot be found at all, and belongs to the same
 /// "describes this daemon, not one dispatch attempt" category above.
-fn resolve_dispatch_script() -> Result<PathBuf, String> {
-    resolve_dispatch_script_from(
+fn resolve_dispatch_script(agent: DispatchAgent) -> Result<PathBuf, String> {
+    resolve_dispatch_script_from_for_agent(
         std::env::var("STORYHOOK_DISPATCH_SCRIPT").ok(),
         std::env::var("HOME").ok().map(PathBuf::from),
         crate::plugin::dev_repo_root(),
+        agent,
     )
 }
 
@@ -1435,10 +1540,11 @@ fn resolve_dispatch_script() -> Result<PathBuf, String> {
 /// default). This is also what makes `installed_plugin_script`'s real
 /// behavior against a real `installed_plugins.json` testable at all — before
 /// this, only the `configured` override branch had any coverage (SH-196).
-fn resolve_dispatch_script_from(
+fn resolve_dispatch_script_from_for_agent(
     configured: Option<String>,
     home: Option<PathBuf>,
     dev_root: Option<PathBuf>,
+    agent: DispatchAgent,
 ) -> Result<PathBuf, String> {
     if let Some(configured) = configured {
         let path = PathBuf::from(configured);
@@ -1451,20 +1557,36 @@ fn resolve_dispatch_script_from(
             ))
         };
     }
-    if let Some(path) = home.and_then(|home| installed_plugin_script(&home)) {
+    let installed = home.and_then(|home| match agent {
+        DispatchAgent::Claude => installed_plugin_script(&home),
+        DispatchAgent::Codex => crate::plugin::codex_installed_plugin_root(&home)
+            .map(|root| root.join("bin/story.sh"))
+            .filter(|script| script.is_file()),
+    });
+    if let Some(path) = installed {
         return check_dispatch_protocol(path);
     }
     if let Some(root) = dev_root {
-        let path = root.join("plugin/claude-code/bin/story.sh");
+        let path = root.join("plugins/story/bin/story.sh");
         if path.is_file() {
             return check_dispatch_protocol(path);
         }
     }
-    Err(
-        "could not find plugin/claude-code/bin/story.sh -- install the plugin \
-         (`story plugin install <target>`) or set STORYHOOK_DISPATCH_SCRIPT"
-            .to_string(),
-    )
+    Err(format!(
+        "could not find plugins/story/bin/story.sh for agent `{}` -- install it with \
+             `story plugin install {}` or set STORYHOOK_DISPATCH_SCRIPT",
+        agent.as_str(),
+        agent.as_str()
+    ))
+}
+
+#[cfg(test)]
+fn resolve_dispatch_script_from(
+    configured: Option<String>,
+    home: Option<PathBuf>,
+    dev_root: Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    resolve_dispatch_script_from_for_agent(configured, home, dev_root, DispatchAgent::Claude)
 }
 
 /// Refuses `path` if its declared `DISPATCH_PROTOCOL` is older than
@@ -1484,14 +1606,14 @@ fn check_dispatch_protocol(path: PathBuf) -> Result<PathBuf, String> {
     Err(format!(
         "the dispatch script at `{}` implements dispatch protocol {declared}, but this \
          storyhook needs at least {REQUIRED_DISPATCH_PROTOCOL} -- the installed story \
-         plugin is out of date. Update it with `story plugin install claude-code` (or \
-         `claude plugin update story@storyhook`), then retry.",
+         plugin is out of date. Update it with `story plugin install claude` or \
+         `story plugin install codex`, matching the active provider, then retry.",
         path.display()
     ))
 }
 
 /// Reads `path`'s own declared `DISPATCH_PROTOCOL=<n>` line — the constant
-/// `plugin/claude-code/bin/story.sh` itself defines near its top — without
+/// `plugins/story/bin/story.sh` itself defines near its top — without
 /// executing it. A `bash -c` probe would only echo this same constant at the
 /// cost of a process spawn on every resolution, and resolution deliberately
 /// runs before anything about the script is trusted (see
@@ -1503,7 +1625,7 @@ fn check_dispatch_protocol(path: PathBuf) -> Result<PathBuf, String> {
 /// both read the same to a caller: "not new enough."
 ///
 /// `pub` so `tests/plugin_contract.rs` can pin the real
-/// `plugin/claude-code/bin/story.sh` in this repo against
+/// `plugins/story/bin/story.sh` in this repo against
 /// [`REQUIRED_DISPATCH_PROTOCOL`] using the exact same parser this module
 /// runs at resolution time, rather than a second implementation that could
 /// drift from it.
@@ -1875,6 +1997,47 @@ mod tests {
             "the reused record must report the FIRST attempt's mode (attended), \
              not the second, deduped request's"
         );
+    }
+
+    #[test]
+    fn a_second_start_with_a_different_agent_reuses_the_first_attempts_agent() {
+        let registry = DispatchRegistry::new();
+        let first = match registry.try_start_for_agent(
+            "proj",
+            "SH-1",
+            DispatchAgent::Codex,
+            false,
+            "t0".to_string(),
+        ) {
+            StartOutcome::Started(handle) => handle,
+            other => panic!("expected Started: {other:?}"),
+        };
+        let reused = match registry.try_start_for_agent(
+            "proj",
+            "SH-1",
+            DispatchAgent::Claude,
+            false,
+            "t1".to_string(),
+        ) {
+            StartOutcome::AlreadyRunning(handle) => handle,
+            other => panic!("expected AlreadyRunning: {other:?}"),
+        };
+        assert_eq!(reused, first);
+        assert_eq!(registry.get(&reused).unwrap().agent, DispatchAgent::Codex);
+    }
+
+    #[test]
+    fn a_record_without_agent_deserializes_as_claude() {
+        let record: DispatchRecord = serde_json::from_value(serde_json::json!({
+            "handle": "old",
+            "project": "proj",
+            "story": "SH-1",
+            "auto": false,
+            "state": "ok",
+            "started_at": "t0"
+        }))
+        .expect("pre-agent persisted record");
+        assert_eq!(record.agent, DispatchAgent::Claude);
     }
 
     impl std::fmt::Debug for StartOutcome {
@@ -2313,6 +2476,7 @@ mod tests {
             handle: "stray-handle".to_string(),
             project: "proj".to_string(),
             story: "SH-9".to_string(),
+            agent: DispatchAgent::Claude,
             auto: false,
             state: DispatchState::Running,
             started_at: "t0".to_string(),
@@ -2424,7 +2588,7 @@ mod tests {
     }
 
     /// Every reason `story.sh`'s `dispatch` command can actually emit
-    /// (`refuse`/`refuse_with` call sites in `plugin/claude-code/bin/
+    /// (`refuse`/`refuse_with` call sites in `plugins/story/bin/
     /// story.sh` and `lib/session.sh`), pinned so a renamed reason string on
     /// either side is caught here rather than silently degrading to
     /// [`DispatchReason::Other`].
@@ -2600,7 +2764,7 @@ mod tests {
     /// warning) is caught here rather than only at dispatch time.
     #[test]
     fn the_shipped_default_templates_are_charter_inert() {
-        let script = include_str!("../../plugin/claude-code/bin/story.sh");
+        let script = include_str!("../../plugins/story/bin/story.sh");
 
         // PROMPT_TPL is still one "${STORY_PROMPT:-literal}" default.
         let line = script
@@ -2892,9 +3056,9 @@ mod tests {
     fn resolve_dispatch_script_falls_back_to_dev_root_when_no_plugin_is_installed() {
         let home = storyhook_test_support::scratch_dir();
         let dev_root = storyhook_test_support::scratch_dir();
-        std::fs::create_dir_all(dev_root.path().join("plugin/claude-code/bin"))
+        std::fs::create_dir_all(dev_root.path().join("plugins/story/bin"))
             .expect("mkdir dev checkout script dir");
-        let dev_script = dev_root.path().join("plugin/claude-code/bin/story.sh");
+        let dev_script = dev_root.path().join("plugins/story/bin/story.sh");
         std::fs::write(&dev_script, FAKE_STORY_SH).expect("write dev story.sh");
         let resolved = resolve_dispatch_script_from(
             None,
@@ -3000,7 +3164,8 @@ mod tests {
         assert!(message.contains("dispatch protocol 0"));
         assert!(message.contains(&REQUIRED_DISPATCH_PROTOCOL.to_string()));
         assert!(message.contains("out of date"));
-        assert!(message.contains("story plugin install claude-code"));
+        assert!(message.contains("story plugin install claude"));
+        assert!(message.contains("story plugin install codex"));
     }
 
     #[test]

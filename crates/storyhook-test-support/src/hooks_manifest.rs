@@ -1,4 +1,4 @@
-//! Reads `plugin/claude-code/hooks/hooks.json`, the manifest declaring how
+//! Reads `plugins/story/hooks/hooks.json`, the manifest declaring how
 //! long Claude Code lets each of storyhook's session hooks run before
 //! killing it.
 //!
@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 
 /// The manifest's path, relative to the repository root.
-pub const HOOKS_MANIFEST: &str = "plugin/claude-code/hooks/hooks.json";
+pub const HOOKS_MANIFEST: &str = "plugins/story/hooks/hooks.json";
 
 /// The repository root, regardless of which crate this function was compiled
 /// into.
@@ -40,7 +40,7 @@ fn manifest_dir() -> PathBuf {
 ///
 /// **Read rather than restated (SH-140).** A literal here would look like a
 /// speed budget somebody chose; it is not — it is `hooks.json`'s own
-/// `"timeout"`, and Claude Code kills the hook at it. Reading the manifest
+/// `"timeout"`, and the agent host kills the hook at it. Reading the manifest
 /// keeps the assertion tracking the contract if the declared value ever
 /// moves, and fails loudly rather than silently guarding nothing if the
 /// manifest stops declaring one.
@@ -88,14 +88,14 @@ pub fn declared_timeout(event: &str, command_substring: &str) -> std::time::Dura
     std::time::Duration::from_secs(seconds)
 }
 
-/// The absolute path to a script under `plugin/claude-code/hooks/`.
+/// The absolute path to a script under `plugins/story/hooks/`.
 #[must_use]
 pub fn hook_script(name: &str) -> PathBuf {
-    manifest_dir().join("plugin/claude-code/hooks").join(name)
+    manifest_dir().join("plugins/story/hooks").join(name)
 }
 
 /// One hook entry read out of the manifest: the event it fires on, the script
-/// basename its command runs, and the timeout Claude Code kills it at.
+/// basename its command runs, and the timeout the agent host kills it at.
 #[derive(Debug, Clone)]
 pub struct DeclaredHook {
     pub event: String,
@@ -171,7 +171,7 @@ pub fn all_declared_hooks() -> Vec<DeclaredHook> {
 }
 
 /// The `<name>.sh` basename out of a `command` string shaped like
-/// `bash "${CLAUDE_PLUGIN_ROOT}/hooks/<name>.sh"`.
+/// `bash "${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/<name>.sh"`.
 fn script_name_from_command(command: &str) -> Option<String> {
     let after = command.split("hooks/").nth(1)?;
     let name: String = after

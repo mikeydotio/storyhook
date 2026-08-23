@@ -285,7 +285,7 @@ say "capturing test inventory"
   printf 'Sources: `<test-binary> --list` for the Rust tiers (the same binaries\n'
   printf '`cargo test --workspace` runs), `cargo test --workspace --doc -- --list` for\n'
   printf 'doctests, and the file list for the bash suite, whose runner\n'
-  printf '(`plugin/claude-code/tests/run-tests.sh`) reports pass/fail per FILE and has\n'
+  printf '(`plugins/story/tests/run-tests.sh`) reports pass/fail per FILE and has\n'
   printf 'no finer unit to name.\n\n'
   printf -- '---\n\n'
 } >"$WORK/inventory.txt"
@@ -326,7 +326,7 @@ cargo test --workspace --doc -- --list 2>/dev/null |
   grep ': test$' | sed 's/: test$//' | LC_ALL=C sort >"$WORK/doctests.txt" || true
 DOCTEST_COUNT="$(wc -l <"$WORK/doctests.txt" | tr -d ' ')"
 
-find plugin/claude-code/tests -name 'test-*.sh' -type f |
+find plugins/story/tests -name 'test-*.sh' -type f |
   sed 's|.*/||' | LC_ALL=C sort >"$WORK/bash-tests.txt"
 BASH_TEST_COUNT="$(wc -l <"$WORK/bash-tests.txt" | tr -d ' ')"
 
@@ -346,7 +346,7 @@ DUPE_COUNT="$(wc -l <"$WORK/dupes.txt" | tr -d ' ')"
     printf '\n'
   fi
 
-  printf '## Bash suite (plugin/claude-code/tests) — %s files\n\n' "$BASH_TEST_COUNT"
+  printf '## Bash suite (plugins/story/tests) — %s files\n\n' "$BASH_TEST_COUNT"
   cat "$WORK/bash-tests.txt"
   printf '\n'
 
@@ -478,7 +478,7 @@ fi
   header "storyhook error contract (baseline)"
   printf 'The machine-readable half of this CLI'"'"'s interface, extracted from\n'
   printf '`%s` — the enforcing test itself, not a copy of one. Exit codes\n' "$CONTRACT_SRC"
-  printf 'are load-bearing: `plugin/claude-code/bin/story.sh` branches on exit 9 to\n'
+  printf 'are load-bearing: `plugins/story/bin/story.sh` branches on exit 9 to\n'
   printf 'detect a lost compare-and-swap claim, and exit 3 is how any caller learns an\n'
   printf 'id does not exist.\n\n'
 

@@ -670,7 +670,7 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
     /// # Each heading is bucketed on the fact it names (SH-280)
     ///
     /// This is the end-of-session record, read by a person or an agent who
-    /// was not there — `plugin/claude-code/hooks/stop-handoff.sh` runs
+    /// was not there — `plugins/story/hooks/stop-handoff.sh` runs
     /// `handoff --since 4h` and feeds the result to the next session
     /// verbatim. Nothing parses it, so its only contract is that every line
     /// is true.

@@ -951,7 +951,7 @@ equivalent typed command.
 
 When to use:
   Configure it as an MCP server in an agent host that speaks the protocol
-  (see plugin/claude-code/.claude-plugin/plugin.json's "mcpServers" entry
+  (see plugins/story/.claude-plugin/plugin.json's "mcpServers" entry
   for Claude Code's own configuration). Not something you run by hand at a
   shell for its own output — it speaks newline-delimited JSON-RPC, not
   human-readable text.

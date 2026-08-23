@@ -446,7 +446,7 @@ pub struct ProjectSnapshotView {
 /// are, and it is dispatched without a [`Ctx`](crate::service::Ctx) so it cannot
 /// honour `--project` either. This is the scoped singular.
 ///
-/// Its consumer is `plugin/claude-code/bin/story.sh`, which needs the slug and
+/// Its consumer is `plugins/story/bin/story.sh`, which needs the slug and
 /// the directory **in one round trip** — the slug so it can pin `--project`
 /// before it changes directory, and the directory so it can go there. Splitting
 /// them across two calls would mean re-resolving after the `cd`, from a working

@@ -4,6 +4,7 @@ import {
   cleanUpCreatedStories,
   COPY_HEADLINES,
   createStory,
+  dispatchStory,
   keepNotices,
   openProject,
   raiseDurableNotices,
@@ -114,7 +115,7 @@ async function openFreshStory(page: Page, title: string): Promise<string> {
 async function raiseAttendedRefusal(page: Page, title: string): Promise<string> {
   const id = await openFreshStory(page, title);
   await stubDispatchRefusal(page, id, false);
-  await page.locator("#dispatch-btn").click();
+  await dispatchStory(page);
   const toast = page.locator("#toast-stack .toast.error");
   await expect(toast).toBeVisible();
   await page.locator("#drawer-close").click();
@@ -128,7 +129,7 @@ async function raiseHistoryRow(page: Page, title: string): Promise<string> {
   const before = await page.locator("#dispatch-history .dispatch-history-row").count();
   const id = await openFreshStory(page, title);
   await stubDispatchRefusal(page, id, true);
-  await page.locator("#dispatch-auto-btn").click();
+  await dispatchStory(page, { auto: true });
   await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(before + 1);
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);

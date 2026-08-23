@@ -1,6 +1,6 @@
 /// Tests for the session-start.sh hook used by Claude Code.
 ///
-/// The hook at plugin/claude-code/hooks/session-start.sh reads stdin JSON
+/// The hook at plugins/story/hooks/session-start.sh reads stdin JSON
 /// (with a `cwd` field), checks for a storyhook project, gathers state,
 /// and emits a JSON response carrying the context in
 /// `hookSpecificOutput.additionalContext` (the silent SessionStart field),
@@ -265,7 +265,7 @@ fn hook_system_message_contains_next_story_info() {
 ///
 /// **Read rather than restated (SH-140).** The 5 in this test was previously a
 /// literal, which made it look like a speed budget somebody chose. It is not:
-/// it is `plugin/claude-code/hooks/hooks.json`'s own `"timeout"`, and Claude
+/// it is `plugins/story/hooks/hooks.json`'s own `"timeout"`, and Claude
 /// Code kills the hook at it. Reading the manifest keeps the assertion tracking
 /// the contract if the declared value ever moves, and fails loudly rather than
 /// silently guarding nothing if the manifest stops declaring one.

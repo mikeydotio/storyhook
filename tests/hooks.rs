@@ -198,7 +198,7 @@ fn hooks_uninstall_idempotent() {
 /// **The name and the derivation are one claim, and SH-320 is what happens when
 /// they disagree.** This was `no_source_file_…` over the pathspec `src/*.rs`,
 /// which made it right about its own set and wrong about its advertised class:
-/// `plugin/claude-code/hooks/post-git.sh` held the identical assumption for as
+/// `plugins/story/hooks/post-git.sh` held the identical assumption for as
 /// long as the scan existed, and the scan could not see it. Widening the
 /// derivation without renaming would have shipped a test whose name contradicts
 /// its own scan — the same defect, held one commit longer.
@@ -208,7 +208,7 @@ fn hooks_uninstall_idempotent() {
 /// extensionless `.githooks/*` chainers. A `*.sh` glob alone misses those four —
 /// they are hook scripts, which makes them the last place this class should be
 /// allowed to hide — and deriving from the executable bit instead would be worse
-/// in the other direction, since `plugin/claude-code/hooks/lib.sh` is mode
+/// in the other direction, since `plugins/story/hooks/lib.sh` is mode
 /// 100644: sourced, never executed. A fourth mechanism (a Python driver, a
 /// Makefile recipe) needs its own glob arm added here; it is not covered by
 /// wishing.
@@ -217,7 +217,7 @@ fn hooks_uninstall_idempotent() {
 /// load-bearing rather than convenient: building `.git/hooks` in a fixture is
 /// the *legitimate* use of the literal — `tests/hook_execution.rs`,
 /// `tests/hook_silence.rs`, this file, and
-/// `plugin/claude-code/tests/test-post-git-hooks-path.sh` all do it — and a test
+/// `plugins/story/tests/test-post-git-hooks-path.sh` all do it — and a test
 /// that installs a hook in the wrong place fails its own assertions, which is a
 /// self-policing production code does not get. The escape hatch for a script
 /// that genuinely needs the literal is therefore to live under a `tests/`
@@ -430,7 +430,7 @@ fn no_managed_hook_lets_its_own_last_statement_decide_gits_verdict() {
 #[test]
 fn the_plugin_greps_for_a_marker_storyhook_still_writes() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let guard = std::fs::read_to_string(root.join("plugin/claude-code/hooks/post-git.sh"))
+    let guard = std::fs::read_to_string(root.join("plugins/story/hooks/post-git.sh"))
         .expect("reading the plugin's post-git hook");
 
     let grepped = guard

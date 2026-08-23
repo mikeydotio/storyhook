@@ -3,6 +3,7 @@ import type { Page } from "@playwright/test";
 import {
   cleanUpCreatedStories,
   deleteStory,
+  dispatchStory,
   fullKeyboardAccess,
   onAFrozenClock,
   openProject,
@@ -300,7 +301,7 @@ test("a successful attended dispatch is a short toast that fades on its own", as
   const id = await openFreshStory(page, title);
   await stubDispatch(page, id, false, "ok");
 
-  await page.locator("#dispatch-btn").click();
+  await dispatchStory(page);
 
   const toast = page.locator("#toast-stack .toast.success");
   await expect(toast).toBeVisible();
@@ -331,7 +332,7 @@ test("a successful --auto dispatch also fades, and names itself autonomous", asy
   await stubDispatch(page, id, true, "ok");
 
   await onAFrozenClock(page, async () => {
-    await page.locator("#dispatch-auto-btn").click();
+    await dispatchStory(page, { auto: true });
 
     // SH-232 sent this to a durable row because "nobody is necessarily
     // watching". SH-304's council reversed that for SUCCESS specifically: the
@@ -358,7 +359,7 @@ test("a refused attended dispatch is durable, keeps its diagnosis, and dismisses
   await stubDispatch(page, id, false, "refused");
 
   await onAFrozenClock(page, async () => {
-    await page.locator("#dispatch-btn").click();
+    await dispatchStory(page);
 
     const toast = page.locator("#toast-stack .toast.error");
     await expect(toast).toBeVisible();
@@ -393,7 +394,7 @@ test("a failed attended dispatch is durable too, and reads differently from a re
   await stubDispatch(page, id, false, "failed");
 
   await onAFrozenClock(page, async () => {
-    await page.locator("#dispatch-btn").click();
+    await dispatchStory(page);
 
     const toast = page.locator("#toast-stack .toast.error");
     await expect(toast).toBeVisible();
@@ -430,7 +431,7 @@ test("a refused --auto dispatch stays a durable history row (SH-232's surviving 
   await stubDispatch(page, id, true, "refused");
 
   await onAFrozenClock(page, async () => {
-    await page.locator("#dispatch-auto-btn").click();
+    await dispatchStory(page, { auto: true });
 
     // The case SH-227's incident review was actually about: an unattended run
     // whose only report is this row. Geography is unchanged for failures --
@@ -461,7 +462,7 @@ test("hovering a fading notice holds its clock, and leaving resumes it", async (
   await stubDispatch(page, id, false, "ok");
 
   await onAFrozenClock(page, async () => {
-    await page.locator("#dispatch-btn").click();
+    await dispatchStory(page);
     const toast = page.locator("#toast-stack .toast.success");
     await expect(toast).toBeVisible();
 
@@ -512,7 +513,7 @@ test("pausing preserves what is left of the clock rather than restarting it", as
   const BURNED_MS = 1000;
 
   await onAFrozenClock(page, async () => {
-    await page.locator("#dispatch-btn").click();
+    await dispatchStory(page);
     const toast = page.locator("#toast-stack .toast.success");
     await expect(toast).toBeVisible();
 
@@ -546,7 +547,7 @@ test("a fading notice still clears under prefers-reduced-motion, without animati
   const id = await openFreshStory(page, title);
   await stubDispatch(page, id, false, "ok");
 
-  await page.locator("#dispatch-btn").click();
+  await dispatchStory(page);
   const toast = page.locator("#toast-stack .toast.success");
   await expect(toast).toBeVisible();
 
@@ -703,7 +704,7 @@ test("with the limit turned off, a success notice has no timer at all", async ({
   await stubDispatch(page, id, false, "ok");
 
   await onAFrozenClock(page, async () => {
-    await page.locator("#dispatch-btn").click();
+    await dispatchStory(page);
     const toast = page.locator("#toast-stack .toast.success");
     await expect(toast).toBeVisible();
     await expect(toast).toContainText(`${id} dispatched`);
@@ -748,7 +749,7 @@ test("a kept notice is dismissed from the keyboard, which closes the loop withou
   await stubDispatch(page, id, false, "ok");
 
   await onAFrozenClock(page, async () => {
-    await page.locator("#dispatch-btn").click();
+    await dispatchStory(page);
     const toast = page.locator("#toast-stack .toast.success");
     await expect(toast).toBeVisible();
 
@@ -787,7 +788,7 @@ test("the choice survives a reload, which is what 'before encountering it' means
   await stubDispatch(page, id, false, "ok");
 
   await onAFrozenClock(page, async () => {
-    await page.locator("#dispatch-btn").click();
+    await dispatchStory(page);
     const toast = page.locator("#toast-stack .toast.success");
     await expect(toast).toBeVisible();
     await page.clock.runFor(NO_TIMER_HORIZON_MS);
@@ -815,7 +816,7 @@ test("the preference is off until the user turns it on", async ({ page }) => {
   await stubDispatch(page, id, false, "ok");
 
   await onAFrozenClock(page, async () => {
-    await page.locator("#dispatch-btn").click();
+    await dispatchStory(page);
     await expect(page.locator("#toast-stack .toast.success")).toBeVisible();
     await runOutTheClock(page, SUCCESS_VISIBLE_MS);
   });
@@ -833,7 +834,7 @@ test("a self-clearing notice is not a tab stop, and no focus event holds its clo
   await stubDispatch(page, id, false, "ok");
 
   await onAFrozenClock(page, async () => {
-    await page.locator("#dispatch-btn").click();
+    await dispatchStory(page);
     const toast = page.locator("#toast-stack .toast.success");
     await expect(toast).toBeVisible();
 
@@ -872,7 +873,7 @@ test("the preference does not change a durable notice, which never had a clock",
   await stubDispatch(page, id, false, "refused");
 
   await onAFrozenClock(page, async () => {
-    await page.locator("#dispatch-btn").click();
+    await dispatchStory(page);
     const toast = page.locator("#toast-stack .toast.error");
     await expect(toast).toBeVisible();
     // An error was already durable and already carried its diagnosis; the
@@ -923,7 +924,7 @@ test("a backgrounded tab does not burn a notice's clock down unseen", async ({
   await page.bringToFront();
 
   await onAFrozenClock(page, async () => {
-    await page.locator("#dispatch-btn").click();
+    await dispatchStory(page);
     const toast = page.locator("#toast-stack .toast.success");
     await expect(toast).toBeVisible();
 
@@ -982,7 +983,7 @@ async function raiseHistoryRow(page: Page, title: string): Promise<string> {
   await page.locator("#home-btn").click();
   const id = await openFreshStory(page, title);
   await stubDispatch(page, id, true, "refused");
-  await page.locator("#dispatch-auto-btn").click();
+  await dispatchStory(page, { auto: true });
   await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(before + 1);
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
@@ -1126,7 +1127,7 @@ test("an arriving dispatch result does not disturb focus already resting on anot
 
   await page.locator("#home-btn").click();
   idB = await openFreshStory(page, titleB);
-  await page.locator("#dispatch-auto-btn").click();
+  await dispatchStory(page, { auto: true });
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
