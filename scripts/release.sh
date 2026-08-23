@@ -54,8 +54,8 @@ set -euo pipefail
 
 REPO="mikeydotio/storyhook"
 MARKETPLACE="storyhook"          # `.claude-plugin/marketplace.json`'s `name`
-PLUGIN="story"                   # `plugin/claude-code/.claude-plugin/plugin.json`'s `name`
-PLUGIN_DIR="plugin/claude-code"
+PLUGIN="story"                   # `plugins/story/.claude-plugin/plugin.json`'s `name`
+PLUGIN_DIR="plugins/story"
 
 # The four artifacts `release.yml`'s matrix builds. Named here so the
 # post-publish check can insist on all of them rather than trusting that a

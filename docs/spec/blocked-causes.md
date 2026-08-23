@@ -106,7 +106,7 @@ silently left, per this project's own scope-rubric:
 
 - The TUI board's `BLK` badge (`src/tui/components/board.rs`).
 - `story context`'s `## Blocked` section (`src/service/query.rs`).
-- `plugin/claude-code/bin/story.sh`'s `ready_gate_reason()`, a jq reimplementation of
+- `plugins/story/bin/story.sh`'s `ready_gate_reason()`, a jq reimplementation of
   `is_ready` that has already drifted from it (missing the `draft` and
   `state == "blocked"` clauses).
 

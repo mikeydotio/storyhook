@@ -201,7 +201,7 @@ Usage:
   story github-auth login|status|logout             (durable credential for unattended pr-check polling)
   story scaffold agents-md|claude-md|cursor-rules
   story help [<command>] [--compact] [--all]
-  story plugin install|uninstall <target>
+  story plugin install|uninstall <claude-code|codex>
   story show <id>
   story log <id>
   story comment <id> "<text>"
@@ -3537,10 +3537,9 @@ fn parse_help(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_plugin(args: &[String]) -> Result<Invocation, AppError> {
-    if args.len() < 3 {
-        return Err(AppError::Usage(
-            "usage: story plugin install|uninstall <target>".to_string(),
-        ));
+    const USAGE: &str = "usage: story plugin install|uninstall <claude-code|codex>";
+    if args.len() != 3 {
+        return Err(AppError::Usage(USAGE.to_string()));
     }
     match args[1].as_str() {
         "install" => Ok(Invocation::Plugin {
@@ -3554,7 +3553,7 @@ fn parse_plugin(args: &[String]) -> Result<Invocation, AppError> {
             },
         }),
         other => Err(AppError::Usage(format!(
-            "unknown plugin action: {other}. Usage: story plugin install|uninstall <target>"
+            "unknown plugin action: {other}. {USAGE}"
         ))),
     }
 }

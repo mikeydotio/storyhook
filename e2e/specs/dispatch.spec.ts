@@ -5,7 +5,7 @@ import { openProject, requiredEnv, seedToken } from "./support";
 
 /**
  * Exercises the dashboard's Dispatch button (SH-50) against a real daemon
- * and a real `plugin/claude-code/bin/story.sh`, with only tmux doubled
+ * and a real `plugins/story/bin/story.sh`, with only tmux doubled
  * (`scripts/run-e2e.sh` puts the plugin test harness's fake tmux ahead of
  * the real one on the daemon's `PATH`) — the worktree, the branch, the CAS
  * claim and the readiness/prompt handoff all run for real. This is the one
@@ -41,7 +41,7 @@ import { openProject, requiredEnv, seedToken } from "./support";
  * Dispatch Auto's own test does not (and cannot, without a real `claude`
  * binary standing behind the fixture's fake tmux) prove the autonomous
  * charter itself runs — that the prompt text and dispatch argv differ under
- * `--auto` is `plugin/claude-code/tests/test-dispatch-auto.sh`'s job, and
+ * `--auto` is `plugins/story/tests/test-dispatch-auto.sh`'s job, and
  * that a closed story's self-reap works is `test-reap.sh`'s. What this file
  * proves is the one thing only a browser can: the button reaches the real
  * endpoint with `?auto=1`, the real `story.sh` really runs, and a real

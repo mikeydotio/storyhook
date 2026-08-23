@@ -79,12 +79,18 @@ Available targets:
 - `story-x86_64-apple-darwin.tar.gz` — macOS Intel
 - `story-aarch64-apple-darwin.tar.gz` — macOS Apple Silicon
 
-### Claude Code plugin
+### Agent plugin
 
-storyhook ships a Claude Code plugin (`plugin/claude-code/`) that adds a `/story` router
-skill (`/story do`, `/story work`, `/story context`, …) and session hooks. There
-are two ways to install it; both register it properly so Claude Code loads the
-`/story` and `/story-*` commands.
+storyhook ships one canonical plugin payload (`plugins/story/`) for Claude Code and
+Codex. Its ten skills cover story context, work, planning, setup, triage, handoff,
+sync, installation, updates, and the full lifecycle router. The skills resolve their
+bundled helper from the installed `SKILL.md` path, so they work from a marketplace
+cache rather than depending on the source checkout or current working directory.
+
+#### Claude Code
+
+Claude exposes the skills as `/story` and `/story-*` commands and loads the provider's
+session hooks. There are two ways to install it.
 
 **CLI-first** — if you already installed the `story` CLI (above):
 
@@ -108,11 +114,37 @@ run `/story-install` and the plugin will install and verify the CLI for you.
 > After installing the plugin (either route), start a new Claude Code session so the
 > `/story` and `/story-*` commands load.
 
-#### The `/story` lifecycle verbs
+#### Codex local marketplace
 
-`/story` covers a story end to end. The verbs below do deterministic work in
-`plugin/claude-code/bin/story.sh`; the rest delegate to the individual
-`/story-*` skills unchanged.
+If the `story` CLI is already installed, use its supported installer:
+
+```bash
+story plugin install codex
+```
+
+It detects the current checkout during development and otherwise registers
+`mikeydotio/storyhook`. To perform the same development setup manually, register this
+checkout as a local marketplace and add the plugin through Codex:
+
+```bash
+codex plugin marketplace add /absolute/path/to/storyhook
+codex plugin add story@storyhook
+```
+
+Start a fresh Codex conversation after installing. Invoke a skill explicitly with the
+host's skill selector or describe the Storyhook workflow in natural language; activation
+does not depend on Claude slash syntax. The Codex manifest deliberately declares only its
+skills; current Codex discovers the shared `hooks/hooks.json` by convention. A local,
+non-managed plugin may ask you to review/trust those SessionStart, PostToolUse(Bash), and
+Stop hooks before they run.
+
+#### Lifecycle router verbs
+
+The `story` skill covers a story end to end. In Claude, these are `/story` commands;
+in Codex, provide the same verb with the selected skill or state the intent naturally.
+The verbs below do deterministic work in
+`plugins/story/bin/story.sh`; the rest delegate to the individual
+skills unchanged.
 
 | Command | What it does |
 |---|---|
@@ -120,25 +152,28 @@ run `/story-install` and the plugin will install and verify the CLI for you.
 | `/story <id>` | Shows the story, then offers to start work on it |
 | `/story new <description>` | Interrogates you, drafts the story, files it after you confirm |
 | `/story view <id>` | Prints the story and its comments, then stops |
-| `/story do <id> [--auto]` | Claims a **ready** story and dispatches it to a fresh plan-mode Claude session in a new tmux window rooted in a per-story git worktree |
+| `/story do <id> [--auto]` | Claims a **ready** story and dispatches it to a fresh provider Plan-mode session in a new tmux window rooted in a per-story git worktree |
 | `/story complete <id>` | Closes the story and reclaims its worktree and merged branch, after showing you a plan and asking |
 | `/story capture <id>` | Dumps the recent output of a dispatched session's window (read-only) |
-| `/story doctor` | Checks project data integrity, and whether this Claude build's readiness and paste behavior is still recognised |
+| `/story doctor` | Checks project data integrity and the selected provider's readiness, Plan-mode, and paste behavior |
 
 `do`, `capture`, and `doctor` need tmux. `do` refuses a story that isn't ready —
 closed, blocked, awaiting, obviated, or already in progress — and names the
 reason rather than dispatching it.
 
-`--auto` keeps plan approval as the *only* human interaction: choose
-auto-accept edits when you approve, and the session runs to completion on its
-own — researching and deciding an easy question itself, resolving a
-genuinely hard one by `/council-vote` (only when that skill can actually
-resolve in the session — `story.sh` checks before it ever writes the
-charter, and falls back to researching and deciding those too rather than
-naming a skill that isn't there), running the full test suite, merging every
-PR it opens with a merge commit, and closing the story once its own
-acceptance criteria are met (or blocking it and stopping on a hard stop,
-such as red tests or a failed merge, it can't resolve).
+The dispatch adapter sets `STORY_AGENT=claude-code|codex`. Claude keeps its existing
+`.claude/worktrees/` and launch contract. Codex uses `.codex/worktrees/`, launches
+`codex --no-alt-screen`, confirms the interactive screen, enters Plan mode with
+Shift+Tab, and submits the bracketed-pasted charter with Tab. A failed readiness or
+Plan-mode check rolls back the claim and worktree before any charter is submitted.
+
+`--auto` keeps plan approval as the *only* human interaction. In Claude, choose
+auto-accept edits when you approve. In Codex, review the plan, Shift+Tab to Default
+mode, and submit approval. The session then runs to completion on its own. Claude
+can probe for `/council-vote`; Codex has no stable machine-readable skill inventory,
+so its default is the safe solo charter unless `STORY_COUNCIL=on` opts in explicitly.
+Both paths research and decide clear questions, run tests, merge their PRs, close the
+story when its acceptance criteria pass, and stop safely on a hard failure.
 
 `complete` is conservative by design. It never deletes an unmerged branch, never
 removes a dirty, locked, or current worktree, and never touches `main` or the
@@ -168,6 +203,14 @@ story plugin uninstall claude-code
 
 This unregisters the plugin via the `claude` CLI, cleans up project-local config, and
 removes any legacy plugin directory left by older versions.
+
+To remove a Codex marketplace installation created from a local checkout:
+
+```bash
+story plugin uninstall codex
+```
+
+This removes only `story@storyhook` and the `storyhook` marketplace through Codex.
 
 ## Quick start
 
