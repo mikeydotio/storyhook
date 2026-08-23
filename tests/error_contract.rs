@@ -396,7 +396,7 @@ fn every_error_variant_holds_its_contract() {
             // instead of regexing them out of `error` — which SH-243 had to do,
             // over 1.68MB. `error` itself is unchanged: it is these findings'
             // own messages joined, so the existing consumers
-            // (`plugin/claude-code/bin/story.sh::_project_integrity` reads
+            // (`plugins/story/bin/story.sh::_project_integrity` reads
             // `.result` and `.error`) are untouched, and the two keys are a
             // strict addition.
             assert_eq!(

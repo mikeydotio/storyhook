@@ -61,7 +61,7 @@
 //! (`from_version == 0`), which permits regardless. The one place in this
 //! repository's own test tree where `is_default()` is true *and* a fixture
 //! plants a non-zero schema *and* `$PATH` is deliberately shadowed —
-//! `plugin/claude-code/tests/run-tests.sh`'s decoy-`story` fixtures — is safe
+//! `plugins/story/tests/run-tests.sh`'s decoy-`story` fixtures — is safe
 //! only because the store there is always created fresh in the same run, so
 //! nothing is ever pending. That is the one margin in `make test` this module
 //! must not narrow: softening the fresh-store exemption would turn that

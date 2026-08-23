@@ -266,6 +266,26 @@ export async function openProject(page: Page, name: string): Promise<void> {
   await waitForBoardData(page);
 }
 
+/** Submit the drawer's dispatch configuration modal. Most dispatch-focused
+ * specs care about the resulting request/notice rather than the modal itself;
+ * keeping this gesture here prevents them from re-encoding its control order.
+ * `dispatch.spec.ts` still exercises the modal's own contract directly. */
+export async function dispatchStory(
+  page: Page,
+  options: { agent?: "claude" | "codex"; auto?: boolean } = {},
+): Promise<void> {
+  await page.locator("#dispatch-btn").click();
+  await expect(page.locator("#dispatch-modal")).toHaveClass(/open/);
+  if (options.agent) {
+    await page.locator("#dispatch-agent").selectOption(options.agent);
+  }
+  if (options.auto) {
+    await page.locator("#dispatch-auto").check();
+  }
+  await page.locator("#dispatch-modal-submit").click();
+  await expect(page.locator("#dispatch-modal")).not.toHaveClass(/open/);
+}
+
 /**
  * Runs `locator`'s own click handler with no user gesture, for the specs whose
  * subject is what a navigation does to an overlay that is already open.

@@ -3,7 +3,7 @@
 //!
 //! # Why this file exists
 //!
-//! `plugin/claude-code/hooks/hooks.json` gives each hook a wall-clock
+//! `plugins/story/hooks/hooks.json` gives each hook a wall-clock
 //! `timeout`; the script inside declares its own `--deadline` to
 //! `story`. Once SH-182 made that the mechanism, the two numbers can drift
 //! apart again exactly the way the original bug did — a script's own
@@ -104,7 +104,7 @@ fn every_hook_declares_a_deadline_inside_its_manifest_timeout() {
             "{script} declares --deadline {}s against a manifest timeout of \
              {}s for {event}. The deadline must leave room for the wrapper around it \
              (bash startup, the stdin read, exec'ing story, rendering) to finish before \
-             Claude Code kills the whole hook.",
+             the agent host kills the whole hook.",
             deadline.as_secs(),
             timeout.as_secs(),
         );
@@ -169,4 +169,64 @@ fn the_manifest_currently_declares_exactly_these_three_scripts() {
         "hooks.json's declared scripts have changed — if this is a real new hook, \
          the tests above already cover it automatically; update this list to match."
     );
+}
+
+/// Codex and Claude load the same default-discovered hook manifest. Pin the
+/// cross-provider protocol itself: exact events, Bash matcher, budgets, and a
+/// root expression that works with Codex's documented `PLUGIN_ROOT` while
+/// retaining Claude's compatibility variable.
+#[test]
+fn hook_manifest_has_the_shared_provider_contract() {
+    let path = repo_root().join(storyhook_test_support::HOOKS_MANIFEST);
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", path.display())),
+    )
+    .expect("hooks.json should be valid JSON");
+
+    let hooks = manifest["hooks"]
+        .as_object()
+        .expect("hooks.json should contain a hooks object");
+    let mut events: Vec<&str> = hooks.keys().map(String::as_str).collect();
+    events.sort_unstable();
+    assert_eq!(events, ["PostToolUse", "SessionStart", "Stop"]);
+
+    let expected = [
+        ("SessionStart", "*", "session-start.sh", 5),
+        ("PostToolUse", "Bash", "post-git.sh", 10),
+        ("Stop", "*", "stop-handoff.sh", 15),
+    ];
+    for (event, matcher, script, timeout) in expected {
+        let declaration = &manifest["hooks"][event][0];
+        assert_eq!(declaration["matcher"], matcher, "{event} matcher drifted");
+        let command = &declaration["hooks"][0];
+        assert_eq!(
+            command["type"], "command",
+            "{event} must remain a command hook"
+        );
+        assert_eq!(command["timeout"], timeout, "{event} timeout drifted");
+        let command_text = command["command"]
+            .as_str()
+            .expect("hook command should be a string");
+        assert!(
+            command_text.contains("${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}"),
+            "{event} does not resolve either provider's installed plugin root: {command_text}"
+        );
+        assert!(command_text.ends_with(&format!("/hooks/{script}\"")));
+    }
+
+    let codex_manifest = repo_root().join("plugins/story/.codex-plugin/plugin.json");
+    let codex: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&codex_manifest)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", codex_manifest.display())),
+    )
+    .expect("Codex plugin manifest should be valid JSON");
+    assert!(
+        codex.get("hooks").is_none(),
+        "current Codex validation rejects an explicit hooks field; hooks are default-discovered"
+    );
+}
+
+fn repo_root() -> &'static std::path::Path {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
 }

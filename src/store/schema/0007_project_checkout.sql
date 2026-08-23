@@ -6,7 +6,7 @@
 -- resolution index, one-to-many, with a unique index on `path` making an
 -- ambiguous answer unrepresentable. This column answers a different question
 -- entirely: **where do this project's repo-side operations execute?** Its only
--- consumer is `dispatch` (`plugin/claude-code/bin/story.sh`), which makes a git
+-- consumer is `dispatch` (`plugins/story/bin/story.sh`), which makes a git
 -- worktree and a tmux window and is the one operation that genuinely needs a
 -- directory. Every other operation is a store call carrying an explicit project.
 --

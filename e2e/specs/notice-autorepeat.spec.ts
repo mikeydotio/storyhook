@@ -3,6 +3,7 @@ import type { Page } from "@playwright/test";
 import {
   cleanUpCreatedStories,
   createStory,
+  dispatchStory,
   holdKey,
   openProject,
   raiseNotice,
@@ -392,7 +393,7 @@ async function raiseHistoryRow(page: Page, title: string): Promise<void> {
   await createStory(page, title);
   await page.locator('.column[data-state="todo"] .card', { hasText: title }).click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
-  await page.locator("#dispatch-auto-btn").click();
+  await dispatchStory(page, { auto: true });
   await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(before + 1);
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);

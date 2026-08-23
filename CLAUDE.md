@@ -245,7 +245,7 @@ Standing rules for every wave:
   isolates_the_data_dir_also_contains_its_daemon` pins it to whichever scripts export
   `STORYHOOK_DATA_DIR`, the same set `…_neutralizes_the_store_path` derives beside it;
   today that's `scripts/run-tests.sh`, `scripts/capture-baseline.sh`, `scripts/run-e2e.sh`,
-  and *both* `plugin/claude-code/tests/{lib.sh,run-tests.sh}` — the last two because
+  and *both* `plugins/story/tests/{lib.sh,run-tests.sh}` — the last two because
   `run-tests.sh` sets `STORYHOOK_TEST_HOME`, which makes `lib.sh` skip its block. `TestEnv`
   can't drift the same way: it pins both variables once, in
   `storyhook_test_support::daemon_containment()`. Four Rust test files `env_clear()` on
@@ -286,7 +286,7 @@ Standing rules for every wave:
   checkout` fences the pattern the same way the daemon-containment scan does — derived over
   `git ls-files`, not a hand-maintained list of the sites that do this.
 - **A fake that keeps state on disk names its directory or refuses to run** (SH-263).
-  `plugin/claude-code/tests/fakes/tmux` is re-exec'd per call, so its whole model lives in
+  `plugins/story/tests/fakes/tmux` is re-exec'd per call, so its whole model lives in
   files under `$FAKE_TMUX_STATE`; that variable used to default to a fixed `/tmp` path, and
   five test files took the default — sharing one directory with each other, with every
   concurrent run, and with the `issue` plugin's fake of the same name. Two users in one
@@ -492,7 +492,7 @@ Standing rules for every wave:
   at teardown was rejected too, for the SH-226 reason. Nothing observes this rule, which is
   precisely why the moment it names has to be the earliest one available rather than the
   last — and why the timing is now written where an agent actually reads it rather than only
-  here: both autonomous charters (`plugin/claude-code/bin/story.sh`) say *before you resume
+  here: both autonomous charters (`plugins/story/bin/story.sh`) say *before you resume
   the work*, pinned in `test-dispatch-auto.sh` and, as a span inertness may not be bought by
   deleting, in `test-charter-inert.sh`.
   **The scanner's own first blind spot was this file** (SH-376). Its wrap rule required
@@ -764,7 +764,7 @@ Standing rules for every wave:
   keeps ~70 fixture sites green is that they all open a **fresh** store (`from_version == 0`,
   which the guard always permits), not `is_default()` reading false. The one place in this
   tree where `is_default()` is true, a fixture plants a non-zero schema, and `$PATH` is
-  deliberately shadowed is `plugin/claude-code/tests/run-tests.sh`'s decoy-`story` fixtures —
+  deliberately shadowed is `plugins/story/tests/run-tests.sh`'s decoy-`story` fixtures —
   safe only because that harness always creates its store fresh in the same run, which is why
   the fresh-store exemption is load-bearing for `make test` itself, not merely a convenience.
   Fail-open is deliberate and measured, not assumed: `$PATH` naming no `story` at all (a

@@ -1349,7 +1349,7 @@ fn normalized_remote(url: &str) -> Result<crate::domain::remote::RemoteUrl, AppE
 /// project's directory must learn the *slug it resolved to* in the same breath,
 /// or it has to resolve twice and the second answer may differ from the first.
 ///
-/// Its consumer is `plugin/claude-code/bin/story.sh`, whose `dispatch` verb is
+/// Its consumer is `plugins/story/bin/story.sh`, whose `dispatch` verb is
 /// the one operation in storyhook that genuinely needs a directory.
 fn dispatch_project_show<S: Store>(ctx: &Ctx<'_, S>) -> Result<Response, AppError> {
     let view = CatalogService::new(ctx.store()).describe(ctx.project())?;

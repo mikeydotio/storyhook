@@ -82,7 +82,7 @@ bookkeeping.
 
 ### Dispatch
 
-`dispatch` is not a `story` verb; it lives in `plugin/claude-code/bin/story.sh` and
+`dispatch` is not a `story` verb; it lives in `plugins/story/bin/story.sh` and
 creates a worktree plus a tmux window. The dashboard's Dispatch button makes the
 daemon invoke it, and appears only for a project with a linked checkout. Its
 authorization review is `dashboard-dispatch.md`.

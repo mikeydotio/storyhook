@@ -1,21 +1,49 @@
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
-use crate::env::spawn_env::apply_claude_allowlist;
+use crate::env::spawn_env::apply_plugin_cli_allowlist;
 use crate::error::AppError;
 
-/// Name of the marketplace declared in `.claude-plugin/marketplace.json`.
 const MARKETPLACE_NAME: &str = "storyhook";
-/// Plugin reference used with the `claude` CLI: `<plugin>@<marketplace>`.
 const PLUGIN_REF: &str = "story@storyhook";
-/// GitHub shorthand source used when not installing from a local dev checkout.
 const GITHUB_REPO: &str = "mikeydotio/storyhook";
-/// Legacy directory created by the old copy-based installer (cleaned up on uninstall).
 const LEGACY_PLUGIN_DIR_NAME: &str = "storyhook";
 const SENTINEL_BEGIN: &str = "<!-- storyhook:begin -->";
 const SENTINEL_END: &str = "<!-- storyhook:end -->";
+const INSTRUCTIONS_SENTINEL_BEGIN: &str = "<!-- BEGIN STORYHOOK -->";
+const INSTRUCTIONS_SENTINEL_END: &str = "<!-- END STORYHOOK -->";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PluginTarget {
+    ClaudeCode,
+    Codex,
+}
+
+impl PluginTarget {
+    fn parse(raw: &str) -> Result<Self, AppError> {
+        match raw {
+            "claude" | "claude-code" => Ok(Self::ClaudeCode),
+            "codex" => Ok(Self::Codex),
+            _ => Err(AppError::Usage(format!(
+                "unknown plugin target: {raw}. Supported: claude, codex"
+            ))),
+        }
+    }
+
+    const fn executable(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "claude",
+            Self::Codex => "codex",
+        }
+    }
+}
+
+fn compatibility_alias_warning(raw: &str) -> Option<&'static str> {
+    (raw == "claude-code")
+        .then_some("warning: plugin target `claude-code` is deprecated; use `claude` instead.\n")
+}
 
 /// Resolve the Claude Code config directory (~/.claude/).
 fn claude_dir() -> Result<PathBuf, AppError> {
@@ -24,27 +52,24 @@ fn claude_dir() -> Result<PathBuf, AppError> {
     Ok(PathBuf::from(home).join(".claude"))
 }
 
-/// Resolve the Claude Code plugins directory (~/.claude/plugins/).
 fn claude_plugins_dir() -> Result<PathBuf, AppError> {
     Ok(claude_dir()?.join("plugins"))
 }
 
-/// Detect whether we are running inside a storyhook dev checkout, returning the
-/// repo root (the directory containing `.claude-plugin/marketplace.json`).
-///
-/// When present, the local repo is used as the marketplace source so contributors
-/// install their working copy instead of the published GitHub version.
+/// Detect a Storyhook development checkout from either provider marketplace.
+/// A contributor installs the checkout; a packaged binary registers GitHub.
 pub(crate) fn dev_repo_root() -> Option<PathBuf> {
-    let has_marketplace = |dir: &Path| dir.join(".claude-plugin").join("marketplace.json").exists();
+    let has_marketplace = |dir: &Path| {
+        dir.join(".claude-plugin/marketplace.json").is_file()
+            || dir.join(".agents/plugins/marketplace.json").is_file()
+    };
 
-    // Current working directory (the common dev case: running from the repo).
     if let Ok(cwd) = std::env::current_dir()
         && has_marketplace(&cwd)
     {
         return Some(cwd);
     }
 
-    // Relative to the executable, e.g. `<repo>/target/{release,debug}/story`.
     if let Ok(exe) = std::env::current_exe() {
         let mut cursor = exe.parent();
         for _ in 0..3 {
@@ -60,10 +85,6 @@ pub(crate) fn dev_repo_root() -> Option<PathBuf> {
     None
 }
 
-/// Choose the marketplace source string for `claude plugin marketplace add`.
-///
-/// A dev checkout installs from its local path; otherwise the published GitHub
-/// repository shorthand is used.
 fn marketplace_source(dev_repo_root: Option<PathBuf>) -> String {
     match dev_repo_root {
         Some(path) => path.display().to_string(),
@@ -71,90 +92,279 @@ fn marketplace_source(dev_repo_root: Option<PathBuf>) -> String {
     }
 }
 
-/// Guidance shown whenever the `claude` CLI cannot be found on PATH.
-fn claude_missing_message() -> String {
-    "Claude Code CLI (`claude`) not found on PATH. Install or enable it, then retry — \
-     or install the plugin manually with `/plugin marketplace add mikeydotio/storyhook` \
-     followed by `/plugin install story@storyhook`."
-        .to_string()
+fn missing_message(target: PluginTarget) -> String {
+    match target {
+        PluginTarget::ClaudeCode => {
+            "Claude Code CLI (`claude`) not found on PATH. Install or enable it, then retry — \
+             or install the plugin manually with `/plugin marketplace add mikeydotio/storyhook` \
+             followed by `/plugin install story@storyhook`."
+                .to_string()
+        }
+        PluginTarget::Codex => {
+            "Codex CLI (`codex`) not found on PATH. Install or enable Codex, then retry — \
+             or register the marketplace and plugin manually with `codex plugin marketplace add \
+             mikeydotio/storyhook` followed by `codex plugin add story@storyhook`."
+                .to_string()
+        }
+    }
 }
 
-/// Returns true if the `claude` CLI is invokable on PATH.
-fn claude_available() -> bool {
-    let mut command = Command::new("claude");
-    apply_claude_allowlist(&mut command);
-    command
+fn provider_available(target: PluginTarget) -> bool {
+    let mut command = Command::new(target.executable());
+    apply_plugin_cli_allowlist(&mut command);
+    match command
         .arg("--version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .is_ok()
+    {
+        // Preserve Claude's historical "invokable is enough" detection.
+        Ok(status) => target == PluginTarget::ClaudeCode || status.success(),
+        Err(_) => false,
+    }
 }
 
-/// Run a `claude` subcommand, capturing its output.
-///
-/// A missing binary is mapped to a clear, actionable error rather than a raw IO error.
-fn run_claude(args: &[&str]) -> Result<std::process::Output, AppError> {
-    let mut command = Command::new("claude");
-    apply_claude_allowlist(&mut command);
-    command.args(args).output().map_err(|e| {
-        if e.kind() == ErrorKind::NotFound {
-            AppError::Storage(claude_missing_message())
+fn run_provider(target: PluginTarget, args: &[&str]) -> Result<Output, AppError> {
+    let mut command = Command::new(target.executable());
+    apply_plugin_cli_allowlist(&mut command);
+    command.args(args).output().map_err(|error| {
+        if error.kind() == ErrorKind::NotFound {
+            AppError::Storage(missing_message(target))
         } else {
-            AppError::Storage(format!("failed to run `claude {}`: {e}", args.join(" ")))
+            AppError::Storage(format!(
+                "failed to run `{} {}`: {error}",
+                target.executable(),
+                args.join(" ")
+            ))
         }
     })
 }
 
-/// Combine stdout + stderr from a process output into a single lowercased string,
-/// used for tolerant matching of "already exists"-style messages.
-fn combined_output(out: &std::process::Output) -> String {
-    let mut s = String::from_utf8_lossy(&out.stdout).to_string();
-    s.push('\n');
-    s.push_str(&String::from_utf8_lossy(&out.stderr));
-    s.to_lowercase()
+fn combined_output(out: &Output) -> String {
+    let mut text = String::from_utf8_lossy(&out.stdout).to_string();
+    text.push('\n');
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    text
 }
 
-/// Register the storyhook marketplace, tolerating the case where it is already added.
-fn add_marketplace(source: &str) -> Result<(), AppError> {
-    let out = run_claude(&["plugin", "marketplace", "add", source])?;
-    if out.status.success() {
-        return Ok(());
-    }
-    let combined = combined_output(&out);
-    if combined.contains("already") {
+fn add_claude_marketplace(source: &str) -> Result<(), AppError> {
+    let out = run_provider(
+        PluginTarget::ClaudeCode,
+        &["plugin", "marketplace", "add", source],
+    )?;
+    if out.status.success() || combined_output(&out).to_lowercase().contains("already") {
         return Ok(());
     }
     Err(AppError::Storage(format!(
         "failed to add storyhook marketplace from `{source}`:\n{}",
-        combined.trim()
+        combined_output(&out).trim()
     )))
 }
 
-/// Install (or re-install) the storyhook plugin via the marketplace.
-fn install_plugin() -> Result<(), AppError> {
-    let out = run_claude(&["plugin", "install", PLUGIN_REF, "--scope", "user"])?;
-    if out.status.success() {
-        return Ok(());
-    }
-    let combined = combined_output(&out);
-    if combined.contains("already") {
+fn install_claude_plugin() -> Result<(), AppError> {
+    let out = run_provider(
+        PluginTarget::ClaudeCode,
+        &["plugin", "install", PLUGIN_REF, "--scope", "user"],
+    )?;
+    if out.status.success() || combined_output(&out).to_lowercase().contains("already") {
         return Ok(());
     }
     Err(AppError::Storage(format!(
         "failed to install `{PLUGIN_REF}`:\n{}",
-        combined.trim()
+        combined_output(&out).trim()
     )))
 }
 
-pub fn install(target: &str, project_root: &Path) -> Result<String, AppError> {
-    if target != "claude-code" {
-        return Err(AppError::Usage(format!(
-            "unknown plugin target: {target}. Supported: claude-code"
+fn codex_json(out: &Output, action: &str) -> Result<serde_json::Value, AppError> {
+    if !out.status.success() {
+        return Err(AppError::Storage(format!(
+            "failed to {action}:\n{}",
+            combined_output(out).trim()
         )));
     }
+    serde_json::from_slice(&out.stdout).map_err(|error| {
+        AppError::Storage(format!(
+            "Codex reported success while trying to {action}, but returned invalid JSON: {error}"
+        ))
+    })
+}
 
-    // Verify Claude Code is present at all.
+/// The immutable cache root of the installed Storyhook Codex plugin.
+///
+/// Codex's durable config records only that `story@storyhook` is enabled; its
+/// `plugin list --json` response is the authority on the installed version.
+/// The response does not repeat `installedPath`, so derive the documented
+/// cache layout from its exact marketplace/name/version identity and accept
+/// it only when the plugin manifest exists there. This avoids choosing an
+/// arbitrary stale cache directory when more than one version remains.
+pub(crate) fn codex_installed_plugin_root(home: &Path) -> Option<PathBuf> {
+    let out = run_provider(PluginTarget::Codex, &["plugin", "list", "--json"]).ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    codex_installed_plugin_root_from(home, &out.stdout)
+}
+
+fn codex_installed_plugin_root_from(home: &Path, raw: &[u8]) -> Option<PathBuf> {
+    let value: serde_json::Value = serde_json::from_slice(raw).ok()?;
+    let plugin = value.get("installed")?.as_array()?.iter().find(|plugin| {
+        plugin.get("pluginId").and_then(|v| v.as_str()) == Some(PLUGIN_REF)
+            && plugin.get("marketplaceName").and_then(|v| v.as_str()) == Some(MARKETPLACE_NAME)
+            && plugin.get("name").and_then(|v| v.as_str()) == Some("story")
+            && plugin.get("installed").and_then(|v| v.as_bool()) == Some(true)
+            && plugin.get("enabled").and_then(|v| v.as_bool()) != Some(false)
+    })?;
+    let version = plugin.get("version")?.as_str()?;
+    if version.is_empty()
+        || version == "."
+        || version == ".."
+        || version.contains('/')
+        || version.contains('\\')
+    {
+        return None;
+    }
+    let root = home
+        .join(".codex/plugins/cache")
+        .join(MARKETPLACE_NAME)
+        .join("story")
+        .join(version);
+    root.join(".codex-plugin/plugin.json")
+        .is_file()
+        .then_some(root)
+}
+
+fn expect_codex_field(
+    value: &serde_json::Value,
+    key: &str,
+    expected: &str,
+    action: &str,
+) -> Result<(), AppError> {
+    if value[key].as_str() == Some(expected) {
+        Ok(())
+    } else {
+        Err(AppError::Storage(format!(
+            "Codex returned an unexpected result while trying to {action}: expected `{key}` to be `{expected}`"
+        )))
+    }
+}
+
+fn add_codex_marketplace(source: &str) -> Result<bool, AppError> {
+    let out = run_provider(
+        PluginTarget::Codex,
+        &["plugin", "marketplace", "add", source, "--json"],
+    )?;
+    let value = codex_json(&out, "add the storyhook marketplace")?;
+    expect_codex_field(
+        &value,
+        "marketplaceName",
+        MARKETPLACE_NAME,
+        "add the storyhook marketplace",
+    )?;
+    value["alreadyAdded"].as_bool().ok_or_else(|| {
+        AppError::Storage(
+            "Codex returned an unexpected marketplace result: `alreadyAdded` was not boolean"
+                .to_string(),
+        )
+    })
+}
+
+fn add_codex_plugin() -> Result<String, AppError> {
+    let out = run_provider(
+        PluginTarget::Codex,
+        &["plugin", "add", PLUGIN_REF, "--json"],
+    )?;
+    let value = codex_json(&out, "install the Storyhook plugin")?;
+    expect_codex_field(
+        &value,
+        "pluginId",
+        PLUGIN_REF,
+        "install the Storyhook plugin",
+    )?;
+    expect_codex_field(
+        &value,
+        "marketplaceName",
+        MARKETPLACE_NAME,
+        "install the Storyhook plugin",
+    )?;
+    value["installedPath"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| {
+            AppError::Storage(
+                "Codex returned an unexpected install result: `installedPath` was missing"
+                    .to_string(),
+            )
+        })
+}
+
+fn remove_codex_plugin() -> Result<(), AppError> {
+    let out = run_provider(
+        PluginTarget::Codex,
+        &["plugin", "remove", PLUGIN_REF, "--json"],
+    )?;
+    if !out.status.success() {
+        let text = combined_output(&out);
+        if text.to_lowercase().contains("not installed") {
+            return Ok(());
+        }
+        return Err(AppError::Storage(format!(
+            "failed to remove `{PLUGIN_REF}`:\n{}",
+            text.trim()
+        )));
+    }
+    let value = codex_json(&out, "remove the Storyhook plugin")?;
+    expect_codex_field(
+        &value,
+        "pluginId",
+        PLUGIN_REF,
+        "remove the Storyhook plugin",
+    )
+}
+
+fn remove_codex_marketplace() -> Result<(), AppError> {
+    let out = run_provider(
+        PluginTarget::Codex,
+        &[
+            "plugin",
+            "marketplace",
+            "remove",
+            MARKETPLACE_NAME,
+            "--json",
+        ],
+    )?;
+    if !out.status.success() {
+        let text = combined_output(&out);
+        if text
+            .to_lowercase()
+            .contains("marketplace `storyhook` is not configured or installed")
+        {
+            return Ok(());
+        }
+        return Err(AppError::Storage(format!(
+            "failed to remove the storyhook marketplace:\n{}",
+            text.trim()
+        )));
+    }
+    let value = codex_json(&out, "remove the storyhook marketplace")?;
+    expect_codex_field(
+        &value,
+        "marketplaceName",
+        MARKETPLACE_NAME,
+        "remove the storyhook marketplace",
+    )
+}
+
+fn append_settings_guidance(message: &mut String, project_root: &Path) {
+    if crate::service::project::pointer_plugin(project_root).is_none() {
+        message.push_str(
+            "\nThe plugin runs with default settings. To change them, add this to \
+             `.storyhook.toml`:\n\n    [plugin]\n    enabled = true\n    tracking = \
+             \"normal\"\n",
+        );
+    }
+}
+
+fn install_claude(project_root: &Path, source: &str) -> Result<String, AppError> {
     if !claude_dir()?.exists() {
         return Err(AppError::Storage(
             "Claude Code not detected (~/.claude/ does not exist). \
@@ -162,65 +372,76 @@ pub fn install(target: &str, project_root: &Path) -> Result<String, AppError> {
                 .to_string(),
         ));
     }
-
-    // The new install path requires the `claude` CLI for proper registration.
-    if !claude_available() {
-        return Err(AppError::Storage(claude_missing_message()));
+    if !provider_available(PluginTarget::ClaudeCode) {
+        return Err(AppError::Storage(missing_message(PluginTarget::ClaudeCode)));
     }
 
-    let source = marketplace_source(dev_repo_root());
-    add_marketplace(&source)?;
-    install_plugin()?;
+    add_claude_marketplace(source)?;
+    install_claude_plugin()?;
 
-    // No configuration file is written.
-    //
-    // This used to seed `.storyhook/plugin-config.toml`, which is now wrong
-    // twice over: that directory is retired, and the plugin's configuration
-    // lives in the `[plugin]` table of the repository's pointer file, which is
-    // *user-authored* — storyhook reads it and never writes it, so that a field
-    // a newer storyhook understands cannot be dropped by an older one
-    // rewriting the file for its own reasons.
-    //
-    // Nothing is lost by not writing it. The defaults the file used to carry
-    // are the defaults the hooks apply when the table is absent, so seeding it
-    // was documentation in the shape of a file. It is documentation again.
-    let mut msg = format!(
+    let mut message = format!(
         "registered storyhook plugin via the `{MARKETPLACE_NAME}` marketplace (source: {source})\n"
     );
-    if crate::service::project::pointer_plugin(project_root).is_none() {
-        msg.push_str(
-            "\nThe plugin runs with default settings. To change them, add this to \
-             `.storyhook.toml`:\n\n    [plugin]\n    enabled = true\n    tracking = \
-             \"normal\"\n",
-        );
-    }
-    msg.push_str(
+    append_settings_guidance(&mut message, project_root);
+    message.push_str(
         "\nStart a new Claude Code session to load the plugin, then run \
          /story-context to get started (or run story load-context directly).",
     );
-    Ok(msg)
+    Ok(message)
 }
 
-pub fn uninstall(target: &str, project_root: &Path) -> Result<String, AppError> {
-    if target != "claude-code" {
-        return Err(AppError::Usage(format!(
-            "unknown plugin target: {target}. Supported: claude-code"
-        )));
+fn install_codex(project_root: &Path, source: &str) -> Result<String, AppError> {
+    if !provider_available(PluginTarget::Codex) {
+        return Err(AppError::Storage(missing_message(PluginTarget::Codex)));
     }
 
+    let already_added = add_codex_marketplace(source)?;
+    let installed_path = add_codex_plugin()?;
+    let marketplace_status = if already_added {
+        "already registered"
+    } else {
+        "registered"
+    };
+    let mut message = format!(
+        "{marketplace_status} the `{MARKETPLACE_NAME}` marketplace (source: {source})\n\
+         installed `{PLUGIN_REF}` at {installed_path}\n"
+    );
+    append_settings_guidance(&mut message, project_root);
+    message.push_str(
+        "\nStart a new Codex conversation to load the Storyhook skills, then select the \
+         `story-context` skill or ask for the current Storyhook project context.",
+    );
+    Ok(message)
+}
+
+pub fn install(target: &str, project_root: &Path) -> Result<String, AppError> {
+    let warning = compatibility_alias_warning(target);
+    let target = PluginTarget::parse(target)?;
+    let source = marketplace_source(dev_repo_root());
+    let message = match target {
+        PluginTarget::ClaudeCode => install_claude(project_root, &source),
+        PluginTarget::Codex => install_codex(project_root, &source),
+    }?;
+    Ok(format!("{}{message}", warning.unwrap_or_default()))
+}
+
+fn uninstall_claude(project_root: &Path) -> Result<String, AppError> {
     let mut removed = Vec::new();
 
-    // Unregister via the claude CLI when available, tolerating "not installed".
-    if claude_available() {
-        let uninstalled = run_claude(&["plugin", "uninstall", PLUGIN_REF])?;
+    if provider_available(PluginTarget::ClaudeCode) {
+        let uninstalled = run_provider(
+            PluginTarget::ClaudeCode,
+            &["plugin", "uninstall", PLUGIN_REF],
+        )?;
         if uninstalled.status.success() {
             removed.push(format!("unregistered {PLUGIN_REF} via claude"));
         }
-        // Remove the now-empty marketplace too (best effort).
-        let _ = run_claude(&["plugin", "marketplace", "remove", MARKETPLACE_NAME]);
+        let _ = run_provider(
+            PluginTarget::ClaudeCode,
+            &["plugin", "marketplace", "remove", MARKETPLACE_NAME],
+        );
     }
 
-    // Remove the legacy bare directory created by the old copy-based installer.
     let legacy = claude_plugins_dir()?.join(LEGACY_PLUGIN_DIR_NAME);
     if legacy.exists() {
         fs::remove_dir_all(&legacy)?;
@@ -230,16 +451,6 @@ pub fn uninstall(target: &str, project_root: &Path) -> Result<String, AppError> 
         ));
     }
 
-    // Deliberately does not delete any plugin configuration. The `[plugin]`
-    // table lives in the repository's pointer file beside its identity, and
-    // rewriting a user-authored file to remove one table is not something an
-    // uninstall should do; a repository that reinstalls the plugin next week
-    // would have lost its settings for no reason. A pre-cutover
-    // `.storyhook/plugin-config.toml` is left alone for the stronger reason
-    // that nothing may write into the legacy directory at all — it is the
-    // user's rollback.
-
-    // Remove sentinel-marked section from CLAUDE.md if present.
     let claude_md_path = project_root.join("CLAUDE.md");
     if claude_md_path.exists() {
         let content = fs::read_to_string(&claude_md_path)?;
@@ -255,6 +466,43 @@ pub fn uninstall(target: &str, project_root: &Path) -> Result<String, AppError> 
     } else {
         Ok(removed.join("\n"))
     }
+}
+
+fn uninstall_codex(project_root: &Path) -> Result<String, AppError> {
+    if !provider_available(PluginTarget::Codex) {
+        return Err(AppError::Storage(missing_message(PluginTarget::Codex)));
+    }
+    remove_codex_plugin()?;
+    remove_codex_marketplace()?;
+    let mut message =
+        format!("removed `{PLUGIN_REF}` and the `{MARKETPLACE_NAME}` marketplace from Codex");
+
+    // Setup may add one explicitly delimited Storyhook block to a pre-existing
+    // AGENTS.md. Remove only that complete block. `story project new` writes a
+    // canonical file with no sentinel, and user-authored/malformed files are
+    // therefore left byte-for-byte untouched.
+    let agents_md_path = project_root.join("AGENTS.md");
+    if agents_md_path.exists() {
+        let content = fs::read_to_string(&agents_md_path)?;
+        if let Some(cleaned) = remove_complete_sentinel_section(
+            &content,
+            INSTRUCTIONS_SENTINEL_BEGIN,
+            INSTRUCTIONS_SENTINEL_END,
+        ) {
+            fs::write(&agents_md_path, cleaned)?;
+            message.push_str("\nremoved the Storyhook sentinel block from AGENTS.md");
+        }
+    }
+    Ok(message)
+}
+
+pub fn uninstall(target: &str, project_root: &Path) -> Result<String, AppError> {
+    let warning = compatibility_alias_warning(target);
+    let message = match PluginTarget::parse(target)? {
+        PluginTarget::ClaudeCode => uninstall_claude(project_root),
+        PluginTarget::Codex => uninstall_codex(project_root),
+    }?;
+    Ok(format!("{}{message}", warning.unwrap_or_default()))
 }
 
 fn remove_sentinel_section(content: &str) -> String {
@@ -276,7 +524,6 @@ fn remove_sentinel_section(content: &str) -> String {
         }
     }
 
-    // Trim trailing whitespace but keep a final newline
     let trimmed = result.trim_end();
     if trimmed.is_empty() {
         String::new()
@@ -285,9 +532,70 @@ fn remove_sentinel_section(content: &str) -> String {
     }
 }
 
+fn remove_complete_sentinel_section(content: &str, begin: &str, end: &str) -> Option<String> {
+    if content.match_indices(begin).count() != 1 || content.match_indices(end).count() != 1 {
+        return None;
+    }
+    let begin_at = content.find(begin)?;
+    let end_at = content.find(end)?;
+    if end_at <= begin_at + begin.len() {
+        return None;
+    }
+
+    let begin_line_start = content[..begin_at].rfind('\n').map_or(0, |at| at + 1);
+    let begin_line_end = content[begin_at..]
+        .find('\n')
+        .map_or(content.len(), |at| begin_at + at);
+    let end_line_start = content[..end_at].rfind('\n').map_or(0, |at| at + 1);
+    let end_line_content_end = content[end_at..]
+        .find('\n')
+        .map_or(content.len(), |at| end_at + at);
+    let end_line_end = if end_line_content_end < content.len() {
+        end_line_content_end + 1
+    } else {
+        end_line_content_end
+    };
+    if content[begin_line_start..begin_line_end].trim_end_matches('\r') != begin
+        || content[end_line_start..end_line_content_end].trim_end_matches('\r') != end
+    {
+        return None;
+    }
+
+    let mut cleaned = String::with_capacity(content.len());
+    cleaned.push_str(&content[..begin_line_start]);
+    cleaned.push_str(&content[end_line_end..]);
+    Some(cleaned)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn targets_are_typed_and_the_error_lists_both() {
+        assert_eq!(
+            PluginTarget::parse("claude").unwrap(),
+            PluginTarget::ClaudeCode
+        );
+        assert_eq!(
+            PluginTarget::parse("claude-code").unwrap(),
+            PluginTarget::ClaudeCode,
+            "the previous public token remains a compatibility alias"
+        );
+        assert_eq!(PluginTarget::parse("codex").unwrap(), PluginTarget::Codex);
+        let error = PluginTarget::parse("vscode").unwrap_err().to_string();
+        assert!(error.contains("claude, codex"), "{error}");
+        assert!(!error.contains("claude-code"), "{error}");
+    }
+
+    #[test]
+    fn the_old_claude_token_is_a_warned_alias() {
+        let warning = compatibility_alias_warning("claude-code").expect("legacy alias warning");
+        assert!(warning.contains("deprecated"));
+        assert!(warning.contains("`claude`"));
+        assert_eq!(compatibility_alias_warning("claude"), None);
+        assert_eq!(compatibility_alias_warning("codex"), None);
+    }
 
     #[test]
     fn marketplace_source_uses_local_path_for_dev_checkout() {
@@ -304,10 +612,44 @@ mod tests {
     }
 
     #[test]
-    fn claude_missing_message_mentions_manual_install() {
-        let msg = claude_missing_message();
-        assert!(msg.contains("/plugin marketplace add mikeydotio/storyhook"));
-        assert!(msg.contains("/plugin install story@storyhook"));
+    fn provider_missing_messages_name_manual_install() {
+        let claude = missing_message(PluginTarget::ClaudeCode);
+        assert!(claude.contains("/plugin marketplace add mikeydotio/storyhook"));
+        assert!(claude.contains("/plugin install story@storyhook"));
+        let codex = missing_message(PluginTarget::Codex);
+        assert!(codex.contains("codex plugin marketplace add mikeydotio/storyhook"));
+        assert!(codex.contains("codex plugin add story@storyhook"));
+    }
+
+    #[test]
+    fn codex_plugin_root_uses_the_authoritative_installed_version() {
+        let home = storyhook_test_support::scratch_dir();
+        let stale = home
+            .path()
+            .join(".codex/plugins/cache/storyhook/story/0.5.0/.codex-plugin");
+        let current = home
+            .path()
+            .join(".codex/plugins/cache/storyhook/story/0.6.0+codex.123/.codex-plugin");
+        fs::create_dir_all(&stale).unwrap();
+        fs::create_dir_all(&current).unwrap();
+        fs::write(stale.join("plugin.json"), "{}").unwrap();
+        fs::write(current.join("plugin.json"), "{}").unwrap();
+        let raw = br#"{"installed":[{"pluginId":"story@storyhook","name":"story","marketplaceName":"storyhook","version":"0.6.0+codex.123","installed":true,"enabled":true}]}"#;
+        assert_eq!(
+            codex_installed_plugin_root_from(home.path(), raw),
+            Some(current.parent().unwrap().to_path_buf())
+        );
+    }
+
+    #[test]
+    fn codex_plugin_root_rejects_disabled_or_unsafe_records() {
+        let home = storyhook_test_support::scratch_dir();
+        for raw in [
+            br#"{"installed":[{"pluginId":"story@storyhook","name":"story","marketplaceName":"storyhook","version":"0.6.0","installed":true,"enabled":false}]}"#.as_slice(),
+            br#"{"installed":[{"pluginId":"story@storyhook","name":"story","marketplaceName":"storyhook","version":"../escape","installed":true,"enabled":true}]}"#.as_slice(),
+        ] {
+            assert_eq!(codex_installed_plugin_root_from(home.path(), raw), None);
+        }
     }
 
     #[test]
@@ -321,5 +663,38 @@ mod tests {
     fn no_sentinel_returns_unchanged() {
         let input = "# My Project\n\nContent.\n";
         assert_eq!(remove_sentinel_section(input), input);
+    }
+
+    #[test]
+    fn removes_only_one_complete_instruction_sentinel_block() {
+        let input =
+            "user before\n<!-- BEGIN STORYHOOK -->\nmanaged\n<!-- END STORYHOOK -->\nuser after\n";
+        assert_eq!(
+            remove_complete_sentinel_section(
+                input,
+                INSTRUCTIONS_SENTINEL_BEGIN,
+                INSTRUCTIONS_SENTINEL_END,
+            ),
+            Some("user before\nuser after\n".to_string())
+        );
+        let malformed = "user before\n<!-- BEGIN STORYHOOK -->\nmanaged\nuser after\n";
+        assert_eq!(
+            remove_complete_sentinel_section(
+                malformed,
+                INSTRUCTIONS_SENTINEL_BEGIN,
+                INSTRUCTIONS_SENTINEL_END,
+            ),
+            None
+        );
+        let suffixed =
+            "user before\n<!-- BEGIN STORYHOOK -->\nmanaged\n<!-- END STORYHOOK --> user suffix\n";
+        assert_eq!(
+            remove_complete_sentinel_section(
+                suffixed,
+                INSTRUCTIONS_SENTINEL_BEGIN,
+                INSTRUCTIONS_SENTINEL_END,
+            ),
+            None
+        );
     }
 }

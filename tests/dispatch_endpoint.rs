@@ -421,7 +421,7 @@ fn the_project_and_story_reach_the_script_verbatim() {
         .as_str()
         .expect("argv echoed back");
     assert!(argv.contains("--project scad-caliper"));
-    assert!(argv.contains("dispatch CAL-12"));
+    assert!(argv.contains("dispatch CAL-12 --agent=claude"));
     assert!(
         !argv.contains("--auto"),
         "a plain dispatch's argv must not carry --auto"
@@ -454,7 +454,55 @@ fn auto_equals_1_appends_auto_to_the_scripts_argv_and_is_relayed_in_the_record()
     let argv = record["payload"]["argv"]
         .as_str()
         .expect("argv echoed back");
-    assert!(argv.contains("dispatch CAL-12 --auto"));
+    assert!(argv.contains("dispatch CAL-12 --agent=claude --auto"));
+}
+
+#[test]
+fn codex_agent_is_relayed_and_passed_to_the_shared_helper() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let stub = write_stub("echo-args");
+    let info = start_with_stub(&env, stub.path());
+
+    let accepted = body_json(
+        post_dispatch_query(&info, &info.token, "proj", "SH-1", "agent=codex&auto=1")
+            .expect("Codex dispatch accepted"),
+    );
+    assert_eq!(accepted["dispatch"]["agent"], "codex");
+    assert_eq!(accepted["dispatch"]["auto"], true);
+    let handle = accepted["dispatch"]["handle"].as_str().unwrap();
+    let record = poll_until_finished(&info, &info.token, "proj", "SH-1", handle);
+    assert_eq!(record["agent"], "codex");
+    assert!(
+        record["payload"]["argv"]
+            .as_str()
+            .unwrap()
+            .contains("dispatch SH-1 --agent=codex --auto")
+    );
+}
+
+#[test]
+fn absent_agent_defaults_to_claude_and_invalid_or_duplicate_values_are_400() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let stub = write_stub("ok");
+    let info = start_with_stub(&env, stub.path());
+
+    let accepted = body_json(
+        post_dispatch(&info, &info.token, "proj", "SH-1").expect("default dispatch accepted"),
+    );
+    assert_eq!(accepted["dispatch"]["agent"], "claude");
+
+    for query in [
+        "agent=claude-code",
+        "agent=unknown",
+        "agent=",
+        "agent=claude&agent=codex",
+    ] {
+        let err = post_dispatch_query(&info, &info.token, "proj", "SH-2", query)
+            .expect_err("invalid agent must be rejected synchronously");
+        assert_eq!(status_of(&err), 400, "query={query}");
+    }
 }
 
 /// `auto=true` is the other recognized spelling (the dashboard sends `1`;
@@ -522,6 +570,25 @@ fn a_repeated_post_with_a_different_auto_reuses_the_first_attempts_mode() {
 }
 
 #[test]
+fn a_repeated_post_with_a_different_agent_reuses_the_first_attempts_agent() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let stub = write_stub("slow");
+    let info = start_with_stub(&env, stub.path());
+
+    let first = body_json(
+        post_dispatch_query(&info, &info.token, "proj", "SH-1", "agent=codex")
+            .expect("first dispatch accepted"),
+    );
+    let second = body_json(
+        post_dispatch_query(&info, &info.token, "proj", "SH-1", "agent=claude")
+            .expect("deduped dispatch accepted"),
+    );
+    assert_eq!(second["dispatch"]["handle"], first["dispatch"]["handle"]);
+    assert_eq!(second["dispatch"]["agent"], "codex");
+}
+
+#[test]
 fn an_unknown_handle_is_404() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
@@ -576,8 +643,12 @@ fn a_script_below_the_required_protocol_is_refused_before_any_handle_exists() {
         "the 500 must name the real diagnosis, not a generic failure: {body}"
     );
     assert!(
-        body.contains("story plugin install claude-code"),
+        body.contains("story plugin install claude"),
         "the 500 must name the remedy: {body}"
+    );
+    assert!(
+        body.contains("story plugin install codex"),
+        "the 500 must list the Codex remedy too: {body}"
     );
 
     // No handle was ever minted -- confirmed the same way an_unknown_handle_is_404

@@ -13,7 +13,7 @@
 //! stderr would force every consumer to read two streams and merge them, on
 //! a stream that also carries free-text warnings. See `move_if_state.rs`,
 //! which reads a conflict envelope off stdout, and
-//! plugin/claude-code/bin/story.sh, whose CAS claim depends on it.
+//! plugins/story/bin/story.sh, whose CAS claim depends on it.
 
 // TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
 #![allow(clippy::disallowed_methods)]

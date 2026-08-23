@@ -220,7 +220,7 @@ fn every_scaffolded_instruction_file_points_at_the_rubric() {
 /// extracts every other charter constant — one `VAR="…"` assignment on its own
 /// line.
 fn scope_clause() -> &'static str {
-    let script = include_str!("../plugin/claude-code/bin/story.sh");
+    let script = include_str!("../plugins/story/bin/story.sh");
     let prefix = "AUTO_SCOPE_CLAUSE=\"";
     let line = script
         .lines()
@@ -249,7 +249,7 @@ fn the_autonomous_charter_carries_the_adoption_clause() {
 
     // Defined but never wired into either composition would pass every check
     // above while reaching no dispatched session at all.
-    let script = include_str!("../plugin/claude-code/bin/story.sh");
+    let script = include_str!("../plugins/story/bin/story.sh");
     for var in ["AUTO_PROMPT_TPL=", "AUTO_PROMPT_SOLO_TPL="] {
         let composition = script
             .lines()
@@ -284,10 +284,9 @@ fn the_charter_scope_clause_names_no_raw_token_count() {
 
 #[test]
 fn story_triage_names_a_collapse_resolution() {
-    let text = std::fs::read_to_string(
-        repo_root().join("plugin/claude-code/skills/story-triage/SKILL.md"),
-    )
-    .expect("reading story-triage/SKILL.md");
+    let text =
+        std::fs::read_to_string(repo_root().join("plugins/story/skills/story-triage/SKILL.md"))
+            .expect("reading story-triage/SKILL.md");
     for needle in ["duplicate-of", "obviates", POINTER] {
         assert!(
             text.contains(needle),
@@ -300,9 +299,8 @@ fn story_triage_names_a_collapse_resolution() {
 
 #[test]
 fn story_new_reference_searches_before_filing() {
-    let text =
-        std::fs::read_to_string(repo_root().join("plugin/claude-code/references/story-new.md"))
-            .expect("reading references/story-new.md");
+    let text = std::fs::read_to_string(repo_root().join("plugins/story/references/story-new.md"))
+        .expect("reading references/story-new.md");
     assert!(
         text.contains("story search"),
         "references/story-new.md must search the existing backlog before drafting a \

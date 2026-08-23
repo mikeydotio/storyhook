@@ -4,7 +4,7 @@
 //! A shell silently SKIPS a `PATH` entry that is not a directory — it is not
 //! an error, there is no diagnostic, the command just falls through to
 //! whatever the next entry (or the system) resolves. That is exactly what
-//! happened to `plugin/claude-code/tests/test-dispatch-actor-labels.sh:24`:
+//! happened to `plugins/story/tests/test-dispatch-actor-labels.sh:24`:
 //! it prepended `$TESTS_DIR/fakes/tmux`, the fake tmux's own FILE, instead of
 //! `$TESTS_DIR/fakes`, the directory holding it. `tmux` in that test resolved
 //! to the real `/opt/homebrew/bin/tmux`, and the test passed anyway — the
@@ -147,14 +147,14 @@ PATH="/usr/bin:/bin"
 // Resolution: does an entry name an existing directory?
 // ---------------------------------------------------------------------------
 
-/// Repo-relative synonyms every `plugin/claude-code/tests/*.sh` file gets for
+/// Repo-relative synonyms every `plugins/story/tests/*.sh` file gets for
 /// free from sourcing `lib.sh` — the two path variables it computes from
 /// `${BASH_SOURCE[0]}` rather than a literal assignment this scan could
 /// otherwise pick up on its own.
 fn builtin_synonyms() -> HashMap<&'static str, &'static str> {
     HashMap::from([
-        ("TESTS_DIR", "plugin/claude-code/tests"),
-        ("PLUGIN_ROOT", "plugin/claude-code"),
+        ("TESTS_DIR", "plugins/story/tests"),
+        ("PLUGIN_ROOT", "plugins/story"),
     ])
 }
 
@@ -256,7 +256,7 @@ enum Resolution {
 /// that still starts with an unresolved variable is checked two more ways
 /// before giving up on it — the whole entry from repo root, and the whole
 /// entry from the scanned file's own directory (which is what lets
-/// `scripts/run-e2e.sh`'s `$repo_root/plugin/claude-code/tests/fakes` resolve
+/// `scripts/run-e2e.sh`'s `$repo_root/plugins/story/tests/fakes` resolve
 /// without this scan ever being told what `repo_root` means).
 fn resolve_entry(
     entry: &str,
