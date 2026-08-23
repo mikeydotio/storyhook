@@ -344,7 +344,7 @@ fn placeholder(token: &str) -> Option<&'static str> {
         "<event_type>" => "pre-commit",
         "<request-id>" => "req-1",
         "<crash-id>" => "crash-1",
-        "<target>" => "claude-code",
+        "<target>" => "claude",
         _ => return None,
     })
 }

@@ -32,7 +32,7 @@ authority, so do not guess a displayed name or re-derive the workflow from memor
 |---|---|
 | No operation supplied | Run **List → Pick** below. |
 | A story id such as `SH-45` | Run **View + Offer** below. A bare token is an id only if it matches `^[A-Za-z0-9]+-[0-9]+$`. |
-| `do <id> [--auto]` | Run **Provider dispatch** below. |
+| `do <id> [--auto] [--agent=claude|codex]` | Run **Provider dispatch** below. |
 | `view <id>` | Run `bash "<story-helper>" view <id>`, show `display`, stop. |
 | `new <description>` | Load `<plugin-root>/references/story-new.md` and follow it. |
 | `complete <id>` | Load `<plugin-root>/references/story-complete.md` and follow it. |
@@ -72,7 +72,9 @@ authority, so do not guess a displayed name or re-derive the workflow from memor
 ## Provider dispatch
 
 Dispatch, capture, and doctor depend on terminal behavior that differs by agent host. Load
-the matching file from `<plugin-root>/adapters/` and follow it. If no adapter exists for the
+the matching file from `<plugin-root>/adapters/` and follow it. For dispatch, an explicit
+`--agent=claude|codex` selects that provider even when it differs from the active host; without
+one, the adapter supplies its own host as the default. If no adapter exists for the
 active host, explain that the provider-specific operation is unavailable and suggest the `story-work` skill for safe
 in-session work. Never invoke a different provider's adapter or report dispatch success
 without one.

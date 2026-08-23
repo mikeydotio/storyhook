@@ -7,9 +7,13 @@ provider-specific manifests and adapters supply only the integration layer.
 The Storyhook CLI supports both providers:
 
 ```bash
-story plugin install claude-code
+story plugin install claude
 story plugin install codex
 ```
+
+The former plugin target `claude-code` remains accepted for install and uninstall as a
+deprecated, warned compatibility alias. New dispatch interfaces accept only `claude` and
+`codex`.
 
 Codex development installs register the repository marketplace and then add the plugin,
 equivalent to:
@@ -59,8 +63,8 @@ exercises the real logic, and the prose can't quietly diverge from it.
 |---|---|
 | `list` | bare `/story` |
 | `view <id>` | `/story view`, `/story <id>` |
-| `dispatch <id> [--auto]` | `/story do` |
-| `dispatch --next [--auto]` | not routed by any skill (SH-344) — the id-less sibling: claims whatever `story next --claim` picks atomically, so a caller dispatching several stories at once (a fleet, a loop) gets a distinct story per call instead of racing the same id |
+| `dispatch <id> [--auto] [--agent=claude\|codex]` | `/story do` |
+| `dispatch --next [--auto] [--agent=claude\|codex]` | not routed by any skill (SH-344) — the id-less sibling: claims whatever `story next --claim` picks atomically, so a caller dispatching several stories at once (a fleet, a loop) gets a distinct story per call instead of racing the same id |
 | `create --title …` | `/story new` |
 | `complete <plan\|execute> <id> [--no-close] [--no-clean] [--force]` | `/story complete` |
 | `reap <id>` | not routed by the skill (SH-208) — the `--auto` charter's own final act; see below |
@@ -183,8 +187,11 @@ Worth knowing before changing anything here:
   rather than best-effort, since nobody is watching to read a partial
   result. The attended path is unchanged: teardown there still stays a later
   `/story complete <id>` from the main checkout.
-- **Dispatch is provider-selected, not inferred from terminal prose.** Adapters set
-  `STORY_AGENT=claude-code|codex`; Claude remains the default for existing callers. Codex
+- **Dispatch is provider-selected, not inferred from terminal prose.** Adapters pass
+  `--agent=claude|codex`; an explicit dispatch flag overrides the active host and an
+  omitted flag retains that adapter's host default. The helper also accepts
+  `STORY_AGENT=claude|codex` for direct callers; `STORY_AGENT=claude-code` is a warned
+  compatibility alias. Claude remains the default for callers that choose neither. Codex
   uses `codex --no-alt-screen`, `.codex/worktrees/`, screen readiness, a confirmed
   Shift+Tab transition into Plan mode, and Tab submission. Failure before submission keeps
   the existing rollback invariants intact. `doctor` reports and probes the selected
@@ -207,7 +214,7 @@ All knobs are `STORY_*`. The commonly useful ones:
 
 | Variable | Effect |
 |---|---|
-| `STORY_AGENT` | provider contract: `claude-code` (default) or `codex` |
+| `STORY_AGENT` | provider contract: `claude` (default) or `codex`; `claude-code` is a deprecated compatibility alias |
 | `STORY_DRY_RUN=1` | preview any side-effecting verb; changes nothing |
 | `STORY_LAUNCH_CMD` | what `dispatch` launches (must **not** include `-w`) |
 | `STORY_PROMPT` / `STORY_PROMPT_EXTRA` | the handoff prompt, and a clause appended to it |

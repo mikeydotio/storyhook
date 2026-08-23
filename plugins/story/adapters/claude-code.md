@@ -6,10 +6,11 @@ has already resolved the installed plugin root and its absolute `<story-helper>`
 Claude exposes the main skill as the `/story` slash command. Infer the operation and arguments
 from that invocation; do not rely on a magic environment variable.
 
-## Dispatch (`do <id> [--auto]`)
+## Dispatch (`do <id> [--auto] [--agent=claude|codex]`)
 
-Run `STORY_AGENT=claude-code bash "<story-helper>" dispatch <id>`, adding `--auto` only when
-the user requested it.
+Run `bash "<story-helper>" dispatch <id> --agent=<agent>`, adding `--auto` only when the user
+requested it. Use the user's explicit agent when present; otherwise use `--agent=claude`.
+Never pass the compatibility-only `claude-code` token through this interface.
 
 - `ok:false`: show `display` and stop. Common causes include a missing or closed story, an
   existing claim, an unready state, or extra arguments.
@@ -26,12 +27,12 @@ Do not rewrite those templates in prose.
 
 ## Capture (`capture <id>`)
 
-Run `STORY_AGENT=claude-code bash "<story-helper>" capture <id>`, show `display`, and stop.
+Run `STORY_AGENT=claude bash "<story-helper>" capture <id>`, show `display`, and stop.
 This is read-only.
 
 ## Doctor (`doctor`)
 
-Run `STORY_AGENT=claude-code bash "<story-helper>" doctor` and show `display`. This checks
+Run `STORY_AGENT=claude bash "<story-helper>" doctor` and show `display`. This checks
 project integrity plus the Claude launch, readiness, and prompt-submission contract.
 
 ## Completion and setup notes

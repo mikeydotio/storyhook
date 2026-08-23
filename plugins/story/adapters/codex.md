@@ -3,10 +3,10 @@
 Load this adapter only when the active agent host is Codex. The shared `story` skill has
 already resolved the installed plugin root and its absolute `<story-helper>` path.
 
-## Dispatch (`do <id> [--auto]`)
+## Dispatch (`do <id> [--auto] [--agent=claude|codex]`)
 
-Run `STORY_AGENT=codex bash "<story-helper>" dispatch <id>`, adding `--auto` only when the user
-requested it.
+Run `bash "<story-helper>" dispatch <id> --agent=<agent>`, adding `--auto` only when the user
+requested it. Use the user's explicit agent when present; otherwise use `--agent=codex`.
 
 - `ok:false`: show `display` and stop. The helper refuses before prompt delivery when the
   story, worktree, Codex process, readiness screen, or Plan-mode footer is unsafe.

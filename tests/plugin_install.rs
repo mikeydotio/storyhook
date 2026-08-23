@@ -322,12 +322,12 @@ fn unrelated_codex_remove_failures_are_not_treated_as_absence() {
 }
 
 #[test]
-fn claude_command_sequence_and_success_guidance_are_unchanged() {
+fn claude_command_sequence_and_success_guidance_use_the_canonical_target() {
     let harness = Harness::new(false);
     harness.install_fake("claude", FAKE_CLAUDE);
     fs::create_dir_all(harness.home.join(".claude")).unwrap();
 
-    let output = harness.run(&["plugin", "install", "claude-code"]);
+    let output = harness.run(&["plugin", "install", "claude"]);
     assert!(output.status.success(), "{}", combined(&output));
     let log = fs::read_to_string(harness.home.join("claude-invocations")).unwrap();
     assert!(log.contains("plugin marketplace add"), "{log}");
@@ -341,4 +341,33 @@ fn claude_command_sequence_and_success_guidance_are_unchanged() {
         "{message}"
     );
     assert!(message.contains("/story-context"), "{message}");
+    assert!(!message.contains("deprecated"), "{message}");
+}
+
+#[test]
+fn legacy_claude_code_target_still_works_and_warns() {
+    let harness = Harness::new(false);
+    harness.install_fake("claude", FAKE_CLAUDE);
+    fs::create_dir_all(harness.home.join(".claude")).unwrap();
+
+    let output = harness.run(&["plugin", "install", "claude-code"]);
+    assert!(output.status.success(), "{}", combined(&output));
+    let message = combined(&output);
+    assert!(message.contains("deprecated"), "{message}");
+    assert!(message.contains("use `claude`"), "{message}");
+}
+
+#[test]
+fn legacy_claude_code_uninstall_target_still_works_and_warns() {
+    let harness = Harness::new(false);
+    harness.install_fake("claude", FAKE_CLAUDE);
+    fs::create_dir_all(harness.home.join(".claude")).unwrap();
+
+    let output = harness.run(&["plugin", "uninstall", "claude-code"]);
+    assert!(output.status.success(), "{}", combined(&output));
+    let message = combined(&output);
+    assert!(message.contains("deprecated"), "{message}");
+    assert!(message.contains("use `claude`"), "{message}");
+    let log = fs::read_to_string(harness.home.join("claude-invocations")).unwrap();
+    assert!(log.contains("plugin uninstall story@storyhook"), "{log}");
 }

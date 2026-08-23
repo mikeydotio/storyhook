@@ -56,6 +56,14 @@ grep -qi "teardown verb.*not part of this skill" "$SKILL" \
 # --- SH-62: --auto is documented where a caller would actually look ---
 grep -qF -- "--auto" "$SKILL" \
   || fail_test "router skill never mentions --auto (dispatch's autonomous flag)"
+grep -qF -- "--agent=claude|codex" "$SKILL" \
+  || fail_test "router skill never names dispatch's canonical agent choices"
+grep -qF -- '--agent=claude' "$PLUGIN_ROOT/adapters/claude-code.md" \
+  || fail_test "Claude adapter does not pass the canonical Claude agent flag"
+grep -qF -- '--agent=codex' "$PLUGIN_ROOT/adapters/codex.md" \
+  || fail_test "Codex adapter does not pass the canonical Codex agent flag"
+grep -qF -- 'STORY_AGENT=claude-code' "$PLUGIN_ROOT/adapters/claude-code.md" \
+  && fail_test "Claude adapter still emits the legacy provider token"
 grep -qF "STORY_AUTO_PROMPT" "${docs[@]}" \
   || fail_test "router skill documents STORY_PROMPT but not its --auto counterpart, STORY_AUTO_PROMPT"
 

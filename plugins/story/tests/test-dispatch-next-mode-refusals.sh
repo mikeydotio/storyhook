@@ -32,10 +32,15 @@ assert_contains "$(jqf "$out" .display)" "no ready stories" "nothing ready: name
 # --- now seed a ready story for the remaining, positive-path checks ---
 id=$(new_story "$repo" "Ready for dry-run preview")
 
-# --auto composes with --next once there is something to claim.
-out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch --next --auto 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "next+auto: accepted once a ready story exists"
-assert_eq "$(jqf "$out" .auto)" "true" "next+auto: auto:true carried through NEXT MODE same as ID MODE"
+# --agent and --auto compose with --next in arbitrary order once there is
+# something to claim.
+out=$(cd "$repo" && STORY_AGENT=unknown STORY_DRY_RUN=1 \
+  bash "$SCRIPT" dispatch --agent=codex --auto --next 2>&1)
+assert_eq "$(jqf "$out" .ok)" "true" "next+agent+auto: accepted once a ready story exists"
+assert_eq "$(jqf "$out" .agent)" "codex" "next+agent+auto: explicit provider carried through NEXT MODE"
+assert_eq "$(jqf "$out" .auto)" "true" "next+agent+auto: auto:true carried through NEXT MODE same as ID MODE"
+assert_contains "$(jqf "$out" .worktree_path)" "/.codex/worktrees/" \
+  "next+agent+auto: provider worktree carried through NEXT MODE"
 
 # --- dry-run claims nothing: the preview names the story but does not move it ---
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch --next 2>&1)

@@ -18,7 +18,8 @@
 # boolean and a human-readable `display`, mirroring issue.sh/storywork's own
 # contract:
 #
-#   dispatch <id>   Refuse unless <id> is READY (issue #40's core ask — see
+#   dispatch <id> [--auto] [--agent=claude|codex]
+#                   Refuse unless <id> is READY (issue #40's core ask — see
 #                    the READY-GATE step below) and not already claimed, then
 #                    claim it via storyhook's CAS primitive, create a NEW git
 #                    worktree at .claude/worktrees/<name> on branch
@@ -97,7 +98,8 @@ set -euo pipefail
 
 # The daemon<->script argv contract this file implements (SH-196). The
 # dashboard's dispatch endpoint (src/api/dispatch.rs) invokes this script as
-# `story.sh --project <slug> dispatch <id> [--auto]`; before SH-196, a daemon
+# `story.sh --project <slug> dispatch <id> [--auto] [--agent=claude|codex]`;
+# before SH-196, a daemon
 # and a script that disagreed about that contract failed by relaying this
 # script's own generic top-level usage error as a well-formed business
 # refusal -- indistinguishable from "not ready" or "already claimed" to
@@ -142,11 +144,26 @@ SELF_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOUR
 # ---- config (all env-overridable) -------------------------------------------
 STORY="${STORY_BIN:-story}"
 
-# The provider adapter selects this explicitly. Claude remains the default so
-# existing callers preserve their launch, worktree and keyboard contracts.
-AGENT="${STORY_AGENT:-claude-code}"
-case "$AGENT" in
-  claude-code)
+# The provider adapter selects this explicitly. `claude` is Storyhook's
+# canonical public token; the old `claude-code` STORY_AGENT value remains a
+# compatibility alias for callers that used the environment seam before
+# SH-436. It warns on stderr so stdout keeps this helper's one-JSON contract.
+canonical_agent() {
+  case "$1" in
+    claude) AGENT="claude" ;;
+    codex) AGENT="codex" ;;
+    claude-code)
+      printf 'warning: STORY_AGENT=claude-code is deprecated; use STORY_AGENT=claude.\n' >&2
+      AGENT="claude"
+      ;;
+    *) fail "unknown agent \`$1\` — supported agents: claude, codex." ;;
+  esac
+}
+
+configure_agent() {
+  canonical_agent "$1"
+  case "$AGENT" in
+  claude)
     AGENT_LABEL="Claude Code"
     DEFAULT_LAUNCH_TPL="claude --permission-mode plan --model opusplan"
     DEFAULT_WORKTREE_IGNORE_PATH=".claude/worktrees/"
@@ -169,10 +186,27 @@ case "$AGENT" in
     DEFAULT_SUBMIT_KEY='Tab'
     DEFAULT_EMPTY_INPUT_PATTERN='^[[:space:]]*Ask Codex to do anything[[:space:]]*$'
     ;;
-  *)
-    fail "unknown STORY_AGENT \`$AGENT\` — supported providers: claude-code, codex."
-    ;;
-esac
+  esac
+
+  # These values are derived from the provider but remain individually
+  # overridable. Recompute them when dispatch's --agent flag overrides the
+  # environment-selected provider; doing only AGENT would launch one provider
+  # with the other's worktree and keyboard contract.
+  LAUNCH_TPL="${STORY_LAUNCH_CMD:-$DEFAULT_LAUNCH_TPL}"
+  WORKTREE_IGNORE_PATH="${STORY_WORKTREE_IGNORE_PATH:-$DEFAULT_WORKTREE_IGNORE_PATH}"
+  READY_PROMPT_GLYPH="${STORY_READY_PROMPT_GLYPH:-$DEFAULT_READY_PROMPT_GLYPH}"
+  READY_PROCESS_PATTERN="${STORY_READY_PROCESS_PATTERN:-$DEFAULT_READY_PROCESS_PATTERN}"
+  READY_LAUNCH_BIN="${LAUNCH_TPL%% *}"
+  SUBMIT_KEY="${STORY_SUBMIT_KEY:-$DEFAULT_SUBMIT_KEY}"
+  EMPTY_INPUT_PATTERN="${STORY_EMPTY_INPUT_PATTERN:-$DEFAULT_EMPTY_INPUT_PATTERN}"
+  DOCTOR_LAUNCH_TPL="${STORY_DOCTOR_LAUNCH_CMD:-$DEFAULT_LAUNCH_TPL}"
+}
+
+# Start with canonical Claude defaults so function definitions and shared
+# configuration below have concrete values. The selected environment value is
+# resolved at command dispatch time: an explicit `dispatch --agent=...` must
+# be able to override even a stale or invalid STORY_AGENT value.
+configure_agent "claude"
 # Launch command, run INSIDE the worktree dispatch already created — must NOT
 # include `-w`/`--worktree` (would try to create a second worktree at the
 # same path). <name> renders to the resolved window/worktree name, <n> to the
@@ -825,7 +859,7 @@ council_vote_available() {
 
 # ---- subcommand: dispatch ---------------------------------------------------
 cmd_dispatch() {
-  # <story-id> XOR --next may appear before or after --auto; anything past
+  # <story-id> XOR --next may appear before or after --auto/--agent; anything past
   # that (a second positional, an unknown flag) is a hard fail rather than
   # the silent ignore this verb used to give a stray trailing token —
   # matching view/list/capture/doctor/complete-plan, which already reject
@@ -833,21 +867,41 @@ cmd_dispatch() {
   # `story next --claim` picks, atomically, rather than a caller-named id —
   # see the NEXT MODE section below for why this is a second mode and not a
   # rewrite of the id-directed claim.
-  local id="" auto="" want_next=""
+  local id="" auto="" want_next="" requested_agent=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --auto) auto=1; shift ;;
+      --auto)
+        [ -z "$auto" ] || fail "--auto may be specified only once — usage: story.sh dispatch (<story-id> | --next) [--auto] [--agent=claude|codex]"
+        auto=1; shift ;;
+      --agent=*)
+        [ -z "$requested_agent" ] || fail "--agent may be specified only once — usage: story.sh dispatch (<story-id> | --next) [--auto] [--agent=claude|codex]"
+        requested_agent="${1#--agent=}"
+        case "$requested_agent" in
+          claude|codex) ;;
+          *) fail "unknown agent \`$requested_agent\` — use --agent=claude or --agent=codex." ;;
+        esac
+        shift ;;
       --next)
-        [ -z "$id" ] || fail "--next cannot be combined with a story id \`$id\` — usage: story.sh dispatch (<story-id> | --next) [--auto]"
+        [ -z "$want_next" ] || fail "--next may be specified only once — usage: story.sh dispatch (<story-id> | --next) [--auto] [--agent=claude|codex]"
+        [ -z "$id" ] || fail "--next cannot be combined with a story id \`$id\` — usage: story.sh dispatch (<story-id> | --next) [--auto] [--agent=claude|codex]"
         want_next=1; shift ;;
       *)
-        [ -z "$id" ] || fail "unexpected argument \`$1\` — usage: story.sh dispatch (<story-id> | --next) [--auto]"
-        [ -z "$want_next" ] || fail "--next cannot be combined with a story id \`$1\` — usage: story.sh dispatch (<story-id> | --next) [--auto]"
+        [ -z "$id" ] || fail "unexpected argument \`$1\` — usage: story.sh dispatch (<story-id> | --next) [--auto] [--agent=claude|codex]"
+        [ -z "$want_next" ] || fail "--next cannot be combined with a story id \`$1\` — usage: story.sh dispatch (<story-id> | --next) [--auto] [--agent=claude|codex]"
         id="$1"; shift ;;
     esac
   done
-  [ -n "$id" ] || [ -n "$want_next" ] || fail "usage: story.sh dispatch (<story-id> | --next) [--auto]"
+  [ -n "$id" ] || [ -n "$want_next" ] || fail "usage: story.sh dispatch (<story-id> | --next) [--auto] [--agent=claude|codex]"
   [ -z "$id" ] || valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
+
+  # The explicit dispatch option outranks STORY_AGENT. Both are resolved
+  # before the tmux/story/checkout gates, so an invalid provider can never
+  # claim a story or create a worktree.
+  if [ -n "$requested_agent" ]; then
+    configure_agent "$requested_agent"
+  else
+    configure_agent "${STORY_AGENT:-claude}"
+  fi
 
   # Step 1: tmux precondition (relaxed under dry-run and under
   # STORY_TARGET_SESSION — a non-interactive caller outside tmux dispatches
@@ -2958,6 +3012,12 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+# Every command except dispatch reads the provider from the environment.
+# Dispatch resolves it only after parsing its own explicit override.
+if [ "${1:-}" != "dispatch" ]; then
+  configure_agent "${STORY_AGENT:-claude}"
+fi
+
 case "${1:-}" in
   dispatch)   shift; cmd_dispatch "$@" ;;
   complete)   shift; cmd_complete "$@" ;;
@@ -2975,5 +3035,5 @@ case "${1:-}" in
   triage)     shift; cmd_triage "$@" ;;
   scaffold-claude-md) shift; cmd_scaffold_claude_md "$@" ;;
   scaffold-agents-md) shift; cmd_scaffold_agents_md "$@" ;;
-  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | doctor | capture <story-id> | ensure-cli | context [--full] | sync [--since <d>] | handoff [--since <d>] | work [story-id] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
+  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] [--agent=claude|codex] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | doctor | capture <story-id> | ensure-cli | context [--full] | sync [--since <d>] | handoff [--since <d>] | work [story-id] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
 esac
