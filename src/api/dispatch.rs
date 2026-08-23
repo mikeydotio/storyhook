@@ -1,7 +1,7 @@
 //! The dashboard's dispatch endpoint (SH-50).
 //!
 //! `POST /api/repos/{project}/story/{id}/dispatch` runs the same
-//! `plugin/claude-code/bin/story.sh dispatch` the CLI's `/story do` uses:
+//! `plugins/story/bin/story.sh dispatch` the CLI's `/story do` uses:
 //! a git worktree, a tmux window, an agent started in plan mode on the
 //! story. `GET .../dispatch/{handle}` polls the outcome. This is
 //! deliberately not a reimplementation of dispatch inside the daemon — the
@@ -118,7 +118,7 @@ const MAX_CAPTURE_BYTES: u64 = 64 * 1024;
 
 /// The taxonomy behind a non-[`Ok`](DispatchState::Ok) terminal
 /// [`DispatchRecord`] (SH-232) — read by [`classify`] from `story.sh`'s own
-/// `reason` field (`refuse`/`refuse_with`, `plugin/claude-code/lib/
+/// `reason` field (`refuse`/`refuse_with`, `plugins/story/lib/
 /// session.sh`) instead of leaving it reachable only by parsing
 /// [`DispatchRecord::payload`]. A plain `fail()` refusal (no claim word, not
 /// ready — see `story.sh`'s own guard order) carries no `reason` field at
@@ -708,7 +708,7 @@ fn load_dispatch_history(env: &Environment) -> Vec<DispatchRecord> {
 }
 
 /// A project slug or story id, validated against the shape `story.sh` itself
-/// requires (`valid_story_id`, `plugin/claude-code/bin/story.sh`):
+/// requires (`valid_story_id`, `plugins/story/bin/story.sh`):
 /// non-empty, alphanumeric first character, alphanumeric/hyphen/underscore
 /// after. Rejects path traversal and whitespace at the one boundary where
 /// a URL segment becomes a shell argument.
@@ -1389,13 +1389,13 @@ fn read_capture(mut file: std::fs::File) -> String {
 }
 
 /// The daemon<->script argv contract [`resolve_dispatch_script`] requires of
-/// whichever `story.sh` it resolves (SH-196). `plugin/claude-code/bin/
+/// whichever `story.sh` it resolves (SH-196). `plugins/story/bin/
 /// story.sh` declares the contract it implements in its own
 /// `DISPATCH_PROTOCOL` constant; bump both together, and see that
 /// constant's doc comment for the rule on when a bump is actually needed.
 pub const REQUIRED_DISPATCH_PROTOCOL: u32 = 1;
 
-/// Locates `plugin/claude-code/bin/story.sh`, in order:
+/// Locates `plugins/story/bin/story.sh`, in order:
 ///
 /// 1. `$STORYHOOK_DISPATCH_SCRIPT` — an operator's own override, and how
 ///    every test in this tree points dispatch at a stub.
@@ -1455,13 +1455,13 @@ fn resolve_dispatch_script_from(
         return check_dispatch_protocol(path);
     }
     if let Some(root) = dev_root {
-        let path = root.join("plugin/claude-code/bin/story.sh");
+        let path = root.join("plugins/story/bin/story.sh");
         if path.is_file() {
             return check_dispatch_protocol(path);
         }
     }
     Err(
-        "could not find plugin/claude-code/bin/story.sh -- install the plugin \
+        "could not find plugins/story/bin/story.sh -- install the plugin \
          (`story plugin install <target>`) or set STORYHOOK_DISPATCH_SCRIPT"
             .to_string(),
     )
@@ -1484,14 +1484,14 @@ fn check_dispatch_protocol(path: PathBuf) -> Result<PathBuf, String> {
     Err(format!(
         "the dispatch script at `{}` implements dispatch protocol {declared}, but this \
          storyhook needs at least {REQUIRED_DISPATCH_PROTOCOL} -- the installed story \
-         plugin is out of date. Update it with `story plugin install claude-code` (or \
-         `claude plugin update story@storyhook`), then retry.",
+         plugin is out of date. Update it with `story plugin install claude-code` or \
+         `story plugin install codex`, matching the active provider, then retry.",
         path.display()
     ))
 }
 
 /// Reads `path`'s own declared `DISPATCH_PROTOCOL=<n>` line — the constant
-/// `plugin/claude-code/bin/story.sh` itself defines near its top — without
+/// `plugins/story/bin/story.sh` itself defines near its top — without
 /// executing it. A `bash -c` probe would only echo this same constant at the
 /// cost of a process spawn on every resolution, and resolution deliberately
 /// runs before anything about the script is trusted (see
@@ -1503,7 +1503,7 @@ fn check_dispatch_protocol(path: PathBuf) -> Result<PathBuf, String> {
 /// both read the same to a caller: "not new enough."
 ///
 /// `pub` so `tests/plugin_contract.rs` can pin the real
-/// `plugin/claude-code/bin/story.sh` in this repo against
+/// `plugins/story/bin/story.sh` in this repo against
 /// [`REQUIRED_DISPATCH_PROTOCOL`] using the exact same parser this module
 /// runs at resolution time, rather than a second implementation that could
 /// drift from it.
@@ -2424,7 +2424,7 @@ mod tests {
     }
 
     /// Every reason `story.sh`'s `dispatch` command can actually emit
-    /// (`refuse`/`refuse_with` call sites in `plugin/claude-code/bin/
+    /// (`refuse`/`refuse_with` call sites in `plugins/story/bin/
     /// story.sh` and `lib/session.sh`), pinned so a renamed reason string on
     /// either side is caught here rather than silently degrading to
     /// [`DispatchReason::Other`].
@@ -2600,7 +2600,7 @@ mod tests {
     /// warning) is caught here rather than only at dispatch time.
     #[test]
     fn the_shipped_default_templates_are_charter_inert() {
-        let script = include_str!("../../plugin/claude-code/bin/story.sh");
+        let script = include_str!("../../plugins/story/bin/story.sh");
 
         // PROMPT_TPL is still one "${STORY_PROMPT:-literal}" default.
         let line = script
@@ -2892,9 +2892,9 @@ mod tests {
     fn resolve_dispatch_script_falls_back_to_dev_root_when_no_plugin_is_installed() {
         let home = storyhook_test_support::scratch_dir();
         let dev_root = storyhook_test_support::scratch_dir();
-        std::fs::create_dir_all(dev_root.path().join("plugin/claude-code/bin"))
+        std::fs::create_dir_all(dev_root.path().join("plugins/story/bin"))
             .expect("mkdir dev checkout script dir");
-        let dev_script = dev_root.path().join("plugin/claude-code/bin/story.sh");
+        let dev_script = dev_root.path().join("plugins/story/bin/story.sh");
         std::fs::write(&dev_script, FAKE_STORY_SH).expect("write dev story.sh");
         let resolved = resolve_dispatch_script_from(
             None,
@@ -3001,6 +3001,7 @@ mod tests {
         assert!(message.contains(&REQUIRED_DISPATCH_PROTOCOL.to_string()));
         assert!(message.contains("out of date"));
         assert!(message.contains("story plugin install claude-code"));
+        assert!(message.contains("story plugin install codex"));
     }
 
     #[test]

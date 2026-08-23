@@ -181,7 +181,7 @@ run_one_project() {
   # named through STORYHOOK_DISPATCH_SCRIPT (the seam every test already
   # uses to point dispatch at a stub), re-exports the fixture's knobs and
   # execs the real script. Council verdict, unanimous, recorded on SH-263.
-  export PATH="$repo_root/plugin/claude-code/tests/fakes:$PATH"
+  export PATH="$repo_root/plugins/story/tests/fakes:$PATH"
   export STORY_READY_DELAY=0
   export STORY_READY_FALLBACK_DELAY=0
   export STORY_CONFIRM_DELAY=0
@@ -222,7 +222,7 @@ run_one_project() {
   # plugin. Grep the real script and abort loudly rather than emit any
   # default; the parser takes the first matching line, and the wrapper has
   # exactly one.
-  _real_dispatch_script="$repo_root/plugin/claude-code/bin/story.sh"
+  _real_dispatch_script="$repo_root/plugins/story/bin/story.sh"
   _dispatch_protocol="$(grep -m1 -E '^[[:space:]]*DISPATCH_PROTOCOL=' "$_real_dispatch_script" | sed 's/^[[:space:]]*//')"
   if [ -z "$_dispatch_protocol" ]; then
     echo "run-e2e.sh: no DISPATCH_PROTOCOL= line in $_real_dispatch_script" >&2

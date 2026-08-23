@@ -1,5 +1,5 @@
-//! The allowlists for the two spawns storyhook itself trusts: `story.sh`
-//! (dispatch) and `claude` (plugin management) — SH-193, the sibling of
+//! The allowlists for the two spawn families storyhook itself trusts: `story.sh`
+//! (dispatch) and provider CLIs (plugin management) — SH-193, the sibling of
 //! [`super::git_env`] this module's header pointed at.
 //!
 //! # Why these two, and not the third
@@ -7,7 +7,7 @@
 //! SH-193 named three children a daemon hands its whole inherited environment
 //! to with no `env_clear`: a user's own event hook (`sh -c`,
 //! [`crate::event_hooks`]), `story.sh`'s dispatch child
-//! ([`crate::api::dispatch::run_child`]), and `claude`'s plugin subcommands
+//! ([`crate::api::dispatch::run_child`]), and provider plugin subcommands
 //! ([`crate::plugin`]). Only the last two are addressed here.
 //!
 //! An event hook's command is arbitrary, user-authored shell — storyhook does
@@ -20,7 +20,7 @@
 //! instead: a hook contract is "you inherit the daemon's environment, which
 //! may be stale and from a different project than the one invoking you."
 //!
-//! `story.sh` and `claude` are different: storyhook chooses every argument on
+//! `story.sh` and provider plugin CLIs are different: storyhook chooses every argument on
 //! their command lines. They are exactly the case [`super::git_env`]'s header
 //! calls "a command can be, and therefore is, an allowlist" — cleared, then
 //! handed back exactly what is measured to be needed, so a variable nobody
@@ -33,8 +33,8 @@
 //! under its own `STORY_`/`STORYHOOK_` prefix, the tuning knobs
 //! (`STORY_READY_ATTEMPTS`, `STORY_CONFIRM_DELAY`, `STORY_PROMPT`, …) that are
 //! its whole designed configuration surface — plus `TMPDIR`, `TMUX` and
-//! `TMUX_PANE` for its tmux session work. `claude plugin marketplace/install/
-//! uninstall` ([`crate::plugin::run_claude`]) needs none of that: it is a
+//! `TMUX_PANE` for its tmux session work. Provider marketplace/install/
+//! uninstall commands ([`crate::plugin`]) need none of that: they are a
 //! narrow, local plugin-management call with no `STORY_` surface and no tmux
 //! session of its own. Handing it `story.sh`'s list would be unjustified
 //! over-permissiveness for a spawn that never asked for it — the same
@@ -49,8 +49,8 @@
 //! `SSH_AUTH_SOCK` — safely, for `git_env`, only because *its* call sites
 //! (`src/service/git.rs`'s `rev-parse`/`log`) are local-only and need no
 //! remote auth at all. `story.sh` is not local-only: it runs
-//! `git fetch --quiet origin` (`plugin/claude-code/bin/story.sh`) and
-//! `git ls-remote --heads origin` (`plugin/claude-code/lib/session.sh`)
+//! `git fetch --quiet origin` (`plugins/story/bin/story.sh`) and
+//! `git ls-remote --heads origin` (`plugins/story/lib/session.sh`)
 //! directly, against a real remote.
 //!
 //! Both call sites were read before this list was written. Both are already
@@ -125,7 +125,7 @@ fn dispatch_permits(name: &str) -> bool {
 /// True if `name` is one `claude`'s plugin-management child is allowed to see.
 ///
 /// Narrower than [`dispatch_permits`] on purpose — see this module's header.
-fn claude_permits(name: &str) -> bool {
+fn plugin_cli_permits(name: &str) -> bool {
     COMMON_MAY_SEE.contains(&name)
 }
 
@@ -153,10 +153,10 @@ pub fn apply_dispatch_allowlist(command: &mut Command) {
     apply_allowlist(command, dispatch_permits);
 }
 
-/// Clears `command`'s environment and restores exactly what a `claude`
+/// Clears `command`'s environment and restores exactly what a provider
 /// plugin-management child may see.
-pub fn apply_claude_allowlist(command: &mut Command) {
-    apply_allowlist(command, claude_permits);
+pub fn apply_plugin_cli_allowlist(command: &mut Command) {
+    apply_allowlist(command, plugin_cli_permits);
 }
 
 #[cfg(test)]
@@ -218,8 +218,11 @@ mod tests {
     }
 
     #[test]
-    fn the_claude_allowlist_is_the_childs_whole_environment() {
-        assert_allowlist_is_the_childs_whole_environment(apply_claude_allowlist, claude_permits);
+    fn the_plugin_cli_allowlist_is_the_childs_whole_environment() {
+        assert_allowlist_is_the_childs_whole_environment(
+            apply_plugin_cli_allowlist,
+            plugin_cli_permits,
+        );
     }
 
     /// `story.sh`'s own tuning surface must survive by prefix, not just by
@@ -233,12 +236,12 @@ mod tests {
         assert!(!dispatch_permits("STORYWRITER_ANYTHING"));
     }
 
-    /// The narrower claude list must reject what the dispatch list allows,
+    /// The narrower plugin-CLI list must reject what the dispatch list allows,
     /// proving the two are genuinely separate rather than one list reused.
     #[test]
-    fn the_claude_allowlist_rejects_dispatch_only_names() {
-        assert!(!claude_permits("TMUX"));
-        assert!(!claude_permits("TMUX_PANE"));
-        assert!(!claude_permits("STORY_READY_ATTEMPTS"));
+    fn the_plugin_cli_allowlist_rejects_dispatch_only_names() {
+        assert!(!plugin_cli_permits("TMUX"));
+        assert!(!plugin_cli_permits("TMUX_PANE"));
+        assert!(!plugin_cli_permits("STORY_READY_ATTEMPTS"));
     }
 }

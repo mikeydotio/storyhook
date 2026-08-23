@@ -65,7 +65,7 @@ STORYHOOK_INSTALL_DIR ?= $(HOME)/.local/bin
 INSTALL_DIR ?= $(STORYHOOK_INSTALL_DIR)
 
 # Full local gate: formatting, clippy with warnings-as-errors, full test
-# suite, plus the Claude Code plugin's own bash harness (bin/story.sh's
+# suite, plus the shared agent plugin's own bash harness (bin/story.sh's
 # ready-gate/CAS-claim/dispatch behavior — issue #40). The plugin suite
 # exercises the REAL `story` binary this build just produced (never a
 # possibly-stale globally-installed one, and never a fake -- a fake can't
@@ -159,7 +159,7 @@ test: check-no-orphan-servers
 	bash scripts/leg.sh clippy -- cargo clippy --workspace --all-targets -- -D warnings
 	@bash scripts/leg.sh rust-suite -- bash scripts/run-tests.sh -- --test-threads=4
 	bash scripts/leg.sh build -- cargo build
-	PATH="$(CURDIR)/target/debug:$$PATH" bash scripts/leg.sh plugin -- bash plugin/claude-code/tests/run-tests.sh
+	PATH="$(CURDIR)/target/debug:$$PATH" bash scripts/leg.sh plugin -- bash plugins/story/tests/run-tests.sh
 	$(if $(E2E),bash scripts/leg.sh e2e -- bash scripts/run-e2e.sh,@bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true)
 	@bash scripts/check-no-orphan-servers.sh postlude
 	@bash scripts/gate-receipt.sh postlude $(if $(E2E),full,gate)

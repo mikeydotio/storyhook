@@ -16,7 +16,7 @@ Two unknowns the epic settled before this story could be scoped precisely:
 
 - **Which directory.** A project's checkout comes from `projects.checkout_path`
   (`story project link checkout`). The button is shown only for a project that has one.
-- **Who does the work.** The daemon invokes `plugin/claude-code/bin/story.sh dispatch`.
+- **Who does the work.** The daemon invokes `plugins/story/bin/story.sh dispatch`.
   The worktree/tmux mechanics stay in the shell script; the daemon only invokes it. This
   is deliberately not a reimplementation of dispatch inside the daemon.
 
@@ -188,7 +188,7 @@ first. **Pre-existing, wider than this story: filed as
 **F3 — the residual risk, given F1 and F2 as context.** A peer holding the token who
 can *also* reach the ordinary write surface (F1) can `PATCH` a story's description and
 then dispatch it, influencing some of what an agent's prompt contains — the prompt
-template is fixed (`plugin/claude-code/bin/story.sh:97`/`:119`), but the story id and
+template is fixed (`plugins/story/bin/story.sh:97`/`:119`), but the story id and
 title it interpolates are not. Mitigated by: the token gate (this story); plan mode
 only — the launch command is identical in both modes (`LAUNCH_TPL`,
 `claude --permission-mode plan`), so a human still approves before anything the agent
@@ -371,7 +371,7 @@ gaps: nothing anywhere checked for the skill's presence, and the charter had no 
 instruction for the *easy*-question case at all — only an implicit absence of "ask the human."
 
 **The check runs in `story.sh`, not in the child session, and not in this daemon.**
-`council_vote_available` (`plugin/claude-code/bin/story.sh`) probes for a real
+`council_vote_available` (`plugins/story/bin/story.sh`) probes for a real
 `skills/council-vote/SKILL.md` — bare under `~/.claude/skills` or the dispatched project's own
 `.claude/skills`, or shipped by an enabled entry in `installed_plugins.json` — before the
 charter is ever rendered, and picks one of two composed templates accordingly. Rejected: asking
@@ -422,7 +422,8 @@ move.
 candidate it resolves — override, installed plugin, or dev checkout alike, one rule, no
 exemption — and refuses (`check_dispatch_protocol`) if it is older than
 `REQUIRED_DISPATCH_PROTOCOL`, naming the script's path, both numbers, and the exact
-remedy (`story plugin install claude-code` / `claude plugin update story@storyhook`).
+remedy (`story plugin install claude-code` or `story plugin install codex`, matching the
+active provider).
 `declared >= required`, not `==`: a script *newer* than the daemon needs must keep
 resolving, so a plugin release is never blocked on a daemon rebuild. Rejected: an exec
 probe (`story.sh --dispatch-protocol`) — it would only echo the same constant at the
@@ -935,7 +936,7 @@ and SH-367 (the half deliberately not shipped here).
   SH-196 adds: an unmarked stub (the exact shape of the machine that produced this
   bug) driven through the real HTTP endpoint, confirming a 500 naming the diagnosis and
   remedy with no handle ever minted.
-- **Plugin** (`plugin/claude-code/tests/`): `test-dispatch-target-session.sh` (the
+- **Plugin** (`plugins/story/tests/`): `test-dispatch-target-session.sh` (the
   pre-existing named-session path, which had zero coverage before this story) and
   `test-dispatch-create-session.sh` (absent → created; present → not recreated;
   creation failure → the same worktree/claim rollback a failed `new-window` already

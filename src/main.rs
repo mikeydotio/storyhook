@@ -19,7 +19,7 @@ use storyhook::output::{self, Response};
 /// result channel carrying exactly one self-describing document per run, and
 /// the error envelope is the result the caller asked for. See
 /// `tests/cli_error_streams.rs` for the contract, and
-/// plugin/claude-code/bin/story.sh, whose CAS claim reads a conflict envelope
+/// plugins/story/bin/story.sh, whose CAS claim reads a conflict envelope
 /// off stdout.
 fn fail(error: &storyhook::error::AppError, json: bool) -> ! {
     let rendered = output::render_error(error, json);

@@ -90,7 +90,7 @@ CLI never draws.
 ## Contributing factors
 
 - **The two claims already on record for three of the four prior pairs are false, and are
-  corrected here.** `plugin/claude-code/bin/story.sh` has never retried a failed `story new`.
+  corrected here.** `plugins/story/bin/story.sh` has never retried a failed `story new`.
   Its own comment says so — *"Deliberately NOT retried by the caller: a repeated create files a
   duplicate story"* — and that comment, byte-identical, predates SH-227 in plugin versions
   0.4.0 through HEAD. SH-252 was deleted with the reason "a `--json` parse fallback in the
