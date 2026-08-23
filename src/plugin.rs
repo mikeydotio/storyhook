@@ -1,7 +1,9 @@
 use std::fs;
 use std::io::ErrorKind;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, ExitStatus, Output};
 
 use crate::env::spawn_env::apply_plugin_cli_allowlist;
 use crate::error::AppError;
@@ -14,6 +16,10 @@ const SENTINEL_BEGIN: &str = "<!-- storyhook:begin -->";
 const SENTINEL_END: &str = "<!-- storyhook:end -->";
 const INSTRUCTIONS_SENTINEL_BEGIN: &str = "<!-- BEGIN STORYHOOK -->";
 const INSTRUCTIONS_SENTINEL_END: &str = "<!-- END STORYHOOK -->";
+const CODEX_LAUNCHER_MARKER: &str = "# storyhook-managed: codex-launcher-v1";
+const CODEX_RULE_MARKER: &str = "# storyhook-managed: codex-rules-v1";
+const CODEX_LAUNCHER_RELATIVE: &str = ".codex/storyhook/story.sh";
+const CODEX_RULE_RELATIVE: &str = ".codex/rules/storyhook.rules";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PluginTarget {
@@ -45,11 +51,15 @@ fn compatibility_alias_warning(raw: &str) -> Option<&'static str> {
         .then_some("warning: plugin target `claude-code` is deprecated; use `claude` instead.\n")
 }
 
-/// Resolve the Claude Code config directory (~/.claude/).
-fn claude_dir() -> Result<PathBuf, AppError> {
+fn home_dir() -> Result<PathBuf, AppError> {
     let home = std::env::var("HOME")
         .map_err(|_| AppError::Storage("could not determine home directory".to_string()))?;
-    Ok(PathBuf::from(home).join(".claude"))
+    Ok(PathBuf::from(home))
+}
+
+/// Resolve the Claude Code config directory (~/.claude/).
+fn claude_dir() -> Result<PathBuf, AppError> {
+    Ok(home_dir()?.join(".claude"))
 }
 
 fn claude_plugins_dir() -> Result<PathBuf, AppError> {
@@ -233,6 +243,214 @@ fn codex_installed_plugin_root_from(home: &Path, raw: &[u8]) -> Option<PathBuf> 
         .then_some(root)
 }
 
+fn codex_launcher_path(home: &Path) -> PathBuf {
+    home.join(CODEX_LAUNCHER_RELATIVE)
+}
+
+fn codex_rule_path(home: &Path) -> PathBuf {
+    home.join(CODEX_RULE_RELATIVE)
+}
+
+fn codex_launcher_contents() -> String {
+    format!(
+        "{CODEX_LAUNCHER_MARKER}\n\
+         # Recreated by `story plugin install codex`; do not edit.\n\
+         exec story plugin run codex -- \"$@\"\n"
+    )
+}
+
+fn codex_rule_contents(launcher: &Path) -> Result<String, AppError> {
+    let launcher = serde_json::to_string(&launcher.to_string_lossy()).map_err(|error| {
+        AppError::Storage(format!("failed to encode the Codex launcher path: {error}"))
+    })?;
+    Ok(format!(
+        "{CODEX_RULE_MARKER}\n\
+         # Recreated by `story plugin install codex`; Codex loads it at startup.\n\
+         prefix_rule(\n\
+             pattern = [\"bash\", {launcher}],\n\
+             decision = \"allow\",\n\
+             justification = \"Allow the installed Storyhook skill to access its daemon and state store\",\n\
+         )\n"
+    ))
+}
+
+fn existing_managed_file(path: &Path, marker: &str) -> Result<Option<Vec<u8>>, AppError> {
+    match fs::read(path) {
+        Ok(contents) => {
+            if contents.starts_with(marker.as_bytes()) {
+                Ok(Some(contents))
+            } else {
+                Err(AppError::Storage(format!(
+                    "refusing to overwrite unmanaged file `{}`; move it aside and retry",
+                    path.display()
+                )))
+            }
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(AppError::Storage(format!(
+            "failed to read `{}`: {error}",
+            path.display()
+        ))),
+    }
+}
+
+fn write_managed_file(path: &Path, contents: &str, executable: bool) -> Result<(), AppError> {
+    let parent = path.parent().ok_or_else(|| {
+        AppError::Storage(format!("managed path `{}` has no parent", path.display()))
+    })?;
+    fs::create_dir_all(parent)?;
+    fs::write(path, contents)?;
+    #[cfg(unix)]
+    {
+        let mode = if executable { 0o755 } else { 0o644 };
+        let mut permissions = fs::metadata(path)?.permissions();
+        permissions.set_mode(mode);
+        fs::set_permissions(path, permissions)?;
+    }
+    #[cfg(not(unix))]
+    let _ = executable;
+    Ok(())
+}
+
+fn restore_managed_file(path: &Path, previous: Option<&[u8]>, executable: bool) {
+    match previous {
+        Some(contents) => {
+            if fs::write(path, contents).is_ok() {
+                #[cfg(unix)]
+                if let Ok(metadata) = fs::metadata(path) {
+                    let mut permissions = metadata.permissions();
+                    permissions.set_mode(if executable { 0o755 } else { 0o644 });
+                    let _ = fs::set_permissions(path, permissions);
+                }
+            }
+        }
+        None => {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+fn verify_codex_rule(rule: &Path, launcher: &Path) -> Result<(), AppError> {
+    let rule = rule.to_string_lossy().into_owned();
+    let launcher = launcher.to_string_lossy().into_owned();
+    let out = run_provider(
+        PluginTarget::Codex,
+        &[
+            "execpolicy",
+            "check",
+            "--pretty",
+            "--rules",
+            &rule,
+            "--",
+            "bash",
+            &launcher,
+            "context",
+        ],
+    )?;
+    let value = codex_json(&out, "verify the Storyhook Codex sandbox rule")?;
+    if value["decision"].as_str() == Some("allow") {
+        Ok(())
+    } else {
+        Err(AppError::Storage(format!(
+            "Codex did not allow the Storyhook launcher while verifying `{}`",
+            rule
+        )))
+    }
+}
+
+fn install_codex_sandbox_integration() -> Result<(PathBuf, PathBuf), AppError> {
+    let home = home_dir()?;
+    let launcher = codex_launcher_path(&home);
+    let rule = codex_rule_path(&home);
+    let previous_launcher = existing_managed_file(&launcher, CODEX_LAUNCHER_MARKER)?;
+    let previous_rule = existing_managed_file(&rule, CODEX_RULE_MARKER)?;
+    let launcher_contents = codex_launcher_contents();
+    let rule_contents = codex_rule_contents(&launcher)?;
+
+    let result = (|| {
+        write_managed_file(&launcher, &launcher_contents, true)?;
+        write_managed_file(&rule, &rule_contents, false)?;
+        verify_codex_rule(&rule, &launcher)
+    })();
+    if let Err(error) = result {
+        restore_managed_file(&launcher, previous_launcher.as_deref(), true);
+        restore_managed_file(&rule, previous_rule.as_deref(), false);
+        return Err(error);
+    }
+    Ok((launcher, rule))
+}
+
+enum ManagedRemoval {
+    Missing,
+    Removed,
+    Preserved,
+}
+
+fn remove_managed_file(path: &Path, marker: &str) -> Result<ManagedRemoval, AppError> {
+    match fs::read(path) {
+        Ok(contents) if contents.starts_with(marker.as_bytes()) => {
+            fs::remove_file(path)?;
+            Ok(ManagedRemoval::Removed)
+        }
+        Ok(_) => Ok(ManagedRemoval::Preserved),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(ManagedRemoval::Missing),
+        Err(error) => Err(AppError::Storage(format!(
+            "failed to read `{}`: {error}",
+            path.display()
+        ))),
+    }
+}
+
+fn remove_empty_dir(path: &Path) {
+    if fs::read_dir(path)
+        .ok()
+        .is_some_and(|mut entries| entries.next().is_none())
+    {
+        let _ = fs::remove_dir(path);
+    }
+}
+
+/// Run the helper from the exact enabled Codex plugin version while preserving
+/// the caller's streams, cwd, terminal, and exit status. This is intercepted
+/// by the CLI before any daemon/store work; the stable launcher is its only
+/// intended caller.
+pub fn run_helper(target: &str, args: &[String]) -> Result<ExitStatus, AppError> {
+    if PluginTarget::parse(target)? != PluginTarget::Codex {
+        return Err(AppError::Usage(
+            "`story plugin run` supports only the Codex stable launcher".to_string(),
+        ));
+    }
+    if args.is_empty() {
+        return Err(AppError::Usage(
+            "usage: story plugin run codex -- <helper-command> [args...]".to_string(),
+        ));
+    }
+    let home = home_dir()?;
+    let root = codex_installed_plugin_root(&home).ok_or_else(|| {
+        AppError::Storage(
+            "could not locate the enabled `story@storyhook` Codex plugin; run `story plugin install codex`"
+                .to_string(),
+        )
+    })?;
+    let helper = root.join("bin/story.sh");
+    if !helper.is_file() {
+        return Err(AppError::Storage(format!(
+            "the enabled Storyhook Codex plugin has no helper at `{}`; reinstall it with `story plugin install codex`",
+            helper.display()
+        )));
+    }
+    Command::new("bash")
+        .arg(&helper)
+        .args(args)
+        .status()
+        .map_err(|error| {
+            AppError::Storage(format!(
+                "failed to run the installed Storyhook helper `{}`: {error}",
+                helper.display()
+            ))
+        })
+}
+
 fn expect_codex_field(
     value: &serde_json::Value,
     key: &str,
@@ -397,6 +615,7 @@ fn install_codex(project_root: &Path, source: &str) -> Result<String, AppError> 
 
     let already_added = add_codex_marketplace(source)?;
     let installed_path = add_codex_plugin()?;
+    let (launcher_path, rule_path) = install_codex_sandbox_integration()?;
     let marketplace_status = if already_added {
         "already registered"
     } else {
@@ -404,12 +623,16 @@ fn install_codex(project_root: &Path, source: &str) -> Result<String, AppError> 
     };
     let mut message = format!(
         "{marketplace_status} the `{MARKETPLACE_NAME}` marketplace (source: {source})\n\
-         installed `{PLUGIN_REF}` at {installed_path}\n"
+         installed `{PLUGIN_REF}` at {installed_path}\n\
+         installed the stable Codex launcher at {}\n\
+         installed and verified its sandbox rule at {}\n",
+        launcher_path.display(),
+        rule_path.display()
     );
     append_settings_guidance(&mut message, project_root);
     message.push_str(
-        "\nStart a new Codex conversation to load the Storyhook skills, then select the \
-         `story-context` skill or ask for the current Storyhook project context.",
+        "\nRestart Codex so it loads the sandbox rule and Storyhook skills, then select \
+         the `story-context` skill or ask for the current Storyhook project context.",
     );
     Ok(message)
 }
@@ -476,6 +699,43 @@ fn uninstall_codex(project_root: &Path) -> Result<String, AppError> {
     remove_codex_marketplace()?;
     let mut message =
         format!("removed `{PLUGIN_REF}` and the `{MARKETPLACE_NAME}` marketplace from Codex");
+
+    let home = home_dir()?;
+    let launcher = codex_launcher_path(&home);
+    let rule = codex_rule_path(&home);
+    match remove_managed_file(&launcher, CODEX_LAUNCHER_MARKER)? {
+        ManagedRemoval::Removed => {
+            message.push_str(&format!(
+                "\nremoved the Storyhook launcher {}",
+                launcher.display()
+            ));
+        }
+        ManagedRemoval::Preserved => {
+            message.push_str(&format!(
+                "\npreserved unmanaged launcher file {}",
+                launcher.display()
+            ));
+        }
+        ManagedRemoval::Missing => {}
+    }
+    match remove_managed_file(&rule, CODEX_RULE_MARKER)? {
+        ManagedRemoval::Removed => {
+            message.push_str(&format!(
+                "\nremoved the Storyhook sandbox rule {}",
+                rule.display()
+            ));
+        }
+        ManagedRemoval::Preserved => {
+            message.push_str(&format!(
+                "\npreserved unmanaged rules file {}",
+                rule.display()
+            ));
+        }
+        ManagedRemoval::Missing => {}
+    }
+    if let Some(parent) = launcher.parent() {
+        remove_empty_dir(parent);
+    }
 
     // Setup may add one explicitly delimited Storyhook block to a pre-existing
     // AGENTS.md. Remove only that complete block. `story project new` writes a

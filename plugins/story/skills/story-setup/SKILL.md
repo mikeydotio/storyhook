@@ -5,13 +5,13 @@ description: "Use when setting up storyhook in a new project, when the 'story' c
 
 # Storyhook Setup
 
-## Resolve packaged files
+## Resolve packaged files and helper
 
-Take the absolute directory containing this loaded `SKILL.md` as `<skill-dir>`. Resolve
-`<plugin-root>` as the normalized absolute path `<skill-dir>/../..`, then resolve
-`<story-helper>` as `<plugin-root>/bin/story.sh`. Substitute absolute, shell-quoted paths for
-packaged-file placeholders. Never resolve packaged files from the user's current working
-directory.
+Take the absolute directory containing this loaded `SKILL.md` as `<skill-dir>` and resolve
+`<plugin-root>` as the normalized absolute path `<skill-dir>/../..`. Load
+`<plugin-root>/references/helper-command.md` and follow it to resolve `<story-helper>`.
+Substitute absolute, shell-quoted paths for packaged-file placeholders. Never resolve
+packaged files from the user's current working directory.
 
 ## Steps
 

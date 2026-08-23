@@ -37,6 +37,19 @@ if [ "${1:-}" = plugin ] && [ "${2:-}" = add ]; then
   exit 0
 fi
 
+if [ "${1:-}" = plugin ] && [ "${2:-}" = list ]; then
+  version=0.6.0
+  if [ -f "$HOME/codex-plugin-version" ]; then IFS= read -r version < "$HOME/codex-plugin-version"; fi
+  printf '{"installed":[{"pluginId":"story@storyhook","name":"story","marketplaceName":"storyhook","version":"%s","installed":true,"enabled":true}]}\n' "$version"
+  exit 0
+fi
+
+if [ "${1:-}" = execpolicy ] && [ "${2:-}" = check ]; then
+  [ "$mode" = "execpolicy-fail" ] && { echo 'rule verification exploded' >&2; exit 21; }
+  printf '{"matchedRules":[{"prefixRuleMatch":{"decision":"allow"}}],"decision":"allow"}\n'
+  exit 0
+fi
+
 if [ "${1:-}" = plugin ] && [ "${2:-}" = remove ]; then
   [ "$mode" = "remove-fail" ] && { echo 'unrelated remove failure' >&2; exit 19; }
   printf '{"pluginId":"story@storyhook","name":"story","marketplaceName":"storyhook"}\n'
@@ -144,6 +157,53 @@ impl Harness {
     fn codex_log(&self) -> String {
         fs::read_to_string(self.home.join("codex-invocations")).unwrap_or_default()
     }
+
+    fn codex_launcher(&self) -> PathBuf {
+        self.home.join(".codex/storyhook/story.sh")
+    }
+
+    fn codex_rule(&self) -> PathBuf {
+        self.home.join(".codex/rules/storyhook.rules")
+    }
+
+    fn set_codex_plugin_version(&self, version: &str) {
+        fs::write(self.home.join("codex-plugin-version"), version)
+            .expect("writing fake Codex plugin version");
+    }
+
+    fn install_fake_plugin_helper(&self, version: &str, body: &str) -> PathBuf {
+        let root = self
+            .home
+            .join(".codex/plugins/cache/storyhook/story")
+            .join(version);
+        fs::create_dir_all(root.join(".codex-plugin")).unwrap();
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::write(root.join(".codex-plugin/plugin.json"), "{}\n").unwrap();
+        fs::write(root.join("bin/story.sh"), body).unwrap();
+        root
+    }
+
+    fn install_story_on_path(&self) {
+        let path = self.fake_bin.join("story");
+        fs::copy(&self.story, &path).expect("copying story onto fixture PATH");
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+
+    fn run_launcher(&self, args: &[&str]) -> Output {
+        let path = format!("{}:/usr/bin:/bin", self.fake_bin.display());
+        Command::new("bash")
+            .arg(self.codex_launcher())
+            .args(args)
+            .current_dir(&self.root)
+            .env_clear()
+            .env("HOME", &self.home)
+            .env("PATH", path)
+            .env("TMPDIR", self._temp.path())
+            .output()
+            .expect("running the stable Codex launcher")
+    }
 }
 
 fn combined(output: &Output) -> String {
@@ -155,19 +215,49 @@ fn combined(output: &Output) -> String {
 }
 
 #[test]
-fn codex_install_requires_only_an_invokable_cli_not_a_dot_codex_directory() {
+fn codex_install_creates_the_stable_launcher_and_verified_rule() {
     let harness = Harness::new(true);
     harness.install_fake("codex", FAKE_CODEX);
     assert!(!harness.home.join(".codex").exists());
 
     let output = harness.run(&["plugin", "install", "codex"]);
     assert!(output.status.success(), "{}", combined(&output));
-    assert!(!harness.home.join(".codex").exists());
-    let message = combined(&output);
+    let launcher = fs::read_to_string(harness.codex_launcher()).unwrap();
+    assert!(launcher.starts_with("# storyhook-managed: codex-launcher-v1"));
     assert!(
-        message.contains("Start a new Codex conversation"),
-        "{message}"
+        launcher.contains("plugin run codex -- \"$@\""),
+        "{launcher}"
     );
+    assert!(!launcher.contains("plugins/cache"), "{launcher}");
+    #[cfg(unix)]
+    assert_ne!(
+        fs::metadata(harness.codex_launcher())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o111,
+        0,
+        "the stable launcher is executable even though skills invoke it via bash"
+    );
+    let rule = fs::read_to_string(harness.codex_rule()).unwrap();
+    assert!(rule.starts_with("# storyhook-managed: codex-rules-v1"));
+    assert!(
+        rule.contains(&format!(
+            "pattern = [\"bash\", \"{}\"]",
+            harness.codex_launcher().display()
+        )),
+        "{rule}"
+    );
+    assert!(!rule.contains("plugins/cache"), "{rule}");
+    assert!(
+        harness
+            .codex_log()
+            .contains("execpolicy check --pretty --rules"),
+        "{}",
+        harness.codex_log()
+    );
+    let message = combined(&output);
+    assert!(message.contains("Restart Codex"), "{message}");
     assert!(message.contains("story-context"), "{message}");
 }
 
@@ -229,6 +319,126 @@ fn codex_install_is_idempotent_and_reports_the_marketplace_state() {
             .count(),
         2
     );
+    let launcher = fs::read_to_string(harness.codex_launcher()).unwrap();
+    assert_eq!(
+        launcher
+            .matches("storyhook-managed: codex-launcher-v1")
+            .count(),
+        1
+    );
+    let rule = fs::read_to_string(harness.codex_rule()).unwrap();
+    assert_eq!(rule.matches("prefix_rule(").count(), 1);
+}
+
+#[test]
+fn codex_install_preserves_unmanaged_launcher_and_rule_files() {
+    for (relative, original) in [
+        (".codex/storyhook/story.sh", "user launcher\n"),
+        (".codex/rules/storyhook.rules", "user rule\n"),
+    ] {
+        let harness = Harness::new(true);
+        harness.install_fake("codex", FAKE_CODEX);
+        let path = harness.home.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, original).unwrap();
+
+        let output = harness.run(&["plugin", "install", "codex"]);
+        assert!(!output.status.success());
+        assert!(combined(&output).contains("refusing to overwrite unmanaged file"));
+        assert_eq!(fs::read_to_string(path).unwrap(), original);
+    }
+}
+
+#[test]
+fn codex_rule_verification_failure_rolls_back_managed_files() {
+    let harness = Harness::new(true);
+    harness.install_fake("codex", FAKE_CODEX);
+    harness.set_codex_mode("execpolicy-fail");
+
+    let output = harness.run(&["plugin", "install", "codex"]);
+    assert!(!output.status.success());
+    assert!(combined(&output).contains("rule verification exploded"));
+    assert!(!harness.codex_launcher().exists());
+    assert!(!harness.codex_rule().exists());
+}
+
+#[test]
+fn failed_codex_upgrade_restores_the_previous_managed_files() {
+    let harness = Harness::new(true);
+    harness.install_fake("codex", FAKE_CODEX);
+    let installed = harness.run(&["plugin", "install", "codex"]);
+    assert!(installed.status.success(), "{}", combined(&installed));
+    let launcher = fs::read(harness.codex_launcher()).unwrap();
+    let rule = fs::read(harness.codex_rule()).unwrap();
+
+    harness.set_codex_mode("execpolicy-fail");
+    let failed = harness.run(&["plugin", "install", "codex"]);
+    assert!(!failed.status.success());
+    assert_eq!(fs::read(harness.codex_launcher()).unwrap(), launcher);
+    assert_eq!(fs::read(harness.codex_rule()).unwrap(), rule);
+}
+
+#[test]
+fn stable_codex_bridge_runs_the_current_enabled_plugin_helper_verbatim() {
+    let harness = Harness::new(true);
+    harness.install_fake("codex", FAKE_CODEX);
+    harness.install_fake_plugin_helper(
+        "0.6.0",
+        "#!/bin/sh\nprintf '{\"ok\":true,\"args\":\"%s\"}\\n' \"$*\"\nexit 7\n",
+    );
+
+    let output = harness.run(&["plugin", "run", "codex", "--", "dispatch", "SH-9", "--auto"]);
+    assert_eq!(output.status.code(), Some(7));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "{\"ok\":true,\"args\":\"dispatch SH-9 --auto\"}\n"
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).is_empty());
+    assert!(
+        harness.codex_log().contains("plugin list --json"),
+        "{}",
+        harness.codex_log()
+    );
+}
+
+#[test]
+fn stable_launcher_follows_codex_plugin_version_changes_without_rule_edits() {
+    let harness = Harness::new(true);
+    harness.install_fake("codex", FAKE_CODEX);
+    harness.install_story_on_path();
+    let installed = harness.run(&["plugin", "install", "codex"]);
+    assert!(installed.status.success(), "{}", combined(&installed));
+    let original_rule = fs::read_to_string(harness.codex_rule()).unwrap();
+
+    harness.install_fake_plugin_helper("0.6.0", "#!/bin/sh\necho old\n");
+    let old = harness.run_launcher(&["context"]);
+    assert!(old.status.success(), "{}", combined(&old));
+    assert_eq!(String::from_utf8_lossy(&old.stdout), "old\n");
+
+    harness.install_fake_plugin_helper("0.7.0", "#!/bin/sh\necho new\n");
+    harness.set_codex_plugin_version("0.7.0");
+    let new = harness.run_launcher(&["context"]);
+    assert!(new.status.success(), "{}", combined(&new));
+    assert_eq!(String::from_utf8_lossy(&new.stdout), "new\n");
+    assert_eq!(
+        fs::read_to_string(harness.codex_rule()).unwrap(),
+        original_rule,
+        "the stable rule is independent of the versioned cache path"
+    );
+}
+
+#[test]
+fn stable_codex_bridge_refuses_other_providers_and_missing_plugins() {
+    let harness = Harness::new(true);
+    harness.install_fake("codex", FAKE_CODEX);
+
+    let missing = harness.run(&["plugin", "run", "codex", "context"]);
+    assert!(!missing.status.success());
+    assert!(combined(&missing).contains("could not locate the enabled"));
+
+    let claude = harness.run(&["plugin", "run", "claude", "context"]);
+    assert!(!claude.status.success());
+    assert!(combined(&claude).contains("supports only the Codex stable launcher"));
 }
 
 #[test]
@@ -263,6 +473,10 @@ fn source_selection_uses_the_checkout_locally_and_github_when_packaged() {
 fn codex_uninstall_is_scoped_idempotent_and_preserves_project_files() {
     let harness = Harness::new(true);
     harness.install_fake("codex", FAKE_CODEX);
+    let installed = harness.run(&["plugin", "install", "codex"]);
+    assert!(installed.status.success(), "{}", combined(&installed));
+    assert!(harness.codex_launcher().exists());
+    assert!(harness.codex_rule().exists());
     harness.set_codex_mode("marketplace-absent");
     let claude_md = harness.root.join("CLAUDE.md");
     let original =
@@ -292,6 +506,35 @@ fn codex_uninstall_is_scoped_idempotent_and_preserves_project_files() {
         log.contains("plugin marketplace remove storyhook --json"),
         "{log}"
     );
+    assert!(!harness.codex_launcher().exists());
+    assert!(!harness.codex_rule().exists());
+}
+
+#[test]
+fn codex_uninstall_preserves_unmanaged_integration_files() {
+    let harness = Harness::new(true);
+    harness.install_fake("codex", FAKE_CODEX);
+    fs::create_dir_all(harness.codex_launcher().parent().unwrap()).unwrap();
+    fs::create_dir_all(harness.codex_rule().parent().unwrap()).unwrap();
+    fs::write(harness.codex_launcher(), "user launcher\n").unwrap();
+    fs::write(harness.codex_rule(), "user rule\n").unwrap();
+
+    let output = harness.run(&["plugin", "uninstall", "codex"]);
+    assert!(output.status.success(), "{}", combined(&output));
+    assert_eq!(
+        fs::read_to_string(harness.codex_launcher()).unwrap(),
+        "user launcher\n"
+    );
+    assert_eq!(
+        fs::read_to_string(harness.codex_rule()).unwrap(),
+        "user rule\n"
+    );
+    let message = combined(&output);
+    assert!(
+        message.contains("preserved unmanaged launcher"),
+        "{message}"
+    );
+    assert!(message.contains("preserved unmanaged rules"), "{message}");
 }
 
 #[test]

@@ -15,8 +15,9 @@ the CLI with it, so this skill bootstraps it.
 
 Run `command -v story`.
 
-- **If found**, the CLI is already installed. Confirm it works by running `story --version`
-  and stop here. Nothing to do.
+- **If found**, confirm it works by running `story --version`. In Codex, also run
+  `story plugin install codex` so the stable Storyhook launcher and its narrow sandbox rule
+  are installed or refreshed; then continue to step 5. In other hosts, stop here.
 - **If not found**, continue to step 2.
 
 ### 2. Ask permission and choose an install method
@@ -57,9 +58,17 @@ do with the install.
   ```
   They will need to restart their shell and agent session for it to take effect.
 
+When the active host is Codex, run `story plugin install codex` after the CLI is verified.
+That idempotent installer refreshes the plugin, writes the stable
+`~/.codex/storyhook/story.sh` launcher, verifies its dedicated Codex rule, and reports both
+paths. Do not hand-edit or broadly allowlist `bash`.
+
 ### 5. Next steps
 
 Once the CLI is verified, suggest:
 
 - the `story-setup` skill to initialize the project and configure plugin behavior, or
 - the `story-context` skill to see the current project state and start working.
+
+For Codex, tell the user to restart Codex before invoking another Storyhook skill so the
+new rule and plugin instructions load.

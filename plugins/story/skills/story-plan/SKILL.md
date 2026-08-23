@@ -7,12 +7,13 @@ description: "Use when breaking down a feature, spec, or requirement into struct
 
 Decompose a feature or spec into structured stories with dependencies.
 
-## Resolve packaged files
+## Resolve packaged files and helper
 
 Take the absolute directory containing this loaded `SKILL.md` as `<skill-dir>`. Resolve
-`<plugin-root>` as the normalized absolute path `<skill-dir>/../..`. Substitute absolute,
-shell-quoted paths for packaged-file placeholders. Never resolve packaged files from the
-user's current working directory.
+`<plugin-root>` as the normalized absolute path `<skill-dir>/../..`. Load
+`<plugin-root>/references/helper-command.md` and follow it to resolve `<story-helper>` for
+the CLI guard below. Substitute absolute, shell-quoted paths for packaged-file placeholders.
+Never resolve packaged files from the user's current working directory.
 
 ## Steps
 
