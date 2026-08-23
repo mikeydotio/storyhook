@@ -95,11 +95,13 @@ session hooks. There are two ways to install it.
 **CLI-first** — if you already installed the `story` CLI (above):
 
 ```bash
-story plugin install claude-code
+story plugin install claude
 ```
 
 This registers `mikeydotio/storyhook` as a marketplace and installs the plugin through the
 `claude` CLI. It requires the `claude` CLI on your PATH.
+The former target `claude-code` remains accepted by `story plugin install` and
+`story plugin uninstall` as a deprecated, warned compatibility alias.
 
 **Marketplace-first** — if you prefer to install the plugin before the CLI:
 
@@ -152,7 +154,7 @@ skills unchanged.
 | `/story <id>` | Shows the story, then offers to start work on it |
 | `/story new <description>` | Interrogates you, drafts the story, files it after you confirm |
 | `/story view <id>` | Prints the story and its comments, then stops |
-| `/story do <id> [--auto]` | Claims a **ready** story and dispatches it to a fresh provider Plan-mode session in a new tmux window rooted in a per-story git worktree |
+| `/story do <id> [--auto] [--agent=claude\|codex]` | Claims a **ready** story and dispatches it to a fresh provider Plan-mode session in a new tmux window rooted in a per-story git worktree |
 | `/story complete <id>` | Closes the story and reclaims its worktree and merged branch, after showing you a plan and asking |
 | `/story capture <id>` | Dumps the recent output of a dispatched session's window (read-only) |
 | `/story doctor` | Checks project data integrity and the selected provider's readiness, Plan-mode, and paste behavior |
@@ -161,7 +163,10 @@ skills unchanged.
 closed, blocked, awaiting, obviated, or already in progress — and names the
 reason rather than dispatching it.
 
-The dispatch adapter sets `STORY_AGENT=claude-code|codex`. Claude keeps its existing
+The dispatch adapter selects `STORY_AGENT=claude|codex`. An explicit `--agent` overrides
+the adapter's host default, so `story.sh dispatch SH-123 --agent=codex` can launch Codex
+from either host. The legacy `STORY_AGENT=claude-code` value remains a warned
+compatibility alias. Claude keeps its existing
 `.claude/worktrees/` and launch contract. Codex uses `.codex/worktrees/`, launches
 `codex --no-alt-screen`, confirms the interactive screen, enters Plan mode with
 Shift+Tab, and submits the bracketed-pasted charter with Tab. A failed readiness or
@@ -198,7 +203,7 @@ cargo uninstall storyhook
 To remove the Claude Code plugin:
 
 ```bash
-story plugin uninstall claude-code
+story plugin uninstall claude
 ```
 
 This unregisters the plugin via the `claude` CLI, cleans up project-local config, and

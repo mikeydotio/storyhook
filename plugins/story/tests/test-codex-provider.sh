@@ -130,8 +130,31 @@ assert_contains "$(jqf "$out" '.commands|join(" ")')" \
 assert_contains "$(jqf "$out" '.commands|join(" ")')" "send-keys -t <pane> Tab" \
   "dry auto: Tab submission"
 
+# The public dispatch flag selects the same provider without relying on the
+# environment seam, may appear before the id, and outranks that seam when both
+# are supplied.
+id_flag=$(new_story "$repo_plan" "Codex explicit agent dry run")
+out=$(cd "$repo_plan" && PATH="$FAKE_BIN:$PATH" STORY_AGENT=unknown STORY_DRY_RUN=1 \
+  bash "$SCRIPT" dispatch --agent=codex "$id_flag" 2>&1)
+assert_eq "$(jqf "$out" .agent)" "codex" "agent flag: selected provider"
+assert_contains "$(jqf "$out" .worktree_path)" "/.codex/worktrees/" \
+  "agent flag: provider worktree"
+assert_contains "$(jqf "$out" '.commands|join(" ")')" "send-keys -t <pane> Tab" \
+  "agent flag: provider submit key"
+
+# The old environment token remains accepted, but canonical JSON and an
+# actionable stderr warning keep every new surface on the shorter token.
+id_alias=$(new_story "$repo_plan" "Claude compatibility alias dry run")
+alias_err=$(mktemp)
+_TMP_REPOS+=("$alias_err")
+out=$(cd "$repo_plan" && STORY_AGENT=claude-code STORY_DRY_RUN=1 \
+  bash "$SCRIPT" dispatch "$id_alias" 2>"$alias_err")
+assert_eq "$(jqf "$out" .agent)" "claude" "legacy env alias: canonical provider"
+assert_contains "$(cat "$alias_err")" "deprecated" "legacy env alias: warning"
+assert_contains "$(cat "$alias_err")" "STORY_AGENT=claude" "legacy env alias: canonical remedy"
+
 out=$(cd "$repo_plan" && STORY_AGENT=unknown bash "$SCRIPT" list 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "unknown provider: refused"
-assert_contains "$(jqf "$out" .display)" "supported providers" "unknown provider: names choices"
+assert_contains "$(jqf "$out" .display)" "supported agents" "unknown provider: names choices"
 
 finish

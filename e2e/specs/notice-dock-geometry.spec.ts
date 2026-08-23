@@ -5,6 +5,7 @@ import {
   COPY_HEADLINES,
   COPY_TARGETS,
   createStory,
+  dispatchStory,
   keepNotices,
   onAFrozenClock,
   openProject,
@@ -281,7 +282,7 @@ test("the newest dispatch-history row is first in the DOM and first on the scree
   for (const id of [first, second]) {
     await page.locator(`.card[data-id="${id}"]`).click();
     await expect(page.locator("#drawer")).toHaveClass(/open/);
-    await page.locator("#dispatch-auto-btn").click();
+    await dispatchStory(page, { auto: true });
     await expect(
       page.locator("#dispatch-history .dispatch-history-row", { hasText: id }),
     ).toBeVisible();

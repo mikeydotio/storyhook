@@ -939,8 +939,8 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"id="create-priority""#));
     assert!(body.contains(r#"id="create-labels-field""#));
     // The daemon token modal (SH-50, generalized dashboard-wide by SH-187)
-    // -- the Dispatch (and, since SH-208, Dispatch Auto) buttons themselves
-    // are built by JS only for an open story in a project with a checkout,
+    // -- the Dispatch button itself is built by JS only for an open story in
+    // a project with a checkout,
     // so they never appear as HTML `id="..."` attributes in this static
     // markup; the modal they (and every other authenticated call) can open
     // does. Their ids are still pinned here, as the JS *source* text the
@@ -950,7 +950,11 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"id="token-input""#));
     assert!(body.contains(r#"id="token-submit""#));
     assert!(body.contains(r#"id: "dispatch-btn""#));
-    assert!(body.contains(r#"id: "dispatch-auto-btn""#));
+    assert!(!body.contains(r#"id: "dispatch-auto-btn""#));
+    assert!(body.contains(r#"id="dispatch-modal""#));
+    assert!(body.contains(r#"id="dispatch-client""#));
+    assert!(body.contains(r#"id="dispatch-agent""#));
+    assert!(body.contains(r#"id="dispatch-auto""#));
     // Multi-repo screens (#20): the header's project selector (SH-42), home
     // dashboard, settings
     assert!(body.contains(r#"id="projsel-btn""#));
@@ -1038,11 +1042,11 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"execCommand("copy")"#));
     assert!(body.contains("\"Copy Description\""));
 
-    // SH-197: the context menu's Dispatch group -- gated identically to the
-    // drawer footer's own Dispatch buttons (dashboard-dispatch.md's As-built
+    // SH-197: the context menu's Dispatch action -- gated identically to the
+    // drawer footer's own Dispatch button (dashboard-dispatch.md's As-built
     // section names the shared expression).
     assert!(body.contains("\"Dispatch\""));
-    assert!(body.contains("\"Dispatch Auto\""));
+    assert!(!body.contains("\"Dispatch Auto\""));
     assert!(body.contains("dispatchHidden"));
 
     // SH-197: the context menu's Set Status submenu.

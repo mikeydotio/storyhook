@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { test, expect } from "./support";
-import { openProject, requiredEnv, seedToken } from "./support";
+import { dispatchStory, openProject, requiredEnv, seedToken } from "./support";
 
 /**
  * Exercises the dashboard's Dispatch button (SH-50) against a real daemon
@@ -21,7 +21,7 @@ import { openProject, requiredEnv, seedToken } from "./support";
  *     for real and claims the story, so no two tests can share one.
  *   - "Delta Project" (prefix DD) — has a checkout, one story ("Roll out
  *     the new onboarding flow", id in `DASHBOARD_DELTA_STORY_ID`), reserved
- *     for Dispatch Auto's own test (SH-208). A project of its own rather
+ *     for the modal's Auto mode test (SH-208/SH-436). A project of its own rather
  *     than a third Alpha story: Alpha's exact two-story, four-empty-column
  *     shape is a fixture filter-persistence.spec.ts and
  *     column-visibility.spec.ts assert on byte-for-byte.
@@ -38,7 +38,7 @@ import { openProject, requiredEnv, seedToken } from "./support";
  * against the named-token exchange the modal now performs, so it must never
  * be the thing pasted into `#token-input`.
  *
- * Dispatch Auto's own test does not (and cannot, without a real `claude`
+ * Auto mode's own test does not (and cannot, without a real `claude`
  * binary standing behind the fixture's fake tmux) prove the autonomous
  * charter itself runs — that the prompt text and dispatch argv differ under
  * `--auto` is `plugins/story/tests/test-dispatch-auto.sh`'s job, and
@@ -80,7 +80,7 @@ const DISPATCH_COMPLETION_TIMEOUT = 45_000;
 // seeds it itself, first thing, the same way an already-authenticated
 // browser tab would carry it in.
 
-test("Dispatch and Dispatch Auto are both absent for a story in a project with no checkout (AC1)", async ({
+test("Dispatch is absent for a story in a project with no checkout (AC1)", async ({
   page,
 }) => {
   await seedToken(page);
@@ -90,7 +90,7 @@ test("Dispatch and Dispatch Auto are both absent for a story in a project with n
   await expect(page.locator("#drawer")).toHaveClass(/open/);
 
   // The footer's other actions (Delete, and Reopen once closed) are always
-  // there; the two dispatch buttons specifically must not be, since Gamma
+  // there; the dispatch button specifically must not be, since Gamma
   // has no checkout.
   await expect(page.locator("#dispatch-btn")).toHaveCount(0);
   await expect(page.locator("#dispatch-auto-btn")).toHaveCount(0);
@@ -108,14 +108,54 @@ test("Dispatch sits at the leading edge, before Delete", async ({ page }) => {
     .click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
 
-  // SH-208: Dispatch, then Dispatch Auto, then Delete pushed to the
-  // trailing edge by its own margin-left:auto -- DOM order is append
-  // order, so this is the real, load-bearing assertion for "leading edge".
+  // Dispatch, then Delete pushed to the trailing edge by its own
+  // margin-left:auto -- DOM order is append order, so this is the real,
+  // load-bearing assertion for "leading edge".
   const footerButtons = page.locator("#drawer-footer button");
-  await expect(footerButtons).toHaveCount(3);
+  await expect(footerButtons).toHaveCount(2);
   await expect(footerButtons.nth(0)).toHaveId("dispatch-btn");
-  await expect(footerButtons.nth(1)).toHaveId("dispatch-auto-btn");
-  await expect(footerButtons.nth(2)).toHaveText("Delete");
+  await expect(footerButtons.nth(1)).toHaveText("Delete");
+});
+
+test("Dispatch opens a reset configuration modal with client, model, and auto controls", async ({ page }) => {
+  await seedToken(page);
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await page.locator(".card-title", { hasText: "Wire up the auth flow" }).click();
+
+  await page.locator("#dispatch-btn").click();
+  const modal = page.locator("#dispatch-modal");
+  const backdrop = page.locator("#dispatch-modal-backdrop");
+  await expect(modal).toHaveClass(/open/);
+  await expect(modal).toHaveAttribute("role", "dialog");
+  await expect(page.locator("#dispatch-client")).toHaveValue("localhost");
+  await expect(page.locator("#dispatch-client option")).toHaveText(["localhost"]);
+  await expect(page.locator("#dispatch-agent option")).toHaveText(["Claude", "Codex"]);
+  await expect(page.locator("#dispatch-agent")).toHaveValue("claude");
+  await expect(page.locator("#dispatch-auto")).not.toBeChecked();
+  await expect(page.locator(".dispatch-auto-help")).toHaveText(
+    "Uses Council for questions, auto-merges PRs, and cleans up its workspace when done. Does not auto-approve the implementation plan.",
+  );
+
+  await page.locator("#dispatch-agent").selectOption("codex");
+  await page.locator("#dispatch-auto").check();
+  await page.locator("#dispatch-modal-cancel").click();
+  await expect(modal).not.toHaveClass(/open/);
+  await expect(page.locator("#dispatch-btn")).toBeFocused();
+  await expect(backdrop).toBeHidden();
+
+  await page.locator("#dispatch-btn").click();
+  await expect(page.locator("#dispatch-agent")).toHaveValue("claude");
+  await expect(page.locator("#dispatch-auto")).not.toBeChecked();
+  await backdrop.click({ position: { x: 2, y: 2 } });
+  await expect(modal).not.toHaveClass(/open/);
+  await expect(backdrop).toBeHidden();
+
+  await page.locator("#dispatch-btn").click();
+  await page.keyboard.press("Escape");
+  await expect(modal).not.toHaveClass(/open/);
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await expect(page.locator("#dispatch-btn")).toBeFocused();
 });
 
 test("a tab authenticates once on load, and dispatch needs no second prompt (AC2)", async ({
@@ -147,22 +187,16 @@ test("a tab authenticates once on load, and dispatch needs no second prompt (AC2
 
   const dispatchButton = page.locator("#dispatch-btn");
   await expect(dispatchButton).toBeVisible();
-  await dispatchButton.click();
+  await dispatchStory(page);
 
   // The "no second prompt" half of AC2: the cookie already authenticates
-  // the POST, so the modal never reopens and the dispatch runs on the first
-  // click. The button goes non-interactive immediately (`startDispatch`
+  // the POST, so the token modal never reopens and dispatch runs from the
+  // configuration submit. The button goes non-interactive immediately (`startDispatch`
   // marks the story in-flight before the POST resolves); the toast lands
   // only after at least one 5s poll cycle.
   await expect(page.locator("#token-modal")).not.toHaveClass(/open/);
   await expect(dispatchButton).toBeDisabled();
   await expect(dispatchButton).toHaveText("Dispatching…");
-  // The OTHER button disables too (the daemon dedupes a second POST by
-  // story, not by mode), but keeps its own idle label -- nothing is
-  // actually dispatching autonomously.
-  await expect(page.locator("#dispatch-auto-btn")).toBeDisabled();
-  await expect(page.locator("#dispatch-auto-btn")).toHaveText("Dispatch Auto");
-
   const toast = page.locator("#toast-stack .toast.success");
   await expect(toast).toBeVisible({ timeout: DISPATCH_COMPLETION_TIMEOUT });
   await expect(toast).toHaveText(`${ALPHA_STORY_ID} dispatched`);
@@ -186,7 +220,7 @@ test("a tab authenticates once on load, and dispatch needs no second prompt (AC2
   // not a daemon or script failure. Before SH-196's dashboard half, this
   // and an actual script failure rendered as the identical red toast,
   // distinguishable only by a 3px border color.
-  await dispatchButton.click();
+  await dispatchStory(page);
   const refusedToast = page.locator("#toast-stack .toast.error", {
     hasText: `${ALPHA_STORY_ID} refused`,
   });
@@ -204,13 +238,13 @@ test("a tab authenticates once on load, and dispatch needs no second prompt (AC2
   await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
 });
 
-test("Dispatch Auto sends ?auto=1 and runs a real autonomous dispatch (SH-208)", async ({
+test("Auto mode sends agent=claude&auto=1 and runs a real autonomous dispatch (SH-208)", async ({
   page,
 }) => {
   test.setTimeout(DISPATCH_COMPLETION_TIMEOUT + 30_000);
 
   // Seeded directly rather than driven through the token modal -- that flow
-  // is AC2's own test; this one is scoped to Dispatch Auto's own behavior.
+  // is AC2's own test; this one is scoped to Auto mode's own behavior.
   await seedToken(page);
   await page.goto("/");
 
@@ -220,20 +254,14 @@ test("Dispatch Auto sends ?auto=1 and runs a real autonomous dispatch (SH-208)",
     .click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
 
-  const dispatchAutoButton = page.locator("#dispatch-auto-btn");
-  await expect(dispatchAutoButton).toBeVisible();
-
   const dispatchRequest = page.waitForRequest(
-    (req) => req.method() === "POST" && req.url().includes("/dispatch?auto=1"),
+    (req) => req.method() === "POST" && req.url().includes("/dispatch?agent=claude&auto=1"),
   );
-  await dispatchAutoButton.click();
+  await dispatchStory(page, { auto: true });
   await dispatchRequest;
 
-  await expect(dispatchAutoButton).toBeDisabled();
-  await expect(dispatchAutoButton).toHaveText("Dispatching (auto)…");
-  // The plain button disables too, but stays labeled for its own mode.
   await expect(page.locator("#dispatch-btn")).toBeDisabled();
-  await expect(page.locator("#dispatch-btn")).toHaveText("Dispatch");
+  await expect(page.locator("#dispatch-btn")).toHaveText("Dispatching…");
 
   // SH-232 sent every --auto result to a durable row; SH-304's council
   // narrowed that to the outcomes it protects. A SUCCEEDING autonomous
@@ -249,8 +277,8 @@ test("Dispatch Auto sends ?auto=1 and runs a real autonomous dispatch (SH-208)",
   await expect(toast).not.toContainText(/utonomous/);
   await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(0);
 
-  await expect(dispatchAutoButton).toBeEnabled();
-  await expect(dispatchAutoButton).toHaveText("Dispatch Auto");
+  await expect(page.locator("#dispatch-btn")).toBeEnabled();
+  await expect(page.locator("#dispatch-btn")).toHaveText("Dispatch");
 
   const worktreePath = join(
     DELTA_CHECKOUT,
@@ -291,7 +319,7 @@ test("a saved token is not asked for again on a second dispatch", async ({
   await expect(page.locator("#drawer")).toHaveClass(/open/);
 
   const dispatchButton = page.locator("#dispatch-btn");
-  await dispatchButton.click();
+  await dispatchStory(page);
 
   // No modal this time -- the saved token goes straight onto the request.
   await expect(page.locator("#token-modal")).not.toHaveClass(/open/);

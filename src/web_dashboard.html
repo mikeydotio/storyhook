@@ -944,6 +944,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .modal-error { font-size: 0.75rem; color: var(--danger); }
 .modal-body p { font-size: 0.8125rem; color: var(--fg-muted); margin: 0; }
 .modal-body code { font-family: var(--mono); font-size: 0.75rem; background: var(--bg-sunken); padding: 0.0625rem 0.25rem; border-radius: var(--radius-sm); }
+.dispatch-auto-option {
+  display: flex; align-items: flex-start; gap: 0.625rem; padding: 0.75rem;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-sunken);
+  cursor: pointer; user-select: none;
+}
+.dispatch-auto-option input { margin-top: 0.1875rem; flex-shrink: 0; }
+.dispatch-auto-copy { display: flex; flex-direction: column; gap: 0.1875rem; }
+.dispatch-auto-title { font-size: 0.8125rem; font-weight: 700; color: var(--fg); }
+.dispatch-auto-help { font-size: 0.75rem; line-height: 1.45; color: var(--fg-muted); }
 
 /* ---- Drafts popover ---- */
 /* The project this popover is about (SH-292). One line, elided -- the same
@@ -1504,6 +1513,30 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   <div class="modal-footer">
     <button type="button" class="btn btn-ghost" id="archive-modal-cancel">Cancel</button>
     <button type="button" class="btn btn-primary" id="archive-modal-submit">Archive</button>
+  </div>
+</div>
+
+<div class="backdrop" id="dispatch-modal-backdrop" data-overlay="dispatch-modal" hidden></div>
+<div class="modal" id="dispatch-modal" tabindex="-1" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="dispatch-modal-header">
+  <div class="modal-header" id="dispatch-modal-header">Dispatch story</div>
+  <div class="modal-body">
+    <div class="field-grid">
+      <div class="field"><label for="dispatch-client">Client</label>
+        <select id="dispatch-client"><option value="localhost">localhost</option></select></div>
+      <div class="field"><label for="dispatch-agent">Model</label>
+        <select id="dispatch-agent"><option value="claude">Claude</option><option value="codex">Codex</option></select></div>
+    </div>
+    <label class="dispatch-auto-option" for="dispatch-auto">
+      <input type="checkbox" id="dispatch-auto">
+      <span class="dispatch-auto-copy">
+        <span class="dispatch-auto-title">Auto mode</span>
+        <span class="dispatch-auto-help">Uses Council for questions, auto-merges PRs, and cleans up its workspace when done. Does not auto-approve the implementation plan.</span>
+      </span>
+    </label>
+  </div>
+  <div class="modal-footer">
+    <button type="button" class="btn btn-ghost" id="dispatch-modal-cancel">Cancel</button>
+    <button type="button" class="btn btn-primary" id="dispatch-modal-submit">Dispatch</button>
   </div>
 </div>
 
@@ -2149,7 +2182,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // ended in), written only by `markDataSettled()`, read only through
     // `readinessNote()`.
     fetchSettledFor: null,
-    // Story id -> {handle, timer, auto} for a dispatch this tab is polling
+    // Story id -> {handle, timer, agent, auto} for a dispatch this tab is polling
     // (SH-50). Keyed per-story rather than one global slot, matching the
     // daemon's own support for several concurrent dispatches; a dispatch
     // keeps polling even after its drawer closes. A completion is reported
@@ -4128,10 +4161,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   // ============================================================
-  // DISPATCH (SH-50), and Dispatch Auto's ?auto=1 (SH-208)
+  // DISPATCH (SH-50/SH-436): agent + auto configuration modal
   // ============================================================
   //
-  // POST .../story/<id>/dispatch[?auto=1] returns a handle immediately (the
+  // POST .../story/<id>/dispatch?agent=<agent>[&auto=1] returns a handle immediately (the
   // daemon runs the real dispatch script off its own request thread); this
   // polls GET .../story/<id>/dispatch/<handle> every DISPATCH_POLL_MS until
   // its state leaves "running". Authentication is handled once, for every
@@ -4148,36 +4181,58 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return !!(repo && repo.path);
   }
 
-  /** The drawer footer's two dispatch buttons (SH-208): plain Dispatch
-   * (attended, unchanged since SH-50) and Dispatch Auto (the autonomous
-   * charter -- after the one plan-approval prompt in the tmux window, it
-   * runs to closure unattended and reclaims its own worktree when done).
-   * Both disable together while `st.id` has ANY entry in
-   * `state.dispatches` -- the daemon dedupes a second POST by STORY, not
-   * by mode (see DispatchRegistry::try_start's own doc comment), so
-   * letting the other button stay clickable would invite a click that
-   * silently does nothing new. Only the button matching what is actually
-   * running switches to its "Dispatching…" text; the other keeps its
-   * ordinary idle label, just greyed out. */
-  function dispatchButtons(st) {
-    var entry = state.dispatches[st.id];
-    var inFlight = !!entry;
-    var runningAuto = inFlight && entry.auto;
-    return [
-      el("button", {
-        id: "dispatch-btn",
-        class: "btn btn-primary",
-        disabled: inFlight,
-        onClick: function() { startDispatch(st.id, false); }
-      }, [inFlight && !runningAuto ? "Dispatching…" : "Dispatch"]),
-      el("button", {
-        id: "dispatch-auto-btn",
-        class: "btn",
-        disabled: inFlight,
-        title: "Runs unattended past the one plan-approval prompt in the new tmux window -- council-votes its own open questions, merges its own PR, closes this story, and reclaims its own worktree and window when done.",
-        onClick: function() { startDispatch(st.id, true); }
-      }, [inFlight && runningAuto ? "Dispatching (auto)…" : "Dispatch Auto"])
-    ];
+  /** The drawer footer's one dispatch action. Configuration now belongs to
+   * the modal rather than to parallel buttons, but the in-flight gate remains
+   * per story: the daemon dedupes by story regardless of agent or auto mode. */
+  function dispatchButton(st) {
+    var inFlight = !!state.dispatches[st.id];
+    return el("button", {
+      id: "dispatch-btn",
+      class: "btn btn-primary",
+      disabled: inFlight,
+      onClick: function() { openDispatchModal(st.id); }
+    }, [inFlight ? "Dispatching…" : "Dispatch"]);
+  }
+
+  var dispatchModalStoryId = null;
+
+  /** Opens a fresh configuration every time: localhost is the only client,
+   * Claude preserves the historical default, and auto remains opt-in. */
+  function openDispatchModal(storyId, returnFocus) {
+    if (state.dispatches[storyId]) return;
+    dispatchModalStoryId = storyId;
+    $("dispatch-client").value = "localhost";
+    $("dispatch-agent").value = "claude";
+    $("dispatch-auto").checked = false;
+    showBackdrop("dispatch-modal-backdrop");
+    activateOverlay("dispatch-modal", "dispatch-agent");
+    // A context-menu action removes its menu node before invoking us. Preserve
+    // the card/row it came from explicitly so Cancel/Escape does not return
+    // focus to <body>; footer invocations use activateOverlay's ordinary
+    // document.activeElement capture.
+    if (returnFocus) overlayReturnFocus["dispatch-modal"] = returnFocus;
+    // Unlike backdrop opacity, modal state is semantic and must not wait on
+    // an animation frame: a paused background tab (or a test clock frozen
+    // around notice timing) can still open and operate the dialog.
+    $("dispatch-modal").classList.add("open");
+    $("dispatch-modal").setAttribute("aria-hidden", "false");
+  }
+
+  function closeDispatchModal() {
+    dispatchModalStoryId = null;
+    hideBackdrop("dispatch-modal-backdrop");
+    $("dispatch-modal").classList.remove("open");
+    $("dispatch-modal").setAttribute("aria-hidden", "true");
+    releaseOverlay("dispatch-modal");
+  }
+
+  function submitDispatchModal() {
+    var storyId = dispatchModalStoryId;
+    if (!storyId || state.dispatches[storyId]) return;
+    var agent = $("dispatch-agent").value;
+    var auto = $("dispatch-auto").checked;
+    closeDispatchModal();
+    startDispatch(storyId, agent, auto);
   }
 
   /** Starts a dispatch for `storyId`. `auto` requests the autonomous
@@ -4186,10 +4241,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * first is still running is just another entry, matching the daemon's
    * own support for several concurrent dispatches. No token handling here
    * -- `api()` prompts for one on a 401 and retries transparently. */
-  function startDispatch(storyId, auto) {
-    state.dispatches[storyId] = { handle: null, timer: null, auto: auto };
+  function startDispatch(storyId, agent, auto) {
+    state.dispatches[storyId] = { handle: null, timer: null, agent: agent, auto: auto };
     if (state.drawerId === storyId) renderDrawer();
-    var path = apiBase() + "/story/" + encodeURIComponent(storyId) + "/dispatch" + (auto ? "?auto=1" : "");
+    var query = "?agent=" + encodeURIComponent(agent) + (auto ? "&auto=1" : "");
+    var path = apiBase() + "/story/" + encodeURIComponent(storyId) + "/dispatch" + query;
     api("POST", path, null)
       .then(function(resp) {
         var entry = state.dispatches[storyId];
@@ -4203,6 +4259,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         // happening, not what this click hoped for.
         if (resp.dispatch && typeof resp.dispatch.auto === "boolean") {
           entry.auto = resp.dispatch.auto;
+        }
+        if (resp.dispatch && (resp.dispatch.agent === "claude" || resp.dispatch.agent === "codex")) {
+          entry.agent = resp.dispatch.agent;
         }
         if (state.drawerId === storyId) renderDrawer();
         pollDispatch(storyId, entry.handle, 0);
@@ -4465,7 +4524,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * once: a gate the user cannot lift from here HIDES the item; a gate
    * that will lift on its own (an in-flight request finishing) DISABLES
    * it. */
-  function storyMenuModel(v) {
+  function storyMenuModel(v, invoker) {
     var st = v.story;
     var description = (st.description || "").trim();
     var isClosed = stateSuperstate(st.state) === "CLOSED";
@@ -4487,13 +4546,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       dispatchHidden ? null : {
         label: "Dispatch",
         disabled: dispatchInFlight,
-        onSelect: function() { startDispatch(st.id, false); }
-      },
-      dispatchHidden ? null : {
-        label: "Dispatch Auto",
-        disabled: dispatchInFlight,
-        title: "Runs unattended past the one plan-approval prompt in the new tmux window.",
-        onSelect: function() { startDispatch(st.id, true); }
+        onSelect: function() { openDispatchModal(st.id, invoker); }
       },
       { separator: true },
       (function() {
@@ -4800,7 +4853,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function openStoryMenu(e, v, invoker) {
     e.preventDefault();
     closeAllPopovers();
-    var model = storyMenuModel(v);
+    var model = storyMenuModel(v, invoker);
     if (!model.length) return;
     storyMenuInvoker = invoker;
     storyMenuNode = renderMenuNode(model, "Story actions", closeStoryMenu, openStorySubmenu);
@@ -9066,7 +9119,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (isClosed && !st.hidden_at) {
       footer.appendChild(el("button", { class: "btn", onClick: function() { renderArchiveConfirm(st); } }, ["Archive"]));
     }
-    // SH-208: Dispatch (and Dispatch Auto) sit at the LEADING edge of the
+    // Dispatch sits at the LEADING edge of the
     // footer -- appended before Delete, which is what its own
     // margin-left:auto is what pushes to the trailing edge. SH-50's own
     // gate is unchanged: only for an open story in a project with a
@@ -9074,7 +9127,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // write that has nowhere to go without one. Reopen and Dispatch never
     // compete for the leading edge -- a closed story never renders Dispatch.
     if (!isClosed && currentRepoHasCheckout()) {
-      dispatchButtons(st).forEach(function(btn) { footer.appendChild(btn); });
+      footer.appendChild(dispatchButton(st));
     }
     footer.appendChild(el("button", { class: "btn btn-danger", style: "margin-left:auto", onClick: function() {
       openDeleteModal(st.id, st.title);
@@ -10800,8 +10853,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * never disabled, so a second click — or a second Enter in `#create-title`
    * — while the first request was still running fired a second, byte-identical
    * `POST .../story` and filed a duplicate story. All three actions share one
-   * flag and disable together, the same way `dispatchButtons()` disables both
-   * of its buttons for one in-flight dispatch: only one of the three can ever
+   * flag and disable together, the same way the dispatch action disables for
+   * one in-flight dispatch: only one of the three can ever
    * be a live request at a time, so letting the others stay clickable would
    * invite a click that either races the in-flight one or discards its
    * result. */
@@ -11403,6 +11456,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     bindEnterSubmit($("token-input"), submitTokenModal);
     $("archive-modal-cancel").addEventListener("click", closeArchiveModal);
     $("archive-modal-backdrop").addEventListener("click", closeArchiveModal);
+    $("dispatch-modal-cancel").addEventListener("click", closeDispatchModal);
+    $("dispatch-modal-backdrop").addEventListener("click", closeDispatchModal);
+    $("dispatch-modal-submit").addEventListener("click", submitDispatchModal);
     $("drop-blocked-reason-skip").addEventListener("click", skipDropBlockedReasonModal);
     $("drop-blocked-reason-backdrop").addEventListener("click", skipDropBlockedReasonModal);
     $("drop-blocked-reason-submit").addEventListener("click", submitDropBlockedReasonModal);
@@ -11433,6 +11489,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       // SH-175: `create-modal` is deliberately absent here — see the
       // comment above its own listener bindings.
       if (e.key === "Escape") {
+        // The dispatch dialog is nested over the story drawer. Escape belongs
+        // to the topmost surface only: closing the broad overlay list below
+        // would also slide the drawer away, making its recorded return-focus
+        // target unreachable. Cancel/backdrop already close just this modal;
+        // keyboard dismissal must have the same scope.
+        if ($("dispatch-modal").classList.contains("open")) {
+          closeDispatchModal();
+          return;
+        }
         // Read BEFORE the closers run, not after (SH-324). An open editor
         // question yields to any open overlay — Escape belongs to the
         // topmost surface, and an overlay is always above the editor behind it
@@ -11442,7 +11507,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         // open, which is what lets it be called unconditionally here, the way
         // every closer beside it already is.
         var armedYieldsToNothing = overlayStack.length === 0;
-        closeDrawer(); closeDraftsModal(); cancelTokenModal(); closeArchiveModal(); skipDropBlockedReasonModal(); closeDeleteModal();
+        closeDrawer(); closeDraftsModal(); cancelTokenModal(); closeArchiveModal(); closeDispatchModal(); skipDropBlockedReasonModal(); closeDeleteModal();
         if (armedYieldsToNothing) cancelStatusMove();
       }
     });

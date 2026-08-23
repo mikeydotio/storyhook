@@ -8,8 +8,8 @@ import {
 } from "./support";
 
 /**
- * Exercises SH-197's context menu Dispatch/Dispatch Auto group, gated
- * identically to the drawer footer's own Dispatch buttons (SH-50/SH-208,
+ * Exercises SH-197's context menu Dispatch action, gated identically to
+ * the drawer footer's own Dispatch button (SH-50/SH-208/SH-436,
  * `docs/spec/dashboard-dispatch.md`'s As-built section for this story names
  * the shared expression). Every dispatch request here is stubbed via
  * `page.route` -- that the endpoint really runs `story.sh` end to end is
@@ -48,13 +48,18 @@ async function createStory(page: import("@playwright/test").Page, title: string)
  * GET poll regardless of what state the POST itself reports, so returning
  * "ok" immediately from both is enough to short-circuit the real 5s poll
  * interval without needing a "running" intermediate leg. */
-function stubbedDispatchBody(storyId: string, auto: boolean) {
+function stubbedDispatchBody(
+  storyId: string,
+  auto: boolean,
+  agent: "claude" | "codex" = "claude",
+) {
   return JSON.stringify({
     result: "ok",
     dispatch: {
       handle: "stub-handle",
       project: "alpha",
       story: storyId,
+      agent,
       auto,
       state: "ok",
       started_at: "2026-01-01T00:00:00Z",
@@ -64,7 +69,7 @@ function stubbedDispatchBody(storyId: string, auto: boolean) {
   });
 }
 
-test("Dispatch and Dispatch Auto are present for an open story with a checkout", async ({
+test("Dispatch is present for an open story with a checkout", async ({
   page,
 }) => {
   await openProject(page, "Alpha Project");
@@ -73,16 +78,18 @@ test("Dispatch and Dispatch Auto are present for an open story with a checkout",
 
   await card.click({ button: "right" });
   const menu = page.locator(".ctxmenu");
-  await expect(menu.locator(".ctxmenu-item", { hasText: /^Dispatch$/ })).toBeVisible();
-  await expect(
-    menu.locator(".ctxmenu-item", { hasText: "Dispatch Auto" }),
-  ).toBeVisible();
+  const dispatch = menu.locator(".ctxmenu-item", { hasText: /^Dispatch$/ });
+  await expect(dispatch).toBeVisible();
+  await expect(menu.locator(".ctxmenu-item", { hasText: "Dispatch Auto" })).toHaveCount(0);
 
-  await page.keyboard.press("Escape");
+  await dispatch.click();
+  await expect(page.locator("#dispatch-modal")).toHaveClass(/open/);
+  await page.locator("#dispatch-modal-cancel").click();
+  await expect(card).toBeFocused();
   await deleteStory(page, title);
 });
 
-test("Dispatch and Dispatch Auto are absent for a story with no checkout, and no stray separator is left behind (AC1)", async ({
+test("Dispatch is absent for a story with no checkout, and no stray separator is left behind (AC1)", async ({
   page,
 }) => {
   await openProject(page, "Gamma Archive");
@@ -130,17 +137,19 @@ test("Dispatch issues POST .../dispatch", async ({ page }) => {
 
   await card.click({ button: "right" });
   await page.locator(".ctxmenu-item", { hasText: /^Dispatch$/ }).click();
+  await expect(page.locator("#dispatch-modal")).toHaveClass(/open/);
+  await page.locator("#dispatch-modal-submit").click();
   await expect(page.locator("#toast-stack .toast.success")).toBeVisible();
 
   const postReq = requests.find((r) => r.method === "POST");
   expect(postReq).toBeTruthy();
   expect(new URL(postReq!.url).pathname).toContain(`/story/${id}/dispatch`);
-  expect(new URL(postReq!.url).search).toBe("");
+  expect(new URL(postReq!.url).search).toBe("?agent=claude");
 
   await deleteStory(page, title);
 });
 
-test("Dispatch Auto issues POST .../dispatch?auto=1", async ({ page }) => {
+test("Dispatch can select Codex and auto mode", async ({ page }) => {
   await openProject(page, "Alpha Project");
   const title = "SH-197 context menu — dispatch auto stubbed";
   const card = await createStory(page, title);
@@ -153,12 +162,15 @@ test("Dispatch Auto issues POST .../dispatch?auto=1", async ({ page }) => {
     await route.fulfill({
       status: req.method() === "POST" ? 202 : 200,
       contentType: "application/json",
-      body: stubbedDispatchBody(id!, true),
+      body: stubbedDispatchBody(id!, true, "codex"),
     });
   });
 
   await card.click({ button: "right" });
-  await page.locator(".ctxmenu-item", { hasText: "Dispatch Auto" }).click();
+  await page.locator(".ctxmenu-item", { hasText: /^Dispatch$/ }).click();
+  await page.locator("#dispatch-agent").selectOption("codex");
+  await page.locator("#dispatch-auto").check();
+  await page.locator("#dispatch-modal-submit").click();
   // A SUCCEEDING --auto completion toasts and clears itself (SH-304): the
   // durable bottom-right row is now reserved for outcomes with no other
   // trace, which a success is not. Routing is by outcome, not by mode --
@@ -170,12 +182,12 @@ test("Dispatch Auto issues POST .../dispatch?auto=1", async ({ page }) => {
 
   const postReq = requests.find((r) => r.method === "POST");
   expect(postReq).toBeTruthy();
-  expect(new URL(postReq!.url).search).toBe("?auto=1");
+  expect(new URL(postReq!.url).search).toBe("?agent=codex&auto=1");
 
   await deleteStory(page, title);
 });
 
-test("both items are aria-disabled while a dispatch for this story is in flight", async ({
+test("the item is aria-disabled while a dispatch for this story is in flight", async ({
   page,
 }) => {
   await openProject(page, "Alpha Project");
@@ -209,6 +221,7 @@ test("both items are aria-disabled while a dispatch for this story is in flight"
 
   await card.click({ button: "right" });
   await page.locator(".ctxmenu-item", { hasText: /^Dispatch$/ }).click();
+  await page.locator("#dispatch-modal-submit").click();
 
   await card.click({ button: "right" });
   const menu = page.locator(".ctxmenu");
@@ -216,9 +229,7 @@ test("both items are aria-disabled while a dispatch for this story is in flight"
   await expect(
     menu.locator(".ctxmenu-item", { hasText: /^Dispatch$/ }),
   ).toHaveAttribute("aria-disabled", "true");
-  await expect(
-    menu.locator(".ctxmenu-item", { hasText: "Dispatch Auto" }),
-  ).toHaveAttribute("aria-disabled", "true");
+  await expect(menu.locator(".ctxmenu-item", { hasText: "Dispatch Auto" })).toHaveCount(0);
 
   await page.keyboard.press("Escape");
   poll.release();

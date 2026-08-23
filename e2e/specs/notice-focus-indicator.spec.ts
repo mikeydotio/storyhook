@@ -3,6 +3,7 @@ import type { Page } from "@playwright/test";
 import {
   cleanUpCreatedStories,
   createStory,
+  dispatchStory,
   fullKeyboardAccess,
   keepNotices,
   measureFocusIndicator,
@@ -135,7 +136,7 @@ async function raiseDispatchHistoryRows(page: Page, ids: string[]): Promise<void
   for (const id of ids) {
     await page.locator(`.card[data-id="${id}"]`).click();
     await expect(page.locator("#drawer")).toHaveClass(/open/);
-    await page.locator("#dispatch-auto-btn").click();
+    await dispatchStory(page, { auto: true });
     await expect(
       page.locator("#dispatch-history .dispatch-history-row", { hasText: id }),
     ).toBeVisible();

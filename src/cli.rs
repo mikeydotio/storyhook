@@ -201,7 +201,7 @@ Usage:
   story github-auth login|status|logout             (durable credential for unattended pr-check polling)
   story scaffold agents-md|claude-md|cursor-rules
   story help [<command>] [--compact] [--all]
-  story plugin install|uninstall <claude-code|codex>
+  story plugin install|uninstall <claude|codex>
   story show <id>
   story log <id>
   story comment <id> "<text>"
@@ -3537,7 +3537,7 @@ fn parse_help(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_plugin(args: &[String]) -> Result<Invocation, AppError> {
-    const USAGE: &str = "usage: story plugin install|uninstall <claude-code|codex>";
+    const USAGE: &str = "usage: story plugin install|uninstall <claude|codex>";
     if args.len() != 3 {
         return Err(AppError::Usage(USAGE.to_string()));
     }

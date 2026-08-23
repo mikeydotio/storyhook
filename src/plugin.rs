@@ -24,10 +24,10 @@ enum PluginTarget {
 impl PluginTarget {
     fn parse(raw: &str) -> Result<Self, AppError> {
         match raw {
-            "claude-code" => Ok(Self::ClaudeCode),
+            "claude" | "claude-code" => Ok(Self::ClaudeCode),
             "codex" => Ok(Self::Codex),
             _ => Err(AppError::Usage(format!(
-                "unknown plugin target: {raw}. Supported: claude-code, codex"
+                "unknown plugin target: {raw}. Supported: claude, codex"
             ))),
         }
     }
@@ -38,6 +38,11 @@ impl PluginTarget {
             Self::Codex => "codex",
         }
     }
+}
+
+fn compatibility_alias_warning(raw: &str) -> Option<&'static str> {
+    (raw == "claude-code")
+        .then_some("warning: plugin target `claude-code` is deprecated; use `claude` instead.\n")
 }
 
 /// Resolve the Claude Code config directory (~/.claude/).
@@ -182,6 +187,50 @@ fn codex_json(out: &Output, action: &str) -> Result<serde_json::Value, AppError>
             "Codex reported success while trying to {action}, but returned invalid JSON: {error}"
         ))
     })
+}
+
+/// The immutable cache root of the installed Storyhook Codex plugin.
+///
+/// Codex's durable config records only that `story@storyhook` is enabled; its
+/// `plugin list --json` response is the authority on the installed version.
+/// The response does not repeat `installedPath`, so derive the documented
+/// cache layout from its exact marketplace/name/version identity and accept
+/// it only when the plugin manifest exists there. This avoids choosing an
+/// arbitrary stale cache directory when more than one version remains.
+pub(crate) fn codex_installed_plugin_root(home: &Path) -> Option<PathBuf> {
+    let out = run_provider(PluginTarget::Codex, &["plugin", "list", "--json"]).ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    codex_installed_plugin_root_from(home, &out.stdout)
+}
+
+fn codex_installed_plugin_root_from(home: &Path, raw: &[u8]) -> Option<PathBuf> {
+    let value: serde_json::Value = serde_json::from_slice(raw).ok()?;
+    let plugin = value.get("installed")?.as_array()?.iter().find(|plugin| {
+        plugin.get("pluginId").and_then(|v| v.as_str()) == Some(PLUGIN_REF)
+            && plugin.get("marketplaceName").and_then(|v| v.as_str()) == Some(MARKETPLACE_NAME)
+            && plugin.get("name").and_then(|v| v.as_str()) == Some("story")
+            && plugin.get("installed").and_then(|v| v.as_bool()) == Some(true)
+            && plugin.get("enabled").and_then(|v| v.as_bool()) != Some(false)
+    })?;
+    let version = plugin.get("version")?.as_str()?;
+    if version.is_empty()
+        || version == "."
+        || version == ".."
+        || version.contains('/')
+        || version.contains('\\')
+    {
+        return None;
+    }
+    let root = home
+        .join(".codex/plugins/cache")
+        .join(MARKETPLACE_NAME)
+        .join("story")
+        .join(version);
+    root.join(".codex-plugin/plugin.json")
+        .is_file()
+        .then_some(root)
 }
 
 fn expect_codex_field(
@@ -366,12 +415,14 @@ fn install_codex(project_root: &Path, source: &str) -> Result<String, AppError> 
 }
 
 pub fn install(target: &str, project_root: &Path) -> Result<String, AppError> {
+    let warning = compatibility_alias_warning(target);
     let target = PluginTarget::parse(target)?;
     let source = marketplace_source(dev_repo_root());
-    match target {
+    let message = match target {
         PluginTarget::ClaudeCode => install_claude(project_root, &source),
         PluginTarget::Codex => install_codex(project_root, &source),
-    }
+    }?;
+    Ok(format!("{}{message}", warning.unwrap_or_default()))
 }
 
 fn uninstall_claude(project_root: &Path) -> Result<String, AppError> {
@@ -446,10 +497,12 @@ fn uninstall_codex(project_root: &Path) -> Result<String, AppError> {
 }
 
 pub fn uninstall(target: &str, project_root: &Path) -> Result<String, AppError> {
-    match PluginTarget::parse(target)? {
+    let warning = compatibility_alias_warning(target);
+    let message = match PluginTarget::parse(target)? {
         PluginTarget::ClaudeCode => uninstall_claude(project_root),
         PluginTarget::Codex => uninstall_codex(project_root),
-    }
+    }?;
+    Ok(format!("{}{message}", warning.unwrap_or_default()))
 }
 
 fn remove_sentinel_section(content: &str) -> String {
@@ -521,12 +574,27 @@ mod tests {
     #[test]
     fn targets_are_typed_and_the_error_lists_both() {
         assert_eq!(
-            PluginTarget::parse("claude-code").unwrap(),
+            PluginTarget::parse("claude").unwrap(),
             PluginTarget::ClaudeCode
+        );
+        assert_eq!(
+            PluginTarget::parse("claude-code").unwrap(),
+            PluginTarget::ClaudeCode,
+            "the previous public token remains a compatibility alias"
         );
         assert_eq!(PluginTarget::parse("codex").unwrap(), PluginTarget::Codex);
         let error = PluginTarget::parse("vscode").unwrap_err().to_string();
-        assert!(error.contains("claude-code, codex"), "{error}");
+        assert!(error.contains("claude, codex"), "{error}");
+        assert!(!error.contains("claude-code"), "{error}");
+    }
+
+    #[test]
+    fn the_old_claude_token_is_a_warned_alias() {
+        let warning = compatibility_alias_warning("claude-code").expect("legacy alias warning");
+        assert!(warning.contains("deprecated"));
+        assert!(warning.contains("`claude`"));
+        assert_eq!(compatibility_alias_warning("claude"), None);
+        assert_eq!(compatibility_alias_warning("codex"), None);
     }
 
     #[test]
@@ -551,6 +619,37 @@ mod tests {
         let codex = missing_message(PluginTarget::Codex);
         assert!(codex.contains("codex plugin marketplace add mikeydotio/storyhook"));
         assert!(codex.contains("codex plugin add story@storyhook"));
+    }
+
+    #[test]
+    fn codex_plugin_root_uses_the_authoritative_installed_version() {
+        let home = storyhook_test_support::scratch_dir();
+        let stale = home
+            .path()
+            .join(".codex/plugins/cache/storyhook/story/0.5.0/.codex-plugin");
+        let current = home
+            .path()
+            .join(".codex/plugins/cache/storyhook/story/0.6.0+codex.123/.codex-plugin");
+        fs::create_dir_all(&stale).unwrap();
+        fs::create_dir_all(&current).unwrap();
+        fs::write(stale.join("plugin.json"), "{}").unwrap();
+        fs::write(current.join("plugin.json"), "{}").unwrap();
+        let raw = br#"{"installed":[{"pluginId":"story@storyhook","name":"story","marketplaceName":"storyhook","version":"0.6.0+codex.123","installed":true,"enabled":true}]}"#;
+        assert_eq!(
+            codex_installed_plugin_root_from(home.path(), raw),
+            Some(current.parent().unwrap().to_path_buf())
+        );
+    }
+
+    #[test]
+    fn codex_plugin_root_rejects_disabled_or_unsafe_records() {
+        let home = storyhook_test_support::scratch_dir();
+        for raw in [
+            br#"{"installed":[{"pluginId":"story@storyhook","name":"story","marketplaceName":"storyhook","version":"0.6.0","installed":true,"enabled":false}]}"#.as_slice(),
+            br#"{"installed":[{"pluginId":"story@storyhook","name":"story","marketplaceName":"storyhook","version":"../escape","installed":true,"enabled":true}]}"#.as_slice(),
+        ] {
+            assert_eq!(codex_installed_plugin_root_from(home.path(), raw), None);
+        }
     }
 
     #[test]

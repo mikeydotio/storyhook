@@ -422,7 +422,7 @@ move.
 candidate it resolves — override, installed plugin, or dev checkout alike, one rule, no
 exemption — and refuses (`check_dispatch_protocol`) if it is older than
 `REQUIRED_DISPATCH_PROTOCOL`, naming the script's path, both numbers, and the exact
-remedy (`story plugin install claude-code` or `story plugin install codex`, matching the
+remedy (`story plugin install claude` or `story plugin install codex`, matching the
 active provider).
 `declared >= required`, not `==`: a script *newer* than the daemon needs must keep
 resolving, so a plugin release is never blocked on a daemon rebuild. Rejected: an exec
@@ -457,18 +457,45 @@ and forgot the other), which is the literal reason `claude plugin update` answer
 
 ## As built — SH-197 (a second entry point: the story context menu)
 
-**Dispatch and Dispatch Auto are reachable from two places now, sharing one gate.**
-SH-197 added a right-click context menu (`storyMenuModel`, `src/web_dashboard.html`) with
-its own Dispatch/Dispatch Auto items, alongside the drawer footer's existing buttons
-(`renderDrawerFooter`/`dispatchButtons`). Both read the identical expression —
+**Dispatch is reachable from two places, sharing one gate.** SH-197 originally added
+parallel Dispatch and Dispatch Auto actions; SH-436 consolidated their configuration into
+one modal-backed Dispatch action in both the right-click context menu (`storyMenuModel`,
+`src/web_dashboard.html`) and drawer footer (`renderDrawerFooter`/`dispatchButton`). Both
+read the identical expression —
 `stateSuperstate(st.state) === "CLOSED"` (or the equivalent `isClosed`) `||
 !currentRepoHasCheckout()` — rather than each surface computing its own answer, so the
 two can never disagree about whether a story is dispatchable. Both call the same
-`startDispatch(id, auto)` and disable while `state.dispatches[id]` holds an entry,
+configuration modal and then `startDispatch(id, agent, auto)`, and disable while
+`state.dispatches[id]` holds an entry,
 matching `DispatchRegistry::try_start`'s per-story (not per-mode) dedupe on the daemon
-side. The context menu HIDES the two items rather than disabling them when the gate
+side. The context menu HIDES the item rather than disabling it when the gate
 fails — nothing a menu click can do lifts "closed" or "no checkout" — the same choice
-the drawer footer already made by omitting the buttons outright.
+the drawer footer already made by omitting the button outright.
+
+## As built — SH-436 (dispatch configuration and provider selection)
+
+The dispatch modal resets on every open. Client is a UI-only select with one value,
+`localhost`; Model selects the canonical `claude` (shown as Claude) or `codex` (shown as
+Codex) provider; Auto mode is an opt-in checkbox whose secondary copy explains that it
+uses Council for questions, auto-merges PRs, and cleans up its workspace without
+auto-approving the implementation plan. Submit sends
+`?agent=claude|codex[&auto=1]`. Omitting `agent` remains a backwards-compatible Claude
+request, while malformed, duplicated, and legacy `claude-code` query values are rejected.
+
+The daemon persists the selected canonical agent in each `DispatchRecord` and passes it
+to the shared helper as `--agent=claude|codex`; old records without the field deserialize
+as Claude. `story.sh dispatch (<id>|--next) [--auto] [--agent=claude|codex]` accepts the
+options in any order, rejects duplicates before side effects, lets the explicit flag
+override `STORY_AGENT`, and otherwise defaults to Claude. The old
+`STORY_AGENT=claude-code` environment value and `story plugin install|uninstall
+claude-code` targets remain warned compatibility aliases because those were public before
+SH-436. New argv and HTTP interfaces intentionally do not accept that alias.
+
+Installed helper resolution is provider-specific. Claude reads Claude Code's installed
+plugin registry; Codex asks `codex plugin list --json` for the authoritative enabled
+`story@storyhook` version and resolves that exact cache directory, rather than guessing
+among stale cached versions. The development-checkout fallback remains the shared
+`plugins/story/bin/story.sh`, and the optional flag does not change dispatch protocol 1.
 
 ## As built — SH-304 (the notification contract: routing by outcome)
 
@@ -952,7 +979,7 @@ and SH-367 (the half deliberately not shipped here).
   clicked, token prompted for, polled to completion, and a real worktree left on disk
   (AC2); a saved token not re-prompted for on a second dispatch. SH-208 adds: both
   dispatch buttons absent for a checkout-less project, Dispatch at the drawer footer's
-  leading edge (DOM order), and Dispatch Auto sending a real `?auto=1` request,
+  leading edge (DOM order), and the modal sending a real `?agent=claude&auto=1` request,
   polling to completion, and leaving a real worktree on disk. Self-reap itself is not
   exercised here — no real `claude` binary stands behind the fixture's fake tmux, so no
   agent ever runs to call `reap` — that is `test-reap.sh` and `test-dispatch-auto.sh`'s
