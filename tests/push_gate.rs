@@ -37,19 +37,48 @@
 //! negative test for the wrong reason, and a hand-written receipt would prove
 //! the checker's format rather than the producer's behaviour.
 //!
+//! # The gate narrowed to `main`/`master` (SH-429)
+//!
+//! This hook used to refuse an unreceipted push on **any** ref. Since SH-396,
+//! `scripts/merge-preflight.sh` is what actually decides whether content
+//! reaches `main` — a server-side `gh pr merge --merge` never triggers this
+//! hook at all — so refusing an ordinary feature-branch push was gating
+//! content this hook's own refusal was never the thing protecting. It now
+//! refuses only a direct push to `main`/`master`, and *reports* (tier found,
+//! or none, and where the real gate lives) for everything else. `GateRepo`
+//! still checks out and pushes local `main` by default — most of these tests
+//! are about the receipt/tier mechanism itself, which is unchanged and
+//! branch-agnostic — but `push_branch` exists specifically to provoke the new
+//! non-`main` report-not-refuse path, and the tests that exercise an actual
+//! *refusal* now do so through `main`, which is where that behaviour survives.
+//!
 //! # Mutation-checked (SH-295: a pin that cannot fail is not a pin)
 //!
-//! Both were run by hand against this suite before it was committed, and the
-//! counts below are measured, not predicted:
+//! All four were run by hand against this suite before it was committed, and
+//! the counts below are measured, not predicted:
 //!
-//! - `.githooks/pre-push` made to `exit 0` unconditionally → **6 of 11 red**,
-//!   every test that asserts a refusal or a spoken line, including all three
-//!   that read the remote ref.
+//! - `.githooks/pre-push` made to `exit 0` unconditionally → **10 of 15 red**
+//!   (was 6 of 11 pre-SH-429; the suite grew, the mutation still finds most of
+//!   it), every test that asserts a refusal or a spoken line, including every
+//!   test that reads the remote ref.
 //! - the hook made to accept *any* receipt in the directory rather than the one
 //!   named for this tree → **exactly 1 red**,
-//!   `a_commit_made_after_the_receipt_is_refused`. That precision is the point:
-//!   it is the only test whose refusal depends on *which* tree was certified,
-//!   so a checker that verified mere existence would pass everything else.
+//!   `a_commit_made_after_the_receipt_is_refused`, unchanged by SH-429. That
+//!   precision is the point: it is the only test whose refusal depends on
+//!   *which* tree was certified, so a checker that verified mere existence
+//!   would pass everything else.
+//! - (SH-429) `is_protected_branch` forced to `1` unconditionally, so every ref
+//!   is treated as `main`/`master` → **exactly 1 red**,
+//!   `a_push_to_a_feature_branch_with_no_receipt_is_reported_but_not_refused`.
+//!   The narrow blast radius is the point: only the one test that specifically
+//!   provokes the non-`main` path notices a refusal that should not have fired.
+//! - (SH-429) the `main | master` case arm made unreachable, so **no** ref is
+//!   ever refused → **4 of 15 red**: every test whose refusal depends on `main`
+//!   specifically still being protected
+//!   (`a_push_to_main_with_no_receipt_is_refused_and_the_remote_does_not_move`,
+//!   `a_commit_made_after_the_receipt_is_refused`,
+//!   `content_that_changes_during_the_run_gets_no_receipt`,
+//!   `enrollment_turns_an_ungated_clone_into_a_gated_one`).
 //!
 //! # What this suite deliberately does not claim
 //!
@@ -181,6 +210,18 @@ impl GateRepo {
         self.git(&args)
     }
 
+    /// Pushes the current `HEAD` to `refs/heads/<remote_branch>` on the
+    /// remote — a fresh branch on every call, never `main`/`master`. This is
+    /// how SH-429's report-not-refuse path is provoked: `remote_ref` (the
+    /// pre-push hook's third stdin field) names this branch, not the local
+    /// one, so the fixture never needs a real local checkout switch.
+    fn push_branch(&self, remote_branch: &str, extra: &[&str]) -> Output {
+        let refspec = format!("HEAD:refs/heads/{remote_branch}");
+        let mut args = vec!["push", "origin", refspec.as_str()];
+        args.extend_from_slice(extra);
+        self.git(&args)
+    }
+
     /// What the remote actually holds for `refs/heads/<name>` — the only
     /// evidence that a push did or did not ship.
     fn remote_sha(&self, name: &str) -> Option<String> {
@@ -236,14 +277,16 @@ fn stderr(out: &Output) -> String {
 // The provocation
 // ---------------------------------------------------------------------------
 
-/// The defect itself: content that never went green must not reach the remote.
+/// The defect itself: content that never went green must not reach `main`
+/// directly. SH-429 narrowed the hard refusal to `main`/`master` — this is
+/// the case where it still applies.
 ///
 /// The load-bearing assertion is the *remote ref*, not the exit code. SH-306's
 /// whole failure mode was a refusal that never happened while everything looked
 /// ordinary, so a test that only reads an exit status would have passed against
 /// the broken mechanism too.
 #[test]
-fn a_push_with_no_receipt_is_refused_and_the_remote_does_not_move() {
+fn a_push_to_main_with_no_receipt_is_refused_and_the_remote_does_not_move() {
     let repo = GateRepo::new();
     assert_ok(&repo.gate("preflight"), "enrolling");
 
@@ -254,7 +297,7 @@ fn a_push_with_no_receipt_is_refused_and_the_remote_does_not_move() {
 
     assert!(
         !out.status.success(),
-        "a push with no receipt must be refused, got success\nstderr: {}",
+        "a push to main with no receipt must be refused, got success\nstderr: {}",
         stderr(&out)
     );
     assert_eq!(
@@ -266,6 +309,42 @@ fn a_push_with_no_receipt_is_refused_and_the_remote_does_not_move() {
     assert!(
         err.contains("make test"),
         "the refusal must name the remedy, got: {err}"
+    );
+    assert!(
+        err.contains("protected branch"),
+        "the refusal must say why main specifically is refused, got: {err}"
+    );
+}
+
+/// SH-429's actual behavioural change: a push to an ordinary (non-`main`)
+/// branch is no longer refused for lacking a receipt — it is reported. The
+/// remote ref moving IS the assertion, per SH-306's own doctrine one section
+/// up: a "report" that still silently blocked the push would be the same
+/// defect wearing new words.
+#[test]
+fn a_push_to_a_feature_branch_with_no_receipt_is_reported_but_not_refused() {
+    let repo = GateRepo::new();
+    assert_ok(&repo.gate("preflight"), "enrolling");
+
+    let out = repo.push_branch("feature", &[]);
+
+    assert_ok(
+        &out,
+        "a feature-branch push with no receipt must still succeed",
+    );
+    assert_eq!(
+        repo.remote_sha("feature").as_deref(),
+        Some(repo.head().as_str()),
+        "the push must actually have shipped -- SH-429 stops refusing this, it does not stop reporting it"
+    );
+    let err = stderr(&out);
+    assert!(
+        err.contains("reported, not refused"),
+        "the report must say plainly that this is no longer a refusal, got: {err}"
+    );
+    assert!(
+        err.contains("merge-preflight.sh"),
+        "the report must name the actual enforcement point, got: {err}"
     );
 }
 
@@ -451,7 +530,10 @@ fn the_documented_bypasses_still_work_and_the_visible_one_is_loud() {
 /// The hole the tracked-hooks choice creates, pinned as behaviour rather than
 /// left as folklore: an unenrolled clone is ungated, and enrollment is what
 /// closes it. This is why enrollment is a step of `make test` and not a
-/// documented ritual.
+/// documented ritual. Uses `main` (via the default `push`) rather than a
+/// feature branch specifically because SH-429 only leaves a refusal on the
+/// table for `main`/`master` — everywhere else, enrollment changes what is
+/// *reported*, not whether the push succeeds.
 #[test]
 fn enrollment_turns_an_ungated_clone_into_a_gated_one() {
     let repo = GateRepo::new();

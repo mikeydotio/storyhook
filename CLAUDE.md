@@ -1021,6 +1021,18 @@ Standing rules for every wave:
   `tests/tap_target_comparison.rs` is a **wiring** fence in SH-360's exact sense
   and its own module doc says so. Design of record:
   `docs/spec/responsive-dashboard.md`'s "Tap targets (D3)".
+- **The push gate protects `main` directly; `merge-preflight.sh` protects everything that
+  reaches it through a PR** (SH-429). `.githooks/pre-push` refuses only a direct push to
+  `main`/`master` with no receipt — every other ref is *reported*, never refused, since
+  SH-396 already made `merge-preflight.sh` (run by `merge-watch.sh`) the primitive that
+  decides whether content actually lands, unconditionally, regardless of what any push
+  carried. Refusing an ordinary feature-branch push was gating content that was never, on
+  its own, the thing merging, while costing the full suite's wall-clock **before work ever
+  left the machine**. The autonomous dispatch charter (`plugins/story/bin/story.sh`) now
+  pushes and opens the PR *before* running `make test`, so work is durable on the remote
+  before that cost is paid, not after — the merge gate still requires the suite to pass
+  before `gh pr merge --merge` may land anything. Design of record: `docs/spec/test-tiers.md`'s
+  "The push gate narrowed to main/master" section.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
