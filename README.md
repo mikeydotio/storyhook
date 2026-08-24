@@ -176,7 +176,7 @@ skills unchanged.
 | `/story <id>` | Shows the story, then offers to start work on it |
 | `/story new <description>` | Interrogates you, drafts the story, files it after you confirm |
 | `/story view <id>` | Prints the story and its comments, then stops |
-| `/story do <id> [--auto] [--agent=claude\|codex]` | Claims a **ready** story and dispatches it to a fresh provider Plan-mode session in a new tmux window rooted in a per-story git worktree |
+| `/story do <id> [--auto] [--force] [--agent=claude\|codex]` | Claims a **ready** story and dispatches it to a fresh provider Plan-mode session in a new tmux window rooted in a per-story git worktree; `--force` reuses an existing `in-progress` claim without weakening worktree/tmux safety |
 | `/story complete <id>` | Closes the story and reclaims its worktree and merged branch, after showing you a plan and asking |
 | `/story capture <id>` | Dumps the recent output of a dispatched session's window (read-only) |
 | `/story doctor` | Checks project data integrity and the selected provider's readiness, Plan-mode, and paste behavior |

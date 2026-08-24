@@ -31,4 +31,71 @@ assert_contains "$(jqf "$out" .display)" "already in-progress" "already-in-progr
 state=$(cd "$repo" && story show "$id" --json | jq -r '.story.story.state')
 assert_eq "$state" "in-progress" "already-in-progress: state unchanged (still in-progress, not re-moved)"
 
+# SH-440: --force is an explicit escape from this ONE guard. Dry-run proves
+# the planned command list contains no redundant state move; the real fake-tmux
+# dispatch below proves the rest of the actuator still runs and the exported
+# event history remains unchanged.
+out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch --force "$id" 2>&1)
+assert_eq "$(jqf "$out" .ok)" "true" "forced dry-run: ok:true"
+assert_eq "$(jqf "$out" .forced)" "true" "forced dry-run: forced:true"
+assert_eq "$(jqf "$out" .reused_claim)" "true" "forced dry-run: reused_claim:true"
+assert_eq "$(jqf "$out" .claim_transitioned)" "false" "forced dry-run: claim_transitioned:false"
+assert_contains "$(jqf "$out" .display)" "reuse its existing" "forced dry-run: display names claim reuse"
+commands=$(jqf "$out" '.commands | join("\n")')
+case "$commands" in
+  *"story move $id in-progress"*)
+    fail_test "forced dry-run: command list contains a redundant state transition" ;;
+esac
+
+transition_count() {
+  (cd "$repo" && story export) \
+    | jq --arg id "$id" '[.stories[] | select(.id == $id).events[] | select(.kind == "StoryStateChanged")] | length'
+}
+before=$(transition_count)
+
+out=$(
+  cd "$repo" \
+    && PATH="$TESTS_DIR/fakes:$PATH" \
+      TMUX="fake,0,0" TMUX_PANE="%0" \
+      STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
+      STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
+      FAKE_TMUX_CAPTURE=marker \
+      bash "$SCRIPT" dispatch "$id" --force 2>&1
+)
+assert_eq "$(jqf "$out" .ok)" "true" "forced dispatch: ok:true"
+assert_eq "$(jqf "$out" .claimed)" "true" "forced dispatch: claimed state is retained"
+assert_eq "$(jqf "$out" .forced)" "true" "forced dispatch: forced:true"
+assert_eq "$(jqf "$out" .reused_claim)" "true" "forced dispatch: reused_claim:true"
+assert_eq "$(jqf "$out" .claim_transitioned)" "false" "forced dispatch: no transition owned by this dispatch"
+assert_contains "$(jqf "$out" .display)" "no state transition" "forced dispatch: display names no-write behavior"
+
+after=$(transition_count)
+assert_eq "$after" "$before" "forced dispatch: exported state-transition count is unchanged"
+[ -d "$repo/.claude/worktrees/$id" ] \
+  || fail_test "forced dispatch: worktree was not created"
+
+# A failure after the forced reuse must clean up only the side effects this
+# dispatch owns. In particular, it must neither roll back nor misreport the
+# pre-existing claim as absent.
+repo_failed=$(mk_story_repo FRD)
+id_failed=$(new_story "$repo_failed" "Failed forced redispatch")
+(cd "$repo_failed" && story move "$id_failed" in-progress >/dev/null)
+out=$(
+  cd "$repo_failed" \
+    && PATH="$TESTS_DIR/fakes:$PATH" \
+      TMUX="fake,0,0" TMUX_PANE="%0" \
+      STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
+      STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
+      FAKE_TMUX_LAUNCH_MANGLE=1 \
+      bash "$SCRIPT" dispatch "$id_failed" --force 2>&1
+)
+assert_eq "$(jqf "$out" .ok)" "false" "failed forced dispatch: ok:false"
+assert_eq "$(jqf "$out" .reason)" "pane-not-ready" "failed forced dispatch: later safety gate still applies"
+assert_eq "$(jqf "$out" .claimed)" "true" "failed forced dispatch: pre-existing claim is reported retained"
+assert_contains "$(jqf "$out" .display)" "pre-existing" "failed forced dispatch: display names retained claim"
+failed_state=$(cd "$repo_failed" && story show "$id_failed" --json | jq -r '.story.story.state')
+assert_eq "$failed_state" "in-progress" "failed forced dispatch: pre-existing claim remains in-progress"
+[ ! -d "$repo_failed/.claude/worktrees/$id_failed" ] \
+  || fail_test "failed forced dispatch: owned worktree was not rolled back"
+
 finish
