@@ -959,12 +959,15 @@ const COARSE_TAP_MIN = 44;
  * that was still in flight. `.modal` animates `translate(-50%, -46%)` to
  * `translate(-50%, -50%)`; `.drawer` animates `translateX(100%)` to
  * `translateX(0)` over 0.2s. Measured over six openings of the create modal
- * on `mobile-webkit`: settled, the three selects sit at 336.5 / 415 / 493.5
- * every single time, every coordinate on the 1/128 grid, every height
- * exactly 44, zero variance. Mid-transition, not one coordinate was dyadic,
- * the values wandered run to run, and one iteration reproduced SH-420's
- * failure outright. An interpolated percentage is the only thing on this
- * surface that puts a non-dyadic offset into a float32 coordinate at all.
+ * on `mobile-webkit` (before SH-439 added a fourth select, `#create-project`,
+ * ahead of the original three and shifted every coordinate below it -- the
+ * settled *property* this measurement demonstrates, not any one of its own
+ * numbers, is what this comment documents): settled, every select's box sat
+ * at the same coordinates run after run, every coordinate on the 1/128 grid,
+ * every height exactly 44, zero variance. Mid-transition, not one coordinate
+ * was dyadic, the values wandered run to run, and one iteration reproduced
+ * SH-420's failure outright. An interpolated percentage is the only thing on
+ * this surface that puts a non-dyadic offset into a float32 coordinate at all.
  *
  * The story had ruled this out on the grounds that the transform is a pure
  * translate and "a translation cannot change a descendant's measured
