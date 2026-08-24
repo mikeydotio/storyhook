@@ -1892,7 +1892,7 @@ fn the_two_injected_kinds_still_mean_what_these_fixtures_need_them_to_mean() {
 }
 
 /// Injects an unrecognised-kind event (a newer storyhook's data, not this
-/// build's) at seq 2 of a fresh story.
+/// build's) after the three required creation events of a fresh story.
 fn inject_unrecognised_kind(fixture: &ServiceFixture) {
     storyhook::store::test_support::inject_raw_events(
         fixture.store(),
@@ -1908,7 +1908,7 @@ fn inject_unrecognised_kind(fixture: &ServiceFixture) {
 }
 
 /// Injects a known-kind event whose payload this build cannot read (a torn
-/// payload — damage) at seq 2 of a fresh story.
+/// payload — damage) after the three required creation events of a fresh story.
 fn inject_torn_payload(fixture: &ServiceFixture) {
     storyhook::store::test_support::inject_raw_events(
         fixture.store(),
@@ -1945,7 +1945,7 @@ fn an_unrecognised_event_kind_is_a_notice_not_a_finding() {
     let notices = examine(&fixture).notices;
     assert_eq!(notices.len(), 1, "{notices:?}");
     assert!(
-        notices[0].contains("event 2")
+        notices[0].contains("event 4")
             && notices[0].contains("`StoryPinned`")
             && notices[0].contains("A newer storyhook wrote it."),
         "{notices:?}"
@@ -1982,7 +1982,7 @@ fn a_torn_known_event_payload_is_still_a_finding_fix_cannot_repair() {
     assert_eq!(issues.len(), 1, "{issues:?}");
     assert!(
         issues[0].starts_with("SH-1: ")
-            && issues[0].contains("event 2")
+            && issues[0].contains("event 4")
             && issues[0].contains("`StoryCommentAdded`")
             && !issues[0].contains("newer storyhook"),
         "a torn payload reads differently from a notice: {issues:?}"
