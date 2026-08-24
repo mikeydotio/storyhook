@@ -1011,8 +1011,11 @@ interface BoardStory {
   superstate: string;
 }
 
-/** Reads `projectName`'s board stories and drafts, by id. */
-async function storiesInProject(
+/** Reads `projectName`'s board stories and drafts, by id. Exported (SH-439)
+ * so a spec that needs to prove a story landed in one project and not
+ * another can ask this directly, rather than hand-rolling a second `/data`
+ * GET with its own header/slug-resolution logic. */
+export async function storiesInProject(
   request: APIRequestContext,
   projectName: string,
 ): Promise<BoardStory[]> {

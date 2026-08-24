@@ -127,12 +127,15 @@ had to be handled explicitly.
 immediately after `toHaveClass(/open/)`, a few milliseconds into a 0.15s
 transition: `.modal` animates `translate(-50%, -46%)` → `translate(-50%, -50%)`,
 `.drawer` animates `translateX(100%)` → `translateX(0)` over 0.2s. Measured over
-six openings of the create modal on `mobile-webkit`, settled, the three selects
-sit at 336.5 / 415 / 493.5 every time — every coordinate on the 1/128 grid,
+six openings of the create modal on `mobile-webkit`, settled, every select's box
+sat at the same coordinates run after run — every coordinate on the 1/128 grid,
 every height exactly 44, zero variance; mid-transition, not one coordinate was
-dyadic and one iteration reproduced SH-420 outright. An interpolated percentage
-is the only thing on this surface that puts a non-dyadic offset into a
-coordinate at all. `settleAndReadTapMin` therefore polls
+dyadic and one iteration reproduced SH-420 outright. (SH-439 added a fourth
+select, `#create-project`, ahead of the original three, which shifts every
+coordinate below it — the settled *property* this measurement demonstrates,
+not any one of its own numbers, is what carries forward.) An interpolated
+percentage is the only thing on this surface that puts a non-dyadic offset into
+a coordinate at all. `settleAndReadTapMin` therefore polls
 `getAnimations({ subtree: true })` on the **swept root** — never `document`,
 which would block a sweep of one surface on a toast animating elsewhere. This
 reaches a class no tolerance could: `.card.entering` interpolates from

@@ -957,8 +957,10 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"id="drawer""#));
     assert!(body.contains(r#"id="drawer-body""#));
     // Create-story modal, including the fields added for #36 (description,
-    // priority, and the label combobox's mount point)
+    // priority, and the label combobox's mount point) and SH-439's project
+    // dropdown, the modal's first field
     assert!(body.contains(r#"id="create-modal""#));
+    assert!(body.contains(r#"id="create-project""#));
     assert!(body.contains(r#"id="create-title""#));
     assert!(body.contains(r#"id="create-description""#));
     assert!(body.contains(r#"id="create-priority""#));
@@ -8512,4 +8514,51 @@ fn status_editor_is_busy_is_not_taught_about_the_destination_prompt() {
              state.statusPrompt on every render instead (see buildStatusRow)."
         );
     }
+}
+
+/// SH-439: the create modal is not part of `renderScreen()`'s repo-screen
+/// chrome (unlike the drawer, which SH-290 already closes on every screen
+/// change), so the one place `fetchReposOnce()` discovers the open project
+/// was deleted elsewhere must close it explicitly -- otherwise a modal
+/// opened before the delete survives the forced jump to Home, floating over
+/// a screen with no project open at all.
+///
+/// A pure substring test can't drive the page's runtime DOM (there's no
+/// headless browser here), so this pins the *source* shape: within the
+/// branch that fires on a vanished project (bounded by its own `toast(...)`
+/// call through the closing brace before `goHome()`), the code must call
+/// `closeCreateModal()`. The real behavioral proof -- that the modal
+/// actually disappears -- is `e2e/specs/create-story-project.spec.ts`'s job.
+#[test]
+fn web_serve_root_html_closes_the_create_modal_when_its_project_vanishes() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let script = script(&body);
+
+    let signature = "toast(\"This project was deleted\", \"error\");";
+    let branch_start = script
+        .find(signature)
+        .expect("the deleted-project toast must exist with this exact text");
+    let close = "\n          goHome();\n        }\n";
+    let branch_end = branch_start
+        + script[branch_start..]
+            .find(close)
+            .expect("the deleted-project branch's own closing goHome()/brace")
+        + close.len();
+    let branch = &script[branch_start..branch_end];
+
+    assert!(
+        branch.contains("closeCreateModal()"),
+        "the branch that fires when the open project was deleted elsewhere no longer \
+         calls closeCreateModal() -- a create/edit-draft modal opened on that project \
+         would then survive the forced navigation to Home with nothing to close it \
+         (SH-439)"
+    );
 }

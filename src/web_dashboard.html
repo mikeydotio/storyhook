@@ -1466,6 +1466,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 <div class="modal" id="create-modal" tabindex="-1" aria-hidden="true">
   <div class="modal-header" id="create-modal-header">New story</div>
   <div class="modal-body">
+    <div class="field" id="create-project-field"><label for="create-project">Project</label><select id="create-project"></select></div>
     <input type="text" id="create-title" placeholder="Title" autocomplete="off">
     <textarea id="create-description" placeholder="Description (optional)" rows="2"></textarea>
     <div class="field-grid">
@@ -3110,6 +3111,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         if (state.screen === "repo" && state.repoId && !state.repos.some(function(r) { return r.id === state.repoId; })) {
           toast("This project was deleted", "error");
           state.repoId = null;
+          // The create modal is not part of `renderScreen()`'s own repo-
+          // screen chrome (unlike the drawer, which SH-290 already closes on
+          // every screen change) — so without this, a modal opened before
+          // the delete survives the jump to Home, floating over a screen
+          // that has no project open at all. `goHome()` below doesn't reach
+          // it: only a create/edit in progress on exactly this project needs
+          // closing, and only this branch knows that's what just happened.
+          if ($("create-modal").classList.contains("open")) closeCreateModal();
           goHome();
         }
       }
@@ -8982,6 +8991,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * click listener at init) rather than adding a new one per instance. */
   function buildLabelCombobox(initialLabels, suggestions) {
     var selected = (initialLabels || []).slice();
+    suggestions = suggestions || [];
     var chips = el("div", { class: "label-chips" }, []);
     var input = el("input", { type: "text", placeholder: "Add label…", autocomplete: "off" });
     var panel = el("div", { class: "fdd-panel" }, []);
@@ -9050,7 +9060,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     panel.addEventListener("click", function(e) { e.stopPropagation(); });
 
     renderChips();
-    return { element: wrap, getLabels: function() { return selected.slice(); } };
+    return {
+      element: wrap,
+      getLabels: function() { return selected.slice(); },
+      // Replaces the suggestion list in place (SH-439's create-modal project
+      // switch reads a different project's labels) without tearing down and
+      // rebuilding the combobox -- which would discard whatever chips are
+      // already chosen and any text sitting uncommitted in `input`, neither
+      // of which `openPanel()`'s closure over `suggestions` needs disturbed
+      // to serve a fresh list.
+      setSuggestions: function(next) { suggestions = next || []; }
+    };
   }
 
   /** A clickable, persisted `.section-label` replacement (SH-169). `key`
@@ -9359,6 +9379,18 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // SCREENS: header project selector, home, settings
   // ============================================================
 
+  /** Any project's own `PREFIX · name`, or `null` if `id` names none of
+   * `state.repos` (not yet loaded, or since deleted/renamed elsewhere).
+   *
+   * Extracted from `currentProjectLabel()` (SH-439) so the create modal's
+   * cross-project toast can name a project that is not the one on screen —
+   * `currentProjectLabel()`'s own contract stays "the open project's label,
+   * or nothing," and calls this rather than duplicating the lookup. */
+  function projectLabel(id) {
+    var project = state.repos.filter(function(r) { return r.id === id; })[0];
+    return project ? project.prefix + " · " + project.name : null;
+  }
+
   /** The project whose board is on screen, as `PREFIX · name`, or `null`
    * when there is none.
    *
@@ -9377,8 +9409,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * entirely — so the two share the derivation and not the wording. */
   function currentProjectLabel() {
     if (state.screen !== "repo") return null;
-    var current = state.repos.filter(function(r) { return r.id === state.repoId; })[0];
-    return current ? current.prefix + " · " + current.name : null;
+    return projectLabel(state.repoId);
   }
 
   /** What the header selector's button reads. The current project's
@@ -10996,14 +11027,65 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * result. */
   var createModalInFlight = false;
 
-  /** Sets {@link createModalInFlight} and reflects it onto the three buttons
-   * it guards. Centralized so `openCreateModal()` can reset it defensively
-   * without duplicating the three ids it touches. */
+  /** Whether `#create-project`'s own vocabulary GET (SH-439) is still
+   * deciding what project `#create-state`/`#create-type` describe. A second,
+   * independent reason the modal must refuse a mutation — distinct from
+   * {@link createModalInFlight}, which is a *mutation* in flight — so the two
+   * are combined by {@link createModalBusy} rather than each toggling the
+   * same buttons' `disabled` attribute on its own, which could disagree
+   * about a control's final state (see {@link syncCreateModalButtons}). */
+  var createVocabPending = false;
+
+  /** Whether the create modal has any reason right now to refuse a new
+   * mutating action. Checked as the FIRST LINE of `submitCreate()` and
+   * `saveDraft()`, not merely reflected onto a button's `disabled` attribute
+   * (SH-439): `bindEnterSubmit($("create-title"), submitCreate)` calls
+   * `submitCreate()` directly and does not consult `disabled` at all, so a
+   * vocabulary fetch racing an Enter-to-submit could otherwise file a story
+   * in the newly-selected project while `#create-state`/`#create-type` were
+   * still showing the PREVIOUS project's slugs — this is the SH-312 lesson
+   * one layer up: the button was never the guard, the flag is. */
+  function createModalBusy() { return createModalInFlight || createVocabPending; }
+
+  /** Disables/enables `#create-state`, `#create-type` and the three footer
+   * buttons from the two independent reasons any of them might need to be
+   * (SH-439) — one funnel, so `createModalInFlight` and `createVocabPending`
+   * can't disagree about a control's final `disabled` state the way two
+   * separate setters toggling the same attribute could. `#create-project`
+   * itself is deliberately never disabled here: it is the control the user
+   * is operating, and disabling it mid-operation would be disabling the
+   * thing that is supposed to still be usable while its own fetch runs. */
+  function syncCreateModalButtons() {
+    var busy = createModalBusy();
+    $("create-submit").disabled = busy;
+    $("create-save-draft").disabled = busy;
+    $("create-discard").disabled = busy;
+    $("create-state").disabled = createVocabPending;
+    $("create-type").disabled = createVocabPending;
+  }
+
+  /** Sets {@link createModalInFlight} and resyncs the buttons it shares with
+   * {@link createVocabPending}. Centralized so `openCreateModal()` can reset
+   * it defensively without duplicating what it touches. */
   function setCreateModalInFlight(value) {
     createModalInFlight = value;
-    $("create-submit").disabled = value;
-    $("create-save-draft").disabled = value;
-    $("create-discard").disabled = value;
+    syncCreateModalButtons();
+  }
+
+  /** Sets {@link createVocabPending} and resyncs the same shared buttons.
+   * Rescues focus to the modal itself FIRST, while `value` is becoming
+   * `true`, if the control about to be disabled currently holds it —
+   * `trapOverlayTab()`'s own candidate filter excludes disabled controls, so
+   * disabling a focused one would silently drop `document.activeElement`
+   * outside the overlay entirely, with no visible focus ring anywhere. */
+  function setCreateVocabPending(value) {
+    if (value) {
+      var current = document.activeElement;
+      var guarded = [$("create-state"), $("create-type"), $("create-submit"), $("create-save-draft"), $("create-discard")];
+      if (guarded.indexOf(current) !== -1) $("create-modal").focus();
+    }
+    createVocabPending = value;
+    syncCreateModalButtons();
   }
 
   /** The draft being edited, or `null` when the modal is in ordinary "New
@@ -11016,6 +11098,46 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * off the DOM, and the modal is a singleton.
    */
   var editingDraft = null;
+
+  /** Rebuilds the create modal's *per-project* vocabulary -- `#create-state`,
+   * `#create-type`, and the label combobox's suggestion list -- from `m` (a
+   * `meta()`-shaped object for whichever project is now being addressed).
+   * Extracted from `openCreateModal()` (SH-439) so a project switch inside
+   * an already-open modal can call it again without rebuilding the fields
+   * `openCreateModal()` itself only ever needs to build once. `#create-
+   * priority` is deliberately not covered here — see its own comment at the
+   * `openCreateModal()` call site for why it never needs rebuilding.
+   *
+   * `selections` is `{state, type}`, naming the exact slugs to preselect (an
+   * existing draft's own fields, however empty). Passed `undefined`, both
+   * fall back to `m.defaults` instead (SH-44's rule: the project's own
+   * first-configured OPEN state/type) -- the same fallback `openCreateModal`
+   * has always applied to a *fresh* story, and now also what a project
+   * switch resets to.
+   *
+   * That reset, not a carried-over slug, is deliberate (SH-439): two
+   * projects can spell a state the same way and mean different points in
+   * two different workflows, so preserving a slug across a switch would
+   * preserve the spelling and silently change the meaning -- the exact shape
+   * SH-364 and SH-281 already cost this project. Resetting to the newly
+   * selected project's own defaults is simply this modal's one existing rule
+   * (SH-44) applied consistently, rather than a second rule invented for the
+   * switch. */
+  function populateCreateVocabulary(m, selections) {
+    var useDefaults = !selections;
+    var defaults = useDefaults ? (m.defaults || {}) : {};
+    clear($("create-state"));
+    $("create-state").appendChild(el("option", { value: "" }, ["Default state"]));
+    m.states.filter(function(s) { return s.super_state === "OPEN"; }).forEach(function(s) {
+      $("create-state").appendChild(el("option", { value: s.slug }, [s.slug]));
+    });
+    $("create-state").value = useDefaults ? (defaults.state || "") : (selections.state || "");
+    clear($("create-type"));
+    $("create-type").appendChild(el("option", { value: "" }, [typeLabel(null)]));
+    m.types.forEach(function(t) { $("create-type").appendChild(el("option", { value: t.slug }, [typeLabel(t.slug)])); });
+    $("create-type").value = useDefaults ? (defaults.type || "") : (selections.type || "");
+    if (createLabelCombobox) createLabelCombobox.setSuggestions(m.labels || []);
+  }
 
   /** Opens the New Story modal. Pass a `StoryView`-shaped draft (from
    * `state.data.drafts`) to reuse it as the Edit Draft modal instead —
@@ -11030,10 +11152,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function openCreateModal(draft) {
     if (!state.data) return;
     editingDraft = draft || null;
+    createTargetProject = state.repoId;
+    // Invalidates any vocabulary GET a previous open of this singleton
+    // modal left in flight (SH-439) -- see createVocabTicket's own comment.
+    createVocabTicket++;
     // Defensive reset (SH-312): the modal is a singleton reused across opens,
     // so a stuck flag from an unreachable error path would otherwise leave
     // every future open permanently disabled.
     setCreateModalInFlight(false);
+    setCreateVocabPending(false);
     var story = editingDraft ? editingDraft.story : null;
     $("create-modal-header").textContent = story ? "Edit draft" : "New story";
     $("create-submit").textContent = story ? "Publish" : "Create Story";
@@ -11042,32 +11169,55 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     autoGrowTextarea($("create-description"));
     $("create-error").textContent = "";
     var m = meta();
-    // SH-44: preselect the project's own first-configured state/type — read
-    // off `meta.defaults`, the same selection `story new` applies server-side
-    // (`src/api/rest.rs::meta_json`), so this can't drift into a hardcoded
-    // guess. Falls back to the blank placeholder when a project has none
-    // (only reachable on legacy data — see `domain::default_type`'s doc).
-    // Skipped entirely when editing a draft: its own fields are the default.
-    var defaults = story ? {} : (m.defaults || {});
-    clear($("create-state"));
-    $("create-state").appendChild(el("option", { value: "" }, ["Default state"]));
-    m.states.filter(function(s) { return s.super_state === "OPEN"; }).forEach(function(s) {
-      $("create-state").appendChild(el("option", { value: s.slug }, [s.slug]));
-    });
-    $("create-state").value = (story && story.state) || defaults.state || "";
-    clear($("create-type"));
-    $("create-type").appendChild(el("option", { value: "" }, [typeLabel(null)]));
-    m.types.forEach(function(t) { $("create-type").appendChild(el("option", { value: t.slug }, [typeLabel(t.slug)])); });
-    $("create-type").value = (story && story.story_type) || defaults.type || "";
+    // Priority is a closed global enum (`PRIORITIES`, `src/api/rest.rs`) --
+    // identical in every project, so unlike state/type/labels below it is
+    // built once here and never needs rebuilding on a project switch
+    // (SH-439's `populateCreateVocabulary` deliberately doesn't touch it).
     clear($("create-priority"));
     $("create-priority").appendChild(el("option", { value: "" }, ["Default priority"]));
     m.priorities.forEach(function(p) { $("create-priority").appendChild(el("option", { value: p }, [p])); });
     $("create-priority").value = (story && story.priority !== "none" && story.priority) || "";
 
+    // SH-439: one option per project in `state.repos`, in the same order
+    // the header's own project selector uses. Disabled only for a project
+    // that ISN'T the one already open here and can't be written to
+    // (`!r.available` -- no checkout, or unreadable, `src/api/rest.rs`'s
+    // `repos_json` doc names both) -- the open project's own option is
+    // NEVER disabled, even when it's the read-only one, so a submit
+    // against it still reaches the server's existing `pathless_refusal`
+    // (422) instead of being silently retargeted by the browser's
+    // option-list reset algorithm, which prefers the first non-disabled
+    // option once the selected one is removed or the list is rebuilt.
+    clear($("create-project"));
+    state.repos.forEach(function(r) {
+      var isOpen = r.id === state.repoId;
+      $("create-project").appendChild(el("option", {
+        value: r.id,
+        disabled: !isOpen && !r.available
+      }, [r.prefix + " · " + r.name]));
+    });
+    $("create-project").value = state.repoId;
+    // Editing a draft: it already belongs to a project, and moving one is a
+    // transfer this modal doesn't offer (SH-442's territory, not SH-439's) --
+    // pinned and disabled rather than merely defaulted, so it can't be
+    // changed by mistake.
+    $("create-project").disabled = !!story;
+
     var labelsField = $("create-labels-field");
     while (labelsField.children.length > 1) labelsField.removeChild(labelsField.lastChild);
-    createLabelCombobox = buildLabelCombobox((story && story.labels) || [], m.labels || []);
+    // Suggestions start empty and are filled by `populateCreateVocabulary()`
+    // just below -- the one place that reads a project's `m.labels`, so a
+    // later project switch can refresh them through `setSuggestions()`
+    // without rebuilding this combobox (SH-439).
+    createLabelCombobox = buildLabelCombobox((story && story.labels) || [], []);
     labelsField.appendChild(createLabelCombobox.element);
+
+    // SH-44: preselect the project's own first-configured state/type when
+    // editing a draft, its own fields ARE the selection -- see
+    // `populateCreateVocabulary()`'s own doc for why passing them here
+    // (rather than omitting the argument) is what skips the defaults
+    // fallback entirely, matching this modal's pre-SH-439 behavior exactly.
+    populateCreateVocabulary(m, story ? { state: story.state, type: story.story_type } : undefined);
 
     showBackdrop("modal-backdrop");
     activateOverlay("create-modal", "create-title");
@@ -11079,10 +11229,96 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   function closeCreateModal() {
     editingDraft = null;
+    // Invalidates any vocabulary GET still in flight (SH-439) -- without
+    // this, a reply for a project the user switched to right before closing
+    // could land after `openCreateModal()`'s NEXT call and repopulate that
+    // later, unrelated open with this one's fields.
+    createVocabTicket++;
+    setCreateVocabPending(false);
     hideBackdrop("modal-backdrop");
     $("create-modal").classList.remove("open");
     $("create-modal").setAttribute("aria-hidden", "true");
     releaseOverlay("create-modal");
+  }
+
+  /** The project the create modal's next request will address -- set by
+   * `openCreateModal()` to `state.repoId` and updated by `#create-project`'s
+   * own `change` handler once its vocabulary GET resolves (SH-439). Every
+   * mutating action below reads this through {@link createApiBase} rather
+   * than `apiBase()`, which addresses `state.repoId` — the *board's*
+   * project, not necessarily the one the modal is now naming. */
+  var createTargetProject = null;
+
+  /** `apiBase()`'s create-modal equivalent — see {@link createTargetProject}. */
+  function createApiBase() { return repoApiBase(createTargetProject); }
+
+  /** Bumped by `openCreateModal()`/`closeCreateModal()` and by every
+   * vocabulary fetch `#create-project`'s `change` handler starts (SH-439) —
+   * mirrors `fetchData()`'s own `boardFetchTicket`/`askedFor` pair. A reply
+   * is applied only when its ticket is still current, so a project switch
+   * made while an earlier vocabulary GET is in flight, or the modal closing
+   * entirely, can never repopulate stale fields out from under whatever is
+   * on screen now. */
+  var createVocabTicket = 0;
+
+  var createProjectChangeTimer = null;
+
+  /** Debounces `#create-project`'s `change` event through this project's
+   * existing `FETCH_DEBOUNCE_MS` (SH-439, the same window `scheduleDataFetch()`
+   * already coalesces a burst of `repo-changed` events through) rather than a
+   * new literal: a held arrow key on a focused, closed `<select>` moves its
+   * selection and fires `change` once per OS key-repeat, and firing one
+   * vocabulary GET per repeat would flicker the busy state and the modal's
+   * fields needlessly. */
+  function scheduleCreateProjectVocabFetch() {
+    if (createProjectChangeTimer) clearTimeout(createProjectChangeTimer);
+    createProjectChangeTimer = setTimeout(function() {
+      createProjectChangeTimer = null;
+      fetchCreateProjectVocab();
+    }, FETCH_DEBOUNCE_MS);
+  }
+
+  /** Fetches the project `#create-project` now names and repopulates the
+   * modal's per-project vocabulary from it (SH-439). Ticketed against
+   * {@link createVocabTicket}: a reply is discarded, not applied, if the
+   * dropdown has since moved on again or the modal has closed. On failure
+   * the dropdown reverts to the last-good project and `#create-error` names
+   * only the project -- never `err.message` (`tests/dashboard_error_reporting.rs`'s
+   * fence, and `describeFailure()`'s own wording is written for a *mutation*,
+   * wrong for this read), so the modal is never left claiming one project
+   * while `#create-state`/`#create-type` still describe another. */
+  function fetchCreateProjectVocab() {
+    var target = $("create-project").value;
+    var previous = createTargetProject;
+    if (target === previous) return;
+    var ticket = ++createVocabTicket;
+    // The candidate project's own base -- deliberately `repoApiBase(target)`
+    // rather than `createApiBase()`, since `target` isn't `createTargetProject`
+    // yet (that assignment only happens once this GET succeeds, below).
+    var base = repoApiBase(target);
+    setCreateVocabPending(true);
+    api("GET", base + "/data", null)
+      .then(function(payload) {
+        if (ticket !== createVocabTicket) return;
+        createTargetProject = target;
+        populateCreateVocabulary(payload.meta);
+        setCreateVocabPending(false);
+      })
+      .catch(function() {
+        if (ticket !== createVocabTicket) return;
+        $("create-project").value = previous;
+        setCreateVocabPending(false);
+        // Deliberately not readinessNote() (SH-301's generator): that
+        // sentence's "Retrying…" half claims an automatic retry this fetch
+        // never schedules, which would be false here -- a re-selection of
+        // the dropdown is what tries again, not a timer. Names no
+        // `err.message` either way (`tests/dashboard_error_reporting.rs`),
+        // and never "Couldn't load"/"Loading", the two literals that
+        // fence reserves for readinessNote() itself.
+        $("create-error").textContent = "Failed to load " +
+          (projectLabel(target) || "that project") + "'s states and types -- still " +
+          "creating in " + (projectLabel(previous) || "the previous project") + ".";
+      });
   }
 
   /** The form's current field values as a `story new`/PATCH-shaped body.
@@ -11109,13 +11345,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * a promise so callers can chain a publish or a close after it settles;
    * resolves immediately with no request when nothing changed. */
   function applyLabelDiff(id, originalLabels) {
+    var base = createApiBase();
     var next = createLabelCombobox ? createLabelCombobox.getLabels() : [];
     var before = originalLabels || [];
     var add = next.filter(function(l) { return before.indexOf(l) === -1; });
     var remove = before.filter(function(l) { return next.indexOf(l) === -1; });
     var calls = [];
-    if (add.length) calls.push(api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/labels", { add: add }));
-    if (remove.length) calls.push(api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/labels", { remove: remove }));
+    if (add.length) calls.push(api("POST", base + "/story/" + encodeURIComponent(id) + "/labels", { add: add }));
+    if (remove.length) calls.push(api("POST", base + "/story/" + encodeURIComponent(id) + "/labels", { remove: remove }));
     return Promise.all(calls);
   }
 
@@ -11137,10 +11374,41 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * on screen behind the toast or the still-open modal already shows the
    * truth by the time the user reads the message. Any other status is the
    * daemon itself answering with a definite outcome (400/403/422/500/…),
-   * which is not ambiguous and keeps its own message unchanged. */
-  function describeMutationFailure(err) {
+   * which is not ambiguous and keeps its own message unchanged.
+   *
+   * `targetProject`, passed only by the create modal's own three actions
+   * (SH-439): `describeFailure()`'s ambiguous-outcome sentence says "Check
+   * the board," which is false once a story can be filed into a project
+   * other than the one on screen — the board behind the modal structurally
+   * cannot answer for a write that never addressed it. When `targetProject`
+   * differs from the open `state.repoId`, this appends that project's own
+   * name to the sentence and refreshes `fetchReposOnce()` too, so that
+   * project's summary counts (the project selector, Home) move even though
+   * its board isn't the one rendered right now. */
+  function describeMutationFailure(err, targetProject) {
     fetchData();
-    return describeFailure(err);
+    var message = describeFailure(err);
+    if (targetProject && targetProject !== state.repoId && err && err.status === 0) {
+      fetchReposOnce();
+      var name = projectLabel(targetProject);
+      if (name) message += " Check " + name + " before retrying.";
+    }
+    return message;
+  }
+
+  /** Names a just-created (or just-saved-as-draft) story's project when that
+   * project isn't the board on screen (SH-439). SH-127's "no success toast"
+   * verdict relies on the entering card's own animation for confirmation —
+   * which says nothing when the created story's project isn't the one
+   * rendered, so this is additive to that decision the same way SH-358's
+   * priority warning already is (see `submitCreate()`'s own comment). A
+   * same-project create/save stays exactly as silent as before. */
+  function toastCrossProjectFiling(payload, targetProject, verb) {
+    if (targetProject === state.repoId) return;
+    var story = payload && payload.story && payload.story.story;
+    var name = projectLabel(targetProject);
+    if (!story || !name) return;
+    toast(story.id + " " + verb + " " + name, "success");
   }
 
   /** Discard Draft (SH-175). Editing an existing draft: deletes it outright
@@ -11150,12 +11418,19 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * behavior the old Cancel button always had. */
   function discardDraft() {
     if (!editingDraft) { closeCreateModal(); return; }
-    if (createModalInFlight) return;
+    if (createModalBusy()) return;
     setCreateModalInFlight(true);
+    // Captured once, alongside `base` (SH-439): editing a draft pins and
+    // disables #create-project, so this can't move mid-request today, but
+    // reading the live module variable at settle time rather than what the
+    // request actually addressed would be a latent bug the moment that
+    // stops being true.
+    var targetProject = createTargetProject;
+    var base = createApiBase();
     var id = editingDraft.story.id;
-    api("DELETE", apiBase() + "/story/" + encodeURIComponent(id), { reason: "Discarded draft" })
+    api("DELETE", base + "/story/" + encodeURIComponent(id), { reason: "Discarded draft" })
       .then(function() { setCreateModalInFlight(false); closeCreateModal(); fetchData(); })
-      .catch(function(err) { setCreateModalInFlight(false); $("create-error").textContent = describeMutationFailure(err); });
+      .catch(function(err) { setCreateModalInFlight(false); $("create-error").textContent = describeMutationFailure(err, targetProject); });
   }
 
   /** Save Draft (SH-175): writes the form's fields but never changes draft
@@ -11164,29 +11439,39 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * modal at all — see `renderDraftsList()`, the only place that opens it
    * in edit mode). */
   function saveDraft() {
-    if (createModalInFlight) return;
+    if (createModalBusy()) return;
     var body = createFormFields();
     if (!body.title) { $("create-error").textContent = "Title is required."; return; }
     setCreateModalInFlight(true);
+    // Captured once (SH-439) -- see discardDraft()'s own comment on why,
+    // and not merely defensively: a fresh (non-draft) create leaves
+    // #create-project enabled for the whole request.
+    var targetProject = createTargetProject;
+    var base = createApiBase();
     var request;
     if (editingDraft) {
       var id = editingDraft.story.id;
-      request = api("PATCH", apiBase() + "/story/" + encodeURIComponent(id), body)
+      request = api("PATCH", base + "/story/" + encodeURIComponent(id), body)
         .then(function() { return applyLabelDiff(id, editingDraft.story.labels); });
     } else {
       body.draft = true;
       var labels = createLabelCombobox ? createLabelCombobox.getLabels() : [];
       if (labels.length) body.labels = labels;
-      request = api("POST", apiBase() + "/story", body);
+      request = api("POST", base + "/story", body);
     }
     request
       .then(function(payload) {
         setCreateModalInFlight(false);
         closeCreateModal();
         toastEnvelopeWarnings(payload);
+        // SH-439: a draft saved into a project other than the open one is
+        // otherwise invisible -- the Drafts popover only ever shows the
+        // OPEN project's drafts (SH-292) -- so this stays silent only in
+        // the same-project case SH-127 already covers for a live create.
+        toastCrossProjectFiling(payload, targetProject, "saved as a draft in");
         fetchData();
       })
-      .catch(function(err) { setCreateModalInFlight(false); $("create-error").textContent = describeMutationFailure(err); });
+      .catch(function(err) { setCreateModalInFlight(false); $("create-error").textContent = describeMutationFailure(err, targetProject); });
   }
 
   /** Create Story / Publish (SH-175) — the button `submitCreate` always
@@ -11196,46 +11481,53 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * does both, since a click on the modal's one remaining primary action
    * is the only chance to say "and now make it live" this form offers.
    *
-   * Guarded by {@link createModalInFlight} (SH-312): without it, this ran
-   * unguarded from two independent entry points — the button's `click` and
-   * Enter in `#create-title` — and neither disabled anything while the
-   * request was outstanding, so two submissions of an unchanged form filed
-   * two byte-identical stories. */
+   * Guarded by {@link createModalBusy} (SH-312, widened by SH-439): without
+   * it, this ran unguarded from two independent entry points — the button's
+   * `click` and Enter in `#create-title` — and neither disabled anything
+   * while the request was outstanding, so two submissions of an unchanged
+   * form filed two byte-identical stories. `createModalBusy()` rather than
+   * the bare in-flight flag because `bindEnterSubmit` calls this function
+   * directly, ignoring the buttons' own `disabled` attribute entirely — so a
+   * vocabulary fetch in flight has to refuse here too, not just visually. */
   function submitCreate() {
-    if (createModalInFlight) return;
+    if (createModalBusy()) return;
     var body = createFormFields();
     if (!body.title) { $("create-error").textContent = "Title is required."; return; }
     setCreateModalInFlight(true);
+    // Captured once (SH-439) -- see discardDraft()'s own comment on why.
+    var targetProject = createTargetProject;
+    var base = createApiBase();
     var request;
     if (editingDraft) {
       var id = editingDraft.story.id;
-      request = api("PATCH", apiBase() + "/story/" + encodeURIComponent(id), body)
+      request = api("PATCH", base + "/story/" + encodeURIComponent(id), body)
         .then(function() { return applyLabelDiff(id, editingDraft.story.labels); })
-        .then(function() { return api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/publish", {}); });
+        .then(function() { return api("POST", base + "/story/" + encodeURIComponent(id) + "/publish", {}); });
     } else {
       var labels = createLabelCombobox ? createLabelCombobox.getLabels() : [];
       if (labels.length) body.labels = labels;
-      request = api("POST", apiBase() + "/story", body);
+      request = api("POST", base + "/story", body);
     }
     request
       .then(function(payload) {
         setCreateModalInFlight(false);
         closeCreateModal();
-        // SH-127: no success toast here -- the new card's own "entering"
-        // animation (reconcileColumnCards, driven by diffSnapshots'
-        // `entered` classification) already confirms the creation in
-        // place, unlike e.g. a deletion, whose exit animation is shared
-        // with plain filtering and so still needs the toast to
-        // disambiguate (council verdict on SH-127).
-        //
-        // A priority warning is additive to that decision, not a reversal of
-        // it (SH-358): SH-127 was about a *success* toast the entering card
-        // already said for free, and this fires only when the created story
-        // needs a look, which nothing else on screen says.
+        // SH-127: no success toast here in the SAME-project case -- the new
+        // card's own "entering" animation (reconcileColumnCards, driven by
+        // diffSnapshots' `entered` classification) already confirms the
+        // creation in place, unlike e.g. a deletion, whose exit animation is
+        // shared with plain filtering and so still needs the toast to
+        // disambiguate (council verdict on SH-127). A cross-project create
+        // (SH-439) gets no such animation -- no card enters the board
+        // that's actually on screen -- so toastCrossProjectFiling() below is
+        // additive to SH-127's verdict, not a reversal of it, the same way
+        // SH-358's priority warning already is: that fires only when the
+        // created story needs a look, which nothing else on screen says.
         toastEnvelopeWarnings(payload);
+        toastCrossProjectFiling(payload, targetProject, "created in");
         fetchData();
       })
-      .catch(function(err) { setCreateModalInFlight(false); $("create-error").textContent = describeMutationFailure(err); });
+      .catch(function(err) { setCreateModalInFlight(false); $("create-error").textContent = describeMutationFailure(err, targetProject); });
   }
 
   // ============================================================
@@ -11579,6 +11871,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // footer buttons dismiss it. Every other modal in this file keeps that
     // stray-dismiss behavior; this is the one deliberate exception.
     $("new-story-btn").addEventListener("click", function() { openCreateModal(); });
+    $("create-project").addEventListener("change", scheduleCreateProjectVocabFetch);
     $("create-discard").addEventListener("click", discardDraft);
     $("create-save-draft").addEventListener("click", saveDraft);
     $("create-submit").addEventListener("click", submitCreate);
