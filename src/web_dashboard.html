@@ -7311,7 +7311,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // Only reachable with "Show archived" on — `filteredStories()` excludes
     // these by default — but visible then so an archived card mixed back
     // into a CLOSED column's cards doesn't read as an ordinary closed one.
-    if (st.hidden_at) flags.appendChild(el("span", { class: "flag flag-archived" }, ["🗄 archived"]));
+    if (st.hidden_at) flags.appendChild(el("span", { class: "flag flag-archived" }, ["🗄️ archived"]));
     if (flags.childNodes.length) next.appendChild(flags);
 
     // The dwell's rendered half: any blocker still inside its dwell window
@@ -8685,7 +8685,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (st.hidden_at) {
       body.appendChild(el("div", { class: "banner banner-archived" }, [
         el("div", { class: "banner-head" }, [
-          "🗄 Archived — hidden from the board until unarchived.",
+          "🗄️ Archived — hidden from the board until unarchived.",
           el("button", { class: "btn btn-ghost", onClick: function() { runFieldMutation(st.id, "POST", "unarchive", {}); } }, ["Unarchive"])
         ])
       ]));
