@@ -1308,6 +1308,15 @@ fn every_backdrop_overlay_is_wired_into_the_focus_trap() {
         Some("covered"),
         "the app shell must be marked `data-modal=\"covered\"` or no overlay covers anything"
     );
+    assert!(
+        body.contains("function trapOverlayTab(e)"),
+        "inert alone lets Tab leave the last surviving control for browser chrome; the overlay \
+         machinery needs an explicit boundary wrap"
+    );
+    assert!(
+        body.contains(r#"document.addEventListener("keydown", trapOverlayTab)"#),
+        "the overlay Tab boundary exists but is not bound to document key events"
+    );
 }
 
 /// A card's presentational body is transparent to pointer events, so a click
