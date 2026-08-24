@@ -32,7 +32,7 @@
 //! instead, the field the heading actually claims.
 
 use storyhook::cli::GraphMode;
-use storyhook::domain::{Priority, StorySnapshot, SuperState};
+use storyhook::domain::{StorySnapshot, SuperState};
 use storyhook::output::StoryView;
 use storyhook::service::{
     Clock, Ctx, ListFilters, NewStoryInput, PrLinkService, QueryService, RelationService,
@@ -320,7 +320,8 @@ fn section<'a>(body: &'a str, heading: &str) -> Vec<&'a str> {
 /// `--stale` is a function of the current time, so a test that cannot pin the
 /// clock can only assert that it did not crash. With one pinned, the whole
 /// annotation is checkable: the threshold, the day count, and the *kind* of
-/// the story's last event.
+/// the story's last event. Creation now finishes by recording the required
+/// default type, so an untouched current story's last activity is `type-set`.
 #[test]
 fn stale_filters_and_annotates_against_the_injected_clock() {
     let fixture = ServiceFixture::new();
@@ -350,7 +351,7 @@ fn stale_filters_and_annotates_against_the_injected_clock() {
 
     let info = views[0].stale_info.as_ref().expect("an annotation");
     assert_eq!(info.last_activity_at, FIXTURE_NOW);
-    assert_eq!(info.last_activity_type, "created");
+    assert_eq!(info.last_activity_type, "type-set");
     assert_eq!(info.days_stale, 4);
 
     // Widening the window past the second story's own activity picks it up,
@@ -1025,18 +1026,13 @@ fn an_unparseable_priority_list_filters_nothing() {
         "an all-unparseable list has always listed the whole project"
     );
 
-    // One parseable entry is enough to make the filter bite.
+    // One parseable legacy diagnostic is enough to make the filter bite. New
+    // stories are low priority, so none of these current stories match it.
     let filters = ListFilters {
         priority: Some("urgent, none".into()),
         ..ListFilters::default()
     };
-    assert_eq!(
-        query(&fixture, |service| service.list(&filters).map(|o| o.views))
-            .iter()
-            .map(|view| view.story.priority.clone())
-            .collect::<Vec<_>>(),
-        [Priority::None, Priority::None]
-    );
+    assert!(query(&fixture, |service| service.list(&filters).map(|o| o.views)).is_empty());
 }
 
 #[test]
