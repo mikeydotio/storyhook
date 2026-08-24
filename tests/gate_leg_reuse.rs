@@ -261,8 +261,7 @@ fn a_dashboard_edit_reruns_only_contract_build_and_browser_batteries() {
     for label in labels {
         let out = repo.run_leg(label, true);
         assert!(out.status.success(), "retrying {label}: {out:?}");
-        let expected =
-            usize::from(matches!(label, "rust-contracts" | "build" | "e2e")) + 1;
+        let expected = usize::from(matches!(label, "rust-contracts" | "build" | "e2e")) + 1;
         assert_eq!(
             repo.executions(label),
             expected,
