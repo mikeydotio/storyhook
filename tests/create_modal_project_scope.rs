@@ -128,7 +128,10 @@ const CAPTURED_BASE: &str = "base";
 
 /// Every line inside `section` that opens an `api(` call.
 fn api_call_lines(section: &str) -> Vec<&str> {
-    section.lines().filter(|line| line.contains("api(\"")).collect()
+    section
+        .lines()
+        .filter(|line| line.contains("api(\""))
+        .collect()
 }
 
 #[test]
