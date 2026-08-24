@@ -332,6 +332,53 @@ whatever internal viewport-fit heuristic caused the divergence is not one WebKit
 shares -- the `contain: layout` fix stays in place regardless, since it is harmless
 where the bug it targets doesn't exist.
 
+### An icon is a shape the page draws, never a character (SH-444)
+
+Found independently of SH-235, on the same controls this section names: the topbar's
+Home/Settings/Drafts icons (and, once swept, the board's column-sort control, the
+card/list-row actions menus, and the Settings-statuses back link) were single Unicode
+characters, rendered through whatever fallback font the platform picked for a
+codepoint `--sans` doesn't cover. U+2302 HOUSE and U+270E LOWER RIGHT PENCIL are not
+emoji at all; U+2699 GEAR is emoji-capable but shipped *unqualified* (no U+FE0F), so
+its text-vs-colour presentation was undetermined per platform on top of that. All
+three rendered at an arbitrary weight unrelated to the 600-weight text beside them —
+exactly what the reported screenshot showed.
+
+**The rule going forward:** every control icon in this file is an inline `<svg
+class="icon" stroke="currentColor">`, reusing the pattern the search box's icon
+already used (`.search-wrap svg`). `currentColor` inherits the button's own colour,
+so the icon themes and hovers with the rest of the control for free, across all four
+theme resolutions this file supports. The three topbar icons are static markup; a
+JS-constructed control builds one through the `svgIcon()` helper beside `el()` (SVG
+needs `createElementNS`, which `el()`'s own `document.createElement` can't provide).
+`tests/dashboard_icon_glyphs.rs::every_btn_icon_span_holds_a_shape` fences the
+topbar's own `.btn-icon` class; the other four controls are covered behaviorally, by
+`e2e/specs/icon-shapes.spec.ts` and `icon-shapes.mobile.spec.ts`.
+
+**The boundary against typographic marks**, decided the same day: caret/chevron/
+triangle/arrow/check/bullet characters (`▾ ▸ ▲ ▼ ↑ ↓ ● ✓ ×`) stay characters. None of
+these are pictographic — they live in Latin-1 Supplement, Arrows, Geometric Shapes, or
+Dingbats-with-`Emoji_Presentation=No` — so every UI font covers them and neither
+fallback-font weight nor presentation ambiguity applies. Several are also pinned as
+exact text by existing e2e contracts (`filter-bar-disclosure.spec.ts`,
+`board-sort.spec.ts`, `board-sort-tiebreak.spec.ts`, `column-visibility.spec.ts`,
+`filter-persistence.spec.ts`, `status-flags.spec.ts`,
+`story-context-menu-priority.spec.ts`), so converting them would be a materially
+larger, purely cosmetic change touching surfaces nothing reported as broken.
+
+**The same undetermined-presentation defect, generalized:** any pictographic
+character anywhere in this file — not just an icon control — must carry a trailing
+U+FE0F or it doesn't belong here at all. `tests/dashboard_icon_glyphs.rs::
+no_pictographic_character_is_left_unqualified` fences the whole file for exactly this,
+with U+2713 CHECK MARK as the one documented, deliberate exception (not an emoji,
+universal font coverage, pinned e2e text). It caught a second, independent instance of
+the same defect during this same investigation: the archived flag/banner's U+1F5C4
+FILE CABINET shipped with no U+FE0F, unlike this file's other emoji (U+1F3F7 LABEL,
+`typeGlyph()`'s fallback), which was already correctly qualified — the convention
+already existed and simply wasn't applied everywhere. Fixed by qualifying it
+(`🗄` → `🗄️`) rather than converting it to a shape: it sits inline inside prose, not
+a standalone icon control.
+
 ## What guards each defect
 
 Every behavioral test below runs under both `mobile-chromium` (Blink) and, since SH-348,
