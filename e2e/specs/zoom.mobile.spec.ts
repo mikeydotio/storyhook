@@ -230,12 +230,12 @@ test("the create-story modal's controls are at least 16px", async ({
   await page.locator("#new-story-btn").click();
   await expect(page.locator("#create-modal")).toHaveClass(/open/);
 
-  // Title, description, State/Type/Priority selects, and the label
-  // combobox's own text input.
+  // Project (SH-439), Title, description, State/Type/Priority selects, and
+  // the label combobox's own text input.
   await expectNoZoomingControls(
     page.locator("#create-modal"),
     "the create-story modal",
-    6,
+    7,
   );
 
   await page.locator("#create-discard").click();
