@@ -6,14 +6,16 @@ has already resolved the installed plugin root and its absolute `<story-helper>`
 Claude exposes the main skill as the `/story` slash command. Infer the operation and arguments
 from that invocation; do not rely on a magic environment variable.
 
-## Dispatch (`do <id> [--auto] [--agent=claude|codex]`)
+## Dispatch (`do <id> [--auto] [--force] [--agent=claude|codex]`)
 
-Run `bash "<story-helper>" dispatch <id> --agent=<agent>`, adding `--auto` only when the user
-requested it. Use the user's explicit agent when present; otherwise use `--agent=claude`.
-Never pass the compatibility-only `claude-code` token through this interface.
+Run `bash "<story-helper>" dispatch <id> --agent=<agent>`, adding `--auto` and/or `--force`
+only when the user requested them. Use the user's explicit agent when present; otherwise use
+`--agent=claude`. Never pass the compatibility-only `claude-code` token through this
+interface. `--force` reuses a named story's existing `in-progress` claim without another
+state transition; it does not override any worktree, branch, tmux, or provider safety gate.
 
 - `ok:false`: show `display` and stop. Common causes include a missing or closed story, an
-  existing claim, an unready state, or extra arguments.
+  existing claim without `--force`, an unready state, or extra arguments.
 - `ok:true`: show `display` verbatim. Surface `warning` and a fenced `pane_tail` when present.
 
 The helper owns ready-state validation, the compare-and-swap claim, the fresh

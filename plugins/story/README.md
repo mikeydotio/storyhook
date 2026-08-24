@@ -80,7 +80,7 @@ and then runs the same packaged helper, preserving the one-JSON-object contract.
 |---|---|
 | `list` | bare `/story` |
 | `view <id>` | `/story view`, `/story <id>` |
-| `dispatch <id> [--auto] [--agent=claude\|codex]` | `/story do` |
+| `dispatch <id> [--auto] [--force] [--agent=claude\|codex]` | `/story do`; `--force` reuses an existing `in-progress` claim without another state transition |
 | `dispatch --next [--auto] [--agent=claude\|codex]` | not routed by any skill (SH-344) — the id-less sibling: claims whatever `story next --claim` picks atomically, so a caller dispatching several stories at once (a fleet, a loop) gets a distinct story per call instead of racing the same id |
 | `create --title …` | `/story new` |
 | `complete <plan\|execute> <id> [--no-close] [--no-clean] [--force]` | `/story complete` |
@@ -172,6 +172,13 @@ Worth knowing before changing anything here:
 - **The claim is a hard precondition, not a trailing best-effort.** Storyhook's
   `state` *is* the claim marker, so `dispatch` claims via `--if-state` CAS
   before any side effect, and rolls the claim back if a later step fails.
+- **Forced redispatch reuses a claim; it never rewrites or owns it.** `/story do
+  <id> --force` is accepted only as the exception to the named story's
+  already-`in-progress` refusal. It skips the readiness lookup and redundant
+  move for that one state, reports `reused_claim:true`/`claim_transitioned:false`,
+  and leaves the pre-existing state untouched if a later dispatch step fails.
+  Worktree, branch, tmux, provider-readiness and prompt-delivery checks remain
+  unchanged; an existing worktree or branch still refuses.
 - **`complete` never forces anything by default**, and never touches tmux at
   all unless it is about to remove a worktree. `git worktree remove` runs
   without `--force` by default, and a branch is deleted only if merged into
