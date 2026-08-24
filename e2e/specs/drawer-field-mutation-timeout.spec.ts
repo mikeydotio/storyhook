@@ -178,6 +178,7 @@ test("a slow but successful comment is reported honestly, not as a failure", asy
     "WebKit never fires XMLHttpRequest.ontimeout on a request held by Playwright route interception -- measured, deterministic (SH-347)",
   );
   const shrunkTimeoutMs = 300;
+  const title = `SH-367 honest comment timeout ${Date.now()}`;
 
   let markRouteDone: () => void;
   const routeDone = new Promise<void>((resolve) => {
@@ -207,14 +208,12 @@ test("a slow but successful comment is reported honestly, not as a failure", asy
   await page.goto(`/?mutationTimeoutMs=${shrunkTimeoutMs}`);
   await openProject(page, "Alpha Project");
 
-  // A seeded story, not a created one. This pin is about what the comment
-  // form's `.catch` SAYS, so the story only has to exist -- and creating one
-  // here opened the new story's drawer, whose backdrop then intercepted the
-  // click meant to open it. Commenting leaves the fixture's own stories
-  // untouched apart from one comment, and each engine runs against its own
-  // seed (SH-335), so there is nothing to clean up and nothing to collide.
-  const card = page.locator('.column[data-state="todo"] .card').first();
-  await expect(card).toBeVisible();
+  // Dispatch specs earlier in this same project consume the seeded todo
+  // stories for real. Own this test's story instead of assuming a fixture
+  // still occupies a particular column; cleanUpCreatedStories removes it in
+  // afterEach even though the comment request deliberately outlives the
+  // client's deadline.
+  const card = await createStory(page, title);
   await card.click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
 
