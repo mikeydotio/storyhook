@@ -171,14 +171,12 @@ fn every_plugin_document_that_offers_a_level_points_at_the_rubric() {
 }
 
 #[test]
-fn the_rubric_topic_names_every_level_the_domain_has() {
+fn the_rubric_topic_names_every_assignable_level() {
     let body = get_help_topic(TOPIC).expect("the topic must exist");
-    // Iterated over the enum rather than a literal list, so a sixth level cannot
-    // ship undescribed: adding a variant fails this test until the topic explains
-    // it. `Priority` has no `IntoEnumIterator`, so the arms are spelled here —
-    // exhaustively, which the compiler checks in `every_level_is_covered_by_the
-    // _levels_under_test` below.
-    for level in LEVELS {
+    // `Priority::None` remains decodable for legacy histories, but is no longer
+    // assignable. The operator-facing rubric therefore describes only the four
+    // values a current mutation can choose.
+    for level in ASSIGNABLE_LEVELS {
         assert!(
             body.contains(level.as_str()),
             "`story help priority-rubric` must say what `{}` means",
@@ -187,33 +185,37 @@ fn the_rubric_topic_names_every_level_the_domain_has() {
     }
 }
 
-/// Every level, for the topic scan above.
-const LEVELS: [Priority; 5] = [
+/// Every priority a current mutation may assign, for the topic scan above.
+const ASSIGNABLE_LEVELS: [Priority; 4] = [
     Priority::Critical,
     Priority::High,
     Priority::Medium,
     Priority::Low,
-    Priority::None,
 ];
 
 #[test]
-fn every_level_is_covered_by_the_levels_under_test() {
-    // The compiler's half of the check above: a new `Priority` variant makes this
-    // match non-exhaustive and the build fails, which is what stops `LEVELS` from
-    // silently describing four of five levels.
-    for level in LEVELS {
+fn every_domain_level_is_classified_as_assignable_or_legacy_only() {
+    // Keep the classification exhaustive even though the rubric intentionally
+    // omits the legacy-only value. A new enum variant cannot silently escape a
+    // decision about whether current mutations may assign it.
+    for level in [
+        Priority::Critical,
+        Priority::High,
+        Priority::Medium,
+        Priority::Low,
+        Priority::None,
+    ] {
         match level {
-            Priority::Critical
-            | Priority::High
-            | Priority::Medium
-            | Priority::Low
-            | Priority::None => {}
+            Priority::Critical | Priority::High | Priority::Medium | Priority::Low => {
+                assert!(ASSIGNABLE_LEVELS.contains(&level))
+            }
+            Priority::None => assert!(!ASSIGNABLE_LEVELS.contains(&level)),
         }
     }
     assert_eq!(
-        LEVELS.len(),
-        5,
-        "a level was added to the domain without being added here"
+        ASSIGNABLE_LEVELS.len(),
+        4,
+        "the assignable priority catalog changed without updating this contract"
     );
 }
 
