@@ -2406,6 +2406,49 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     });
   }
 
+  /** Wraps Tab at the boundary of everything that remains interactive while
+   * an overlay is open.
+   *
+   * `inert` removes the covered app and inactive overlays from the document's
+   * tab order, but it does not make the browser wrap at the final surviving
+   * control: Chromium hands the next Tab to its own chrome and leaves
+   * `document.activeElement` on `<body>`. The active overlay is therefore only
+   * half a focus trap without this boundary rule.
+   *
+   * The stops are derived from the whole document after inert/visibility
+   * filtering, not scoped blindly to the active overlay. That preserves the
+   * older notice-layer decision recorded above: visible notice controls sit
+   * above the backdrop and remain reachable by mouse, so they must remain
+   * reachable by keyboard too. In the ordinary empty-notice case the set is
+   * exactly the active overlay's controls. */
+  function trapOverlayTab(e) {
+    if (e.key !== "Tab" || e.defaultPrevented || overlayStack.length === 0) return;
+    var candidates = Array.prototype.filter.call(
+      document.querySelectorAll(
+        'a[href],button,input,select,textarea,[contenteditable="true"],[tabindex]'
+      ),
+      function(node) {
+        return !node.disabled && node.tabIndex >= 0 && canTakeFocus(node);
+      }
+    );
+    var activeSurface = $(overlayStack[overlayStack.length - 1]);
+    if (!candidates.length) {
+      e.preventDefault();
+      activeSurface.focus();
+      return;
+    }
+    var current = document.activeElement;
+    var first = candidates[0];
+    var last = candidates[candidates.length - 1];
+    if (e.shiftKey && current === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && current === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+
   /** Opens `surfaceId` as a modal surface: remembers what had focus, makes
    * everything else inert, and moves focus inside.
    *
@@ -11423,6 +11466,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // takes the seven *closed* overlays out of the tab order they have
     // always been in (see `applyOverlayModality()`).
     applyOverlayModality();
+    document.addEventListener("keydown", trapOverlayTab);
     document.querySelectorAll("#view-toggle button").forEach(function(btn) {
       btn.classList.toggle("active", btn.dataset.view === state.view);
       btn.addEventListener("click", function() { setView(btn.dataset.view); });
