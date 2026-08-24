@@ -2175,7 +2175,7 @@ pub fn dispatch_unscoped_with_stdin<S: Store>(
             let report = if dry_run {
                 plan.report(true)
             } else {
-                plan.apply(store, &source)?
+                plan.apply(store, &source, now)?
             };
             Ok(Response::Message(report.render()))
         }

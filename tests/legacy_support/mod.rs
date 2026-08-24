@@ -383,10 +383,13 @@ pub fn new_store() -> (TempDir, storyhook::store::SqliteStore) {
 pub fn migrate(root: &Path) -> (TempDir, storyhook::store::SqliteStore, MigrationReport) {
     let (dir, store) = new_store();
     let report = plan(root)
-        .apply(&store, root)
+        .apply(&store, root, MIGRATION_AT)
         .expect("applying the migration");
     (dir, store, report)
 }
+
+/// The instant compatibility events appended by the migration carry.
+pub const MIGRATION_AT: &str = "2026-08-24T12:00:00Z";
 
 /// The plan for `root`, or a panic naming why it could not be built.
 pub fn plan(root: &Path) -> MigrationPlan {
