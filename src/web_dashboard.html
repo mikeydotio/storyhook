@@ -11282,10 +11282,41 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * on screen behind the toast or the still-open modal already shows the
    * truth by the time the user reads the message. Any other status is the
    * daemon itself answering with a definite outcome (400/403/422/500/…),
-   * which is not ambiguous and keeps its own message unchanged. */
-  function describeMutationFailure(err) {
+   * which is not ambiguous and keeps its own message unchanged.
+   *
+   * `targetProject`, passed only by the create modal's own three actions
+   * (SH-439): `describeFailure()`'s ambiguous-outcome sentence says "Check
+   * the board," which is false once a story can be filed into a project
+   * other than the one on screen — the board behind the modal structurally
+   * cannot answer for a write that never addressed it. When `targetProject`
+   * differs from the open `state.repoId`, this appends that project's own
+   * name to the sentence and refreshes `fetchReposOnce()` too, so that
+   * project's summary counts (the project selector, Home) move even though
+   * its board isn't the one rendered right now. */
+  function describeMutationFailure(err, targetProject) {
     fetchData();
-    return describeFailure(err);
+    var message = describeFailure(err);
+    if (targetProject && targetProject !== state.repoId && err && err.status === 0) {
+      fetchReposOnce();
+      var name = projectLabel(targetProject);
+      if (name) message += " Check " + name + " before retrying.";
+    }
+    return message;
+  }
+
+  /** Names a just-created (or just-saved-as-draft) story's project when that
+   * project isn't the board on screen (SH-439). SH-127's "no success toast"
+   * verdict relies on the entering card's own animation for confirmation —
+   * which says nothing when the created story's project isn't the one
+   * rendered, so this is additive to that decision the same way SH-358's
+   * priority warning already is (see `submitCreate()`'s own comment). A
+   * same-project create/save stays exactly as silent as before. */
+  function toastCrossProjectFiling(payload, targetProject, verb) {
+    if (targetProject === state.repoId) return;
+    var story = payload && payload.story && payload.story.story;
+    var name = projectLabel(targetProject);
+    if (!story || !name) return;
+    toast(story.id + " " + verb + " " + name, "success");
   }
 
   /** Discard Draft (SH-175). Editing an existing draft: deletes it outright
@@ -11297,11 +11328,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (!editingDraft) { closeCreateModal(); return; }
     if (createModalBusy()) return;
     setCreateModalInFlight(true);
+    // Captured once, alongside `base` (SH-439): editing a draft pins and
+    // disables #create-project, so this can't move mid-request today, but
+    // reading the live module variable at settle time rather than what the
+    // request actually addressed would be a latent bug the moment that
+    // stops being true.
+    var targetProject = createTargetProject;
     var base = createApiBase();
     var id = editingDraft.story.id;
     api("DELETE", base + "/story/" + encodeURIComponent(id), { reason: "Discarded draft" })
       .then(function() { setCreateModalInFlight(false); closeCreateModal(); fetchData(); })
-      .catch(function(err) { setCreateModalInFlight(false); $("create-error").textContent = describeMutationFailure(err); });
+      .catch(function(err) { setCreateModalInFlight(false); $("create-error").textContent = describeMutationFailure(err, targetProject); });
   }
 
   /** Save Draft (SH-175): writes the form's fields but never changes draft
@@ -11314,6 +11351,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var body = createFormFields();
     if (!body.title) { $("create-error").textContent = "Title is required."; return; }
     setCreateModalInFlight(true);
+    // Captured once (SH-439) -- see discardDraft()'s own comment on why,
+    // and not merely defensively: a fresh (non-draft) create leaves
+    // #create-project enabled for the whole request.
+    var targetProject = createTargetProject;
     var base = createApiBase();
     var request;
     if (editingDraft) {
@@ -11331,9 +11372,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         setCreateModalInFlight(false);
         closeCreateModal();
         toastEnvelopeWarnings(payload);
+        // SH-439: a draft saved into a project other than the open one is
+        // otherwise invisible -- the Drafts popover only ever shows the
+        // OPEN project's drafts (SH-292) -- so this stays silent only in
+        // the same-project case SH-127 already covers for a live create.
+        toastCrossProjectFiling(payload, targetProject, "saved as a draft in");
         fetchData();
       })
-      .catch(function(err) { setCreateModalInFlight(false); $("create-error").textContent = describeMutationFailure(err); });
+      .catch(function(err) { setCreateModalInFlight(false); $("create-error").textContent = describeMutationFailure(err, targetProject); });
   }
 
   /** Create Story / Publish (SH-175) — the button `submitCreate` always
@@ -11356,6 +11402,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var body = createFormFields();
     if (!body.title) { $("create-error").textContent = "Title is required."; return; }
     setCreateModalInFlight(true);
+    // Captured once (SH-439) -- see discardDraft()'s own comment on why.
+    var targetProject = createTargetProject;
     var base = createApiBase();
     var request;
     if (editingDraft) {
@@ -11372,21 +11420,22 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       .then(function(payload) {
         setCreateModalInFlight(false);
         closeCreateModal();
-        // SH-127: no success toast here -- the new card's own "entering"
-        // animation (reconcileColumnCards, driven by diffSnapshots'
-        // `entered` classification) already confirms the creation in
-        // place, unlike e.g. a deletion, whose exit animation is shared
-        // with plain filtering and so still needs the toast to
-        // disambiguate (council verdict on SH-127).
-        //
-        // A priority warning is additive to that decision, not a reversal of
-        // it (SH-358): SH-127 was about a *success* toast the entering card
-        // already said for free, and this fires only when the created story
-        // needs a look, which nothing else on screen says.
+        // SH-127: no success toast here in the SAME-project case -- the new
+        // card's own "entering" animation (reconcileColumnCards, driven by
+        // diffSnapshots' `entered` classification) already confirms the
+        // creation in place, unlike e.g. a deletion, whose exit animation is
+        // shared with plain filtering and so still needs the toast to
+        // disambiguate (council verdict on SH-127). A cross-project create
+        // (SH-439) gets no such animation -- no card enters the board
+        // that's actually on screen -- so toastCrossProjectFiling() below is
+        // additive to SH-127's verdict, not a reversal of it, the same way
+        // SH-358's priority warning already is: that fires only when the
+        // created story needs a look, which nothing else on screen says.
         toastEnvelopeWarnings(payload);
+        toastCrossProjectFiling(payload, targetProject, "created in");
         fetchData();
       })
-      .catch(function(err) { setCreateModalInFlight(false); $("create-error").textContent = describeMutationFailure(err); });
+      .catch(function(err) { setCreateModalInFlight(false); $("create-error").textContent = describeMutationFailure(err, targetProject); });
   }
 
   // ============================================================
