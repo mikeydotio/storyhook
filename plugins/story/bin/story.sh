@@ -18,14 +18,17 @@
 # boolean and a human-readable `display`, mirroring issue.sh/storywork's own
 # contract:
 #
-#   dispatch <id> [--auto] [--agent=claude|codex]
+#   dispatch <id> [--auto] [--force] [--agent=claude|codex]
 #                   Refuse unless <id> is READY (issue #40's core ask — see
 #                    the READY-GATE step below) and not already claimed, then
 #                    claim it via storyhook's CAS primitive, create a NEW git
 #                    worktree at .claude/worktrees/<name> on branch
 #                    worktree-<name>, open a new tmux window rooted IN that
 #                    worktree, gate on claude becoming ready, then type +
-#                    submit the handoff prompt.
+#                    submit the handoff prompt. `--force` permits a named story
+#                    already at `in-progress`: it reuses that existing claim
+#                    without writing a redundant state transition. It bypasses
+#                    no worktree, branch, tmux, or other safety gate.
 #
 #   dispatch --next  SH-344's NEXT MODE — the id-less sibling. Instead of a
 #                    caller-named id, claims whatever `story next --claim`
@@ -56,7 +59,9 @@
 #      concrete unstick command, which the ready-gate's fallback reason
 #      ("not in `story list --ready`") does not. Explicit precondition:
 #      state == "in-progress" refuses before any side effect, run BEFORE the
-#      ready-gate below.
+#      ready-gate below. SH-440 added an explicit `--force` exception for an
+#      operator intentionally resuming a pre-claimed story; that path skips
+#      the redundant move but keeps every later dispatch safety check.
 #
 #   2. READY-STATE GATE (new — the literal ask of issue #40). Queries
 #      `story list --ready --json` (the same ground truth `story-work` and
@@ -85,9 +90,12 @@
 #      the actuator has to tolerate "already in-progress, skip the move."
 #      This script's only caller is a human via `/story do <id>` (or the
 #      /story router), with no pre-claim step — deviation #1 above already
-#      guarantees `state != "in-progress"` by the time the claim attempt
-#      runs, so the CAS move is now unconditional (still guarded by
-#      --if-state, still rolled back on a later hard failure).
+#      guarantees `state != "in-progress"` by the time the ordinary claim
+#      attempt runs, so that CAS move remains unconditional (still guarded by
+#      --if-state, still rolled back on a later hard failure). SH-440's
+#      `--force` path is deliberately separate: it accepts only an already
+#      in-progress named story and records that no transition was made, so a
+#      later dispatch failure never rolls back somebody else's existing claim.
 #
 # Everything else — worktree/tmux mechanics, the two/three-tier base-
 # freshness handling, claim-rollback-on-later-failure — is unchanged from the
@@ -98,8 +106,8 @@ set -euo pipefail
 
 # The daemon<->script argv contract this file implements (SH-196). The
 # dashboard's dispatch endpoint (src/api/dispatch.rs) invokes this script as
-# `story.sh --project <slug> dispatch <id> [--auto] [--agent=claude|codex]`;
-# before SH-196, a daemon
+# `story.sh --project <slug> dispatch <id> [--auto] [--force]
+# [--agent=claude|codex]`; before SH-196, a daemon
 # and a script that disagreed about that contract failed by relaying this
 # script's own generic top-level usage error as a well-formed business
 # refusal -- indistinguishable from "not ready" or "already claimed" to
@@ -639,7 +647,7 @@ enter_checkout() {
   CDPATH= cd -- "$root" || fail "cannot enter project \`$PROJECT_SLUG\`'s checkout \`$root\`."
 }
 
-# claim_rollback_note <id> <pre-claim-state> — cmd_dispatch's claim is a HARD
+# claim_rollback_note <id> <pre-claim-state> <claim-transitioned> — cmd_dispatch's claim is a HARD
 # PRECONDITION performed BEFORE any worktree/window side effect. If it
 # succeeds and a LATER step still hard-fails (worktree/branch collision, `git
 # worktree add`, `tmux new-window`), the story would otherwise be left
@@ -647,7 +655,9 @@ enter_checkout() {
 # session — silent. This attempts a best-effort CAS move BACK to
 # <pre-claim-state>, guarded by --if-state in-progress so a genuine
 # concurrent transition away from in-progress is never clobbered, and
-# echoes a clause for the failure message naming the outcome either way.
+# echoes a clause for the failure message naming the outcome either way. A
+# forced redispatch of an already-in-progress story passes false because this
+# dispatch did not create the claim and therefore must not roll it back.
 # dispatch_ready_note — one clause naming WHY the readiness check gave up, from
 # the globals it sets (wait_ready_sentinel's reasons since SH-231; wait_ready's
 # own "timeout" default survives for cmd_doctor's still-unported call). A
@@ -738,7 +748,11 @@ dispatch_ready_note() {
 }
 
 claim_rollback_note() {
-  local id="$1" pre_state="$2"
+  local id="$1" pre_state="$2" transitioned="$3"
+  if [ "$transitioned" != true ]; then
+    printf ' The pre-existing `in-progress` state was left unchanged.'
+    return 0
+  fi
   local rb_json rb_result
   rb_json=$(story_cli --actor dispatch-rollback move "$id" "$pre_state" --if-state in-progress --json 2>/dev/null) || true
   rb_result=$(printf '%s' "$rb_json" | jq -r '.result // ""' 2>/dev/null || printf '')
@@ -748,6 +762,27 @@ claim_rollback_note() {
     printf ' WARNING: story %s is now stranded at `in-progress` with no worktree/window — run `story move %s %s --if-state in-progress` to un-stick it.' \
       "$id" "$id" "$pre_state"
   fi
+}
+
+# missing_claim_state_vocabulary — confirm, never infer, that this project's
+# state vocabulary lacks the literal `in-progress` state cmd_dispatch uses for
+# an id-directed claim. Echoes the observed comma-separated vocabulary and
+# returns 0 only for a positively-parsed absence. A failed call, empty message,
+# unparseable message, or any output that mentions `in-progress` degrades to the
+# ordinary move failure instead of asserting a diagnosis without evidence.
+#
+# Kept on the already-failed claim path so the successful path pays nothing.
+# The CLI's error names the cause; this wrapper adds a machine-readable reason
+# and Storyhook's own repair command without removing the upstream error.
+missing_claim_state_vocabulary() {
+  local list_json message states
+  list_json=$(story_cli state list --json 2>/dev/null) || true
+  message=$(printf '%s' "$list_json" | jq -r '.message // ""' 2>/dev/null) || true
+  [ -n "$message" ] || return 1
+  case "$message" in *in-progress*) return 1 ;; esac
+  states=$(printf '%s\n' "$message" | awk 'NF { printf "%s%s", (n++ ? ", " : ""), $1 }')
+  [ -n "$states" ] || return 1
+  printf '%s' "$states"
 }
 
 # ready_gate_reason <show-json> — build a specific, best-effort explanation
@@ -859,7 +894,7 @@ council_vote_available() {
 
 # ---- subcommand: dispatch ---------------------------------------------------
 cmd_dispatch() {
-  # <story-id> XOR --next may appear before or after --auto/--agent; anything past
+  # <story-id> XOR --next may appear before or after --auto/--force/--agent; anything past
   # that (a second positional, an unknown flag) is a hard fail rather than
   # the silent ignore this verb used to give a stray trailing token —
   # matching view/list/capture/doctor/complete-plan, which already reject
@@ -867,14 +902,17 @@ cmd_dispatch() {
   # `story next --claim` picks, atomically, rather than a caller-named id —
   # see the NEXT MODE section below for why this is a second mode and not a
   # rewrite of the id-directed claim.
-  local id="" auto="" want_next="" requested_agent=""
+  local id="" auto="" want_next="" force="" requested_agent=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --auto)
-        [ -z "$auto" ] || fail "--auto may be specified only once — usage: story.sh dispatch (<story-id> | --next) [--auto] [--agent=claude|codex]"
+        [ -z "$auto" ] || fail "--auto may be specified only once — usage: story.sh dispatch (<story-id> | --next) [--auto] [--force] [--agent=claude|codex]"
         auto=1; shift ;;
+      --force)
+        [ -z "$force" ] || fail "--force may be specified only once — usage: story.sh dispatch <story-id> [--auto] [--force] [--agent=claude|codex]"
+        force=1; shift ;;
       --agent=*)
-        [ -z "$requested_agent" ] || fail "--agent may be specified only once — usage: story.sh dispatch (<story-id> | --next) [--auto] [--agent=claude|codex]"
+        [ -z "$requested_agent" ] || fail "--agent may be specified only once — usage: story.sh dispatch (<story-id> | --next) [--auto] [--force] [--agent=claude|codex]"
         requested_agent="${1#--agent=}"
         case "$requested_agent" in
           claude|codex) ;;
@@ -882,16 +920,18 @@ cmd_dispatch() {
         esac
         shift ;;
       --next)
-        [ -z "$want_next" ] || fail "--next may be specified only once — usage: story.sh dispatch (<story-id> | --next) [--auto] [--agent=claude|codex]"
-        [ -z "$id" ] || fail "--next cannot be combined with a story id \`$id\` — usage: story.sh dispatch (<story-id> | --next) [--auto] [--agent=claude|codex]"
+        [ -z "$want_next" ] || fail "--next may be specified only once — usage: story.sh dispatch (<story-id> | --next) [--auto] [--force] [--agent=claude|codex]"
+        [ -z "$id" ] || fail "--next cannot be combined with a story id \`$id\` — usage: story.sh dispatch (<story-id> | --next) [--auto] [--force] [--agent=claude|codex]"
         want_next=1; shift ;;
       *)
-        [ -z "$id" ] || fail "unexpected argument \`$1\` — usage: story.sh dispatch (<story-id> | --next) [--auto] [--agent=claude|codex]"
-        [ -z "$want_next" ] || fail "--next cannot be combined with a story id \`$1\` — usage: story.sh dispatch (<story-id> | --next) [--auto] [--agent=claude|codex]"
+        [ -z "$id" ] || fail "unexpected argument \`$1\` — usage: story.sh dispatch (<story-id> | --next) [--auto] [--force] [--agent=claude|codex]"
+        [ -z "$want_next" ] || fail "--next cannot be combined with a story id \`$1\` — usage: story.sh dispatch (<story-id> | --next) [--auto] [--force] [--agent=claude|codex]"
         id="$1"; shift ;;
     esac
   done
-  [ -n "$id" ] || [ -n "$want_next" ] || fail "usage: story.sh dispatch (<story-id> | --next) [--auto] [--agent=claude|codex]"
+  [ -n "$id" ] || [ -n "$want_next" ] || fail "usage: story.sh dispatch (<story-id> | --next) [--auto] [--force] [--agent=claude|codex]"
+  [ -z "$want_next" ] || [ -z "$force" ] \
+    || fail "--force requires a named story id and cannot be combined with --next — usage: story.sh dispatch <story-id> [--auto] [--force] [--agent=claude|codex]"
   [ -z "$id" ] || valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
 
   # The explicit dispatch option outranks STORY_AGENT. Both are resolved
@@ -930,6 +970,7 @@ cmd_dispatch() {
   # so everything from here on (worktree, tmux, the claim-rollback path) runs
   # identically regardless of which one produced them.
   local title state pre_claim_state claim_cmd_desc
+  local claim_transitioned=false reused_claim=false
   if [ -n "$want_next" ]; then
     # NEXT MODE (SH-344): a single `story next --claim` call does what ID
     # MODE's steps 4-6 plus its CAS move do for a caller-named id — pick a
@@ -969,6 +1010,7 @@ cmd_dispatch() {
       pre_claim_state="$state"
     else
       pre_claim_state=$(printf '%s' "$next_json" | jq -r '.claimed_from // ""')
+      claim_transitioned=true
     fi
   else
     # ID MODE: unchanged from before SH-344.
@@ -998,41 +1040,55 @@ cmd_dispatch() {
     # before the ready-gate for its more specific message — since SH-236 the
     # ready-gate below would also catch this, just less helpfully.
     if [ "$state" = "in-progress" ]; then
-      fail "story $id is already in-progress — not redispatching (a previous \`/story do\` may still be running against it, or move it back to a ready state first if this is stale)."
+      if [ -z "$force" ]; then
+        fail "story $id is already in-progress — not redispatching (a previous \`/story do\` may still be running against it, move it back to a ready state first if this is stale, or pass \`--force\` to reuse the existing claim)."
+      fi
+      reused_claim=true
     fi
 
     # Step 6 (deviation #2 — see header): READY-STATE GATE, issue #40's core
     # ask. Ground-truth membership check against the CLI's own `is_ready()`,
     # via the exact command every interactive skill already relies on.
-    local ready_json is_ready_flag
-    # Called plainly, NOT via $(...): _load_ready_stories may `fail`, and a
-    # command substitution would run that in a subshell.
-    _load_ready_stories
-    ready_json="$_READY_JSON"
-    is_ready_flag=$(printf '%s' "$ready_json" | jq --arg id "$id" '([.stories[]?.story.id // empty] | index($id)) != null' 2>/dev/null || printf 'false')
-    if [ "$is_ready_flag" != "true" ]; then
-      local reason
-      reason=$(ready_gate_reason "$show_json" "$id")
-      fail "story $id is not ready to work on ($reason) — run \`story show $id\` for details."
-    fi
-
-    # claim target is unconditionally "in-progress" — deviation #4 (see
-    # header): step 5 above already guarantees $state != "in-progress" here.
     pre_claim_state="$state"
-    claim_cmd_desc="story move $id in-progress --if-state $pre_claim_state"
+    claim_cmd_desc=""
+    if [ "$reused_claim" != true ]; then
+      local ready_json is_ready_flag
+      # Called plainly, NOT via $(...): _load_ready_stories may `fail`, and a
+      # command substitution would run that in a subshell.
+      _load_ready_stories
+      ready_json="$_READY_JSON"
+      is_ready_flag=$(printf '%s' "$ready_json" | jq --arg id "$id" '([.stories[]?.story.id // empty] | index($id)) != null' 2>/dev/null || printf 'false')
+      if [ "$is_ready_flag" != "true" ]; then
+        local reason
+        reason=$(ready_gate_reason "$show_json" "$id")
+        fail "story $id is not ready to work on ($reason) — run \`story show $id\` for details."
+      fi
 
-    if [ -z "$DRY_RUN" ]; then
-      local move_json move_result
-      move_json=$(story_cli --actor dispatch move "$id" in-progress --if-state "$state" --json 2>/dev/null) || true
-      move_result=$(printf '%s' "$move_json" | jq -r '.result // ""' 2>/dev/null || printf '')
-      case "$move_result" in
-        ok)
-          state="in-progress" ;;
-        conflict)
-          refuse "claim-conflict" "story $id changed state before it could be claimed (expected \`$state\`, now \`$(printf '%s' "$move_json" | jq -r '.actual // "?"' 2>/dev/null)\`) — another dispatch likely won the race." ;;
-        *)
-          fail "story move $id in-progress failed: $(printf '%s' "$move_json" | jq -r '.error // "story move emitted no result"' 2>/dev/null)." ;;
-      esac
+      # The ordinary id-directed claim target remains unconditionally
+      # "in-progress". The forced pre-claimed path above never reaches this
+      # move and therefore never writes a redundant transition.
+      claim_cmd_desc="story move $id in-progress --if-state $pre_claim_state"
+
+      if [ -z "$DRY_RUN" ]; then
+        local move_json move_result move_error states
+        move_json=$(story_cli --actor dispatch move "$id" in-progress --if-state "$state" --json 2>/dev/null) || true
+        move_result=$(printf '%s' "$move_json" | jq -r '.result // ""' 2>/dev/null || printf '')
+        case "$move_result" in
+          ok)
+            state="in-progress"
+            claim_transitioned=true ;;
+          conflict)
+            refuse "claim-conflict" "story $id changed state before it could be claimed (expected \`$state\`, now \`$(printf '%s' "$move_json" | jq -r '.actual // "?"' 2>/dev/null)\`) — another dispatch likely won the race." ;;
+          *)
+            move_error=$(printf '%s' "$move_json" | jq -r '.error // ""' 2>/dev/null) || true
+            [ -n "$move_error" ] || move_error="story move emitted no result"
+            if states=$(missing_claim_state_vocabulary); then
+              refuse "claim-state-missing" \
+                "story $id cannot be claimed: this Storyhook project's state vocabulary has no \`in-progress\` state (it defines: $states) — run \`story doctor --fix\` in this repo to add it, then re-run this dispatch. (\`story move\` reported: $move_error)"
+            fi
+            fail "story move $id in-progress failed: $move_error." ;;
+        esac
+      fi
     fi
   fi
 
@@ -1107,26 +1163,32 @@ cmd_dispatch() {
   # it), so emit the planned commands SYMBOLICALLY and stop before any side
   # effect.
   if [ -n "$DRY_RUN" ]; then
+    local dry_claim_note="would claim it via \`$claim_cmd_desc\`"
+    [ "$reused_claim" = true ] \
+      && dry_claim_note="would reuse its existing \`in-progress\` claim (\`--force\`; no state transition)"
     jq -n \
       --arg id "$id" --arg title "$title" --arg dir "$dir" \
       --arg agent "$AGENT" --arg agent_label "$AGENT_LABEL" \
       --arg submit_key "$SUBMIT_KEY" --arg plan_key "$CODEX_PLAN_KEY" \
       --arg wname "$wname" --arg launch "$launch_cmd" --arg prompt "$prompt" \
       --arg state "$state" --arg claim_cmd "$claim_cmd_desc" \
+      --arg claim_note "$dry_claim_note" \
       --arg ignore_status "$ignore_status" \
       --arg detach "$detach" --arg target "$target" \
       --argjson auto "$([ -n "$auto" ] && echo true || echo false)" --arg auto_note "$auto_note" \
       --argjson council "$council" \
+      --argjson forced "$([ -n "$force" ] && echo true || echo false)" \
+      --argjson reused_claim "$reused_claim" \
       --arg wtpath "$worktree_path" --arg wtbranch "$worktree_branch" '
       {
         ok: true, dry_run: true,
         id: $id, title: $title, dir: $dir,
         window_name: $wname, prompt: $prompt, state: $state, auto: $auto, council: $council,
+        forced: $forced, reused_claim: $reused_claim, claim_transitioned: false,
         agent: $agent, agent_label: $agent_label, submit_key: $submit_key,
         worktree_branch: $wtbranch, worktree_path: $wtpath,
         gitignore: (if $ignore_status == "already-ignored" then "already-ignored" else "would-add" end),
-        commands: [
-          $claim_cmd,
+        commands: ((if $claim_cmd == "" then [] else [$claim_cmd] end) + [
           ("git worktree add --no-track -b " + $wtbranch + " " + $wtpath + " <base-oid>"),
           ("tmux new-window " + $target + $detach + "-c " + $wtpath + " -n " + $wname + " -P -F #{pane_id} " + $launch
              + " \\; set-window-option -t " + $wname + " remain-on-exit on"
@@ -1136,10 +1198,9 @@ cmd_dispatch() {
           ("printf %s " + $prompt + " | tmux load-buffer -b story-" + $id + " -"),
           ("tmux paste-buffer -p -d -b story-" + $id + " -t <pane>"),
           ("tmux send-keys -t <pane> " + $submit_key)
-        ],
+        ]),
         display: ("[story] DRY RUN for " + $id + " (" + $title
-                  + "): would claim it via `" + $claim_cmd
-                  + "`, create worktree " + $wtpath + " (branch " + $wtbranch
+                  + "): " + $claim_note + ", create worktree " + $wtpath + " (branch " + $wtbranch
                   + "), open a new tmux window named " + $wname + " with " + $agent_label
                   + ", and run the listed commands." + $auto_note)
       }'
@@ -1182,19 +1243,19 @@ cmd_dispatch() {
   elif base_oid=$(git rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null) && [ -n "$base_oid" ]; then
     base_note="could not determine origin/$default; new work is based on the local checkout, NOT the latest origin tip"
     if [ -n "$REQUIRE_FRESH_BASE" ]; then
-      fail "could not determine a fresh origin/$default and STORY_REQUIRE_FRESH_BASE is set — refusing to dispatch on a possibly-stale base.$(claim_rollback_note "$id" "$pre_claim_state")"
+      fail "could not determine a fresh origin/$default and STORY_REQUIRE_FRESH_BASE is set — refusing to dispatch on a possibly-stale base.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned")"
     fi
   else
-    fail "cannot resolve a base commit for the new worktree (no origin/$default and HEAD has no commits).$(claim_rollback_note "$id" "$pre_claim_state")"
+    fail "cannot resolve a base commit for the new worktree (no origin/$default and HEAD has no commits).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned")"
   fi
 
   # Step 9: create the worktree off the resolved base commit.
   if git show-ref --verify --quiet "refs/heads/$worktree_branch" || [ -e "$worktree_path" ]; then
-    fail "a worktree or branch for \`$wname\` already exists — already dispatched?$(claim_rollback_note "$id" "$pre_claim_state")"
+    fail "a worktree or branch for \`$wname\` already exists — already dispatched?$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned")"
   fi
   local wt_err
   if ! wt_err=$(git worktree add --no-track -b "$worktree_branch" "$worktree_path" "$base_oid" 2>&1); then
-    fail "failed to create worktree at $worktree_path: $(printf '%s' "$wt_err" | tail -n 2)$(claim_rollback_note "$id" "$pre_claim_state")"
+    fail "failed to create worktree at $worktree_path: $(printf '%s' "$wt_err" | tail -n 2)$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned")"
   fi
 
   # Step 9b: ensure the target session exists (SH-50, opt-in via
@@ -1212,7 +1273,7 @@ cmd_dispatch() {
       git worktree remove --force "$worktree_path" >/dev/null 2>&1 || true
       git worktree prune >/dev/null 2>&1 || true
       git branch -D "$worktree_branch" >/dev/null 2>&1 || true
-      fail "failed to create tmux session \`$TARGET_SESSION\`.$(claim_rollback_note "$id" "$pre_claim_state")"
+      fail "failed to create tmux session \`$TARGET_SESSION\`.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned")"
     fi
     session_created=true
   fi
@@ -1285,7 +1346,7 @@ cmd_dispatch() {
     git worktree remove --force "$worktree_path" >/dev/null 2>&1 || true
     git worktree prune >/dev/null 2>&1 || true
     git branch -D "$worktree_branch" >/dev/null 2>&1 || true
-    fail "failed to open a new tmux window.$(claim_rollback_note "$id" "$pre_claim_state")"
+    fail "failed to open a new tmux window.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned")"
   fi
   window=$(tmux display-message -p -t "$pane" '#{window_id}' 2>/dev/null || printf '')
   # The pane's pid, captured right after the window opened: SH-231 (R2, the
@@ -1304,8 +1365,9 @@ cmd_dispatch() {
   # as commands, so "type it anyway and warn" is not a safe default when nobody
   # is watching the pane. The window is deliberately left standing — it is the
   # only place the launch failure's own words survive — while the worktree,
-  # branch and claim are rolled back so an immediate retry is not answered with
-  # "already dispatched?" (the collision guard keys on worktree/branch).
+  # branch and any claim created by this dispatch are rolled back so an
+  # immediate retry is not answered with "already dispatched?" (the collision
+  # guard keys on worktree/branch). A forced pre-existing claim stays put.
   local provider_ready=false
   if [ "$AGENT" = "codex" ]; then
     wait_ready "$pane" "$launch_cmd" && provider_ready=true
@@ -1319,15 +1381,15 @@ cmd_dispatch() {
     git worktree prune >/dev/null 2>&1 || true
     git branch -D "$worktree_branch" >/dev/null 2>&1 || true
     refuse_with pane-not-ready \
-      "[story] $id → could not confirm $AGENT_LABEL is running in window \`$wname\` ($(dispatch_ready_note)). Nothing was typed into that pane. The window is left open so you can look at it; the worktree, branch and claim were rolled back.$(claim_rollback_note "$id" "$pre_claim_state")" \
+      "[story] $id → could not confirm $AGENT_LABEL is running in window \`$wname\` ($(dispatch_ready_note)). Nothing was typed into that pane. The window is left open so you can look at it; the worktree and branch were rolled back.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned")" \
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
             --arg pane "$pane" --arg cmd "$WAIT_READY_COMMAND" \
             --arg wreason "$WAIT_READY_REASON" --arg tail "$ready_tail" \
-            --arg pattern "$READY_PROCESS_PATTERN" \
+            --arg pattern "$READY_PROCESS_PATTERN" --argjson claimed "$reused_claim" \
             '{id:$id, window:$window, window_name:$wname, pane:$pane,
               readiness_confirmed:false, pane_command:$cmd,
               wait_ready_reason:$wreason, ready_process_pattern:$pattern,
-              pane_tail:$tail, claimed:false}')"
+              pane_tail:$tail, claimed:$claimed}')"
   fi
   local readiness_confirmed=true
 
@@ -1342,12 +1404,13 @@ cmd_dispatch() {
     git worktree prune >/dev/null 2>&1 || true
     git branch -D "$worktree_branch" >/dev/null 2>&1 || true
     refuse_with plan-mode-unconfirmed \
-      "[story] $id → $AGENT_LABEL is ready in window \`$wname\`, but its Plan mode could not be confirmed ($PLAN_MODE_REASON). Nothing was typed into that pane. The window is left open; the worktree, branch and claim were rolled back.$(claim_rollback_note "$id" "$pre_claim_state")" \
+      "[story] $id → $AGENT_LABEL is ready in window \`$wname\`, but its Plan mode could not be confirmed ($PLAN_MODE_REASON). Nothing was typed into that pane. The window is left open; the worktree and branch were rolled back.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned")" \
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
             --arg pane "$pane" --arg reason "$PLAN_MODE_REASON" --arg tail "$mode_tail" \
+            --argjson claimed "$reused_claim" \
             '{id:$id, window:$window, window_name:$wname, pane:$pane,
               readiness_confirmed:true, plan_mode_confirmed:false,
-              plan_mode_reason:$reason, pane_tail:$tail, claimed:false}')"
+              plan_mode_reason:$reason, pane_tail:$tail, claimed:$claimed}')"
   fi
 
   # Step 12: type + submit the prompt, confirmed. SEND_PROMPT_PHASE distinguishes
@@ -1370,19 +1433,22 @@ cmd_dispatch() {
       git worktree prune >/dev/null 2>&1 || true
       git branch -D "$worktree_branch" >/dev/null 2>&1 || true
       refuse_with handoff-undelivered \
-      "[story] $id → $AGENT_LABEL is running in window \`$wname\`, but the prompt never reached its input box, so nothing was submitted. The window is left open; the worktree, branch and claim were rolled back.$(claim_rollback_note "$id" "$pre_claim_state")" \
+      "[story] $id → $AGENT_LABEL is running in window \`$wname\`, but the prompt never reached its input box, so nothing was submitted. The window is left open; the worktree and branch were rolled back.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned")" \
         "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
-              --arg pane "$pane" --arg tail "$send_tail" \
+              --arg pane "$pane" --arg tail "$send_tail" --argjson claimed "$reused_claim" \
               '{id:$id, window:$window, window_name:$wname, pane:$pane,
                 readiness_confirmed:true, delivery_phase:"undelivered",
-                pane_tail:$tail, claimed:false}')"
+                pane_tail:$tail, claimed:$claimed}')"
     fi
     # received-unsubmitted: the box HELD the prompt and submission was never
     # confirmed. It may already be in front of a live agent, so the claim and the
     # worktree STAY — rolling back here would return the story to the ready list
     # and let the next dispatch hand the same work to a second session.
+    local release_note="run \`story move $id $pre_claim_state --if-state in-progress\` to release it"
+    [ "$reused_claim" = true ] \
+      && release_note="leave or change the pre-existing \`in-progress\` state explicitly; this dispatch did not create a claim transition to release"
     refuse_with handoff-unconfirmed \
-      "[story] $id → $AGENT_LABEL is running in window \`$wname\` and the prompt reached its input box, but the submission was never confirmed. The claim and worktree are DELIBERATELY left in place: the agent may already be working. Look with \`story.sh capture $id\`, then either re-submit in that window or run \`story move $id $pre_claim_state --if-state in-progress\` to release it." \
+      "[story] $id → $AGENT_LABEL is running in window \`$wname\` and the prompt reached its input box, but the submission was never confirmed. The claim and worktree are DELIBERATELY left in place: the agent may already be working. Look with \`story.sh capture $id\`, then either re-submit in that window or $release_note." \
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
             --arg pane "$pane" --arg tail "$send_tail" \
             '{id:$id, window:$window, window_name:$wname, pane:$pane,
@@ -1395,8 +1461,10 @@ cmd_dispatch() {
   # was claimed AND the charter reached a confirmed agent session", which is
   # what a caller has always read it as; before SH-226 it meant only the former,
   # and the difference was carried in prose nothing downstream read.
-  local warning="" display base
-  base="[story] $id ($title) → opened tmux window \`$wname\` on a worktree based on \`origin/$default\` @ \`${base_oid:0:8}\`, launched $AGENT_LABEL with \`$launch_cmd\` (plan mode), submitted the prompt with \`$SUBMIT_KEY\`, and claimed it (now \`in-progress\`)."
+  local warning="" display base claim_success_note="and claimed it (now \`in-progress\`)"
+  [ "$reused_claim" = true ] \
+    && claim_success_note="and reused its existing \`in-progress\` claim (\`--force\`; no state transition)"
+  base="[story] $id ($title) → opened tmux window \`$wname\` on a worktree based on \`origin/$default\` @ \`${base_oid:0:8}\`, launched $AGENT_LABEL with \`$launch_cmd\` (plan mode), submitted the prompt with \`$SUBMIT_KEY\`, $claim_success_note."
   if [ -n "$base_note" ]; then
     warning="${warning:+$warning }${base_note}."
   fi
@@ -1419,6 +1487,8 @@ cmd_dispatch() {
     --argjson pconf "$prompt_confirmed" \
     --argjson paccept "$prompt_accepted_flag" \
     --argjson auto "$([ -n "$auto" ] && echo true || echo false)" --argjson council "$council" \
+    --argjson forced "$([ -n "$force" ] && echo true || echo false)" \
+    --argjson reused_claim "$reused_claim" --argjson claim_transitioned "$claim_transitioned" \
     --arg warning "$warning" --arg tail "$tail_evidence" --arg display "$display" \
     --arg default "$default" --arg base_oid "$base_oid" --argjson base_fresh "$base_fresh" \
     --arg wtbranch "$worktree_branch" --arg wtpath "$worktree_path" \
@@ -1429,6 +1499,7 @@ cmd_dispatch() {
       id: $id, title: $title,
       window: $window, window_name: $wname, pane: $pane,
       state: $state, auto: $auto, council: $council,
+      forced: $forced, reused_claim: $reused_claim, claim_transitioned: $claim_transitioned,
       agent: $agent, agent_label: $agent_label, submit_key: $submit_key,
       readiness_confirmed: $ready, plan_mode_confirmed: $plan,
       prompt_confirmed: $pconf, prompt_accepted: $paccept,
@@ -3035,5 +3106,5 @@ case "${1:-}" in
   triage)     shift; cmd_triage "$@" ;;
   scaffold-claude-md) shift; cmd_scaffold_claude_md "$@" ;;
   scaffold-agents-md) shift; cmd_scaffold_agents_md "$@" ;;
-  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] [--agent=claude|codex] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | doctor | capture <story-id> | ensure-cli | context [--full] | sync [--since <d>] | handoff [--since <d>] | work [story-id] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
+  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] [--force] [--agent=claude|codex] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | doctor | capture <story-id> | ensure-cli | context [--full] | sync [--since <d>] | handoff [--since <d>] | work [story-id] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
 esac

@@ -41,3 +41,6 @@
 
 # rca plugin
 .rca/
+
+# story per-story git worktrees (ephemeral — never commit)
+.codex/worktrees/

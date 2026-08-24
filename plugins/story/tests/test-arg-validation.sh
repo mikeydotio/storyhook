@@ -21,6 +21,7 @@ assert_eq "$(jqf "$out" .ok)" "false" "dispatch with a trailing token: ok:false"
 assert_contains "$(jqf "$out" .display)" "usage" "dispatch with a trailing token: usage message"
 assert_contains "$(jqf "$out" .display)" "--auto" "dispatch with a trailing token: usage names --auto"
 assert_contains "$(jqf "$out" .display)" "--agent=claude|codex" "dispatch with a trailing token: usage names --agent"
+assert_contains "$(jqf "$out" .display)" "--force" "dispatch with a trailing token: usage names --force"
 
 out=$(bash "$SCRIPT" dispatch SH-1 --agent=claude-code 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "dispatch with legacy agent token: ok:false"
@@ -33,6 +34,11 @@ assert_contains "$(jqf "$out" .display)" "only once" "dispatch with duplicate ag
 out=$(bash "$SCRIPT" dispatch SH-1 --auto --auto 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "dispatch with duplicate auto: ok:false"
 assert_contains "$(jqf "$out" .display)" "only once" "dispatch with duplicate auto: names duplication"
+
+out=$(bash "$SCRIPT" dispatch --next --force 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "dispatch --next --force: ok:false"
+assert_contains "$(jqf "$out" .display)" "requires a named story id" \
+  "dispatch --next --force: explains that force is id-directed"
 
 out=$(bash "$SCRIPT" reap 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "reap with no id: ok:false"
