@@ -309,7 +309,7 @@ fn test_changed_shares_fmt_clippy_build_and_plugin_legs_with_test() {
     let shared_leg_markers = [
         "cargo fmt --all -- --check",
         "cargo clippy --workspace --all-targets",
-        "leg.sh build -- cargo build",
+        "leg.sh --reuse build -- cargo build",
         "plugins/story/tests/run-tests.sh",
         "check-no-orphan-servers.sh preflight",
         "check-no-orphan-servers.sh postlude",

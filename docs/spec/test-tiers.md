@@ -96,6 +96,33 @@ once. A positive control (`make_dash_n_fails_on_an_unknown_target`) proves a
 successful dry run means something, per SH-364's lesson that an oracle
 nobody has tested is blind.
 
+### A failed leg invalidates only itself
+
+Every executable gate leg now runs through `scripts/leg.sh --reuse`. A green
+leg records an atomic, machine-local receipt under the shared git directory,
+keyed by the leg's command line and the content of its relevant tracked input
+space. A failed leg records nothing. Retrying the same gate therefore reuses
+every still-valid green result and executes the failed leg again; a browser
+failure cannot cause formatting, clippy, Rust, build, or plugin work to repeat
+merely because the aggregate `full` receipt was never reached.
+
+The fingerprints are dependency scopes, not a whole-tree timestamp. Rust
+formatting follows Rust sources and rustfmt/workspace configuration; clippy
+follows compilable Rust targets; build follows production Rust inputs; the
+plugin and browser legs add their own payloads and harnesses. The Rust suite
+is deliberately broader: repository-contract tests read tracked scripts,
+documentation, plugin files, and e2e specs at runtime, so its honest input
+space is the whole tracked tree. In all cases, an edit inside the relevant
+space yields a different fingerprint and forces that leg to run again. The
+fingerprint contract and `Makefile` are inputs to every leg, so changing the
+cache mechanism itself cannot reuse evidence produced under its old rules.
+
+These per-leg receipts are evidence used only while assembling a gate run;
+they never certify a tree by themselves. `gate-receipt.sh postlude` remains
+the sole writer of `gate`/`full` receipts and still refuses mid-run tracked
+content drift. A leg also fingerprints before and after execution and records
+nothing if its own inputs changed while it ran.
+
 ## Merge commits reach the gate a different way (SH-396)
 
 Everything above assumes the gate is reached by a **push**: `.githooks/pre-
