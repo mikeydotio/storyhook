@@ -73,7 +73,9 @@ mod legacy_support;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use legacy_support::{custom_config_tree, golden_export_path, migrate, real_tree, store_snapshots};
+use legacy_support::{
+    MIGRATION_AT, custom_config_tree, golden_export_path, migrate, real_tree, store_snapshots,
+};
 use storyhook::domain::StorySnapshot;
 use storyhook::service::transfer::ProjectExport;
 use storyhook::service::{Clock, Ctx, GitService, StoryService, TransferService};
@@ -660,6 +662,12 @@ fn the_real_trees_export_equals_the_golden_document_modulo_the_repairs() {
                         .ok()
                         .as_ref()
                             == Some(&event)
+            }) || report.metadata_repairs.iter().any(|repair| {
+                repair.story == ours.id
+                    && serde_json::to_value(repair.event(MIGRATION_AT))
+                        .ok()
+                        .as_ref()
+                        == Some(&event)
             });
             if named {
                 accounted += 1;
@@ -683,7 +691,7 @@ fn the_real_trees_export_equals_the_golden_document_modulo_the_repairs() {
     );
     assert_eq!(
         accounted,
-        report.repairs.len(),
+        report.repairs.len() + report.metadata_repairs.len(),
         "every repair the report names must actually appear in the document, and nothing else"
     );
     assert_eq!(report.repairs.len(), 10);

@@ -1109,7 +1109,7 @@ pub fn import_project<S: Store>(
 
 /// Events that make a restored legacy history satisfy the current creation
 /// invariant without rewriting any of its existing events.
-fn restore_default_events(
+pub(super) fn restore_default_events(
     snapshot: &StorySnapshot,
     default_type: &str,
     now: &str,

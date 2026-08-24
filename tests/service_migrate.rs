@@ -12,9 +12,9 @@ use std::collections::BTreeMap;
 use legacy_support::{
     custom_config_tree, migrate, new_store, plan, real_tree, store_snapshots, tree_contents,
 };
-use storyhook::domain::{StoryEvent, SuperState, TypeDef};
+use storyhook::domain::{Priority, StoryEvent, SuperState, TypeDef};
 use storyhook::legacy;
-use storyhook::service::migrate::{MigrationPlan, RepairKind};
+use storyhook::service::migrate::{MetadataRepairKind, MigrationPlan, RepairKind};
 use storyhook::storage;
 use storyhook::store::{ReadOps, Store as _, WriteOps};
 
@@ -57,8 +57,8 @@ fn the_real_tree_migrates_with_every_count_the_baseline_recorded() {
     );
     assert_eq!(
         report.events,
-        486 + report.repairs.len(),
-        "every original event, plus exactly one per repair — a migration adds, it does not drop"
+        486 + report.repairs.len() + report.metadata_repairs.len(),
+        "every original event, plus exactly one per relation or metadata repair — a migration adds, it does not drop"
     );
 
     let snapshots = store_snapshots(&store);
@@ -90,6 +90,66 @@ fn the_real_tree_migrates_with_every_count_the_baseline_recorded() {
         "the frozen tree's stories land where they were, except the deleted one, \
          which now rests in a state that is genuinely CLOSED"
     );
+}
+
+#[test]
+fn legacy_missing_and_parked_metadata_becomes_explicit_events() {
+    let (_tree, root) = custom_config_tree();
+    append_raw(
+        &root,
+        "ADA-2",
+        r#"{"kind":"StoryPrioritySet","at":"2026-02-02T00:00:00Z","priority":"none"}"#,
+    );
+
+    let (_dir, store, report) = migrate(&root);
+    let repairs: Vec<_> = report
+        .metadata_repairs
+        .iter()
+        .filter(|repair| repair.story == "ADA-2")
+        .collect();
+    assert_eq!(repairs.len(), 2, "{repairs:#?}");
+    assert_eq!(
+        repairs[0].kind,
+        MetadataRepairKind::Type {
+            story_type: "story".to_string(),
+        },
+        "the first configured type, not a hard-coded stock type, is the default"
+    );
+    assert_eq!(repairs[1].kind, MetadataRepairKind::PriorityLow);
+    assert!(
+        report
+            .metadata_repairs
+            .iter()
+            .all(|repair| repair.story != "ADA-1"),
+        "an already-valid history must gain no compatibility event"
+    );
+
+    let (row, events) = store
+        .read(|tx| {
+            let project = tx.projects()?.first().expect("one project").id;
+            let story = storyhook::store::StoryNo::parse_id("ADA", "ADA-2").unwrap();
+            Ok((
+                tx.story(project, story)?.expect("ADA-2 exists"),
+                tx.events_for(project, story)?,
+            ))
+        })
+        .expect("reading the normalized story");
+    assert_eq!(row.snapshot.story_type.as_deref(), Some("story"));
+    assert_eq!(row.snapshot.priority, Priority::Low);
+    assert!(row.snapshot.priority_assessed);
+    assert_eq!(row.snapshot.updated_at, legacy_support::MIGRATION_AT);
+
+    let tail: Vec<_> = events.iter().rev().take(2).collect();
+    assert!(matches!(
+        tail[1].known(),
+        Some(StoryEvent::StoryTypeSet { at, story_type })
+            if at == legacy_support::MIGRATION_AT && story_type == "story"
+    ));
+    assert!(matches!(
+        tail[0].known(),
+        Some(StoryEvent::StoryPrioritySet { at, priority: Priority::Low })
+            if at == legacy_support::MIGRATION_AT
+    ));
 }
 
 #[test]
@@ -191,8 +251,9 @@ fn a_one_sided_relation_is_completed_at_the_instant_it_was_claimed() {
         "both ends must claim the edge after a repair"
     );
     assert_eq!(
-        snapshots["ADA-2"].updated_at, "2026-02-01T00:00:00Z",
-        "the edge really did appear then, and it is now the story's most recent activity"
+        snapshots["ADA-2"].updated_at,
+        legacy_support::MIGRATION_AT,
+        "required metadata is appended at migration time after the historically stamped edge"
     );
 }
 
@@ -537,7 +598,7 @@ fn a_second_migration_of_one_checkout_is_refused() {
     let (_dir, store, _report) = migrate(&root);
 
     let again = plan(&root)
-        .apply(&store, &root)
+        .apply(&store, &root, legacy_support::MIGRATION_AT)
         .expect_err("a checkout is migrated once");
     let message = again.to_string();
     assert!(
@@ -563,7 +624,7 @@ fn a_second_migration_is_refused_even_with_the_pointer_file_deleted() {
     std::fs::remove_file(root.join(".storyhook.toml")).expect("removing the pointer");
 
     let message = plan(&root)
-        .apply(&store, &root)
+        .apply(&store, &root, legacy_support::MIGRATION_AT)
         .expect_err("the store's own record is the second guard")
         .to_string();
     assert!(
@@ -582,8 +643,12 @@ fn two_trees_with_the_same_prefix_stay_completely_isolated() {
     let (_b, root_b) = real_tree();
     let (_dir, store) = new_store();
 
-    plan(&root_a).apply(&store, &root_a).expect("first");
-    plan(&root_b).apply(&store, &root_b).expect("second");
+    plan(&root_a)
+        .apply(&store, &root_a, legacy_support::MIGRATION_AT)
+        .expect("first");
+    plan(&root_b)
+        .apply(&store, &root_b, legacy_support::MIGRATION_AT)
+        .expect("second");
 
     let projects = store.read(|tx| tx.projects()).expect("reading");
     assert_eq!(projects.len(), 2, "two checkouts, two projects");
