@@ -11466,7 +11466,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // takes the seven *closed* overlays out of the tab order they have
     // always been in (see `applyOverlayModality()`).
     applyOverlayModality();
-    document.addEventListener("keydown", trapOverlayTab);
+    bindTypedKeys(document, trapOverlayTab);
     document.querySelectorAll("#view-toggle button").forEach(function(btn) {
       btn.classList.toggle("active", btn.dataset.view === state.view);
       btn.addEventListener("click", function() { setView(btn.dataset.view); });
