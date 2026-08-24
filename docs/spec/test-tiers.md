@@ -58,7 +58,7 @@ skip it.
 
 | | `make test` | `make test-full` |
 |---|---|---|
-| fmt, clippy, the Rust suite, `cargo build`, the plugin bash harness | ✓ | ✓ |
+| fmt, clippy, core Rust, checkout-contract Rust, `cargo build`, plugin bash | ✓ | ✓ |
 | `scripts/run-e2e.sh` (the browser suite) | — (named deferral) | ✓ |
 | Gates | every push (`.githooks/pre-push`) | `scripts/release.sh`'s public path |
 | Receipt tier | `gate` | `full` |
@@ -109,13 +109,21 @@ merely because the aggregate `full` receipt was never reached.
 The fingerprints are dependency scopes, not a whole-tree timestamp. Rust
 formatting follows Rust sources and rustfmt/workspace configuration; clippy
 follows compilable Rust targets; build follows production Rust inputs; the
-plugin and browser legs add their own payloads and harnesses. The Rust suite
-is deliberately broader: repository-contract tests read tracked scripts,
-documentation, plugin files, and e2e specs at runtime, so its honest input
-space is the whole tracked tree. In all cases, an edit inside the relevant
-space yields a different fingerprint and forces that leg to run again. The
-fingerprint contract and `Makefile` are inputs to every leg, so changing the
-cache mechanism itself cannot reuse evidence produced under its old rules.
+plugin and browser legs add their own payloads and harnesses. Rust execution
+is split into two disjoint batteries. `rust-suite` owns ordinary integration
+tests, workspace library tests, and doctests. `rust-contracts` owns the
+integration targets whose source reads `CARGO_MANIFEST_DIR`, shells out to
+`git ls-files`, or embeds checkout content with `include_str!`; its honest
+input is the whole tracked tree because those tests inspect scripts,
+documentation, plugin files, and e2e specs at runtime. Thus a browser-only
+edit reruns the browser and the related checkout contracts, never the core
+Rust battery. `scripts/rust-test-targets.sh` derives the disjoint target sets
+from Cargo metadata and test source rather than maintaining a list.
+
+In all cases, an edit inside the relevant space yields a different fingerprint
+and forces only that battery to run again. The fingerprint contract and
+`Makefile` are inputs to every leg, so changing the cache mechanism itself
+cannot reuse evidence produced under its old rules.
 
 These per-leg receipts are evidence used only while assembling a gate run;
 they never certify a tree by themselves. `gate-receipt.sh postlude` remains

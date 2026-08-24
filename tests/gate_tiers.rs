@@ -274,7 +274,7 @@ fn the_two_tiers_agree_on_every_leg_but_the_browser_suite_and_the_receipt() {
 }
 
 /// The selective tier's rust-suite leg (SH-429): `test-changed` must reach
-/// `scripts/run-changed.sh`, never the bare full-workspace invocation `test`
+/// `scripts/run-changed.sh`, never the full core-battery invocation `test`
 /// itself uses — the whole point of the split, provoked rather than assumed.
 #[test]
 fn test_changed_runs_run_changed_sh_instead_of_the_full_workspace_runner() {
@@ -290,10 +290,14 @@ fn test_changed_runs_run_changed_sh_instead_of_the_full_workspace_runner() {
         "make test must NOT invoke scripts/run-changed.sh, dry run was:\n{gate:#?}"
     );
     assert!(
+        gate.iter().any(|l| l.contains("run-rust-battery.sh core")),
+        "make test must invoke the full core Rust battery, dry run was:\n{gate:#?}"
+    );
+    assert!(
         !changed
             .iter()
-            .any(|l| l.contains("run-tests.sh -- --test-threads=4")),
-        "make test-changed must not ALSO run the full-workspace invocation \
+            .any(|l| l.contains("run-rust-battery.sh core")),
+        "make test-changed must not ALSO run the full core Rust battery \
          directly, dry run was:\n{changed:#?}"
     );
 }
@@ -309,6 +313,7 @@ fn test_changed_shares_fmt_clippy_build_and_plugin_legs_with_test() {
     let shared_leg_markers = [
         "cargo fmt --all -- --check",
         "cargo clippy --workspace --all-targets",
+        "run-rust-battery.sh contracts",
         "leg.sh --reuse build -- cargo build",
         "plugins/story/tests/run-tests.sh",
         "check-no-orphan-servers.sh preflight",

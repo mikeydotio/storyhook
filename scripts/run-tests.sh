@@ -38,14 +38,20 @@
 # `tests/*.rs`/lib-`#[cfg(test)]` binary), so selection has no signal for
 # them at all, and they cost ~3s total (`docs/rearch/baseline/timings.md`) —
 # cheap enough that skipping them was never worth the soundness gap.
+# `--only-no-doc` is the same targeted mode without doctests. It is reserved
+# for the checkout-contract battery: the disjoint core battery owns doctests,
+# so running them again there would itself violate the no-unrelated-reruns
+# contract.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
 only_mode=0
+run_docs=1
 only_names=()
-if [ "${1:-}" = "--only" ]; then
+if [ "${1:-}" = "--only" ] || [ "${1:-}" = "--only-no-doc" ]; then
     only_mode=1
+    [ "$1" = "--only-no-doc" ] && run_docs=0
     shift
     while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
         only_names+=("$1")
@@ -162,7 +168,9 @@ skipping it" >&2
             i=$((i + 1))
         done
     fi
-    run_leg cargo test --workspace --doc "$@" || status=$?
+    if [ "$run_docs" -eq 1 ]; then
+        run_leg cargo test --workspace --doc "$@" || status=$?
+    fi
 fi
 
 # Diagnostic side-channel, never gating: a failure recording the ledger must
