@@ -839,6 +839,31 @@ fn web_serve_and_query_root() {
     assert!(body.contains("Storyhook"));
 }
 
+/// The dashboard's About section reports the version of the binary serving
+/// it. Keeping this assertion at the HTTP boundary proves the embedded shell
+/// was rendered, not merely that its source file contains a placeholder.
+#[test]
+fn web_serve_root_html_embeds_the_running_package_version() {
+    let fixture = served();
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{}/", fixture.port))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+
+    let expected = format!("Storyhook v{}", env!("CARGO_PKG_VERSION"));
+    assert!(
+        body.contains(&expected),
+        "served dashboard must contain the running package version `{expected}`"
+    );
+    assert!(
+        !body.contains("__STORYHOOK_VERSION__"),
+        "served dashboard must not expose its unresolved version placeholder"
+    );
+}
+
 /// SH-197's deep link (`?project=<slug>&story=<id>`) is resolved client-side
 /// by the dashboard's own JS, not by the server -- but that only works if
 /// the server still serves the dashboard for a `/` request that carries a
