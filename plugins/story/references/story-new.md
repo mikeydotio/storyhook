@@ -89,14 +89,11 @@ bash "<story-helper>" create \
 `backend` and `api`. Comma is always the label delimiter — a single label can
 never contain one.
 
-**Always pass `--priority`, and read `story help priority-rubric` to choose the
-level.** Priority is `story next`'s sort key, so it decides what the next
-session picks up. Omitting it records the story as *nobody has assessed this*,
-which is a different fact from `--priority none` — that one means *deliberately
-parked*, a decision somebody made. Both sort last, so a defect filed either way
-can sit at the bottom of the queue indefinitely; the difference is that
-`story list --unassessed` and `story-triage` can find the unassessed ones and
-say so, while a parked story is left alone on purpose.
+**Read `story help priority-rubric` before choosing a level.** Priority is
+`story next`'s sort key, so it decides what the next session picks up. Omitted
+priority defaults to `low`; omitted type uses the project's first configured
+type. Pass both explicitly when the user's requested classification differs
+from those defaults.
 
 ## 8. Report
 

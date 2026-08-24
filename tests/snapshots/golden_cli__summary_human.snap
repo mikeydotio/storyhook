@@ -11,7 +11,7 @@ by state:
 by priority:
   critical: 2
   high: 3
-  low: 4
+  low: 5
   medium: 4
 by type:
   bug: 1
@@ -39,7 +39,7 @@ by state:
 by priority:
   critical: 2
   high: 3
-  low: 4
+  low: 5
   medium: 4
 by type:
   bug: 1

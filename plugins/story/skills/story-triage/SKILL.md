@@ -37,11 +37,10 @@ one of:
   carries it)
 - **`stale`** — not updated within `STORY_STALE_THRESHOLD`; each finding's own `detail`
   states the real window used (e.g. `"stale 3d+"`), never restated here
-- **`unprioritized`** — nobody has ever chosen this story's priority. Since SH-359
-  the store records that as its own fact, so this category no longer catches a
-  story **deliberately parked** at `none` — parking is a decision, and this
-  category is for the absence of one. Every story here is a triage failure rather
-  than a judgement call, and a defect must never be left in it
+- **`unprioritized`** — a legacy story whose history predates the required
+  priority invariant. Current creation defaults to `low`; this diagnostic stays
+  able to identify an old unassessed representation until schema migration 19
+  normalizes it
 - **`cycle`** — sits on a `blocked-by` cycle — the CLI does not surface this itself, so
   the script detects it directly from every story's own relationships (Kahn's algorithm);
   this is no longer a manual "eyeball the graph" step
@@ -61,7 +60,7 @@ says the backlog looks clean; report that and stop.
 For each finding, ask one concise question about what to do and execute their decision with the matching
 direct CLI command:
 
-- **Reprioritize**: `story prioritize <id> <critical|high|medium|low|none>` — run
+- **Reprioritize**: `story prioritize <id> <critical|high|medium|low>` — run
   `story help priority-rubric` first and choose against its criteria. A level is
   `story next`'s sort key, ties break toward the older story, and every inflated
   level permanently costs the resolution of the level it joins, so on a genuine

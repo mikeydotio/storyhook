@@ -1,8 +1,8 @@
 //! `scripts/merge-preflight.sh`, **provoked** — not inspected.
 //!
 //! SH-396. `main` was red for 73 minutes because PR #484 merged two
-//! independently green branches — SH-315's attachment CLI and the exhaustive
-//! `Invocation` match `tests/unassessed_priority_paths.rs` runs over it —
+//! independently green branches — SH-315's attachment CLI and an exhaustive
+//! `Invocation` match on the other side —
 //! into a tree that failed to compile. Zero textual conflict, so nothing
 //! flagged it: a new match variant on one side, no arm added on the other.
 //! `.githooks/pre-push` only ever certifies the tip tree of a *pushed* ref,

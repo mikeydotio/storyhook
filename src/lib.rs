@@ -21,7 +21,6 @@ pub mod migration_guard;
 pub mod output;
 pub mod path_identity;
 pub mod plugin;
-pub mod priority_notice;
 pub mod service;
 pub mod storage;
 pub mod store;

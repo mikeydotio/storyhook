@@ -10,13 +10,13 @@
 //! Not a refusal: `story block` runs non-interactively from agents and from
 //! the daemon, where there is no terminal to ask at, so the door stays open
 //! and the nudge rides on the response the same way
-//! [`crate::priority_notice`]'s does.
+//! the story view's warnings do.
 //!
-//! Split the same way [`crate::priority_notice`] is, for the same reason:
+//! Split between single-story and batch wording for the same reason:
 //! [`unlinked_mentions`] is the one place that reads the store (generic over
 //! [`Store`], so every caller shares it rather than re-deriving the check),
 //! and [`warning`] is pure text with no dependency on either — the split
-//! `tests/unassessed_priority_paths.rs`-style path fence in
+//! source-derived path fence in
 //! `tests/block_notice_paths.rs` relies on: it can call the text function
 //! directly with a hand-built mention list, with no store to stand up.
 //!
@@ -92,7 +92,7 @@ pub(crate) fn unlinked_mentions<S: Store>(
 }
 
 /// The clause every text below ends with — one copy, the way
-/// [`crate::priority_notice::GUIDANCE`] is.
+/// the equivalent single-story guidance is.
 const REMEDY: &str =
     "story relate <id> blocked-by <blocker>` (or `story block <id> --on <blocker> \"<reason>\"`)";
 

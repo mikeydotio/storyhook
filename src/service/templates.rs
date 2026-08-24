@@ -66,10 +66,8 @@ story prioritize {prefix}-6 medium
 **Read `story help priority-rubric` before choosing a level.** Priority is
 `story next`'s sort key, not a label — it decides what the next session picks
 up, ties break toward the older story, and every inflated level costs the
-resolution of the level it joins. A story created with no `--priority` is
-recorded as *nobody has assessed this*, and sorts last — the same place as a
-story deliberately parked at `none`, which is a decision somebody made. The two
-are stored apart: `story list --unassessed` finds the first kind.
+resolution of the level it joins. A story created with no `--priority` defaults
+to `low`; one with no `--type` uses the project's first configured type.
 
 ### Decompose a spec
 
@@ -223,7 +221,7 @@ to manage tasks.
 - `story show <id>` — show story details
 - `story comment <id> "text"` — add a comment
 - `story move <id> <state>` — change story state
-- `story prioritize <id> <level>` — set priority (critical, high, medium, low, none);
+- `story prioritize <id> <level>` — set priority (critical, high, medium, low);
   run `story help priority-rubric` for what each level means before choosing one
 - `story assign <id> <member>` — assign a story
 - `story label <id> <label>` — add a label

@@ -62,12 +62,11 @@ fn dashboard_html() -> String {
 }
 
 /// All priority levels, in the order the frontend should offer them.
-const PRIORITIES: [Priority; 5] = [
+const PRIORITIES: [Priority; 4] = [
     Priority::Critical,
     Priority::High,
     Priority::Medium,
     Priority::Low,
-    Priority::None,
 ];
 
 /// All relationship kinds a story can be linked with, in canonical form (not
@@ -800,7 +799,11 @@ fn meta_json<R: ReadOps>(
         "priorities": priorities,
         "relations": RELATIONS,
         "labels": labels,
-        "defaults": { "state": default_state_slug, "type": default_type_slug },
+        "defaults": {
+            "state": default_state_slug,
+            "type": default_type_slug,
+            "priority": Priority::Low.as_str()
+        },
     }))
 }
 

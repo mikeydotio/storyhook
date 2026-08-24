@@ -10,7 +10,7 @@ source: tests/golden_cli.rs
       "stories": [
         {
           "display_state": "in-progress",
-          "head_global_seq": 51,
+          "head_global_seq": 52,
           "progress": {
             "children_done": 0,
             "children_total": 3
@@ -44,7 +44,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 61,
+          "head_global_seq": 62,
           "story": {
             "assignee": "ada-lovelace",
             "awaiting": null,
@@ -81,7 +81,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 65,
+          "head_global_seq": 66,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -111,7 +111,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 66,
+          "head_global_seq": 67,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -136,7 +136,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 60,
+          "head_global_seq": 61,
           "story": {
             "assignee": "grace-hopper",
             "awaiting": null,
@@ -172,7 +172,7 @@ source: tests/golden_cli.rs
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 64,
+          "head_global_seq": 65,
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
@@ -189,13 +189,14 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 24,
+          "head_global_seq": 25,
           "story": {
             "awaiting": null,
             "comments": [],
             "created_at": "[timestamp]",
             "id": "SH-7",
-            "priority": "none",
+            "priority": "low",
+            "priority_assessed": true,
             "relationships": [],
             "state": "todo",
             "story_type": "chore",
@@ -206,7 +207,7 @@ source: tests/golden_cli.rs
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 63,
+          "head_global_seq": 64,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -231,7 +232,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 33,
+          "head_global_seq": 34,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -248,7 +249,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 36,
+          "head_global_seq": 37,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -265,7 +266,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 39,
+          "head_global_seq": 40,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -291,7 +292,7 @@ source: tests/golden_cli.rs
       "stories": [
         {
           "display_state": "in-progress",
-          "head_global_seq": 51,
+          "head_global_seq": 52,
           "progress": {
             "children_done": 0,
             "children_total": 3
@@ -325,7 +326,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 61,
+          "head_global_seq": 62,
           "story": {
             "assignee": "ada-lovelace",
             "awaiting": null,
@@ -362,7 +363,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 60,
+          "head_global_seq": 61,
           "story": {
             "assignee": "grace-hopper",
             "awaiting": null,
@@ -398,7 +399,7 @@ source: tests/golden_cli.rs
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 64,
+          "head_global_seq": 65,
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
@@ -415,13 +416,14 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 24,
+          "head_global_seq": 25,
           "story": {
             "awaiting": null,
             "comments": [],
             "created_at": "[timestamp]",
             "id": "SH-7",
-            "priority": "none",
+            "priority": "low",
+            "priority_assessed": true,
             "relationships": [],
             "state": "todo",
             "story_type": "chore",
@@ -432,7 +434,7 @@ source: tests/golden_cli.rs
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 63,
+          "head_global_seq": 64,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -457,7 +459,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 33,
+          "head_global_seq": 34,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -474,7 +476,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 36,
+          "head_global_seq": 37,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -491,7 +493,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 39,
+          "head_global_seq": 40,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -516,7 +518,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 66,
+          "head_global_seq": 67,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -550,7 +552,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 68,
+          "head_global_seq": 69,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -568,7 +570,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 70,
+          "head_global_seq": 71,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -594,7 +596,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 60,
+          "head_global_seq": 61,
           "story": {
             "assignee": "grace-hopper",
             "awaiting": null,
@@ -639,7 +641,7 @@ source: tests/golden_cli.rs
       "stories": [
         {
           "display_state": "blocked",
-          "head_global_seq": 64,
+          "head_global_seq": 65,
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
@@ -672,7 +674,7 @@ source: tests/golden_cli.rs
       "stories": [
         {
           "display_state": "in-progress",
-          "head_global_seq": 51,
+          "head_global_seq": 52,
           "progress": {
             "children_done": 0,
             "children_total": 3
@@ -706,7 +708,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 61,
+          "head_global_seq": 62,
           "story": {
             "assignee": "ada-lovelace",
             "awaiting": null,
@@ -743,7 +745,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 65,
+          "head_global_seq": 66,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -773,7 +775,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 60,
+          "head_global_seq": 61,
           "story": {
             "assignee": "grace-hopper",
             "awaiting": null,
@@ -808,7 +810,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 39,
+          "head_global_seq": 40,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -831,24 +833,7 @@ source: tests/golden_cli.rs
     "argv": "story list --priority none --json",
     "stdout": {
       "result": "ok",
-      "stories": [
-        {
-          "head_global_seq": 24,
-          "story": {
-            "awaiting": null,
-            "comments": [],
-            "created_at": "[timestamp]",
-            "id": "SH-7",
-            "priority": "none",
-            "relationships": [],
-            "state": "todo",
-            "story_type": "chore",
-            "superstate": "OPEN",
-            "title": "Document the data layer",
-            "updated_at": "[timestamp]"
-          }
-        }
-      ]
+      "stories": []
     }
   },
   {
@@ -857,7 +842,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 61,
+          "head_global_seq": 62,
           "story": {
             "assignee": "ada-lovelace",
             "awaiting": null,
@@ -894,7 +879,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 65,
+          "head_global_seq": 66,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -924,7 +909,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 66,
+          "head_global_seq": 67,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -957,7 +942,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 61,
+          "head_global_seq": 62,
           "story": {
             "assignee": "ada-lovelace",
             "awaiting": null,
@@ -994,7 +979,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 60,
+          "head_global_seq": 61,
           "story": {
             "assignee": "grace-hopper",
             "awaiting": null,
@@ -1037,7 +1022,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 61,
+          "head_global_seq": 62,
           "story": {
             "assignee": "ada-lovelace",
             "awaiting": null,
@@ -1096,7 +1081,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 65,
+          "head_global_seq": 66,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -1127,7 +1112,7 @@ source: tests/golden_cli.rs
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 64,
+          "head_global_seq": 65,
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
@@ -1145,7 +1130,7 @@ source: tests/golden_cli.rs
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 63,
+          "head_global_seq": 64,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -1179,7 +1164,7 @@ source: tests/golden_cli.rs
       "stories": [
         {
           "display_state": "in-progress",
-          "head_global_seq": 51,
+          "head_global_seq": 52,
           "progress": {
             "children_done": 0,
             "children_total": 3
@@ -1213,7 +1198,180 @@ source: tests/golden_cli.rs
           }
         },
         {
+          "head_global_seq": 62,
+          "story": {
+            "assignee": "ada-lovelace",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Trait shape settled: one method per verb."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-2",
+            "labels": [
+              "api",
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-3",
+                "relation": "blocks"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "normal",
+            "superstate": "OPEN",
+            "title": "Define the Store trait",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "head_global_seq": 67,
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-4",
+            "labels": [
+              "backend"
+            ],
+            "priority": "medium",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "review",
+            "story_type": "normal",
+            "superstate": "OPEN",
+            "title": "Write the migration runner",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
           "head_global_seq": 61,
+          "story": {
+            "assignee": "grace-hopper",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Reproduced with two linked worktrees."
+              },
+              {
+                "at": "[timestamp]",
+                "text": "Root cause is the committed next-id counter."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-5",
+            "labels": [
+              "defect"
+            ],
+            "priority": "critical",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-9",
+                "relation": "blocks"
+              }
+            ],
+            "state": "todo",
+            "story_type": "bug",
+            "superstate": "OPEN",
+            "title": "Fix the id collision across worktrees",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "head_global_seq": 25,
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-7",
+            "priority": "low",
+            "priority_assessed": true,
+            "relationships": [],
+            "state": "todo",
+            "story_type": "chore",
+            "superstate": "OPEN",
+            "title": "Document the data layer",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "head_global_seq": 34,
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-10",
+            "priority": "medium",
+            "priority_assessed": true,
+            "relationships": [],
+            "state": "todo",
+            "story_type": "normal",
+            "superstate": "OPEN",
+            "title": "Ship the CLI shim",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "head_global_seq": 37,
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-11",
+            "priority": "low",
+            "priority_assessed": true,
+            "relationships": [],
+            "state": "todo",
+            "story_type": "normal",
+            "superstate": "OPEN",
+            "title": "Audit error codes",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "head_global_seq": 40,
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-12",
+            "priority": "high",
+            "priority_assessed": true,
+            "relationships": [],
+            "state": "todo",
+            "story_type": "normal",
+            "superstate": "OPEN",
+            "title": "Harden concurrent writes",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story list --phase 1 --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "head_global_seq": 62,
           "story": {
             "assignee": "ada-lovelace",
             "awaiting": null,
@@ -1251,178 +1409,6 @@ source: tests/golden_cli.rs
         },
         {
           "head_global_seq": 66,
-          "story": {
-            "awaiting": null,
-            "comments": [],
-            "created_at": "[timestamp]",
-            "id": "SH-4",
-            "labels": [
-              "backend"
-            ],
-            "priority": "medium",
-            "priority_assessed": true,
-            "relationships": [
-              {
-                "other_id": "SH-1",
-                "relation": "child-of"
-              }
-            ],
-            "state": "review",
-            "story_type": "normal",
-            "superstate": "OPEN",
-            "title": "Write the migration runner",
-            "updated_at": "[timestamp]"
-          }
-        },
-        {
-          "head_global_seq": 60,
-          "story": {
-            "assignee": "grace-hopper",
-            "awaiting": null,
-            "comments": [
-              {
-                "at": "[timestamp]",
-                "text": "Reproduced with two linked worktrees."
-              },
-              {
-                "at": "[timestamp]",
-                "text": "Root cause is the committed next-id counter."
-              }
-            ],
-            "created_at": "[timestamp]",
-            "id": "SH-5",
-            "labels": [
-              "defect"
-            ],
-            "priority": "critical",
-            "priority_assessed": true,
-            "relationships": [
-              {
-                "other_id": "SH-9",
-                "relation": "blocks"
-              }
-            ],
-            "state": "todo",
-            "story_type": "bug",
-            "superstate": "OPEN",
-            "title": "Fix the id collision across worktrees",
-            "updated_at": "[timestamp]"
-          }
-        },
-        {
-          "head_global_seq": 24,
-          "story": {
-            "awaiting": null,
-            "comments": [],
-            "created_at": "[timestamp]",
-            "id": "SH-7",
-            "priority": "none",
-            "relationships": [],
-            "state": "todo",
-            "story_type": "chore",
-            "superstate": "OPEN",
-            "title": "Document the data layer",
-            "updated_at": "[timestamp]"
-          }
-        },
-        {
-          "head_global_seq": 33,
-          "story": {
-            "awaiting": null,
-            "comments": [],
-            "created_at": "[timestamp]",
-            "id": "SH-10",
-            "priority": "medium",
-            "priority_assessed": true,
-            "relationships": [],
-            "state": "todo",
-            "story_type": "normal",
-            "superstate": "OPEN",
-            "title": "Ship the CLI shim",
-            "updated_at": "[timestamp]"
-          }
-        },
-        {
-          "head_global_seq": 36,
-          "story": {
-            "awaiting": null,
-            "comments": [],
-            "created_at": "[timestamp]",
-            "id": "SH-11",
-            "priority": "low",
-            "priority_assessed": true,
-            "relationships": [],
-            "state": "todo",
-            "story_type": "normal",
-            "superstate": "OPEN",
-            "title": "Audit error codes",
-            "updated_at": "[timestamp]"
-          }
-        },
-        {
-          "head_global_seq": 39,
-          "story": {
-            "awaiting": null,
-            "comments": [],
-            "created_at": "[timestamp]",
-            "id": "SH-12",
-            "priority": "high",
-            "priority_assessed": true,
-            "relationships": [],
-            "state": "todo",
-            "story_type": "normal",
-            "superstate": "OPEN",
-            "title": "Harden concurrent writes",
-            "updated_at": "[timestamp]"
-          }
-        }
-      ]
-    }
-  },
-  {
-    "argv": "story list --phase 1 --json",
-    "stdout": {
-      "result": "ok",
-      "stories": [
-        {
-          "head_global_seq": 61,
-          "story": {
-            "assignee": "ada-lovelace",
-            "awaiting": null,
-            "comments": [
-              {
-                "at": "[timestamp]",
-                "text": "Trait shape settled: one method per verb."
-              }
-            ],
-            "created_at": "[timestamp]",
-            "id": "SH-2",
-            "labels": [
-              "api",
-              "backend",
-              "phase:1"
-            ],
-            "priority": "high",
-            "priority_assessed": true,
-            "relationships": [
-              {
-                "other_id": "SH-3",
-                "relation": "blocks"
-              },
-              {
-                "other_id": "SH-1",
-                "relation": "child-of"
-              }
-            ],
-            "state": "todo",
-            "story_type": "normal",
-            "superstate": "OPEN",
-            "title": "Define the Store trait",
-            "updated_at": "[timestamp]"
-          }
-        },
-        {
-          "head_global_seq": 65,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -1476,7 +1462,7 @@ source: tests/golden_cli.rs
       "stories": [
         {
           "display_state": "in-progress",
-          "head_global_seq": 51,
+          "head_global_seq": 52,
           "progress": {
             "children_done": 0,
             "children_total": 3
@@ -1510,7 +1496,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 61,
+          "head_global_seq": 62,
           "story": {
             "assignee": "ada-lovelace",
             "awaiting": null,
@@ -1547,7 +1533,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 65,
+          "head_global_seq": 66,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -1577,7 +1563,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 66,
+          "head_global_seq": 67,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -1602,7 +1588,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 60,
+          "head_global_seq": 61,
           "story": {
             "assignee": "grace-hopper",
             "awaiting": null,
@@ -1638,7 +1624,7 @@ source: tests/golden_cli.rs
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 64,
+          "head_global_seq": 65,
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
@@ -1655,13 +1641,14 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 24,
+          "head_global_seq": 25,
           "story": {
             "awaiting": null,
             "comments": [],
             "created_at": "[timestamp]",
             "id": "SH-7",
-            "priority": "none",
+            "priority": "low",
+            "priority_assessed": true,
             "relationships": [],
             "state": "todo",
             "story_type": "chore",
@@ -1672,7 +1659,7 @@ source: tests/golden_cli.rs
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 63,
+          "head_global_seq": 64,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -1697,7 +1684,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 33,
+          "head_global_seq": 34,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -1714,7 +1701,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 36,
+          "head_global_seq": 37,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -1731,7 +1718,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 39,
+          "head_global_seq": 40,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -1765,7 +1752,7 @@ source: tests/golden_cli.rs
       "stories": [
         {
           "display_state": "in-progress",
-          "head_global_seq": 51,
+          "head_global_seq": 52,
           "progress": {
             "children_done": 0,
             "children_total": 3
@@ -1799,7 +1786,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 61,
+          "head_global_seq": 62,
           "story": {
             "assignee": "ada-lovelace",
             "awaiting": null,
@@ -1836,7 +1823,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 65,
+          "head_global_seq": 66,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -1866,7 +1853,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 66,
+          "head_global_seq": 67,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -1891,7 +1878,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 60,
+          "head_global_seq": 61,
           "story": {
             "assignee": "grace-hopper",
             "awaiting": null,
@@ -1927,7 +1914,7 @@ source: tests/golden_cli.rs
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 64,
+          "head_global_seq": 65,
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
@@ -1944,13 +1931,14 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 24,
+          "head_global_seq": 25,
           "story": {
             "awaiting": null,
             "comments": [],
             "created_at": "[timestamp]",
             "id": "SH-7",
-            "priority": "none",
+            "priority": "low",
+            "priority_assessed": true,
             "relationships": [],
             "state": "todo",
             "story_type": "chore",
@@ -1961,7 +1949,7 @@ source: tests/golden_cli.rs
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 63,
+          "head_global_seq": 64,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -1986,7 +1974,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 33,
+          "head_global_seq": 34,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2003,7 +1991,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 36,
+          "head_global_seq": 37,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2020,7 +2008,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 39,
+          "head_global_seq": 40,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2046,7 +2034,7 @@ source: tests/golden_cli.rs
       "stories": [
         {
           "display_state": "in-progress",
-          "head_global_seq": 51,
+          "head_global_seq": 52,
           "progress": {
             "children_done": 0,
             "children_total": 3
@@ -2080,7 +2068,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 60,
+          "head_global_seq": 61,
           "story": {
             "assignee": "grace-hopper",
             "awaiting": null,
@@ -2123,7 +2111,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 61,
+          "head_global_seq": 62,
           "story": {
             "assignee": "ada-lovelace",
             "awaiting": null,
@@ -2160,7 +2148,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 65,
+          "head_global_seq": 66,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2190,7 +2178,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 66,
+          "head_global_seq": 67,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2225,7 +2213,7 @@ source: tests/golden_cli.rs
       "stories": [
         {
           "display_state": "in-progress",
-          "head_global_seq": 51,
+          "head_global_seq": 52,
           "progress": {
             "children_done": 0,
             "children_total": 3
@@ -2259,7 +2247,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 61,
+          "head_global_seq": 62,
           "story": {
             "assignee": "ada-lovelace",
             "awaiting": null,
@@ -2296,7 +2284,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 65,
+          "head_global_seq": 66,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2326,7 +2314,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 66,
+          "head_global_seq": 67,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2351,7 +2339,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 60,
+          "head_global_seq": 61,
           "story": {
             "assignee": "grace-hopper",
             "awaiting": null,
@@ -2387,7 +2375,7 @@ source: tests/golden_cli.rs
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 64,
+          "head_global_seq": 65,
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
@@ -2404,13 +2392,14 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 24,
+          "head_global_seq": 25,
           "story": {
             "awaiting": null,
             "comments": [],
             "created_at": "[timestamp]",
             "id": "SH-7",
-            "priority": "none",
+            "priority": "low",
+            "priority_assessed": true,
             "relationships": [],
             "state": "todo",
             "story_type": "chore",
@@ -2420,7 +2409,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 68,
+          "head_global_seq": 69,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -2439,7 +2428,7 @@ source: tests/golden_cli.rs
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 63,
+          "head_global_seq": 64,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2464,7 +2453,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 33,
+          "head_global_seq": 34,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2481,7 +2470,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 36,
+          "head_global_seq": 37,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2498,7 +2487,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 39,
+          "head_global_seq": 40,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2515,7 +2504,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 70,
+          "head_global_seq": 71,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -2543,7 +2532,7 @@ source: tests/golden_cli.rs
       "stories": [
         {
           "display_state": "in-progress",
-          "head_global_seq": 51,
+          "head_global_seq": 52,
           "progress": {
             "children_done": 0,
             "children_total": 3
@@ -2577,7 +2566,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 61,
+          "head_global_seq": 62,
           "story": {
             "assignee": "ada-lovelace",
             "awaiting": null,
@@ -2614,7 +2603,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 65,
+          "head_global_seq": 66,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2644,7 +2633,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 66,
+          "head_global_seq": 67,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2669,7 +2658,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 60,
+          "head_global_seq": 61,
           "story": {
             "assignee": "grace-hopper",
             "awaiting": null,
@@ -2705,7 +2694,7 @@ source: tests/golden_cli.rs
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 64,
+          "head_global_seq": 65,
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
@@ -2722,13 +2711,14 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 24,
+          "head_global_seq": 25,
           "story": {
             "awaiting": null,
             "comments": [],
             "created_at": "[timestamp]",
             "id": "SH-7",
-            "priority": "none",
+            "priority": "low",
+            "priority_assessed": true,
             "relationships": [],
             "state": "todo",
             "story_type": "chore",
@@ -2738,7 +2728,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 68,
+          "head_global_seq": 69,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -2757,7 +2747,7 @@ source: tests/golden_cli.rs
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 63,
+          "head_global_seq": 64,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2782,7 +2772,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 33,
+          "head_global_seq": 34,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2799,7 +2789,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 36,
+          "head_global_seq": 37,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2816,7 +2806,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 39,
+          "head_global_seq": 40,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2833,7 +2823,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 70,
+          "head_global_seq": 71,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -2861,7 +2851,7 @@ source: tests/golden_cli.rs
       "stories": [
         {
           "display_state": "in-progress",
-          "head_global_seq": 51,
+          "head_global_seq": 52,
           "progress": {
             "children_done": 0,
             "children_total": 3
@@ -2895,7 +2885,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 61,
+          "head_global_seq": 62,
           "story": {
             "assignee": "ada-lovelace",
             "awaiting": null,
@@ -2932,7 +2922,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 65,
+          "head_global_seq": 66,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2962,7 +2952,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 66,
+          "head_global_seq": 67,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2987,7 +2977,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 60,
+          "head_global_seq": 61,
           "story": {
             "assignee": "grace-hopper",
             "awaiting": null,
@@ -3023,7 +3013,7 @@ source: tests/golden_cli.rs
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 64,
+          "head_global_seq": 65,
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
@@ -3040,13 +3030,14 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 24,
+          "head_global_seq": 25,
           "story": {
             "awaiting": null,
             "comments": [],
             "created_at": "[timestamp]",
             "id": "SH-7",
-            "priority": "none",
+            "priority": "low",
+            "priority_assessed": true,
             "relationships": [],
             "state": "todo",
             "story_type": "chore",
@@ -3056,7 +3047,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 68,
+          "head_global_seq": 69,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -3075,7 +3066,7 @@ source: tests/golden_cli.rs
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 63,
+          "head_global_seq": 64,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -3100,7 +3091,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 33,
+          "head_global_seq": 34,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -3117,7 +3108,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 36,
+          "head_global_seq": 37,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -3134,7 +3125,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 39,
+          "head_global_seq": 40,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -3151,7 +3142,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 70,
+          "head_global_seq": 71,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",

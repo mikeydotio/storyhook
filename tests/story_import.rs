@@ -198,12 +198,12 @@ fn import_with_story_type() {
         .success()
         .stdout(predicate::str::contains("type: normal"));
 
-    // Verify untyped story has no type set
+    // Verify an omitted type uses the project's first configured type.
     story(dir.path())
         .args(["show", "SH-3"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("type: Default"));
+        .stdout(predicate::str::contains("type: normal"));
 }
 
 #[test]
@@ -304,15 +304,11 @@ fn import_accepts_valid_story_type() {
 }
 
 // ============================================================
-// A batch that lands stories nobody assessed (SH-358)
+// Required import metadata (SH-449)
 // ============================================================
-//
-// Same door as `story new`'s own unassessed-priority warning (SH-354/SH-359),
-// reached through `story import` instead: an entry with no `priority` field
-// files at the fold's starting value, and until this story nothing said so.
 
 #[test]
-fn import_with_omitted_priority_warns_once_naming_the_batch() {
+fn import_with_omitted_metadata_defaults_every_entry() {
     let dir = tempdir().unwrap();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
@@ -321,71 +317,52 @@ fn import_with_omitted_priority_warns_once_naming_the_batch() {
 
     let json = r#"[{"title": "One"}, {"title": "Two"}]"#;
 
-    let output = story(dir.path())
-        .args(["import"])
-        .write_stdin(json)
-        .assert()
-        .success();
-    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
-
-    let warning_lines: Vec<&str> = stdout
-        .lines()
-        .filter(|line| line.starts_with("warning:"))
-        .collect();
-    assert_eq!(
-        warning_lines.len(),
-        1,
-        "one aggregate line, not one per story: {stdout}"
-    );
-    assert!(warning_lines[0].contains("2 of 2"), "{}", warning_lines[0]);
-    assert!(warning_lines[0].contains("SH-1"));
-    assert!(warning_lines[0].contains("SH-2"));
-}
-
-#[test]
-fn import_with_every_entry_prioritized_stays_silent() {
-    let dir = tempdir().unwrap();
-    story(dir.path())
-        .args(["project", "new", "--prefix", "SH"])
-        .assert()
-        .success();
-
-    let json = r#"[{"title": "One", "priority": "high"}, {"title": "Two", "priority": "low"}]"#;
-
     story(dir.path())
         .args(["import"])
         .write_stdin(json)
         .assert()
         .success()
         .stdout(predicate::str::contains("warning:").not());
+
+    for id in ["SH-1", "SH-2"] {
+        story(dir.path())
+            .args(["show", id])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("priority: low"))
+            .stdout(predicate::str::contains("type: normal"));
+    }
 }
 
 #[test]
-fn import_with_explicit_priority_none_stays_silent() {
-    // The load-bearing distinction SH-354 established: `"priority": "none"` is
-    // a decision (deliberately parked), not silence, and must not be nagged.
+fn import_with_explicit_priority_none_rejects_the_whole_batch() {
     let dir = tempdir().unwrap();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
-    let json = r#"[{"title": "Parked on purpose", "priority": "none"}]"#;
+    let json = r#"[{"title": "Would be valid"}, {"title": "Invalid", "priority": "none"}]"#;
 
     story(dir.path())
         .args(["import"])
         .write_stdin(json)
         .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "priority must be one of: critical, high, medium, low",
+        ));
+
+    story(dir.path())
+        .args(["list"])
+        .assert()
         .success()
-        .stdout(predicate::str::contains("warning:").not());
+        .stdout(predicate::str::contains("Would be valid").not());
 }
 
 #[test]
-fn import_with_an_unparseable_priority_warns_and_still_imports() {
-    // `service::transfer::import_events`'s own documented leniency: an
-    // unparseable priority is dropped rather than the whole entry rejected,
-    // and scripts depend on that. What SH-358 ends is the silence — before
-    // this, `"priority": "urgent"` and an omitted field were indistinguishable.
+fn import_with_an_unparseable_priority_rejects_without_a_partial_write() {
     let dir = tempdir().unwrap();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
@@ -394,45 +371,32 @@ fn import_with_an_unparseable_priority_warns_and_still_imports() {
 
     let json = r#"[{"title": "Typo'd priority", "priority": "urgent"}]"#;
 
-    let output = story(dir.path())
+    story(dir.path())
         .args(["import"])
         .write_stdin(json)
         .assert()
-        .success();
-    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "priority must be one of: critical, high, medium, low",
+        ));
 
-    // Still imported.
     story(dir.path())
-        .args(["show", "SH-1"])
+        .args(["list"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Typo'd priority"))
-        .stdout(predicate::str::contains("priority: none"));
-
-    let warning_lines: Vec<&str> = stdout
-        .lines()
-        .filter(|line| line.starts_with("warning:"))
-        .collect();
-    // The unassessed line and the unparseable line — two distinct facts, both
-    // capped at one line each regardless of batch size.
-    assert_eq!(warning_lines.len(), 2, "{stdout}");
-    assert!(warning_lines.iter().any(|l| l.contains("1 of 1")));
-    assert!(
-        warning_lines
-            .iter()
-            .any(|l| l.contains("urgent") && l.contains("SH-1"))
-    );
+        .stdout(predicate::str::contains("Typo'd priority").not());
 }
 
 #[test]
-fn import_json_carries_the_aggregate_and_per_story_attribution() {
+fn import_json_returns_defaulted_stories_without_warnings() {
     let dir = tempdir().unwrap();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
-    let json = r#"[{"title": "Unassessed"}, {"title": "Assessed", "priority": "high"}]"#;
+    let json = r#"[{"title": "Defaulted"}, {"title": "Explicit", "priority": "high", "story_type": "bug"}]"#;
 
     let output = story(dir.path())
         .args(["import", "--json"])
@@ -443,31 +407,14 @@ fn import_json_carries_the_aggregate_and_per_story_attribution() {
     let envelope: serde_json::Value =
         serde_json::from_str(&stdout).expect("`story import --json` must emit one JSON object");
 
-    let warnings = envelope["warnings"]
-        .as_array()
-        .expect("the envelope must carry a batch-level `warnings` array");
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
-    assert!(warnings[0].as_str().unwrap().contains("1 of 2"));
+    assert!(envelope.get("warnings").is_none(), "{envelope}");
 
     let stories = envelope["stories"].as_array().expect("a `stories` array");
-    let unassessed = stories
+    let defaulted = stories
         .iter()
         .find(|s| s["story"]["id"] == "SH-1")
         .expect("SH-1 in the stories array");
-    assert_eq!(
-        unassessed["warnings"]
-            .as_array()
-            .expect("SH-1 must carry its own per-story warning")
-            .len(),
-        1
-    );
-
-    let assessed = stories
-        .iter()
-        .find(|s| s["story"]["id"] == "SH-2")
-        .expect("SH-2 in the stories array");
-    assert!(
-        assessed.get("warnings").is_none(),
-        "an assessed story must carry no warnings key: {assessed:?}"
-    );
+    assert_eq!(defaulted["story"]["priority"], "low");
+    assert_eq!(defaulted["story"]["story_type"], "normal");
+    assert!(defaulted.get("warnings").is_none());
 }
