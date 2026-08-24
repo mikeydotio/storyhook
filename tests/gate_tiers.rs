@@ -179,6 +179,34 @@ fn the_browser_tier_detection_targets_reach_their_scripts() {
     );
 }
 
+/// The coverage tier's own detection layer (SH-429) — the same shape as the
+/// browser tier's, fenced the same way just above: a target that stopped
+/// invoking its script would restore silence without failing anything.
+#[test]
+fn the_coverage_tier_detection_targets_reach_their_scripts() {
+    let map = dry_run("coverage-map");
+    let watch = dry_run("coverage-watch");
+    let status = dry_run("coverage-status");
+
+    assert!(
+        map.iter().any(|l| l.contains("scripts/coverage-map.sh")),
+        "make coverage-map must invoke scripts/coverage-map.sh, dry run was:\n{map:#?}"
+    );
+    assert!(
+        watch
+            .iter()
+            .any(|l| l.contains("scripts/coverage-watch.sh")),
+        "make coverage-watch must invoke scripts/coverage-watch.sh, dry run was:\n{watch:#?}"
+    );
+    assert!(
+        status
+            .iter()
+            .any(|l| l.contains("scripts/coverage-status.sh")),
+        "make coverage-status must invoke scripts/coverage-status.sh, dry run \
+         was:\n{status:#?}"
+    );
+}
+
 /// The receipt each tier writes must name that tier — `full` from
 /// `test-full`, `gate` from `test` — and neither tier may write the other's.
 #[test]
@@ -242,6 +270,101 @@ fn the_two_tiers_agree_on_every_leg_but_the_browser_suite_and_the_receipt() {
         gate, full,
         "make test and make test-full must agree on every leg except the \
          browser suite and the receipt's tier"
+    );
+}
+
+/// The selective tier's rust-suite leg (SH-429): `test-changed` must reach
+/// `scripts/run-changed.sh`, never the bare full-workspace invocation `test`
+/// itself uses — the whole point of the split, provoked rather than assumed.
+#[test]
+fn test_changed_runs_run_changed_sh_instead_of_the_full_workspace_runner() {
+    let gate = dry_run("test");
+    let changed = dry_run("test-changed");
+
+    assert!(
+        changed.iter().any(|l| l.contains("scripts/run-changed.sh")),
+        "make test-changed must invoke scripts/run-changed.sh, dry run was:\n{changed:#?}"
+    );
+    assert!(
+        !gate.iter().any(|l| l.contains("scripts/run-changed.sh")),
+        "make test must NOT invoke scripts/run-changed.sh, dry run was:\n{gate:#?}"
+    );
+    assert!(
+        !changed
+            .iter()
+            .any(|l| l.contains("run-tests.sh -- --test-threads=4")),
+        "make test-changed must not ALSO run the full-workspace invocation \
+         directly, dry run was:\n{changed:#?}"
+    );
+}
+
+/// Only the rust-suite leg and the postlude may differ between `test` and
+/// `test-changed` — fmt, clippy, the build, and the plugin harness stay
+/// unconditional (SH-429's own design: only test EXECUTION is selective,
+/// compilation never is). The e2e deferral line is deliberately excluded
+/// from `test-changed`'s recipe entirely (it is not a release gate), so it
+/// is filtered on both sides rather than compared.
+#[test]
+fn test_changed_shares_fmt_clippy_build_and_plugin_legs_with_test() {
+    let shared_leg_markers = [
+        "cargo fmt --all -- --check",
+        "cargo clippy --workspace --all-targets",
+        "leg.sh build -- cargo build",
+        "plugins/story/tests/run-tests.sh",
+        "check-no-orphan-servers.sh preflight",
+        "check-no-orphan-servers.sh postlude",
+        "gate-receipt.sh preflight",
+    ];
+
+    let gate = dry_run("test");
+    let changed = dry_run("test-changed");
+
+    for marker in shared_leg_markers {
+        let in_gate = gate.iter().any(|l| l.contains(marker));
+        let in_changed = changed.iter().any(|l| l.contains(marker));
+        assert!(
+            in_gate && in_changed,
+            "expected leg containing '{marker}' in BOTH make test and make \
+             test-changed's dry runs -- test:{in_gate} test-changed:{in_changed}\n\
+             test: {gate:#?}\ntest-changed: {changed:#?}"
+        );
+    }
+}
+
+/// `test-changed`'s postlude must read the tier `scripts/run-changed.sh`
+/// actually earned from its own state file, never a hardcoded tier literal
+/// the way `test`'s (`... postlude gate`) and `test-full`'s
+/// (`... postlude full`) do — the whole reason `run-changed.sh` writes one
+/// (`docs/spec/selective-testing.md`: the tier is honest, not aspirational).
+#[test]
+fn test_changed_reads_its_postlude_tier_from_the_state_file_run_changed_sh_writes() {
+    let changed = dry_run("test-changed");
+
+    // A multi-line shell compound (joined by trailing `\` in the Makefile)
+    // prints as several SEPARATE lines under `make -n`, one per physical
+    // recipe line -- so the state-file reference and the postlude
+    // invocation itself are checked independently, not assumed to share one
+    // line.
+    assert!(
+        changed
+            .iter()
+            .any(|l| l.contains("storyhook-changed-tier-args")),
+        "make test-changed's postlude must read the state file \
+         scripts/run-changed.sh writes, dry run was:\n{changed:#?}"
+    );
+
+    let postlude_invocation = changed
+        .iter()
+        .find(|l| l.contains("gate-receipt.sh postlude"))
+        .unwrap_or_else(|| {
+            panic!("make test-changed must certify with a postlude step:\n{changed:#?}")
+        });
+    assert!(
+        !postlude_invocation.ends_with("postlude gate")
+            && !postlude_invocation.ends_with("postlude full")
+            && !postlude_invocation.ends_with("postlude changed"),
+        "the postlude invocation must not hardcode a tier literal -- it must \
+         be resolved from the state file at run time, got: {postlude_invocation}"
     );
 }
 

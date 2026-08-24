@@ -1033,6 +1033,23 @@ Standing rules for every wave:
   before that cost is paid, not after — the merge gate still requires the suite to pass
   before `gh pr merge --merge` may land anything. Design of record: `docs/spec/test-tiers.md`'s
   "The push gate narrowed to main/master" section.
+- **`make test-changed` speeds up the developer loop; it never speeds up what reaches
+  `main`** (SH-429). `scripts/select-tests.sh` diffs the current tree against the NEAREST
+  fully-certified (`gate`/`full`) ancestor — never a previous `changed`-tier run, so there is
+  never more than one hop of drift and the selected set only grows the longer a branch goes
+  without a full run. `scripts/coverage-map.sh` captures a per-test-binary source-file map via
+  LLVM instrumentation, but is never trusted to prove a binary unaffected — ~57 of this repo's
+  test files read `CARGO_MANIFEST_DIR` at runtime and ~19 shell out to `git ls-files`, both
+  invisible to line coverage, so three unconditional escape hatches (no map for the baseline;
+  any changed path outside `src/**.rs`/`crates/**.rs`/`tests/*.rs`; a derived, never-hand-kept
+  tree-scanning set) sit on top of the map and are checked before it. `gate-receipt.sh` gained
+  a third tier, `changed < gate < full`, carrying a `base <tree>` line; `.githooks/pre-push`
+  accepts it for a push, but `scripts/merge-preflight.sh` never does for a merge — a council
+  verdict (story SH-429): a merge tree is a two-parent combination no single branch's own
+  selective run ever accounted for, the same reason `merge-preflight.sh` exists at all
+  (SH-396). `scripts/run-changed.sh` stamps the tier honestly rather than aspirationally: any
+  escape hatch that ran everything earns `gate`, never `changed`. Design of record:
+  `docs/spec/selective-testing.md`.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
