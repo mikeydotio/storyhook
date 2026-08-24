@@ -506,10 +506,21 @@ test('the Done column defaults to completion order, most recently finished first
     "title",
     "Sort: Completed ↓",
   );
-  expect(await ourColumnTitles(page, "done")).toEqual([second, first]);
+  await expect
+    .poll(() => ourColumnTitles(page, "done"), {
+      message: "the Done column settles into its default completion order",
+    })
+    .toEqual([second, first]);
 
   await selectColumnSort(page, "done", "Completed ↑");
-  expect(await ourColumnTitles(page, "done")).toEqual([first, second]);
+  // The menu closes as soon as the preference is accepted, while the board's
+  // live-data render may still be replacing the just-sorted cards. Assert the
+  // eventual order instead of sampling that hand-off at one instant.
+  await expect
+    .poll(() => ourColumnTitles(page, "done"), {
+      message: "the Done column settles into ascending completion order",
+    })
+    .toEqual([first, second]);
 
   // `deleteStory()` is scoped to the todo column (see this file's own
   // header comment on the per-column isolation test) -- both stories are
