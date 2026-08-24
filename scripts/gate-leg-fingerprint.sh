@@ -9,15 +9,14 @@
 # failure does not make a still-identical Rust formatting, lint, test, build,
 # or plugin result false.
 #
-# The scopes are conservative dependency sets, not directory ownership:
-# `rust-suite` includes every tracked file because this repository's Rust
-# suite deliberately contains contract tests that read README.md, CLAUDE.md,
-# scripts, plugin files, and e2e specs at runtime. An e2e edit therefore can
-# invalidate the Rust suite, but an e2e *failure* with no edit cannot. The
-# other legs have smaller, mechanically stated input spaces.
+# The scopes are conservative dependency sets, not directory ownership. The
+# ordinary `rust-suite` owns Rust sources, fixtures, and doctests. Checkout-
+# reading Rust tests live in the separate `rust-contracts` battery, whose
+# inputs are the tracked tree. A browser edit can therefore invalidate those
+# related contract checks without throwing away the unrelated core Rust run.
 #
 # Interface:
-#   gate-leg-fingerprint.sh <fmt|clippy|rust-suite|build|plugin|e2e> [argv...]
+#   gate-leg-fingerprint.sh <fmt|clippy|rust-suite|rust-contracts|build|plugin|e2e> [argv...]
 #
 # stdout is exactly one git object id. All failures are nonzero and loud.
 
@@ -31,7 +30,7 @@ label="${1:-}"
 shift
 
 case "$label" in
-(fmt | clippy | rust-suite | build | plugin | e2e) ;;
+(fmt | clippy | rust-suite | rust-contracts | build | plugin | e2e) ;;
 (*)
     echo "gate-leg-fingerprint: unknown reusable leg '$label'" >&2
     exit 1
@@ -82,9 +81,16 @@ is_input() {
         esac
         ;;
     (rust-suite)
-        # Runtime repository-contract tests intentionally reach every major
-        # surface. The only sound non-hand-maintained scope is the tracked
-        # repository itself.
+        is_production_rust "$path" && return 0
+        case "$path" in
+        (tests/* | scripts/run-tests.sh | scripts/run-rust-battery.sh | scripts/rust-test-targets.sh) return 0 ;;
+        esac
+        ;;
+    (rust-contracts)
+        # This deliberately smaller *execution* battery reads every major
+        # repository surface at runtime, so its input fingerprint is the
+        # tracked tree. It absorbs cross-space invalidation without forcing
+        # the ordinary Rust battery to execute again.
         return 0
         ;;
     (build)
@@ -109,7 +115,7 @@ is_input() {
 
 # Batch every selected path through one `git hash-object --stdin-paths` call.
 # Spawning one git process per file makes the whole-tree Rust fingerprint take
-# tens of seconds on this repository; batching keeps all six gate fingerprints
+# tens of seconds on this repository; batching keeps all seven gate fingerprints
 # below a second while producing the same content-addressed answer.
 paths="$(mktemp -t storyhook-gate-leg-paths.XXXXXX)"
 hashes="$(mktemp -t storyhook-gate-leg-hashes.XXXXXX)"
