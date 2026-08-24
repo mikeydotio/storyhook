@@ -3,6 +3,7 @@ import {
   cleanUpCreatedStories,
   heldReadDeadlineMs,
   holdUntilRefused,
+  openStatusesEditor,
   projectSlug,
   requiredEnv,
   seedToken,
@@ -69,7 +70,7 @@ test("the catalog names its failure instead of reporting an empty store", async 
   await expect(btn).toBeDisabled();
   await expect(subtitle).toBeHidden();
 
-  repos.refuse();
+  await repos.refuse();
 
   // And now there is something to name. Still zero call-to-action buttons --
   // offering to create a project when the store's real count is simply
@@ -96,7 +97,7 @@ test("a catalog that answers after a failure drops the error where it stands", a
   );
   await seedToken(page);
   await page.goto(`/?catalogFetchTimeoutMs=${heldReadDeadlineMs()}`);
-  repos.refuse();
+  await repos.refuse();
 
   const empty = page.locator(".home-empty");
   await expect(empty).toHaveText("Couldn't load your projects. Retrying…");
@@ -170,13 +171,11 @@ test("a statuses editor whose fetch never answers names the failure", async ({
     page,
     (url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/states`,
   );
-  await page.goto(`/?apiGetTimeoutMs=${heldReadDeadlineMs()}`);
-  await page.locator("#settings-btn").click();
-  await expect(page.locator("#settings-view")).toBeVisible();
-  await page
-    .locator(".settings-table tbody tr", { hasText: "Alpha Project" })
-    .getByRole("button", { name: "Statuses" })
-    .click();
+  const deadline = heldReadDeadlineMs();
+  await page.goto(
+    `/?apiGetTimeoutMs=${deadline}&catalogFetchTimeoutMs=${deadline}`,
+  );
+  await openStatusesEditor(page, "Alpha Project");
 
   const empty = page.locator(".status-empty");
   await expect(page.locator(".settings-head h2")).toHaveText(
@@ -184,7 +183,7 @@ test("a statuses editor whose fetch never answers names the failure", async ({
   );
   await expect(empty).toHaveText("Loading this project's statuses…");
 
-  states.refuse();
+  await states.refuse();
 
   await expect(empty).toHaveText(
     "Couldn't load this project's statuses. Retrying…",

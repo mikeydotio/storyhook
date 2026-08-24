@@ -7,7 +7,12 @@ import type {
   Request,
   Route,
 } from "@playwright/test";
-import { contention, gracedTestBudget, loadGraceEnabled } from "../load-grace";
+import {
+  contention,
+  loadGraceEnabled,
+  MAX_TEST_TIMEOUT_MS,
+  resetTestBudget,
+} from "../load-grace";
 
 export { expect };
 
@@ -16,6 +21,11 @@ export { expect };
  * room to extend the deadline before it arrives, not so tight that the
  * sampling itself is a meaningful cost against a 15s+ test budget. */
 const LOAD_GRACE_SAMPLE_INTERVAL_MS = 500;
+
+/** How often sustained contention resets the current runnable's window.
+ * Sampling stays sub-second so a new burst is noticed promptly; resets are
+ * coarser so every one can be reported without flooding the runner. */
+const LOAD_GRACE_RESET_INTERVAL_MS = 5_000;
 
 /**
  * The load-grace watchdog (SH-347's user determination, 2026-08-17: "relax
@@ -26,10 +36,11 @@ const LOAD_GRACE_SAMPLE_INTERVAL_MS = 500;
  *
  * Samples contention every {@link LOAD_GRACE_SAMPLE_INTERVAL_MS} and calls
  * `testInfo.setTimeout()` *before* the deadline can fire -- Playwright has no
- * hook that runs after a test's timeout has already torn it down, so "reset
- * the timer" can only mean "extend it pre-emptively." Monotonic: a grant is
- * never retracted, even if contention subsides, because a test already
- * mid-flight has no way to know it no longer needs the room. Adopts a spec's
+ * hook that runs after a test's timeout has already torn it down. In this
+ * auto-fixture slot the grant is a duration from *now*. Under sustained
+ * contention each rate-limited reset restores a complete graced window,
+ * shortened as the absolute 15-minute wall-clock ceiling approaches. Adopts
+ * a spec's
  * own `test.setTimeout()` (e.g. `dispatch.spec.ts`'s multiple of
  * `DISPATCH_COMPLETION_TIMEOUT`) as its base the moment one is seen, so this
  * watchdog only ever ADDS grace on top of whatever budget a spec already
@@ -49,33 +60,64 @@ export const test = base.extend<{ loadGrace: void }>({
         return;
       }
       // The un-graced floor: the budget the spec or config actually asked
-      // for, before any load-driven grace is layered on top. Only updates
-      // when `testInfo.timeout` changes to something this watchdog did NOT
-      // just set itself -- i.e. the spec called its own `test.setTimeout()`
-      // -- which is a rebase, not grace, and must never be logged as though
-      // it were. Read `wantMs` fresh from THIS floor every tick, never from
-      // the watchdog's own last grant: computing it from the last grant
-      // would multiply an already-graced number by the ratio again on every
-      // tick, compounding exponentially for as long as contention stays
-      // above 1 instead of converging to one stable, ratio-appropriate
-      // value.
+      // for, before any load-driven grace is layered on top. `browser` is a
+      // worker fixture with its own timeout slot: while it launches,
+      // `testInfo.setTimeout()` updates that running slot but
+      // `testInfo.timeout` continues to report the default slot. The old
+      // `timeout !== granted` check therefore mistook every grant for a spec
+      // reset and forgot it. Track observed default-slot values separately
+      // from values written by this watchdog; only an unseen value rebases
+      // the floor to a spec's own `test.setTimeout()`.
       let floorMs = testInfo.timeout;
+      let observedTimeoutMs = testInfo.timeout;
       let grantedMs = testInfo.timeout;
+      let lastResetAtMs = 0;
+      // This fixture may begin while Playwright is still setting up a worker
+      // browser, and the installed Playwright version does not expose a
+      // `TestInfo.startTime`. The watchdog only needs elapsed time since it
+      // began protecting the current runnable, so its own monotonic origin is
+      // the correct and portable clock.
+      const startedAtMs = performance.now();
+      const absoluteCeilingAtMs = startedAtMs + MAX_TEST_TIMEOUT_MS;
+      let grantedUntilMs = Math.min(absoluteCeilingAtMs, startedAtMs + grantedMs);
+      const watchdogTimeouts = new Set<number>();
       const timer = setInterval(() => {
-        if (testInfo.timeout !== grantedMs) {
-          floorMs = testInfo.timeout;
-          grantedMs = testInfo.timeout;
+        const observedMs = testInfo.timeout;
+        if (observedMs !== observedTimeoutMs) {
+          observedTimeoutMs = observedMs;
+          if (!watchdogTimeouts.has(observedMs)) {
+            floorMs = observedMs;
+            grantedMs = observedMs;
+          }
         }
         const ratio = contention();
-        const wantMs = gracedTestBudget(floorMs, ratio);
-        if (wantMs <= grantedMs) return;
+        if (ratio <= 1) return;
+        const nowMs = performance.now();
+        if (nowMs - lastResetAtMs < LOAD_GRACE_RESET_INTERVAL_MS) return;
+        lastResetAtMs = nowMs;
+        const elapsedMs = Math.max(0, nowMs - startedAtMs);
+        // A lower contention sample must not retract time already granted.
+        // Preserve that absolute deadline, while resetTestBudget's shrinking
+        // wall-clock remainder prevents any reset from moving past the cap.
+        const remainingGrantMs = Math.max(1, Math.round(grantedUntilMs - nowMs));
+        const remainingWallMs = Math.max(1, Math.round(absoluteCeilingAtMs - nowMs));
+        const wantMs = Math.min(
+          remainingWallMs,
+          Math.max(remainingGrantMs, resetTestBudget(floorMs, elapsedMs, ratio)),
+        );
+        watchdogTimeouts.add(wantMs);
         testInfo.setTimeout(wantMs);
         const line =
-          `load-grace: extended "${testInfo.title}" to ${wantMs}ms ` +
-          `(contention=${ratio.toFixed(2)}, floor=${floorMs}ms, was ${grantedMs}ms)`;
-        grantedMs = wantMs;
+          `load-grace: reset "${testInfo.title}" to ${wantMs}ms from now ` +
+          `(contention=${ratio.toFixed(2)}, floor=${floorMs}ms, ` +
+          `elapsed=${Math.round(elapsedMs)}ms, was ${grantedMs}ms)`;
         process.stderr.write(`${line}\n`);
         testInfo.annotations.push({ type: "load-grace", description: line });
+        grantedMs = wantMs;
+        grantedUntilMs = Math.min(
+          absoluteCeilingAtMs,
+          Math.max(grantedUntilMs, nowMs + wantMs),
+        );
       }, LOAD_GRACE_SAMPLE_INTERVAL_MS);
       try {
         await use();
@@ -264,6 +306,24 @@ export async function openProject(page: Page, name: string): Promise<void> {
   await page.locator(".repo-card-name", { hasText: name }).click();
   await expect(page.locator("#board-view")).toBeVisible();
   await waitForBoardData(page);
+}
+
+/** Opens a seeded project's statuses editor only after the initial catalog
+ * bootstrap has finished.
+ *
+ * `page.goto()` waits for the document, not for `bootstrap()`'s first
+ * `/api/repos` reply. The project's visible home card is the catalog boundary:
+ * it cannot exist until the reply has been applied, and the statuses row this
+ * helper needs is built from that same catalog. */
+export async function openStatusesEditor(page: Page, name: string): Promise<void> {
+  await expect(page.locator(".repo-card-name", { hasText: name })).toBeVisible();
+  await page.locator("#settings-btn").click();
+  await expect(page.locator("#settings-view")).toBeVisible();
+  await page
+    .locator(".settings-table tbody tr", { hasText: name })
+    .getByRole("button", { name: "Statuses" })
+    .click();
+  await expect(page.locator(".settings-head h2")).toHaveText(`Statuses · ${name}`);
 }
 
 /** Submit the drawer's dispatch configuration modal. Most dispatch-focused
@@ -845,8 +905,16 @@ export async function holdFetch<T>(
       // happened to be in flight, and the assertion below would then read the
       // DOM before the held body ever reached it.
       const arrived = page.waitForResponse((r) => r.request() === heldRequest);
+      const finished = page.waitForEvent("requestfinished", {
+        predicate: (r) => r === heldRequest,
+      });
       gate.release();
       await arrived;
+      // `response` means headers exist; `requestfinished` is the boundary at
+      // which WebKit has consumed the fulfilled body. Waiting for both keeps
+      // the renderer turn below behind the complete XHR rather than merely
+      // behind its headers on a contended machine.
+      await finished;
       // The XHR's completion task was queued on the renderer before this
       // `evaluate` could be, and a renderer runs its task queue in order, so
       // a macrotask that resolves here is proof the page has already done
@@ -862,7 +930,7 @@ export interface HeldRoute {
   /** Refuses the held request, and every later one matching the same
    * predicate, so nothing repairs the view behind the assertions that
    * follow. */
-  refuse: () => void;
+  refuse: () => Promise<void>;
   /** Stops refusing: from here on these requests reach the daemon, which is
    * how a spec puts a store back in service under a page that has already
    * given up on it. */
@@ -896,14 +964,38 @@ export async function holdUntilRefused(
   matches: (url: URL) => boolean,
 ): Promise<HeldRoute> {
   const gate = latch();
+  const taken = latch();
   let refusing = true;
+  let active = 0;
   await page.route(matches, async (route) => {
-    await gate.held;
-    if (refusing) await route.abort();
-    else await route.continue();
+    const request = route.request();
+    active++;
+    taken.release();
+    try {
+      await gate.held;
+      if (refusing) {
+        const failed = page.waitForEvent("requestfailed", {
+          predicate: (r) => r === request,
+        });
+        await route.abort();
+        await failed;
+      } else {
+        await route.continue();
+      }
+    } finally {
+      active--;
+    }
   });
   return {
-    refuse: gate.release,
+    refuse: async () => {
+      gate.release();
+      // A loading line proves the page started the read, but not that the
+      // route callback has reached its await yet. Observe that boundary and
+      // the renderer's requestfailed event before callers assert the failed
+      // UI; a fire-and-forget release made those assertions race WebKit.
+      await taken.held;
+      await expect.poll(() => active).toBe(0);
+    },
     restore: () => {
       refusing = false;
     },

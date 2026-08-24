@@ -225,7 +225,7 @@ test.describe("SH-347 interception-contract probes", () => {
     await page.locator("#drafts-btn").click();
     const beforeRefuseElapsedMs = Date.now() - beforeNav;
 
-    data.refuse();
+    await data.refuse();
     const outcome = await pollForText(
       page.locator("#drafts-list"),
       "Couldn't load this project's drafts. Retrying…",
@@ -268,7 +268,7 @@ test.describe("SH-347 interception-contract probes", () => {
     await page.locator("#drafts-btn").click();
     const beforeRefuseElapsedMs = Date.now() - beforeNav;
 
-    alphaData.refuse();
+    await alphaData.refuse();
     const outcome = await pollForText(
       page.locator("#drafts-list"),
       "Couldn't load this project's drafts. Retrying…",
