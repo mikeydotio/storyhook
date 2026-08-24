@@ -267,6 +267,10 @@ fn seed_fixture_story(store: &SqliteStore, project: ProjectId) -> StoryNo {
                 at: "2026-01-01T00:02:00Z".into(),
                 labels: vec!["infra".into()],
             },
+            StoryEvent::StoryTypeSet {
+                at: "2026-01-01T00:03:00Z".into(),
+                story_type: "feature".into(),
+            },
         ],
     )
     .expect("seeding the fixture story");

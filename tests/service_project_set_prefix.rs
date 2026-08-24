@@ -21,7 +21,7 @@
 
 mod store_support;
 
-use storyhook::domain::StoryEvent;
+use storyhook::domain::{Priority, StoryEvent};
 use storyhook::service::{Clock, PointerUpdate, ProjectService};
 use storyhook::store::{
     EventSeq, ExpectedSeq, ProjectId, ReadOps, SqliteStore, SqliteWriteTx, Store, StoreConfig,
@@ -325,16 +325,32 @@ fn create_story_in_tx(
     project: ProjectId,
     title: &str,
 ) -> Result<StoryNo, StoreError> {
+    let story_type = tx
+        .types(project)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| StoreError::Invariant("fixture project has no configured type".into()))?
+        .slug;
     let story = tx.allocate_story_no(project)?;
     let head = tx.append_events(
         project,
         story,
         ExpectedSeq::Exact(EventSeq::ZERO),
-        &[StoryEvent::StoryCreated {
-            at: FIXTURE_NOW.to_string(),
-            title: title.to_string(),
-            state: "todo".into(),
-        }],
+        &[
+            StoryEvent::StoryCreated {
+                at: FIXTURE_NOW.to_string(),
+                title: title.to_string(),
+                state: "todo".into(),
+            },
+            StoryEvent::StoryPrioritySet {
+                at: FIXTURE_NOW.to_string(),
+                priority: Priority::Low,
+            },
+            StoryEvent::StoryTypeSet {
+                at: FIXTURE_NOW.to_string(),
+                story_type,
+            },
+        ],
         &storyhook::domain::provenance::Provenance::unrecorded(),
     )?;
     let states = tx.state_map(project)?;

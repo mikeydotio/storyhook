@@ -728,10 +728,13 @@ fn seed_a_labelled_story(path: &Path) {
              VALUES (1, 'u-1', 'proj', 'Proj', 'SH', '2026-01-01T00:00:00Z');
          INSERT INTO project_states (project_id, position, slug, superstate)
              VALUES (1, 0, 'todo', 'OPEN'), (1, 1, 'done', 'CLOSED');
+         INSERT INTO project_types (project_id, position, slug, description, emoji)
+             VALUES (1, 0, 'normal', NULL, NULL);
          INSERT INTO stories (project_id, story_no, head_seq, title, state, superstate,
-                              priority, priority_rank, created_at, updated_at, snapshot)
-             VALUES (1, 1, 1, 'A story', 'todo', 'OPEN', 'none', 4,
-                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '{}');
+                              priority, priority_rank, story_type, created_at, updated_at, snapshot)
+             VALUES (1, 1, 1, 'A story', 'todo', 'OPEN', 'low', 3, 'normal',
+                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z',
+                     '{\"priority\":\"low\",\"priority_assessed\":true,\"story_type\":\"normal\"}');
          INSERT INTO story_labels (project_id, story_no, label) VALUES (1, 1, 'bug');",
     )
     .unwrap();
@@ -1443,7 +1446,7 @@ fn migration_nine_retypes_task_stories_to_normal_by_appending_a_real_event() {
         v8_store_with_renamed_and_retired_type_stories(dir.path());
     let before = next_global_seq(&store, project);
 
-    store.migrate().unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..9]).unwrap();
 
     let (story_type, updated_at, head_seq) = story_type_updated_head(&store, project, task_story);
     assert_eq!(story_type.as_deref(), Some("normal"));
@@ -1481,7 +1484,7 @@ fn migration_nine_retypes_story_stories_to_normal_by_appending_a_real_event() {
     let (store, project, _task_story, story_story, _epic_story) =
         v8_store_with_renamed_and_retired_type_stories(dir.path());
 
-    store.migrate().unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..9]).unwrap();
 
     let (story_type, updated_at, head_seq) = story_type_updated_head(&store, project, story_story);
     assert_eq!(
@@ -1516,7 +1519,7 @@ fn migration_nine_leaves_an_epic_typed_story_completely_alone() {
         v8_store_with_renamed_and_retired_type_stories(dir.path());
     let before = story_type_updated_head(&store, project, epic_story);
 
-    store.migrate().unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..9]).unwrap();
 
     let after = story_type_updated_head(&store, project, epic_story);
     assert_eq!(
@@ -1539,7 +1542,7 @@ fn migration_nine_read_model_agrees_with_the_event_log_afterward() {
     let (store, project, _task_story, _story_story, _epic_story) =
         v8_store_with_renamed_and_retired_type_stories(dir.path());
 
-    store.migrate().unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..15]).unwrap();
 
     let diff = diff_read_model(&store, project).unwrap();
     assert!(
@@ -1555,7 +1558,7 @@ fn migration_nine_drops_task_and_renames_story_closing_the_position_gap() {
     let (store, project, _task_story, _story_story, _epic_story) =
         v8_store_with_renamed_and_retired_type_stories(dir.path());
 
-    store.migrate().unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..9]).unwrap();
 
     let catalog = type_catalog(&store, project);
     let slugs: Vec<&str> = catalog.iter().map(|(slug, _)| slug.as_str()).collect();
@@ -1580,7 +1583,7 @@ fn migration_nine_backfills_emoji_for_the_four_default_slugs_only() {
     let (store, project, _task_story, _story_story, _epic_story) =
         v8_store_with_renamed_and_retired_type_stories(dir.path());
 
-    store.migrate().unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..9]).unwrap();
 
     let types = store.read(|tx| tx.types(project)).unwrap();
     let emoji_of = |slug: &str| {
@@ -1611,7 +1614,7 @@ fn migration_nine_does_not_invent_an_emoji_for_a_custom_type() {
     .unwrap();
     drop(conn);
 
-    store.migrate().unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..9]).unwrap();
 
     let types = store.read(|tx| tx.types(project)).unwrap();
     let spike = types.iter().find(|t| t.slug == "spike").unwrap();
@@ -1679,7 +1682,7 @@ fn migration_nine_leaves_a_project_with_no_task_stories_and_no_task_type_untouch
     let before = story_type_updated_head(&store, project, no);
     let before_global_seq = next_global_seq(&store, project);
 
-    store.migrate().unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..9]).unwrap();
 
     assert_eq!(before, story_type_updated_head(&store, project, no));
     assert_eq!(before_global_seq, next_global_seq(&store, project));
@@ -1752,7 +1755,7 @@ fn migration_nine_removes_an_unused_task_catalog_entry_without_touching_any_stor
     let before = story_type_updated_head(&store, project, no);
     let before_global_seq = next_global_seq(&store, project);
 
-    store.migrate().unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..9]).unwrap();
 
     assert_eq!(
         before,
@@ -1808,7 +1811,7 @@ fn migration_ten_adds_a_hidden_at_column_that_pre_existing_stories_read_as_null(
          proves nothing about the migration that adds it"
     );
 
-    store.migrate().unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..10]).unwrap();
 
     let hidden_at: Option<String> = Connection::open(store.path())
         .unwrap()
@@ -1834,7 +1837,7 @@ fn migration_ten_leaves_every_other_column_and_the_event_log_untouched() {
     seed_a_v9_story(store.path());
     let before = next_global_seq(&store, storyhook::store::ProjectId::new(1));
 
-    store.migrate().unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..13]).unwrap();
 
     assert_eq!(
         before,
@@ -1889,7 +1892,7 @@ fn migration_twelve_adds_a_draft_column_that_pre_existing_stories_read_as_live()
          proves nothing about the migration that adds it"
     );
 
-    store.migrate().unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..12]).unwrap();
 
     let draft: bool = Connection::open(store.path())
         .unwrap()
@@ -1916,7 +1919,7 @@ fn migration_twelve_leaves_every_other_column_and_the_event_log_untouched() {
     seed_a_v11_story(store.path());
     let before = next_global_seq(&store, storyhook::store::ProjectId::new(1));
 
-    store.migrate().unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..13]).unwrap();
 
     assert_eq!(
         before,
@@ -2051,7 +2054,7 @@ fn migration_fifteen_backfills_each_row_with_its_head_events_feed_position() {
          this test proves nothing about the migration that adds it"
     );
 
-    store.migrate().unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..15]).unwrap();
 
     assert_eq!(
         head_global_seq_of(&store, 1),
@@ -2069,7 +2072,7 @@ fn migration_fifteen_leaves_a_row_with_no_events_at_zero() {
     store.migrate_with(&migrate::MIGRATIONS[..14]).unwrap();
     seed_a_v14_project(store.path());
 
-    store.migrate().unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..15]).unwrap();
 
     assert_eq!(
         head_global_seq_of(&store, 2),
@@ -2089,7 +2092,7 @@ fn migration_fifteen_leaves_the_event_log_and_the_change_feed_untouched() {
     seed_a_v14_project(store.path());
     let before = next_global_seq(&store, storyhook::store::ProjectId::new(1));
 
-    store.migrate().unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..15]).unwrap();
 
     assert_eq!(
         before,
@@ -2113,7 +2116,7 @@ fn migration_fifteen_leaves_the_recency_index_covering_its_sort() {
     store.migrate_with(&migrate::MIGRATIONS[..14]).unwrap();
     seed_a_v14_project(store.path());
 
-    store.migrate().unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..15]).unwrap();
 
     let index_sql: String = Connection::open(store.path())
         .unwrap()
@@ -2263,7 +2266,7 @@ fn migration_sixteen_backfills_assessment_from_the_last_priority_event() {
     let dir = scratch_dir();
     let store = v15_store_with_priority_histories(dir.path());
 
-    store.migrate().unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..16]).unwrap();
 
     assert!(
         assessed_in_snapshot(&store, 1),
@@ -2293,7 +2296,7 @@ fn migration_sixteen_reads_a_stale_row_as_of_its_own_head_seq() {
     let dir = scratch_dir();
     let store = v15_store_with_priority_histories(dir.path());
 
-    store.migrate().unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..16]).unwrap();
 
     assert!(
         assessed_in_snapshot(&store, 5),
@@ -2311,7 +2314,7 @@ fn migration_sixteen_writes_no_key_for_a_story_nobody_assessed() {
     let dir = scratch_dir();
     let store = v15_store_with_priority_histories(dir.path());
 
-    store.migrate().unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..16]).unwrap();
 
     let present: i64 = Connection::open(store.path())
         .unwrap()
@@ -2327,5 +2330,501 @@ fn migration_sixteen_writes_no_key_for_a_story_nobody_assessed() {
     assert_eq!(
         present, 0,
         "an unassessed story keeps no `priority_assessed` key at all"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Migration 19: type and priority are required (SH-449)
+// ---------------------------------------------------------------------------
+
+struct V18RequiredMetadataFixture {
+    store: SqliteStore,
+    primary: storyhook::store::ProjectId,
+    secondary: storyhook::store::ProjectId,
+}
+
+fn v18_store_with_legacy_metadata(dir: &Path) -> V18RequiredMetadataFixture {
+    use storyhook::domain::provenance::Provenance;
+    use storyhook::domain::{Priority, StoryEvent, TypeDef, fold_story};
+    use storyhook::service::project::default_states;
+    use storyhook::store::{EventSeq, ExpectedSeq, NewProject, ReadOps, WriteOps};
+
+    let store = SqliteStore::open(dir.join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..18]).unwrap();
+
+    let (primary, secondary) = store
+        .write(|tx| {
+            let primary = tx.create_project(&NewProject {
+                uuid: "required-primary".into(),
+                slug: "required-primary".into(),
+                name: "Required primary".into(),
+                prefix: "SH".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+            })?;
+            tx.put_states(primary, &default_states())?;
+            tx.put_types(
+                primary,
+                &[
+                    TypeDef {
+                        slug: "incident".into(),
+                        description: None,
+                        emoji: None,
+                    },
+                    TypeDef {
+                        slug: "normal".into(),
+                        description: None,
+                        emoji: None,
+                    },
+                    TypeDef {
+                        slug: "bug".into(),
+                        description: None,
+                        emoji: None,
+                    },
+                    TypeDef {
+                        slug: "chore".into(),
+                        description: None,
+                        emoji: None,
+                    },
+                ],
+            )?;
+
+            let states = tx.state_map(primary)?;
+            let created = |title: &str| StoryEvent::StoryCreated {
+                at: "2026-01-01T00:00:00Z".into(),
+                title: title.into(),
+                state: "todo".into(),
+            };
+            let typed = |story_type: &str| StoryEvent::StoryTypeSet {
+                at: "2026-01-01T00:01:00Z".into(),
+                story_type: story_type.into(),
+            };
+            let prioritised = |priority| StoryEvent::StoryPrioritySet {
+                at: "2026-01-01T00:02:00Z".into(),
+                priority,
+            };
+
+            // Respectively: type-only repair, priority-only repair, both,
+            // explicitly parked, cleared, already-valid control, closed, and
+            // deleted. The final two prove lifecycle state is not rewritten.
+            let mut histories = vec![
+                vec![
+                    created("missing type"),
+                    prioritised(Priority::High),
+                    StoryEvent::StoryLabelsSet {
+                        at: "2026-01-01T00:03:00Z".into(),
+                        labels: vec!["preserved".into()],
+                    },
+                ],
+                vec![created("missing priority"), typed("normal")],
+                vec![created("missing both")],
+                vec![
+                    created("explicitly parked"),
+                    typed("chore"),
+                    prioritised(Priority::None),
+                ],
+                vec![
+                    created("cleared priority"),
+                    typed("bug"),
+                    prioritised(Priority::Medium),
+                    StoryEvent::StoryPriorityCleared {
+                        at: "2026-01-01T00:03:00Z".into(),
+                    },
+                ],
+                vec![
+                    created("already valid"),
+                    prioritised(Priority::Critical),
+                    typed("incident"),
+                ],
+                vec![
+                    created("closed legacy story"),
+                    StoryEvent::StoryClosedAndArchived {
+                        at: "2026-01-01T00:04:00Z".into(),
+                        state: "done".into(),
+                    },
+                ],
+                vec![
+                    created("deleted legacy story"),
+                    StoryEvent::StoryDeleted {
+                        at: "2026-01-01T00:04:00Z".into(),
+                        reason: "fixture".into(),
+                    },
+                ],
+            ];
+
+            let mut story_nos = Vec::new();
+            for events in &histories {
+                let story_no = tx.allocate_story_no(primary)?;
+                let head = tx.append_events(
+                    primary,
+                    story_no,
+                    ExpectedSeq::Exact(EventSeq::new(0)),
+                    events,
+                    &Provenance::unrecorded(),
+                )?;
+                let snapshot = fold_story(&story_no.to_id("SH"), events, &states)?;
+                tx.put_story(primary, &snapshot, head)?;
+                story_nos.push(story_no);
+            }
+
+            // A real, symmetric dependent relation between the type-only row
+            // and the valid control. It and the label above must survive the
+            // parent-table rebuild, and both remain vouched by history.
+            let relation_pairs = [(0usize, 5usize, "SH-6"), (5usize, 0usize, "SH-1")];
+            for (index, _other_index, other_id) in relation_pairs {
+                let event = StoryEvent::StoryRelationshipAdded {
+                    at: "2026-01-01T00:05:00Z".into(),
+                    other_id: other_id.into(),
+                    relation: "relates-to".into(),
+                };
+                let previous_head = EventSeq::new(i64::try_from(histories[index].len()).unwrap());
+                let head = tx.append_events(
+                    primary,
+                    story_nos[index],
+                    ExpectedSeq::Exact(previous_head),
+                    std::slice::from_ref(&event),
+                    &Provenance::unrecorded(),
+                )?;
+                histories[index].push(event);
+                let snapshot =
+                    fold_story(&story_nos[index].to_id("SH"), &histories[index], &states)?;
+                tx.put_story(primary, &snapshot, head)?;
+            }
+
+            let secondary = tx.create_project(&NewProject {
+                uuid: "required-secondary".into(),
+                slug: "required-secondary".into(),
+                name: "Required secondary".into(),
+                prefix: "OT".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+            })?;
+            tx.put_states(secondary, &default_states())?;
+            tx.put_types(
+                secondary,
+                &[TypeDef {
+                    slug: "normal".into(),
+                    description: None,
+                    emoji: None,
+                }],
+            )?;
+            let secondary_states = tx.state_map(secondary)?;
+            let secondary_story = tx.allocate_story_no(secondary)?;
+            let secondary_events = vec![StoryEvent::StoryCreated {
+                at: "2026-01-01T00:00:00Z".into(),
+                title: "other project".into(),
+                state: "todo".into(),
+            }];
+            let secondary_head = tx.append_events(
+                secondary,
+                secondary_story,
+                ExpectedSeq::Exact(EventSeq::new(0)),
+                &secondary_events,
+                &Provenance::unrecorded(),
+            )?;
+            let secondary_snapshot = fold_story("OT-1", &secondary_events, &secondary_states)?;
+            tx.put_story(secondary, &secondary_snapshot, secondary_head)?;
+
+            Ok((primary, secondary))
+        })
+        .unwrap();
+
+    V18RequiredMetadataFixture {
+        store,
+        primary,
+        secondary,
+    }
+}
+
+fn project_counter(path: &Path, project: storyhook::store::ProjectId) -> i64 {
+    Connection::open(path)
+        .unwrap()
+        .query_row(
+            "SELECT next_global_seq FROM projects WHERE id = ?1",
+            rusqlite::params![project.get()],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn migration_nineteen_repairs_every_legacy_shape_with_ordered_real_events() {
+    use storyhook::domain::{Priority, StoryEvent};
+    use storyhook::store::{GlobalSeq, ReadOps, StoredPayload};
+
+    let dir = scratch_dir();
+    let fixture = v18_store_with_legacy_metadata(dir.path());
+    let primary_before = project_counter(fixture.store.path(), fixture.primary);
+    let secondary_before = project_counter(fixture.store.path(), fixture.secondary);
+    let control_before = fixture
+        .store
+        .read(|tx| tx.story(fixture.primary, StoryNo::new(6)))
+        .unwrap()
+        .unwrap();
+
+    fixture.store.migrate().unwrap();
+
+    assert_eq!(
+        project_counter(fixture.store.path(), fixture.primary),
+        primary_before + 10,
+        "the primary project receives exactly its ten repair events"
+    );
+    assert_eq!(
+        project_counter(fixture.store.path(), fixture.secondary),
+        secondary_before + 2,
+        "global allocation is independent per project"
+    );
+
+    let primary_events = fixture
+        .store
+        .read(|tx| tx.events_since(fixture.primary, GlobalSeq::new(primary_before - 1), 20))
+        .unwrap();
+    let observed: Vec<(i64, &str)> = primary_events
+        .iter()
+        .map(|event| (event.story_no.get(), event.event.kind.as_str()))
+        .collect();
+    assert_eq!(
+        observed,
+        [
+            (1, "StoryTypeSet"),
+            (2, "StoryPrioritySet"),
+            (3, "StoryTypeSet"),
+            (3, "StoryPrioritySet"),
+            (4, "StoryPrioritySet"),
+            (5, "StoryPrioritySet"),
+            (7, "StoryTypeSet"),
+            (7, "StoryPrioritySet"),
+            (8, "StoryTypeSet"),
+            (8, "StoryPrioritySet"),
+        ],
+        "story order is stable and type precedes priority when both are absent"
+    );
+    assert!(
+        primary_events
+            .windows(2)
+            .all(|pair| pair[1].event.global_seq.get() == pair[0].event.global_seq.get() + 1),
+        "the migration consumes one contiguous project-global range"
+    );
+    let repair_at = &primary_events[0].event.at;
+    assert!(
+        primary_events
+            .iter()
+            .all(|event| &event.event.at == repair_at),
+        "all repair events share the migration timestamp"
+    );
+    for event in &primary_events {
+        match event.event.known().expect("repair events are decodable") {
+            StoryEvent::StoryTypeSet { story_type, .. } => {
+                assert_eq!(story_type, "incident", "the first configured type wins");
+            }
+            StoryEvent::StoryPrioritySet { priority, .. } => {
+                assert_eq!(priority, &Priority::Low);
+            }
+            other => panic!("unexpected repair event: {other:?}"),
+        }
+        assert!(matches!(event.event.payload, StoredPayload::Known(_)));
+    }
+
+    let rows = fixture
+        .store
+        .read(|tx| tx.stories(fixture.primary, &storyhook::store::StoryQuery::all()))
+        .unwrap();
+    assert_eq!(rows.len(), 8);
+    for row in &rows {
+        assert!(row.snapshot.story_type.is_some());
+        assert_ne!(row.snapshot.priority, Priority::None);
+        assert!(row.snapshot.priority_assessed);
+        if row.story_no != StoryNo::new(6) {
+            assert_eq!(row.snapshot.updated_at, *repair_at);
+        }
+    }
+    assert_eq!(rows[6].snapshot.superstate.as_str(), "CLOSED");
+    assert!(rows[6].archived && !rows[6].snapshot.deleted);
+    assert!(rows[7].archived && rows[7].snapshot.deleted);
+
+    let control_after = rows
+        .iter()
+        .find(|row| row.story_no == StoryNo::new(6))
+        .unwrap();
+    assert_eq!(control_after, &control_before, "valid rows are byte-stable");
+
+    let secondary = fixture
+        .store
+        .read(|tx| tx.story(fixture.secondary, StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(secondary.snapshot.story_type.as_deref(), Some("normal"));
+    assert_eq!(secondary.snapshot.priority, Priority::Low);
+}
+
+#[test]
+fn migration_nineteen_preserves_dependents_constraints_trigger_and_doctor_agreement() {
+    use storyhook::store::{ReadOps, diff_read_model};
+
+    let dir = scratch_dir();
+    let fixture = v18_store_with_legacy_metadata(dir.path());
+    let conn = Connection::open(fixture.store.path()).unwrap();
+    let before: (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM story_labels),
+                    (SELECT COUNT(*) FROM story_relations)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    drop(conn);
+
+    fixture.store.migrate().unwrap();
+
+    let conn = Connection::open(fixture.store.path()).unwrap();
+    let after: (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM story_labels),
+                    (SELECT COUNT(*) FROM story_relations)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(after, before);
+    assert_eq!(after, (1, 2), "both kinds of dependent row are exercised");
+
+    let type_error = conn
+        .execute(
+            "UPDATE stories SET story_type = NULL WHERE project_id = ?1 AND story_no = 1",
+            rusqlite::params![fixture.primary.get()],
+        )
+        .unwrap_err();
+    assert!(type_error.to_string().contains("NOT NULL"), "{type_error}");
+    let priority_error = conn
+        .execute(
+            "UPDATE stories SET priority = 'none', priority_rank = 4
+             WHERE project_id = ?1 AND story_no = 1",
+            rusqlite::params![fixture.primary.get()],
+        )
+        .unwrap_err();
+    assert!(
+        priority_error
+            .to_string()
+            .contains("CHECK constraint failed"),
+        "{priority_error}"
+    );
+    let append_only_error = conn
+        .execute(
+            "DELETE FROM events WHERE project_id = ?1 AND story_no = 1 AND seq = 1",
+            rusqlite::params![fixture.primary.get()],
+        )
+        .unwrap_err();
+    assert!(
+        append_only_error
+            .to_string()
+            .contains("events are append-only"),
+        "{append_only_error}"
+    );
+    let foreign_key_faults: i64 = conn
+        .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(foreign_key_faults, 0);
+    drop(conn);
+
+    for project in [fixture.primary, fixture.secondary] {
+        let diff = diff_read_model(&fixture.store, project).unwrap();
+        assert!(diff.is_clean(), "{}", diff.describe());
+    }
+    let labels = fixture
+        .store
+        .read(|tx| {
+            Ok(tx
+                .story(fixture.primary, StoryNo::new(1))?
+                .unwrap()
+                .snapshot
+                .labels)
+        })
+        .unwrap();
+    assert_eq!(labels, ["preserved"]);
+}
+
+#[test]
+fn migration_nineteen_rolls_back_when_a_project_has_no_default_type() {
+    use storyhook::domain::provenance::Provenance;
+    use storyhook::domain::{Priority, StoryEvent, fold_story};
+    use storyhook::service::project::default_states;
+    use storyhook::store::{EventSeq, ExpectedSeq, NewProject, ReadOps, WriteOps};
+
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..18]).unwrap();
+    let project = store
+        .write(|tx| {
+            let project = tx.create_project(&NewProject {
+                uuid: "empty-types".into(),
+                slug: "empty-types".into(),
+                name: "Empty types".into(),
+                prefix: "ET".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+            })?;
+            tx.put_states(project, &default_states())?;
+            let states = tx.state_map(project)?;
+            let story = tx.allocate_story_no(project)?;
+            let events = vec![
+                StoryEvent::StoryCreated {
+                    at: "2026-01-01T00:00:00Z".into(),
+                    title: "cannot default type".into(),
+                    state: "todo".into(),
+                },
+                StoryEvent::StoryPrioritySet {
+                    at: "2026-01-01T00:01:00Z".into(),
+                    priority: Priority::Low,
+                },
+            ];
+            let head = tx.append_events(
+                project,
+                story,
+                ExpectedSeq::Exact(EventSeq::new(0)),
+                &events,
+                &Provenance::unrecorded(),
+            )?;
+            let snapshot = fold_story("ET-1", &events, &states)?;
+            tx.put_story(project, &snapshot, head)?;
+            Ok(project)
+        })
+        .unwrap();
+    let counter_before = project_counter(store.path(), project);
+    let conn = Connection::open(store.path()).unwrap();
+    let events_before: i64 = conn
+        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+        .unwrap();
+    drop(conn);
+
+    let error = store.migrate().unwrap_err();
+    assert!(error.to_string().contains("NOT NULL"), "{error}");
+    assert_eq!(store.schema_version().unwrap(), 18);
+    assert_eq!(project_counter(store.path(), project), counter_before);
+    let conn = Connection::open(store.path()).unwrap();
+    let events_after: i64 = conn
+        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        events_after, events_before,
+        "the appended repair rolled back"
+    );
+    let still_untyped: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM stories WHERE story_type IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(still_untyped, 1);
+    let trigger_exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'trigger' AND name = 'events_reject_delete'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        trigger_exists, 1,
+        "DDL inside the failed migration rolled back"
     );
 }

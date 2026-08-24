@@ -68,6 +68,18 @@ fn arb_priority() -> impl Strategy<Value = Priority> {
     ])
 }
 
+/// Priorities a current mutation path can write. `arb_priority` above keeps
+/// `None` for pure legacy-fold coverage; current read-model rows cannot store
+/// that sentinel after schema 19.
+fn arb_assignable_priority() -> impl Strategy<Value = Priority> {
+    prop::sample::select(vec![
+        Priority::Critical,
+        Priority::High,
+        Priority::Medium,
+        Priority::Low,
+    ])
+}
+
 /// Text that exercises the encodings a JSON payload has to survive.
 fn arb_text() -> impl Strategy<Value = String> {
     prop::string::string_regex("[a-zA-Z0-9 \"'\\\\\n\t✓é]{0,40}").expect("a valid regex")
@@ -171,7 +183,7 @@ fn arb_op() -> impl Strategy<Value = Op> {
     prop_oneof![
         6 => Just(Op::Create),
         2 => arb_text().prop_map(Op::SetTitle),
-        2 => arb_priority().prop_map(Op::SetPriority),
+        2 => arb_assignable_priority().prop_map(Op::SetPriority),
         2 => prop::collection::vec(arb_text(), 0..3).prop_map(Op::SetLabels),
         1 => arb_text().prop_map(Op::SetType),
         1 => arb_text().prop_map(Op::SetDescription),
@@ -211,16 +223,29 @@ fn run_script(store: &SqliteStore, project: ProjectId, ops: &[(usize, Op)]) -> V
             let story = store
                 .write(|tx| tx.allocate_story_no(project))
                 .expect("allocating");
+            let created_at = at();
+            let priority_at = at();
+            let type_at = at();
             append_and_fold(
                 store,
                 project,
                 story,
                 ExpectedSeq::Exact(EventSeq::ZERO),
-                &[StoryEvent::StoryCreated {
-                    at: at(),
-                    title: format!("Story {story}"),
-                    state: "todo".into(),
-                }],
+                &[
+                    StoryEvent::StoryCreated {
+                        at: created_at,
+                        title: format!("Story {story}"),
+                        state: "todo".into(),
+                    },
+                    StoryEvent::StoryPrioritySet {
+                        at: priority_at,
+                        priority: Priority::Low,
+                    },
+                    StoryEvent::StoryTypeSet {
+                        at: type_at,
+                        story_type: "feature".into(),
+                    },
+                ],
             )
             .expect("creating a story");
             stories.push(story);

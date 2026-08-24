@@ -15,7 +15,7 @@
 mod store_support;
 
 use store_support::{append_and_fold, new_store, seed_project};
-use storyhook::domain::{StoryEvent, fold_story};
+use storyhook::domain::{Priority, StoryEvent, fold_story};
 use storyhook::store::test_support::{
     forget_events, forget_story, inject_events, inject_raw_events,
 };
@@ -57,18 +57,28 @@ fn seeded() -> (
     (dir, store, project)
 }
 
-/// Creates story `n` in `project` with one `StoryCreated` event.
+/// Creates a valid current story before each test corrupts one chosen part.
 fn create(store: &storyhook::store::SqliteStore, project: storyhook::store::ProjectId, n: i64) {
     append_and_fold(
         store,
         project,
         StoryNo::new(n),
         ExpectedSeq::Exact(EventSeq::ZERO),
-        &[StoryEvent::StoryCreated {
-            at: AT.to_string(),
-            title: format!("story {n}"),
-            state: "todo".to_string(),
-        }],
+        &[
+            StoryEvent::StoryCreated {
+                at: AT.to_string(),
+                title: format!("story {n}"),
+                state: "todo".to_string(),
+            },
+            StoryEvent::StoryPrioritySet {
+                at: AT.to_string(),
+                priority: Priority::Low,
+            },
+            StoryEvent::StoryTypeSet {
+                at: AT.to_string(),
+                story_type: "feature".to_string(),
+            },
+        ],
     )
     .expect("creating a story");
 }
@@ -108,12 +118,12 @@ fn a_relation_only_one_end_claims_can_be_fabricated() {
         .expect("reading both logs");
     assert_eq!(
         one.len(),
-        2,
+        4,
         "the claiming end must carry the relationship event"
     );
     assert_eq!(
         two.len(),
-        1,
+        3,
         "the other end must NOT — a symmetric injection would fabricate a healthy relation"
     );
 }
@@ -171,7 +181,11 @@ fn bytes_that_are_not_a_decodable_event_can_be_written_verbatim() {
         .read(|tx| tx.events_for(project, StoryNo::new(1)))
         .expect("reading the log");
     let (known, unknown) = partition_known(StoryNo::new(1), &stored);
-    assert_eq!(known.len(), 1, "only the creation event still decodes");
+    assert_eq!(
+        known.len(),
+        3,
+        "only the three baseline events still decode"
+    );
     assert_eq!(
         unknown.len(),
         1,
@@ -223,7 +237,7 @@ fn a_storys_events_can_be_deleted_leaving_its_read_model_row_behind() {
     create(&store, project, 1);
 
     let removed = forget_events(&store, project, StoryNo::new(1)).expect("forgetting the log");
-    assert_eq!(removed, 1, "one event was there to remove");
+    assert_eq!(removed, 3, "the three baseline events were there to remove");
 
     let (events, row) = store
         .read(|tx| {
