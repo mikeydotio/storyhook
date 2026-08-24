@@ -8,9 +8,13 @@
 # who wants to move a leg between tiers has a measurement instead of a
 # memory — the way SH-222 had numbers before it moved a budget.
 #
-# Two forms:
+# Three forms:
 #   leg.sh <label> -- <cmd...>   run the command, report its wall clock,
 #                                 propagate its exit status verbatim
+#   leg.sh --reuse <label> -- <cmd...>
+#                                reuse a prior successful result while this
+#                                leg's tracked inputs and argv are identical;
+#                                otherwise run and record it on success
 #   leg.sh --skipped <label>     print a deferral notice instead of running
 #                                 anything
 #
@@ -28,15 +32,53 @@ if [ "${1:-}" = "--skipped" ]; then
     exit 0
 fi
 
+reuse=0
+if [ "${1:-}" = "--reuse" ]; then
+    reuse=1
+    shift
+fi
+
 label="${1:-}"
-[ -n "$label" ] || { echo "leg.sh: usage: leg.sh <label> -- <cmd...>  |  leg.sh --skipped <label>" >&2; exit 1; }
+[ -n "$label" ] || { echo "leg.sh: usage: leg.sh [--reuse] <label> -- <cmd...>  |  leg.sh --skipped <label>" >&2; exit 1; }
 shift
 
 if [ "${1:-}" != "--" ]; then
-    echo "leg.sh: usage: leg.sh <label> -- <cmd...>" >&2
+    echo "leg.sh: usage: leg.sh [--reuse] <label> -- <cmd...>" >&2
     exit 1
 fi
 shift
+
+fingerprint=""
+receipt=""
+if [ "$reuse" = 1 ]; then
+    case "$label" in
+    (*[!a-z0-9-]* | '')
+        echo "leg.sh: reusable label must contain only lowercase letters, digits, and hyphens" >&2
+        exit 1
+        ;;
+    esac
+
+    root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+        echo "leg.sh: --reuse requires a git worktree" >&2
+        exit 1
+    }
+    common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd)" || {
+        echo "leg.sh: could not resolve the shared git directory" >&2
+        exit 1
+    }
+    fingerprint="$("$root/scripts/gate-leg-fingerprint.sh" "$label" "$@")" || {
+        echo "leg.sh: could not fingerprint reusable leg $label" >&2
+        exit 1
+    }
+    receipt_dir="$common_dir/storyhook/gate-leg-receipts/$label"
+    receipt="$receipt_dir/$fingerprint"
+
+    if [ -f "$receipt" ] \
+        && grep -q "^fingerprint $fingerprint$" "$receipt" 2>/dev/null; then
+        echo "leg $label: REUSED — relevant tracked inputs and command are unchanged" >&2
+        exit 0
+    fi
+fi
 
 start=$(date +%s)
 status=0
@@ -44,5 +86,24 @@ status=0
 end=$(date +%s)
 
 echo "leg $label: $((end - start))s" >&2
+
+if [ "$reuse" = 1 ] && [ "$status" = 0 ]; then
+    after="$("$root/scripts/gate-leg-fingerprint.sh" "$label" "$@")" || {
+        echo "leg.sh: could not re-fingerprint successful leg $label; result is not reusable" >&2
+        exit 1
+    }
+    if [ "$fingerprint" != "$after" ]; then
+        echo "leg $label: relevant tracked inputs changed while it ran; result was not recorded" >&2
+    else
+        mkdir -p "$receipt_dir"
+        tmp="$receipt_dir/.tmp.$$"
+        {
+            printf 'fingerprint %s\n' "$fingerprint"
+            printf 'label %s\n' "$label"
+            printf 'worktree %s\n' "$root"
+        } >"$tmp"
+        mv -f "$tmp" "$receipt"
+    fi
+fi
 
 exit "$status"

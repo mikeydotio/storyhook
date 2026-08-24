@@ -165,12 +165,12 @@ test-full: test
 
 test: check-no-orphan-servers
 	@bash scripts/gate-receipt.sh preflight
-	bash scripts/leg.sh fmt -- cargo fmt --all -- --check
-	bash scripts/leg.sh clippy -- cargo clippy --workspace --all-targets -- -D warnings
-	@bash scripts/leg.sh rust-suite -- bash scripts/run-tests.sh -- --test-threads=4
-	bash scripts/leg.sh build -- cargo build
-	PATH="$(CURDIR)/target/debug:$$PATH" bash scripts/leg.sh plugin -- bash plugins/story/tests/run-tests.sh
-	$(if $(E2E),bash scripts/leg.sh e2e -- bash scripts/run-e2e.sh,@bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true)
+	bash scripts/leg.sh --reuse fmt -- cargo fmt --all -- --check
+	bash scripts/leg.sh --reuse clippy -- cargo clippy --workspace --all-targets -- -D warnings
+	@bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-tests.sh -- --test-threads=4
+	bash scripts/leg.sh --reuse build -- cargo build
+	PATH="$(CURDIR)/target/debug:$$PATH" bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh
+	$(if $(E2E),bash scripts/leg.sh --reuse e2e -- bash scripts/run-e2e.sh,@bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true)
 	@bash scripts/check-no-orphan-servers.sh postlude
 	@bash scripts/gate-receipt.sh postlude $(if $(E2E),full,gate)
 
@@ -191,11 +191,11 @@ test: check-no-orphan-servers
 # single, wrong $2.
 test-changed: check-no-orphan-servers
 	@bash scripts/gate-receipt.sh preflight
-	bash scripts/leg.sh fmt -- cargo fmt --all -- --check
-	bash scripts/leg.sh clippy -- cargo clippy --workspace --all-targets -- -D warnings
-	@bash scripts/leg.sh rust-suite -- bash scripts/run-changed.sh
-	bash scripts/leg.sh build -- cargo build
-	PATH="$(CURDIR)/target/debug:$$PATH" bash scripts/leg.sh plugin -- bash plugins/story/tests/run-tests.sh
+	bash scripts/leg.sh --reuse fmt -- cargo fmt --all -- --check
+	bash scripts/leg.sh --reuse clippy -- cargo clippy --workspace --all-targets -- -D warnings
+	@bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-changed.sh
+	bash scripts/leg.sh --reuse build -- cargo build
+	PATH="$(CURDIR)/target/debug:$$PATH" bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh
 	@bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true
 	@bash scripts/check-no-orphan-servers.sh postlude
 	@state_file="$$(git rev-parse --git-dir)/storyhook-changed-tier-args"; \
