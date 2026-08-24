@@ -43,6 +43,27 @@ root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
 }
 cd "$root"
 
+# Use the same derived target partition for evidence that `run-rust-battery.sh`
+# uses for execution. A contract test edit must not invalidate the ordinary
+# Rust battery merely because both kinds of integration target live under
+# `tests/`.
+core_rust_targets=""
+if [ "$label" = "rust-suite" ]; then
+    core_rust_targets="$(bash scripts/rust-test-targets.sh core)"
+fi
+
+is_core_rust_target_path() {
+    path="$1"
+    [ "${path%/*}" = "tests" ] || return 1
+    case "$path" in
+    (*.rs) ;;
+    (*) return 1 ;;
+    esac
+    target="${path##*/}"
+    target="${target%.rs}"
+    printf '%s\n' "$core_rust_targets" | grep -Fqx -- "$target"
+}
+
 # Inputs shared by every cached verdict. If the orchestration or the scope
 # definition changes, no result produced under the previous contract is
 # silently reused.
@@ -99,6 +120,16 @@ is_input() {
     (rust-suite)
         is_non_dashboard_production_rust "$path" && return 0
         case "$path" in
+        (tests/*.rs)
+            if [ "${path%/*}" = "tests" ]; then
+                is_core_rust_target_path "$path" && return 0
+            else
+                # A nested module can be shared by more than one integration
+                # target; without a Rust dependency graph it stays a
+                # conservative input to core.
+                return 0
+            fi
+            ;;
         (tests/* | scripts/run-tests.sh | scripts/run-rust-battery.sh | scripts/rust-test-targets.sh) return 0 ;;
         esac
         ;;

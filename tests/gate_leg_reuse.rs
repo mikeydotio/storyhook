@@ -37,6 +37,10 @@ impl Repo {
             ("src/lib.rs", "pub fn answer() -> u8 { 42 }\n"),
             ("src/web_dashboard.html", "<main>dashboard</main>\n"),
             ("tests/contract.rs", "#[test] fn contract() {}\n"),
+            (
+                "tests/dashboard_contract.rs",
+                "const ROOT: &str = env!(\"CARGO_MANIFEST_DIR\");\n#[test] fn contract() { assert!(!ROOT.is_empty()); }\n",
+            ),
             ("e2e/specs/board.spec.ts", "// browser fixture\n"),
             ("scripts/leg.sh", "# fingerprint fixture\n"),
         ] {
@@ -54,6 +58,15 @@ impl Repo {
         permissions.set_mode(0o755);
         fs::set_permissions(&fingerprint, permissions)
             .expect("making fixture fingerprint helper executable");
+        let classifier = repo.path().join("scripts/rust-test-targets.sh");
+        fs::copy(checkout().join("scripts/rust-test-targets.sh"), &classifier)
+            .expect("copying the real Rust target classifier into the fixture");
+        let mut permissions = fs::metadata(&classifier)
+            .expect("reading Rust target classifier metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&classifier, permissions)
+            .expect("making fixture Rust target classifier executable");
         repo.git(&["add", "."]);
         repo.git(&["commit", "-q", "-m", "fixture"]);
         repo
@@ -266,6 +279,40 @@ fn a_dashboard_edit_reruns_only_contract_build_and_browser_batteries() {
             repo.executions(label),
             expected,
             "dashboard edit invalidated the wrong battery: {label}"
+        );
+    }
+}
+
+#[test]
+fn a_contract_test_edit_does_not_invalidate_the_core_rust_battery() {
+    let repo = Repo::new();
+    let labels = [
+        "fmt",
+        "clippy",
+        "rust-suite",
+        "rust-contracts",
+        "build",
+        "plugin",
+        "e2e",
+    ];
+    for label in labels {
+        let out = repo.run_leg(label, true);
+        assert!(out.status.success(), "seeding {label}: {out:?}");
+    }
+
+    repo.write(
+        "tests/dashboard_contract.rs",
+        "const ROOT: &str = env!(\"CARGO_MANIFEST_DIR\");\n#[test] fn contract_edited() { assert!(!ROOT.is_empty()); }\n",
+    );
+
+    for label in labels {
+        let out = repo.run_leg(label, true);
+        assert!(out.status.success(), "retrying {label}: {out:?}");
+        let expected = usize::from(matches!(label, "fmt" | "clippy" | "rust-contracts")) + 1;
+        assert_eq!(
+            repo.executions(label),
+            expected,
+            "contract-test edit invalidated the wrong battery: {label}"
         );
     }
 }

@@ -1314,8 +1314,9 @@ fn every_backdrop_overlay_is_wired_into_the_focus_trap() {
          machinery needs an explicit boundary wrap"
     );
     assert!(
-        body.contains(r#"document.addEventListener("keydown", trapOverlayTab)"#),
-        "the overlay Tab boundary exists but is not bound to document key events"
+        body.contains("bindTypedKeys(document, trapOverlayTab)"),
+        "the overlay Tab boundary exists but is not bound to document key events through the \
+         composition-safe keyboard funnel"
     );
 }
 
