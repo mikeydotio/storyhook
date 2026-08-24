@@ -9,14 +9,24 @@
 # gate was ever "nine minutes nominal, routinely longer" — the CLI's own tests
 # were never the slow part.
 #
-#   make test        fmt, clippy, the Rust suite, a release build, the plugin
-#                     bash harness. THE MERGE GATE — this is what
-#                     `.githooks/pre-push` requires a receipt for.
-#   make test-full    `make test`, plus `scripts/run-e2e.sh` (the dashboard's
-#                     browser suite). THE RELEASE GATE — `scripts/release.sh`
-#                     will not cut a public release without it, and
-#                     `--skip-gate` stays refused there. See
-#                     `docs/spec/test-tiers.md` for the design of record.
+#   make test         fmt, clippy, the Rust suite, a release build, the plugin
+#                      bash harness. THE MERGE GATE — this is what
+#                      `.githooks/pre-push` requires a receipt for.
+#   make test-full     `make test`, plus `scripts/run-e2e.sh` (the dashboard's
+#                      browser suite). THE RELEASE GATE — `scripts/release.sh`
+#                      will not cut a public release without it, and
+#                      `--skip-gate` stays refused there. See
+#                      `docs/spec/test-tiers.md` for the design of record.
+#   make test-changed  `make test` with the Rust-suite leg narrowed to
+#                      whatever `scripts/select-tests.sh` decides is affected
+#                      since the nearest fully-certified ancestor (SH-429) —
+#                      fmt, clippy, the build and the plugin harness stay
+#                      unconditional; only test EXECUTION is selective.
+#                      Writes a `changed`-tier receipt, which `.githooks/pre-
+#                      push` accepts for a push but `scripts/merge-preflight.
+#                      sh` never does for a merge (a council verdict — story
+#                      SH-429, and `docs/spec/selective-testing.md`). A
+#                      developer-loop accelerant, never a weaker merge gate.
 #
 # The dashboard is a feature; the CLI is the tool storyhook actually is. A
 # push that changed only Rust code was never made safer by a browser suite
@@ -56,7 +66,7 @@
 # would undo the split SH-394 measured — and it is deliberately absent from
 # the `test-full` branch, where the suite is about to actually run.
 
-.PHONY: test test-full build fmt lint clippy check release-build install check-no-orphan-servers e2e-install e2e merge-watch browser-watch browser-status
+.PHONY: test test-full test-changed build fmt lint clippy check release-build install check-no-orphan-servers e2e-install e2e merge-watch browser-watch browser-status coverage-map coverage-watch coverage-status
 
 # Where `make install` puts the binary. Mirrors install.sh's default and its
 # STORYHOOK_INSTALL_DIR override so both entry points agree; a one-off can
@@ -164,6 +174,36 @@ test: check-no-orphan-servers
 	@bash scripts/check-no-orphan-servers.sh postlude
 	@bash scripts/gate-receipt.sh postlude $(if $(E2E),full,gate)
 
+# The selective tier (SH-429). Identical to `test` except the rust-suite leg
+# runs `scripts/run-changed.sh` (which asks `scripts/select-tests.sh` what is
+# affected and runs only that) instead of the whole workspace, and the
+# postlude reads back whichever tier that leg actually earned —
+# `changed <base>` for a genuine subset, or plain `gate` whenever an escape
+# hatch ran everything, so the receipt never claims less than what actually
+# ran. `docs/spec/selective-testing.md` is the design of record; the postlude
+# staying the LAST line here, exactly as it is for `test`, is what
+# `tests/selective_gate.rs` pins.
+#
+# `$$tier_args` below is deliberately UNQUOTED in the postlude call:
+# `scripts/run-changed.sh` writes either `gate` (one word) or
+# `changed <base-tree>` (two), and postlude's own $2/$3 need them as separate
+# positional arguments — quoting would pass `changed <base-tree>` as a
+# single, wrong $2.
+test-changed: check-no-orphan-servers
+	@bash scripts/gate-receipt.sh preflight
+	bash scripts/leg.sh fmt -- cargo fmt --all -- --check
+	bash scripts/leg.sh clippy -- cargo clippy --workspace --all-targets -- -D warnings
+	@bash scripts/leg.sh rust-suite -- bash scripts/run-changed.sh
+	bash scripts/leg.sh build -- cargo build
+	PATH="$(CURDIR)/target/debug:$$PATH" bash scripts/leg.sh plugin -- bash plugins/story/tests/run-tests.sh
+	@bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true
+	@bash scripts/check-no-orphan-servers.sh postlude
+	@state_file="$$(git rev-parse --git-dir)/storyhook-changed-tier-args"; \
+	 tier_args="$$(cat "$$state_file" 2>/dev/null)"; \
+	 [ -n "$$tier_args" ] || tier_args=gate; \
+	 rm -f "$$state_file"; \
+	 bash scripts/gate-receipt.sh postlude $$tier_args
+
 # Installs the e2e/ Node toolchain and the browsers e2e/playwright.config.ts
 # names (chromium, webkit -- SH-335). Not part of either gate target itself --
 # it is a one-time (per-machine, per-Playwright-version) bootstrap step, not
@@ -236,6 +276,36 @@ browser-watch:
 
 browser-status:
 	@bash scripts/browser-status.sh
+
+# The coverage tier's own detection layer (SH-429), the same shape as the
+# browser tier's three targets just above — a council verdict on this story
+# chose that shape explicitly (`docs/spec/selective-testing.md`).
+#
+# `make coverage-map` captures a coverage map for whatever tree is checked
+# out HERE, right now — the direct, local-iteration entry point, requiring a
+# `gate`/`full` receipt for this tree already on file (`scripts/coverage-
+# map.sh` refuses without one).
+#
+# `make coverage-watch` is the poller: one pass, keyed to whether
+# `origin/main`'s tip tree already has a map, running in its own persistent,
+# locked worktree (separate from `browser-watch-worktree` — an instrumented
+# build lives in a separate `target-coverage/`, so sharing a worktree would
+# mean the two pollers evict each other's warm build on every alternating
+# run). Meant to be re-run every few minutes by something that already exists
+# on the machine, the same bootstrap posture `make browser-watch` and `make
+# merge-watch` already take.
+#
+# `make coverage-status` reports the distance — commits-behind or `never` —
+# with no bootstrap needed at all, the same reason `make browser-status`
+# exists at that tier.
+coverage-map:
+	bash scripts/coverage-map.sh
+
+coverage-watch:
+	bash scripts/coverage-watch.sh
+
+coverage-status:
+	@bash scripts/coverage-status.sh
 
 # Fails if a test-spawned server from this worktree is still running. Never
 # looks at the installed dashboard daemon on :3456 — that one is production.
