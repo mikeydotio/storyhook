@@ -9,15 +9,14 @@
 # failure does not make a still-identical Rust formatting, lint, test, build,
 # or plugin result false.
 #
-# The scopes are conservative dependency sets, not directory ownership:
-# `rust-suite` includes every tracked file because this repository's Rust
-# suite deliberately contains contract tests that read README.md, CLAUDE.md,
-# scripts, plugin files, and e2e specs at runtime. An e2e edit therefore can
-# invalidate the Rust suite, but an e2e *failure* with no edit cannot. The
-# other legs have smaller, mechanically stated input spaces.
+# The scopes are conservative dependency sets, not directory ownership. The
+# ordinary `rust-suite` owns Rust sources, fixtures, and doctests. Checkout-
+# reading Rust tests live in the separate `rust-contracts` battery, whose
+# inputs are the tracked tree. A browser edit can therefore invalidate those
+# related contract checks without throwing away the unrelated core Rust run.
 #
 # Interface:
-#   gate-leg-fingerprint.sh <fmt|clippy|rust-suite|build|plugin|e2e> [argv...]
+#   gate-leg-fingerprint.sh <fmt|clippy|rust-suite|rust-contracts|build|plugin|e2e> [argv...]
 #
 # stdout is exactly one git object id. All failures are nonzero and loud.
 
@@ -31,7 +30,7 @@ label="${1:-}"
 shift
 
 case "$label" in
-(fmt | clippy | rust-suite | build | plugin | e2e) ;;
+(fmt | clippy | rust-suite | rust-contracts | build | plugin | e2e) ;;
 (*)
     echo "gate-leg-fingerprint: unknown reusable leg '$label'" >&2
     exit 1
@@ -43,6 +42,27 @@ root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
     exit 1
 }
 cd "$root"
+
+# Use the same derived target partition for evidence that `run-rust-battery.sh`
+# uses for execution. A contract test edit must not invalidate the ordinary
+# Rust battery merely because both kinds of integration target live under
+# `tests/`.
+core_rust_targets=""
+if [ "$label" = "rust-suite" ]; then
+    core_rust_targets="$(bash scripts/rust-test-targets.sh core)"
+fi
+
+is_core_rust_target_path() {
+    path="$1"
+    [ "${path%/*}" = "tests" ] || return 1
+    case "$path" in
+    (*.rs) ;;
+    (*) return 1 ;;
+    esac
+    target="${path##*/}"
+    target="${target%.rs}"
+    printf '%s\n' "$core_rust_targets" | grep -Fqx -- "$target"
+}
 
 # Inputs shared by every cached verdict. If the orchestration or the scope
 # definition changes, no result produced under the previous contract is
@@ -65,6 +85,25 @@ is_production_rust() {
     esac
 }
 
+# The dashboard is compiled into the binary through `include_str!`, so a page
+# edit must rebuild the executable. It is not Rust source, however, and the
+# checkout-contract battery owns the Rust assertions that inspect it. Keeping
+# that boundary explicit prevents a browser fix from throwing away formatting,
+# lint, core-Rust, or shell-plugin evidence merely because the page lives under
+# `src/`.
+is_non_dashboard_production_rust() {
+    [ "$1" != "src/web_dashboard.html" ] || return 1
+    is_production_rust "$1"
+}
+
+is_rust_lint_input() {
+    case "$1" in
+    (Cargo.toml | Cargo.lock | build.rs | clippy.toml | .cargo/*) return 0 ;;
+    (*Cargo.toml | *.rs) return 0 ;;
+    (*) return 1 ;;
+    esac
+}
+
 is_input() {
     path="$1"
     is_gate_contract "$path" && return 0
@@ -76,22 +115,36 @@ is_input() {
         esac
         ;;
     (clippy)
-        is_production_rust "$path" && return 0
-        case "$path" in
-        (tests/* | benches/* | examples/*) return 0 ;;
-        esac
+        is_rust_lint_input "$path" && return 0
         ;;
     (rust-suite)
-        # Runtime repository-contract tests intentionally reach every major
-        # surface. The only sound non-hand-maintained scope is the tracked
-        # repository itself.
+        is_non_dashboard_production_rust "$path" && return 0
+        case "$path" in
+        (tests/*.rs)
+            if [ "${path%/*}" = "tests" ]; then
+                is_core_rust_target_path "$path" && return 0
+            else
+                # A nested module can be shared by more than one integration
+                # target; without a Rust dependency graph it stays a
+                # conservative input to core.
+                return 0
+            fi
+            ;;
+        (tests/* | scripts/run-tests.sh | scripts/run-rust-battery.sh | scripts/rust-test-targets.sh) return 0 ;;
+        esac
+        ;;
+    (rust-contracts)
+        # This deliberately smaller *execution* battery reads every major
+        # repository surface at runtime, so its input fingerprint is the
+        # tracked tree. It absorbs cross-space invalidation without forcing
+        # the ordinary Rust battery to execute again.
         return 0
         ;;
     (build)
         is_production_rust "$path" && return 0
         ;;
     (plugin)
-        is_production_rust "$path" && return 0
+        is_non_dashboard_production_rust "$path" && return 0
         case "$path" in
         (plugins/story/* | .agents/plugins/marketplace.json | .claude-plugin/marketplace.json) return 0 ;;
         esac
@@ -109,7 +162,7 @@ is_input() {
 
 # Batch every selected path through one `git hash-object --stdin-paths` call.
 # Spawning one git process per file makes the whole-tree Rust fingerprint take
-# tens of seconds on this repository; batching keeps all six gate fingerprints
+# tens of seconds on this repository; batching keeps all seven gate fingerprints
 # below a second while producing the same content-addressed answer.
 paths="$(mktemp -t storyhook-gate-leg-paths.XXXXXX)"
 hashes="$(mktemp -t storyhook-gate-leg-hashes.XXXXXX)"
