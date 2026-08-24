@@ -9,8 +9,9 @@
 # gate was ever "nine minutes nominal, routinely longer" — the CLI's own tests
 # were never the slow part.
 #
-#   make test         fmt, clippy, the Rust suite, a release build, the plugin
-#                      bash harness. THE MERGE GATE — this is what
+#   make test         fmt, clippy, disjoint core/checkout-contract Rust
+#                      batteries, a release build, and the plugin bash
+#                      harness. THE MERGE GATE — this is what
 #                      `.githooks/pre-push` requires a receipt for.
 #   make test-full     `make test`, plus `scripts/run-e2e.sh` (the dashboard's
 #                      browser suite). THE RELEASE GATE — `scripts/release.sh`
@@ -167,7 +168,8 @@ test: check-no-orphan-servers
 	@bash scripts/gate-receipt.sh preflight
 	bash scripts/leg.sh --reuse fmt -- cargo fmt --all -- --check
 	bash scripts/leg.sh --reuse clippy -- cargo clippy --workspace --all-targets -- -D warnings
-	@bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-tests.sh -- --test-threads=4
+	@bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-rust-battery.sh core
+	@bash scripts/leg.sh --reuse rust-contracts -- bash scripts/run-rust-battery.sh contracts
 	bash scripts/leg.sh --reuse build -- cargo build
 	PATH="$(CURDIR)/target/debug:$$PATH" bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh
 	$(if $(E2E),bash scripts/leg.sh --reuse e2e -- bash scripts/run-e2e.sh,@bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true)
@@ -194,6 +196,7 @@ test-changed: check-no-orphan-servers
 	bash scripts/leg.sh --reuse fmt -- cargo fmt --all -- --check
 	bash scripts/leg.sh --reuse clippy -- cargo clippy --workspace --all-targets -- -D warnings
 	@bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-changed.sh
+	@bash scripts/leg.sh --reuse rust-contracts -- bash scripts/run-rust-battery.sh contracts
 	bash scripts/leg.sh --reuse build -- cargo build
 	PATH="$(CURDIR)/target/debug:$$PATH" bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh
 	@bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true

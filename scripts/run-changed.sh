@@ -56,13 +56,22 @@ directive="$(printf '%s\n' "$select_out" | sed -n '2p')"
 names="$(printf '%s\n' "$select_out" | tail -n +2)"
 
 if [ "$directive" = "ALL" ]; then
-    bash scripts/run-tests.sh -- --test-threads=4
+    # Checkout-reading integration tests are a separate reusable battery.
+    # Running the whole workspace here would duplicate them immediately
+    # before Makefile's rust-contracts leg.
+    bash scripts/run-rust-battery.sh core
     status=$?
     if [ "$status" -eq 0 ]; then
         printf 'gate\n' >"$state_file"
     fi
     exit "$status"
 fi
+
+# The rust-contracts leg owns every checkout-reading integration target. Drop
+# those names from this selective core invocation so no target can execute in
+# both batteries during one gate.
+contracts="$(bash scripts/rust-test-targets.sh contracts)" || die "could not classify Rust contract targets"
+names="$(printf '%s\n' "$names" | grep -Fvx -f <(printf '%s\n' "$contracts") || true)"
 
 # `cmd` starts non-empty (4 elements) and only ever grows, so `"${cmd[@]}"`
 # below never expands a truly-empty array -- bash < 4.4 (macOS's system bash

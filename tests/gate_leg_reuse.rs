@@ -7,6 +7,7 @@
 //! command executions; no receipt is forged and no implementation text is
 //! parsed.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -34,7 +35,12 @@ impl Repo {
             ("Cargo.toml", "[package]\nname='fixture'\nversion='0.1.0'\n"),
             ("Makefile", "test:\n\t@true\n"),
             ("src/lib.rs", "pub fn answer() -> u8 { 42 }\n"),
+            ("src/web_dashboard.html", "<main>dashboard</main>\n"),
             ("tests/contract.rs", "#[test] fn contract() {}\n"),
+            (
+                "tests/dashboard_contract.rs",
+                "const ROOT: &str = env!(\"CARGO_MANIFEST_DIR\");\n#[test] fn contract() { assert!(!ROOT.is_empty()); }\n",
+            ),
             ("e2e/specs/board.spec.ts", "// browser fixture\n"),
             ("scripts/leg.sh", "# fingerprint fixture\n"),
         ] {
@@ -52,6 +58,15 @@ impl Repo {
         permissions.set_mode(0o755);
         fs::set_permissions(&fingerprint, permissions)
             .expect("making fixture fingerprint helper executable");
+        let classifier = repo.path().join("scripts/rust-test-targets.sh");
+        fs::copy(checkout().join("scripts/rust-test-targets.sh"), &classifier)
+            .expect("copying the real Rust target classifier into the fixture");
+        let mut permissions = fs::metadata(&classifier)
+            .expect("reading Rust target classifier metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&classifier, permissions)
+            .expect("making fixture Rust target classifier executable");
         repo.git(&["add", "."]);
         repo.git(&["commit", "-q", "-m", "fixture"]);
         repo
@@ -169,7 +184,14 @@ fn a_failed_leg_never_creates_reusable_evidence() {
 fn a_browser_failure_does_not_invalidate_prior_green_batteries() {
     let repo = Repo::new();
 
-    for label in ["fmt", "clippy", "rust-suite", "build", "plugin"] {
+    for label in [
+        "fmt",
+        "clippy",
+        "rust-suite",
+        "rust-contracts",
+        "build",
+        "plugin",
+    ] {
         let out = repo.run_leg(label, true);
         assert!(out.status.success(), "seeding {label}: {out:?}");
     }
@@ -180,7 +202,14 @@ fn a_browser_failure_does_not_invalidate_prior_green_batteries() {
         "browser failure: {browser:?}"
     );
 
-    for label in ["fmt", "clippy", "rust-suite", "build", "plugin"] {
+    for label in [
+        "fmt",
+        "clippy",
+        "rust-suite",
+        "rust-contracts",
+        "build",
+        "plugin",
+    ] {
         let out = repo.run_leg(label, true);
         assert!(out.status.success(), "retrying {label}: {out:?}");
         assert_eq!(
@@ -190,4 +219,163 @@ fn a_browser_failure_does_not_invalidate_prior_green_batteries() {
         );
     }
     assert_eq!(repo.executions("e2e"), 1);
+}
+
+#[test]
+fn a_browser_edit_reruns_only_browser_and_checkout_contracts() {
+    let repo = Repo::new();
+    let labels = [
+        "fmt",
+        "clippy",
+        "rust-suite",
+        "rust-contracts",
+        "build",
+        "plugin",
+        "e2e",
+    ];
+    for label in labels {
+        let out = repo.run_leg(label, true);
+        assert!(out.status.success(), "seeding {label}: {out:?}");
+    }
+
+    repo.write("e2e/specs/board.spec.ts", "// edited browser assertion\n");
+
+    for label in labels {
+        let out = repo.run_leg(label, true);
+        assert!(out.status.success(), "retrying {label}: {out:?}");
+        let expected = usize::from(matches!(label, "rust-contracts" | "e2e")) + 1;
+        assert_eq!(
+            repo.executions(label),
+            expected,
+            "browser edit invalidated the wrong battery: {label}"
+        );
+    }
+}
+
+#[test]
+fn a_dashboard_edit_reruns_only_contract_build_and_browser_batteries() {
+    let repo = Repo::new();
+    let labels = [
+        "fmt",
+        "clippy",
+        "rust-suite",
+        "rust-contracts",
+        "build",
+        "plugin",
+        "e2e",
+    ];
+    for label in labels {
+        let out = repo.run_leg(label, true);
+        assert!(out.status.success(), "seeding {label}: {out:?}");
+    }
+
+    repo.write("src/web_dashboard.html", "<main>edited dashboard</main>\n");
+
+    for label in labels {
+        let out = repo.run_leg(label, true);
+        assert!(out.status.success(), "retrying {label}: {out:?}");
+        let expected = usize::from(matches!(label, "rust-contracts" | "build" | "e2e")) + 1;
+        assert_eq!(
+            repo.executions(label),
+            expected,
+            "dashboard edit invalidated the wrong battery: {label}"
+        );
+    }
+}
+
+#[test]
+fn a_contract_test_edit_does_not_invalidate_the_core_rust_battery() {
+    let repo = Repo::new();
+    let labels = [
+        "fmt",
+        "clippy",
+        "rust-suite",
+        "rust-contracts",
+        "build",
+        "plugin",
+        "e2e",
+    ];
+    for label in labels {
+        let out = repo.run_leg(label, true);
+        assert!(out.status.success(), "seeding {label}: {out:?}");
+    }
+
+    repo.write(
+        "tests/dashboard_contract.rs",
+        "const ROOT: &str = env!(\"CARGO_MANIFEST_DIR\");\n#[test] fn contract_edited() { assert!(!ROOT.is_empty()); }\n",
+    );
+
+    for label in labels {
+        let out = repo.run_leg(label, true);
+        assert!(out.status.success(), "retrying {label}: {out:?}");
+        let expected = usize::from(matches!(label, "fmt" | "clippy" | "rust-contracts")) + 1;
+        assert_eq!(
+            repo.executions(label),
+            expected,
+            "contract-test edit invalidated the wrong battery: {label}"
+        );
+    }
+}
+
+#[test]
+fn rust_battery_classifier_is_disjoint_and_exhaustive() {
+    fn target_names(mode: &str) -> BTreeSet<String> {
+        let out = Command::new("bash")
+            .args(["scripts/rust-test-targets.sh", mode])
+            .current_dir(checkout())
+            .output()
+            .expect("running the Rust battery classifier");
+        assert!(
+            out.status.success(),
+            "classifying {mode}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    let core = target_names("core");
+    let contracts = target_names("contracts");
+    assert!(
+        core.is_disjoint(&contracts),
+        "a Rust target belongs to both reusable batteries: {:?}",
+        core.intersection(&contracts).collect::<Vec<_>>()
+    );
+    assert!(core.contains("storyhook"));
+    assert!(core.contains("storyhook_test_support"));
+    assert!(contracts.contains("e2e_fixture_hygiene"));
+    assert!(!core.contains("e2e_fixture_hygiene"));
+
+    let metadata = Command::new("cargo")
+        .args(["metadata", "--no-deps", "--format-version=1"])
+        .current_dir(checkout())
+        .output()
+        .expect("reading Cargo targets");
+    assert!(
+        metadata.status.success(),
+        "cargo metadata failed: {metadata:?}"
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(&metadata.stdout).expect("parsing cargo metadata");
+    let expected: BTreeSet<String> = value["packages"]
+        .as_array()
+        .expect("packages array")
+        .iter()
+        .flat_map(|package| package["targets"].as_array().expect("targets array"))
+        .filter(|target| {
+            target["kind"]
+                .as_array()
+                .expect("target kind array")
+                .iter()
+                .any(|kind| matches!(kind.as_str(), Some("test" | "lib")))
+        })
+        .map(|target| target["name"].as_str().expect("target name").to_owned())
+        .collect();
+    assert_eq!(
+        core.union(&contracts).cloned().collect::<BTreeSet<_>>(),
+        expected,
+        "the split silently omitted or invented a Cargo test target"
+    );
 }

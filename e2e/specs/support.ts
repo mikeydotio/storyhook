@@ -1334,7 +1334,7 @@ export type IndicatorProbe = {
  * has already answered differently. */
 export async function probeIndicator(page: Page, selector: string): Promise<IndicatorProbe | null> {
   return page.evaluate((sel) => {
-    const el = document.querySelector(sel) as HTMLElement | null;
+    let el = document.querySelector(sel) as HTMLElement | null;
     if (!el) return null;
 
     // Waits for any CSS transition touching a colour this probe reads to
@@ -1355,10 +1355,10 @@ export async function probeIndicator(page: Page, selector: string): Promise<Indi
     // transition duration in this sheet (max observed: 0.2s) many times
     // over, so a signature that never actually settles still resolves with
     // its last sample rather than hanging the test forever.
-    const sample = () => {
-      const cs = getComputedStyle(el);
+    const sample = (node: HTMLElement) => {
+      const cs = getComputedStyle(node);
       const backgrounds: string[] = [];
-      for (let n: Element | null = el; n; n = n.parentElement) {
+      for (let n: Element | null = node; n; n = n.parentElement) {
         backgrounds.push(getComputedStyle(n).backgroundColor);
       }
       return { cs, backgrounds };
@@ -1369,13 +1369,30 @@ export async function probeIndicator(page: Page, selector: string): Promise<Indi
     const MAX_ATTEMPTS = 120; // ~2s at 60fps -- 10x the sheet's slowest colour transition
     const STABLE_FRAMES_NEEDED = 3;
 
-    return new Promise<IndicatorProbe>((resolve) => {
+    return new Promise<IndicatorProbe | null>((resolve) => {
       let lastSignature = "";
       let stableFrames = 0;
       let attempts = 0;
       const tick = () => {
         attempts++;
-        const { cs, backgrounds } = sample();
+        const current = document.querySelector(sel) as HTMLElement | null;
+        if (!current) {
+          if (attempts >= MAX_ATTEMPTS) { resolve(null); return; }
+          lastSignature = "";
+          stableFrames = 0;
+          requestAnimationFrame(tick);
+          return;
+        }
+        if (current !== el) {
+          // Live dashboard data can replace a drawer control while this probe
+          // waits for its colour transition. Computed style on the detached
+          // node serializes colours as empty strings, so reacquire the selector
+          // and require the replacement to establish its own stable window.
+          el = current;
+          lastSignature = "";
+          stableFrames = 0;
+        }
+        const { cs, backgrounds } = sample(current);
         const signature = signatureOf(cs, backgrounds);
         if (signature === lastSignature) {
           stableFrames++;
@@ -1384,16 +1401,17 @@ export async function probeIndicator(page: Page, selector: string): Promise<Indi
           lastSignature = signature;
         }
         if (stableFrames >= STABLE_FRAMES_NEEDED || attempts >= MAX_ATTEMPTS) {
-          const cls = typeof el.className === "string" && el.className ? `.${el.className.split(" ").join(".")}` : "";
+          const cls = typeof current.className === "string" && current.className
+            ? `.${current.className.split(" ").join(".")}` : "";
           resolve({
-            focusVisible: el.matches(":focus-visible"),
+            focusVisible: current.matches(":focus-visible"),
             outlineStyle: cs.outlineStyle,
             outlineWidth: cs.outlineWidth,
             outlineColor: cs.outlineColor,
             outlineOffset: cs.outlineOffset,
             borderColor: cs.borderTopColor,
             backgrounds,
-            what: `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ""}${cls}`,
+            what: `${current.tagName.toLowerCase()}${current.id ? `#${current.id}` : ""}${cls}`,
           });
           return;
         }
