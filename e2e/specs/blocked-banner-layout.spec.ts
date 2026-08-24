@@ -81,26 +81,49 @@ test("a long, multi-sentence blocked reason wraps as one paragraph, not narrow f
   await expect(body).toContainText(blockerAId);
   await expect(body).toContainText(blockerBId);
 
-  const bannerBox = await banner.boundingBox();
-  const bodyBox = await body.boundingBox();
-  if (!bannerBox || !bodyBox) {
-    throw new Error("expected both the banner and its body to have a layout box");
-  }
+  // Read the related geometry and computed style in one renderer task. A
+  // live-data refresh may replace the drawer between separate Locator calls;
+  // measuring a detached predecessor makes getComputedStyle serialize its
+  // font size as an empty string even though the visible replacement is fine.
+  const geometry = await page.evaluate(() => new Promise<{
+    bannerWidth: number;
+    bodyWidth: number;
+    bodyHeight: number;
+    fontSize: number;
+  }>((resolve) => {
+    const measureCurrentBanner = () => {
+      const bodyEl = document.querySelector<HTMLElement>(".banner-blocked .banner-body");
+      const bannerEl = bodyEl?.closest<HTMLElement>(".banner-blocked");
+      if (bodyEl?.isConnected && bannerEl?.isConnected) {
+        const bannerBox = bannerEl.getBoundingClientRect();
+        const bodyBox = bodyEl.getBoundingClientRect();
+        const fontSize = parseFloat(getComputedStyle(bodyEl).fontSize);
+        if (bannerBox.width > 0 && bodyBox.width > 0 && Number.isFinite(fontSize)) {
+          resolve({
+            bannerWidth: bannerBox.width,
+            bodyWidth: bodyBox.width,
+            bodyHeight: bodyBox.height,
+            fontSize,
+          });
+          return;
+        }
+      }
+      requestAnimationFrame(measureCurrentBanner);
+    };
+    measureCurrentBanner();
+  }));
 
   // A wrapped paragraph spans nearly the banner's own width; a run of
   // narrow flex-item columns does not. `.banner`'s own horizontal padding
   // accounts for the small gap this threshold leaves.
-  expect(bodyBox.width).toBeGreaterThan(bannerBox.width * 0.8);
+  expect(geometry.bodyWidth).toBeGreaterThan(geometry.bannerWidth * 0.8);
 
   // And it must actually wrap onto more than one line, derived from the
   // element's own font size rather than a bare pixel literal (this
   // project's own standing rule on timing/geometry ceilings) -- a single
   // line would be roughly one font-size tall; several wrapped lines of a
   // ~300-character reason are several times that.
-  const fontSizePx = await body.evaluate((el) =>
-    parseFloat(getComputedStyle(el).fontSize),
-  );
-  expect(bodyBox.height).toBeGreaterThan(fontSizePx * 2);
+  expect(geometry.bodyHeight).toBeGreaterThan(geometry.fontSize * 2);
 
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
