@@ -13,32 +13,14 @@ repo=$(mk_story_repo)
 out=$(cd "$repo" && bash "$SCRIPT" triage 2>&1)
 assert_eq "$(jqf "$out" .ok)" "true" "fresh project: ok"
 
-# --- unprioritized ---
-unp=$(new_story "$repo" "No priority")
+# --- current creation defaults to low, so it is not a legacy diagnostic ---
+defaulted=$(new_story "$repo" "Default priority")
 out=$(cd "$repo" && bash "$SCRIPT" triage 2>&1)
-assert_contains "$(jqf "$out" '[.findings[]|select(.category=="unprioritized")|.id]|join(",")')" "$unp" \
-  "unprioritized: flagged"
-assert_eq "$(jqf "$out" '.counts.unprioritized >= 1')" "true" "unprioritized: counted"
-
-# --- a story deliberately parked at `none` is NOT unprioritized (SH-359) ---
-#
-# The negative case, and the whole reason this category was rewritten. `none` is
-# a real level meaning *deliberately parked*, so a story someone put there on
-# purpose is a decision, not a triage failure. Before SH-359 the classifier read
-# `.priority == "none"` and could not tell it from `unp` above, which nobody
-# ever assessed — so both were flagged and the category asked the user to
-# re-decide something already decided.
-#
-# Note this asserts the *pair*: `parked` absent AND `unp` still present. Either
-# alone would pass against a broken classifier — an empty category satisfies the
-# first, and the old behaviour satisfies the second.
-parked=$(new_story "$repo" "Parked on purpose")
-(cd "$repo" && story prioritize "$parked" none >/dev/null 2>&1)
-out=$(cd "$repo" && bash "$SCRIPT" triage 2>&1)
-assert_eq "$(jqf "$out" '[.findings[]|select(.category=="unprioritized")|.id]|index("'"$parked"'") == null')" "true" \
-  "parked at none: not flagged as unprioritized"
-assert_contains "$(jqf "$out" '[.findings[]|select(.category=="unprioritized")|.id]|join(",")')" "$unp" \
-  "parked at none: the never-assessed story is still flagged"
+assert_eq "$(jqf "$out" '[.findings[]|select(.category=="unprioritized")|.id]|index("'"$defaulted"'") == null')" "true" \
+  "default priority: not flagged as a legacy unprioritized story"
+assert_eq "$(jqf "$out" '.counts.unprioritized')" "0" "default priority: no legacy findings"
+assert_eq "$(cd "$repo" && story show "$defaulted" --json | jq -r '.story.story.priority')" "low" \
+  "default priority: current creation writes low"
 
 # --- orphan (no relationships at all) ---
 orp=$(new_story "$repo" "No relationships")
@@ -89,7 +71,7 @@ out=$(cd "$repo" && STORY_STALE_THRESHOLD='not-a-duration' bash "$SCRIPT" triage
 assert_eq "$(jqf "$out" .ok)" "false" "stale threshold: a malformed duration is rejected by the real CLI, not silently accepted"
 
 # --- read-only: nothing about the real project changed ---
-assert_eq "$(cd "$repo" && story show "$unp" --json | jq -r '.story.story.priority')" "none" \
+assert_eq "$(cd "$repo" && story show "$defaulted" --json | jq -r '.story.story.priority')" "low" \
   "read-only: triage itself never mutates a story"
 
 # --- errors ---
