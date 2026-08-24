@@ -11000,6 +11000,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function openCreateModal(draft) {
     if (!state.data) return;
     editingDraft = draft || null;
+    createTargetProject = state.repoId;
     // Defensive reset (SH-312): the modal is a singleton reused across opens,
     // so a stuck flag from an unreachable error path would otherwise leave
     // every future open permanently disabled.
@@ -11053,6 +11054,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     releaseOverlay("create-modal");
   }
 
+  /** The project the create modal's next request will address -- set by
+   * `openCreateModal()` to `state.repoId` and, once SH-439's `#create-
+   * project` dropdown is wired, updated by its own `change` handler. Every
+   * mutating action below reads this through {@link createApiBase} rather
+   * than `apiBase()`, which addresses `state.repoId` — the *board's*
+   * project, not necessarily the one the modal is now naming. */
+  var createTargetProject = null;
+
+  /** `apiBase()`'s create-modal equivalent — see {@link createTargetProject}. */
+  function createApiBase() { return repoApiBase(createTargetProject); }
+
   /** The form's current field values as a `story new`/PATCH-shaped body.
    * `title` is always present (validated non-empty by the caller); every
    * other field is present only when non-default, matching how `PATCH
@@ -11077,13 +11089,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * a promise so callers can chain a publish or a close after it settles;
    * resolves immediately with no request when nothing changed. */
   function applyLabelDiff(id, originalLabels) {
+    var base = createApiBase();
     var next = createLabelCombobox ? createLabelCombobox.getLabels() : [];
     var before = originalLabels || [];
     var add = next.filter(function(l) { return before.indexOf(l) === -1; });
     var remove = before.filter(function(l) { return next.indexOf(l) === -1; });
     var calls = [];
-    if (add.length) calls.push(api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/labels", { add: add }));
-    if (remove.length) calls.push(api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/labels", { remove: remove }));
+    if (add.length) calls.push(api("POST", base + "/story/" + encodeURIComponent(id) + "/labels", { add: add }));
+    if (remove.length) calls.push(api("POST", base + "/story/" + encodeURIComponent(id) + "/labels", { remove: remove }));
     return Promise.all(calls);
   }
 
@@ -11120,8 +11133,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (!editingDraft) { closeCreateModal(); return; }
     if (createModalInFlight) return;
     setCreateModalInFlight(true);
+    var base = createApiBase();
     var id = editingDraft.story.id;
-    api("DELETE", apiBase() + "/story/" + encodeURIComponent(id), { reason: "Discarded draft" })
+    api("DELETE", base + "/story/" + encodeURIComponent(id), { reason: "Discarded draft" })
       .then(function() { setCreateModalInFlight(false); closeCreateModal(); fetchData(); })
       .catch(function(err) { setCreateModalInFlight(false); $("create-error").textContent = describeMutationFailure(err); });
   }
@@ -11136,16 +11150,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var body = createFormFields();
     if (!body.title) { $("create-error").textContent = "Title is required."; return; }
     setCreateModalInFlight(true);
+    var base = createApiBase();
     var request;
     if (editingDraft) {
       var id = editingDraft.story.id;
-      request = api("PATCH", apiBase() + "/story/" + encodeURIComponent(id), body)
+      request = api("PATCH", base + "/story/" + encodeURIComponent(id), body)
         .then(function() { return applyLabelDiff(id, editingDraft.story.labels); });
     } else {
       body.draft = true;
       var labels = createLabelCombobox ? createLabelCombobox.getLabels() : [];
       if (labels.length) body.labels = labels;
-      request = api("POST", apiBase() + "/story", body);
+      request = api("POST", base + "/story", body);
     }
     request
       .then(function(payload) {
@@ -11174,16 +11189,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var body = createFormFields();
     if (!body.title) { $("create-error").textContent = "Title is required."; return; }
     setCreateModalInFlight(true);
+    var base = createApiBase();
     var request;
     if (editingDraft) {
       var id = editingDraft.story.id;
-      request = api("PATCH", apiBase() + "/story/" + encodeURIComponent(id), body)
+      request = api("PATCH", base + "/story/" + encodeURIComponent(id), body)
         .then(function() { return applyLabelDiff(id, editingDraft.story.labels); })
-        .then(function() { return api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/publish", {}); });
+        .then(function() { return api("POST", base + "/story/" + encodeURIComponent(id) + "/publish", {}); });
     } else {
       var labels = createLabelCombobox ? createLabelCombobox.getLabels() : [];
       if (labels.length) body.labels = labels;
-      request = api("POST", apiBase() + "/story", body);
+      request = api("POST", base + "/story", body);
     }
     request
       .then(function(payload) {
