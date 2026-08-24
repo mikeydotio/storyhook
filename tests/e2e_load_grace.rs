@@ -219,6 +219,33 @@ fn an_extension_is_never_silent() {
 }
 
 #[test]
+fn watchdog_resets_from_now_without_moving_the_absolute_wall_clock_ceiling() {
+    let module = read("e2e/load-grace.ts");
+    let support = read("e2e/specs/support.ts");
+
+    assert!(
+        module.contains("MAX_TEST_TIMEOUT_MS - elapsed")
+            && module.contains("Math.max(1,")
+            && !module.contains("elapsedMs)) + gracedTestBudget"),
+        "resetTestBudget must grant a duration from now that shrinks to the remaining wall-clock \
+         ceiling, never elapsed-plus-window (which Playwright treats as a fresh fixture duration \
+         and can therefore extend forever); the floor must stay above zero because zero disables \
+         Playwright timeouts"
+    );
+    assert!(
+        support.contains("resetTestBudget(floorMs, elapsedMs, ratio)"),
+        "the running watchdog must call resetTestBudget with measured elapsed time"
+    );
+    assert!(
+        support.contains("absoluteCeilingAtMs")
+            && support.contains("grantedUntilMs")
+            && support.contains("remainingWallMs"),
+        "the running watchdog must preserve earlier grants as absolute deadlines while clamping \
+         every fresh fixture-duration reset to the same wall-clock ceiling"
+    );
+}
+
+#[test]
 fn every_tracked_spec_is_subject_to_the_watchdog() {
     let specs = tracked_e2e_files(".spec.ts");
     assert!(

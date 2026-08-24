@@ -4,6 +4,7 @@ import {
   cleanUpCreatedStories,
   deleteStory,
   openProject,
+  openStatusesEditor,
   seedToken,
 } from "./support";
 
@@ -336,13 +337,7 @@ test("the settings project form's controls are at least 16px", async ({
 
 test("the statuses editor's controls are at least 16px", async ({ page }) => {
   await page.goto("/");
-  await page.locator("#settings-btn").click();
-  await expect(page.locator("#settings-view")).toBeVisible();
-
-  await page
-    .locator(".settings-table tr", { hasText: "Alpha Project" })
-    .locator("button", { hasText: "Statuses" })
-    .click();
+  await openStatusesEditor(page, "Alpha Project");
   await expect(page.locator(".status-list")).toBeVisible();
 
   // Two roots rather than one row's worth: a floor, not an exact count, so

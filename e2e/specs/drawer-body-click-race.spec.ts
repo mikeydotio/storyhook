@@ -144,9 +144,8 @@ test("a /data reply landing between mousedown and mouseup does not swallow a dra
 
   const toggle = page.locator(".section-toggle", { hasText: "Comments" });
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
-  const box = await settledBoundingBox(page.locator("#drawer"), toggle);
-
   const held = await holdARebuildingReply(page, request, id, "high");
+  const box = await settledBoundingBox(page.locator("#drawer"), toggle);
 
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
@@ -231,9 +230,8 @@ test("a /data reply landing mid-press does not swallow a drawer footer button's 
 
   const del = page.locator("#drawer-footer .btn-danger");
   await expect(del).toBeVisible();
-  const box = await settledBoundingBox(page.locator("#drawer"), del);
-
   const held = await holdARebuildingReply(page, request, id, "high");
+  const box = await settledBoundingBox(page.locator("#drawer"), del);
 
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
@@ -270,9 +268,11 @@ test("a /data reply landing mid-press does not swallow a list row's click (SH-40
   await page.locator('#view-toggle button[data-view="list"]').click();
   const row = page.locator(`#list-body tr[data-id="${id}"]`);
   await expect(row).toBeVisible();
-  const box = await settledBoundingBox(page.locator("#list-view"), row);
-
   const held = await holdARebuildingReply(page, request, id, "high");
+  // The mutation/route handshake above can take arbitrarily long under
+  // contention. Measure the live row only after that handshake, immediately
+  // before the coordinate press, rather than aiming at a pre-network box.
+  const box = await settledBoundingBox(page.locator("#list-view"), row);
 
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();

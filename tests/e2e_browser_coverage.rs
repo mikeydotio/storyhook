@@ -20,6 +20,9 @@
 //!    identically, quietly narrowing WebKit coverage relative to Chromium's,
 //!    or the two pairs stop sharing `MOBILE_SPECS` under opposite selector
 //!    kinds -- `the_two_projects_in_each_engine_pair_select_their_specs_the_same_way`.
+//! 4. A failed project stops the matrix or a later project's Playwright
+//!    invocation erases its failure artifacts --
+//!    `the_matrix_records_failures_continues_and_keeps_each_projects_artifacts`.
 
 use std::path::{Path, PathBuf};
 
@@ -525,5 +528,33 @@ fn project_blocks_and_selector_read_this_configs_own_shape() {
     assert_eq!(
         selector(match_block),
         Some(("testMatch", "MOBILE_SPECS".to_string()))
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 4. A continued matrix preserves every project's failure evidence
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_matrix_records_failures_continues_and_keeps_each_projects_artifacts() {
+    let runner = read("scripts/run-e2e.sh");
+
+    assert!(
+        runner.contains("run_one_project \"$project\"")
+            && runner.contains("project=$project FAILED (exit $status)")
+            && runner.contains("overall_status=$status")
+            && runner.contains("exit \"$overall_status\""),
+        "a failed Playwright project must be recorded while the outer project loop continues, \
+         and the runner must report failure only after every remaining project had its turn"
+    );
+    assert!(
+        runner.contains("results_root=\"$repo_root/e2e/test-results/current\""),
+        "scripts/run-e2e.sh must establish one artifact root for the whole invocation; without \
+         it a later Playwright project can clear the earlier project's screenshots and traces"
+    );
+    assert!(
+        runner.contains("--output=\"$results_root/$project\""),
+        "each Playwright invocation must write beneath a project-keyed output directory; the \
+         default shared test-results directory is cleared at the start of every invocation"
     );
 }

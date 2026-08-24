@@ -3,6 +3,7 @@ import type { APIRequestContext, Locator, Page } from "@playwright/test";
 import {
   cleanUpCreatedStories,
   onAFrozenClock,
+  openStatusesEditor,
   projectSlug,
   requiredEnv,
   seedToken,
@@ -176,20 +177,10 @@ async function storyLocation(
   return { state: payload.story.story.state, superstate: payload.story.story.superstate };
 }
 
-async function openStatuses(page: Page, project: string): Promise<void> {
-  await page.locator("#settings-btn").click();
-  await expect(page.locator("#settings-view")).toBeVisible();
-  await page
-    .locator(".settings-table tbody tr", { hasText: project })
-    .getByRole("button", { name: "Statuses" })
-    .click();
-  await expect(page.locator(".settings-head h2")).toHaveText(`Statuses · ${project}`);
-}
-
 async function openClockedEditor(page: Page): Promise<void> {
   await page.clock.install();
   await page.goto("/");
-  await openStatuses(page, SCRATCH_PROJECT);
+  await openStatusesEditor(page, SCRATCH_PROJECT);
 }
 
 const row = (page: Page, slug: string): Locator =>
@@ -253,17 +244,24 @@ test("a destination question can still be applied a minute later", async ({
   await onAFrozenClock(page, async () => {
     await trigger(page, SCRATCH_OCCUPIED).click();
     await expect(destinationPanel(page, SCRATCH_OCCUPIED)).toBeVisible();
+    // Choose while the editor is active, as a user does. Focus inside the
+    // row is the production busy boundary, so the two safety polls advanced
+    // below cannot leave an in-flight repaint poised between select and
+    // Apply when the frozen window resumes.
+    await destinationSelect(page, SCRATCH_OCCUPIED).selectOption("blocked");
     await page.clock.runFor(ARMED_HORIZON_MS);
     await expect(destinationPanel(page, SCRATCH_OCCUPIED)).toBeVisible();
+    await expect(destinationSelect(page, SCRATCH_OCCUPIED)).toHaveValue("blocked");
   });
 
-  await destinationSelect(page, SCRATCH_OCCUPIED).selectOption("blocked");
   await applyButton(page, SCRATCH_OCCUPIED).click();
 
-  await expect(row(page, SCRATCH_OCCUPIED)).toHaveCount(0);
   const project = await projectSlug(request, SCRATCH_PROJECT);
-  expect(await statusExists(request, project, SCRATCH_OCCUPIED)).toBe(false);
-  expect((await storyLocation(request, project, scratchStoryId)).state).toBe("blocked");
+  await expect.poll(() => statusExists(request, project, SCRATCH_OCCUPIED)).toBe(false);
+  await expect
+    .poll(async () => (await storyLocation(request, project, scratchStoryId)).state)
+    .toBe("blocked");
+  await expect(row(page, SCRATCH_OCCUPIED)).toHaveCount(0);
 });
 
 test("a destination question survives a refresh nobody asked for", async ({ page }) => {
