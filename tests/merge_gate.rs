@@ -172,6 +172,24 @@ impl MergeRepo {
         assert_ok(&self.gate("preflight"), "fixture: enrolling");
         assert_ok(&self.gate("postlude"), "fixture: writing the receipt");
     }
+
+    /// `gate-receipt.sh postlude <tier> [<base>]` — the tiered form (SH-429),
+    /// for tests exercising the `changed` tier specifically.
+    fn gate_postlude(&self, tier: &str, base: Option<&str>) -> Output {
+        let mut args = vec![
+            checkout()
+                .join("scripts/gate-receipt.sh")
+                .display()
+                .to_string(),
+            "postlude".to_string(),
+            tier.to_string(),
+        ];
+        if let Some(b) = base {
+            args.push(b.to_string());
+        }
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        run(self.path(), "bash", &arg_refs)
+    }
 }
 
 fn run(cwd: &Path, program: &str, args: &[&str]) -> Output {
@@ -421,6 +439,85 @@ fn a_new_commit_after_certification_produces_an_uncertified_tree_again() {
         stdout(&out),
         stdout(&repo.preflight(&base, &head_v1)),
         "fixture: the two trees must actually differ"
+    );
+}
+
+/// SH-429's council verdict, provoked directly: a `changed`-tier receipt —
+/// even one that exists for the merge tree's EXACT oid — is never sufficient
+/// to certify a merge. `merge-preflight.sh` is tier-blind by mere file
+/// existence; this is the one place that blindness must not extend to, since
+/// a selective run diffed against one branch's own history, and a merge
+/// combines two branches' independently-authored diffs — the exact SH-396
+/// shape (14 of 30 real merges producing a tree matching neither parent)
+/// this whole gate exists to catch.
+#[test]
+fn a_changed_tier_receipt_does_not_certify_a_merge_even_for_the_exact_tree() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let base_tree = repo.tree_of("main");
+    let head = repo.branch("feature", "main", "g", "new\n");
+
+    let predicted = stdout(&repo.preflight(&base, &head));
+
+    // Certify the BASE first, at `gate` tier — a `changed` receipt needs a
+    // certified base of its own to name. `gate-receipt.sh` keys receipts by
+    // TREE oid, not commit oid, which is why this uses `base_tree`
+    // (`repo.tree_of`) rather than `base` (`repo.rev_parse`, a commit —
+    // correct for `merge-preflight.sh`'s own ref-taking arguments, but not
+    // for `gate-receipt.sh postlude`'s base-TREE argument). Checkout
+    // precedes preflight: preflight records whichever tree is checked out
+    // AT THAT MOMENT, and postlude refuses if it has drifted since.
+    assert_ok(
+        &repo.git(&["checkout", "-q", "main"]),
+        "back to main to certify it",
+    );
+    assert_ok(
+        &repo.gate("preflight"),
+        "fixture: enrolling to certify the base",
+    );
+    assert_ok(
+        &repo.gate_postlude("gate", None),
+        "fixture: certifying the base",
+    );
+
+    // Perform the real merge on a throwaway branch, in the SAME repo, then
+    // certify the resulting tree — the exact one merge-preflight.sh will
+    // look up — at `changed`, the one tier that must not satisfy it.
+    assert_ok(
+        &repo.git(&["checkout", "-q", "-b", "merged", &base]),
+        "branching for the real merge",
+    );
+    assert_ok(
+        &repo.git(&["merge", "-q", "--no-edit", &head]),
+        "the real merge must succeed cleanly",
+    );
+    assert_eq!(
+        repo.tree_of("HEAD"),
+        predicted,
+        "fixture: the real merge's tree must equal the predicted one"
+    );
+    assert_ok(
+        &repo.gate("preflight"),
+        "fixture: re-enrolling on the merge branch",
+    );
+    assert_ok(
+        &repo.gate_postlude("changed", Some(&base_tree)),
+        "fixture: writing a changed-tier receipt for the merge tree itself",
+    );
+
+    let out = repo.preflight(&base, &head);
+
+    assert!(
+        !out.status.success(),
+        "a changed-tier receipt must not certify a merge, got exit {:?}\nstderr: {}",
+        out.status.code(),
+        stderr(&out)
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("changed"),
+        "the refusal must name the insufficient tier, got: {}",
+        stderr(&out)
     );
 }
 

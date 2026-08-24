@@ -33,15 +33,28 @@
 #                   own fail-fast semantics mean it is reached only if every
 #                   leg passed; certifies that tree
 #
-# TIER is `gate` (the default -- fmt, clippy, the Rust suite, the plugin bash
-# harness) or `full` (`gate` plus the browser suite -- SH-394). It names what
-# was actually run, nothing more: `.githooks/pre-push` accepts either, because
-# the reduced gate protecting `main` is the whole point of the split, but it
-# reports which one a push carries so that is never silent. A `full` receipt
-# for a tree is a strictly stronger claim than a `gate` one for the same tree,
-# so postlude never lets a `gate` run overwrite an existing `full` receipt --
-# re-running the cheap tier after the expensive one must not erase the
-# stronger claim.
+# TIER is `changed` (SH-429 -- a selective run over `scripts/select-tests.sh`'s
+# own pick of test binaries), `gate` (the default -- fmt, clippy, the whole
+# Rust suite, the plugin bash harness) or `full` (`gate` plus the browser
+# suite -- SH-394). It names what was actually run, nothing more:
+# `.githooks/pre-push` accepts any of the three for a push, because the
+# reduced gate protecting `main` is the whole point of the split, but it
+# reports which one a push carries so that is never silent. The three form a
+# strict order, `changed < gate < full`, and postlude never lets a weaker-tier
+# run overwrite a stronger receipt already on file for the same tree --
+# re-running a cheap tier after an expensive one must not erase the stronger
+# claim. `scripts/merge-preflight.sh` -- unlike the push hook -- does NOT
+# accept `changed`: a merge tree is content no single branch's selective run
+# ever accounted for (SH-396's own reason for existing), so landing on `main`
+# still requires `gate` or `full` regardless of what tier a push carried (a
+# council verdict, recorded on story SH-429).
+#
+# A `changed` receipt additionally carries a fourth line, `base <tree>`,
+# naming the fully-certified (`gate`/`full`) tree `select-tests.sh` diffed
+# against to decide what to run -- the fact that makes the claim honest: "the
+# selected tests passed, relative to a specific prior green tree," never "the
+# whole suite passed." `postlude` refuses to write one without a `base` that
+# itself currently carries a `gate`/`full` receipt.
 #
 # The receipt is keyed on a tree object id — not a commit sha, and not a clock.
 # Content is the thing that was tested; a clock is a second thing to be wrong
@@ -155,10 +168,23 @@ onto main:"
 
 postlude)
     tier="${2:-gate}"
+    base_tree="${3:-}"
     case "$tier" in
-    gate | full) ;;
-    *) die "unknown tier '$tier' -- postlude takes 'gate' or 'full'" ;;
+    changed | gate | full) ;;
+    *) die "unknown tier '$tier' -- postlude takes 'changed', 'gate' or 'full'" ;;
     esac
+    if [ "$tier" = "changed" ]; then
+        [ -n "$base_tree" ] \
+            || die "postlude changed needs a base tree: 'gate-receipt.sh postlude changed <base-tree>'"
+        base_receipt="$receipts/$base_tree"
+        base_tier="$(sed -n 's/^tier //p' "$base_receipt" 2>/dev/null | head -n1)"
+        base_tier="${base_tier:-gate}"
+        [ -f "$base_receipt" ] && { [ "$base_tier" = "gate" ] || [ "$base_tier" = "full" ]; } \
+            || die "base tree $base_tree carries no gate/full receipt of its own -- a \
+changed receipt must name a tree that was itself fully certified, not another selective run"
+    elif [ -n "$base_tree" ]; then
+        die "only 'changed' takes a base tree; got tier '$tier' with base '$base_tree'"
+    fi
 
     [ -f "$preflight_state" ] \
         || die "no preflight was recorded — 'make test' must run \
@@ -180,16 +206,27 @@ certifies nothing. Changed:"
 
     mkdir -p "$receipts" || die "could not create $receipts"
 
-    # A `full` receipt already on file for this exact tree is a strictly
-    # stronger claim than the `gate` tier this run would write -- don't erase
-    # it. Any other combination (no prior receipt, a prior `gate` receipt, or
-    # this run itself being `full`) proceeds to write below.
-    if [ "$tier" = "gate" ] && [ -f "$receipts/$after" ] \
-        && grep -q '^tier full$' "$receipts/$after" 2>/dev/null; then
-        note "tree $after already carries a full receipt; a gate-tier run \
-does not downgrade it"
-        rm -f "$preflight_state"
-        exit 0
+    # A receipt already on file for this exact tree at an EQUAL OR STRONGER
+    # tier is a claim this run's own tier cannot improve on -- don't erase it.
+    # `changed < gate < full` is the whole order; a `changed` run over a tree
+    # that already carries `gate` must not "downgrade" it back to a partial
+    # claim, and the pre-existing full-over-gate rule generalizes cleanly.
+    tier_rank() {
+        case "$1" in
+        changed) printf '1\n' ;;
+        gate) printf '2\n' ;;
+        full) printf '3\n' ;;
+        esac
+    }
+    if [ -f "$receipts/$after" ]; then
+        existing_tier="$(sed -n 's/^tier //p' "$receipts/$after" 2>/dev/null | head -n1)"
+        existing_tier="${existing_tier:-gate}"
+        if [ "$(tier_rank "$tier")" -lt "$(tier_rank "$existing_tier")" ]; then
+            note "tree $after already carries a $existing_tier receipt; a $tier-tier \
+run does not downgrade it"
+            rm -f "$preflight_state"
+            exit 0
+        fi
     fi
 
     # Atomic: the filename IS the claim, so a half-written one would read as
@@ -200,6 +237,10 @@ does not downgrade it"
         printf 'tree %s\n' "$after"
         printf 'worktree %s\n' "$root"
         printf 'tier %s\n' "$tier"
+        if [ "$tier" = "changed" ]; then
+            printf 'base %s\n' "$base_tree"
+        fi
+        true
     } > "$tmp" || die "could not stage the receipt"
     mv -f "$tmp" "$receipts/$after" || die "could not publish the receipt"
     rm -f "$preflight_state"
