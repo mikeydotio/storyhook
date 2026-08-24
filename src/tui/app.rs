@@ -1642,21 +1642,25 @@ mod tests {
     }
 
     #[test]
-    fn creating_a_story_with_no_priority_carries_the_unassessed_warning() {
+    fn creating_a_story_with_no_priority_uses_low_without_a_warning() {
         let fixture = TuiFixture::new();
         let invoker = fixture.invoker();
 
         let (id, warnings) =
-            create_story_mutation(&invoker, "Unassessed story", None, &[], None, None)
-                .expect("creating with no priority still succeeds");
+            create_story_mutation(&invoker, "Defaulted story", None, &[], None, None)
+                .expect("creating with the default priority succeeds");
 
-        assert_eq!(warnings.len(), 1, "exactly one warning: {warnings:?}");
-        assert!(warnings[0].contains(&id));
-        assert!(warnings[0].contains("story next"));
+        assert!(warnings.is_empty(), "no warning expected: {warnings:?}");
+        let store = DataStore::load(&invoker).expect("reloading the story");
+        assert_eq!(
+            store.find_story(&id).expect("the story exists").priority,
+            crate::domain::Priority::Low
+        );
 
-        let notification = creation_notification(&id, &warnings);
-        assert!(notification.starts_with(&format!("Created {id}")));
-        assert!(notification.contains(&warnings[0]));
+        assert_eq!(
+            creation_notification(&id, &warnings),
+            format!("Created {id}")
+        );
     }
 
     #[test]

@@ -210,7 +210,7 @@ Usage:
   story move <id> <state-slug> [--if-state <expected>] ["<comment>"]
   story block <id> [--on <blocker>]... ["<reason>"]
   story unblock <id> [--on <blocker>]...
-  story prioritize <id> <critical|high|medium|low|none>
+  story prioritize <id> <critical|high|medium|low>
   story label <id> <labels-csv>
   story unlabel <id> <labels-csv>
   story reopen <id> [--force]

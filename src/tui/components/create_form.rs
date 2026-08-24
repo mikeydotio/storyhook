@@ -32,7 +32,6 @@ const CREATE_FIELDS: &[CreateField] = &[
 ];
 
 const PRIORITY_OPTIONS: &[Priority] = &[
-    Priority::None,
     Priority::Low,
     Priority::Medium,
     Priority::High,
@@ -84,11 +83,7 @@ impl CreateForm {
             Some(description_raw)
         };
 
-        let priority = if self.priority_cursor == 0 {
-            None
-        } else {
-            Some(PRIORITY_OPTIONS[self.priority_cursor].clone())
-        };
+        let priority = Some(PRIORITY_OPTIONS[self.priority_cursor].clone());
 
         let labels_raw = self.label_input.value().to_string();
         let labels: Vec<String> = labels_raw
@@ -438,7 +433,7 @@ mod tests {
         assert_eq!(actions.len(), 1);
         assert!(
             matches!(&actions[0], Action::CreateStory { title, priority, labels, assignee, description }
-                if title == "My new story" && priority.is_none() && labels.is_empty() && assignee.is_none() && description.is_none())
+                if title == "My new story" && priority == &Some(Priority::Low) && labels.is_empty() && assignee.is_none() && description.is_none())
         );
     }
 
@@ -476,17 +471,18 @@ mod tests {
         form.handle_key(key(KeyCode::Tab), &state); // Priority
         assert_eq!(form.focused_field, 2);
 
-        // Default is None (index 0)
+        // Default is Low (index 0)
         assert_eq!(form.priority_cursor, 0);
+        assert_eq!(PRIORITY_OPTIONS[form.priority_cursor], Priority::Low);
 
         // j moves down
         form.handle_key(key(KeyCode::Char('j')), &state);
         assert_eq!(form.priority_cursor, 1);
-        assert_eq!(PRIORITY_OPTIONS[form.priority_cursor], Priority::Low);
+        assert_eq!(PRIORITY_OPTIONS[form.priority_cursor], Priority::Medium);
 
         form.handle_key(key(KeyCode::Char('j')), &state);
         assert_eq!(form.priority_cursor, 2);
-        assert_eq!(PRIORITY_OPTIONS[form.priority_cursor], Priority::Medium);
+        assert_eq!(PRIORITY_OPTIONS[form.priority_cursor], Priority::High);
 
         // k moves back
         form.handle_key(key(KeyCode::Char('k')), &state);
@@ -511,7 +507,6 @@ mod tests {
 
         // Priority: move to field and set High
         form.handle_key(key(KeyCode::Tab), &state);
-        form.handle_key(key(KeyCode::Char('j')), &state); // Low
         form.handle_key(key(KeyCode::Char('j')), &state); // Medium
         form.handle_key(key(KeyCode::Char('j')), &state); // High
 

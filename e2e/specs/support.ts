@@ -263,9 +263,9 @@ export async function projectSlug(
  * no vocabulary, and every spec that waited only for that was racing the
  * fetch (SH-222). Losing that race is not a slow assertion, which would
  * simply retry: the create modal is built **once**, synchronously, from
- * `meta()` at the moment it opens, so a modal opened in that window has a
- * Priority select holding nothing but "Default priority" and never
- * repopulates. `selectOption("critical")` against it then spins out the whole
+ * `meta()` at the moment it opens, so a modal opened in that window has an
+ * empty Priority select and never repopulates. `selectOption("critical")`
+ * against it then spins out the whole
  * 15s test timeout with "did not find some options" — the failure SH-223
  * recorded twice against `board-sort.spec.ts` and once against
  * `create-story-defaults.spec.ts`, each time on a machine that was busy. The
@@ -1349,15 +1349,8 @@ export async function settledBoundingBox(
 /** Creates a story with both a title and a description (so Copy Description has
  * something to copy) and returns its id.
  *
- * Sets a priority (SH-358): this helper is a general-purpose fixture used by
- * 25+ unrelated specs across this suite, none of which test priority. Left at
- * "Default priority" it silently raises the unassessed-priority warning toast
- * on every call -- a side effect no caller here is testing for, and one that
- * broke a dozen specs whose own notice-count and focus-geometry assertions
- * didn't expect an extra, timer-driven toast in the stack. A story actually
- * testing priority behaviour (story-context-menu-priority.spec.ts) has its
- * own local `createStory` with an optional priority argument and is
- * unaffected by this one. */
+ * This general-purpose fixture chooses medium explicitly so callers can rely
+ * on one stable value; the form's low default is covered separately. */
 export async function createStory(page: Page, title: string): Promise<string> {
   await page.locator("#new-story-btn").click();
   await expect(page.locator("#create-modal")).toHaveClass(/open/);

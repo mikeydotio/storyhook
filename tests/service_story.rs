@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use storyhook::domain::{Priority, StateDef, StorySnapshot, SuperState};
 use storyhook::error::AppError;
 use storyhook::service::{Clock, Ctx, FieldEdits, NewStoryInput, StoryService};
-use storyhook::store::{ReadOps, SqliteStore, Store, StoryNo, StoryQuery};
+use storyhook::store::{ReadOps, SqliteStore, Store, StoryNo, StoryQuery, WriteOps};
 use storyhook_test_support::{FIXTURE_NOW, ServiceFixture};
 
 // --- helpers ---------------------------------------------------------------
@@ -62,6 +62,47 @@ fn a_new_story_opens_in_the_first_configured_open_state() {
     assert_eq!(story.state, "todo");
     assert_eq!(story.superstate, SuperState::Open);
     assert_eq!(story.created_at, FIXTURE_NOW);
+    assert_eq!(story.priority, Priority::Low);
+    assert!(story.priority_assessed);
+    assert_eq!(story.story_type.as_deref(), Some("feature"));
+    assert_eq!(
+        event_kinds(&fixture, &story.id),
+        ["StoryCreated", "StoryPrioritySet", "StoryTypeSet"]
+    );
+}
+
+#[test]
+fn the_default_type_follows_configured_order_not_alphabetical_order() {
+    let fixture = ServiceFixture::new();
+    let story = new_story(&fixture.ctx(), "type ordering matters");
+    assert_eq!(story.story_type.as_deref(), Some("feature"));
+}
+
+#[test]
+fn an_empty_type_catalog_rejects_creation_without_allocating_a_story() {
+    let fixture = ServiceFixture::new();
+    fixture
+        .store()
+        .write(|tx| tx.put_types(fixture.project(), &[]))
+        .expect("emptying the legacy catalog");
+
+    let error = StoryService::new(&fixture.ctx())
+        .create(&NewStoryInput {
+            title: "cannot be typed".into(),
+            ..NewStoryInput::default()
+        })
+        .expect_err("an empty catalog cannot supply the required type");
+    assert_eq!(
+        validation_message(error),
+        "project has no configured story types"
+    );
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.stories(fixture.project(), &StoryQuery::all()))
+            .expect("listing stories")
+            .is_empty()
+    );
 }
 
 #[test]
@@ -182,7 +223,10 @@ fn an_empty_label_list_writes_no_labels_event() {
             ..NewStoryInput::default()
         })
         .expect("creating with an empty label list");
-    assert_eq!(event_kinds(&fixture, &story.id), ["StoryCreated"]);
+    assert_eq!(
+        event_kinds(&fixture, &story.id),
+        ["StoryCreated", "StoryPrioritySet", "StoryTypeSet"]
+    );
 }
 
 #[test]
@@ -195,7 +239,10 @@ fn a_blank_description_writes_no_description_event() {
             ..NewStoryInput::default()
         })
         .expect("creating with a blank description");
-    assert_eq!(event_kinds(&fixture, &story.id), ["StoryCreated"]);
+    assert_eq!(
+        event_kinds(&fixture, &story.id),
+        ["StoryCreated", "StoryPrioritySet", "StoryTypeSet"]
+    );
 }
 
 #[test]
@@ -237,7 +284,10 @@ fn an_invalid_priority_is_rejected_at_creation() {
             ..NewStoryInput::default()
         })
         .unwrap_err();
-    assert!(validation_message(error).contains("invalid priority `urgent`"));
+    assert_eq!(
+        validation_message(error),
+        "priority must be one of: critical, high, medium, low"
+    );
 }
 
 #[test]
@@ -560,7 +610,6 @@ fn every_priority_slug_round_trips_through_the_service() {
         ("high", Priority::High),
         ("medium", Priority::Medium),
         ("low", Priority::Low),
-        ("none", Priority::None),
     ] {
         let story = new_story(&ctx, slug);
         let after = service.set_priority(&story.id, slug).expect("setting");
@@ -578,8 +627,25 @@ fn an_invalid_priority_names_the_valid_ones() {
         .unwrap_err();
     assert_eq!(
         validation_message(error),
-        "priority must be one of: critical, high, medium, low, none"
+        "priority must be one of: critical, high, medium, low"
     );
+}
+
+#[test]
+fn none_is_not_an_assignable_priority() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let story = new_story(&ctx, "priority");
+    let before = event_kinds(&fixture, &story.id);
+    let error = StoryService::new(&ctx)
+        .set_priority(&story.id, "none")
+        .expect_err("none is a legacy representation, not an assignable level");
+    assert_eq!(
+        validation_message(error),
+        "priority must be one of: critical, high, medium, low"
+    );
+    assert_eq!(event_kinds(&fixture, &story.id), before);
+    assert_eq!(snapshot(&fixture, &story.id).priority, Priority::Low);
 }
 
 #[test]
@@ -687,7 +753,10 @@ fn clearing_awaiting_on_a_story_that_awaits_nothing_writes_no_event() {
         .clear_awaiting(&story.id)
         .expect("clearing");
     assert_eq!(after.awaiting, None);
-    assert_eq!(event_kinds(&fixture, &story.id), ["StoryCreated"]);
+    assert_eq!(
+        event_kinds(&fixture, &story.id),
+        ["StoryCreated", "StoryPrioritySet", "StoryTypeSet"]
+    );
 }
 
 #[test]
@@ -718,7 +787,12 @@ fn moving_between_open_states_leaves_the_story_open() {
     assert_eq!(after.closed_at, None);
     assert_eq!(
         event_kinds(&fixture, &story.id),
-        ["StoryCreated", "StoryStateChanged"]
+        [
+            "StoryCreated",
+            "StoryPrioritySet",
+            "StoryTypeSet",
+            "StoryStateChanged"
+        ]
     );
 }
 
@@ -760,6 +834,8 @@ fn closing_a_story_that_was_awaiting_something_clears_it_first() {
         event_kinds(&fixture, &story.id),
         [
             "StoryCreated",
+            "StoryPrioritySet",
+            "StoryTypeSet",
             "StoryAwaitingSet",
             "StoryStateChanged",
             "StoryAwaitingCleared",
@@ -780,6 +856,8 @@ fn closing_a_story_that_awaits_nothing_omits_the_awaiting_clear() {
         event_kinds(&fixture, &story.id),
         [
             "StoryCreated",
+            "StoryPrioritySet",
+            "StoryTypeSet",
             "StoryStateChanged",
             "StoryClosedAndArchived"
         ]
@@ -798,6 +876,8 @@ fn a_comment_supplied_with_a_move_lands_between_the_move_and_the_close_markers()
         event_kinds(&fixture, &story.id),
         [
             "StoryCreated",
+            "StoryPrioritySet",
+            "StoryTypeSet",
             "StoryStateChanged",
             "StoryCommentAdded",
             "StoryClosedAndArchived",
@@ -992,7 +1072,13 @@ fn set_state_with_awaiting_sets_state_and_reason_atomically() {
     assert_eq!(after.awaiting.as_deref(), Some("waiting on SH-9"));
     assert_eq!(
         event_kinds(&fixture, &story.id),
-        ["StoryCreated", "StoryStateChanged", "StoryAwaitingSet"],
+        [
+            "StoryCreated",
+            "StoryPrioritySet",
+            "StoryTypeSet",
+            "StoryStateChanged",
+            "StoryAwaitingSet"
+        ],
         "state and awaiting land as one batch, not two separate writes"
     );
 }
@@ -1012,7 +1098,12 @@ fn set_state_without_awaiting_is_unchanged() {
     assert_eq!(after.awaiting, None);
     assert_eq!(
         event_kinds(&fixture, &story.id),
-        ["StoryCreated", "StoryStateChanged"]
+        [
+            "StoryCreated",
+            "StoryPrioritySet",
+            "StoryTypeSet",
+            "StoryStateChanged"
+        ]
     );
 }
 
@@ -1037,6 +1128,8 @@ fn set_state_can_carry_a_comment_and_a_reason_together() {
         event_kinds(&fixture, &story.id),
         [
             "StoryCreated",
+            "StoryPrioritySet",
+            "StoryTypeSet",
             "StoryStateChanged",
             "StoryCommentAdded",
             "StoryAwaitingSet"
@@ -1103,7 +1196,7 @@ fn set_state_refuses_a_reason_combined_with_a_move_to_a_closed_state() {
     assert_eq!(snapshot(&fixture, &story.id).state, "todo");
     assert_eq!(
         event_kinds(&fixture, &story.id),
-        ["StoryCreated"],
+        ["StoryCreated", "StoryPrioritySet", "StoryTypeSet"],
         "a refused call must write nothing"
     );
 }
@@ -1175,6 +1268,8 @@ fn set_fields_can_close_a_story() {
         event_kinds(&fixture, &story.id),
         [
             "StoryCreated",
+            "StoryPrioritySet",
+            "StoryTypeSet",
             "StoryStateChanged",
             "StoryClosedAndArchived"
         ]
@@ -1299,7 +1394,10 @@ fn a_rejected_field_in_a_batch_writes_none_of_it() {
         },
     );
     assert_eq!(snapshot(&fixture, &story.id).title, "atomic edits");
-    assert_eq!(event_kinds(&fixture, &story.id), ["StoryCreated"]);
+    assert_eq!(
+        event_kinds(&fixture, &story.id),
+        ["StoryCreated", "StoryPrioritySet", "StoryTypeSet"]
+    );
 }
 
 // --- set fields: the JSON patch --------------------------------------------
@@ -1413,7 +1511,12 @@ fn the_json_patch_reports_a_cleared_assignee_without_writing_an_event() {
     assert!(message.contains("assignee cleared"), "{message}");
     assert_eq!(
         event_kinds(&fixture, &story.id),
-        ["StoryCreated", "StoryTitleSet"]
+        [
+            "StoryCreated",
+            "StoryPrioritySet",
+            "StoryTypeSet",
+            "StoryTitleSet"
+        ]
     );
 }
 
@@ -1445,7 +1548,10 @@ fn the_json_patch_rejects_malformed_input() {
         (r#"[1,2]"#, "JSON must be an object"),
         (r#"{"title":7}"#, "title must be a string"),
         (r#"{"state":7}"#, "state must be a string"),
-        (r#"{"priority":"urgent"}"#, "invalid priority `urgent`"),
+        (
+            r#"{"priority":"urgent"}"#,
+            "priority must be one of: critical, high, medium, low",
+        ),
         (r#"{"assignee":7}"#, "assignee must be a string or null"),
         (r#"{"labels":"x"}"#, "labels must be an array of strings"),
         (r#"{"blocked":7}"#, "blocked must be a string or null"),
@@ -1470,7 +1576,10 @@ fn the_json_patch_rejects_malformed_input() {
             "`{patch}` gave `{message}`, expected it to mention `{expected}`"
         );
     }
-    assert_eq!(event_kinds(&fixture, &story.id), ["StoryCreated"]);
+    assert_eq!(
+        event_kinds(&fixture, &story.id),
+        ["StoryCreated", "StoryPrioritySet", "StoryTypeSet"]
+    );
 }
 
 #[test]
@@ -1516,7 +1625,10 @@ fn bulk_update_reports_an_undefined_state_without_touching_the_story() {
         .bulk_update(&[(story.id.clone(), "limbo".into())])
         .unwrap();
     assert_eq!(message, "SH-1: error — state `limbo` is not defined");
-    assert_eq!(event_kinds(&fixture, &story.id), ["StoryCreated"]);
+    assert_eq!(
+        event_kinds(&fixture, &story.id),
+        ["StoryCreated", "StoryPrioritySet", "StoryTypeSet"]
+    );
 }
 
 #[test]
@@ -1674,6 +1786,8 @@ fn reopening_preserves_the_whole_event_log() {
         event_kinds(&fixture, &story.id),
         [
             "StoryCreated",
+            "StoryPrioritySet",
+            "StoryTypeSet",
             "StoryStateChanged",
             "StoryClosedAndArchived",
             "StoryStateChanged",
@@ -1824,6 +1938,8 @@ fn hiding_an_already_hidden_story_is_a_no_op() {
         event_kinds(&fixture, &story.id),
         [
             "StoryCreated",
+            "StoryPrioritySet",
+            "StoryTypeSet",
             "StoryStateChanged",
             "StoryClosedAndArchived",
             "StoryHidden"
@@ -1870,6 +1986,8 @@ fn unhiding_a_story_that_is_not_hidden_is_a_no_op() {
         event_kinds(&fixture, &story.id),
         [
             "StoryCreated",
+            "StoryPrioritySet",
+            "StoryTypeSet",
             "StoryStateChanged",
             "StoryClosedAndArchived"
         ]
@@ -1983,7 +2101,12 @@ fn creating_with_draft_true_sets_draft() {
     assert!(story.draft);
     assert_eq!(
         event_kinds(&fixture, &story.id),
-        ["StoryCreated", "StoryCreatedAsDraft"]
+        [
+            "StoryCreated",
+            "StoryCreatedAsDraft",
+            "StoryPrioritySet",
+            "StoryTypeSet"
+        ]
     );
 }
 
@@ -1993,7 +2116,10 @@ fn creating_without_draft_is_live_from_the_start() {
     let ctx = fixture.ctx();
     let story = new_story(&ctx, "live from the start");
     assert!(!story.draft);
-    assert_eq!(event_kinds(&fixture, &story.id), ["StoryCreated"]);
+    assert_eq!(
+        event_kinds(&fixture, &story.id),
+        ["StoryCreated", "StoryPrioritySet", "StoryTypeSet"]
+    );
 }
 
 #[test]
@@ -2007,7 +2133,13 @@ fn publishing_a_draft_clears_draft() {
     assert!(!published.draft);
     assert_eq!(
         event_kinds(&fixture, &story.id),
-        ["StoryCreated", "StoryCreatedAsDraft", "StoryPublished"]
+        [
+            "StoryCreated",
+            "StoryCreatedAsDraft",
+            "StoryPrioritySet",
+            "StoryTypeSet",
+            "StoryPublished"
+        ]
     );
 }
 
@@ -2021,7 +2153,10 @@ fn publishing_an_already_live_story_is_a_no_op() {
     let published = service.publish(&story.id).expect("publishing");
     assert!(!published.draft);
     // No `StoryPublished` event: the idempotent call appended nothing.
-    assert_eq!(event_kinds(&fixture, &story.id), ["StoryCreated"]);
+    assert_eq!(
+        event_kinds(&fixture, &story.id),
+        ["StoryCreated", "StoryPrioritySet", "StoryTypeSet"]
+    );
 }
 
 #[test]
@@ -2037,7 +2172,13 @@ fn publishing_a_draft_twice_appends_only_one_event() {
     assert_eq!(second.updated_at, first.updated_at);
     assert_eq!(
         event_kinds(&fixture, &story.id),
-        ["StoryCreated", "StoryCreatedAsDraft", "StoryPublished"]
+        [
+            "StoryCreated",
+            "StoryCreatedAsDraft",
+            "StoryPrioritySet",
+            "StoryTypeSet",
+            "StoryPublished"
+        ]
     );
 }
 

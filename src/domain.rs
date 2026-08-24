@@ -377,19 +377,17 @@ pub struct StorySnapshot {
     /// priority, whatever they chose.
     ///
     /// The distinction [`priority`](Self::priority) alone cannot make (SH-359).
-    /// [`Priority::None`] means DELIBERATELY PARKED — "do not pick this up",
-    /// per `story help priority-rubric` — but it is also what [`fold_story`]
-    /// starts at, so a parked story and one nobody ever assessed were the same
-    /// value in the snapshot while the event log could always tell them apart:
-    /// `creation_events` emits `StoryPrioritySet` only when `--priority` was
-    /// actually given.
+    /// [`Priority::None`] is also what [`fold_story`] starts at, so legacy
+    /// histories with no priority event and histories explicitly assigned the
+    /// old `none` value need this separate fact. Current creation always emits
+    /// `StoryPrioritySet`, defaulting an omission to `low` (SH-449).
     ///
     /// Defined mechanically — "an event set it" — rather than as a judgement
     /// the fold cannot verify. An import, a GitHub sync and a human all count,
     /// because each is a recorded decision.
     ///
     /// `priority != Priority::None` implies this is `true`; the converse pair
-    /// is unreachable through [`fold_story`], which asserts it on the way out.
+    /// remains reachable only while decoding legacy histories.
     #[serde(default, skip_serializing_if = "is_false")]
     pub priority_assessed: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -525,16 +523,15 @@ pub enum StoryEvent {
         at: String,
         priority: Priority,
     },
-    /// Returns a story to *never assessed* — the inverse of
+    /// Returns a legacy story to *never assessed* — the inverse of
     /// [`StoryPrioritySet`](Self::StoryPrioritySet) when the story had no
     /// priority on record before it (SH-359).
     ///
     /// Sibling of [`StoryAssigneeCleared`](Self::StoryAssigneeCleared), added
     /// for the reason that variant's own doc comment states: a field with an
     /// event that sets it and none that clears it cannot be put back without
-    /// rewriting history. Without this, `story undo` of a first-ever
-    /// `story prioritize` left the story reading *assessed, and parked* —
-    /// a statement nobody had made.
+    /// rewriting history. It remains decodable and usable when undoing an old
+    /// history whose creation predates the required `low` event (SH-449).
     ///
     /// Folds [`priority`](StorySnapshot::priority) back to [`Priority::None`]
     /// **and** [`priority_assessed`](StorySnapshot::priority_assessed) to
@@ -1806,8 +1803,8 @@ pub fn fold_story(
     // everywhere* — every fold in the suite becomes a sample of this invariant,
     // rather than the dozen hand-written permutations a unit test would carry.
     // Note it is blind in the other direction on purpose: assessed-and-`none`
-    // is legal and load-bearing — that is exactly "deliberately parked" — so
-    // `a_story_with_no_priority_event_is_not_assessed` covers that side.
+    // remains a legal legacy fold, even though current mutation paths cannot
+    // create it.
     debug_assert!(
         priority == Priority::None || priority_assessed,
         "story {id} folded to priority `{}` without a priority event",

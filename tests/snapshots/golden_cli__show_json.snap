@@ -8,7 +8,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "story": {
         "display_state": "in-progress",
-        "head_global_seq": 51,
+        "head_global_seq": 52,
         "progress": {
           "children_done": 0,
           "children_total": 3
@@ -48,7 +48,7 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
-        "head_global_seq": 60,
+        "head_global_seq": 61,
         "story": {
           "assignee": "grace-hopper",
           "awaiting": null,
@@ -90,7 +90,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "story": {
         "display_state": "blocked",
-        "head_global_seq": 64,
+        "head_global_seq": 65,
         "story": {
           "awaiting": "waiting on the benchmark harness",
           "comments": [],
@@ -113,13 +113,14 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
-        "head_global_seq": 24,
+        "head_global_seq": 25,
         "story": {
           "awaiting": null,
           "comments": [],
           "created_at": "[timestamp]",
           "id": "SH-7",
-          "priority": "none",
+          "priority": "low",
+          "priority_assessed": true,
           "relationships": [],
           "state": "todo",
           "story_type": "chore",
@@ -135,7 +136,7 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
-        "head_global_seq": 65,
+        "head_global_seq": 66,
         "story": {
           "awaiting": null,
           "comments": [],
@@ -171,7 +172,7 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
-        "head_global_seq": 68,
+        "head_global_seq": 69,
         "story": {
           "awaiting": null,
           "closed_at": "[timestamp]",
@@ -195,7 +196,7 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
-        "head_global_seq": 72,
+        "head_global_seq": 73,
         "story": {
           "awaiting": null,
           "closed_at": "[timestamp]",

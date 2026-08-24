@@ -30,8 +30,7 @@ async function createStory(page: Page, title: string, description?: string) {
   await expect(page.locator("#create-modal")).toHaveClass(/open/);
   await page.locator("#create-title").fill(title);
   if (description) await page.locator("#create-description").fill(description);
-  // SH-358: an unassessed priority raises a timer-driven warning toast this
-  // file's own assertions do not expect.
+  // Keep this fixture's priority explicit.
   await page.locator("#create-priority").selectOption("medium");
   await page.locator("#create-submit").click();
   await expect(page.locator("#create-modal")).not.toHaveClass(/open/);

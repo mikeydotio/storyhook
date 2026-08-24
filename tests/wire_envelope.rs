@@ -312,7 +312,7 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
             Response::Stories {
                 views: vec![view(snapshot("SH-4", "Fourth"))],
                 message: Some("Created 1 story".to_string()),
-                warnings: vec!["priority not set on 1 of 1 stories: SH-4".to_string()],
+                warnings: vec!["example mutation warning for SH-4".to_string()],
             },
         ),
         ("summary", Response::Summary(Box::new(summary()))),

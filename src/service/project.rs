@@ -1764,11 +1764,12 @@ pub fn default_states() -> Vec<StateDef> {
 /// own name, and reusing it as a type slug reads as "a story of type story"
 /// everywhere the badge or the picker renders it. `default`, the other
 /// obvious candidate, was rejected for a sharper reason: it collides with the
-/// literal word `add_type` already refuses as a reserved slug (`none` and
-/// `default` are how the CLI *unsets* a type), and with the fallback text
-/// (`output.rs`'s `"Default"`) an untyped story renders today — a type
-/// actually named `default` would be visually indistinguishable from having
-/// no type at all, exactly the ambiguity SH-157 set out to remove.
+/// literal word `add_type` already refuses as a reserved slug (`none` remains
+/// the legacy untyped diagnostic sentinel and `default` is configuration
+/// vocabulary), and with the historical fallback text (`output.rs`'s
+/// `"Default"`) a legacy untyped story renders today. A type actually named
+/// `default` would be visually indistinguishable from that compatibility
+/// representation.
 #[must_use]
 pub fn default_types() -> Vec<TypeDef> {
     [

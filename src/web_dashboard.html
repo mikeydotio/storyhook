@@ -3921,18 +3921,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * a running timer that silently changes its mind, and the next notice is
    * three seconds away regardless. */
   function noticeIsDurable(variant) {
-    // "warn" does NOT join "error" here, reversed from this story's first
-    // attempt (SH-358). The reasoning "a warning names an action the reader
-    // must take" was real, but so was the cost: ordinary test fixtures across
-    // this whole e2e suite create stories with no --priority as routine
-    // setup, unrelated to anything this story tests, and a durable warn toast
-    // outlives its own test -- the shared "Alpha Project" session accumulates
-    // one per fixture, and the pile grows tall enough to intercept clicks
-    // meant for board cards in later, unrelated specs (44 failures across
-    // notice-dock-geometry.spec.ts, story-context-menu.spec.ts,
-    // zoom.mobile.spec.ts and others, none of which mention priority at all).
-    // A warning that blocks the UI it is trying to inform about is a worse
-    // failure than one that self-clears in TOAST_LIFETIME_MS like every
+    // Warnings remain transient. They name recoverable advice rather than a
+    // failed mutation, so they self-clear in TOAST_LIFETIME_MS like every
     // other transient notice.
     return variant === "error" || state.keepNotices;
   }
@@ -4113,15 +4103,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   /** Surfaces a mutation response's envelope `warnings` as toasts (SH-358).
-   *
-   * `api()` already resolves the parsed envelope -- `warnings` was arriving in
-   * the browser the whole time, on every successful mutation, and nothing read
-   * it. The create modal is the first caller: `story new`'s own unassessed-
-   * priority warning (SH-354/SH-359) reaches `POST /api/repos/{id}/story`
-   * exactly like every other field on that response, and the dashboard had no
-   * surface for it at all. `payload` may be `undefined` (a `.then()` with no
-   * parameter still resolves) or carry no `warnings` key (most responses
-   * don't), so both are guarded rather than assumed. */
+   * `payload` may be `undefined` (a `.then()` with no parameter still
+   * resolves) or carry no `warnings` key (most responses don't), so both are
+   * guarded rather than assumed. */
   function toastEnvelopeWarnings(payload) {
     ((payload && payload.warnings) || []).forEach(function(w) { toast(w, "warn"); });
   }
@@ -5288,10 +5272,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   /** The glyph for a type slug: the type's own configured `emoji`, a
    * generic 🏷️ fallback for a configured type that has none, or "" for an
-   * untyped story (`slug` null/undefined) — untyped renders no badge at
-   * all, deliberately, since it is the most common case in practice and a
-   * badge column that means nothing for most rows would be visual noise
-   * rather than a signal. */
+   * legacy untyped story (`slug` null/undefined) — retained so an old export
+   * remains renderable until migration normalization. */
   function typeGlyph(slug) {
     if (!slug) return "";
     var t = meta().types.filter(function(x) { return x.slug === slug; })[0];
@@ -5299,10 +5281,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return t.emoji || "🏷️";
   }
 
-  /** The `<glyph> <slug>` label pickers show; falls back to `none` for the
-   * empty/unset option — the vocabulary `story list --type none` already
-   * uses, so it reads the same everywhere rather than as "–", "Untyped" and
-   * "Default type" for one idea in three places. */
+  /** The `<glyph> <slug>` label pickers show. The `none` fallback is only for
+   * rendering a legacy untyped value; current pickers contain configured
+   * types exclusively. */
   function typeLabel(slug) {
     if (!slug) return "none";
     var glyph = typeGlyph(slug);
@@ -8791,13 +8772,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     });
     grid.appendChild(el("div", { class: "field" }, [el("label", {}, ["Assignee"]), assigneeSelect]));
 
-    var typeSelect = el("select", {}, [el("option", { value: "" }, [typeLabel(null)])].concat(m.types.map(function(t) {
+    var typeSelect = el("select", {}, m.types.map(function(t) {
       var o = el("option", { value: t.slug }, [typeLabel(t.slug)]);
       if (t.slug === st.story_type) o.selected = true;
       return o;
-    })));
+    }));
     typeSelect.addEventListener("change", function() {
-      if (typeSelect.value) runFieldMutation(st.id, "PATCH", "", { type: typeSelect.value });
+      runFieldMutation(st.id, "PATCH", "", { type: typeSelect.value });
     });
     grid.appendChild(el("div", { class: "field" }, [el("label", {}, ["Type"]), typeSelect]));
 
@@ -11108,12 +11089,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * priority` is deliberately not covered here — see its own comment at the
    * `openCreateModal()` call site for why it never needs rebuilding.
    *
-   * `selections` is `{state, type}`, naming the exact slugs to preselect (an
-   * existing draft's own fields, however empty). Passed `undefined`, both
-   * fall back to `m.defaults` instead (SH-44's rule: the project's own
-   * first-configured OPEN state/type) -- the same fallback `openCreateModal`
-   * has always applied to a *fresh* story, and now also what a project
-   * switch resets to.
+   * `selections` is `{state, type}`, naming the slugs to preselect. An
+   * existing draft may preserve an empty state, but an empty legacy type
+   * falls back to `m.defaults.type`: current type controls have no unset
+   * representation. Passed `undefined`, both fields use `m.defaults`
+   * (SH-44's rule: the project's own first-configured OPEN state/type) --
+   * the same fallback `openCreateModal` has always applied to a *fresh*
+   * story, and now also what a project switch resets to.
    *
    * That reset, not a carried-over slug, is deliberate (SH-439): two
    * projects can spell a state the same way and mean different points in
@@ -11125,7 +11107,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * switch. */
   function populateCreateVocabulary(m, selections) {
     var useDefaults = !selections;
-    var defaults = useDefaults ? (m.defaults || {}) : {};
+    var defaults = m.defaults || {};
     clear($("create-state"));
     $("create-state").appendChild(el("option", { value: "" }, ["Default state"]));
     m.states.filter(function(s) { return s.super_state === "OPEN"; }).forEach(function(s) {
@@ -11133,9 +11115,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     });
     $("create-state").value = useDefaults ? (defaults.state || "") : (selections.state || "");
     clear($("create-type"));
-    $("create-type").appendChild(el("option", { value: "" }, [typeLabel(null)]));
     m.types.forEach(function(t) { $("create-type").appendChild(el("option", { value: t.slug }, [typeLabel(t.slug)])); });
-    $("create-type").value = useDefaults ? (defaults.type || "") : (selections.type || "");
+    $("create-type").value = (!useDefaults && selections.type) ? selections.type : (defaults.type || "");
     if (createLabelCombobox) createLabelCombobox.setSuggestions(m.labels || []);
   }
 
@@ -11169,14 +11150,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     autoGrowTextarea($("create-description"));
     $("create-error").textContent = "";
     var m = meta();
+    var defaults = m.defaults || {};
     // Priority is a closed global enum (`PRIORITIES`, `src/api/rest.rs`) --
     // identical in every project, so unlike state/type/labels below it is
     // built once here and never needs rebuilding on a project switch
     // (SH-439's `populateCreateVocabulary` deliberately doesn't touch it).
     clear($("create-priority"));
-    $("create-priority").appendChild(el("option", { value: "" }, ["Default priority"]));
     m.priorities.forEach(function(p) { $("create-priority").appendChild(el("option", { value: p }, [p])); });
-    $("create-priority").value = (story && story.priority !== "none" && story.priority) || "";
+    $("create-priority").value = (story && m.priorities.indexOf(story.priority) !== -1)
+      ? story.priority
+      : (defaults.priority || "low");
 
     // SH-439: one option per project in `state.repos`, in the same order
     // the header's own project selector uses. Disabled only for a project

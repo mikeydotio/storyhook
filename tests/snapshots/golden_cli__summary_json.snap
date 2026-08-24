@@ -19,7 +19,7 @@ source: tests/golden_cli.rs
           ],
           [
             "low",
-            4
+            5
           ],
           [
             "medium",
@@ -71,7 +71,7 @@ source: tests/golden_cli.rs
         "ready_stories": [
           {
             "display_state": "in-progress",
-            "head_global_seq": 51,
+            "head_global_seq": 52,
             "progress": {
               "children_done": 0,
               "children_total": 3
@@ -105,7 +105,7 @@ source: tests/golden_cli.rs
             }
           },
           {
-            "head_global_seq": 60,
+            "head_global_seq": 61,
             "story": {
               "assignee": "grace-hopper",
               "awaiting": null,
@@ -140,7 +140,7 @@ source: tests/golden_cli.rs
             }
           },
           {
-            "head_global_seq": 61,
+            "head_global_seq": 62,
             "story": {
               "assignee": "ada-lovelace",
               "awaiting": null,
@@ -177,7 +177,7 @@ source: tests/golden_cli.rs
             }
           },
           {
-            "head_global_seq": 39,
+            "head_global_seq": 40,
             "story": {
               "awaiting": null,
               "comments": [],
@@ -194,7 +194,7 @@ source: tests/golden_cli.rs
             }
           },
           {
-            "head_global_seq": 66,
+            "head_global_seq": 67,
             "story": {
               "awaiting": null,
               "comments": [],
@@ -241,7 +241,7 @@ source: tests/golden_cli.rs
           ],
           [
             "low",
-            4
+            5
           ],
           [
             "medium",
@@ -293,7 +293,7 @@ source: tests/golden_cli.rs
         "ready_stories": [
           {
             "display_state": "in-progress",
-            "head_global_seq": 51,
+            "head_global_seq": 52,
             "progress": {
               "children_done": 0,
               "children_total": 3
@@ -327,7 +327,7 @@ source: tests/golden_cli.rs
             }
           },
           {
-            "head_global_seq": 60,
+            "head_global_seq": 61,
             "story": {
               "assignee": "grace-hopper",
               "awaiting": null,
@@ -362,7 +362,7 @@ source: tests/golden_cli.rs
             }
           },
           {
-            "head_global_seq": 61,
+            "head_global_seq": 62,
             "story": {
               "assignee": "ada-lovelace",
               "awaiting": null,
@@ -399,7 +399,7 @@ source: tests/golden_cli.rs
             }
           },
           {
-            "head_global_seq": 39,
+            "head_global_seq": 40,
             "story": {
               "awaiting": null,
               "comments": [],
@@ -416,7 +416,7 @@ source: tests/golden_cli.rs
             }
           },
           {
-            "head_global_seq": 66,
+            "head_global_seq": 67,
             "story": {
               "awaiting": null,
               "comments": [],

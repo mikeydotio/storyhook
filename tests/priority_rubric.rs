@@ -117,12 +117,12 @@ fn the_compact_reference_points_at_the_rubric() {
     // The session-start context an agent reads before it has run anything, and
     // so the first place a level gets chosen from.
     //
-    // It used to spell the five levels inline — `critical|high|medium|low|none`
+    // It used to spell the priority levels inline
     // — and now names the rubric instead. That was forced rather than chosen:
     // `compact_reference_under_3000_chars` is a real byte budget with eleven
     // bytes spare, because this text is loaded into every session's context, and
     // the pointer only fits in the space the vocabulary was using. It is also
-    // the better half to keep. A list of five words tells an agent what parses;
+    // the better half to keep. A list of words tells an agent what parses;
     // it does not tell it which one is true, which is the whole of SH-354.
     let text = compact_reference();
     assert!(

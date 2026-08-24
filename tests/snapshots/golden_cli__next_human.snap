@@ -27,8 +27,8 @@ SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
 SH-12 [todo] (high) [normal] Harden concurrent writes
 SH-4 [review] (medium) [normal] Write the migration runner [backend]
 SH-10 [todo] (medium) [normal] Ship the CLI shim
+SH-7 [todo] (low) [chore] Document the data layer
 SH-11 [todo] (low) [normal] Audit error codes
-SH-7 [todo] [chore] Document the data layer
 
 $ story next --phase 1
 SH-2 Define the Store trait
