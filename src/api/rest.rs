@@ -45,6 +45,21 @@ use crate::service::{CatalogService, ConfigService, Ctx, FieldEdits, QueryServic
 use crate::store::{ProjectId, ReadOps, Store};
 
 const DASHBOARD_HTML: &str = include_str!("../web_dashboard.html");
+const DASHBOARD_VERSION_PLACEHOLDER: &str = "__STORYHOOK_VERSION__";
+
+/// Builds the self-contained dashboard shell with this binary's package
+/// version. The embedded HTML owns the presentation while the serving binary
+/// remains the only version authority.
+fn dashboard_html() -> String {
+    debug_assert_eq!(
+        DASHBOARD_HTML
+            .matches(DASHBOARD_VERSION_PLACEHOLDER)
+            .count(),
+        1,
+        "the dashboard must contain exactly one version placeholder"
+    );
+    DASHBOARD_HTML.replacen(DASHBOARD_VERSION_PLACEHOLDER, env!("CARGO_PKG_VERSION"), 1)
+}
 
 /// All priority levels, in the order the frontend should offer them.
 const PRIORITIES: [Priority; 5] = [
@@ -204,7 +219,7 @@ pub fn route<S: Store>(
     trusted_hosts: &TrustedHosts,
 ) -> Routed {
     match classify(&path_segments(path), method) {
-        Route::Shell => Routed::quiet(html_reply(DASHBOARD_HTML).no_cache()),
+        Route::Shell => Routed::quiet(html_reply(dashboard_html()).no_cache()),
         Route::Repos => Routed::quiet(match repos_json(store, env) {
             Ok(json) => json_reply(200, json).no_cache(),
             Err(e) => error_reply(&e),
