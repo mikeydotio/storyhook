@@ -8913,6 +8913,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * click listener at init) rather than adding a new one per instance. */
   function buildLabelCombobox(initialLabels, suggestions) {
     var selected = (initialLabels || []).slice();
+    suggestions = suggestions || [];
     var chips = el("div", { class: "label-chips" }, []);
     var input = el("input", { type: "text", placeholder: "Add label…", autocomplete: "off" });
     var panel = el("div", { class: "fdd-panel" }, []);
@@ -8981,7 +8982,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     panel.addEventListener("click", function(e) { e.stopPropagation(); });
 
     renderChips();
-    return { element: wrap, getLabels: function() { return selected.slice(); } };
+    return {
+      element: wrap,
+      getLabels: function() { return selected.slice(); },
+      // Replaces the suggestion list in place (SH-439's create-modal project
+      // switch reads a different project's labels) without tearing down and
+      // rebuilding the combobox -- which would discard whatever chips are
+      // already chosen and any text sitting uncommitted in `input`, neither
+      // of which `openPanel()`'s closure over `suggestions` needs disturbed
+      // to serve a fresh list.
+      setSuggestions: function(next) { suggestions = next || []; }
+    };
   }
 
   /** A clickable, persisted `.section-label` replacement (SH-169). `key`
@@ -9290,6 +9301,18 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // SCREENS: header project selector, home, settings
   // ============================================================
 
+  /** Any project's own `PREFIX · name`, or `null` if `id` names none of
+   * `state.repos` (not yet loaded, or since deleted/renamed elsewhere).
+   *
+   * Extracted from `currentProjectLabel()` (SH-439) so the create modal's
+   * cross-project toast can name a project that is not the one on screen —
+   * `currentProjectLabel()`'s own contract stays "the open project's label,
+   * or nothing," and calls this rather than duplicating the lookup. */
+  function projectLabel(id) {
+    var project = state.repos.filter(function(r) { return r.id === id; })[0];
+    return project ? project.prefix + " · " + project.name : null;
+  }
+
   /** The project whose board is on screen, as `PREFIX · name`, or `null`
    * when there is none.
    *
@@ -9308,8 +9331,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * entirely — so the two share the derivation and not the wording. */
   function currentProjectLabel() {
     if (state.screen !== "repo") return null;
-    var current = state.repos.filter(function(r) { return r.id === state.repoId; })[0];
-    return current ? current.prefix + " · " + current.name : null;
+    return projectLabel(state.repoId);
   }
 
   /** What the header selector's button reads. The current project's
@@ -10925,6 +10947,46 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    */
   var editingDraft = null;
 
+  /** Rebuilds the create modal's *per-project* vocabulary -- `#create-state`,
+   * `#create-type`, and the label combobox's suggestion list -- from `m` (a
+   * `meta()`-shaped object for whichever project is now being addressed).
+   * Extracted from `openCreateModal()` (SH-439) so a project switch inside
+   * an already-open modal can call it again without rebuilding the fields
+   * `openCreateModal()` itself only ever needs to build once. `#create-
+   * priority` is deliberately not covered here — see its own comment at the
+   * `openCreateModal()` call site for why it never needs rebuilding.
+   *
+   * `selections` is `{state, type}`, naming the exact slugs to preselect (an
+   * existing draft's own fields, however empty). Passed `undefined`, both
+   * fall back to `m.defaults` instead (SH-44's rule: the project's own
+   * first-configured OPEN state/type) -- the same fallback `openCreateModal`
+   * has always applied to a *fresh* story, and now also what a project
+   * switch resets to.
+   *
+   * That reset, not a carried-over slug, is deliberate (SH-439): two
+   * projects can spell a state the same way and mean different points in
+   * two different workflows, so preserving a slug across a switch would
+   * preserve the spelling and silently change the meaning -- the exact shape
+   * SH-364 and SH-281 already cost this project. Resetting to the newly
+   * selected project's own defaults is simply this modal's one existing rule
+   * (SH-44) applied consistently, rather than a second rule invented for the
+   * switch. */
+  function populateCreateVocabulary(m, selections) {
+    var useDefaults = !selections;
+    var defaults = useDefaults ? (m.defaults || {}) : {};
+    clear($("create-state"));
+    $("create-state").appendChild(el("option", { value: "" }, ["Default state"]));
+    m.states.filter(function(s) { return s.super_state === "OPEN"; }).forEach(function(s) {
+      $("create-state").appendChild(el("option", { value: s.slug }, [s.slug]));
+    });
+    $("create-state").value = useDefaults ? (defaults.state || "") : (selections.state || "");
+    clear($("create-type"));
+    $("create-type").appendChild(el("option", { value: "" }, [typeLabel(null)]));
+    m.types.forEach(function(t) { $("create-type").appendChild(el("option", { value: t.slug }, [typeLabel(t.slug)])); });
+    $("create-type").value = useDefaults ? (defaults.type || "") : (selections.type || "");
+    if (createLabelCombobox) createLabelCombobox.setSuggestions(m.labels || []);
+  }
+
   /** Opens the New Story modal. Pass a `StoryView`-shaped draft (from
    * `state.data.drafts`) to reuse it as the Edit Draft modal instead —
    * same fields, retitled header, and a relabeled submit button (SH-175).
@@ -10950,23 +11012,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     autoGrowTextarea($("create-description"));
     $("create-error").textContent = "";
     var m = meta();
-    // SH-44: preselect the project's own first-configured state/type — read
-    // off `meta.defaults`, the same selection `story new` applies server-side
-    // (`src/api/rest.rs::meta_json`), so this can't drift into a hardcoded
-    // guess. Falls back to the blank placeholder when a project has none
-    // (only reachable on legacy data — see `domain::default_type`'s doc).
-    // Skipped entirely when editing a draft: its own fields are the default.
-    var defaults = story ? {} : (m.defaults || {});
-    clear($("create-state"));
-    $("create-state").appendChild(el("option", { value: "" }, ["Default state"]));
-    m.states.filter(function(s) { return s.super_state === "OPEN"; }).forEach(function(s) {
-      $("create-state").appendChild(el("option", { value: s.slug }, [s.slug]));
-    });
-    $("create-state").value = (story && story.state) || defaults.state || "";
-    clear($("create-type"));
-    $("create-type").appendChild(el("option", { value: "" }, [typeLabel(null)]));
-    m.types.forEach(function(t) { $("create-type").appendChild(el("option", { value: t.slug }, [typeLabel(t.slug)])); });
-    $("create-type").value = (story && story.story_type) || defaults.type || "";
+    // Priority is a closed global enum (`PRIORITIES`, `src/api/rest.rs`) --
+    // identical in every project, so unlike state/type/labels below it is
+    // built once here and never needs rebuilding on a project switch
+    // (SH-439's `populateCreateVocabulary` deliberately doesn't touch it).
     clear($("create-priority"));
     $("create-priority").appendChild(el("option", { value: "" }, ["Default priority"]));
     m.priorities.forEach(function(p) { $("create-priority").appendChild(el("option", { value: p }, [p])); });
@@ -10974,8 +11023,19 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
     var labelsField = $("create-labels-field");
     while (labelsField.children.length > 1) labelsField.removeChild(labelsField.lastChild);
-    createLabelCombobox = buildLabelCombobox((story && story.labels) || [], m.labels || []);
+    // Suggestions start empty and are filled by `populateCreateVocabulary()`
+    // just below -- the one place that reads a project's `m.labels`, so a
+    // later project switch can refresh them through `setSuggestions()`
+    // without rebuilding this combobox (SH-439).
+    createLabelCombobox = buildLabelCombobox((story && story.labels) || [], []);
     labelsField.appendChild(createLabelCombobox.element);
+
+    // SH-44: preselect the project's own first-configured state/type when
+    // editing a draft, its own fields ARE the selection -- see
+    // `populateCreateVocabulary()`'s own doc for why passing them here
+    // (rather than omitting the argument) is what skips the defaults
+    // fallback entirely, matching this modal's pre-SH-439 behavior exactly.
+    populateCreateVocabulary(m, story ? { state: story.state, type: story.story_type } : undefined);
 
     showBackdrop("modal-backdrop");
     activateOverlay("create-modal", "create-title");
