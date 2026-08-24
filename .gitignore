@@ -1,4 +1,9 @@
 /target
+# A second, separate target dir for coverage-instrumented builds
+# (scripts/coverage-map.sh, SH-429) -- `-C instrument-coverage` changes every
+# crate's build fingerprint, so sharing /target with ordinary `make test`
+# builds would mean every switch between the two rebuilds from scratch.
+/target-coverage
 .DS_Store
 .playwright-mcp/
 

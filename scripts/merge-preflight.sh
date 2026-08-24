@@ -31,8 +31,12 @@
 # against an uncertified tree and, on green, certifies it for real.
 #
 # EXIT CODES
-#   0   the merge is clean and its tree already carries a receipt (any tier)
-#   1   the merge is clean but its tree has no receipt yet
+#   0   the merge is clean and its tree already carries a gate/full receipt
+#   1   the merge is clean but its tree has no gate/full receipt yet -- either
+#       none at all, or only a `changed`-tier one (SH-429's council verdict:
+#       a selective run never certifies a merge tree, since it diffed against
+#       one branch's own history and a merge is a two-parent combination
+#       neither side's run ever accounted for)
 #   2   the merge does not resolve cleanly (a real textual conflict, or an
 #       invalid ref) — there is no tree to certify until the branch is rebased
 #
@@ -87,8 +91,23 @@ printf '%s\n' "$tree"
 
 if [ -f "$receipts/$tree" ]; then
     tier="$(sed -n 's/^tier //p' "$receipts/$tree" 2>/dev/null | head -n1)"
-    note "certified — tier ${tier:-gate} (tree $tree)"
-    exit 0
+    tier="${tier:-gate}"
+    # SH-429's council verdict, unanimous: a `changed`-tier receipt is never
+    # sufficient to land a merge, even one that happens to exist for this
+    # exact tree oid. `select-tests.sh` diffs against the nearest tree ONE
+    # branch made green; a merge tree is a two-parent combination neither
+    # side's own selective run ever accounted for -- the same reason SH-396
+    # exists at all (14 of the last 30 merges produced a tree matching
+    # neither parent, content no single-branch receipt could ever cover).
+    # `gate`/`full` are unconditional (the whole suite ran), so only those
+    # two certify a merge; `changed` reports as UNCERTIFIED here on purpose.
+    if [ "$tier" = "gate" ] || [ "$tier" = "full" ]; then
+        note "certified — tier $tier (tree $tree)"
+        exit 0
+    fi
+    note "not certified — tree $tree carries only a '$tier' receipt, which \
+merge-preflight.sh does not accept (gate/full only — SH-429)"
+    exit 1
 fi
 
 note "not certified — no receipt for tree $tree"
