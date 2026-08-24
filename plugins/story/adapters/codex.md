@@ -3,10 +3,13 @@
 Load this adapter only when the active agent host is Codex. The shared `story` skill has
 already resolved the installed plugin root and its absolute `<story-helper>` path.
 
-## Dispatch (`do <id> [--auto] [--agent=claude|codex]`)
+## Dispatch (`do <id> [--auto] [--force] [--agent=claude|codex]`)
 
-Run `bash "<story-helper>" dispatch <id> --agent=<agent>`, adding `--auto` only when the user
-requested it. Use the user's explicit agent when present; otherwise use `--agent=codex`.
+Run `bash "<story-helper>" dispatch <id> --agent=<agent>`, adding `--auto` and/or `--force`
+only when the user requested them. Use the user's explicit agent when present; otherwise use
+`--agent=codex`. `--force` reuses a named story's existing `in-progress` claim without
+another state transition; it does not override any worktree, branch, tmux, or provider
+safety gate.
 
 - `ok:false`: show `display` and stop. The helper refuses before prompt delivery when the
   story, worktree, Codex process, readiness screen, or Plan-mode footer is unsafe.

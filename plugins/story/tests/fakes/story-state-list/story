@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Proxy for test-dispatch-missing-claim-state.sh. Storyhook's own invariant
+# prevents a test from deleting the required `in-progress` state, so this fake
+# answers exactly the otherwise-unconstructable claim with the error an older
+# or skewed store can produce. Every other command reaches the real CLI except
+# `state list`, whose controlled modes prove the diagnosis degrades rather than
+# guesses when confirmation is unavailable.
+set -euo pipefail
+
+real="${STORY_REAL_BIN:?STORY_REAL_BIN must point at the real story binary}"
+
+is_state_list() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --project) shift 2 || return 1 ;;
+      --project=*) shift ;;
+      *) break ;;
+    esac
+  done
+  [ "${1:-}" = state ] && [ "${2:-}" = list ]
+}
+
+is_claim_call() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --actor | --project) shift 2 || return 1 ;;
+      --actor=* | --project=*) shift ;;
+      *) break ;;
+    esac
+  done
+  [ "${1:-}" = move ] && [ "${3:-}" = in-progress ] \
+    && [ "${4:-}" = --if-state ]
+}
+
+if [ -n "${STORY_CLAIM_STATE_MISSING:-}" ] && is_claim_call "$@"; then
+  printf '{"result":"error","error":"state `in-progress` is not defined","exit_code":2}\n'
+  exit 2
+fi
+
+if is_state_list "$@"; then
+  [ -z "${STORY_STATE_LIST_LOG:-}" ] || printf 'state list\n' >>"$STORY_STATE_LIST_LOG"
+  case "${STORY_STATE_LIST_MODE:-real}" in
+    missing)
+      printf '{"result":"ok","message":"todo (OPEN) — 1 open\\nblocked (OPEN)\\ndone (CLOSED)"}\n'
+      exit 0
+      ;;
+    fail)
+      printf '{"result":"error","error":"state list unavailable"}\n'
+      exit 1
+      ;;
+    empty)
+      printf '{"result":"ok","message":""}\n'
+      exit 0
+      ;;
+    whitespace)
+      printf '{"result":"ok","message":"\\n   \\n"}\n'
+      exit 0
+      ;;
+  esac
+fi
+
+exec "$real" "$@"
