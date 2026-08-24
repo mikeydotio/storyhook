@@ -5,6 +5,7 @@ import {
   cleanUpCreatedStories,
   heldReadDeadlineMs,
   holdUntilRefused,
+  latch,
   openProject,
   projectSlug,
   requiredEnv,
@@ -25,6 +26,38 @@ import {
  */
 
 const DATA_DELAY_MS = 2000;
+
+test("choosing Settings while the initial catalog is in flight is not undone by bootstrap", async ({
+  page,
+}) => {
+  await seedToken(page);
+  const catalogGate = latch();
+  const catalogRequested = latch();
+  await page.route(/\/api\/repos$/, async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    catalogRequested.release();
+    await catalogGate.held;
+    await route.continue();
+  });
+
+  await page.goto("/");
+  await catalogRequested.held;
+  await page.locator("#settings-btn").click();
+  await expect(page.locator("#settings-view")).toBeVisible();
+
+  // Both bootstrap's first read and goSettings()'s refresh may be waiting on
+  // this gate. Releasing them together constructs the production race: the
+  // initial callback lands only after the user's navigation has committed.
+  catalogGate.release();
+  await expect(
+    page.locator(".settings-table tbody tr", { hasText: "Alpha Project" }),
+  ).toBeVisible();
+  await expect(page.locator("#settings-view")).toBeVisible();
+  await expect(page.locator("#home-view")).toBeHidden();
+});
 
 /** Holds every project-data read for `DATA_DELAY_MS`. Registered before the
  * navigation that triggers one, since the very first `/data` is the one
@@ -546,7 +579,7 @@ test("a project whose data never arrives names the failure, once there is one to
     "Loading this project's states, types and labels…",
   );
 
-  alphaData.refuse();
+  await alphaData.refuse();
 
   // And now there is something to name. Both controls say it, in the same
   // words about their own subject, because both draw the sentence from
@@ -610,7 +643,7 @@ test("a project that answers after a failure drops the error where it stands", a
 
   await expect(page.locator("#board-view")).toBeVisible();
   await page.locator("#drafts-btn").click();
-  alphaData.refuse();
+  await alphaData.refuse();
   const list = page.locator("#drafts-list");
   await expect(list).toHaveText("Couldn't load this project's drafts. Retrying…");
 
@@ -664,7 +697,7 @@ test("one project's failure is not carried into the next project's loading windo
 
   await expect(page.locator("#board-view")).toBeVisible();
   await page.locator("#drafts-btn").click();
-  alphaData.refuse();
+  await alphaData.refuse();
   const list = page.locator("#drafts-list");
   await expect(list).toHaveText("Couldn't load this project's drafts. Retrying…");
 

@@ -93,7 +93,12 @@ async function blockStory(
     .locator('input[placeholder="Reason for blocking…"]')
     .fill(reason);
   await page.locator("#drawer-body button", { hasText: "Block" }).click();
-  await expect(page.locator(".banner-blocked")).toBeVisible();
+  // The relation already made this banner visible. Wait for the *new*
+  // awaiting reason, not the pre-existing surface, so closing the drawer
+  // cannot outrun the Block mutation and sample a relation-only badge.
+  await expect(page.locator(".banner-blocked .banner-body")).toHaveText(
+    reason,
+  );
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 }

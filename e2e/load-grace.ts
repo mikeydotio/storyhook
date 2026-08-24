@@ -131,6 +131,28 @@ export function gracedTestBudget(baseMs: number, ratio: number = contention()): 
   return Math.min(MAX_TEST_TIMEOUT_MS, Math.round(baseMs * Math.max(1, ratio)));
 }
 
+/** The timeout window to grant from *now*, shortened as necessary to preserve
+ * the user's absolute 15-minute wall-clock ceiling.
+ *
+ * The watchdog lives in an auto fixture. In that slot Playwright interprets
+ * `testInfo.setTimeout()` as a fresh duration for the currently running
+ * fixture, not as a deadline measured from the test's beginning. Passing an
+ * elapsed-plus-window total therefore resets the fixture to an ever larger
+ * duration and can run past the claimed ceiling. The reset duration is the
+ * smaller of the contention-graced window and the wall time still remaining;
+ * near the ceiling it deliberately shrinks so repeated resets all converge on
+ * the same absolute deadline. One millisecond, never zero, at or past the
+ * ceiling: Playwright uses zero to mean "disable timeouts". */
+export function resetTestBudget(
+  baseMs: number,
+  elapsedMs: number,
+  ratio: number = contention(),
+): number {
+  const elapsed = Math.max(0, Math.round(elapsedMs));
+  const remaining = Math.max(1, MAX_TEST_TIMEOUT_MS - elapsed);
+  return Math.min(gracedTestBudget(baseMs, ratio), remaining);
+}
+
 /**
  * A one-line, human-readable summary of the grace decision at a given
  * moment -- used both at config-evaluation time (`playwright.config.ts`) and

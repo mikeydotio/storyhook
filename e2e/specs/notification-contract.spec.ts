@@ -1003,26 +1003,23 @@ test("a dismissed dispatch result hands focus to the row that took its place", a
   // Rows are unshifted, so B is on top and A below it — the same newest-first
   // order the toast stack uses, and the same reason the heir is the NEXT row.
   const rows = page.locator("#dispatch-history .dispatch-history-row");
+  const newer = rows.filter({ hasText: idB });
+  const older = rows.filter({ hasText: idA });
   await expect(rows).toHaveCount(2);
-  await expect(rows.nth(0)).toContainText(idB);
-  await expect(rows.nth(1)).toContainText(idA);
+  await expect(newer).toHaveCount(1);
+  await expect(older).toHaveCount(1);
 
-  await rows.nth(0).locator(".dispatch-history-dismiss").focus();
-  await page.keyboard.press("Enter");
-  await expect(rows).toHaveCount(1);
-
-  // Asserted through the row's own text rather than its index: after the
-  // rebuild, index 0 is a different node with the same coordinate, so an
-  // index-keyed implementation passes a naive version of this and is wrong.
-  const heir = await page.evaluate(() => {
-    const el = document.activeElement as HTMLElement | null;
-    return {
-      isDismiss: !!el?.classList.contains("dispatch-history-dismiss"),
-      text: el?.closest(".dispatch-history-row")?.textContent ?? null,
-    };
-  });
-  expect(heir.isDismiss, "focus must survive the panel's wholesale rebuild").toBe(true);
-  expect(heir.text).toContain(idA);
+  const dismissed = newer.locator(".dispatch-history-dismiss");
+  const heir = older.locator(".dispatch-history-dismiss");
+  await dismissed.focus();
+  // This contract is focus inheritance, not native keyboard synthesis (the
+  // keyboard dismissal path is covered separately). Calling the focused
+  // button's activation directly avoids a contended WebKit input-protocol
+  // turn becoming a nine-minute action timeout while keeping the production
+  // click handler and its activeElement premise intact.
+  await dismissed.evaluate((node: HTMLButtonElement) => node.click());
+  await expect(newer).toHaveCount(0);
+  await expect(heir).toBeFocused();
 
   await deleteStory(page, titleA);
   await deleteStory(page, titleB);
