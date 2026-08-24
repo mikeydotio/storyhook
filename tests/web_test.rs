@@ -932,8 +932,10 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"id="drawer""#));
     assert!(body.contains(r#"id="drawer-body""#));
     // Create-story modal, including the fields added for #36 (description,
-    // priority, and the label combobox's mount point)
+    // priority, and the label combobox's mount point) and SH-439's project
+    // dropdown, the modal's first field
     assert!(body.contains(r#"id="create-modal""#));
+    assert!(body.contains(r#"id="create-project""#));
     assert!(body.contains(r#"id="create-title""#));
     assert!(body.contains(r#"id="create-description""#));
     assert!(body.contains(r#"id="create-priority""#));
