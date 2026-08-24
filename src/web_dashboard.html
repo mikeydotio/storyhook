@@ -11673,8 +11673,19 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * Home. */
   function bootstrap() {
     fetchReposOnce(function() {
-      var linked = resolveDeepLinkProject();
       urlSyncArmed = true;
+      // The first catalog reply chooses the initial screen only while the
+      // initial Home screen is still showing. Settings is usable while that
+      // read is in flight; a user's click there outranks the late bootstrap
+      // callback just as an explicit deep link outranks remembered state.
+      // Without this boundary the callback called `goHome()` after Settings
+      // had rendered, hiding a live settings DOM underneath Home and making
+      // the click appear to have been ignored on a loaded machine.
+      if (state.screen !== "home") {
+        syncUrl();
+        return;
+      }
+      var linked = resolveDeepLinkProject();
       if (linked) {
         if (deepLink.story) pendingDeepLink = { repoId: linked.id, storyId: deepLink.story };
         selectRepo(linked.id);

@@ -7,6 +7,7 @@ import {
   gracedBudget,
   gracedTestBudget,
   graceMultiplier,
+  resetTestBudget,
 } from "../load-grace";
 
 /**
@@ -71,6 +72,12 @@ test.describe("load-grace pure functions", () => {
   test("gracedTestBudget at idle returns its base unchanged", () => {
     expect(gracedTestBudget(BASE_TEST_TIMEOUT_MS, 0.3)).toBe(BASE_TEST_TIMEOUT_MS);
     expect(gracedTestBudget(120_000, 0.5)).toBe(120_000);
+  });
+
+  test("resetTestBudget resets from now without crossing the absolute wall-clock ceiling", () => {
+    expect(resetTestBudget(BASE_TEST_TIMEOUT_MS, 20_000, 2)).toBe(30_000);
+    expect(resetTestBudget(BASE_TEST_TIMEOUT_MS, MAX_TEST_TIMEOUT_MS - 1_000, 2)).toBe(1_000);
+    expect(resetTestBudget(BASE_TEST_TIMEOUT_MS, MAX_TEST_TIMEOUT_MS + 1_000, 2)).toBe(1);
   });
 
   test("MAX_TEST_TIMEOUT_MS is exactly the user's own 15-minute determination", () => {

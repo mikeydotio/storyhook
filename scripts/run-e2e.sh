@@ -34,6 +34,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 repo_root="$PWD"
 story_bin="$repo_root/target/debug/story"
+results_root="$repo_root/e2e/test-results/current"
+
+# One artifact tree for this invocation. Each Playwright project gets its own
+# output directory below, so a later project's startup no longer erases the
+# screenshots, traces and error contexts from earlier failures while this
+# script deliberately continues through the remaining matrix.
+rm -rf "$results_root"
+mkdir -p "$results_root"
 
 # --- The engine set, derived from the config (SH-335). ------------------
 #
@@ -479,7 +487,7 @@ WRAPPER
   # is the *inverted* value -- always 0 -- and `exit "$status"` would always
   # exit 0 regardless of whether Playwright passed (SH-224).
   status=0
-  npx playwright test --project="$project" "${playwright_args[@]+"${playwright_args[@]}"}" || status=$?
+  npx playwright test --project="$project" --output="$results_root/$project" "${playwright_args[@]+"${playwright_args[@]}"}" || status=$?
   if [ "$status" -ne 0 ]; then
     echo "run-e2e.sh: project=$project failed. If the error above is about a missing browser executable, run 'make e2e-install' and retry." >&2
     exit "$status"
