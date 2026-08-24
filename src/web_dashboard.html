@@ -4233,7 +4233,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       id: "dispatch-btn",
       class: "btn btn-primary",
       disabled: inFlight,
-      onClick: function() { openDispatchModal(st.id); }
+      // WebKit does not necessarily focus a button when it is clicked, so the
+      // modal cannot infer its return-focus target from activeElement.
+      onClick: function(e) { openDispatchModal(st.id, e.currentTarget); }
     }, [inFlight ? "Dispatching…" : "Dispatch"]);
   }
 
@@ -4249,10 +4251,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("dispatch-auto").checked = false;
     showBackdrop("dispatch-modal-backdrop");
     activateOverlay("dispatch-modal", "dispatch-agent");
-    // A context-menu action removes its menu node before invoking us. Preserve
-    // the card/row it came from explicitly so Cancel/Escape does not return
-    // focus to <body>; footer invocations use activateOverlay's ordinary
-    // document.activeElement capture.
+    // Preserve the invoker explicitly so Cancel/Escape does not return focus
+    // to <body>. Context-menu actions remove their menu node before invoking
+    // us, and WebKit pointer clicks do not necessarily focus footer buttons.
     if (returnFocus) overlayReturnFocus["dispatch-modal"] = returnFocus;
     // Unlike backdrop opacity, modal state is semantic and must not wait on
     // an animation frame: a paused background tab (or a test clock frozen
