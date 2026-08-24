@@ -35,6 +35,7 @@ impl Repo {
             ("Cargo.toml", "[package]\nname='fixture'\nversion='0.1.0'\n"),
             ("Makefile", "test:\n\t@true\n"),
             ("src/lib.rs", "pub fn answer() -> u8 { 42 }\n"),
+            ("src/web_dashboard.html", "<main>dashboard</main>\n"),
             ("tests/contract.rs", "#[test] fn contract() {}\n"),
             ("e2e/specs/board.spec.ts", "// browser fixture\n"),
             ("scripts/leg.sh", "# fingerprint fixture\n"),
@@ -234,6 +235,38 @@ fn a_browser_edit_reruns_only_browser_and_checkout_contracts() {
             repo.executions(label),
             expected,
             "browser edit invalidated the wrong battery: {label}"
+        );
+    }
+}
+
+#[test]
+fn a_dashboard_edit_reruns_only_contract_build_and_browser_batteries() {
+    let repo = Repo::new();
+    let labels = [
+        "fmt",
+        "clippy",
+        "rust-suite",
+        "rust-contracts",
+        "build",
+        "plugin",
+        "e2e",
+    ];
+    for label in labels {
+        let out = repo.run_leg(label, true);
+        assert!(out.status.success(), "seeding {label}: {out:?}");
+    }
+
+    repo.write("src/web_dashboard.html", "<main>edited dashboard</main>\n");
+
+    for label in labels {
+        let out = repo.run_leg(label, true);
+        assert!(out.status.success(), "retrying {label}: {out:?}");
+        let expected =
+            usize::from(matches!(label, "rust-contracts" | "build" | "e2e")) + 1;
+        assert_eq!(
+            repo.executions(label),
+            expected,
+            "dashboard edit invalidated the wrong battery: {label}"
         );
     }
 }

@@ -64,6 +64,25 @@ is_production_rust() {
     esac
 }
 
+# The dashboard is compiled into the binary through `include_str!`, so a page
+# edit must rebuild the executable. It is not Rust source, however, and the
+# checkout-contract battery owns the Rust assertions that inspect it. Keeping
+# that boundary explicit prevents a browser fix from throwing away formatting,
+# lint, core-Rust, or shell-plugin evidence merely because the page lives under
+# `src/`.
+is_non_dashboard_production_rust() {
+    [ "$1" != "src/web_dashboard.html" ] || return 1
+    is_production_rust "$1"
+}
+
+is_rust_lint_input() {
+    case "$1" in
+    (Cargo.toml | Cargo.lock | build.rs | clippy.toml | .cargo/*) return 0 ;;
+    (*Cargo.toml | *.rs) return 0 ;;
+    (*) return 1 ;;
+    esac
+}
+
 is_input() {
     path="$1"
     is_gate_contract "$path" && return 0
@@ -75,13 +94,10 @@ is_input() {
         esac
         ;;
     (clippy)
-        is_production_rust "$path" && return 0
-        case "$path" in
-        (tests/* | benches/* | examples/*) return 0 ;;
-        esac
+        is_rust_lint_input "$path" && return 0
         ;;
     (rust-suite)
-        is_production_rust "$path" && return 0
+        is_non_dashboard_production_rust "$path" && return 0
         case "$path" in
         (tests/* | scripts/run-tests.sh | scripts/run-rust-battery.sh | scripts/rust-test-targets.sh) return 0 ;;
         esac
@@ -97,7 +113,7 @@ is_input() {
         is_production_rust "$path" && return 0
         ;;
     (plugin)
-        is_production_rust "$path" && return 0
+        is_non_dashboard_production_rust "$path" && return 0
         case "$path" in
         (plugins/story/* | .agents/plugins/marketplace.json | .claude-plugin/marketplace.json) return 0 ;;
         esac
