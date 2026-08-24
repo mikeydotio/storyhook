@@ -497,5 +497,7 @@ test("a destination that vanishes mid-question is cleared, not withdrawn", async
 
   await destinationSelect(page, SCRATCH_OCCUPIED).selectOption("blocked");
   await applyButton(page, SCRATCH_OCCUPIED).click();
-  expect((await storyLocation(request, project, scratchStoryId)).state).toBe("blocked");
+  await expect
+    .poll(async () => (await storyLocation(request, project, scratchStoryId)).state)
+    .toBe("blocked");
 });
