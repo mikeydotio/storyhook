@@ -3052,6 +3052,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         if (state.screen === "repo" && state.repoId && !state.repos.some(function(r) { return r.id === state.repoId; })) {
           toast("This project was deleted", "error");
           state.repoId = null;
+          // The create modal is not part of `renderScreen()`'s own repo-
+          // screen chrome (unlike the drawer, which SH-290 already closes on
+          // every screen change) — so without this, a modal opened before
+          // the delete survives the jump to Home, floating over a screen
+          // that has no project open at all. `goHome()` below doesn't reach
+          // it: only a create/edit in progress on exactly this project needs
+          // closing, and only this branch knows that's what just happened.
+          if ($("create-modal").classList.contains("open")) closeCreateModal();
           goHome();
         }
       }
