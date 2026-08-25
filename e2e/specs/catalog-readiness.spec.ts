@@ -220,6 +220,11 @@ test("a partial catalog keeps known drafts visible without claiming a complete c
   await expect(page.locator("#drafts-list")).toContainText(
     "Couldn't load some projects' drafts. Retrying…",
   );
+
+  // SSE can start another catalog read after the assertions above. Remove
+  // the route and await any handler already decoding its response before the
+  // browser context disposes that response during test teardown.
+  await page.unrouteAll({ behavior: "wait" });
 });
 
 test("a statuses editor whose fetch never answers names the failure", async ({
