@@ -2667,6 +2667,35 @@ fn web_serve_root_html_styles_the_status_light_and_card_blockers() {
         declarations(css, ".story-ref").contains("display: inline-flex"),
         ".story-ref must lay its light and id out inline, not stacked"
     );
+    let story_ref = declarations(css, ".story-ref");
+    assert!(
+        story_ref.contains("flex: none"),
+        ".story-ref must not shrink inside a pressured flex row -- shrinking lets the id break at its hyphen"
+    );
+    assert!(
+        story_ref.contains("white-space: nowrap"),
+        ".story-ref must keep the complete story id on one line"
+    );
+    assert!(
+        declarations(css, ".flag-blocked").contains("flex-wrap: wrap"),
+        ".flag-blocked must wrap between atomic story refs instead of overflowing a narrow card"
+    );
+    assert!(
+        declarations(css, ".rel-id").contains("font-size: inherit"),
+        ".rel-id must match its surrounding prose -- especially the compact blocked badge"
+    );
+    for selector in [
+        ".card-id",
+        ".col-id",
+        ".drawer-id",
+        ".drafts-row-id",
+        ".archive-modal-list li",
+    ] {
+        assert!(
+            declarations(css, selector).contains("white-space: nowrap"),
+            "{selector} must keep its bare story id on one line"
+        );
+    }
     let unknown = declarations(css, ".story-light.unknown");
     assert!(
         unknown.contains("background: transparent"),
