@@ -129,7 +129,11 @@ test("submitting files the story in the selected project, not the one on screen,
   await page.locator("#new-story-btn").click();
   await expect(page.locator("#create-modal")).toHaveClass(/open/);
   await page.locator("#create-project").selectOption(betaSlug);
-  await expect(page.locator("#create-state")).toBeEnabled();
+  // Enabled is not a settlement signal: Alpha leaves this control enabled
+  // too. Its fixture-only review option disappears only when Beta lands.
+  await expect(
+    page.locator("#create-state option", { hasText: "review" }),
+  ).toHaveCount(0);
 
   await page.locator("#create-title").fill(title);
   // Set explicitly to dodge SH-358's unassessed-priority warn toast, which
