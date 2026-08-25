@@ -370,7 +370,11 @@ One pass, per live run:
 lanes run to their natural end. `pause` returns to `running` on `resume`;
 graceful `stop` becomes `finished` when the last lane frees. `stop --now`
 additionally kills lane windows and returns each claimed story to its prior
-state, preserving worktrees and branches.
+state, preserving worktrees and branches — `story unclaim --keep-worktree`,
+subject to the open reconciliation above. SH-484's conservative default matters
+here: an unclaimed story is unfinished by definition, so its branch is usually
+unmerged and its worktree often dirty, and a teardown that removed them by
+default would destroy work nobody pushed.
 
 ### Where the dispatch subprocess runs
 
@@ -496,7 +500,17 @@ unguarded.
 Claiming is one verb, `story claim <id> | --next` (epic SH-475): both forms
 mutating, exactly one required, so a dropped argument can never silently claim
 whatever happened to be top-priority. `story next --claim` is removed by SH-477;
-`story next` goes back to being a pure read.
+`story next` goes back to being a pure read. Releasing a claim is its inverse,
+`story unclaim <id>` (SH-483, with the tmux and worktree teardown in SH-484) —
+the primitive `stop --now` and the quarantine path both route through rather
+than composing their own `story move`.
+
+**One reconciliation is open, and is SH-464's to settle before it is built.**
+`stop --now` is specified below as returning each claimed story to its *prior*
+state; `story unclaim` was filed under a determination that it moves a story to
+`todo`. Both cannot hold. The options — record `claimed_from` on the lane and
+move explicitly, change this document to `todo`, or give `unclaim` a `--to`
+flag — are laid out on SH-464. Do not resolve it silently in either direction.
 
 ## Control surfaces
 
@@ -642,6 +656,10 @@ order, so `ready_order` hands them out in a workable sequence at equal priority.
 | W8 | SH-471 | Persistent halt/drain banner |
 | W9 | SH-472 | Engine event hooks |
 | W9 | SH-473 | Browser leg, operator docs, the As-built record |
+
+Claiming and releasing are epic **SH-475**'s, not this one's: SH-476 (the claim
+verb), SH-483/SH-484 (`story unclaim` and its teardown). SH-455, SH-464 and
+SH-465 are `blocked-by` them.
 
 ### The claim primitive this engine depends on
 
