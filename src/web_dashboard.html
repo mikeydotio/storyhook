@@ -11134,8 +11134,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     draftOpenTicket++;
     editingDraft = draft || null;
     createTargetProject = draft ? draftProject : state.repoId;
-    // Invalidates any vocabulary GET a previous open of this singleton
-    // modal left in flight (SH-439) -- see createVocabTicket's own comment.
+    // Cancels delayed work and invalidates any vocabulary GET a previous open
+    // of this singleton modal left in flight (SH-439, SH-485) -- a timer from
+    // that open must not start a read or revive pending state in this one.
+    cancelCreateProjectVocabFetch();
     createVocabTicket++;
     // Defensive reset (SH-312): the modal is a singleton reused across opens,
     // so a stuck flag from an unreachable error path would otherwise leave
@@ -11213,10 +11215,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   function closeCreateModal() {
     editingDraft = null;
-    // Invalidates any vocabulary GET still in flight (SH-439) -- without
-    // this, a reply for a project the user switched to right before closing
-    // could land after `openCreateModal()`'s NEXT call and repopulate that
-    // later, unrelated open with this one's fields.
+    // Cancels a delayed read and invalidates any vocabulary GET still in
+    // flight (SH-439, SH-485) -- without both halves, work for a project the
+    // user selected right before closing could start or land after
+    // `openCreateModal()`'s NEXT call and alter that later, unrelated open.
+    cancelCreateProjectVocabFetch();
     createVocabTicket++;
     setCreateVocabPending(false);
     hideBackdrop("modal-backdrop");
@@ -11237,51 +11240,64 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   /** `apiBase()`'s create-modal equivalent — see {@link createTargetProject}. */
   function createApiBase() { return repoApiBase(createTargetProject); }
 
-  /** Bumped by `openCreateModal()`/`closeCreateModal()` and by every
-   * vocabulary fetch `#create-project`'s `change` handler starts (SH-439) —
-   * mirrors `fetchData()`'s own `boardFetchTicket`/`askedFor` pair. A reply
-   * is applied only when its ticket is still current, so a project switch
-   * made while an earlier vocabulary GET is in flight, or the modal closing
-   * entirely, can never repopulate stale fields out from under whatever is
-   * on screen now. */
+  /** Bumped by `openCreateModal()`/`closeCreateModal()` and synchronously by
+   * every `#create-project` change (SH-439, SH-485) — before that change's
+   * debounced GET can start. Mirrors `fetchData()`'s own
+   * `boardFetchTicket`/`askedFor` pair. A scheduled read or reply is eligible
+   * only while its captured ticket is still current, so a second selection
+   * or the modal closing can never let older work repopulate stale fields. */
   var createVocabTicket = 0;
 
   var createProjectChangeTimer = null;
 
-  /** Debounces `#create-project`'s `change` event through this project's
-   * existing `FETCH_DEBOUNCE_MS` (SH-439, the same window `scheduleDataFetch()`
-   * already coalesces a burst of `repo-changed` events through) rather than a
-   * new literal: a held arrow key on a focused, closed `<select>` moves its
-   * selection and fires `change` once per OS key-repeat, and firing one
-   * vocabulary GET per repeat would flicker the busy state and the modal's
-   * fields needlessly. */
+  /** Clears the create-project debounce without changing safety state. Open,
+   * close and every new selection call this before advancing the ticket, so
+   * a callback belonging to an older modal era cannot start later. */
+  function cancelCreateProjectVocabFetch() {
+    if (createProjectChangeTimer === null) return;
+    clearTimeout(createProjectChangeTimer);
+    createProjectChangeTimer = null;
+  }
+
+  /** Starts the safety transition for `#create-project` synchronously, then
+   * debounces only its network read through this project's existing
+   * `FETCH_DEBOUNCE_MS` (SH-439, SH-485). The immediate ticket and pending
+   * guard are what make the selector's newly-visible value safe before a
+   * timer can run; the delay still coalesces the vocabulary GETs a held arrow
+   * key can otherwise fire once per OS key-repeat.
+   *
+   * Returning to `createTargetProject` is already a complete transition: its
+   * vocabulary remains mounted, so the new ticket invalidates older work,
+   * pending clears, and no read is scheduled. */
   function scheduleCreateProjectVocabFetch() {
-    if (createProjectChangeTimer) clearTimeout(createProjectChangeTimer);
+    cancelCreateProjectVocabFetch();
+    var target = $("create-project").value;
+    var previous = createTargetProject;
+    var ticket = ++createVocabTicket;
+    if (target === previous) {
+      setCreateVocabPending(false);
+      return;
+    }
+    setCreateVocabPending(true);
     createProjectChangeTimer = setTimeout(function() {
       createProjectChangeTimer = null;
-      fetchCreateProjectVocab();
+      fetchCreateProjectVocab(target, previous, ticket);
     }, FETCH_DEBOUNCE_MS);
   }
 
-  /** Fetches the project `#create-project` now names and repopulates the
-   * modal's per-project vocabulary from it (SH-439). Ticketed against
-   * {@link createVocabTicket}: a reply is discarded, not applied, if the
-   * dropdown has since moved on again or the modal has closed. On failure
-   * the dropdown reverts to the last-good project and `#create-error` names
-   * only the project -- never `err.message` (`tests/dashboard_error_reporting.rs`'s
-   * fence, and `describeFailure()`'s own wording is written for a *mutation*,
-   * wrong for this read), so the modal is never left claiming one project
-   * while `#create-state`/`#create-type` still describe another. */
-  function fetchCreateProjectVocab() {
-    var target = $("create-project").value;
-    var previous = createTargetProject;
-    if (target === previous) return;
-    var ticket = ++createVocabTicket;
+  /** Fetches the captured project and repopulates the modal's per-project
+   * vocabulary from it (SH-439, SH-485). The change handler already advanced
+   * {@link createVocabTicket} and raised pending before scheduling this call;
+   * this rejects a stale ticket once before issuing any work and again before
+   * applying either outcome. Only the current successful request may make its
+   * target `createTargetProject`; only the current failure may revert to the
+   * captured last-good project, clear pending, and report the error. */
+  function fetchCreateProjectVocab(target, previous, ticket) {
+    if (ticket !== createVocabTicket) return;
     // The candidate project's own base -- deliberately `repoApiBase(target)`
     // rather than `createApiBase()`, since `target` isn't `createTargetProject`
     // yet (that assignment only happens once this GET succeeds, below).
     var base = repoApiBase(target);
-    setCreateVocabPending(true);
     api("GET", base + "/data", null)
       .then(function(payload) {
         if (ticket !== createVocabTicket) return;
