@@ -449,49 +449,35 @@ fn decompose_markdown_with_labels() {
 }
 
 // ============================================================
-// A batch that lands stories nobody assessed (SH-358)
+// Required decompose metadata (SH-449)
 // ============================================================
-//
-// `story decompose` is the bulk path `/story-plan` drives, and any heading the
-// spec did not mark `[LEVEL]` files unassessed exactly like `story new` with
-// no `--priority` (SH-354/SH-359). A batch must not emit one line per story —
-// that is the story's own constraint — so these pin ONE aggregate line
-// regardless of batch size, plus per-story attribution in `--json` for a
-// caller that needs to know which.
 
 #[test]
-fn decompose_with_no_priority_markers_warns_once_naming_the_batch() {
+fn decompose_with_no_priority_markers_defaults_every_story_to_low() {
     let dir = tempdir().unwrap();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
-    // Three stories, three levels of nesting, none marked with `[LEVEL]`.
     let md = "# Epic\n## Feature\n### Task\n";
     let file_path = dir.path().join("spec.md");
     std::fs::write(&file_path, md).unwrap();
 
-    let output = story(dir.path())
+    story(dir.path())
         .args(["decompose", file_path.to_str().unwrap()])
         .assert()
-        .success();
-    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+        .success()
+        .stdout(predicate::str::contains("warning:").not());
 
-    let warning_lines: Vec<&str> = stdout
-        .lines()
-        .filter(|line| line.starts_with("warning:"))
-        .collect();
-    assert_eq!(
-        warning_lines.len(),
-        1,
-        "one aggregate line, not one per story: {stdout}"
-    );
-    assert!(warning_lines[0].contains("3 of 3"), "{}", warning_lines[0]);
-    assert!(warning_lines[0].contains("SH-1"));
-    assert!(warning_lines[0].contains("SH-2"));
-    assert!(warning_lines[0].contains("SH-3"));
-    assert!(warning_lines[0].contains("story list --unassessed"));
+    for id in ["SH-1", "SH-2", "SH-3"] {
+        story(dir.path())
+            .args(["show", id])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("priority: low"))
+            .stdout(predicate::str::contains("type: normal"));
+    }
 }
 
 #[test]
@@ -533,14 +519,39 @@ fn decompose_dry_run_never_warns_since_nothing_was_written() {
 }
 
 #[test]
-fn decompose_json_carries_the_aggregate_and_per_story_attribution() {
+fn decompose_rejects_the_retired_none_marker_atomically() {
     let dir = tempdir().unwrap();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
-    // Epic unmarked, Feature marked -- one of two lands unassessed.
+    let file_path = dir.path().join("spec.md");
+    std::fs::write(&file_path, "# Valid parent\n## [NONE] Retired marker\n").unwrap();
+
+    story(dir.path())
+        .args(["decompose", file_path.to_str().unwrap()])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "priority must be one of: critical, high, medium, low",
+        ));
+    story(dir.path())
+        .args(["list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Valid parent").not());
+}
+
+#[test]
+fn decompose_json_returns_defaulted_and_explicit_metadata_without_warnings() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+
     let md = "# Epic\n## [HIGH] Feature\n";
     let file_path = dir.path().join("spec.md");
     std::fs::write(&file_path, md).unwrap();
@@ -553,11 +564,7 @@ fn decompose_json_carries_the_aggregate_and_per_story_attribution() {
     let envelope: serde_json::Value =
         serde_json::from_str(&stdout).expect("`story decompose --json` must emit one JSON object");
 
-    let warnings = envelope["warnings"]
-        .as_array()
-        .expect("the envelope must carry a batch-level `warnings` array");
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
-    assert!(warnings[0].as_str().unwrap().contains("1 of 2"));
+    assert!(envelope.get("warnings").is_none(), "{envelope}");
 
     let stories = envelope["stories"].as_array().expect("a `stories` array");
     assert_eq!(stories.len(), 2, "{stories:?}");
@@ -566,18 +573,15 @@ fn decompose_json_carries_the_aggregate_and_per_story_attribution() {
         .iter()
         .find(|s| s["story"]["id"] == "SH-1")
         .expect("SH-1 in the stories array");
-    let epic_warnings = epic["warnings"]
-        .as_array()
-        .expect("SH-1 must carry its own per-story warning");
-    assert_eq!(epic_warnings.len(), 1);
-    assert!(epic_warnings[0].as_str().unwrap().contains("SH-1"));
+    assert_eq!(epic["story"]["priority"], "low");
+    assert_eq!(epic["story"]["story_type"], "normal");
+    assert!(epic.get("warnings").is_none());
 
     let feature = stories
         .iter()
         .find(|s| s["story"]["id"] == "SH-2")
         .expect("SH-2 in the stories array");
-    assert!(
-        feature.get("warnings").is_none(),
-        "an assessed story must carry no warnings key: {feature:?}"
-    );
+    assert_eq!(feature["story"]["priority"], "high");
+    assert_eq!(feature["story"]["story_type"], "normal");
+    assert!(feature.get("warnings").is_none());
 }

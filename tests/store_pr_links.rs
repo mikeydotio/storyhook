@@ -47,7 +47,7 @@ fn migration_eleven_adds_a_story_pr_links_table_that_starts_empty() {
          this test proves nothing about the migration that adds it"
     );
 
-    store.migrate().unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..11]).unwrap();
 
     let count: i64 = Connection::open(store.path())
         .unwrap()
@@ -68,7 +68,7 @@ fn migration_eleven_leaves_every_pre_existing_column_and_the_event_log_untouched
     store.migrate_with(&migrate::MIGRATIONS[..10]).unwrap();
     seed_a_v10_story(store.path());
 
-    store.migrate().unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..11]).unwrap();
 
     let (title, hidden_at): (String, Option<String>) = Connection::open(store.path())
         .unwrap()
@@ -81,11 +81,16 @@ fn migration_eleven_leaves_every_pre_existing_column_and_the_event_log_untouched
     assert_eq!(title, "A story");
     assert_eq!(hidden_at, None);
 
-    let events = store
-        .read(|tx| tx.events_for(ProjectId::new(1), StoryNo::new(1)))
+    let events: i64 = Connection::open(store.path())
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE project_id = 1 AND story_no = 1",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
-    assert!(
-        events.is_empty(),
+    assert_eq!(
+        events, 0,
         "the pre-existing story was seeded with no events; migration 11 must \
          not have added any"
     );

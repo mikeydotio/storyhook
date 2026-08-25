@@ -276,15 +276,11 @@ Examples:
   story new "Sketch: notification preferences" --draft
 
 Related:
-  story help priority-rubric — What critical/high/medium/low/none
-                               mean. --priority is a scheduling
-                               decision, not a label; omit it and
-                               nobody has assessed this story yet,
-                               which sorts LAST in 'story next' — the
-                               same place as 'none' (deliberately
-                               parked), but a different fact.
-                               story list --unassessed finds the
-                               first kind.
+  story help priority-rubric — What critical/high/medium/low mean.
+                               --priority is a scheduling decision,
+                               not a label; omit it to use low.
+  story type list          — Show configured types. Omit --type to use
+                             the first configured type.
   story publish <id>     — Make a draft live (one-way)
   story decompose        — Create multiple stories from a spec file
   story set <id>          — Change any field after creation
@@ -347,7 +343,7 @@ Examples:
   story list --drafts                 # Only drafts, to pick one to edit
 
 Related:
-  story help priority-rubric — What the five --priority levels mean
+  story help priority-rubric — What the four --priority levels mean
   story help archive — What "archived" means here
   story next     — Get the highest-priority ready story
   story publish  — Make a draft live
@@ -1399,7 +1395,7 @@ Error:
   }
 
 Related:
-  story help priority-rubric — what the "priority" field's five
+  story help priority-rubric — what the "priority" field's four
                                values mean, for a caller choosing
                                one rather than reading one
 "#,
@@ -1695,7 +1691,7 @@ Related:
             r#"story prioritize <id> <level>
 
 Set the priority of a story. Priority levels: critical, high,
-medium, low, none.
+medium, low.
 
 When to use:
   After creating a story, or when reprioritizing work. Priority
@@ -1718,7 +1714,7 @@ Related:
         // Redirect old "priority" name
         m.insert("priority", m["prioritize"]);
 
-        // The criteria behind the five levels, and the reason there is a
+        // The criteria behind the four levels, and the reason there is a
         // rubric at all: a priority is `story next`'s sort key, so every level
         // set without criteria is a scheduling decision made by vibe.
         //
@@ -1796,13 +1792,6 @@ low
   branch, a single flake costing one re-run, a defect with an
   obvious workaround, or tooling whose absence hides nothing
   currently filed.
-
-none
-  DELIBERATELY PARKED — a feature with no settled design, or work
-  deferred pending its owner. Because none sorts LAST, it says "do
-  not pick this up". It does NOT mean "not yet assessed": an
-  unassessed story is a triage failure, not a priority, and a defect
-  must never sit here.
 
 == Tiebreakers, in order ==
 
@@ -2868,30 +2857,16 @@ pub fn all_topics_text() -> String {
 mod tests {
     use super::get_help_topic;
 
-    /// SH-402's sibling defect, adopted rather than filed: the `new` topic
-    /// used to say omitting `--priority` "files the story at none, which
-    /// sorts LAST" — the exact unassessed/parked conflation SH-359's
-    /// `priority_notice::unassessed_warning` was written to avoid at
-    /// runtime. Docs and runtime behaviour disagreeing about the same
-    /// command is the SH-136 class regardless of which one is filed to fix.
     #[test]
-    fn the_new_topic_does_not_conflate_unassessed_with_deliberately_parked() {
+    fn the_new_topic_names_the_service_defaults() {
         let body = get_help_topic("new").expect("the `new` topic must exist");
         assert!(
-            !body.contains("the story is filed at none"),
-            "the `new` topic must not claim omitting --priority parks the story at \
-             none — that is a decision somebody made, and omission is the absence of \
-             one; the two are stored apart precisely so this distinction survives"
+            body.contains("omit it to use low"),
+            "the `new` topic must name the priority creation default"
         );
         assert!(
-            body.contains("nobody has assessed"),
-            "the `new` topic must state the true fact about omitting --priority, \
-             matching priority_notice::unassessed_warning's own phrasing"
-        );
-        assert!(
-            body.contains("story list --unassessed"),
-            "the `new` topic must name the command that finds an unassessed story, \
-             the same remedy SH-359 shipped for this exact question"
+            body.contains("first configured type"),
+            "the `new` topic must name the type creation default"
         );
     }
 

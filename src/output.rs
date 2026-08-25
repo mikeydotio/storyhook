@@ -1562,11 +1562,9 @@ fn render_story(view: &StoryView) -> String {
         if story.draft { "yes" } else { "no" }
     ));
     body.push_str(&format!("assignee: {assignee}\n"));
-    // The parenthetical only ever appears on `none`, and only when nobody has
-    // chosen (SH-359). `none` alone is ambiguous to a reader — the rubric
-    // defines it as "deliberately parked", so a story nobody assessed was
-    // silently claiming a decision. Every other level implies an assessment by
-    // the fold's own invariant, so annotating them would be noise.
+    // The parenthetical only appears on the legacy `none` representation when
+    // no priority event exists (SH-359). Current creation always emits low,
+    // but old logs and exports remain readable.
     let assessment = if story.priority == Priority::None && !story.priority_assessed {
         " (not assessed)"
     } else {

@@ -98,7 +98,7 @@ tbody tr:hover { background:var(--table-hover); }
 
 <div class="section">
 <div class="section-title">Priority Breakdown</div>
-<div class="priorities"><span class="priority-badge priority-critical">critical: 2</span><span class="priority-badge priority-high">high: 3</span><span class="priority-badge priority-low">low: 4</span><span class="priority-badge priority-medium">medium: 4</span></div>
+<div class="priorities"><span class="priority-badge priority-critical">critical: 2</span><span class="priority-badge priority-high">high: 3</span><span class="priority-badge priority-low">low: 5</span><span class="priority-badge priority-medium">medium: 4</span></div>
 </div>
 
 <div class="section">
@@ -124,7 +124,7 @@ tbody tr:hover { background:var(--table-hover); }
 <tr><td class="col-id">SH-8</td><td>Retire the JSONL reader</td><td>done</td><td><span class="priority-badge priority-low">low</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
 <tr class="row-ready"><td class="col-id">SH-11</td><td>Audit error codes</td><td>todo</td><td><span class="priority-badge priority-low">low</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
 <tr class="row-blocked"><td class="col-id">SH-6</td><td>Benchmark the rebuild path</td><td>todo</td><td><span class="priority-badge priority-low">low</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
-<tr class="row-ready"><td class="col-id">SH-7</td><td>Document the data layer</td><td>todo</td><td><span class="priority-badge priority-none">none</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
+<tr class="row-ready"><td class="col-id">SH-7</td><td>Document the data layer</td><td>todo</td><td><span class="priority-badge priority-low">low</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
 </tbody>
 </table>
 </div>

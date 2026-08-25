@@ -9,7 +9,7 @@ SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1
 SH-4 [review] (medium) [normal] Write the migration runner [backend]
 SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
 SH-6 [todo] (low) [spike] Benchmark the rebuild path
-SH-7 [todo] [chore] Document the data layer
+SH-7 [todo] (low) [chore] Document the data layer
 SH-9 [todo] (medium) [normal] Add the daemon transport [phase:2]
 SH-10 [todo] (medium) [normal] Ship the CLI shim
 SH-11 [todo] (low) [normal] Audit error codes
@@ -20,7 +20,7 @@ SH-1 [todo] (critical) [epic] Design the storage engine (0/3)
 SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
 SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
 SH-6 [todo] (low) [spike] Benchmark the rebuild path
-SH-7 [todo] [chore] Document the data layer
+SH-7 [todo] (low) [chore] Document the data layer
 SH-9 [todo] (medium) [normal] Add the daemon transport [phase:2]
 SH-10 [todo] (medium) [normal] Ship the CLI shim
 SH-11 [todo] (low) [normal] Audit error codes
@@ -52,7 +52,7 @@ SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
 SH-12 [todo] (high) [normal] Harden concurrent writes
 
 $ story list --priority none
-SH-7 [todo] [chore] Document the data layer
+no stories found
 
 $ story list --label backend
 SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
@@ -82,7 +82,7 @@ SH-1 [todo] (critical) [epic] Design the storage engine (0/3)
 SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
 SH-4 [review] (medium) [normal] Write the migration runner [backend]
 SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
-SH-7 [todo] [chore] Document the data layer
+SH-7 [todo] (low) [chore] Document the data layer
 SH-10 [todo] (medium) [normal] Ship the CLI shim
 SH-11 [todo] (low) [normal] Audit error codes
 SH-12 [todo] (high) [normal] Harden concurrent writes
@@ -105,7 +105,7 @@ SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1
 SH-4 [review] (medium) [normal] Write the migration runner [backend]
 SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
 SH-6 [todo] (low) [spike] Benchmark the rebuild path
-SH-7 [todo] [chore] Document the data layer
+SH-7 [todo] (low) [chore] Document the data layer
 SH-9 [todo] (medium) [normal] Add the daemon transport [phase:2]
 SH-10 [todo] (medium) [normal] Ship the CLI shim
 SH-11 [todo] (low) [normal] Audit error codes
@@ -122,7 +122,7 @@ SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1
 SH-4 [review] (medium) [normal] Write the migration runner [backend]
 SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
 SH-6 [todo] (low) [spike] Benchmark the rebuild path
-SH-7 [todo] [chore] Document the data layer
+SH-7 [todo] (low) [chore] Document the data layer
 SH-9 [todo] (medium) [normal] Add the daemon transport [phase:2]
 SH-10 [todo] (medium) [normal] Ship the CLI shim
 SH-11 [todo] (low) [normal] Audit error codes
@@ -145,7 +145,7 @@ SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1
 SH-4 [review] (medium) [normal] Write the migration runner [backend]
 SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
 SH-6 [todo] (low) [spike] Benchmark the rebuild path
-SH-7 [todo] [chore] Document the data layer
+SH-7 [todo] (low) [chore] Document the data layer
 SH-8 [done] (low) [chore] Retire the JSONL reader
 SH-9 [todo] (medium) [normal] Add the daemon transport [phase:2]
 SH-10 [todo] (medium) [normal] Ship the CLI shim
@@ -161,7 +161,7 @@ SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1
 SH-4 [review] (medium) [normal] Write the migration runner [backend]
 SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
 SH-6 [todo] (low) [spike] Benchmark the rebuild path
-SH-7 [todo] [chore] Document the data layer
+SH-7 [todo] (low) [chore] Document the data layer
 SH-8 [done] (low) [chore] Retire the JSONL reader
 SH-9 [todo] (medium) [normal] Add the daemon transport [phase:2]
 SH-10 [todo] (medium) [normal] Ship the CLI shim
@@ -177,7 +177,7 @@ SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1
 SH-4 [review] (medium) [normal] Write the migration runner [backend]
 SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
 SH-6 [todo] (low) [spike] Benchmark the rebuild path
-SH-7 [todo] [chore] Document the data layer
+SH-7 [todo] (low) [chore] Document the data layer
 SH-8 [done] (low) [chore] Retire the JSONL reader
 SH-9 [todo] (medium) [normal] Add the daemon transport [phase:2]
 SH-10 [todo] (medium) [normal] Ship the CLI shim

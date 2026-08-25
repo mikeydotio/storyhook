@@ -42,7 +42,7 @@ use std::path::{Path, PathBuf};
 
 use crate::domain::provenance::Provenance;
 use crate::domain::{
-    StateDef, StoryEvent, StorySnapshot, fold_story, inverse_relation,
+    Priority, StateDef, StoryEvent, StorySnapshot, fold_story, inverse_relation,
     validate_state_defs_for_write, validate_type_slug,
 };
 use crate::error::AppError;
@@ -52,8 +52,11 @@ use crate::store::{
     StoreError, StoryNo, StoryQuery, WriteOps, partition_known,
 };
 
+use super::project::default_types;
 use super::project::{ProjectPointer, pointer_path, read_pointer, unique_slug, write_pointer};
 use super::state_set::write_states_repairing;
+use super::story::default_story_type;
+use super::transfer::restore_default_events;
 
 /// What a repair did to one story's history.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -160,6 +163,8 @@ pub struct MigrationReport {
     pub next_story_no: u64,
     /// Every one-sided relation that was repaired.
     pub repairs: Vec<Repair>,
+    /// Legacy histories extended with current required metadata events.
+    pub metadata_repairs: Vec<MetadataRepair>,
     /// Every event kind this binary does not understand, retained anyway.
     pub unknown_events: Vec<RetainedUnknown>,
     /// The settings this migration found in the tree, as lines describing
@@ -173,6 +178,41 @@ pub struct MigrationReport {
     /// what the tree turned out to be configured with — or, since SH-408,
     /// what it held that this migration left behind and why.
     pub settings: Vec<String>,
+}
+
+/// One required-metadata event appended to a legacy story history.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MetadataRepair {
+    /// The story whose history gains the event.
+    pub story: String,
+    /// The field and value supplied by the destination project's defaults.
+    pub kind: MetadataRepairKind,
+}
+
+/// Which required field a legacy history lacked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MetadataRepairKind {
+    /// The project's first configured story type.
+    Type { story_type: String },
+    /// The lowest assignable priority.
+    PriorityLow,
+}
+
+impl MetadataRepair {
+    /// The current event this compatibility repair appends.
+    #[must_use]
+    pub fn event(&self, at: &str) -> StoryEvent {
+        match &self.kind {
+            MetadataRepairKind::Type { story_type } => StoryEvent::StoryTypeSet {
+                at: at.to_string(),
+                story_type: story_type.clone(),
+            },
+            MetadataRepairKind::PriorityLow => StoryEvent::StoryPrioritySet {
+                at: at.to_string(),
+                priority: Priority::Low,
+            },
+        }
+    }
 }
 
 impl MigrationReport {
@@ -223,6 +263,20 @@ impl MigrationReport {
             for repair in &self.repairs {
                 out.push_str(&format!("    {repair}\n"));
             }
+        }
+
+        if !self.metadata_repairs.is_empty() {
+            let types = self
+                .metadata_repairs
+                .iter()
+                .filter(|repair| matches!(repair.kind, MetadataRepairKind::Type { .. }))
+                .count();
+            let priorities = self.metadata_repairs.len() - types;
+            out.push_str(&format!(
+                "  required metadata: {types} type default{}, {priorities} low-priority default{}\n",
+                if types == 1 { "" } else { "s" },
+                if priorities == 1 { "" } else { "s" }
+            ));
         }
 
         if !self.unknown_events.is_empty() {
@@ -282,6 +336,7 @@ pub struct MigrationPlan {
     project: LegacyProject,
     stories: Vec<PlannedStory>,
     repairs: Vec<Repair>,
+    metadata_repairs: Vec<MetadataRepair>,
     highest: StoryNo,
 }
 
@@ -341,6 +396,16 @@ impl MigrationPlan {
         refusals.into_result(&project.root)?;
 
         let mut stories = Vec::new();
+        let default_type = project
+            .types
+            .first()
+            .cloned()
+            .or_else(|| default_types().into_iter().next())
+            .ok_or_else(|| {
+                AppError::Validation("project has no configured story types".to_string())
+            })?
+            .slug;
+        let mut metadata_repairs = Vec::new();
         // `max`, not `count`: the counter is ahead of the highest id whenever a
         // number was burned (a rejected `--state`, a story deleted before the
         // archive existed), and a `next` derived from a count would re-mint one.
@@ -355,6 +420,20 @@ impl MigrationPlan {
                 highest = story_no;
             }
             let snapshot = snapshots[&story.id].clone();
+            if snapshot.story_type.is_none() {
+                metadata_repairs.push(MetadataRepair {
+                    story: story.id.clone(),
+                    kind: MetadataRepairKind::Type {
+                        story_type: default_type.clone(),
+                    },
+                });
+            }
+            if snapshot.priority == Priority::None || !snapshot.priority_assessed {
+                metadata_repairs.push(MetadataRepair {
+                    story: story.id.clone(),
+                    kind: MetadataRepairKind::PriorityLow,
+                });
+            }
             stories.push(PlannedStory {
                 events: raw_events(story, &repairs),
                 id: story.id.clone(),
@@ -368,6 +447,7 @@ impl MigrationPlan {
             project,
             stories,
             repairs,
+            metadata_repairs,
             highest,
         })
     }
@@ -410,7 +490,8 @@ impl MigrationPlan {
             prefix: self.project.effective_prefix().to_string(),
             dry_run,
             stories: self.stories.len(),
-            events: self.stories.iter().map(|s| s.events.len()).sum(),
+            events: self.stories.iter().map(|s| s.events.len()).sum::<usize>()
+                + self.metadata_repairs.len(),
             archived: self.stories.iter().filter(|s| s.archived).count(),
             deleted: self.stories.iter().filter(|s| s.snapshot.deleted).count(),
             states: self.project.states.len(),
@@ -418,6 +499,7 @@ impl MigrationPlan {
             members: self.project.members.len(),
             next_story_no: u64::try_from(self.highest.get()).unwrap_or(0) + 1,
             repairs: self.repairs.clone(),
+            metadata_repairs: self.metadata_repairs.clone(),
             unknown_events: self
                 .project
                 .unknown_events()
@@ -436,7 +518,12 @@ impl MigrationPlan {
     /// trust and nobody can re-run. The pointer file is written *after* the
     /// commit, so a failed migration leaves a checkout with no claim on a
     /// project that does not exist.
-    pub fn apply<S: Store>(&self, store: &S, dest: &Path) -> Result<MigrationReport, AppError> {
+    pub fn apply<S: Store>(
+        &self,
+        store: &S,
+        dest: &Path,
+        at: &str,
+    ) -> Result<MigrationReport, AppError> {
         let prefix = self.project.effective_prefix().to_string();
         let root = dest.canonicalize().unwrap_or_else(|_| dest.to_path_buf());
         let uuid = uuid::Uuid::new_v4().to_string();
@@ -468,7 +555,10 @@ impl MigrationPlan {
             write_states_repairing(tx, project, &self.project.states)?;
             if !self.project.types.is_empty() {
                 tx.put_types(project, &self.project.types)?;
+            } else {
+                tx.put_types(project, &default_types())?;
             }
+            let default_type = default_story_type(&*tx, project)?;
             for member in &self.project.members {
                 tx.put_member(project, member)?;
             }
@@ -496,7 +586,7 @@ impl MigrationPlan {
             // fails halfway leaves nothing behind.
             let mut heads = Vec::with_capacity(self.stories.len());
             for story in &self.stories {
-                let head = tx.append_raw_events(
+                let raw_head = tx.append_raw_events(
                     project,
                     story.story_no,
                     ExpectedSeq::Exact(EventSeq::ZERO),
@@ -515,6 +605,18 @@ impl MigrationPlan {
                     // is worse than one that admits it was told nothing.
                     &Provenance::unrecorded(),
                 )?;
+                let defaults = restore_default_events(&story.snapshot, &default_type, at);
+                let head = if defaults.is_empty() {
+                    raw_head
+                } else {
+                    tx.append_events(
+                        project,
+                        story.story_no,
+                        ExpectedSeq::Exact(raw_head),
+                        &defaults,
+                        &Provenance::unrecorded(),
+                    )?
+                };
                 heads.push(head);
             }
             for (story, head) in self.stories.iter().zip(heads) {

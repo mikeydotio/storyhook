@@ -148,7 +148,7 @@ fn tearing_a_project_down_without_the_deferral_fails_before_it_writes_anything()
     let events: i64 = conn
         .query_row("SELECT count(*) FROM events", [], |row| row.get(0))
         .unwrap();
-    assert_eq!((projects, events), (1, 1), "nothing may have been written");
+    assert_eq!((projects, events), (1, 3), "nothing may have been written");
     let _ = project;
 }
 
@@ -241,9 +241,9 @@ fn a_rebuild_reports_every_story_with_the_head_it_folded_to() {
 
     assert_eq!(rebuilt.len(), 2);
     assert_eq!(rebuilt[0].story_no, StoryNo::new(1));
-    assert_eq!(rebuilt[0].head_seq, EventSeq::new(2));
+    assert_eq!(rebuilt[0].head_seq, EventSeq::new(4));
     assert_eq!(rebuilt[0].snapshot.as_ref().unwrap().title, "Renamed");
-    assert_eq!(rebuilt[1].head_seq, EventSeq::new(1));
+    assert_eq!(rebuilt[1].head_seq, EventSeq::new(3));
 }
 
 #[test]
@@ -311,7 +311,7 @@ fn a_stale_head_seq_is_reported_as_its_own_divergence() {
         .find(|d| d.field == "head_seq")
         .expect("the head_seq divergence");
     assert_eq!(head.persisted, "0");
-    assert_eq!(head.rebuilt, "1");
+    assert_eq!(head.rebuilt, "3");
 }
 
 #[test]
@@ -339,8 +339,8 @@ fn a_row_with_no_events_behind_it_is_reported_as_extra() {
     raw(&store)
         .execute(
             "INSERT INTO stories (project_id, story_no, head_seq, title, state, superstate, \
-                 priority, priority_rank, deleted, archived, created_at, updated_at, snapshot) \
-             SELECT project_id, 2, 1, title, state, superstate, priority, priority_rank, deleted, \
+                 priority, priority_rank, story_type, deleted, archived, created_at, updated_at, snapshot) \
+             SELECT project_id, 2, 1, title, state, superstate, priority, priority_rank, story_type, deleted, \
                  archived, created_at, updated_at, snapshot FROM stories",
             [],
         )
@@ -538,7 +538,7 @@ fn an_unknown_event_kind_is_retained_reported_and_not_a_divergence() {
     raw(&store)
         .execute(
             "INSERT INTO events (project_id, story_no, seq, global_seq, kind, at, payload) \
-             SELECT ?1, ?2, 2, 99, ?3, '2026-01-01T00:05:00Z', ?4",
+             SELECT ?1, ?2, 4, 99, ?3, '2026-01-01T00:05:00Z', ?4",
             rusqlite::params![
                 store
                     .read(|tx| tx.project_by_slug("alpha"))
@@ -554,11 +554,11 @@ fn an_unknown_event_kind_is_retained_reported_and_not_a_divergence() {
         .unwrap();
 
     let events = store.read(|tx| tx.events_for(project, one)).unwrap();
-    assert_eq!(events.len(), 2, "the unknown event must still be readable");
-    assert_eq!(events[1].kind, UNDECODABLE_KIND);
+    assert_eq!(events.len(), 4, "the unknown event must still be readable");
+    assert_eq!(events[3].kind, UNDECODABLE_KIND);
     assert!(
         matches!(
-            &events[1].payload,
+            &events[3].payload,
             storyhook::store::StoredPayload::Unknown { json, .. } if json.contains("mars")
         ),
         "the payload must be retained verbatim"
@@ -568,7 +568,7 @@ fn an_unknown_event_kind_is_retained_reported_and_not_a_divergence() {
 
     assert_eq!(diff.unknown_events.len(), 1);
     assert_eq!(diff.unknown_events[0].kind, UNDECODABLE_KIND);
-    assert_eq!(diff.unknown_events[0].seq, EventSeq::new(2));
+    assert_eq!(diff.unknown_events[0].seq, EventSeq::new(4));
     // Reported, but not damage: retaining an event this binary does not
     // understand is correct behaviour. `head_seq` and `head_global_seq`
     // (SH-336) both moved, because the unknown event still counts as
@@ -639,7 +639,7 @@ fn repair_never_writes_a_row_from_an_incomplete_fold() {
         let (_dir, store) = new_store();
         let project = seed_project(&store, "alpha", "SH");
         let one = create_story(&store, project, "First", "2026-01-01T00:00:00Z");
-        inject_raw(&store, "alpha", one, 2, 99, kind, &payload);
+        inject_raw(&store, "alpha", one, 4, 99, kind, &payload);
 
         // What a *newer* storyhook left behind: a row folded from the whole
         // history, including the event this build cannot read.
@@ -704,12 +704,13 @@ fn a_stale_head_is_still_damage_on_a_story_this_build_cannot_fold_whole() {
         &store,
         "alpha",
         one,
-        2,
+        4,
         99,
         UNDECODABLE_KIND,
         &format!("{{\"kind\":\"{UNDECODABLE_KIND}\",\"at\":\"2026-01-01T00:05:00Z\"}}"),
     );
-    // The row was never re-folded, so it still names seq 1 as its head.
+    // The row was never re-folded, so it still names the three required
+    // creation events as its head.
     raw(&store)
         .execute(
             "UPDATE stories SET title = 'folded by a newer storyhook' WHERE story_no = ?1",
@@ -752,7 +753,7 @@ fn a_row_a_newer_storyhook_folded_whole_is_not_damage() {
         &store,
         "alpha",
         one,
-        2,
+        4,
         99,
         UNDECODABLE_KIND,
         &format!("{{\"kind\":\"{UNDECODABLE_KIND}\",\"at\":\"2026-01-01T00:05:00Z\"}}"),
@@ -762,7 +763,7 @@ fn a_row_a_newer_storyhook_folded_whole_is_not_damage() {
     raw(&store)
         .execute(
             "UPDATE stories SET title = 'folded by a newer storyhook', \
-             head_seq = 2, head_global_seq = 99 WHERE story_no = ?1",
+             head_seq = 4, head_global_seq = 99 WHERE story_no = ?1",
             rusqlite::params![one.get()],
         )
         .unwrap();
@@ -830,7 +831,7 @@ fn repair_rewrites_damaged_rows_and_leaves_the_project_clean() {
     let row = store.read(|tx| tx.story(project, one)).unwrap().unwrap();
     assert_eq!(row.title, "First");
     assert_eq!(row.labels, vec!["keep"]);
-    assert_eq!(row.head_seq, EventSeq::new(3));
+    assert_eq!(row.head_seq, EventSeq::new(5));
     let edges = store.read(|tx| tx.relations_to(project, two)).unwrap();
     assert_eq!(edges.len(), 1, "the mirror was restored too");
 }

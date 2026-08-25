@@ -37,7 +37,7 @@ fn set_and_show_priority() {
 }
 
 #[test]
-fn priority_defaults_to_none() {
+fn priority_defaults_to_low() {
     let dir = tempdir().unwrap();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
@@ -52,7 +52,7 @@ fn priority_defaults_to_none() {
         .args(["show", "SH-1"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("priority: none"));
+        .stdout(predicate::str::contains("priority: low"));
 }
 
 #[test]

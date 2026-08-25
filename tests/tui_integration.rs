@@ -261,7 +261,7 @@ fn create_and_edit_story_flow() {
     assert_eq!(store.story_count(), 1);
     let story = store.find_story("CE-1").unwrap();
     assert_eq!(story.title, "Initial title");
-    assert_eq!(story.priority, Priority::None);
+    assert_eq!(story.priority, Priority::Low);
     assert!(story.assignee.is_none());
     assert!(story.comments.is_empty());
 
@@ -671,7 +671,7 @@ fn data_refresh_picks_up_external_changes() {
     let id = create_story(&fixture, "Original");
 
     let store = load(&fixture).unwrap();
-    assert_eq!(store.find_story(&id).unwrap().priority, Priority::None);
+    assert_eq!(store.find_story(&id).unwrap().priority, Priority::Low);
 
     // External write (simulating CLI changing priority)
     set_priority(&fixture, &id, "critical");

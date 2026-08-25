@@ -25,12 +25,12 @@
 -- reads as "a story of type story" everywhere it appears. `default`, the
 -- obvious alternative, was rejected for a sharper reason than awkwardness: it
 -- collides with the literal word `add_type` already refuses as a reserved
--- slug (`none` and `default` are how the CLI *unsets* a story's type), and
--- with the fallback text an untyped story's `type:` line already renders
+-- slug (`none` remains the legacy untyped diagnostic sentinel and `default`
+-- is configuration vocabulary), and with the historical fallback text an
+-- untyped story's `type:` line already renders
 -- (`output.rs`'s `"Default"`) — a type actually named `default` would be
 -- visually indistinguishable from having no type at all, exactly the
--- ambiguity SH-157 set out to remove by making the web picker say `none`
--- instead. `normal` has neither problem.
+-- ambiguity SH-157 set out to remove. `normal` has neither problem.
 --
 -- ---------------------------------------------------------------------------
 -- Retiring `task`

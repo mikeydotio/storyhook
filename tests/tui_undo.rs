@@ -390,10 +390,11 @@ fn undo_set_priority_restores() {
 
     let id = create_story(&fixture, "Priority test");
 
-    // Verify initial priority is None
+    // Verify the required creation default.
     let store = load(&fixture);
     let story = store.find_story("SP-1").unwrap();
-    assert_eq!(story.priority, Priority::None);
+    assert_eq!(story.priority, Priority::Low);
+    assert!(story.priority_assessed);
 
     // Snapshot before mutation
     let events_before = load_events(&fixture, &id);
@@ -420,36 +421,26 @@ fn undo_set_priority_restores() {
     };
     perform_undo(&fixture, &entry);
 
-    // Verify priority restored to None
+    // Verify priority restored to the explicit creation event.
     let store = load(&fixture);
-    assert_eq!(store.find_story("SP-1").unwrap().priority, Priority::None);
+    assert_eq!(store.find_story("SP-1").unwrap().priority, Priority::Low);
 }
 
-// ─── SH-359: undo of a first-ever prioritize ───────────────────────
+// ─── SH-449: undo of a first post-create prioritize ────────────────
 
-/// Undoing a story's **first** `story prioritize` must return it to *nobody has
-/// assessed this*, not leave it claiming somebody parked it.
-///
-/// This is the case a gate keyed on `priority` alone cannot see, and it is why
-/// `compensate` also compares `priority_assessed`. Both sides of that gate read
-/// `Priority::None` here — the story was unassessed before the prioritize, and
-/// the undo targets that same unassessed state — so a priority-only gate emits
-/// nothing at all, and a gate that emits `StoryPrioritySet { none }` writes a
-/// decision nobody made. Only `StoryPriorityCleared` restores the target.
-///
-/// Mutation that must turn this red: revert `compensate`'s branch to the
-/// unconditional `StoryPrioritySet` push.
+/// A current story begins with a real `StoryPrioritySet(low)` event. Undoing
+/// its first later reprioritization therefore compensates with another set to
+/// low; the legacy clear event remains only for histories that began without
+/// a priority event.
 #[test]
-fn undoing_a_first_ever_prioritize_returns_the_story_to_unassessed() {
+fn undoing_a_first_post_create_prioritize_returns_to_low() {
     let (fixture, _root) = init_project("SH");
     let id = create_story(&fixture, "Nobody chose");
 
     let before = load_events(&fixture, &id);
     let story = load(&fixture).find_story(&id).expect("the story").clone();
-    assert!(
-        !story.priority_assessed,
-        "created with no --priority, so nothing has been assessed yet"
-    );
+    assert_eq!(story.priority, Priority::Low);
+    assert!(story.priority_assessed);
 
     run(
         &fixture,
@@ -475,19 +466,24 @@ fn undoing_a_first_ever_prioritize_returns_the_story_to_unassessed() {
     let restored = load(&fixture).find_story(&id).expect("the story").clone();
     assert_eq!(
         restored.priority,
-        Priority::None,
-        "the level goes back to none"
+        Priority::Low,
+        "the level goes back to the creation default"
     );
     assert!(
-        !restored.priority_assessed,
-        "and so does the *assessment* — otherwise undo has invented a decision \
-         to park this story that nobody ever made"
+        restored.priority_assessed,
+        "the initial low priority was a real event"
     );
 
     let events = load_events(&fixture, &id);
     assert!(
-        matches!(events.last(), Some(StoryEvent::StoryPriorityCleared { .. })),
-        "the compensating event is a clear, not a set: {:?}",
+        matches!(
+            events.last(),
+            Some(StoryEvent::StoryPrioritySet {
+                priority: Priority::Low,
+                ..
+            })
+        ),
+        "the compensating event restores low: {:?}",
         events.last()
     );
 }

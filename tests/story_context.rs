@@ -113,7 +113,7 @@ fn context_shows_type_distribution() {
         .assert()
         .success();
     story(dir.path())
-        .args(["new", "Untyped task"])
+        .args(["new", "Default-typed task"])
         .assert()
         .success();
 
@@ -123,8 +123,8 @@ fn context_shows_type_distribution() {
         .success()
         .stdout(predicate::str::contains("## Type Distribution"))
         .stdout(predicate::str::contains("- bug: 1"))
-        .stdout(predicate::str::contains("- normal: 1"))
-        .stdout(predicate::str::contains("- Default: 1"));
+        .stdout(predicate::str::contains("- normal: 2"))
+        .stdout(predicate::str::contains("- Default:").not());
 }
 
 #[test]
@@ -139,7 +139,7 @@ fn context_json_includes_type_distribution() {
         .assert()
         .success();
     story(dir.path())
-        .args(["new", "Untyped task"])
+        .args(["new", "Default-typed task"])
         .assert()
         .success();
 
@@ -149,7 +149,8 @@ fn context_json_includes_type_distribution() {
         .success()
         .stdout(predicate::str::contains("\"by_type\""))
         .stdout(predicate::str::contains("\"bug\": 1"))
-        .stdout(predicate::str::contains("\"Default\": 1"));
+        .stdout(predicate::str::contains("\"normal\": 1"))
+        .stdout(predicate::str::contains("\"Default\"").not());
 }
 
 /// Runs `story <args>` against `project` and returns raw stdout, asserting

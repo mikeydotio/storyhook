@@ -182,6 +182,23 @@ macro_rules! store_conformance_suite {
                 }
             }
 
+            /// The explicit event history every current-schema story starts
+            /// with. `created` stays available to the event-log tests that
+            /// intentionally exercise one raw event at a time.
+            fn created_story_events(title: &str, at: &str) -> [StoryEvent; 3] {
+                [
+                    created(title, at),
+                    StoryEvent::StoryPrioritySet {
+                        at: at.to_string(),
+                        priority: Priority::Low,
+                    },
+                    StoryEvent::StoryTypeSet {
+                        at: at.to_string(),
+                        story_type: "feature".into(),
+                    },
+                ]
+            }
+
             fn new_story(store: &Subject, project: ProjectId, title: &str) -> StoryNo {
                 let story = store
                     .write(|tx| tx.allocate_story_no(project))
@@ -191,7 +208,7 @@ macro_rules! store_conformance_suite {
                     project,
                     story,
                     ExpectedSeq::Exact(EventSeq::ZERO),
-                    &[created(title, "2026-01-01T00:00:00Z")],
+                    &created_story_events(title, "2026-01-01T00:00:00Z"),
                 )
                 .expect("creating a story");
                 story
@@ -649,7 +666,7 @@ macro_rules! store_conformance_suite {
                     .write(|tx| tx.purge_story(project, doomed))
                     .expect("purging the story");
 
-                assert_eq!(removed.events, 1, "the whole log goes: {removed:?}");
+                assert_eq!(removed.events, 3, "the whole log goes: {removed:?}");
                 assert!(
                     f.store().read(|tx| tx.story(project, doomed)).unwrap().is_none(),
                     "the read-model row is gone"
@@ -660,7 +677,7 @@ macro_rules! store_conformance_suite {
                 );
                 assert_eq!(
                     f.store().read(|tx| tx.event_count(project)).unwrap(),
-                    before - 1,
+                    before - 3,
                     "and it came out of the project's total"
                 );
             }
@@ -1601,7 +1618,7 @@ macro_rules! store_conformance_suite {
                     .into_iter()
                     .map(|e| e.seq.get())
                     .collect();
-                assert_eq!(seqs, [1, 2, 3]);
+                assert_eq!(seqs, [1, 2, 3, 4, 5]);
             }
 
             #[test]
@@ -1644,10 +1661,10 @@ macro_rules! store_conformance_suite {
                     .store()
                     .write(|tx| tx.append_events(project, story, ExpectedSeq::Any, &[], &$crate::domain::provenance::Provenance::unrecorded()))
                     .unwrap();
-                assert_eq!(head, EventSeq::new(1));
+                assert_eq!(head, EventSeq::new(3));
                 assert_eq!(
                     f.store().read(|tx| tx.events_for(project, story)).unwrap().len(),
-                    1
+                    3
                 );
             }
 
@@ -1681,7 +1698,7 @@ macro_rules! store_conformance_suite {
                 .unwrap();
                 assert_eq!(
                     f.store().read(|tx| tx.head_seq(project, story)).unwrap(),
-                    EventSeq::new(2)
+                    EventSeq::new(4)
                 );
             }
 
@@ -1721,7 +1738,7 @@ macro_rules! store_conformance_suite {
                 )
                 .unwrap();
                 let events = f.store().read(|tx| tx.events_for(project, story)).unwrap();
-                assert_eq!(events[1].known(), Some(&original));
+                assert_eq!(events[3].known(), Some(&original));
             }
 
             #[test]
@@ -1774,7 +1791,7 @@ macro_rules! store_conformance_suite {
                 let stored = f.store().read(|tx| tx.events_for(project, story)).unwrap();
                 let (known, unknown) = partition_known(story, &stored);
                 assert!(unknown.is_empty());
-                assert_eq!(&known[1..], &corpus[..]);
+                assert_eq!(&known[3..], &corpus[..]);
             }
 
             #[test]
@@ -1802,8 +1819,8 @@ macro_rules! store_conformance_suite {
                 )
                 .unwrap();
                 let stored = f.store().read(|tx| tx.events_for(project, one)).unwrap();
-                assert_eq!(stored[1].known(), Some(&added));
-                assert_eq!(stored[2].known(), Some(&removed));
+                assert_eq!(stored[3].known(), Some(&added));
+                assert_eq!(stored[4].known(), Some(&removed));
             }
 
             #[test]
@@ -1857,7 +1874,7 @@ macro_rules! store_conformance_suite {
                     .unwrap();
                 assert_eq!(
                     feed.iter().map(|e| e.story_no.get()).collect::<Vec<_>>(),
-                    [1, 2]
+                    [1, 1, 1, 2, 2, 2]
                 );
             }
 
@@ -1885,7 +1902,7 @@ macro_rules! store_conformance_suite {
                     .into_iter()
                     .map(|e| e.event.global_seq.get())
                     .collect();
-                assert_eq!(positions, [1, 2, 3]);
+                assert_eq!(positions, [1, 2, 3, 4, 5, 6, 7]);
             }
 
             #[test]
@@ -1897,11 +1914,11 @@ macro_rules! store_conformance_suite {
                 new_story(f.store(), project, "Third");
                 let feed = f
                     .store()
-                    .read(|tx| tx.events_since(project, GlobalSeq::new(1), 100))
+                    .read(|tx| tx.events_since(project, GlobalSeq::new(3), 100))
                     .unwrap();
                 assert_eq!(
                     feed.iter().map(|e| e.story_no.get()).collect::<Vec<_>>(),
-                    [2, 3]
+                    [2, 2, 2, 3, 3, 3]
                 );
             }
 
@@ -1943,7 +1960,7 @@ macro_rules! store_conformance_suite {
                 new_story(f.store(), project, "Second");
                 assert_eq!(
                     f.store().read(|tx| tx.max_global_seq(project)).unwrap(),
-                    GlobalSeq::new(2)
+                    GlobalSeq::new(6)
                 );
             }
 
@@ -2013,7 +2030,7 @@ macro_rules! store_conformance_suite {
                 match error {
                     StoreError::Conflict { expected, actual } => {
                         assert_eq!(expected, ExpectedSeq::Exact(EventSeq::new(1)));
-                        assert_eq!(actual, EventSeq::new(2));
+                        assert_eq!(actual, EventSeq::new(4));
                     }
                     other => panic!("expected a Conflict, got {other}"),
                 }
@@ -2028,14 +2045,14 @@ macro_rules! store_conformance_suite {
                     f.store(),
                     project,
                     story,
-                    ExpectedSeq::Exact(EventSeq::new(1)),
+                    ExpectedSeq::Exact(EventSeq::new(3)),
                     &[StoryEvent::StoryTitleSet {
                         at: "2026-01-01T00:01:00Z".into(),
                         title: "Renamed".into(),
                     }],
                 )
                 .unwrap();
-                assert_eq!(head, EventSeq::new(2));
+                assert_eq!(head, EventSeq::new(4));
             }
 
             #[test]
@@ -2058,7 +2075,7 @@ macro_rules! store_conformance_suite {
                 }
                 assert_eq!(
                     f.store().read(|tx| tx.head_seq(project, story)).unwrap(),
-                    EventSeq::new(4)
+                    EventSeq::new(6)
                 );
             }
 
@@ -2082,7 +2099,7 @@ macro_rules! store_conformance_suite {
 
                 assert_eq!(
                     f.store().read(|tx| tx.events_for(project, story)).unwrap().len(),
-                    1
+                    3
                 );
                 let after = f.store().read(|tx| tx.project(project)).unwrap().unwrap();
                 assert_eq!(
@@ -2171,7 +2188,7 @@ macro_rules! store_conformance_suite {
                         f.store(),
                         project,
                         two,
-                        ExpectedSeq::Exact(EventSeq::new(1)),
+                        ExpectedSeq::Exact(EventSeq::new(3)),
                         &[StoryEvent::StoryTitleSet {
                             at: "2026-01-01T00:02:00Z".into(),
                             title: "Also renamed".into(),
@@ -2199,7 +2216,7 @@ macro_rules! store_conformance_suite {
                 assert_eq!(row.title, "First");
                 assert_eq!(row.state, "todo");
                 assert_eq!(row.superstate, SuperState::Open);
-                assert_eq!(row.head_seq, EventSeq::new(1));
+                assert_eq!(row.head_seq, EventSeq::new(3));
             }
 
             #[test]
@@ -2481,7 +2498,7 @@ macro_rules! store_conformance_suite {
                     .read(|tx| tx.story(project, story))
                     .unwrap()
                     .unwrap();
-                assert_eq!(row.head_seq, EventSeq::new(3));
+                assert_eq!(row.head_seq, EventSeq::new(5));
                 assert_eq!(
                     row.head_seq,
                     f.store().read(|tx| tx.head_seq(project, story)).unwrap()
@@ -2517,11 +2534,11 @@ macro_rules! store_conformance_suite {
                             project,
                             story,
                             ExpectedSeq::Exact(EventSeq::ZERO),
-                            &[created("First", "2026-01-01T00:00:00Z")],
+                            &created_story_events("First", "2026-01-01T00:00:00Z"),
                             &$crate::domain::provenance::Provenance::unrecorded(),
                         )?;
                         assert_eq!(tx.head_seq(project, story)?, head);
-                        assert_eq!(tx.events_for(project, story)?.len(), 1);
+                        assert_eq!(tx.events_for(project, story)?.len(), 3);
 
                         let state_map = tx.state_map(project)?;
                         let stored = tx.events_for(project, story)?;
@@ -2547,7 +2564,7 @@ macro_rules! store_conformance_suite {
                         project,
                         story,
                         ExpectedSeq::Exact(EventSeq::ZERO),
-                        &[created("First", "2026-01-01T00:00:00Z")],
+                        &created_story_events("First", "2026-01-01T00:00:00Z"),
                         &$crate::domain::provenance::Provenance::unrecorded(),
                     )?;
                     let state_map = tx.state_map(project)?;
@@ -2622,7 +2639,7 @@ macro_rules! store_conformance_suite {
                         Some("bug"),
                         &["blue"],
                     ),
-                    ("Echo", "done", Priority::None, None, None, &[]),
+                    ("Echo", "done", Priority::Low, None, None, &[]),
                     (
                         "Foxtrot",
                         "done",
@@ -3708,9 +3725,9 @@ macro_rules! store_conformance_suite {
                     .unwrap();
 
                 let events = f.store().read(|tx| tx.events_for(project, story)).unwrap();
-                assert_eq!(events.len(), 2);
-                assert_eq!(events[1].kind, "StoryTeleported");
-                assert_eq!(events[1].at, "2026-01-01T00:05:00Z");
+                assert_eq!(events.len(), 4);
+                assert_eq!(events[3].kind, "StoryTeleported");
+                assert_eq!(events[3].at, "2026-01-01T00:05:00Z");
             }
 
             #[test]
@@ -3731,7 +3748,7 @@ macro_rules! store_conformance_suite {
                     })
                     .unwrap();
                 let events = f.store().read(|tx| tx.events_for(project, story)).unwrap();
-                match &events[1].payload {
+                match &events[3].payload {
                     StoredPayload::Unknown { kind, json } => {
                         assert_eq!(kind, "StoryTeleported");
                         assert_eq!(*json, teleported().payload);
@@ -3759,11 +3776,11 @@ macro_rules! store_conformance_suite {
                     .unwrap();
                 let events = f.store().read(|tx| tx.events_for(project, story)).unwrap();
                 let (known, unknown) = partition_known(story, &events);
-                assert_eq!(known.len(), 1);
+                assert_eq!(known.len(), 3);
                 assert_eq!(unknown.len(), 1);
                 assert_eq!(unknown[0].kind, "StoryTeleported");
                 assert_eq!(unknown[0].story_no, story);
-                assert_eq!(unknown[0].seq, EventSeq::new(2));
+                assert_eq!(unknown[0].seq, EventSeq::new(4));
             }
 
             #[test]
@@ -3819,11 +3836,11 @@ macro_rules! store_conformance_suite {
                     .unwrap();
                 assert_eq!(
                     f.store().read(|tx| tx.head_seq(project, story)).unwrap(),
-                    EventSeq::new(2)
+                    EventSeq::new(4)
                 );
                 assert_eq!(
                     f.store().read(|tx| tx.max_global_seq(project)).unwrap(),
-                    GlobalSeq::new(2)
+                    GlobalSeq::new(4)
                 );
             }
 
@@ -3988,8 +4005,8 @@ macro_rules! store_conformance_suite {
                     .store()
                     .read(|tx| tx.events_for(beta, StoryNo::new(1)))
                     .unwrap();
-                assert_eq!(alpha_events.len(), 1);
-                assert_eq!(beta_events.len(), 1);
+                assert_eq!(alpha_events.len(), 3);
+                assert_eq!(beta_events.len(), 3);
                 assert!(matches!(
                     alpha_events[0].known(),
                     Some(StoryEvent::StoryCreated { title, .. }) if title == "alpha story 1"
@@ -4019,13 +4036,13 @@ macro_rules! store_conformance_suite {
                     f.store()
                         .read(|tx| tx.head_seq(alpha, StoryNo::new(1)))
                         .unwrap(),
-                    EventSeq::new(2)
+                    EventSeq::new(4)
                 );
                 assert_eq!(
                     f.store()
                         .read(|tx| tx.head_seq(beta, StoryNo::new(1)))
                         .unwrap(),
-                    EventSeq::new(1)
+                    EventSeq::new(3)
                 );
             }
 
@@ -4037,7 +4054,7 @@ macro_rules! store_conformance_suite {
                     .store()
                     .read(|tx| tx.events_since(alpha, GlobalSeq::ZERO, 100))
                     .unwrap();
-                assert_eq!(alpha_feed.len(), 2);
+                assert_eq!(alpha_feed.len(), 6);
                 // Each project has its own positions, starting at 1 — a shared
                 // counter would leak one project's write rate to the other.
                 assert_eq!(
@@ -4045,7 +4062,7 @@ macro_rules! store_conformance_suite {
                         .iter()
                         .map(|e| e.event.global_seq.get())
                         .collect::<Vec<_>>(),
-                    [1, 2]
+                    [1, 2, 3, 4, 5, 6]
                 );
                 let beta_feed = f
                     .store()
@@ -4056,7 +4073,7 @@ macro_rules! store_conformance_suite {
                         .iter()
                         .map(|e| e.event.global_seq.get())
                         .collect::<Vec<_>>(),
-                    [1, 2]
+                    [1, 2, 3, 4, 5, 6]
                 );
             }
 
@@ -4077,11 +4094,11 @@ macro_rules! store_conformance_suite {
                 .unwrap();
                 assert_eq!(
                     f.store().read(|tx| tx.max_global_seq(alpha)).unwrap(),
-                    GlobalSeq::new(3)
+                    GlobalSeq::new(7)
                 );
                 assert_eq!(
                     f.store().read(|tx| tx.max_global_seq(beta)).unwrap(),
-                    GlobalSeq::new(2)
+                    GlobalSeq::new(6)
                 );
             }
 
@@ -4317,11 +4334,11 @@ macro_rules! store_conformance_suite {
                 let f = f.reopen();
                 assert_eq!(
                     f.store().read(|tx| tx.events_for(project, story)).unwrap().len(),
-                    1
+                    3
                 );
                 assert_eq!(
                     f.store().read(|tx| tx.head_seq(project, story)).unwrap(),
-                    EventSeq::new(1)
+                    EventSeq::new(3)
                 );
             }
 
@@ -4577,7 +4594,10 @@ macro_rules! store_conformance_suite {
                             project,
                             story,
                             ExpectedSeq::Exact(EventSeq::ZERO),
-                            &[created("written inside the copied transaction", "2026-01-01T00:00:00Z")],
+                            &created_story_events(
+                                "written inside the copied transaction",
+                                "2026-01-01T00:00:00Z",
+                            ),
                             &$crate::domain::provenance::Provenance::unrecorded(),
                         )?;
                         let prefix = tx.project(project)?.expect("the project exists").prefix;

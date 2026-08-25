@@ -477,7 +477,7 @@ const NEW_FIELDS: &[FieldSpec] = &[
         name: "story_type",
         kind: FieldKind::Str,
         required: false,
-        description: "Story type slug.",
+        description: "Story type slug. Defaults to the project's first configured type.",
     },
     FieldSpec {
         name: "description",
@@ -489,7 +489,7 @@ const NEW_FIELDS: &[FieldSpec] = &[
         name: "priority",
         kind: FieldKind::Str,
         required: false,
-        description: "Priority level: critical, high, medium, low, or none.",
+        description: "Priority level: critical, high, medium, or low. Defaults to low.",
     },
     FieldSpec {
         name: "assignee",
@@ -587,7 +587,7 @@ const PRIORITIZE_FIELDS: &[FieldSpec] = &[
         name: "priority",
         kind: FieldKind::Str,
         required: true,
-        description: "Priority level: critical, high, medium, low, or none.",
+        description: "Priority level: critical, high, medium, or low.",
     },
 ];
 

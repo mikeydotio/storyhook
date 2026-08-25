@@ -392,6 +392,11 @@ source: tests/golden_cli.rs
         },
         {
           "at": "[timestamp]",
+          "kind": "StoryPrioritySet",
+          "priority": "low"
+        },
+        {
+          "at": "[timestamp]",
           "kind": "StoryTypeSet",
           "story_type": "chore"
         }

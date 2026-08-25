@@ -355,8 +355,9 @@ impl<'ctx, S: Store> ConfigService<'ctx, S> {
             validate_type_glyph(glyph)?;
         }
         Ok(self.ctx.store().write(|tx| {
-            // `none` and `default` are how the CLI *unsets* a story's type, so
-            // a type by either name could be set and never cleared.
+            // `none` is the legacy untyped diagnostic sentinel and `default`
+            // is reserved configuration vocabulary, so either real slug
+            // would make a read ambiguous.
             for reserved in ["none", "default"] {
                 if slug.eq_ignore_ascii_case(reserved) {
                     return Err(AppError::Validation(format!(

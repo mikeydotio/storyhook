@@ -231,6 +231,16 @@ pub const MIGRATIONS: &[Migration] = &[
         // `events_reject_delete` warning does not apply.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 19,
+        name: "required_story_metadata",
+        sql: include_str!("schema/0019_required_story_metadata.sql"),
+        // Repairs legacy rows with real events, then rebuilds `stories` so
+        // type and the four assignable priorities are enforced by SQLite.
+        // Child rows survive because enforcement is disabled for the rebuild;
+        // `apply` checks every foreign key again before committing.
+        foreign_keys_off: true,
+    },
 ];
 
 /// The newest schema version this binary understands.
