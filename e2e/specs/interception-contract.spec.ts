@@ -190,14 +190,15 @@ test.describe("SH-347 interception-contract probes", () => {
    */
   const PROBE_D_POLL_BOUND_MS = 12_000;
 
-  async function pollForText(
+  async function pollForAttribute(
     locator: import("@playwright/test").Locator,
+    attribute: string,
     expectedText: string,
     boundMs: number,
   ): Promise<{ seen: boolean; elapsedMs: number }> {
     const start = Date.now();
     while (Date.now() - start < boundMs) {
-      const text = await locator.textContent().catch(() => null);
+      const text = await locator.getAttribute(attribute).catch(() => null);
       if (text === expectedText) {
         return { seen: true, elapsedMs: Date.now() - start };
       }
@@ -226,9 +227,10 @@ test.describe("SH-347 interception-contract probes", () => {
     const beforeRefuseElapsedMs = Date.now() - beforeNav;
 
     await data.refuse();
-    const outcome = await pollForText(
-      page.locator("#drafts-list"),
-      "Couldn't load this project's drafts. Retrying…",
+    const outcome = await pollForAttribute(
+      page.locator("#new-story-btn"),
+      "title",
+      "Couldn't load this project's states, types and labels. Retrying…",
       PROBE_D_POLL_BOUND_MS,
     );
 
@@ -269,9 +271,10 @@ test.describe("SH-347 interception-contract probes", () => {
     const beforeRefuseElapsedMs = Date.now() - beforeNav;
 
     await alphaData.refuse();
-    const outcome = await pollForText(
-      page.locator("#drafts-list"),
-      "Couldn't load this project's drafts. Retrying…",
+    const outcome = await pollForAttribute(
+      page.locator("#new-story-btn"),
+      "title",
+      "Couldn't load this project's states, types and labels. Retrying…",
       PROBE_D_POLL_BOUND_MS,
     );
 

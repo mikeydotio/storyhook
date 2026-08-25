@@ -977,23 +977,19 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .dispatch-auto-help { font-size: 0.75rem; line-height: 1.45; color: var(--fg-muted); }
 
 /* ---- Drafts popover ---- */
-/* The project this popover is about (SH-292). One line, elided -- the same
-   recipe `.projsel-label` and `.drafts-row-title` use, and for the same
-   reason: a project name is unbounded user input and `.modal` is
-   `min(30rem, 92vw)`. Without `nowrap` a long name wraps to two or three
-   lines and stops reading as a subject line at all. */
-.drafts-subject { padding: 0 1.25rem 0.25rem; font-size: 0.8125rem; color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Same `vh`-then-`dvh` fallback pair as `.app` and `.modal`. */
 .drafts-list { list-style: none; display: flex; flex-direction: column; gap: 0.25rem; max-height: 60vh; max-height: 60dvh; overflow-y: auto; }
 .drafts-list-empty { font-size: 0.8125rem; color: var(--fg-muted); padding: 0.5rem 0; }
 .drafts-row {
-  display: flex; align-items: baseline; gap: 0.5rem; width: 100%; text-align: left;
+  display: flex; flex-direction: column; gap: 0.1875rem; width: 100%; text-align: left;
   padding: 0.5rem 0.625rem; border: 1px solid transparent; border-radius: var(--radius-sm);
   background: transparent; font: inherit; color: var(--fg); cursor: pointer;
 }
 .drafts-row:hover { background: var(--bg-sunken); border-color: var(--border); }
+.drafts-row-main { display: flex; align-items: baseline; gap: 0.5rem; min-width: 0; }
 .drafts-row-id { font-family: var(--mono); font-size: 0.75rem; color: var(--fg-muted); flex-shrink: 0; }
 .drafts-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drafts-row-project { padding-left: 0; font-size: 0.75rem; color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---- Story context menu (SH-197) ----
    `position: fixed`, not `.fdd-panel`'s `absolute` -- this is anchored to
@@ -1487,7 +1483,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 <div class="backdrop" id="drafts-backdrop" data-overlay="drafts-modal" hidden></div>
 <div class="modal" id="drafts-modal" tabindex="-1" aria-hidden="true">
   <div class="modal-header">Drafts</div>
-  <div class="drafts-subject" id="drafts-subject" hidden></div>
   <div class="modal-body">
     <ul class="drafts-list" id="drafts-list"></ul>
   </div>
@@ -3157,6 +3152,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (state.reposReadiness === next) return;
     state.reposReadiness = next;
     renderProjectSelector();
+    updateDraftsButton();
     if (state.screen === "home") renderHome();
     if (state.screen === "settings") renderSettings();
     updateSubtitle();
@@ -5709,60 +5705,33 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     syncCreateAvailability();
   }
 
-  /** SH-175: the topbar's Drafts button label — "No Drafts" or "N Drafts",
-   * per this project's own draft count. Also refreshes the popover's list
-   * if it happens to be open, so a draft published or discarded from
-   * elsewhere (another tab, another client) doesn't leave a stale row
-   * behind the next poll tick already updated the button for.
-   *
-   * Holds one invariant since SH-284: **the Drafts surface exists exactly
-   * while a project's board is on screen, and never claims a count it does
-   * not have.** Both halves were broken, and both are fixed here rather than
-   * at the call sites, because this function owns what this button renders:
-   *
-   * - `renderScreen()` gates the button's *visibility* on `isRepo` (SH-175
-   *   added it to the topbar and never wired it in), and calls this for the
-   *   `state.data = null` edge — `renderAll()`, the only previous caller,
-   *   early-returns there, so nothing repainted the label until one `/data`
-   *   round trip later and it kept the *previous* project's count.
-   * - The popover is dismissed where its owning button goes away, which
-   *   `renderScreen()` hiding the button does not do by itself: an open
-   *   modal stays open behind it. The path that needs this is asynchronous
-   *   and has no gesture to hang it off — `fetchReposOnce()` calls
-   *   `goHome()` when the open project is deleted by another client — so it
-   *   belongs on the state change, not on a click handler.
-   *
-   * A board-to-board switch *repaints* instead: `state.data` is null by the
-   * time this runs, so the open list is cleared to its loading line and then
-   * filled with the new project's drafts. Closing there would be the odd one
-   * out — rows appearing under an open popover is already what every `/data`
-   * does (see the paragraph above).
-   *
-   * Deliberately **not** disabled during that window, unlike its neighbour
-   * `#new-story-btn` (`syncCreateAvailability()`, SH-265). That button is
-   * disabled because `openCreateModal()` builds its fields once from `meta()`
-   * and never repopulates, so a click inside the window reaches a
-   * permanently-wrong modal; this popover re-renders on every arrival, so
-   * disabling it would remedy nothing and cost the tab order. The asymmetry
-   * is a council verdict, not an oversight: `story show SH-284` carries it in
-   * full, including the dissent. (The council's own working directory was
-   * untracked and worktree-local; the story comment is the copy that survives
-   * a clone — SH-363 made that the rule.)
-   *
-   * The label stays the neutral "Drafts" when that window turns out to be
-   * permanent (SH-291) — the failure is named where the user asked for these
-   * drafts, in the popover, and in `#new-story-btn`'s tooltip beside it, not
-   * in a topbar that has to hold it forever. Two reasons, both already decided
-   * elsewhere in this file: "Drafts" claims nothing, which is the exact truth
-   * about a count that is now unknown rather than merely late, and naming the
-   * failure here would put it a second time next to a connection indicator
-   * whose whole job is to say the store is not answering (SH-265's tooltip
-   * takes the same division of labour). */
+  /** Every draft the global catalog answered with, preserving catalog order
+   * and each project's existing story order. The owner travels beside the
+   * view rather than being copied into it, matching the server's additive
+   * `/api/repos[].drafts` shape (SH-442). */
+  function catalogDrafts() {
+    var result = [];
+    state.repos.forEach(function(project) {
+      (project.drafts || []).forEach(function(draft) {
+        result.push({ project: project, draft: draft });
+      });
+    });
+    return result;
+  }
+
+  function catalogHasDraftErrors() {
+    return state.repos.some(function(project) { return !!project.error; });
+  }
+
+  /** The topbar's global Drafts count (SH-442). `GET /api/repos` is the
+   * source on every screen, so navigation no longer hides or re-scopes the
+   * control. A count is claimed only when the whole catalog answered and
+   * every project was readable; otherwise the neutral "Drafts" label leaves
+   * the unknown part honest and the open popover names the failure. */
   function updateDraftsButton() {
-    if (state.screen !== "repo") { closeDraftsModal(); return; }
-    $("drafts-btn-text").textContent = state.data
-      ? ((state.data.drafts || []).length || "No") + " Drafts"
-      : "Drafts";
+    var complete = state.reposReadiness === "loaded" && !catalogHasDraftErrors();
+    var count = catalogDrafts().length;
+    $("drafts-btn-text").textContent = complete ? (count || "No") + " Drafts" : "Drafts";
     if (!$("drafts-modal").classList.contains("open")) return;
     renderDraftsList();
   }
@@ -5828,14 +5797,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * SH-284's council named when it gave two of these controls deliberately
    * different *behaviour* in the same window.
    *
-   * `subject` is the whole possessive phrase ("this project's drafts"; "your
-   * projects"), not a bare noun — the catalog is nobody's project, so the
-   * old hardcoded "this project's " prefix cannot serve it. It is still never
-   * the project's own *name* (SH-292): the Drafts popover names its project
-   * separately, into `#drafts-subject`, by the function that paints the
-   * popover, so a name here would be a second copy in one place and a
-   * duplicate in the other -- on `#new-story-btn`'s tooltip, which renders on
-   * an un-overlaid topbar inches from `#projsel-btn` itself. `failed` is the
+   * `subject` is the phrase the caller can truthfully claim ("drafts"; "your
+   * projects"), not a fixed project-relative noun. `failed` is the
    * caller's own settled predicate (`dataFetchFailed()` for the per-project
    * surfaces, `state.reposReadiness`/`state.statusesReadiness` for the
    * others), passed in rather than read from one fixed field, since which
@@ -5889,7 +5852,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("search-wrap").hidden = !isRepo;
     $("view-toggle").hidden = !isRepo;
     $("new-story-btn").hidden = !isRepo;
-    $("drafts-btn").hidden = !isRepo;
+    $("drafts-btn").hidden = false;
     // The chrome band just changed shape: `#filter-bar` is in it, and hiding it
     // is a `display: none` transition, which a `ResizeObserver` does not
     // reliably report (SH-323). The observer is the safety net for everything
@@ -9385,9 +9348,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * that lets two labels disagree.
    *
    * `null` rather than a fallback string, because the fallback below is a
-   * *selector's* answer. Its second reader (SH-292) is the Drafts popover's
-   * subject line, where printing "All projects" would name the wrong thing
-   * entirely — so the two share the derivation and not the wording. */
+   * *selector's* answer and no project is current on Home or Settings. */
   function currentProjectLabel() {
     if (state.screen !== "repo") return null;
     return projectLabel(state.repoId);
@@ -11070,8 +11031,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   /** The draft being edited, or `null` when the modal is in ordinary "New
-   * story" mode — a `StoryView`-shaped object from `state.data.drafts`
-   * (SH-175). Set by `openCreateModal(draft)`, read by `discardDraft()`,
+   * story" mode — a `StoryView` refreshed from its owner's `/data` response
+   * (SH-175, globalised by SH-442). Set by `openCreateModal(draft)`, read by `discardDraft()`,
    * `saveDraft()` and `submitCreate()` to decide POST-a-new-story versus
    * PATCH-an-existing-one, and cleared by `closeCreateModal()`. A module
    * variable rather than a DOM data-attribute for the same reason
@@ -11120,20 +11081,21 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (createLabelCombobox) createLabelCombobox.setSuggestions(m.labels || []);
   }
 
-  /** Opens the New Story modal. Pass a `StoryView`-shaped draft (from
-   * `state.data.drafts`) to reuse it as the Edit Draft modal instead —
-   * same fields, retitled header, and a relabeled submit button (SH-175).
-   *
-   * Refuses without `state.data` (SH-265): every field below is built once,
-   * synchronously, from `meta()`, which is empty until then, and nothing
-   * repopulates the modal after it opens. `#new-story-btn` is kept disabled
-   * for the same reason (`syncCreateAvailability()`) — this is the second
-   * line of defense for the modal's other entry point, `renderDraftsList()`'s
-   * row click, which reaches here directly. */
-  function openCreateModal(draft) {
-    if (!state.data) return;
+  /** Opens the New Story modal, or edits a draft fetched from any project
+   * (SH-442). A new story still requires the open board's `state.data` per
+   * SH-265. A draft instead supplies its owning project and the fresh `meta`
+   * returned beside it by that project's `/data`; this is what makes editing
+   * from Home or Settings possible without pretending either screen has a
+   * current board vocabulary. */
+  function openCreateModal(draft, draftProject, draftMeta) {
+    if (!draft && !state.data) return;
+    if (draft && (!draftProject || !draftMeta)) return;
+    // A direct New Story open supersedes any catalog-row detail read still
+    // pending. When this call itself came from that read, the reply already
+    // passed its ticket check and advancing the ticket simply closes its era.
+    draftOpenTicket++;
     editingDraft = draft || null;
-    createTargetProject = state.repoId;
+    createTargetProject = draft ? draftProject : state.repoId;
     // Invalidates any vocabulary GET a previous open of this singleton
     // modal left in flight (SH-439) -- see createVocabTicket's own comment.
     createVocabTicket++;
@@ -11149,7 +11111,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("create-description").value = (story && story.description) || "";
     autoGrowTextarea($("create-description"));
     $("create-error").textContent = "";
-    var m = meta();
+    var m = draft ? draftMeta : meta();
     var defaults = m.defaults || {};
     // Priority is a closed global enum (`PRIORITIES`, `src/api/rest.rs`) --
     // identical in every project, so unlike state/type/labels below it is
@@ -11163,9 +11125,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
     // SH-439: one option per project in `state.repos`, in the same order
     // the header's own project selector uses. Disabled only for a project
-    // that ISN'T the one already open here and can't be written to
+    // that ISN'T the target already selected here and can't be written to
     // (`!r.available` -- no checkout, or unreadable, `src/api/rest.rs`'s
-    // `repos_json` doc names both) -- the open project's own option is
+    // `repos_json` doc names both) -- the selected target's own option is
     // NEVER disabled, even when it's the read-only one, so a submit
     // against it still reaches the server's existing `pathless_refusal`
     // (422) instead of being silently retargeted by the browser's
@@ -11173,15 +11135,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // option once the selected one is removed or the list is rebuilt.
     clear($("create-project"));
     state.repos.forEach(function(r) {
-      var isOpen = r.id === state.repoId;
+      var isTarget = r.id === createTargetProject;
       $("create-project").appendChild(el("option", {
         value: r.id,
-        disabled: !isOpen && !r.available
+        disabled: !isTarget && !r.available
       }, [r.prefix + " · " + r.name]));
     });
-    $("create-project").value = state.repoId;
+    $("create-project").value = createTargetProject;
     // Editing a draft: it already belongs to a project, and moving one is a
-    // transfer this modal doesn't offer (SH-442's territory, not SH-439's) --
+    // transfer this modal doesn't offer (SH-442 widens visibility and access,
+    // not story identity) --
     // pinned and disabled rather than merely defaulted, so it can't be
     // changed by mistake.
     $("create-project").disabled = !!story;
@@ -11225,8 +11188,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   /** The project the create modal's next request will address -- set by
-   * `openCreateModal()` to `state.repoId` and updated by `#create-project`'s
-   * own `change` handler once its vocabulary GET resolves (SH-439). Every
+   * `openCreateModal()` to the board project for a new story or the owning
+   * project for a global draft, and updated by `#create-project`'s own
+   * change handler for new stories once its vocabulary GET resolves. Every
    * mutating action below reads this through {@link createApiBase} rather
    * than `apiBase()`, which addresses `state.repoId` — the *board's*
    * project, not necessarily the one the modal is now naming. */
@@ -11394,6 +11358,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     toast(story.id + " " + verb + " " + name, "success");
   }
 
+  /** Refreshes every surface a draft mutation can change (SH-442). The
+   * catalog owns the global count/list on every screen; the board needs its
+   * separate project data only when it is showing the affected owner. */
+  function refreshAfterDraftMutation(targetProject) {
+    fetchReposOnce();
+    if (state.screen === "repo" && targetProject === state.repoId) fetchData();
+  }
+
   /** Discard Draft (SH-175). Editing an existing draft: deletes it outright
    * — "discard" on an already-persisted draft means it goes away, matching
    * the button's red, destructive styling. Creating a new one: nothing has
@@ -11412,7 +11384,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var base = createApiBase();
     var id = editingDraft.story.id;
     api("DELETE", base + "/story/" + encodeURIComponent(id), { reason: "Discarded draft" })
-      .then(function() { setCreateModalInFlight(false); closeCreateModal(); fetchData(); })
+      .then(function() {
+        setCreateModalInFlight(false);
+        closeCreateModal();
+        refreshAfterDraftMutation(targetProject);
+      })
       .catch(function(err) { setCreateModalInFlight(false); $("create-error").textContent = describeMutationFailure(err, targetProject); });
   }
 
@@ -11447,12 +11423,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         setCreateModalInFlight(false);
         closeCreateModal();
         toastEnvelopeWarnings(payload);
-        // SH-439: a draft saved into a project other than the open one is
-        // otherwise invisible -- the Drafts popover only ever shows the
-        // OPEN project's drafts (SH-292) -- so this stays silent only in
-        // the same-project case SH-127 already covers for a live create.
+        // Cross-project saves still name their destination, while the global
+        // Drafts surface now makes them immediately reachable too (SH-442).
         toastCrossProjectFiling(payload, targetProject, "saved as a draft in");
-        fetchData();
+        refreshAfterDraftMutation(targetProject);
       })
       .catch(function(err) { setCreateModalInFlight(false); $("create-error").textContent = describeMutationFailure(err, targetProject); });
   }
@@ -11479,6 +11453,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     setCreateModalInFlight(true);
     // Captured once (SH-439) -- see discardDraft()'s own comment on why.
     var targetProject = createTargetProject;
+    var publishingDraft = !!editingDraft;
     var base = createApiBase();
     var request;
     if (editingDraft) {
@@ -11508,7 +11483,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         // created story needs a look, which nothing else on screen says.
         toastEnvelopeWarnings(payload);
         toastCrossProjectFiling(payload, targetProject, "created in");
-        fetchData();
+        if (publishingDraft) refreshAfterDraftMutation(targetProject);
+        else fetchData();
       })
       .catch(function(err) { setCreateModalInFlight(false); $("create-error").textContent = describeMutationFailure(err, targetProject); });
   }
@@ -11531,14 +11507,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    *
    * This is the surface the stale-hide defect was found on, twice (SH-284,
    * SH-302), because it is the one with callers that close it when it was
-   * never open: the Escape handler, which has always called this on every
-   * press, and `updateDraftsButton()`, which since SH-284 calls it on every
-   * navigation to a non-repo screen — including the `renderScreen()` at
-   * module init. So an ordinary page load schedules one of these before the
-   * user has done anything, and the window it opens sits exactly where a
-   * user reaching for the Drafts button lands. Both halves of the repair are
-   * in {@link showBackdrop} and {@link hideBackdrop} now, so nothing here
-   * has to know that. */
+   * never open, including the Escape handler on every press. Both halves of
+   * the repair are in {@link showBackdrop} and {@link hideBackdrop} now, so
+   * this global surface needs no special navigation-time lifecycle. */
   function closeDraftsModal() {
     hideBackdrop("drafts-backdrop");
     $("drafts-modal").classList.remove("open");
@@ -11546,82 +11517,76 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     releaseOverlay("drafts-modal");
   }
 
-  /** Populates the Drafts popover — the project it is about, and its row
-   * list from `state.data.drafts`, this project's own drafts per
-   * `updateDraftsButton()`'s doc comment. Clicking a row opens it in the
-   * create modal's Edit Draft mode.
-   *
-   * **The subject line names the project (SH-292), and it is written here
-   * rather than on open.** Two of this popover's own sentences claim a
-   * project scope — `readinessNote()`'s "this project's drafts" and "No
-   * drafts in this project." — and until SH-292 nothing inside the overlay
-   * resolved either: `.backdrop` blurs the topbar, and since SH-299 `inert`
-   * removes it from the accessibility tree outright, so the one label naming
-   * the project was behind both. That is survivable for a 2s loading window
-   * and not for the state next to it, which has no end at all: a `/data` that
-   * keeps failing parks this popover on "Couldn't load… Retrying…"
-   * indefinitely, and a user can sit in front of it. The rule the council
-   * settled, which is what bounds this to one overlay: *a surface that says
-   * "this project" must be able to resolve it; one that does not, needn't* —
-   * so `#create-modal` ("New story"/"Edit draft") and `#archive-modal`
-   * ("Archive `state`") are deliberately untouched.
-   *
-   * Writing it in this function is the anti-drift fence, not a convenience.
-   * The name is painted by the same function, in the same call, as the rows
-   * it labels, so no caller can repaint one and leave the other — and this
-   * function is already the sole owner of the surface (SH-284).
-   *
-   * **ORDERING IS LOAD-BEARING TWICE OVER, and an early return added above
-   * either write reintroduces a defect.** Clearing the list *before*
-   * branching is the older half (SH-284): this runs on the `state.data =
-   * null` edge of a project switch, with the popover possibly open, and the
-   * clear is the only thing that takes the previous project's rows off
-   * screen, since the branch below appends rather than replaces. An early
-   * return above it — for a null `state.data`, say — would leave project A's
-   * drafts listed, and clickable, inside project B. The subject write has the
-   * same shape and a worse failure: a stale *name* over a fresh loading line
-   * asserts something false, where a blank one merely says nothing.
-   * `board-readiness.spec.ts` asserts both across exactly that switch,
-   * without retrying, so neither can rot silently.
-   *
-   * "No drafts in this project." is an *earned* claim and is made only once
-   * the project has actually answered. Before that there is no count to
-   * report and the two cases are not the same: the old single branch said
-   * "none" whenever `state.data.drafts` was empty *or* `state.data` was null,
-   * which asserted an emptiness it did not have.
-   *
-   * The un-answered branch is two states rather than one, which is what
-   * `readinessNote()` is for (SH-291): a project still inside its first `/data`
-   * round trip, and a project whose `/data` has completed without data and
-   * will keep doing so until whatever is wrong is fixed. Both are `!state.data`
-   * and only one of them is loading. */
+  /** Monotonic ticket for the owner-data read that opens a global draft.
+   * Reopening the Drafts surface and choosing another row can put two reads
+   * in flight; only the latest choice may open the singleton editor. */
+  var draftOpenTicket = 0;
+
+  /** Opens the current version of a catalog draft with its owner's current
+   * vocabulary. The catalog snapshot is enough to list a row but deliberately
+   * not trusted for editing: another client may have edited, published, or
+   * discarded it since that snapshot arrived. */
+  function openCatalogDraft(entry) {
+    var ticket = ++draftOpenTicket;
+    var project = entry.project;
+    var id = entry.draft.story.id;
+    var base = repoApiBase(project.id);
+    closeDraftsModal();
+    api("GET", base + "/data", null)
+      .then(function(payload) {
+        if (ticket !== draftOpenTicket) return;
+        var fresh = (payload.drafts || []).filter(function(draft) {
+          return draft.story.id === id;
+        })[0];
+        if (!fresh) {
+          fetchReposOnce();
+          toast(id + " is no longer an available draft.", "error");
+          return;
+        }
+        openCreateModal(fresh, project.id, payload.meta);
+      })
+      .catch(function() {
+        if (ticket !== draftOpenTicket) return;
+        fetchReposOnce();
+        toast("Failed to load the draft from " + (projectLabel(project.id) || "that project") + ".", "error");
+      });
+  }
+
+  /** Populates the dashboard-wide Drafts surface from `state.repos` (SH-442).
+   * Clearing precedes every branch so an open popover can never retain stale,
+   * clickable rows while a catalog refresh moves through loading or failure.
+   * Known rows remain useful during a partial per-project error, but neither
+   * the button nor this list claims that their count is complete. */
   function renderDraftsList() {
-    var subject = $("drafts-subject");
-    var label = currentProjectLabel();
-    subject.textContent = label || "";
-    subject.hidden = !label;
     var list = $("drafts-list");
     clear(list);
-    if (!state.data) {
-      list.appendChild(el("li", { class: "drafts-list-empty" }, [readinessNote("this project's drafts", dataFetchFailed())]));
+    var drafts = catalogDrafts();
+    if (state.reposReadiness !== "loaded" && !state.repos.length) {
+      list.appendChild(el("li", { class: "drafts-list-empty" }, [readinessNote("drafts", state.reposReadiness === "failed")]));
       return;
     }
-    var drafts = state.data.drafts || [];
-    if (!drafts.length) {
-      list.appendChild(el("li", { class: "drafts-list-empty" }, ["No drafts in this project."]));
-      return;
-    }
-    drafts.forEach(function(draft) {
+    drafts.forEach(function(entry) {
+      var draft = entry.draft;
       var row = el("button", {
         type: "button",
         class: "drafts-row",
-        onClick: function() { closeDraftsModal(); openCreateModal(draft); },
+        onClick: function() { openCatalogDraft(entry); },
       }, [
-        el("span", { class: "drafts-row-id" }, [draft.story.id]),
-        el("span", { class: "drafts-row-title" }, [draft.story.title]),
+        el("span", { class: "drafts-row-main" }, [
+          el("span", { class: "drafts-row-id" }, [draft.story.id]),
+          el("span", { class: "drafts-row-title" }, [draft.story.title]),
+        ]),
+        el("span", { class: "drafts-row-project" }, [entry.project.prefix + " · " + entry.project.name]),
       ]);
       list.appendChild(el("li", {}, [row]));
     });
+    if (state.reposReadiness !== "loaded") {
+      list.appendChild(el("li", { class: "drafts-list-empty" }, [readinessNote("drafts", state.reposReadiness === "failed")]));
+    } else if (catalogHasDraftErrors()) {
+      list.appendChild(el("li", { class: "drafts-list-empty" }, [readinessNote("some projects' drafts", true)]));
+    } else if (!drafts.length) {
+      list.appendChild(el("li", { class: "drafts-list-empty" }, ["No drafts."]));
+    }
   }
 
   /** The bulk "Archive" button on a CLOSED-superstate column's header

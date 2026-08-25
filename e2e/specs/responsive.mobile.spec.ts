@@ -385,7 +385,7 @@ test("the list table scrolls sideways to its far columns instead of clipping the
 });
 
 /**
- * SH-292: the Drafts popover names its project, and a project name is
+ * SH-442: every global draft row names its project, and a project name is
  * unbounded user input landing in a `min(30rem, 92vw)` box.
  *
  * This overlay had no entry in this sweep at all until now, which is what the
@@ -413,7 +413,7 @@ const LONG_PROJECT_NAME =
   "Phase Two (Northern Hemisphere)";
 
 for (const width of SWEEP_WIDTHS) {
-  test(`the Drafts popover elides a long project name at ${width}px`, async ({
+  test(`a global draft row elides a long project name at ${width}px`, async ({
     page,
   }) => {
     await page.setViewportSize({ width, height: SWEEP_HEIGHT });
@@ -437,11 +437,15 @@ for (const width of SWEEP_WIDTHS) {
     });
     await page.goto("/");
     await openProject(page, LONG_PROJECT_NAME);
+    await page.locator("#new-story-btn").click();
+    await page.locator("#create-title").fill(`Long-name draft ${width}`);
+    await page.locator("#create-save-draft").click();
+    await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
     await page.locator("#drafts-btn").click();
     await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
 
-    const subject = page.locator("#drafts-subject");
-    const box = await subject.evaluate((el) => ({
+    const project = page.locator("#drafts-list .drafts-row-project");
+    const box = await project.evaluate((el) => ({
       scrollWidth: el.scrollWidth,
       clientWidth: el.clientWidth,
       textOverflow: getComputedStyle(el).textOverflow,
@@ -449,14 +453,14 @@ for (const width of SWEEP_WIDTHS) {
     }));
     expect(
       box.scrollWidth,
-      `#drafts-subject (${box.clientWidth}px wide, white-space: ` +
+      `.drafts-row-project (${box.clientWidth}px wide, white-space: ` +
         `${box.whiteSpace}) is not truncating a ${LONG_PROJECT_NAME.length}-` +
         `character project name at ${width}px -- it wrapped to more lines ` +
         "instead, which turns a subject line into a title",
     ).toBeGreaterThan(box.clientWidth);
     expect(
       box.textOverflow,
-      "#drafts-subject must truncate with an ellipsis, the treatment " +
+      ".drafts-row-project must truncate with an ellipsis, the treatment " +
         "`.projsel-label` and `.drafts-row-title` already use -- clipping a " +
         "name mid-glyph says nothing about where it was cut",
     ).toBe("ellipsis");
@@ -490,7 +494,7 @@ for (const width of SWEEP_WIDTHS) {
  * rather than through the Drafts popover above it -- the two assertions
  * together (document-level overflow, and the label's own truncation
  * mechanism) are what the topbar's own `.projsel-btn`/`.projsel-label` pair
- * needs, the same two-assertion shape SH-292 used for `#drafts-subject`.
+ * needs, the same two-assertion shape SH-442 uses for `.drafts-row-project`.
  */
 for (const width of SWEEP_WIDTHS) {
   test(`the header project selector elides a long project name at ${width}px`, async ({
