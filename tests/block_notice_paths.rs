@@ -5,9 +5,7 @@
 //! --blocked`/`--json '{"blocked":...}'` are three independent dispatch arms
 //! that all end up writing [`StoryEvent::StoryAwaitingSet`](storyhook::domain::StoryEvent::StoryAwaitingSet),
 //! and each one used to have its own chance to leave a prose blocker mention
-//! unlinked with nobody told. This file is the derived check, in the style
-//! `tests/unassessed_priority_paths.rs` already uses for the sibling
-//! question ("which door can leave a story unassessed") — a compile-time
+//! unlinked with nobody told. This file is a compile-time
 //! exhaustive `match` over every [`Invocation`] variant, with no wildcard
 //! arm, so a 65th variant is a compile error here until its author says
 //! whether it sets `awaiting`.

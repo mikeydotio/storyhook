@@ -104,9 +104,7 @@ test("the submenu offers the daemon's whole priority vocabulary, with the story'
   page,
 }) => {
   const title = "SH-310 context menu — submenu contents";
-  // No priority passed: a new story defaults to "none" (Priority::default,
-  // src/domain.rs), which is the case decision 1 is actually about -- the
-  // default is a named, choosable row here, not a dash.
+  // No priority passed: the service emits the required low default.
   const card = await createStory(page, title);
 
   await openSetPriority(page, card);
@@ -115,15 +113,14 @@ test("the submenu offers the daemon's whole priority vocabulary, with the story'
     "high",
     "medium",
     "low",
-    "none",
   ]);
 
   const submenu = priorityMenu(page);
-  await expect(submenu.locator(".ctxmenu-item")).toHaveCount(5);
-  await expect(submenu.locator('[role="menuitemradio"]')).toHaveCount(5);
+  await expect(submenu.locator(".ctxmenu-item")).toHaveCount(4);
+  await expect(submenu.locator('[role="menuitemradio"]')).toHaveCount(4);
   await expect(submenu.locator('[aria-checked="true"]')).toHaveCount(1);
-  await expect(submenu.locator('[aria-checked="true"]')).toContainText("none");
-  await expect(submenu.locator(".ctxmenu-item .dot")).toHaveCount(5);
+  await expect(submenu.locator('[aria-checked="true"]')).toContainText("low");
+  await expect(submenu.locator(".ctxmenu-item .dot")).toHaveCount(4);
 
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");

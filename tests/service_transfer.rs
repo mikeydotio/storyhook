@@ -89,7 +89,11 @@ fn an_export_carries_the_catalog_and_every_story() {
     assert_eq!(export.stories.len(), 1);
     assert_eq!(export.stories[0].id, id);
     assert!(!export.stories[0].archived);
-    assert_eq!(export.stories[0].events.len(), 1, "just the creation event");
+    assert_eq!(
+        export.stories[0].events.len(),
+        3,
+        "creation plus required priority and type events"
+    );
 }
 
 #[test]
@@ -136,7 +140,7 @@ fn an_export_carries_a_story_whose_stored_id_disagrees_with_the_prefix() {
         .expect("the damaged story, carried out under its stored id");
     assert_eq!(
         tampered.events.len(),
-        1,
+        3,
         "its events were still found, keyed by the row's own story_no rather than a reparse"
     );
     let healthy = export
@@ -144,7 +148,7 @@ fn an_export_carries_a_story_whose_stored_id_disagrees_with_the_prefix() {
         .iter()
         .find(|s| s.id == healthy_id)
         .expect("the untouched story, unaffected by its sibling's damage");
-    assert_eq!(healthy.events.len(), 1);
+    assert_eq!(healthy.events.len(), 3);
 }
 
 #[test]
@@ -644,9 +648,9 @@ fn an_event_kind_this_build_cannot_decode_is_exported_verbatim() {
     // it: the document carries order, so a slot that moved is data that moved.
     let parsed: serde_json::Value = serde_json::from_str(&json).expect("re-parsing");
     assert_eq!(
-        parsed["stories"][0]["events"][1],
+        parsed["stories"][0]["events"][3],
         serde_json::from_str::<serde_json::Value>(FROM_THE_FUTURE).unwrap(),
-        "the unknown event must be the second event of the story it belongs to"
+        "the unknown event must follow the required creation metadata"
     );
 }
 
@@ -654,7 +658,8 @@ fn an_event_kind_this_build_cannot_decode_is_exported_verbatim() {
 fn a_restored_document_holds_the_same_events_at_the_same_positions() {
     let fixture = ServiceFixture::new();
     let id = create(&fixture, "Pinned by a newer storyhook");
-    // The unknown lands at position 2 of 4: before SH-67 it was dropped, which
+    // The unknown lands after the three-event creation batch: before SH-67 it
+    // was dropped, which
     // renumbered every event after it as well as losing that one.
     pin_from_the_future(&fixture);
     StoryService::new(&fixture.ctx())
@@ -672,6 +677,8 @@ fn a_restored_document_holds_the_same_events_at_the_same_positions() {
             .collect::<Vec<_>>(),
         [
             "StoryCreated",
+            "StoryPrioritySet",
+            "StoryTypeSet",
             "StoryPinned",
             "StoryCommentAdded",
             "StoryStateChanged",
@@ -899,30 +906,68 @@ fn importing_splits_a_comma_bearing_label() {
 }
 
 #[test]
-fn an_unparseable_priority_is_dropped_rather_than_rejected() {
-    // `story new --priority urgent` is an error; `story import` has always
-    // ignored the field instead, and scripts depend on it.
+fn an_unparseable_priority_rejects_the_whole_import() {
     let fixture = ServiceFixture::new();
-    let story = ImportStory {
+    let bad = ImportStory {
         priority: Some("urgent".to_string()),
-        ..described("Lenient")
+        ..described("Invalid")
     };
-    let batch = TransferService::new(&fixture.ctx())
-        .import(&[story])
-        .expect("importing");
-    assert_eq!(
-        batch.views[0].story.priority,
-        storyhook::domain::Priority::None
-    );
-
-    let rejected = StoryService::new(&fixture.ctx()).create(&NewStoryInput {
-        title: "Strict".to_string(),
-        priority: Some("urgent".to_string()),
-        ..NewStoryInput::default()
-    });
+    let error = TransferService::new(&fixture.ctx())
+        .import(&[described("Would have been first"), bad])
+        .expect_err("an invalid priority must reject the batch");
     assert!(
-        matches!(rejected, Err(AppError::Validation(_))),
-        "`story new` must still reject what `story import` tolerates: {rejected:?}"
+        error
+            .to_string()
+            .contains("priority must be one of: critical, high, medium, low"),
+        "{error}"
+    );
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.stories(fixture.project(), &StoryQuery::all()))
+            .expect("listing stories")
+            .is_empty(),
+        "the first description and every counter allocation must roll back"
+    );
+}
+
+#[test]
+fn importing_without_type_or_priority_emits_both_defaults() {
+    let fixture = ServiceFixture::new();
+    let batch = TransferService::new(&fixture.ctx())
+        .import(&[described("Defaulted")])
+        .expect("importing");
+    let story = &batch.views[0].story;
+    assert_eq!(story.priority, storyhook::domain::Priority::Low);
+    assert!(story.priority_assessed);
+    assert_eq!(story.story_type.as_deref(), Some("feature"));
+
+    let kinds: Vec<String> = fixture
+        .store()
+        .read(|tx| tx.events_for(fixture.project(), StoryNo::new(1)))
+        .expect("reading events")
+        .into_iter()
+        .map(|event| event.kind)
+        .collect();
+    assert_eq!(kinds, ["StoryCreated", "StoryPrioritySet", "StoryTypeSet"]);
+}
+
+#[test]
+fn importing_explicit_priority_none_is_rejected_atomically() {
+    let fixture = ServiceFixture::new();
+    let bad = ImportStory {
+        priority: Some("none".to_string()),
+        ..described("Legacy parked input")
+    };
+    TransferService::new(&fixture.ctx())
+        .import(&[bad])
+        .expect_err("none is not assignable through import");
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.stories(fixture.project(), &StoryQuery::all()))
+            .expect("listing stories")
+            .is_empty()
     );
 }
 
@@ -1110,6 +1155,132 @@ fn empty_store() -> (SqliteStore, tempfile::TempDir) {
     let store = SqliteStore::open(dir.path().join("store.db")).expect("opening the store");
     store.migrate().expect("migrating");
     (store, dir)
+}
+
+#[test]
+fn a_legacy_restore_appends_custom_type_and_low_priority_events() {
+    use storyhook::domain::{Priority, StoryEvent, TypeDef};
+    use storyhook::service::transfer::{ExportedEvent, ExportedStory};
+
+    let export = ProjectExport {
+        schema: 1,
+        prefix: None,
+        states: storyhook_test_support::default_states(),
+        types: vec![
+            TypeDef {
+                slug: "custom-first".to_string(),
+                description: None,
+                emoji: None,
+            },
+            TypeDef {
+                slug: "bug".to_string(),
+                description: None,
+                emoji: None,
+            },
+        ],
+        members: Vec::new(),
+        settings: None,
+        remotes: Vec::new(),
+        github_sync: None,
+        github_bases: std::collections::BTreeMap::new(),
+        stories: vec![ExportedStory {
+            id: "SH-1".to_string(),
+            events: vec![
+                ExportedEvent::Known(StoryEvent::StoryCreated {
+                    at: "2025-01-01T00:00:00Z".to_string(),
+                    title: "Legacy parked story".to_string(),
+                    state: "todo".to_string(),
+                }),
+                ExportedEvent::Known(StoryEvent::StoryPrioritySet {
+                    at: "2025-01-01T00:01:00Z".to_string(),
+                    priority: Priority::None,
+                }),
+            ],
+            archived: false,
+            attachment_blobs: Vec::new(),
+        }],
+    };
+
+    let (store, dir) = empty_store();
+    transfer::import_project(
+        &store,
+        dir.path(),
+        &Clock::Fixed("2026-08-24T12:00:00Z".to_string()),
+        &export,
+        false,
+    )
+    .expect("restoring a legacy project");
+    let project = restored_project(&store, dir.path());
+    let row = store
+        .read(|tx| tx.story(project.id, StoryNo::new(1)))
+        .expect("reading the story")
+        .expect("the story exists");
+    assert_eq!(row.snapshot.story_type.as_deref(), Some("custom-first"));
+    assert_eq!(row.snapshot.priority, Priority::Low);
+    assert!(row.snapshot.priority_assessed);
+    assert_eq!(row.snapshot.updated_at, "2026-08-24T12:00:00Z");
+    let events = store
+        .read(|tx| tx.events_for(project.id, StoryNo::new(1)))
+        .expect("reading events");
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.kind.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "StoryCreated",
+            "StoryPrioritySet",
+            "StoryTypeSet",
+            "StoryPrioritySet"
+        ]
+    );
+    assert_eq!(row.head_seq.get(), 4);
+    assert_eq!(row.head_global_seq.get(), 4);
+}
+
+#[test]
+fn a_pre_types_restore_installs_the_stock_catalog_before_normalizing() {
+    use storyhook::domain::StoryEvent;
+    use storyhook::service::transfer::{ExportedEvent, ExportedStory};
+
+    let export = ProjectExport {
+        schema: 1,
+        prefix: None,
+        states: storyhook_test_support::default_states(),
+        types: Vec::new(),
+        members: Vec::new(),
+        settings: None,
+        remotes: Vec::new(),
+        github_sync: None,
+        github_bases: std::collections::BTreeMap::new(),
+        stories: vec![ExportedStory {
+            id: "SH-1".to_string(),
+            events: vec![ExportedEvent::Known(StoryEvent::StoryCreated {
+                at: "2025-01-01T00:00:00Z".to_string(),
+                title: "Pre-types story".to_string(),
+                state: "todo".to_string(),
+            })],
+            archived: false,
+            attachment_blobs: Vec::new(),
+        }],
+    };
+
+    let (store, dir) = empty_store();
+    transfer::import_project(&store, dir.path(), &Clock::System, &export, false)
+        .expect("restoring a pre-types project");
+    let project = restored_project(&store, dir.path());
+    let (types, story) = store
+        .read(|tx| {
+            Ok((
+                tx.types(project.id)?,
+                tx.story(project.id, StoryNo::new(1))?
+                    .expect("the story exists"),
+            ))
+        })
+        .expect("reading the restored project");
+    assert_eq!(types[0].slug, "normal");
+    assert_eq!(story.snapshot.story_type.as_deref(), Some("normal"));
+    assert_eq!(story.snapshot.priority, storyhook::domain::Priority::Low);
 }
 
 #[test]

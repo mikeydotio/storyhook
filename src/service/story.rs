@@ -38,11 +38,12 @@ pub struct NewStoryInput {
     pub title: String,
     /// The state to open in; the project's default open state when absent.
     pub state: Option<String>,
-    /// The story type slug. Must be one the project defines.
+    /// The story type slug. Must be one the project defines; the project's
+    /// first configured type is used when absent.
     pub story_type: Option<String>,
     /// A long-form description. Blank or whitespace-only is treated as absent.
     pub description: Option<String>,
-    /// A priority slug.
+    /// An assignable priority slug. Defaults to `low` when absent.
     pub priority: Option<String>,
     /// Labels, deduplicated and sorted before they are written.
     pub labels: Option<Vec<String>>,
@@ -198,11 +199,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
 
     /// Sets an open story's priority.
     pub fn set_priority(&self, id: &str, priority: &str) -> Result<StorySnapshot, AppError> {
-        let level = Priority::parse(priority).ok_or_else(|| {
-            AppError::Validation(
-                "priority must be one of: critical, high, medium, low, none".to_string(),
-            )
-        })?;
+        let level = assignable_priority(priority)?;
         let now = self.ctx.now();
         let snapshot = self.edit_story(id, Intent::Edit, |_row, _states| {
             Ok(vec![StoryEvent::StoryPrioritySet {
@@ -1080,6 +1077,32 @@ fn default_open_state(states: &[StateDef]) -> Result<StateDef, AppError> {
         .ok_or_else(|| AppError::Validation("project has no OPEN-mapped default state".to_string()))
 }
 
+/// The project's default story type, with the creation-time refusal an empty
+/// legacy catalog needs.
+pub(super) fn default_story_type(
+    tx: &impl ReadOps,
+    project: ProjectId,
+) -> Result<String, AppError> {
+    crate::domain::default_type(&tx.types(project)?)
+        .map(|story_type| story_type.slug)
+        .ok_or_else(|| AppError::Validation("project has no configured story types".to_string()))
+}
+
+/// Parses a priority accepted by a current mutation path.
+///
+/// `Priority::None` remains decodable for old events, snapshots and exports,
+/// but it is no longer a value a caller may assign.
+pub(super) fn assignable_priority(raw: &str) -> Result<Priority, AppError> {
+    match Priority::parse(raw) {
+        Some(
+            priority @ (Priority::Critical | Priority::High | Priority::Medium | Priority::Low),
+        ) => Ok(priority),
+        Some(Priority::None) | None => Err(AppError::Validation(
+            "priority must be one of: critical, high, medium, low".to_string(),
+        )),
+    }
+}
+
 /// The events `story new` writes, with every field validated first.
 fn creation_events(
     tx: &impl ReadOps,
@@ -1088,17 +1111,19 @@ fn creation_events(
     input: &NewStoryInput,
     now: &str,
 ) -> Result<Vec<StoryEvent>, AppError> {
-    if let Some(slug) = &input.story_type {
-        require_known_type(tx, project, slug)?;
-    }
+    let story_type = match &input.story_type {
+        Some(slug) => {
+            require_known_type(tx, project, slug)?;
+            slug.clone()
+        }
+        None => default_story_type(tx, project)?,
+    };
     let priority = input
         .priority
         .as_deref()
-        .map(|p| {
-            Priority::parse(p)
-                .ok_or_else(|| AppError::Validation(format!("invalid priority `{p}`")))
-        })
-        .transpose()?;
+        .map(assignable_priority)
+        .transpose()?
+        .unwrap_or(Priority::Low);
     let assignee = input
         .assignee
         .as_deref()
@@ -1131,12 +1156,10 @@ fn creation_events(
             at: now.to_string(),
         });
     }
-    if let Some(priority) = priority {
-        events.push(StoryEvent::StoryPrioritySet {
-            at: now.to_string(),
-            priority,
-        });
-    }
+    events.push(StoryEvent::StoryPrioritySet {
+        at: now.to_string(),
+        priority,
+    });
     if let Some(labels) = &input.labels {
         let normalized = normalize_labels(labels);
         if !normalized.is_empty() {
@@ -1160,12 +1183,10 @@ fn creation_events(
             description: description.clone(),
         });
     }
-    if let Some(story_type) = &input.story_type {
-        events.push(StoryEvent::StoryTypeSet {
-            at: now.to_string(),
-            story_type: story_type.clone(),
-        });
-    }
+    events.push(StoryEvent::StoryTypeSet {
+        at: now.to_string(),
+        story_type,
+    });
     Ok(events)
 }
 
@@ -1207,8 +1228,7 @@ fn plan_field_edits(
         push_state_change(&mut plan, states, story, slug, now)?;
     }
     if let Some(raw) = &edits.priority {
-        let priority = Priority::parse(raw)
-            .ok_or_else(|| AppError::Validation(format!("invalid priority `{raw}`")))?;
+        let priority = assignable_priority(raw)?;
         plan.events.push(StoryEvent::StoryPrioritySet {
             at: now.to_string(),
             priority,
@@ -1302,8 +1322,7 @@ fn apply_json_patch(
             "state" => push_state_change(plan, states, story, json_str(value, "state")?, now)?,
             "priority" => {
                 let raw = json_str(value, "priority")?;
-                let priority = Priority::parse(raw)
-                    .ok_or_else(|| AppError::Validation(format!("invalid priority `{raw}`")))?;
+                let priority = assignable_priority(raw)?;
                 plan.events.push(StoryEvent::StoryPrioritySet {
                     at: now.to_string(),
                     priority,

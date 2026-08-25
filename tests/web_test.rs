@@ -3753,10 +3753,8 @@ fn web_serve_api_data_meta_has_types_priorities_relations_members() {
         .iter()
         .map(|p| p.as_str().unwrap())
         .collect();
-    assert_eq!(
-        priorities,
-        vec!["critical", "high", "medium", "low", "none"]
-    );
+    assert_eq!(priorities, vec!["critical", "high", "medium", "low"]);
+    assert_eq!(json["meta"]["defaults"]["priority"], "low");
 
     let relations: Vec<&str> = json["meta"]["relations"]
         .as_array()
@@ -4061,12 +4059,8 @@ fn web_create_story_returns_201_and_story() {
     assert_eq!(data_json["summary"]["total_open"], 1);
 }
 
-/// The dashboard's create route (`Invocation::New`) reaches the same
-/// unassessed-priority warning `story new` does (SH-354/SH-359/SH-358): the
-/// envelope's `warnings` field, not a new one, is what makes the browser able
-/// to read it without any server-side dashboard-specific code.
 #[test]
-fn web_create_story_with_no_priority_carries_the_unassessed_warning() {
+fn web_create_story_with_omitted_metadata_uses_required_defaults() {
     let fixture = served();
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
@@ -4079,15 +4073,33 @@ fn web_create_story_with_no_priority_carries_the_unassessed_warning() {
     assert_eq!(resp.status(), 201);
     let json: serde_json::Value =
         serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
-    let warnings = json["warnings"]
-        .as_array()
-        .expect("the envelope must carry `warnings` when the story is unassessed");
-    assert!(
-        warnings
-            .iter()
-            .any(|w| w.as_str().is_some_and(|w| w.contains("priority not set"))),
-        "{json}"
-    );
+    assert_eq!(story_field(&json, "priority"), "low");
+    assert_eq!(story_field(&json, "story_type"), "normal");
+    assert!(json.get("warnings").is_none(), "{json}");
+}
+
+#[test]
+fn web_create_story_rejects_explicit_none_without_allocating_an_id() {
+    let fixture = served();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let error = post_json(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
+        r#"{"title":"Invalid priority","priority":"none"}"#,
+    )
+    .unwrap_err();
+    assert_eq!(status_of(error), 422);
+
+    let resp = post_json(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
+        r#"{"title":"First valid"}"#,
+    )
+    .unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "id"), "SH-1");
 }
 
 /// The load-bearing pairing with the test above: a stated priority raises no
@@ -6280,7 +6292,7 @@ fn build_report_data_counts_priorities() {
 fn build_report_data_counts_types() {
     let fixture = served();
     fixture.seed(&["new", "Epic story", "--type", "epic"]);
-    fixture.seed(&["new", "Untyped story"]);
+    fixture.seed(&["new", "Default type story"]);
 
     let data = fixture.report_data();
     let type_names: Vec<&str> = data
@@ -6294,8 +6306,8 @@ fn build_report_data_counts_types() {
         "should have 'epic' type count"
     );
     assert!(
-        type_names.contains(&"Default"),
-        "should have 'Default' type count"
+        type_names.contains(&"normal"),
+        "should have the default 'normal' type count"
     );
 }
 

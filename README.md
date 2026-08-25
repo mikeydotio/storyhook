@@ -19,7 +19,9 @@ It keeps every project's stories in one local SQLite store as an append-only eve
 - Define project states mapped to `OPEN` or `CLOSED`, and edit, reorder, or
   remove them later from the CLI, the web dashboard, or the TUI
 - Set and clear `awaiting` blockers
-- Set priority levels (critical, high, medium, low, none)
+- Classify every story by a configured type; omission uses the first (`normal`
+  in the stock catalog)
+- Set priority levels (critical, high, medium, low); new stories default to low
 - Add and filter by labels/tags
 - Search stories by title, comments, and labels
 - Project summary with state/priority breakdown

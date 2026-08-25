@@ -624,7 +624,7 @@ fn set_unknown_type_rejected() {
 }
 
 #[test]
-fn untyped_story_shows_default_for_type() {
+fn omitted_type_shows_the_first_configured_type() {
     let dir = tempdir().unwrap();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
@@ -640,7 +640,7 @@ fn untyped_story_shows_default_for_type() {
         .args(["show", "SH-1"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("type: Default"));
+        .stdout(predicate::str::contains("type: normal"));
 }
 
 // ============================================================
@@ -679,7 +679,7 @@ fn list_type_filter_shows_matching_stories() {
 }
 
 #[test]
-fn list_type_none_shows_untyped_stories() {
+fn list_type_none_is_empty_for_current_creation_paths() {
     let dir = tempdir().unwrap();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
@@ -691,7 +691,7 @@ fn list_type_none_shows_untyped_stories() {
         .assert()
         .success();
     story(dir.path())
-        .args(["new", "Untyped"])
+        .args(["new", "Default type"])
         .assert()
         .success();
 
@@ -701,7 +701,7 @@ fn list_type_none_shows_untyped_stories() {
         .success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
     assert!(!stdout.contains("SH-1"));
-    assert!(stdout.contains("SH-2"));
+    assert!(!stdout.contains("SH-2"));
 }
 
 #[test]
@@ -1006,7 +1006,7 @@ fn list_shows_type_badge_in_human_output() {
 }
 
 #[test]
-fn list_shows_default_badge_for_untyped_story() {
+fn list_shows_default_type_badge_when_type_is_omitted() {
     let dir = tempdir().unwrap();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
@@ -1014,13 +1014,13 @@ fn list_shows_default_badge_for_untyped_story() {
         .success();
 
     story(dir.path())
-        .args(["new", "Untyped task"])
+        .args(["new", "Default type task"])
         .assert()
         .success();
 
     let output = story(dir.path()).args(["list"]).assert().success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
-    assert!(stdout.contains("[Default]"));
+    assert!(stdout.contains("[normal]"));
 }
 
 #[test]
@@ -1143,7 +1143,7 @@ fn json_output_includes_story_type() {
 }
 
 #[test]
-fn json_output_omits_type_for_untyped_story() {
+fn json_output_includes_default_type_when_type_is_omitted() {
     let dir = tempdir().unwrap();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
@@ -1151,17 +1151,15 @@ fn json_output_omits_type_for_untyped_story() {
         .success();
 
     story(dir.path())
-        .args(["new", "Untyped task"])
+        .args(["new", "Default type task"])
         .assert()
         .success();
 
-    // story_type has skip_serializing_if = "Option::is_none", so it's omitted entirely
-    let output = story(dir.path())
+    story(dir.path())
         .args(["--json", "show", "SH-1"])
         .assert()
-        .success();
-    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
-    assert!(!stdout.contains("story_type"));
+        .success()
+        .stdout(predicate::str::contains("\"story_type\": \"normal\""));
 }
 
 // ============================================================

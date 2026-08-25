@@ -236,10 +236,9 @@ fn report_html_shows_type_breakdown() {
         .assert()
         .success();
 
-    // Create stories: 1 untyped (Default), 1 bug, 1 normal
-    // "bug" and "normal" are default types from init
+    // Omission selects `normal`, so this produces 2 normal stories and 1 bug.
     story(dir.path())
-        .args(["new", "Untyped task"])
+        .args(["new", "Default type task"])
         .assert()
         .success();
     story(dir.path())
@@ -256,7 +255,6 @@ fn report_html_shows_type_breakdown() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Type Breakdown"))
-        .stdout(predicate::str::contains("Default: 1"))
         .stdout(predicate::str::contains("bug: 1"))
-        .stdout(predicate::str::contains("normal: 1"));
+        .stdout(predicate::str::contains("normal: 2"));
 }

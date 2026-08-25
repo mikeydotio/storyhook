@@ -33,7 +33,7 @@ test.beforeEach(async ({ page }) => {
   await openProject(page, "Alpha Project");
 });
 
-test("the create-story modal preselects the project's first-configured state and type", async ({
+test("the create-story modal preselects required state, type, and priority defaults", async ({
   page,
 }) => {
   await page.locator("#new-story-btn").click();
@@ -41,6 +41,7 @@ test("the create-story modal preselects the project's first-configured state and
 
   await expect(page.locator("#create-state")).toHaveValue("todo");
   await expect(page.locator("#create-type")).toHaveValue("normal");
+  await expect(page.locator("#create-priority")).toHaveValue("low");
 });
 
 test("creating a story shows no success toast (SH-127) -- the card's own entrance animation is the confirmation", async ({
@@ -65,10 +66,10 @@ test("creating a story shows no success toast (SH-127) -- the card's own entranc
   await deleteStory(page, title);
 });
 
-test("submitting without touching state or type creates a story with the preselected defaults", async ({
+test("submitting without touching metadata creates a story with the preselected defaults", async ({
   page,
 }) => {
-  const title = "A story left at its default state and type";
+  const title = "A story left at its metadata defaults";
 
   await page.locator("#new-story-btn").click();
   await expect(page.locator("#create-modal")).toHaveClass(/open/);

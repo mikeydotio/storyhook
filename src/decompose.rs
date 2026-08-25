@@ -120,6 +120,9 @@ fn extract_priority(text: &str) -> (String, Option<String>) {
         ("[HIGH]", "high"),
         ("[MEDIUM]", "medium"),
         ("[LOW]", "low"),
+        // Kept recognizable only so an old spec fails through the service's
+        // explicit-`none` validator instead of silently turning `[NONE]` into
+        // part of the title.
         ("[NONE]", "none"),
     ] {
         if let Some(pos) = text.to_ascii_uppercase().find(marker) {

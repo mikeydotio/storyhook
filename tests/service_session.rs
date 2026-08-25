@@ -308,9 +308,17 @@ fn reading_a_storys_history_returns_its_events_in_order() {
     let Response::StoryHistory(events) = response else {
         panic!("history read must answer with the events");
     };
-    assert_eq!(events.len(), 2);
+    assert_eq!(events.len(), 4);
     assert!(matches!(events[0], StoryEvent::StoryCreated { .. }));
-    assert!(matches!(events[1], StoryEvent::StoryCommentAdded { .. }));
+    assert!(matches!(
+        events[1],
+        StoryEvent::StoryPrioritySet {
+            priority: storyhook::domain::Priority::Low,
+            ..
+        }
+    ));
+    assert!(matches!(events[2], StoryEvent::StoryTypeSet { .. }));
+    assert!(matches!(events[3], StoryEvent::StoryCommentAdded { .. }));
 }
 
 #[test]
@@ -496,7 +504,7 @@ mod undo {
         ));
         assert_eq!(show(&fixture, &id).state, "todo");
         // Append-only: the move is still in the history, and so is its undo.
-        assert_eq!(session::history(&fixture.ctx(), &id).unwrap().len(), 3);
+        assert_eq!(session::history(&fixture.ctx(), &id).unwrap().len(), 5);
     }
 
     #[test]
@@ -589,7 +597,7 @@ mod undo {
         undo(&fixture, &id, &before);
         let after = show(&fixture, &id);
         assert_eq!(after.title, "Edited everywhere");
-        assert_eq!(after.priority, storyhook::domain::Priority::None);
+        assert_eq!(after.priority, storyhook::domain::Priority::Low);
         assert!(after.labels.is_empty(), "{:?}", after.labels);
         assert_eq!(after.description.as_deref().unwrap_or(""), "");
         assert_eq!(after.awaiting, None);

@@ -40,10 +40,11 @@ use crate::store::{
 };
 
 use super::project::{
-    DEFAULT_PREFIX, ProjectPointer, Registration, pointer_path, read_pointer, register_origin,
-    unique_slug, write_pointer,
+    DEFAULT_PREFIX, ProjectPointer, Registration, default_types, pointer_path, read_pointer,
+    register_origin, unique_slug, write_pointer,
 };
 use super::state_set::write_states_repairing;
+use super::story::{assignable_priority, default_story_type};
 use super::{Clock, Ctx, append_and_fold, project_prefix};
 
 /// A whole project, as `story export` writes it and `story import-project`
@@ -673,10 +674,11 @@ impl<'ctx, S: Store> TransferService<'ctx, S> {
             let ordered = tx.states(project)?;
             let states = slug_map(&ordered);
             require_known_types(&*tx, project, stories)?;
+            let default_type = default_story_type(&*tx, project)?;
 
             let mut created_ids: Vec<String> = Vec::new();
             for story in stories {
-                let events = import_events(&*tx, project, &ordered, story, &now)?;
+                let events = import_events(&*tx, project, &ordered, &default_type, story, &now)?;
                 let story_no = tx.allocate_story_no(project)?;
                 let snapshot = append_and_fold(
                     tx,
@@ -946,7 +948,14 @@ pub fn import_project<S: Store>(
         write_states_repairing(tx, project, &export.states)?;
         if !export.types.is_empty() {
             tx.put_types(project, &export.types)?;
+        } else if tx.types(project)?.is_empty() {
+            // A pre-types export carries no catalog at all. Schema 19 requires
+            // every restored story to name one, so seed the same stock catalog
+            // a new project gets rather than making that legacy document
+            // unrestorable.
+            tx.put_types(project, &default_types())?;
         }
+        let default_type = default_story_type(&*tx, project)?;
         for member in &export.members {
             tx.put_member(project, member)?;
         }
@@ -1002,7 +1011,7 @@ pub fn import_project<S: Store>(
             } else {
                 LinkSource::Live
             };
-            let head = tx.append_raw_events(
+            let raw_head = tx.append_raw_events(
                 project,
                 story_no,
                 ExpectedSeq::Exact(EventSeq::ZERO),
@@ -1016,6 +1025,22 @@ pub fn import_project<S: Store>(
                 // inventing one here would be manufacturing a record.
                 &Provenance::unrecorded(),
             )?;
+            let stored = tx.events_for(project, story_no)?;
+            let (known, _unknown) = partition_known(story_no, &stored);
+            let id = story_no.to_id(&prefix);
+            let snapshot = fold_story(&id, &known, &states)?;
+            let defaults = restore_default_events(&snapshot, &default_type, &now);
+            let head = if defaults.is_empty() {
+                raw_head
+            } else {
+                tx.append_events(
+                    project,
+                    story_no,
+                    ExpectedSeq::Exact(raw_head),
+                    &defaults,
+                    &Provenance::unrecorded(),
+                )?
+            };
             if story_no.get() > highest.get() {
                 highest = story_no;
             }
@@ -1080,6 +1105,29 @@ pub fn import_project<S: Store>(
         skipped_remotes,
         discarded_github_sync,
     })
+}
+
+/// Events that make a restored legacy history satisfy the current creation
+/// invariant without rewriting any of its existing events.
+pub(super) fn restore_default_events(
+    snapshot: &StorySnapshot,
+    default_type: &str,
+    now: &str,
+) -> Vec<StoryEvent> {
+    let mut events = Vec::new();
+    if snapshot.story_type.is_none() {
+        events.push(StoryEvent::StoryTypeSet {
+            at: now.to_string(),
+            story_type: default_type.to_string(),
+        });
+    }
+    if snapshot.priority == Priority::None || !snapshot.priority_assessed {
+        events.push(StoryEvent::StoryPrioritySet {
+            at: now.to_string(),
+            priority: Priority::Low,
+        });
+    }
+    events
 }
 
 /// The `prefix` field an export document carries.
@@ -1176,14 +1224,13 @@ fn require_known_types(
 /// The events one imported description writes.
 ///
 /// The same batch, in the same order, as
-/// [`creation_events`](super::story) builds for `story new` — with two
-/// deliberate differences, both of them leniencies the legacy importer has
-/// always had: an unparseable priority is **dropped** rather than rejected, and
-/// the story type has already been validated for the whole batch.
+/// [`creation_events`](super::story) builds for `story new`. The story type has
+/// already been validated for the whole batch.
 fn import_events(
     tx: &impl ReadOps,
     project: ProjectId,
     states: &[StateDef],
+    default_type: &str,
     story: &ImportStory,
     now: &str,
 ) -> Result<Vec<StoryEvent>, AppError> {
@@ -1219,12 +1266,16 @@ fn import_events(
         title: story.title.clone(),
         state: state_slug,
     }];
-    if let Some(priority) = story.priority.as_deref().and_then(Priority::parse) {
-        events.push(StoryEvent::StoryPrioritySet {
-            at: now.to_string(),
-            priority,
-        });
-    }
+    let priority = story
+        .priority
+        .as_deref()
+        .map(assignable_priority)
+        .transpose()?
+        .unwrap_or(Priority::Low);
+    events.push(StoryEvent::StoryPrioritySet {
+        at: now.to_string(),
+        priority,
+    });
     if let Some(labels) = &story.labels
         && !labels.is_empty()
     {
@@ -1250,12 +1301,13 @@ fn import_events(
             description: description.clone(),
         });
     }
-    if let Some(story_type) = &story.story_type {
-        events.push(StoryEvent::StoryTypeSet {
-            at: now.to_string(),
-            story_type: story_type.clone(),
-        });
-    }
+    events.push(StoryEvent::StoryTypeSet {
+        at: now.to_string(),
+        story_type: story
+            .story_type
+            .clone()
+            .unwrap_or_else(|| default_type.to_string()),
+    });
     Ok(events)
 }
 

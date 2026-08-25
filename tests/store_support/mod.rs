@@ -12,7 +12,7 @@
 
 use std::path::Path;
 
-use storyhook::domain::{StateDef, StoryEvent, SuperState, TypeDef, fold_story};
+use storyhook::domain::{Priority, StateDef, StoryEvent, SuperState, TypeDef, fold_story};
 use storyhook::store::{
     EventSeq, ExpectedSeq, NewProject, ProjectId, ReadOps, SqliteStore, Store, StoreError, StoryNo,
     WriteOps,
@@ -142,6 +142,14 @@ pub fn append_and_fold(
 
 /// Allocates a number, creates the story, and returns the number.
 pub fn create_story(store: &SqliteStore, project: ProjectId, title: &str, at: &str) -> StoryNo {
+    let story_type = store
+        .read(|tx| {
+            tx.types(project)?.into_iter().next().ok_or_else(|| {
+                StoreError::Invariant("fixture project has no configured story type".into())
+            })
+        })
+        .expect("resolving the default story type")
+        .slug;
     let story = store
         .write(|tx| tx.allocate_story_no(project))
         .expect("allocating a story number");
@@ -150,11 +158,21 @@ pub fn create_story(store: &SqliteStore, project: ProjectId, title: &str, at: &s
         project,
         story,
         ExpectedSeq::Exact(EventSeq::ZERO),
-        &[StoryEvent::StoryCreated {
-            at: at.to_string(),
-            title: title.to_string(),
-            state: "todo".into(),
-        }],
+        &[
+            StoryEvent::StoryCreated {
+                at: at.to_string(),
+                title: title.to_string(),
+                state: "todo".into(),
+            },
+            StoryEvent::StoryPrioritySet {
+                at: at.to_string(),
+                priority: Priority::Low,
+            },
+            StoryEvent::StoryTypeSet {
+                at: at.to_string(),
+                story_type,
+            },
+        ],
     )
     .expect("creating a story");
     story

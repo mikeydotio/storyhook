@@ -82,7 +82,6 @@ pub struct StoryDetail {
 }
 
 const PRIORITY_OPTIONS: &[Priority] = &[
-    Priority::None,
     Priority::Low,
     Priority::Medium,
     Priority::High,

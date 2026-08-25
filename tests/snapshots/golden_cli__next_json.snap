@@ -7,7 +7,7 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
-        "head_global_seq": 60,
+        "head_global_seq": 61,
         "story": {
           "assignee": "grace-hopper",
           "awaiting": null,
@@ -49,7 +49,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 60,
+          "head_global_seq": 61,
           "story": {
             "assignee": "grace-hopper",
             "awaiting": null,
@@ -84,7 +84,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 61,
+          "head_global_seq": 62,
           "story": {
             "assignee": "ada-lovelace",
             "awaiting": null,
@@ -121,7 +121,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 39,
+          "head_global_seq": 40,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -146,7 +146,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 60,
+          "head_global_seq": 61,
           "story": {
             "assignee": "grace-hopper",
             "awaiting": null,
@@ -181,7 +181,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 61,
+          "head_global_seq": 62,
           "story": {
             "assignee": "ada-lovelace",
             "awaiting": null,
@@ -218,7 +218,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 39,
+          "head_global_seq": 40,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -235,7 +235,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 66,
+          "head_global_seq": 67,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -260,7 +260,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 33,
+          "head_global_seq": 34,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -277,7 +277,24 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 36,
+          "head_global_seq": 25,
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-7",
+            "priority": "low",
+            "priority_assessed": true,
+            "relationships": [],
+            "state": "todo",
+            "story_type": "chore",
+            "superstate": "OPEN",
+            "title": "Document the data layer",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "head_global_seq": 37,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -292,22 +309,6 @@ source: tests/golden_cli.rs
             "title": "Audit error codes",
             "updated_at": "[timestamp]"
           }
-        },
-        {
-          "head_global_seq": 24,
-          "story": {
-            "awaiting": null,
-            "comments": [],
-            "created_at": "[timestamp]",
-            "id": "SH-7",
-            "priority": "none",
-            "relationships": [],
-            "state": "todo",
-            "story_type": "chore",
-            "superstate": "OPEN",
-            "title": "Document the data layer",
-            "updated_at": "[timestamp]"
-          }
         }
       ]
     }
@@ -317,7 +318,7 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
-        "head_global_seq": 61,
+        "head_global_seq": 62,
         "story": {
           "assignee": "ada-lovelace",
           "awaiting": null,

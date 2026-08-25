@@ -200,8 +200,8 @@ fn compensate(
         });
     }
     // Gated on *both* halves, because they move independently (SH-359). The
-    // case that needs it is invisible to a priority-only gate: undoing a
-    // story's first-ever `story prioritize` targets `priority: none,
+    // legacy case that needs it is invisible to a priority-only gate: undoing
+    // a pre-SH-449 story's first-ever `story prioritize` targets `priority: none,
     // assessed: false`, and the story currently reads `priority: none,
     // assessed: true` — the levels are equal, so a gate keyed on `priority`
     // alone never fires and the restored story keeps claiming somebody

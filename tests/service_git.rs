@@ -181,6 +181,7 @@ fn the_comment_and_the_transition_are_one_atomic_batch() {
     let fixture = ServiceFixture::new();
     git_init(&fixture);
     let id = create(&fixture, "Referenced");
+    let creation_event_count = events_of(&fixture, StoryNo::new(1)).len();
     // A claim, not a bare mention: only a claim moves a story (SH-124), and
     // this test is about the move landing in the same batch as the comment.
     commit(&fixture, &format!("feat: closes {id}"));
@@ -188,11 +189,14 @@ fn the_comment_and_the_transition_are_one_atomic_batch() {
 
     let events = events_of(&fixture, StoryNo::new(1));
     assert!(
-        matches!(events[1], StoryEvent::StoryCommitLinked { .. }),
+        matches!(
+            events[creation_event_count],
+            StoryEvent::StoryCommitLinked { .. }
+        ),
         "the link record comes first: {events:?}"
     );
     assert!(
-        matches!(events[2], StoryEvent::StoryStateChanged { ref state, .. } if state == "in-progress"),
+        matches!(events[creation_event_count + 1], StoryEvent::StoryStateChanged { ref state, .. } if state == "in-progress"),
         "the move follows it in the same batch: {events:?}"
     );
     fixture.assert_no_drift();
@@ -203,6 +207,7 @@ fn the_project_setting_can_turn_the_transition_off() {
     let fixture = ServiceFixture::new();
     git_init(&fixture);
     let id = create(&fixture, "Referenced");
+    let creation_event_count = events_of(&fixture, StoryNo::new(1)).len();
     fixture
         .store()
         .write(|tx| {
@@ -226,7 +231,11 @@ fn the_project_setting_can_turn_the_transition_off() {
         "no transition may be reported: {message}"
     );
     let events = events_of(&fixture, StoryNo::new(1));
-    assert_eq!(events.len(), 2, "creation and the comment, nothing else");
+    assert_eq!(
+        events.len(),
+        creation_event_count + 1,
+        "required creation metadata and the link, nothing else"
+    );
     // SH-178: the commit DID claim it — the setting is why it did not move,
     // not a missing claim word. A user who turned auto-transition off should
     // not be told their commit grammar is wrong.
@@ -367,6 +376,7 @@ fn a_repository_whose_commits_name_no_stories_changes_nothing() {
     let fixture = ServiceFixture::new();
     git_init(&fixture);
     create(&fixture, "Untouched");
+    let before = events_of(&fixture, StoryNo::new(1));
     commit(&fixture, "chore: nothing to do with stories");
 
     let message = sync(&fixture).expect("syncing");
@@ -374,7 +384,7 @@ fn a_repository_whose_commits_name_no_stories_changes_nothing() {
         message.starts_with("scanned 1 commits, linked 0 commits to 0 stories"),
         "{message}"
     );
-    assert_eq!(events_of(&fixture, StoryNo::new(1)).len(), 1);
+    assert_eq!(events_of(&fixture, StoryNo::new(1)), before);
 }
 
 #[test]
@@ -884,6 +894,7 @@ fn a_window_that_excludes_every_commit_scans_nothing() {
     let fixture = ServiceFixture::new();
     git_init(&fixture);
     let id = create(&fixture, "Out of the window");
+    let before = events_of(&fixture, StoryNo::new(1));
     // Dated in the past rather than "now": `--since=0d` resolved against a
     // commit made in the current second lands on whichever side of the cutoff
     // the run happens to fall, which is a flake rather than a finding.
@@ -900,7 +911,7 @@ fn a_window_that_excludes_every_commit_scans_nothing() {
         message.starts_with("scanned 0 commits, linked 0 commits to 0 stories"),
         "{message}"
     );
-    assert_eq!(events_of(&fixture, StoryNo::new(1)).len(), 1);
+    assert_eq!(events_of(&fixture, StoryNo::new(1)), before);
 }
 
 #[test]
@@ -908,6 +919,7 @@ fn a_reference_carrying_another_projects_prefix_is_ignored() {
     let fixture = ServiceFixture::new();
     git_init(&fixture);
     create(&fixture, "Ours");
+    let before = events_of(&fixture, StoryNo::new(1));
     commit(&fixture, "feat: closes AB-1 in the other tracker");
 
     let message = sync(&fixture).expect("syncing");
@@ -915,7 +927,7 @@ fn a_reference_carrying_another_projects_prefix_is_ignored() {
         message.contains("linked 0 commits to 0 stories"),
         "{message}"
     );
-    assert_eq!(events_of(&fixture, StoryNo::new(1)).len(), 1);
+    assert_eq!(events_of(&fixture, StoryNo::new(1)), before);
 }
 
 #[test]
@@ -923,6 +935,7 @@ fn a_pinned_clock_stamps_every_event_the_run_writes() {
     let mut fixture = ServiceFixture::new();
     git_init(&fixture);
     let id = create(&fixture, "Referenced");
+    let creation_event_count = events_of(&fixture, StoryNo::new(1)).len();
     // Claims, so the run writes a `StoryStateChanged` as well as a link. A bare
     // mention would leave only the link, and this loop would keep passing while
     // covering half of what its name promises.
@@ -937,7 +950,7 @@ fn a_pinned_clock_stamps_every_event_the_run_writes() {
             .any(|event| matches!(event, StoryEvent::StoryStateChanged { .. })),
         "the run must have written a state change for this loop to be worth running: {events:?}"
     );
-    for event in events.iter().skip(1) {
+    for event in events.iter().skip(creation_event_count) {
         let at = match event {
             StoryEvent::StoryCommitLinked { at, .. } | StoryEvent::StoryStateChanged { at, .. } => {
                 at.as_str()
