@@ -161,6 +161,39 @@ fn next_unblocks_after_dependency_closed() {
 }
 
 #[test]
+fn next_count_orders_a_blocked_story_after_its_blocker() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Blocker"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Dependent"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["relate", "SH-1", "blocks", "SH-2"])
+        .assert()
+        .success();
+
+    let output = story(dir.path())
+        .args(["next", "--count", "2"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    let blocker = stdout.find("SH-1").expect("blocker is listed");
+    let dependent = stdout.find("SH-2").expect("dependent is listed");
+    assert!(
+        blocker < dependent,
+        "the blocker must precede its dependent"
+    );
+}
+
+#[test]
 fn next_count_returns_multiple() {
     let dir = tempdir().unwrap();
     story(dir.path())

@@ -1210,6 +1210,18 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains("recorded state is "));
     assert!(body.contains(r#"case "state": return v.display_state || st.state;"#));
 
+    // SH-450: List exposes the server-owned execution queue as a one-based
+    // Order column. It reads the same nextRank() as the board's Next sort,
+    // and its comparator handles Infinity explicitly so unranked work stays
+    // last in either direction rather than flipping to the front.
+    assert!(body.contains(
+        r#"<th data-col="order">Order <span class="sort-arrow" id="sort-order"></span></th>"#
+    ));
+    assert!(body.contains(r#"class: "col-order""#));
+    assert!(body.contains(r#"order === Infinity ? "—" : String(order + 1)"#));
+    assert!(body.contains(r#"if (col === "order")"#));
+    assert!(body.contains("if (ra === Infinity && rb === Infinity) return byNumber;"));
+
     // SH-407: `filteredStories`'s state filter joins the same
     // `display_state || state` idiom -- it used to be the one deliberate
     // holdout (filtering by literal state, per SH-277's own comment), which
@@ -3266,6 +3278,7 @@ fn web_serve_api_data_carries_next_ids() {
     let fixture = served();
     fixture.seed(&["new", "First"]);
     fixture.seed(&["new", "Second"]);
+    fixture.seed(&["relate", "SH-1", "blocks", "SH-2"]);
 
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
     let resp = fixture
@@ -3285,7 +3298,17 @@ fn web_serve_api_data_carries_next_ids() {
     assert_eq!(
         next_ids,
         ["SH-1", "SH-2"],
-        "both stories tie on priority, so the order must fall back to ready_order's story-number tiebreak"
+        "the blocked successor must retain a later execution rank instead of disappearing"
+    );
+    let second = json["stories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|view| view["story"]["id"] == "SH-2")
+        .expect("SH-2 is on the board");
+    assert_eq!(
+        second["is_ready"], false,
+        "next_ids is an execution order, not a duplicate of current readiness"
     );
 }
 
