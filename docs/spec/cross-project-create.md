@@ -169,12 +169,13 @@ by changing the code rather than loosening the fence:
   dropdown does — so the fix was different, honest wording ("Failed to load…"),
   not routing an outcome through a generator whose contract doesn't match it.
 
-## One stated limitation
+## Global draft follow-up
 
-Editing an existing draft pins `#create-project`, disabled, to the draft's own
-project. Moving an already-created draft between projects is a transfer this modal
-does not offer — that is explicitly SH-442's territory (global drafts), not this
-story's.
+SH-442 subsequently made draft discovery global and made the existing editor
+reachable from Home, Settings, or any project board. Editing still pins
+`#create-project` to the draft's owner: global visibility does not redefine a
+story's project identity or introduce a transfer operation. See
+`docs/spec/global-drafts.md`.
 
 ## Tests
 
