@@ -343,6 +343,54 @@ test("a stale global draft row cannot open an editor for a draft that is gone", 
   );
 });
 
+test("a global draft editor closes when its owning project is deleted elsewhere", async ({
+  page,
+  request,
+}) => {
+  const betaSlug = await projectSlug(request, "Beta Project");
+  const title = "Owner disappears while editing from Home";
+
+  await page.locator("#new-story-btn").click();
+  await page.locator("#create-project").selectOption(betaSlug);
+  await expect(page.locator("#create-state")).toBeEnabled();
+  await page.locator("#create-title").fill(title);
+  await page.locator("#create-save-draft").click();
+  await page.locator("#home-btn").click();
+  await page.locator("#drafts-btn").click();
+  await page.locator("#drafts-list .drafts-row", { hasText: title }).click();
+  await expect(page.locator("#create-modal")).toHaveClass(/open/);
+  await expect(page.locator("#create-project")).toHaveValue(betaSlug);
+
+  await page.route("**/api/repos", async (route) => {
+    const response = await route.fetch({
+      headers: {
+        ...route.request().headers(),
+        "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
+      },
+    });
+    const repos = (await response.json()) as Array<{ id: string }>;
+    await route.fulfill({
+      response,
+      json: repos.filter((repo) => repo.id !== betaSlug),
+    });
+  });
+  const catalog = page.waitForResponse(
+    (resp) =>
+      resp.request().method() === "GET" &&
+      new URL(resp.url()).pathname === "/api/repos",
+  );
+  await page.evaluate(() => {
+    (window as unknown as { fetchReposOnce: () => void }).fetchReposOnce();
+  });
+  await catalog;
+
+  await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
+  await expect(page.locator("#home-view")).toBeVisible();
+  await expect(page.locator("#toast-stack .toast.error")).toContainText(
+    "This project was deleted",
+  );
+});
+
 /**
  * The regression test for SH-439's own sharpest hazard, found reviewing the
  * design before implementation: `bindEnterSubmit($("create-title"),
