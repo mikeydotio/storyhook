@@ -587,7 +587,7 @@ svg.icon { width: 1em; height: 1em; display: block; flex: none; }
    here: populateCard()'s own doc comment covers it. */
 .card .card-actions-btn, .card .rel-id { pointer-events: auto; }
 .card-id-row { display: flex; align-items: center; gap: 0.3125rem; }
-.card-id { font-family: var(--mono); font-size: 0.6875rem; color: var(--fg-faint); font-weight: 600; }
+.card-id { font-family: var(--mono); font-size: 0.6875rem; color: var(--fg-faint); font-weight: 600; white-space: nowrap; }
 .type-badge { font-size: 0.8125rem; line-height: 1; }
 /* SH-235: hidden on a fine pointer -- right-click already reaches this
    exact menu there, and a mouse-only affordance on every card would be
@@ -626,18 +626,22 @@ svg.icon { width: 1em; height: 1em; display: block; flex: none; }
    this project's loaded stories at all (another project, soft-deleted,
    a draft), so there is no status to colour -- a hollow ring rather than
    an omitted dot, so the gap reads as "unresolvable", not as a missing
-   feature. */
-.story-ref { display: inline-flex; align-items: center; gap: 0.25rem; }
+   feature.
+
+   `flex: none` and `white-space: nowrap` (SH-451) make the light and the
+   complete id one atomic layout token. A flex parent may move that token to
+   its next line, but may not shrink it until the id breaks at its hyphen. */
+.story-ref { display: inline-flex; align-items: center; gap: 0.25rem; flex: none; white-space: nowrap; }
 .story-light.unknown { background: transparent; border: 1.5px solid var(--fg-faint); }
 /* flex-wrap (SH-309): the blocked badge can now carry a whole sentence of
    `.rel-id` refs, each pinned to `min-width: var(--tap-min)` -- 44px under
    `pointer: coarse` -- so three refs alone are 132px of irreducible width.
-   `.card` clips nothing (no `overflow` rule of its own), so an unwrapped
-   row would run the badge off the card rather than merely looking tight,
-   on the narrow columns `responsive.mobile.spec.ts` pins at a 320px
-   viewport. */
+   `.card-flags` wraps separate flags; `.flag-blocked` (SH-451) wraps the
+   complete reference tokens inside its one mixed-content sentence. `.card`
+   clips nothing (no `overflow` rule of its own), so both levels are needed
+   to keep narrow columns from overflowing without splitting an id. */
 .card-flags { display: flex; flex-wrap: wrap; gap: 0.3125rem; margin-top: 0.375rem; }
-.flag-blocked { color: var(--danger); }
+.flag-blocked { color: var(--danger); flex-wrap: wrap; }
 .flag-archived { color: var(--fg-faint); }
 .flag { font-size: 0.6875rem; font-weight: 600; display: inline-flex; align-items: center; gap: 0.1875rem; }
 /* SH-203 consumer 2's cleared-blocker dwell -- see dwellingBlockerIds()
@@ -735,7 +739,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 }
 .drawer.open { transform: translateX(0); }
 .drawer-header { display: flex; align-items: center; gap: 0.625rem; padding: 1rem 1.25rem; border-bottom: 1px solid var(--border); flex-shrink: 0; }
-.drawer-id { font-family: var(--mono); font-size: 0.8125rem; font-weight: 700; color: var(--fg-muted); }
+.drawer-id { font-family: var(--mono); font-size: 0.8125rem; font-weight: 700; color: var(--fg-muted); white-space: nowrap; }
 .drawer-close { margin-left: auto; }
 .drawer-body { flex: 1; overflow-y: auto; padding: 1.25rem; display: flex; flex-direction: column; gap: 1.25rem; }
 .drawer-title {
@@ -905,10 +909,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    any `.rel-row`: `.referenced-by-text`, `.comment-text` (via
    linkifyStoryIds()) and `.card-blockers`. SH-235 measured this under
    24px tall, hence the tap-target floor alongside the relation's own
-   color/font/padding rather than a bare link-reset. */
+   color/padding rather than a bare link-reset. Its font size inherits from
+   each surface (SH-451), keeping compact card badges compact while relation
+   rows retain their existing surrounding size. */
 .rel-id {
   font-family: var(--mono); color: var(--accent); background: none; border: none; padding: 0;
-  font-size: 0.8125rem; display: inline-flex; align-items: center; justify-content: center;
+  font-size: inherit; display: inline-flex; align-items: center; justify-content: center;
   min-width: var(--tap-min); min-height: var(--tap-min);
 }
 .rel-id:hover { text-decoration: underline; }
@@ -937,7 +943,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .confirm-delete input { padding: 0.375rem 0.5rem; border: 1px solid var(--danger); border-radius: var(--radius-sm); background: var(--bg); font-size: var(--control-font-sm); }
 .confirm-delete-actions { display: flex; gap: 0.5rem; }
 .archive-modal-list { list-style: none; margin: 0.5rem 0 0; padding: 0; max-height: 12rem; overflow-y: auto; font-size: 0.8125rem; font-family: var(--mono); }
-.archive-modal-list li { padding: 0.125rem 0; color: var(--fg-muted); }
+.archive-modal-list li { padding: 0.125rem 0; color: var(--fg-muted); white-space: nowrap; }
 
 /* ---- Modal ---- */
 .modal {
@@ -992,7 +998,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   background: transparent; font: inherit; color: var(--fg); cursor: pointer;
 }
 .drafts-row:hover { background: var(--bg-sunken); border-color: var(--border); }
-.drafts-row-id { font-family: var(--mono); font-size: 0.75rem; color: var(--fg-muted); flex-shrink: 0; }
+.drafts-row-id { font-family: var(--mono); font-size: 0.75rem; color: var(--fg-muted); flex-shrink: 0; white-space: nowrap; }
 .drafts-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---- Story context menu (SH-197) ----
