@@ -198,6 +198,7 @@ test("Drafts is global on Home and edits a cross-project draft through its owner
   page,
   request,
 }) => {
+  const alphaSlug = await projectSlug(request, "Alpha Project");
   const betaSlug = await projectSlug(request, "Beta Project");
   const alphaTitle = "Alpha draft in the global list";
   const betaTitle = "Beta draft opened from Home";
