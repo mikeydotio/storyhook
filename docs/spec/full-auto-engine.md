@@ -60,7 +60,7 @@ being picked.
 | A1 | `human-only` is filtered in `ready_queue` — the `story next` path — and does **not** make a story `!is_ready`. A human can still progress it, so it must not read as blocked, and must not make its parent epic compute as blocked. |
 | A2 | Run and lane state are **operational tables**, not story events. The append-only event log stays the fold `story doctor`'s `diff_rebuilt` compares against, and heartbeat-rate writes have no business in a log nothing compacts. What the run *did* to stories is already event-sourced on the stories themselves. |
 | A3 | The engine invokes `story.sh dispatch`; the worktree/tmux/charter mechanics are not reimplemented in Rust. |
-| A4 | Claims stay serial even at N lanes. `story next --claim` is the arbiter; a claim is milliseconds and the store is the only thing that can adjudicate a race. |
+| A4 | Claims stay serial even at N lanes. `story claim --next` is the arbiter; a claim is milliseconds and the store is the only thing that can adjudicate a race. |
 | A5 | A project with no `projects.checkout_path` is refused, with the same message the dashboard's Dispatch button already gives. |
 | A6 | Lane charters keep the standing no-version-bump / no-deploy prohibition. Nothing about Full Auto relaxes it. |
 
@@ -268,7 +268,7 @@ sequenceDiagram
     participant Locks as machine locks
     participant GH as GitHub
 
-    Rec->>Store: story next --claim (scope, exclude no-auto)
+    Rec->>Store: story claim --next (scope, exclude no-auto)
     Store-->>Rec: SH-N, claimed (CAS)
     Rec->>Sh: dispatch SH-N --auto (own thread, off the store thread)
     Sh->>Lane: worktree + tmux window + charter
@@ -362,7 +362,7 @@ One pass, per live run:
    BreakerTripped`, fire the hook, raise the banner. A completion zeroes the
    streak.
 5. **Fill** idle lanes while the run is `running` and the machine lane budget
-   allows: `story next --claim` scoped and label-filtered, then dispatch.
+   allows: `story claim --next` scoped and label-filtered, then dispatch.
 6. **Terminate.** Nothing claimable and every lane idle → `finished`,
    `stop_reason = QueueDrained`, hook + banner.
 
@@ -485,10 +485,18 @@ carries no steps of its own.
 `!is_ready`, so the board's ready count is unchanged and an epic whose only
 incomplete child is `human-only` is **not** blocked — a human can progress it.
 
-The engine's claim is `story next --claim` narrowed by two new filters:
+The engine's claim is `story claim --next` narrowed by two new filters:
 `--epic <id>` (the descendant subtree) and `--exclude-label <csv>`. Both are
-ordinary `next` flags, useful outside the engine, rather than engine-private
-behavior hidden inside a service.
+ordinary query flags accepted on **both** doors onto the ready queue — `story
+next`, which reads, and `story claim --next`, which reads and takes — rather
+than engine-private behavior hidden inside a service. Filtering what the engine
+*looks at* without filtering what it *takes* would leave the half that matters
+unguarded.
+
+Claiming is one verb, `story claim <id> | --next` (epic SH-475): both forms
+mutating, exactly one required, so a dropped argument can never silently claim
+whatever happened to be top-priority. `story next --claim` is removed by SH-477;
+`story next` goes back to being a pure read.
 
 ## Control surfaces
 
@@ -568,7 +576,7 @@ directions.
 | `tests/engine_run_model.rs` | run/lane state transitions, breaker arithmetic, the schema CHECKs |
 | `tests/engine_reconcile.rs` | every row of the failure taxonomy, through `FakeDispatcher` |
 | `tests/engine_restart.rs` | interrupted lanes quarantine on restart, worktrees preserved |
-| `tests/engine_labels.rs` | `human-only` never in `next`; `no-auto` still in `next` and never dispatched |
+| `tests/engine_labels.rs` | `human-only` never in `next` or `claim --next`; `no-auto` still in `next` and never dispatched |
 | `tests/epic_computed_state.rs` | every rule and edge case above, table-driven |
 | `tests/epic_priority_tiebreak.rs` | `ready_order` with epic priority, including the no-parent rule; totality preserved |
 | `tests/machine_lock.rs` | real processes, stale-pid recovery, mutation-checked (precedent: `tests/orphan_check.rs`) |
@@ -595,7 +603,7 @@ mock. `ShellDispatcher` is exercised by the shell suite against the real script.
 |---|---|---|
 | W1 | Epic semantics (SH-446 absorbed): computed state, stored priority, `next` tie-break, epics-not-actionable, the Show-Epics filter | — |
 | W2 | Reserved labels: `human-only` filtering, `no-auto` reservation, orange tint | W1 (shares the `next` path) |
-| W3 | `story next --epic` and `--exclude-label` | W1, W2 |
+| W3 | `--epic` and `--exclude-label` on `story next` and `story claim --next` | W1, W2, SH-476 |
 | W4 | `machine-lock.sh`, the gate lock in `run-tests.sh`, `land-pr.sh`, charter change | — |
 | W5 | Codex hook-surface spike; the `PreToolUse` full-auto hook; lane launch posture | — |
 | W6 | Store migration, `EngineService`, the `Dispatcher` seam, the reconcile loop, breaker, restart reconciliation | W3 |
@@ -615,7 +623,7 @@ order, so `ready_order` hands them out in a workable sequence at equal priority.
 | W1 | SH-446 | Epic semantics, absorbed whole: computed state, stored priority, `next` tie-break, epics-not-actionable, the Show-Epics filter. Also carries a required correction to the shipped priority rubric (see below). |
 | W2 | SH-453 | Reserve `no-auto` / `human-only`; filter `human-only` out of `story next` |
 | W2 | SH-454 | Orange tint for both reserved labels in the dashboard |
-| W3 | SH-455 | `story next --epic <id>` and `--exclude-label <csv>` |
+| W3 | SH-455 | `--epic <id>` and `--exclude-label <csv>` on both `story next` and `story claim --next` |
 | W4 | SH-456 | `scripts/machine-lock.sh` |
 | W4 | SH-457 | Gate lock inside `scripts/run-tests.sh` |
 | W4 | SH-458 | `scripts/land-pr.sh` — certify and merge under the merge lock |
@@ -634,6 +642,14 @@ order, so `ready_order` hands them out in a workable sequence at equal priority.
 | W8 | SH-471 | Persistent halt/drain banner |
 | W9 | SH-472 | Engine event hooks |
 | W9 | SH-473 | Browser leg, operator docs, the As-built record |
+
+### The claim primitive this engine depends on
+
+Epic **SH-475** collapses claiming onto one verb, `story claim <id> | --next`,
+and removes `story next --claim` (SH-477). SH-455 and SH-465 are both
+`blocked-by` SH-476, the verb itself. Nothing about the engine's design changes
+— the claim is still atomic, still serial across lanes, and the store is still
+the arbiter of a race. Only the spelling of the primitive moves.
 
 ### A correction SH-446 forces on the shipped priority rubric
 
