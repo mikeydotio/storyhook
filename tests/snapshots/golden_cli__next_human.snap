@@ -26,6 +26,7 @@ SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
 SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
 SH-12 [todo] (high) [normal] Harden concurrent writes
 SH-4 [review] (medium) [normal] Write the migration runner [backend]
+SH-9 [todo] (medium) [normal] Add the daemon transport [phase:2]
 SH-10 [todo] (medium) [normal] Ship the CLI shim
 SH-7 [todo] (low) [chore] Document the data layer
 SH-11 [todo] (low) [normal] Audit error codes
