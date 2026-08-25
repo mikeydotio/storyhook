@@ -354,15 +354,18 @@ pub struct ReportData {
     pub stories: Vec<StoryView>,
     pub ready_ids: Vec<String>,
     pub blocked_ids: Vec<String>,
-    /// The ids `story next` would hand out, in the exact order it would hand
-    /// them out — priority ASC, then story number ASC
+    /// The ids `story next --count N` would hand out, in the exact order it
+    /// would hand them out. The first is claimable now; each later id becomes
+    /// claimable after every preceding id virtually completes, with each
+    /// available frontier ordered by priority ASC, then story number ASC
     /// ([`crate::domain::ready_order`]), over leaf stories only
     /// ([`crate::domain::has_children`] excludes an epic). Unlike
     /// [`Self::ready_ids`] (unsorted, epics included, driving the ready/
     /// blocked board badges), this is what the web dashboard's "Next" board
-    /// sort needs: the browser cannot reach `story next` itself
-    /// (`/api/v1/invoke` is loopback- and master-token-gated), so the
-    /// server computes the queue once and ships the order (SH-407).
+    /// sort and List "Order" column need: the browser cannot reach `story
+    /// next` itself (`/api/v1/invoke` is loopback- and master-token-gated),
+    /// so the server computes the queue once and ships the order (SH-407,
+    /// SH-450).
     pub next_ids: Vec<String>,
 }
 
