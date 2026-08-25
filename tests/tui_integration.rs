@@ -1210,9 +1210,10 @@ fn removing_an_occupied_status_without_a_destination_is_refused() {
     assert!(store.states.iter().any(|s| s.slug == "in-review"));
 }
 
-/// SH-240, end to end: the dashboard's "Ready Stories" panel and `story
-/// next` are asked the same question about the same real project, and give
-/// the same answer.
+/// SH-240/SH-450, end to end: the dashboard's "Ready Stories" panel and
+/// `story next` agree on the immediately actionable head of the same real
+/// project. Multi-result `next` then continues through work its earlier
+/// results would unblock, while the panel remains a snapshot of readiness now.
 ///
 /// The unit tests around `ready_stories` build a `DataStore` by hand, so
 /// they cannot see whether the *snapshot* carries what the answer needs —
@@ -1225,7 +1226,7 @@ fn removing_an_occupied_status_without_a_destination_is_refused() {
 /// readiness one, so an epic would make the two disagree for a reason that
 /// is not this test's subject.
 #[test]
-fn the_ready_panel_and_story_next_agree_over_a_real_project() {
+fn the_ready_panel_and_story_next_share_the_actionable_head() {
     let fixture = init_project("SH");
 
     let free = create_story(&fixture, "Free");
@@ -1286,7 +1287,16 @@ fn the_ready_panel_and_story_next_agree_over_a_real_project() {
             .collect::<Vec<_>>(),
         other => panic!("expected a list of stories, got {other:?}"),
     };
-    assert_eq!(next, panel, "the TUI offers what `story next` offers");
+    assert_eq!(
+        next.first().map(String::as_str),
+        panel.first().copied(),
+        "the TUI and `story next` must offer the same actionable head"
+    );
+    assert_eq!(
+        next,
+        [free, blocker, dependent],
+        "multi-result `next` continues through the dependent it virtually unblocks"
+    );
 }
 
 /// Helper: relate two stories, the way `story relate <a> <rel> <b>` does.

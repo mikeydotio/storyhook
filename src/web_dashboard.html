@@ -677,6 +677,7 @@ tbody tr:last-child td { border-bottom: none; }
 tbody tr:hover { background: var(--bg-sunken); }
 tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .col-id { font-family: var(--mono); white-space: nowrap; font-size: 0.75rem; }
+.col-order { font-family: var(--mono); white-space: nowrap; text-align: right; color: var(--fg-muted); font-size: 0.75rem; }
 .col-date { white-space: nowrap; color: var(--fg-muted); font-size: 0.75rem; }
 /* SH-235: same coarse-pointer-only gating as .card-actions-btn -- hidden
    entirely on a fine pointer (`display: none` on a <td>/<th> removes it
@@ -1423,6 +1424,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         <thead>
           <tr>
             <th data-col="id">ID <span class="sort-arrow" id="sort-id"></span></th>
+            <th data-col="order">Order <span class="sort-arrow" id="sort-order"></span></th>
             <th data-col="title">Title <span class="sort-arrow" id="sort-title"></span></th>
             <th data-col="state">State <span class="sort-arrow" id="sort-state"></span></th>
             <th data-col="priority">Priority <span class="sort-arrow" id="sort-priority"></span></th>
@@ -6446,13 +6448,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return sa < sb ? -1 : sa > sb ? 1 : 0;
   }
 
-  /** `id`'s position in `state.data.next_ids` -- the order `story next`
-   * would hand this queue out in (SH-407). `Infinity` when `id` is absent
-   * (not in the queue at all: claimed, an epic, out of phase, or the field
-   * is missing from an older daemon), so an unranked card always sorts
-   * after every ranked one regardless of `dir` -- see `columnCardCompare`'s
-   * `"next"` branch for why that has to be direction-independent rather
-   * than `* dir`. Reads the wire key literally (`next_ids`), mirroring
+  /** `id`'s zero-based position in `state.data.next_ids` -- the dependency-
+   * aware execution order `story next --count N` would return (SH-407,
+   * SH-450). `Infinity` when `id` is absent (not in the reachable queue at
+   * all: claimed, an epic, intrinsically blocked, cyclic, or the field is
+   * missing from an older daemon), so an unranked card/row always sorts
+   * after every ranked one regardless of `dir` -- see the `"next"` and
+   * List `"order"` comparator branches for why that has to be direction-
+   * independent rather than `* dir`. Reads the wire key literally
+   * (`next_ids`), mirroring
    * `compareWriteOrder`'s `a.head_global_seq` -- both are pinned against
    * drift by a `tests/web_test.rs` assertion that reads the field's actual
    * serialized name back out of a live daemon rather than hand-copying it
@@ -8320,6 +8324,20 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // `"priority"` branch does.
     var sorted = stories.slice().sort(function(a, b) {
       var col = state.sort.col, dir = state.sort.dir;
+      var sa = a.story, sb = b.story;
+      var idFallback = sa.id < sb.id ? -1 : sa.id > sb.id ? 1 : 0;
+      var byNumber = (storyNumber(sa.id) - storyNumber(sb.id)) || idFallback;
+      if (col === "order") {
+        var ra = nextRank(sa.id), rb = nextRank(sb.id);
+        // No rank is absence from the executable queue, not its greatest or
+        // least value. Keep it last in both directions; two missing ranks
+        // use the same stable story-number fallback as every other column.
+        if (ra === Infinity || rb === Infinity) {
+          if (ra === Infinity && rb === Infinity) return byNumber;
+          return ra === Infinity ? 1 : -1;
+        }
+        return (ra - rb) * dir;
+      }
       var av = sortValue(a, col), bv = sortValue(b, col);
       var cmp = (av < bv ? -1 : av > bv ? 1 : 0) * dir;
       if (cmp !== 0) return cmp;
@@ -8327,9 +8345,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         var byWrite = compareWriteOrder(a, b) * dir;
         if (byWrite !== 0) return byWrite;
       }
-      var sa = a.story, sb = b.story;
-      var idFallback = sa.id < sb.id ? -1 : sa.id > sb.id ? 1 : 0;
-      var byNumber = (storyNumber(sa.id) - storyNumber(sb.id)) || idFallback;
       return col === "updated" ? byNumber * dir : byNumber;
     });
 
@@ -8425,10 +8440,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function populateListRow(row, v, ready, blocked) {
     var st = v.story;
     var updated = (st.updated_at || "").slice(0, 10);
+    var order = nextRank(st.id);
     clear(row);
     row.setAttribute("aria-label", st.id + ": " + st.title);
     var badge = buildTypeBadge(st.story_type);
     row.appendChild(el("td", { class: "col-id" }, badge ? [badge, " ", st.id] : [st.id]));
+    row.appendChild(el("td", { class: "col-order" }, [order === Infinity ? "—" : String(order + 1)]));
     row.appendChild(el("td", {}, [st.title]));
     row.appendChild(el("td", {}, [buildStatePill(v)]));
     row.appendChild(el("td", {}, [priorityDot(st.priority)]));

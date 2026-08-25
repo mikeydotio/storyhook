@@ -23,13 +23,16 @@
 //! dependency *chain*, not a roster, and resorting it by id would replace the
 //! path it reports with a different, meaningless one.
 //!
-//! `next`, `summary`, `report` and `context`'s ready lists rank by
+//! `summary`, `report` and `context`'s ready lists rank by
 //! [`domain::ready_order`](crate::domain::ready_order) (priority, then story
 //! number) instead of bare story number — a total order the legacy comparator
-//! did not have (SH-63). `report_data`'s `next_ids` is the same list, sharing
-//! the same `ready_queue` helper `next` truncates — the web dashboard's board
-//! reads it as the "Next" sort key, since the browser cannot call `story
-//! next` itself (SH-407).
+//! did not have (SH-63). `next` extends that comparator into a dependency-aware
+//! execution order: each result virtually completes before the next is chosen,
+//! so a blocked successor can appear after its blocker (SH-450).
+//! `report_data`'s `next_ids` is that same list, sharing the same
+//! `execution_queue` helper `next` truncates — the web dashboard reads it as
+//! the "Next" board sort and the List view's "Order" column, since the browser
+//! cannot call `story next` itself (SH-407, SH-450).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -371,19 +374,23 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
         Ok(results)
     }
 
-    /// `story next` — the ready stories a worker should pick up, best first.
+    /// `story next` — the executable story order a worker should follow.
     ///
-    /// Leaf stories only: a parent whose children are ready is not itself
-    /// work. Sorted by [`domain::ready_order`]: priority, then story number —
-    /// a total order, so asking twice with nothing changed in between always
-    /// returns the same list (SH-63).
+    /// The first result is ready now. Each later result is what becomes
+    /// executable after every preceding result virtually completes, so an
+    /// open dependency constrains order instead of making its successor
+    /// permanently absent (SH-450). Leaf stories only: a parent whose children
+    /// are ready is not itself work. Every available frontier is sorted by
+    /// [`domain::ready_order`]: priority, then story number — a total order, so
+    /// asking twice with nothing changed in between always returns the same
+    /// list (SH-63).
     pub fn next(&self, count: usize, phase: Option<&str>) -> Result<Vec<StoryView>, AppError> {
         let views = self.story_views(false)?;
         let stories = view_map(&views);
         let active = self.active_state()?;
-        let mut ready = ready_queue(&views, &stories, active.as_ref(), phase);
-        ready.truncate(count);
-        Ok(ready)
+        let mut execution = execution_queue(&views, &stories, active.as_ref(), phase);
+        execution.truncate(count);
+        Ok(execution)
     }
 
     /// `story summary` — the project's rollup plus its top five ready stories.
@@ -433,7 +440,7 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
         // agree.)
         summary.ready_count = ready_ids.len();
 
-        let next_ids = ready_queue(&views, &stories, active.as_ref(), None)
+        let next_ids = execution_queue(&views, &stories, active.as_ref(), None)
             .into_iter()
             .map(|view| view.story.id)
             .collect();
@@ -1205,40 +1212,105 @@ fn type_label(story: &StorySnapshot) -> String {
 }
 
 /// [`domain::ready_order`] over a list of views — the ready-list ordering
-/// shared by `next`, `summary`, `report` and `context`.
+/// shared by `summary`, `report` and `context`. `execution_queue` uses the
+/// same tuple as its ordered frontier rather than sorting a completed list.
 fn sort_ready(views: &mut [StoryView]) {
     views.sort_by(|a, b| domain::ready_order(&a.story, &b.story));
 }
 
-/// The ready queue `story next` hands out, in full and in order: every leaf
-/// story (`!has_children`) that is claimable, sorted by
-/// [`domain::ready_order`] and optionally filtered to one `phase:<n>` label.
+/// The execution queue `story next --count N` hands out, in full and in order.
 ///
-/// The one implementation behind two callers: [`QueryService::next`], which
-/// truncates it to `count`, and [`QueryService::report_data`], which needs
-/// only the ids in this exact order for the web dashboard's "Next" board
-/// sort (SH-407) — the browser cannot call `story next` itself,
+/// Kahn's topological traversal begins with every immediately claimable leaf.
+/// Popping one node virtually completes it: each successor loses that open
+/// predecessor and joins the frontier once none remain. The frontier's key is
+/// the exact [`domain::ready_order`] tuple, so priority is reconsidered every
+/// time work becomes executable rather than only once at the beginning.
+/// Nothing here mutates a snapshot or the store (SH-450).
+///
+/// A story can enter the graph only if it would be claimable with dependency
+/// lookups removed: this retains `is_claimable`'s closed/draft/blocked/
+/// awaiting/obviated/active gates without duplicating them. Every open
+/// `blocked-by` target still contributes a predecessor, including one outside
+/// that candidate set. Such a predecessor is never popped, deliberately, so a
+/// claimed/manual-blocked/epic/out-of-phase blocker, or a dependency cycle,
+/// leaves its downstream work unranked instead of pretending it can run.
+///
+/// This is the one implementation behind two callers: [`QueryService::next`],
+/// which truncates it to `count`, and [`QueryService::report_data`], which
+/// needs the ids in this exact order for the web dashboard's "Next" board sort
+/// and List "Order" column (SH-407, SH-450) — the browser cannot call
+/// `story next` itself,
 /// `/api/v1/invoke` being loopback- and master-token-gated
 /// (`src/api/rpc.rs`), so the server computes the queue once and ships the
 /// order rather than the dashboard re-deriving it in JS, a duplicate of
 /// this exact predicate this project has already paid for once (SH-240).
-fn ready_queue(
+fn execution_queue(
     views: &[StoryView],
     stories: &BTreeMap<String, StorySnapshot>,
     active: Option<&StateDef>,
     phase: Option<&str>,
 ) -> Vec<StoryView> {
-    let mut ready: Vec<StoryView> = views
+    let no_open_blockers = BTreeMap::<String, StorySnapshot>::new();
+    let candidates: BTreeMap<&str, &StoryView> = views
         .iter()
-        .filter(|view| is_claimable(&view.story, stories, active) && !has_children(&view.story))
-        .cloned()
+        .filter(|view| {
+            is_claimable(&view.story, &no_open_blockers, active)
+                && !has_children(&view.story)
+                && phase.is_none_or(|phase| view.story.labels.contains(&format!("phase:{phase}")))
+        })
+        .map(|view| (view.story.id.as_str(), view))
         .collect();
-    if let Some(phase) = phase {
-        let label = format!("phase:{phase}");
-        ready.retain(|view| view.story.labels.contains(&label));
+
+    let mut predecessor_counts = BTreeMap::<&str, usize>::new();
+    let mut successors = BTreeMap::<&str, BTreeSet<&str>>::new();
+    for (id, view) in &candidates {
+        let open_predecessors: BTreeSet<&str> = view
+            .story
+            .relationships
+            .iter()
+            .filter(|relation| relation.relation == "blocked-by")
+            .filter_map(|relation| {
+                stories
+                    .get(&relation.other_id)
+                    .filter(|blocker| blocker.superstate == SuperState::Open)
+                    .map(|_| relation.other_id.as_str())
+            })
+            .collect();
+        predecessor_counts.insert(id, open_predecessors.len());
+        for predecessor in open_predecessors {
+            successors.entry(predecessor).or_default().insert(id);
+        }
     }
-    sort_ready(&mut ready);
-    ready
+
+    let mut frontier = BTreeSet::<(Priority, u64, &str)>::new();
+    for (id, count) in &predecessor_counts {
+        if *count == 0 {
+            let story = &candidates[id].story;
+            frontier.insert((story.priority.clone(), domain::story_number(id), id));
+        }
+    }
+
+    let mut execution = Vec::with_capacity(candidates.len());
+    while let Some((_, _, id)) = frontier.pop_first() {
+        execution.push(candidates[id].clone());
+        if let Some(blocked) = successors.get(id) {
+            for successor in blocked {
+                let Some(count) = predecessor_counts.get_mut(successor) else {
+                    continue;
+                };
+                *count -= 1;
+                if *count == 0 {
+                    let story = &candidates[successor].story;
+                    frontier.insert((
+                        story.priority.clone(),
+                        domain::story_number(successor),
+                        successor,
+                    ));
+                }
+            }
+        }
+    }
+    execution
 }
 
 /// The counting half of `summary` and `report`, which agree on every field.
