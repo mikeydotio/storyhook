@@ -210,7 +210,9 @@ test("Drafts is global on Home and edits a cross-project draft through its owner
 
   await page.locator("#new-story-btn").click();
   await page.locator("#create-project").selectOption(betaSlug);
-  await expect(page.locator("#create-state")).toBeEnabled();
+  await expect(
+    page.locator("#create-state option", { hasText: "review" }),
+  ).toHaveCount(0);
   await page.locator("#create-title").fill(betaTitle);
   await page.locator("#create-save-draft").click();
   await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
@@ -352,7 +354,9 @@ test("a global draft editor closes when its owning project is deleted elsewhere"
 
   await page.locator("#new-story-btn").click();
   await page.locator("#create-project").selectOption(betaSlug);
-  await expect(page.locator("#create-state")).toBeEnabled();
+  await expect(
+    page.locator("#create-state option", { hasText: "review" }),
+  ).toHaveCount(0);
   await page.locator("#create-title").fill(title);
   await page.locator("#create-save-draft").click();
   await page.locator("#home-btn").click();
@@ -379,9 +383,22 @@ test("a global draft editor closes when its owning project is deleted elsewhere"
       resp.request().method() === "GET" &&
       new URL(resp.url()).pathname === "/api/repos",
   );
-  await page.evaluate(() => {
-    (window as unknown as { fetchReposOnce: () => void }).fetchReposOnce();
-  });
+  const alphaSlug = await projectSlug(request, "Alpha Project");
+  const nudge = await request.post(
+    `/api/repos/${encodeURIComponent(alphaSlug)}/story`,
+    {
+      headers: {
+        "X-Storyhook": "1",
+        "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
+      },
+      data: { title: "Trigger the external catalog refresh" },
+    },
+  );
+  if (!nudge.ok()) {
+    throw new Error(
+      `catalog-refresh nudge answered ${nudge.status()}: ${await nudge.text()}`,
+    );
+  }
   await catalog;
 
   await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
