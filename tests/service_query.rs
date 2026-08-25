@@ -204,6 +204,107 @@ fn next_orders_same_second_ties_by_story_number_and_agrees_with_itself() {
     );
 }
 
+/// SH-450: an open dependency is an ordering edge, not a declaration that
+/// its successor can never be done. The frontier is reconsidered after each
+/// virtual completion: SH-3 wins the initial frontier on medium priority,
+/// SH-1 then precedes its own dependent, and newly-unblocked critical SH-2
+/// immediately outranks the unrelated low SH-4.
+#[test]
+fn next_walks_blockers_and_reprioritizes_each_unblocked_frontier() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let blocker = new_story(&ctx, "low blocker");
+    let dependent = new_story(&ctx, "critical dependent");
+    let independent = new_story(&ctx, "medium independent");
+    let tail = new_story(&ctx, "low tail");
+    let stories = StoryService::new(&ctx);
+    stories.set_priority(&blocker, "low").expect("prioritizing");
+    stories
+        .set_priority(&dependent, "critical")
+        .expect("prioritizing");
+    stories
+        .set_priority(&independent, "medium")
+        .expect("prioritizing");
+    stories.set_priority(&tail, "low").expect("prioritizing");
+    RelationService::new(&ctx)
+        .relate(&blocker, "blocks", &dependent, false)
+        .expect("relating");
+
+    let all = query(&fixture, |service| service.next(usize::MAX, None));
+    assert_eq!(
+        ids(&all),
+        [
+            independent.as_str(),
+            blocker.as_str(),
+            dependent.as_str(),
+            tail.as_str()
+        ]
+    );
+    let first_two = query(&fixture, |service| service.next(2, None));
+    assert_eq!(ids(&first_two), [independent.as_str(), blocker.as_str()]);
+}
+
+/// A phase-scoped queue must not manufacture readiness by hiding a blocker
+/// outside the phase. Once that blocker genuinely closes, the dependent gets
+/// a rank normally.
+#[test]
+fn next_phase_does_not_walk_through_an_out_of_phase_blocker() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let blocker = new_story(&ctx, "outside phase");
+    let dependent = new_story(&ctx, "phase dependent");
+    let independent = new_story(&ctx, "phase independent");
+    let stories = StoryService::new(&ctx);
+    for id in [&dependent, &independent] {
+        stories
+            .set_labels(id, &["phase:1".into()], &[])
+            .expect("labelling");
+    }
+    RelationService::new(&ctx)
+        .relate(&blocker, "blocks", &dependent, false)
+        .expect("relating");
+
+    let blocked = query(&fixture, |service| service.next(usize::MAX, Some("1")));
+    assert_eq!(ids(&blocked), [independent.as_str()]);
+
+    stories
+        .set_state(&blocker, "done", None, None, None)
+        .expect("closing blocker");
+    let unblocked = query(&fixture, |service| service.next(usize::MAX, Some("1")));
+    assert_eq!(ids(&unblocked), [dependent.as_str(), independent.as_str()]);
+}
+
+/// Nodes the current queue cannot execute are never treated as virtual
+/// completions. That rule also makes a dependency cycle terminate naturally:
+/// no member reaches a zero-predecessor frontier, and neither does downstream
+/// work waiting on the cycle.
+#[test]
+fn next_leaves_intrinsically_blocked_and_cyclic_subgraphs_unranked() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let manual = new_story(&ctx, "manual blocker");
+    let after_manual = new_story(&ctx, "after manual");
+    let cycle_a = new_story(&ctx, "cycle a");
+    let cycle_b = new_story(&ctx, "cycle b");
+    let after_cycle = new_story(&ctx, "after cycle");
+    let independent = new_story(&ctx, "independent");
+    StoryService::new(&ctx)
+        .set_awaiting(&manual, "outside answer")
+        .expect("blocking");
+    let relations = RelationService::new(&ctx);
+    for (a, b) in [
+        (&manual, &after_manual),
+        (&cycle_a, &cycle_b),
+        (&cycle_b, &cycle_a),
+        (&cycle_b, &after_cycle),
+    ] {
+        relations.relate(a, "blocks", b, false).expect("relating");
+    }
+
+    let execution = query(&fixture, |service| service.next(usize::MAX, None));
+    assert_eq!(ids(&execution), [independent.as_str()]);
+}
+
 /// And in `handoff`, which additionally splits open stories from archived
 /// ones (that split is not the defect; the legacy path concatenated a
 /// directory listing with a SQL query, and grouping open before archived is
@@ -870,7 +971,7 @@ fn report_data_treats_the_blocked_state_as_not_ready() {
 }
 
 /// SH-407: `report_data().next_ids` is the same queue `story next` hands
-/// out, in the same order — both routes share one `ready_queue` helper
+/// out, in the same order — both routes share one `execution_queue` helper
 /// (`src/service/query.rs`), so this is an equality pin in the style of
 /// `summary_and_report_agree_about_the_ready_count_by_two_different_routes`
 /// above, guarding against the two ever being computed independently again.
@@ -902,7 +1003,7 @@ fn report_datas_next_ids_agrees_with_next_by_two_different_routes() {
 }
 
 /// SH-407: `next_ids` excludes a parent the same way `story next` does —
-/// `ready_queue`'s `!has_children` filter applies to both callers, so an
+/// `execution_queue`'s `!has_children` filter applies to both callers, so an
 /// epic never appears in the dashboard's "Next" sort even though it is
 /// itself `is_claimable` and therefore does appear in `ready_ids`.
 #[test]
