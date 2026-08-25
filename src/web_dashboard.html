@@ -5752,7 +5752,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var complete = state.reposReadiness === "loaded" && !catalogHasDraftErrors();
     var count = catalogDrafts().length;
     $("drafts-btn-text").textContent = complete ? (count || "No") + " Drafts" : "Drafts";
-    if (!$("drafts-modal").classList.contains("open")) return;
+    // Overlay ownership changes synchronously; `.open` follows one animation
+    // frame later. A catalog reply inside that frame must still repaint the
+    // activated surface rather than leave its first loading snapshot behind.
+    if (overlayStack.indexOf("drafts-modal") === -1) return;
     renderDraftsList();
   }
 
