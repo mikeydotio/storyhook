@@ -78,7 +78,7 @@ enum (`PRIORITIES`, `src/api/rest.rs`), identical in every project, so it is bui
 once in `openCreateModal()` and never needs rebuilding. Title, description, and
 already-typed labels are project-independent and always carry over unconditionally.
 
-## The busy guard is a function, not a button attribute
+## Safety begins when the selection changes
 
 The modal's pre-existing in-flight guard (SH-312) reflected `createModalInFlight`
 onto three buttons' `disabled` attributes. That is not, itself, a request guard:
@@ -91,14 +91,26 @@ visibly, and briefly, disagreed with itself.
 
 `createModalBusy()` (`createModalInFlight || createVocabPending`) is checked as the
 literal first line of `submitCreate()`/`saveDraft()`, not merely reflected onto a
-button. `syncCreateModalButtons()` is the one place both flags drive the shared
-`disabled` attributes, so the two reasons can never disagree about a control's
-final state. `#create-project` itself is deliberately **never** disabled by either
-flag — it is the control the user is actively operating — with a focus rescue to
-the modal itself (`$("create-modal").focus()`) run before a currently-focused
-control is disabled, since `trapOverlayTab()`'s own candidate filter excludes
-disabled controls and would otherwise silently drop focus outside the overlay
-entirely.
+button. The safety transition starts synchronously in `#create-project`'s `change`
+handler: it cancels the prior debounce timer, advances `createVocabTicket` to
+invalidate scheduled and in-flight work, and raises `createVocabPending` whenever
+the visible selection differs from `createTargetProject`. The 150 ms debounce wraps
+only the vocabulary GET. Consequently the selector can name the candidate project
+immediately while every mutation remains blocked until that exact project's
+vocabulary has loaded successfully and made it `createTargetProject`.
+
+Returning to the already-loaded `createTargetProject` advances the ticket and
+clears pending without refetching vocabulary. Modal open and close cancel the
+timer as well as advancing the ticket, so delayed work from one singleton-modal
+instance cannot revive pending state or alter a later instance.
+
+`syncCreateModalButtons()` is the one place both flags drive the shared `disabled`
+attributes, so the two reasons can never disagree about a control's final state.
+`#create-project` itself is deliberately **never** disabled by either flag — it is
+the control the user is actively operating — with a focus rescue to the modal
+itself (`$("create-modal").focus()`) run before a currently-focused control is
+disabled, since `trapOverlayTab()`'s own candidate filter excludes disabled
+controls and would otherwise silently drop focus outside the overlay entirely.
 
 Every create-modal action captures `createTargetProject` into a local once, at the
 same point it captures its request base — not merely for symmetry, but because the
@@ -192,11 +204,15 @@ story's project identity or introduce a transfer operation. See
   to the new project's own defaults and drops the old project's own state from the
   option list; submitting files the story in the selected project and not the open
   one, with a toast naming both; a same-project create raises no toast; a
-  no-checkout project's option is disabled; editing a draft pins the dropdown; and
-  the load-bearing regression test — holding the target project's vocabulary fetch
-  open and pressing Enter in the title — proves zero requests fire while it is
-  pending, mutation-checked against `createModalBusy()` reverted to the bare
-  in-flight flag.
+  no-checkout project's option is disabled; and editing a draft pins the dropdown.
+  SH-485 adds same-renderer-task proof that selection immediately disables all
+  guarded controls and that immediate Save Draft/Enter dispatch no request; a
+  released vocabulary read enables one Beta POST; Alpha→Beta→Alpha cancels the
+  read and reuses Alpha vocabulary; a held Beta response delivered inside Delta's
+  newer debounce window cannot clear pending, replace vocabulary, or become the
+  mutation target; and current-request failure still reverts, restores controls,
+  reports the existing wording, and preserves rescued modal focus. The original
+  in-flight Enter regression remains as a second boundary around the same guard.
 
 This is a **wiring** fence in the sense SH-360 draws that distinction: it proves
 every create-modal request is addressed to the project the UI names, never that the
