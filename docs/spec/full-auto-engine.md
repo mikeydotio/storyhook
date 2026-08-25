@@ -370,11 +370,11 @@ One pass, per live run:
 lanes run to their natural end. `pause` returns to `running` on `resume`;
 graceful `stop` becomes `finished` when the last lane frees. `stop --now`
 additionally kills lane windows and returns each claimed story to its prior
-state, preserving worktrees and branches — `story unclaim --keep-worktree`,
-subject to the open reconciliation above. SH-484's conservative default matters
-here: an unclaimed story is unfinished by definition, so its branch is usually
-unmerged and its worktree often dirty, and a teardown that removed them by
-default would destroy work nobody pushed.
+state, preserving worktrees and branches — `story unclaim --keep-worktree`.
+The flag is load-bearing: `unclaim`'s plain form removes the worktree
+unconditionally, uncommitted changes included, because it is a cleanup verb.
+What it never discards is anything git was told about — an `unmerged` branch is
+kept, so committed work survives on its ref whether or not it was ever pushed.
 
 ### Where the dispatch subprocess runs
 
@@ -505,12 +505,15 @@ whatever happened to be top-priority. `story next --claim` is removed by SH-477;
 the primitive `stop --now` and the quarantine path both route through rather
 than composing their own `story move`.
 
-**One reconciliation is open, and is SH-464's to settle before it is built.**
-`stop --now` is specified below as returning each claimed story to its *prior*
-state; `story unclaim` was filed under a determination that it moves a story to
-`todo`. Both cannot hold. The options — record `claimed_from` on the lane and
-move explicitly, change this document to `todo`, or give `unclaim` a `--to`
-flag — are laid out on SH-464. Do not resolve it silently in either direction.
+**`unclaim` restores the state a story was claimed from**, derived from the
+story's own event log inside its own transaction — `StoryStateChanged` records
+only the destination, so it is a short replay rather than a field read. The
+engine therefore needs no `claimed_from` column, no explicit `story move`, and
+no second release path: it calls `unclaim` and the store answers the question.
+Where the replay cannot answer — a story created directly into the active state,
+or a prior state since removed from the vocabulary — it falls back to `todo` and
+**says so**. A silent substitution there would store a wrong answer about where
+the work came from.
 
 ## Control surfaces
 
