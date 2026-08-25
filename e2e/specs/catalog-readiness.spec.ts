@@ -72,6 +72,15 @@ test("the catalog names its failure instead of reporting an empty store", async 
   await expect(subtitle).toBeHidden();
   await expect(drafts).toBeVisible();
   await expect(page.locator("#drafts-btn-text")).toHaveText("Drafts");
+
+  // Hold the popover inside its entry frame: overlay ownership is already
+  // active, while its visual `.open` class has deliberately not landed. A
+  // repaint keyed to that eventual class misses the refusal below and leaves
+  // this list claiming "Loading" after every other catalog surface says the
+  // request failed.
+  await page.evaluate(() => {
+    window.requestAnimationFrame = (_callback: FrameRequestCallback): number => 1;
+  });
   await drafts.click();
   await expect(page.locator("#drafts-list")).toHaveText("Loading drafts…");
 
