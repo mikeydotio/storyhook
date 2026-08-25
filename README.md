@@ -25,7 +25,7 @@ It keeps every project's stories in one local SQLite store as an append-only eve
 - Add and filter by labels/tags
 - Search stories by title, comments, and labels
 - Project summary with state/priority breakdown
-- Find next ready-to-work stories (`story next`)
+- Find the next executable stories in dependency order (`story next`)
 - Add and remove story relationships
 - Derive read-only `ancestor-of` and `descendent-of` family relationships on show output
 - Archive stories immediately when they move into a `CLOSED` state
@@ -787,7 +787,7 @@ volume really was on purpose.
 Three commands support AI coding agent workflows:
 
 - `story context` -- generates a project overview document (states, priorities, relationships, and ready work) suitable for the start of an AI session. Use `--format json` for structured output.
-- `story next` -- surfaces the highest-priority unblocked story so an agent can pick up work without manual triage. Use `--count <n>` to get multiple candidates. Use `--claim` when more than one agent may be running against the same project at once: it atomically moves the answer into the project's active state before returning it, so two agents racing this command are handed two different stories instead of racing a separate `story move`.
+- `story next` -- surfaces the highest-priority unblocked story so an agent can pick up work without manual triage. Use `--count <n>` for the sequential execution order: each result virtually completes before the next is chosen, allowing a dependency-blocked story to appear after its blocker. Use `--claim` when more than one agent may be running against the same project at once: it atomically moves the immediately actionable answer into the project's active state before returning it, so two agents racing this command are handed two different stories instead of racing a separate `story move`.
 - `story handoff --since <duration>` -- generates a session handoff document summarizing what changed during a work session (e.g. `--since 2h`). Useful when passing context between agents or between an agent and a human.
 
 ### MCP server

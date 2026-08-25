@@ -356,8 +356,14 @@ Related:
             "next",
             r#"story next [--count <n>] [--phase <N>] [--claim]
 
-Get the highest-priority ready stories. A story is "ready" when all its
-predecessors are closed and it has no awaiting blockers.
+Get the story execution order, highest priority first while respecting
+dependencies. The first result is ready now. With --count above 1, each later
+result is the story that becomes executable after the earlier results are
+treated as completed; an open blocker therefore appears before its dependent
+instead of removing the dependent from the answer entirely.
+
+Stories with an awaiting/manual blocker, an obviated-by edge, a dependency
+cycle, or an open predecessor that this queue cannot execute remain absent.
 
 --claim atomically moves the answer into the project's active state
 (normally in-progress) before returning it, so two callers racing this
@@ -375,7 +381,7 @@ When to use:
 
 Examples:
   story next                # Top-priority ready story
-  story next --count 3      # Top 3 ready stories
+  story next --count 3      # First 3 stories in execution order
   story next --phase 1      # Top-priority ready story in phase 1
   story next --claim        # Claim the top-priority ready story atomically
   story next --json         # Structured JSON output
@@ -1844,9 +1850,10 @@ A dependency is a scheduling fact, not a severity claim.
   - blocks / blocked-by transmit nothing by default. A low blocker
     under a high dependent stays low.
   - The one exception, the blocker floor: if X is blocked-by Y and X
-    sorts EARLIER than Y, raise Y to X's level, never higher. Since
-    story next skips blocked stories, a low blocker beneath a high
-    dependent is a stall the queue cannot resolve by itself.
+    sorts EARLIER than Y, raise Y to X's level, never higher. story next
+    places Y before X, but Y still competes on its own priority while it is
+    executable; leaving a low blocker beneath a high dependent would delay
+    both behind unrelated medium work.
   - When the blocker floor and the detection carve-out disagree, the
     carve-out wins. It is the more specific rule, and the floor
     exists to prevent a stall that a detector edge does not create.

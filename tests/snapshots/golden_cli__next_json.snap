@@ -260,6 +260,32 @@ source: tests/golden_cli.rs
           }
         },
         {
+          "display_state": "blocked",
+          "head_global_seq": 64,
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-9",
+            "labels": [
+              "phase:2"
+            ],
+            "priority": "medium",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-5",
+                "relation": "blocked-by"
+              }
+            ],
+            "state": "todo",
+            "story_type": "normal",
+            "superstate": "OPEN",
+            "title": "Add the daemon transport",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
           "head_global_seq": 34,
           "story": {
             "awaiting": null,

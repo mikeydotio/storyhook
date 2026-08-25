@@ -33,22 +33,31 @@ path `story next` uses, and ships the order.
 ### The design
 
 `QueryService::next` (`src/service/query.rs`) used to inline its own filter/sort.
-That body is now a private helper, `ready_queue(views, stories, active, phase)`,
-shared by two callers:
+That body became a private helper shared with the dashboard in SH-407, and
+SH-450 extends it into
+`execution_queue(views, stories, active, phase)`, shared by two callers:
 
-- `next(count, phase)` — unchanged behavior, truncates `ready_queue`'s result to
-  `count`.
-- `report_data()` — calls `ready_queue(&views, &stories, active.as_ref(), None)`
-  (every ready leaf, no phase filter) and stores the ids on a new
-  `ReportData.next_ids: Vec<String>`.
+- `next(count, phase)` — truncates the execution order to `count`; its first
+  result remains immediately claimable.
+- `report_data()` — computes the complete project execution order and stores
+  its ids in `ReportData.next_ids: Vec<String>`.
+
+The execution queue is a deterministic Kahn traversal over open `blocked-by`
+edges. Its initial frontier is every leaf that passes all non-dependency
+`is_claimable` gates. Each selected story virtually completes, reducing its
+successors' predecessor counts; newly unblocked work joins the frontier, which
+is ordered again by `ready_order`. This means `A blocked-by B` constrains the
+answer to `B, A` instead of making A absent. No snapshots or store rows change.
+An open predecessor outside the candidate set — claimed, manually blocked,
+awaiting, obviated, an epic, outside a requested phase, or in a dependency
+cycle — is never virtually completed, so it and downstream work stay unranked.
 
 `next_ids` reaches the wire on `GET .../data` (`src/api/rest.rs`) as a top-level
 array, alongside the existing `ready_ids`/`blocked_ids`. It is **not** the same set
-as `ready_ids`: `ready_ids` includes epics (used by the ready/blocked badges, where
-excluding epics would be wrong — an epic can legitimately carry the badge) and is
-not sorted by `ready_order` at all (built by iterating a `BTreeMap` keyed by id
-string, so it comes out lexicographic). `next_ids` is the exact, ordered answer
-`story next` would give.
+as `ready_ids`: `ready_ids` means claimable now, includes epics for badge rendering,
+and is not an ordered queue. `next_ids` is the exact ordered answer
+`story next --count N` would give and may additionally include future stories
+that an earlier entry unlocks.
 
 The dashboard reads it through `nextRank(id)` — the id's index in
 `state.data.next_ids`, or `Infinity` if absent. `columnCardCompare`'s `"next"`
@@ -64,6 +73,16 @@ tie (an array index is unique), so the reversing `* dir` only ever applies there
 The menu gains `Next ↑`/`Next ↓`, offered only on OPEN-superstate columns
 (`columnSortOptionsFor`) — a CLOSED column's contents will never be offered by
 `story next` again, so the option would be permanently degenerate there.
+
+### The List Order column (SH-450)
+
+The List view exposes the same `nextRank(id)` as a one-based **Order** column
+immediately after ID. A story absent from `next_ids` displays an em dash. The
+header sorts in both directions; ranked rows reverse normally, while unranked
+rows remain last in either direction because absence from the executable queue
+is not a numeric rank to reverse. Two unranked rows fall back to canonical story
+number. This is deliberately a consumer of the existing top-level `next_ids`,
+not a second per-story field or a JavaScript dependency traversal.
 
 ## 2. The "Completed" sort
 
@@ -195,10 +214,13 @@ OPEN→CLOSED, so there is nothing for that check to reconcile.
 
 | Claim | Pinned by |
 |---|---|
-| `next_ids` is exactly `story next`'s own answer, by construction (shared helper) | `tests/service_query.rs::report_datas_next_ids_agrees_with_next_by_two_different_routes` |
+| `next_ids` is exactly `story next`'s own dependency-aware answer, by construction (shared helper) | `tests/service_query.rs::report_datas_next_ids_agrees_with_next_by_two_different_routes` |
+| A blocked successor follows its blocker and is reprioritized when unlocked | `tests/service_query.rs::next_walks_blockers_and_reprioritizes_each_unblocked_frontier`; `tests/story_next.rs::next_count_orders_a_blocked_story_after_its_blocker` |
+| Unexecutable blockers, phase boundaries, and cycles do not manufacture a rank | `tests/service_query.rs::next_phase_does_not_walk_through_an_out_of_phase_blocker`; `::next_leaves_intrinsically_blocked_and_cyclic_subgraphs_unranked` |
 | `next_ids` excludes a parent the way `story next` does | `tests/service_query.rs::report_datas_next_ids_excludes_parents_the_way_next_does` |
 | The daemon emits `next_ids` on `/data` | `tests/web_test.rs::web_serve_api_data_carries_next_ids` |
 | The dashboard reads the literal wire key (not a hand-typed guess on both sides) | `tests/web_test.rs::web_dashboard_js_reads_the_wire_key_next_ids_actually_serializes_to` |
+| List renders one-based ranks and sorts both directions with unranked rows last | `tests/web_test.rs::web_serve_root_html_has_board_list_drawer_markers`; `e2e/specs/list-order.spec.ts` |
 | The sort menu offers the right options on the right columns | `tests/web_test.rs`'s SH-305/SH-407 block; `e2e/specs/board-sort.spec.ts` |
 | A story blocked by an open story promotes to "blocked" | `src/domain.rs::a_todo_story_blocked_by_an_open_story_is_promoted_to_blocked`, and end-to-end via `tests/service_query.rs::a_todo_story_blocked_by_an_open_story_shows_a_promoted_display_state` |
 | A closed blocker does not promote | `src/domain.rs::a_blocker_that_is_closed_does_not_promote` |
