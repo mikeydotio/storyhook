@@ -8548,21 +8548,18 @@ fn status_editor_is_busy_is_not_taught_about_the_destination_prompt() {
     }
 }
 
-/// SH-439: the create modal is not part of `renderScreen()`'s repo-screen
-/// chrome (unlike the drawer, which SH-290 already closes on every screen
-/// change), so the one place `fetchReposOnce()` discovers the open project
-/// was deleted elsewhere must close it explicitly -- otherwise a modal
-/// opened before the delete survives the forced jump to Home, floating over
-/// a screen with no project open at all.
+/// SH-439 closed the create modal when its open board vanished. SH-442 makes
+/// the editor global, so its pinned `createTargetProject` may instead vanish
+/// while the user is already on Home or Settings. The catalog success path
+/// must close from that target independently of board navigation.
 ///
 /// A pure substring test can't drive the page's runtime DOM (there's no
 /// headless browser here), so this pins the *source* shape: within the
-/// branch that fires on a vanished project (bounded by its own `toast(...)`
-/// call through the closing brace before `goHome()`), the code must call
-/// `closeCreateModal()`. The real behavioral proof -- that the modal
-/// actually disappears -- is `e2e/specs/create-story-project.spec.ts`'s job.
+/// target guard (bounded by the next board-specific comment), the code must
+/// both identify `createTargetProject` and call `closeCreateModal()`. The real
+/// behavioral proof is in `e2e/specs/create-story-project.spec.ts`.
 #[test]
-fn web_serve_root_html_closes_the_create_modal_when_its_project_vanishes() {
+fn web_serve_root_html_closes_the_create_modal_when_its_target_vanishes() {
     let fixture = served();
     let port = fixture.port;
 
@@ -8574,23 +8571,23 @@ fn web_serve_root_html_closes_the_create_modal_when_its_project_vanishes() {
     let body = resp.into_body().read_to_string().unwrap();
     let script = script(&body);
 
-    let signature = "toast(\"This project was deleted\", \"error\");";
+    let signature = "var createTargetVanished =";
     let branch_start = script
         .find(signature)
-        .expect("the deleted-project toast must exist with this exact text");
-    let close = "\n          goHome();\n        }\n";
+        .expect("the global create target has a deleted-project guard");
+    let close = "// The currently-viewed project was deleted elsewhere";
     let branch_end = branch_start
         + script[branch_start..]
             .find(close)
-            .expect("the deleted-project branch's own closing goHome()/brace")
-        + close.len();
+            .expect("the global create-target guard precedes the board-specific guard");
     let branch = &script[branch_start..branch_end];
 
     assert!(
-        branch.contains("closeCreateModal()"),
-        "the branch that fires when the open project was deleted elsewhere no longer \
-         calls closeCreateModal() -- a create/edit-draft modal opened on that project \
-         would then survive the forced navigation to Home with nothing to close it \
-         (SH-439)"
+        branch.contains("createTargetProject")
+            && branch.contains("!state.repos.some")
+            && branch.contains("closeCreateModal()"),
+        "the global create-target deletion guard no longer derives from \
+         createTargetProject and closes the modal -- an editor opened from Home/Settings \
+         would retain live controls aimed at a vanished project (SH-442). Found: {branch}"
     );
 }
