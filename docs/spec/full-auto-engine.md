@@ -48,7 +48,7 @@ being picked.
 | D8 | **Epic semantics from SH-446 are absorbed into this program**, not merely depended on: epic state becomes computed from children, epic priority stays stored, and `story next` breaks priority ties on epic priority. | The epic entry point is meaningless without it, and "an epic with all finished children is finished" is the run's own termination condition. |
 | D9 | **The queue is live and unbounded.** `story next` is re-asked every time a lane frees; a run ends when nothing is claimable. | An epic's children unblock each other as the run's own merges land; a snapshot taken at start would miss most of them. |
 | D10 | **Quarantine and continue; halt on three consecutive hard stops**, reset by any completion. | One hard story never halts a run; a broken tree halts within three attempts. |
-| D11 | **On daemon restart or reboot, interrupted lanes are quarantined and reported, never resumed.** Worktree and branch are preserved. | A fresh agent inheriting uncommitted work it did not write is a hazard with no upside; the story is still there to be re-dispatched deliberately. |
+| D11 | **On daemon restart or reboot, interrupted lanes are quarantined and reported, never resumed.** Worktree and branch are preserved. | A fresh agent inheriting uncommitted work it did not write is a hazard with no upside; the story is still there to be re-dispatched deliberately. Re-confirmed against a live alternative once `story reset` existed: the engine must never destroy a crashed agent's work unattended, so a human runs `reset` deliberately if they want the clean restart. |
 | D12 | **Two reserved labels.** `no-auto`: still returned by `story next` and claimable by hand, but never dispatched by the engine — human-in-the-loop work. `human-only`: never returned by `story next` at all. Both render with an orange tint in the dashboard. | The engine skips `no-auto` rather than holding a lane open waiting for a person who is asleep; `human-only` is removed from the ready queue entirely because no agent should be offered it. |
 | D13 | **Halt, drain and lane-failure fire an event hook and raise a dashboard banner that persists until acknowledged.** | A gate that goes silent must read as stale rather than as an all-clear (SH-306, SH-418). A push you might miss plus a banner you cannot is the pair that survives a missed notification. |
 | D14 | **Multiple runs, one per project, with a machine-wide lane budget.** | Two projects can progress at once; total concurrent lanes stay bounded, which is what the locks in D4/D5 are sized against. |
@@ -370,11 +370,8 @@ One pass, per live run:
 lanes run to their natural end. `pause` returns to `running` on `resume`;
 graceful `stop` becomes `finished` when the last lane frees. `stop --now`
 additionally kills lane windows and returns each claimed story to its prior
-state, preserving worktrees and branches — `story unclaim --keep-worktree`.
-The flag is load-bearing: `unclaim`'s plain form removes the worktree
-unconditionally, uncommitted changes included, because it is a cleanup verb.
-What it never discards is anything git was told about — an `unmerged` branch is
-kept, so committed work survives on its ref whether or not it was ever pushed.
+state, preserving worktrees and branches — plain `story unclaim`, which touches
+no on-disk state by construction rather than by opting out of doing so.
 
 ### Where the dispatch subprocess runs
 
@@ -501,9 +498,12 @@ Claiming is one verb, `story claim <id> | --next` (epic SH-475): both forms
 mutating, exactly one required, so a dropped argument can never silently claim
 whatever happened to be top-priority. `story next --claim` is removed by SH-477;
 `story next` goes back to being a pure read. Releasing a claim is its inverse,
-`story unclaim <id>` (SH-483, with the tmux and worktree teardown in SH-484) —
-the primitive `stop --now` and the quarantine path both route through rather
-than composing their own `story move`.
+`story unclaim <id>` (SH-483, with its plugin half in SH-484) — the primitive
+`stop --now` routes through rather than composing its own `story move`.
+`unclaim` restores the claim's state and closes the lane's window; it does not
+touch on-disk state at all. Its destructive sibling `story reset <id>` deletes
+the worktree and branch for a clean restart, and **the engine never calls it**
+— see the restart policy below.
 
 **`unclaim` restores the state a story was claimed from**, derived from the
 story's own event log inside its own transaction — `StoryStateChanged` records
@@ -579,7 +579,7 @@ ships no notification stack of its own.
 | Window gone, story still OPEN | HardStop(WindowGone) | quarantine, increment streak |
 | No observable change past the stall ceiling | HardStop(Stalled) | quarantine, increment streak |
 | `story.sh` answered `ok:false` | HardStop(DispatchRefused) | quarantine; relay the script's own refusal verbatim (SH-120's verdict) |
-| Daemon restart with a live lane | HardStop(Interrupted) | quarantine, report; never resume (D11) |
+| Daemon restart with a live lane | HardStop(Interrupted) | quarantine, report; never resume, never `reset` (D11) |
 | Story carries `no-auto` | Skipped | never claimed; listed as needing a human |
 
 ## Testing
