@@ -2,6 +2,7 @@ import { test, expect } from "./support";
 import type { Locator, Page } from "@playwright/test";
 import {
   cleanUpCreatedStories,
+  deleteBlockedStory,
   deleteStory,
   openFilters,
   openProject,
@@ -41,7 +42,7 @@ test.beforeEach(async ({ page }) => {
  * Creates a story in Alpha Project's `todo` column -- default state/type,
  * same helper shape as `zoom.mobile.spec.ts`'s own local `createStory`.
  */
-async function createStory(page: Page, title: string): Promise<void> {
+async function createStory(page: Page, title: string): Promise<string> {
   await page.locator("#new-story-btn").click();
   await expect(page.locator("#create-modal")).toHaveClass(/open/);
   await page.locator("#create-title").fill(title);
@@ -49,10 +50,107 @@ async function createStory(page: Page, title: string): Promise<void> {
   await page.locator("#create-priority").selectOption("medium");
   await page.locator("#create-submit").click();
   await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
-  await expect(
-    page.locator('.column[data-state="todo"] .card', { hasText: title }),
-  ).toBeVisible();
+  const card = page.locator('.column[data-state="todo"] .card', {
+    hasText: title,
+  });
+  await expect(card).toBeVisible();
+  return (await card.getAttribute("data-id"))!;
 }
+
+/** Adds one blocked-by edge through the open drawer's real relation form. */
+async function addBlocker(page: Page, blockerId: string): Promise<void> {
+  await page.locator('input[data-field="relationship-id"]').fill(blockerId);
+  await page
+    .locator('select[data-field="relationship-kind"]')
+    .selectOption("blocked-by");
+  await page
+    .locator("#drawer-body .inline-add button", { hasText: "Add" })
+    .click();
+  await expect(page.locator(".rel-row", { hasText: blockerId })).toBeVisible();
+}
+
+/**
+ * SH-451: the blocked badge is one flex item containing several storyRef()
+ * children. At phone width, three coarse-pointer-floored references create
+ * the same pressure as the reported WKT-36 screenshot: the badge must wrap
+ * between references, never inside an id at its hyphen.
+ */
+test("a pressured blocked badge keeps every story id on one line", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 320, height: SWEEP_HEIGHT });
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+
+  const blockerTitles = [
+    "SH-451 intact id — blocker A",
+    "SH-451 intact id — blocker B",
+    "SH-451 intact id — blocker C",
+  ];
+  const blockerIds: string[] = [];
+  for (const title of blockerTitles) {
+    blockerIds.push(await createStory(page, title));
+  }
+  const workerTitle = "SH-451 intact id — pressured worker";
+  await createStory(page, workerTitle);
+
+  const detailLoaded = page.waitForResponse(
+    (resp) =>
+      /\/story\/[^/]+$/.test(new URL(resp.url()).pathname) &&
+      resp.request().method() === "GET",
+  );
+  await page
+    .locator('.column[data-state="todo"] .card', { hasText: workerTitle })
+    .click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await detailLoaded;
+  for (const blockerId of blockerIds) {
+    await addBlocker(page, blockerId);
+  }
+  await page.locator("#drawer-close").click();
+  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
+
+  const workerCard = page.locator('.column[data-state="blocked"] .card', {
+    hasText: workerTitle,
+  });
+  const badge = workerCard.locator(".flag-blocked");
+  const refs = badge.locator(".story-ref");
+  await expect(refs).toHaveCount(3);
+
+  const metrics = await refs.evaluateAll((nodes) =>
+    nodes.map((node) => {
+      const id = node.querySelector<HTMLElement>(".rel-id")!;
+      const range = document.createRange();
+      range.selectNodeContents(id);
+      return {
+        id: id.textContent,
+        textLines: range.getClientRects().length,
+        fontSize: getComputedStyle(id).fontSize,
+        badgeFontSize: getComputedStyle(node.closest(".flag-blocked")!).fontSize,
+      };
+    }),
+  );
+  for (const metric of metrics) {
+    expect(metric.textLines, `${metric.id} split across lines`).toBe(1);
+    expect(
+      metric.fontSize,
+      `${metric.id} should match the compact blocker badge typography`,
+    ).toBe(metric.badgeFontSize);
+  }
+  const overflow = await workerCard.evaluate((node) => ({
+    scrollWidth: node.scrollWidth,
+    clientWidth: node.clientWidth,
+  }));
+  expect(
+    overflow.scrollWidth,
+    "keeping ids atomic must not make the blocked badge overflow its card",
+  ).toBeLessThanOrEqual(overflow.clientWidth);
+
+  await deleteBlockedStory(page, workerTitle);
+  for (const title of blockerTitles) {
+    await deleteStory(page, title);
+  }
+});
 
 /**
  * Fails if the page itself scrolls horizontally at the current viewport --
