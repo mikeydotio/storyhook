@@ -166,13 +166,13 @@ test("the List view's Updated column breaks a same-second tie by write order, an
   await page.locator('#view-toggle button[data-view="list"]').click();
   await expect(page.locator("#list-view")).toBeVisible();
 
-  // `populateListRow` puts the title in the row's second `<td>` (no class
-  // of its own), right after the id column.
+  // SH-450 puts Order after ID, so `populateListRow` now puts the title in
+  // the row's third `<td>` (no class of its own).
   async function orderedTitles(): Promise<string[]> {
     const rows = page
       .locator("tr[data-id]")
       .filter({ hasText: "SH-336 tiebreak test" });
-    return rows.locator("td:nth-child(2)").allTextContents();
+    return rows.locator("td:nth-child(3)").allTextContents();
   }
 
   const header = page.locator('thead th[data-col="updated"]');
