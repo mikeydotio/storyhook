@@ -40,7 +40,7 @@ use crate::domain::{Priority, default_open_state, default_type};
 use crate::env::Environment;
 use crate::error::AppError;
 use crate::invoke::dispatch;
-use crate::output::{Response, render_response};
+use crate::output::{ReportData, Response, render_response};
 use crate::service::{CatalogService, ConfigService, Ctx, FieldEdits, QueryService, StoryService};
 use crate::store::{ProjectId, ReadOps, Store};
 
@@ -461,7 +461,7 @@ use crate::output::NO_CHECKOUT;
 
 /// `GET /api/repos` — one entry per project the store knows, driving the
 /// header's project selector, the home screen's summary cards, and the
-/// settings screen's project list.
+/// settings screen's project list, and the dashboard-wide Drafts surface.
 ///
 /// **Every** project, not only those with a checkout. A project whose directory
 /// was deleted and then forgotten by `story doctor --fix`, or one that arrived
@@ -491,16 +491,20 @@ fn repos_json<S: Store>(store: &S, env: &Environment) -> Result<String, AppError
                 .and_then(|inner| inner);
             let read_only = entry.path.is_none();
             match summary {
-                Ok(data) => serde_json::json!({
-                    "id": entry.id,
-                    "name": entry.name,
-                    "prefix": entry.prefix,
-                    "path": entry.path,
-                    "available": !read_only,
-                    "read_only": read_only,
-                    "reason": read_only.then_some(NO_CHECKOUT),
-                    "summary": data.summary,
-                }),
+                Ok(data) => {
+                    let drafts = dashboard_drafts_json(&data);
+                    serde_json::json!({
+                        "id": entry.id,
+                        "name": entry.name,
+                        "prefix": entry.prefix,
+                        "path": entry.path,
+                        "available": !read_only,
+                        "read_only": read_only,
+                        "reason": read_only.then_some(NO_CHECKOUT),
+                        "summary": data.summary,
+                        "drafts": drafts,
+                    })
+                }
                 Err(e) => serde_json::json!({
                     "id": entry.id,
                     "name": entry.name,
@@ -516,6 +520,18 @@ fn repos_json<S: Store>(store: &S, env: &Environment) -> Result<String, AppError
         .collect();
 
     to_json(&repos)
+}
+
+/// The dashboard's one definition of a visible draft: unpublished and not
+/// soft-deleted. Both the global catalog and a project's board data call this
+/// helper, so a draft cannot appear in one Drafts surface but disappear from
+/// the other because two filters drifted apart (SH-442).
+fn dashboard_drafts_json(data: &ReportData) -> Vec<serde_json::Value> {
+    data.stories
+        .iter()
+        .filter(|view| !view.story.deleted && view.story.draft)
+        .map(|view| serde_json::to_value(view).unwrap_or(serde_json::Value::Null))
+        .collect()
 }
 
 /// `POST /api/repos` — create a project at a path on this machine.
@@ -711,12 +727,7 @@ fn project_data_json<S: Store>(ctx: &Ctx<'_, S>) -> Result<String, AppError> {
                 })
                 .collect();
 
-            let drafts_json: Vec<serde_json::Value> = data
-                .stories
-                .iter()
-                .filter(|view| !view.story.deleted && view.story.draft)
-                .map(|view| serde_json::to_value(view).unwrap_or(serde_json::Value::Null))
-                .collect();
+            let drafts_json = dashboard_drafts_json(&data);
 
             let response = serde_json::json!({
                 "summary": data.summary,

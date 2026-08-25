@@ -1617,30 +1617,11 @@ fn every_backdrop_is_shown_and_hidden_through_the_helpers() {
     }
 }
 
-/// The Drafts popover names its project, and does it in a box that can hold
-/// an unbounded name (SH-292).
-///
-/// Two halves, both cheap and both load-bearing, and neither observable from
-/// the browser suite without a project whose name is long enough to prove it:
-///
-/// 1. **The slot exists, inside the popover, hidden by default.** Hidden
-///    because `currentProjectLabel()` answers `null` off the board screen and
-///    an empty subject line would otherwise reserve its own padding above the
-///    list.
-/// 2. **It elides.** `.modal` is `min(30rem, 92vw)` and a project name has no
-///    length bound anywhere in `src/domain/` — so the one-line ellipsis recipe
-///    `.projsel-label` and `.drafts-row-title` already use is the whole reason
-///    this line can be given user input at all. Without `nowrap` a long name
-///    silently wraps to two or three lines and reads as a title;
-///    `e2e/specs/responsive.mobile.spec.ts` proves the rendered consequence at
-///    four widths, and this fails in seconds if the recipe is unpicked.
-///
-/// The header is asserted to stay the control's own name. Folding the project
-/// into it is the shape SH-292's council rejected: `.modal-header` is
-/// `1rem/700` with no truncation and is shared by six modals, so one surface's
-/// data would impose a truncation rule on five that never asked for one.
+/// The global Drafts popover identifies every row's owning project in a box
+/// that can hold an unbounded project name (SH-442, preserving SH-292's
+/// truncation requirement after removing the old one-project subject line).
 #[test]
-fn the_drafts_popover_names_its_project_in_a_box_that_can_hold_one() {
+fn every_global_draft_row_names_its_project_in_a_box_that_can_hold_one() {
     let fixture = served();
     let port = fixture.port;
 
@@ -1651,46 +1632,14 @@ fn the_drafts_popover_names_its_project_in_a_box_that_can_hold_one() {
         .unwrap();
     let body = resp.into_body().read_to_string().unwrap();
 
-    let modal_at = body
-        .find(r#"<div class="modal" id="drafts-modal""#)
-        .expect("the dashboard has a drafts popover");
-    let modal_end = modal_at
-        + body[modal_at..]
-            .find("</div>\n\n")
-            .expect("the drafts popover's markup ends");
-    let modal = &body[modal_at..modal_end];
-
     assert!(
-        modal.contains(r#"<div class="modal-header">Drafts</div>"#),
-        "the Drafts popover's header must stay the control's own name. Folding the project \
-         into it puts unbounded user input in a `1rem/700` box with no truncation, shared by \
-         six modals (SH-292)"
-    );
-    let subject_at = modal.find(r#"id="drafts-subject""#).unwrap_or_else(|| {
-        panic!(
-            "the Drafts popover names no project. Its own copy says \"this project's drafts\" \
-             and \"No drafts in this project.\" while `.backdrop` blurs the topbar and SH-299's \
-             `inert` removes it from the accessibility tree, so nothing inside the overlay \
-             resolves either sentence (SH-292): {modal}"
-        )
-    });
-    let subject = enclosing_tag(modal, subject_at);
-    assert_eq!(
-        attribute(subject, "class"),
-        Some("drafts-subject"),
-        "the subject line's class is deliberately named for this surface rather than for the \
-         modal family: a `.modal-subject` reads as a house pattern the next contributor is \
-         invited to spread to `#create-modal` and `#archive-modal`, neither of which claims a \
-         project scope it cannot resolve (SH-292)"
-    );
-    assert!(
-        subject.contains(" hidden"),
-        "the subject line starts hidden: `currentProjectLabel()` answers null off the board \
-         screen, and an empty line would still reserve its own padding above the list -- {subject}"
+        body.contains(r#"el("span", { class: "drafts-row-project" }"#),
+        "each global draft row must render its owning project beside the draft; an id prefix \
+         alone is not a project name and prefixes need not explain the project to a user"
     );
 
     let css = stylesheet(&body);
-    let rule = declarations(css, ".drafts-subject");
+    let rule = declarations(css, ".drafts-row-project");
     for (property, value) in [
         ("overflow", "hidden"),
         ("text-overflow", "ellipsis"),
@@ -1698,24 +1647,18 @@ fn the_drafts_popover_names_its_project_in_a_box_that_can_hold_one() {
     ] {
         assert!(
             rule.contains(&format!("{property}: {value}")),
-            "`.drafts-subject` must carry `{property}: {value}` -- a project name has no length \
-             bound, and without the full one-line ellipsis recipe a long one wraps into a title \
-             or clips mid-glyph inside a `min(30rem, 92vw)` box (SH-292). Found: {rule}"
+            "`.drafts-row-project` must carry `{property}: {value}` -- a project name has no \
+             length bound, and without the full one-line ellipsis recipe it can overflow the \
+             global Drafts modal (SH-442). Found: {rule}"
         );
     }
 }
 
-/// A catalog refresh repaints the Drafts popover's project name, not just the
-/// topbar's (SH-292).
+/// A catalog refresh repaints the global Drafts popover, not just the topbar.
 ///
 /// `fetchReposOnce()`'s success path is the only thing that reassigns
-/// `state.repos`, and the subject line is derived from it. It repainted the
-/// project selector, the home cards and the settings table and nothing
-/// belonging to this popover — so a project renamed by another client left the
-/// popover naming the old one, and left it there: the board's `/data` is a
-/// separate request, `renderAll()` runs only on a parsed 200, and
-/// `markDataSettled()` fires at most once per project. A stale name is worse
-/// than no name, and this is the dwell state the naming exists for.
+/// `state.repos`, and both rows and counts are derived from it. Without this
+/// call another client's save/publish/discard leaves an open popover stale.
 ///
 /// `updateDraftsButton()` is the right call and not a fourth `render*`: it
 /// owns this surface (SH-284) and early-returns unless the popover is open.
@@ -1742,11 +1685,35 @@ fn a_catalog_refresh_repaints_the_drafts_popover_not_only_the_topbar() {
 
     assert!(
         block.contains("updateDraftsButton()"),
-        "nothing repaints the Drafts popover when the catalog changes, so a project renamed by \
-         another client leaves the popover naming the old one indefinitely -- the board's own \
-         `/data` cannot correct it, and this is exactly the dwell state the name was added for \
-         (SH-292). Found: {block}"
+        "nothing repaints the global Drafts popover when the catalog changes, so another \
+         client's save/publish/discard leaves its rows and count stale (SH-442). Found: {block}"
     );
+}
+
+/// A catalog row is only a discovery snapshot. Opening it re-reads the owner
+/// and applies only the latest selection, so stale or reordered replies cannot
+/// populate the singleton editor with the wrong draft (SH-442).
+#[test]
+fn opening_a_global_draft_is_ticketed_and_revalidated() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading src/web_dashboard.html");
+    let body = function_body(script(&html), "openCatalogDraft");
+
+    for required in [
+        "var ticket = ++draftOpenTicket;",
+        "if (ticket !== draftOpenTicket) return;",
+        "var fresh = (payload.drafts || []).filter",
+        "if (!fresh)",
+        "openCreateModal(fresh, project.id, payload.meta);",
+    ] {
+        assert!(
+            body.contains(required),
+            "openCatalogDraft() lost its stale-snapshot/reordered-reply guard `{required}` \
+             (SH-442). Body: {body}"
+        );
+    }
 }
 
 /// The dashboard's `<script>` block, so a text-literal assertion below
@@ -5968,6 +5935,59 @@ fn web_serve_repos_list_reports_available_repo_with_summary() {
     assert_eq!(repos[0]["summary"]["total_open"], 1);
 }
 
+/// SH-442: the catalog is the dashboard-wide Drafts source, while `/data`
+/// remains the board-scoped source. Both routes use the same server helper so
+/// they expose exactly the same unpublished, non-deleted views.
+#[test]
+fn web_serve_repos_list_carries_each_projects_visible_drafts() {
+    let fixture = served();
+    fixture.seed(&["new", "Live story"]);
+    fixture.seed(&["new", "Visible sketch", "--draft"]);
+    fixture.seed(&["new", "Discarded sketch", "--draft"]);
+    fixture.seed(&["delete", "SH-3", "discarded"]);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    let catalog: serde_json::Value = serde_json::from_str(
+        &fixture
+            .agent()
+            .get(format!("http://127.0.0.1:{port}/api/repos"))
+            .call()
+            .unwrap()
+            .into_body()
+            .read_to_string()
+            .unwrap(),
+    )
+    .unwrap();
+    let project = &catalog.as_array().unwrap()[0];
+    let catalog_ids: Vec<&str> = project["drafts"]
+        .as_array()
+        .expect("a readable catalog entry carries drafts")
+        .iter()
+        .map(|draft| draft["story"]["id"].as_str().unwrap())
+        .collect();
+
+    let data: serde_json::Value = serde_json::from_str(
+        &fixture
+            .agent()
+            .get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+            .call()
+            .unwrap()
+            .into_body()
+            .read_to_string()
+            .unwrap(),
+    )
+    .unwrap();
+    let data_ids: Vec<&str> = data["drafts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|draft| draft["story"]["id"].as_str().unwrap())
+        .collect();
+
+    assert_eq!(catalog_ids, vec!["SH-2"]);
+    assert_eq!(catalog_ids, data_ids);
+}
+
 /// SH-42's header selector shows `PREFIX · name` for the current project, so
 /// `/api/repos` has to carry the prefix — it was already reading the record
 /// that has it, just not putting it on the wire.
@@ -8580,21 +8600,18 @@ fn status_editor_is_busy_is_not_taught_about_the_destination_prompt() {
     }
 }
 
-/// SH-439: the create modal is not part of `renderScreen()`'s repo-screen
-/// chrome (unlike the drawer, which SH-290 already closes on every screen
-/// change), so the one place `fetchReposOnce()` discovers the open project
-/// was deleted elsewhere must close it explicitly -- otherwise a modal
-/// opened before the delete survives the forced jump to Home, floating over
-/// a screen with no project open at all.
+/// SH-439 closed the create modal when its open board vanished. SH-442 makes
+/// the editor global, so its pinned `createTargetProject` may instead vanish
+/// while the user is already on Home or Settings. The catalog success path
+/// must close from that target independently of board navigation.
 ///
 /// A pure substring test can't drive the page's runtime DOM (there's no
 /// headless browser here), so this pins the *source* shape: within the
-/// branch that fires on a vanished project (bounded by its own `toast(...)`
-/// call through the closing brace before `goHome()`), the code must call
-/// `closeCreateModal()`. The real behavioral proof -- that the modal
-/// actually disappears -- is `e2e/specs/create-story-project.spec.ts`'s job.
+/// target guard (bounded by the next board-specific comment), the code must
+/// both identify `createTargetProject` and call `closeCreateModal()`. The real
+/// behavioral proof is in `e2e/specs/create-story-project.spec.ts`.
 #[test]
-fn web_serve_root_html_closes_the_create_modal_when_its_project_vanishes() {
+fn web_serve_root_html_closes_the_create_modal_when_its_target_vanishes() {
     let fixture = served();
     let port = fixture.port;
 
@@ -8606,23 +8623,23 @@ fn web_serve_root_html_closes_the_create_modal_when_its_project_vanishes() {
     let body = resp.into_body().read_to_string().unwrap();
     let script = script(&body);
 
-    let signature = "toast(\"This project was deleted\", \"error\");";
+    let signature = "var createTargetVanished =";
     let branch_start = script
         .find(signature)
-        .expect("the deleted-project toast must exist with this exact text");
-    let close = "\n          goHome();\n        }\n";
+        .expect("the global create target has a deleted-project guard");
+    let close = "// The currently-viewed project was deleted elsewhere";
     let branch_end = branch_start
         + script[branch_start..]
             .find(close)
-            .expect("the deleted-project branch's own closing goHome()/brace")
-        + close.len();
+            .expect("the global create-target guard precedes the board-specific guard");
     let branch = &script[branch_start..branch_end];
 
     assert!(
-        branch.contains("closeCreateModal()"),
-        "the branch that fires when the open project was deleted elsewhere no longer \
-         calls closeCreateModal() -- a create/edit-draft modal opened on that project \
-         would then survive the forced navigation to Home with nothing to close it \
-         (SH-439)"
+        branch.contains("createTargetProject")
+            && branch.contains("!state.repos.some")
+            && branch.contains("closeCreateModal()"),
+        "the global create-target deletion guard no longer derives from \
+         createTargetProject and closes the modal -- an editor opened from Home/Settings \
+         would retain live controls aimed at a vanished project (SH-442). Found: {branch}"
     );
 }

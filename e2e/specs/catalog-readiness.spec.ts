@@ -58,6 +58,7 @@ test("the catalog names its failure instead of reporting an empty store", async 
   const label = page.locator("#projsel-label");
   const btn = page.locator("#projsel-btn");
   const subtitle = page.locator("#subtitle");
+  const drafts = page.locator("#drafts-btn");
 
   // Held, not yet refused: nothing has completed, so the loading line is the
   // honest one and the error would be a lie. This is the assertion a bare
@@ -69,6 +70,19 @@ test("the catalog names its failure instead of reporting an empty store", async 
   await expect(label).toHaveText("Projects");
   await expect(btn).toBeDisabled();
   await expect(subtitle).toBeHidden();
+  await expect(drafts).toBeVisible();
+  await expect(page.locator("#drafts-btn-text")).toHaveText("Drafts");
+
+  // Hold the popover inside its entry frame: overlay ownership is already
+  // active, while its visual `.open` class has deliberately not landed. A
+  // repaint keyed to that eventual class misses the refusal below and leaves
+  // this list claiming "Loading" after every other catalog surface says the
+  // request failed.
+  await page.evaluate(() => {
+    window.requestAnimationFrame = (_callback: FrameRequestCallback): number => 1;
+  });
+  await drafts.click();
+  await expect(page.locator("#drafts-list")).toHaveText("Loading drafts…");
 
   await repos.refuse();
 
@@ -85,6 +99,9 @@ test("the catalog names its failure instead of reporting an empty store", async 
     "Couldn't load your projects. Retrying…",
   );
   await expect(subtitle).toBeHidden();
+  await expect(page.locator("#drafts-list")).toHaveText(
+    "Couldn't load drafts. Retrying…",
+  );
 });
 
 test("a catalog that answers after a failure drops the error where it stands", async ({
@@ -159,6 +176,55 @@ test("an empty store still offers to add a project", async ({ page }) => {
   await expect(page.locator("#projsel-label")).toHaveText("No projects yet");
   await expect(page.locator("#projsel-btn")).toBeDisabled();
   await expect(page.locator("#projsel-btn")).toHaveAttribute("title", "");
+  await expect(page.locator("#drafts-btn")).toBeVisible();
+  await expect(page.locator("#drafts-btn-text")).toHaveText("No Drafts");
+  await page.locator("#drafts-btn").click();
+  await expect(page.locator("#drafts-list")).toHaveText("No drafts.");
+});
+
+test("a partial catalog keeps known drafts visible without claiming a complete count", async ({
+  page,
+  request,
+}) => {
+  const alpha = await projectSlug(request, "Alpha Project");
+  const created = await request.post(
+    `/api/repos/${encodeURIComponent(alpha)}/story`,
+    { headers: writeHeaders(), data: { title: "Known despite another project failing", draft: true } },
+  );
+  if (!created.ok()) throw new Error(`draft seed answered ${created.status()}`);
+
+  await page.route("**/api/repos", async (route) => {
+    const response = await route.fetch({
+      headers: {
+        ...route.request().headers(),
+        "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
+      },
+    });
+    const repos = (await response.json()) as Array<Record<string, unknown>>;
+    const failed = repos.find((repo) => repo.name === "Beta Project");
+    if (failed) {
+      delete failed.drafts;
+      failed.error = "simulated unreadable project";
+      failed.available = false;
+    }
+    await route.fulfill({ response, json: repos });
+  });
+  await seedToken(page);
+  await page.goto("/");
+
+  await expect(page.locator("#drafts-btn-text")).toHaveText("Drafts");
+  await page.locator("#drafts-btn").click();
+  await expect(page.locator("#drafts-list .drafts-row")).toContainText(
+    "Known despite another project failing",
+  );
+  await expect(page.locator("#drafts-list")).toContainText(
+    "Couldn't load some projects' drafts. Retrying…",
+  );
+
+  // SSE can start another catalog read after the assertions above. Remove
+  // the route and await any handler already decoding its response before the
+  // browser context disposes that response during test teardown.
+  await page.unrouteAll({ behavior: "wait" });
 });
 
 test("a statuses editor whose fetch never answers names the failure", async ({

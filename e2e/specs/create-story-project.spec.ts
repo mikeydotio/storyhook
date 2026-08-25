@@ -5,6 +5,7 @@ import {
   holdUntilRefused,
   openProject,
   projectSlug,
+  requiredEnv,
   seedToken,
   storiesInProject,
 } from "./support";
@@ -77,6 +78,7 @@ test("switching projects resets state and type to the new project's own defaults
   page,
   request,
 }) => {
+  const alphaSlug = await projectSlug(request, "Alpha Project");
   const betaSlug = await projectSlug(request, "Beta Project");
 
   await page.locator("#new-story-btn").click();
@@ -127,7 +129,11 @@ test("submitting files the story in the selected project, not the one on screen,
   await page.locator("#new-story-btn").click();
   await expect(page.locator("#create-modal")).toHaveClass(/open/);
   await page.locator("#create-project").selectOption(betaSlug);
-  await expect(page.locator("#create-state")).toBeEnabled();
+  // Enabled is not a settlement signal: Alpha leaves this control enabled
+  // too. Its fixture-only review option disappears only when Beta lands.
+  await expect(
+    page.locator("#create-state option", { hasText: "review" }),
+  ).toHaveCount(0);
 
   await page.locator("#create-title").fill(title);
   // Set explicitly to dodge SH-358's unassessed-priority warn toast, which
@@ -190,6 +196,221 @@ test("editing a draft pins the project dropdown, disabled", async ({
   await expect(page.locator("#create-project")).toHaveValue(alphaSlug);
 
   await page.locator("#create-discard").click();
+});
+
+test("Drafts is global on Home and edits a cross-project draft through its owner", async ({
+  page,
+  request,
+}) => {
+  const alphaSlug = await projectSlug(request, "Alpha Project");
+  const betaSlug = await projectSlug(request, "Beta Project");
+  const alphaTitle = "Alpha draft in the global list";
+  const betaTitle = "Beta draft opened from Home";
+  const editedBetaTitle = "Beta draft edited from Home";
+
+  await page.locator("#new-story-btn").click();
+  await page.locator("#create-title").fill(alphaTitle);
+  await page.locator("#create-save-draft").click();
+  await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
+
+  await page.locator("#new-story-btn").click();
+  await page.locator("#create-project").selectOption(betaSlug);
+  await expect(
+    page.locator("#create-state option", { hasText: "review" }),
+  ).toHaveCount(0);
+  await page.locator("#create-title").fill(betaTitle);
+  await page.locator("#create-save-draft").click();
+  await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
+
+  await page.locator("#home-btn").click();
+  await expect(page.locator("#home-view")).toBeVisible();
+  await expect(page.locator("#drafts-btn")).toBeVisible();
+  await expect(page.locator("#drafts-btn-text")).toHaveText("2 Drafts");
+
+  await page.locator("#drafts-btn").click();
+  const rows = page.locator("#drafts-list .drafts-row");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.filter({ hasText: alphaTitle })).toContainText("AA · Alpha Project");
+  const betaRow = rows.filter({ hasText: betaTitle });
+  await expect(betaRow).toContainText("BB · Beta Project");
+
+  const ownerData = page.waitForResponse(
+    (resp) =>
+      resp.request().method() === "GET" &&
+      new URL(resp.url()).pathname === `/api/repos/${betaSlug}/data`,
+  );
+  await betaRow.click();
+  await ownerData;
+  await expect(page.locator("#create-modal-header")).toHaveText("Edit draft");
+  await expect(page.locator("#create-project")).toBeDisabled();
+  await expect(page.locator("#create-project")).toHaveValue(betaSlug);
+  await expect(page.locator("#create-title")).toHaveValue(betaTitle);
+
+  await page.locator("#create-title").fill(editedBetaTitle);
+  const patched = page.waitForResponse(
+    (resp) =>
+      resp.request().method() === "PATCH" &&
+      new URL(resp.url()).pathname.startsWith(`/api/repos/${betaSlug}/story/`),
+  );
+  await page.locator("#create-save-draft").click();
+  const patchedPayload = await (await patched).json();
+  const editedId: string = patchedPayload.story.story.id;
+  await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
+
+  await page.locator("#drafts-btn").click();
+  const editedBetaRow = page.locator("#drafts-list .drafts-row", {
+    hasText: editedBetaTitle,
+  });
+  await expect(editedBetaRow).toContainText("BB · Beta Project");
+  const refreshedOwnerData = page.waitForResponse(
+    (resp) =>
+      resp.request().method() === "GET" &&
+      new URL(resp.url()).pathname === `/api/repos/${betaSlug}/data`,
+  );
+  await editedBetaRow.click();
+  await refreshedOwnerData;
+  const published = page.waitForResponse(
+    (resp) =>
+      resp.request().method() === "POST" &&
+      new URL(resp.url()).pathname === `/api/repos/${betaSlug}/story/${editedId}/publish`,
+  );
+  await page.locator("#create-submit").click();
+  await published;
+  await expect(page.locator("#drafts-btn-text")).toHaveText("1 Drafts");
+
+  await page.locator("#drafts-btn").click();
+  const alphaRow = page.locator("#drafts-list .drafts-row", { hasText: alphaTitle });
+  const alphaOwnerData = page.waitForResponse(
+    (resp) =>
+      resp.request().method() === "GET" &&
+      new URL(resp.url()).pathname === `/api/repos/${alphaSlug}/data`,
+  );
+  await alphaRow.click();
+  await alphaOwnerData;
+  const discarded = page.waitForResponse(
+    (resp) =>
+      resp.request().method() === "DELETE" &&
+      new URL(resp.url()).pathname.startsWith(`/api/repos/${alphaSlug}/story/`),
+  );
+  await page.locator("#create-discard").click();
+  await discarded;
+  await expect(page.locator("#drafts-btn-text")).toHaveText("No Drafts");
+
+  const betaStories = await storiesInProject(request, "Beta Project");
+  const alphaStories = await storiesInProject(request, "Alpha Project");
+  expect(betaStories.some((story) => story.id === editedId)).toBe(true);
+  expect(alphaStories.some((story) => story.id === editedId)).toBe(false);
+});
+
+test("a stale global draft row cannot open an editor for a draft that is gone", async ({
+  page,
+  request,
+}) => {
+  const alphaSlug = await projectSlug(request, "Alpha Project");
+  const title = "Stale catalog draft";
+  const created = page.waitForResponse(
+    (resp) =>
+      resp.request().method() === "POST" &&
+      new URL(resp.url()).pathname === `/api/repos/${alphaSlug}/story`,
+  );
+  await page.locator("#new-story-btn").click();
+  await page.locator("#create-title").fill(title);
+  await page.locator("#create-save-draft").click();
+  const createdPayload = await (await created).json();
+  const id: string = createdPayload.story.story.id;
+  await expect(page.locator("#drafts-btn-text")).toHaveText("1 Drafts");
+
+  await page.route(
+    (url) => url.pathname === `/api/repos/${alphaSlug}/data`,
+    async (route) => {
+      const response = await route.fetch({
+        headers: {
+          ...route.request().headers(),
+          "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
+        },
+      });
+      const data = await response.json();
+      data.drafts = [];
+      await route.fulfill({ response, json: data });
+    },
+  );
+
+  await page.locator("#drafts-btn").click();
+  const refreshedCatalog = page.waitForResponse(
+    (resp) =>
+      resp.request().method() === "GET" &&
+      new URL(resp.url()).pathname === "/api/repos",
+  );
+  await page.locator("#drafts-list .drafts-row", { hasText: title }).click();
+  await refreshedCatalog;
+
+  await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
+  await expect(page.locator("#toast-stack .toast.error")).toContainText(
+    `${id} is no longer an available draft.`,
+  );
+});
+
+test("a global draft editor closes when its owning project is deleted elsewhere", async ({
+  page,
+  request,
+}) => {
+  const betaSlug = await projectSlug(request, "Beta Project");
+  const title = "Owner disappears while editing from Home";
+
+  await page.locator("#new-story-btn").click();
+  await page.locator("#create-project").selectOption(betaSlug);
+  await expect(
+    page.locator("#create-state option", { hasText: "review" }),
+  ).toHaveCount(0);
+  await page.locator("#create-title").fill(title);
+  await page.locator("#create-save-draft").click();
+  await page.locator("#home-btn").click();
+  await page.locator("#drafts-btn").click();
+  await page.locator("#drafts-list .drafts-row", { hasText: title }).click();
+  await expect(page.locator("#create-modal")).toHaveClass(/open/);
+  await expect(page.locator("#create-project")).toHaveValue(betaSlug);
+
+  await page.route("**/api/repos", async (route) => {
+    const response = await route.fetch({
+      headers: {
+        ...route.request().headers(),
+        "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
+      },
+    });
+    const repos = (await response.json()) as Array<{ id: string }>;
+    await route.fulfill({
+      response,
+      json: repos.filter((repo) => repo.id !== betaSlug),
+    });
+  });
+  const catalog = page.waitForResponse(
+    (resp) =>
+      resp.request().method() === "GET" &&
+      new URL(resp.url()).pathname === "/api/repos",
+  );
+  const alphaSlug = await projectSlug(request, "Alpha Project");
+  const nudge = await request.post(
+    `/api/repos/${encodeURIComponent(alphaSlug)}/story`,
+    {
+      headers: {
+        "X-Storyhook": "1",
+        "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
+      },
+      data: { title: "Trigger the external catalog refresh" },
+    },
+  );
+  if (!nudge.ok()) {
+    throw new Error(
+      `catalog-refresh nudge answered ${nudge.status()}: ${await nudge.text()}`,
+    );
+  }
+  await catalog;
+
+  await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
+  await expect(page.locator("#home-view")).toBeVisible();
+  await expect(page.locator("#toast-stack .toast.error")).toContainText(
+    "This project was deleted",
+  );
 });
 
 /**

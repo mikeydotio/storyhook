@@ -249,7 +249,7 @@ test("the + New button is inert until the project's data arrives", async ({
  * announces at every width. The one mobile spec that measures the topbar
  * measures it on a board, where this button's visibility is unchanged.
  */
-test("the Drafts button claims no count until this project's data arrives", async ({
+test("the global Drafts count does not wait for the open board's data", async ({
   page,
   request,
 }) => {
@@ -268,30 +268,23 @@ test("the Drafts button claims no count until this project's data arrives", asyn
   // The deliberate divergence from `#new-story-btn`, pinned directly: this
   // control stays operable, because it has an honest thing to show.
   await expect(btn).toBeEnabled();
-  // "No Drafts" here would be the specific wrong answer -- indistinguishable
-  // from an earned zero for a project that has one.
-  await expect(label).toHaveText("Drafts");
+  // The catalog, not Alpha's held board payload, owns this global count.
+  await expect(label).toHaveText("1 Drafts");
+  await expect(page.locator("#new-story-btn")).toBeDisabled();
 
   await btn.click();
   await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
-  await expect(page.locator("#drafts-list")).toHaveText("Loading this project's drafts…");
-  await expect(page.locator("#drafts-list")).not.toContainText(
-    "No drafts in this project.",
-  );
-
-  // The property that justifies leaving the button live: a popover opened
-  // inside the window fills itself in when the data lands, with no reopen.
-  await expect(page.locator("#drafts-list .drafts-row")).toHaveCount(1, {
-    timeout: DATA_DELAY_MS * 3,
-  });
+  await expect(page.locator("#drafts-list .drafts-row")).toHaveCount(1);
   await expect(page.locator("#drafts-list .drafts-row")).toContainText(
     DRAFT_TITLE,
   );
-  await expect(label).toHaveText("1 Drafts");
+  await expect(page.locator("#drafts-list .drafts-row-project")).toHaveText(
+    "AA · Alpha Project",
+  );
   await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
 });
 
-test("a switch to another project carries neither the count nor the rows", async ({
+test("a board switch does not re-scope the global draft count or rows", async ({
   page,
   request,
 }) => {
@@ -303,8 +296,6 @@ test("a switch to another project carries neither the count nor the rows", async
 
   await page.locator("#drafts-btn").click();
   await expect(page.locator("#drafts-list .drafts-row")).toHaveCount(1);
-
-  await expect(page.locator("#drafts-subject")).toHaveText("AA · Alpha Project");
 
   // The switch cannot be driven by hand from here, and that is now true of
   // both input devices. `.backdrop` is `position: fixed; inset: 0` over an
@@ -334,49 +325,18 @@ test("a switch to another project carries neither the count nor the rows", async
     page.locator("#projsel-menu .projsel-item", { hasText: "Beta Project" }),
   );
 
-  // The regression this story is named for: Alpha's count must never describe
-  // Beta, not even for the one `/data` round trip Beta takes to answer.
-  //
-  // Read once, without retrying, and that is the whole point. `selectRepo()`
-  // runs synchronously on the Enter above, so this reads the very first paint
-  // of the new project's topbar. A retrying `toHaveText` cannot make this
-  // claim at all: it would poll happily through the stale value and pass on
-  // the corrected one that lands 2s later, which is exactly the defect.
-  expect(await page.locator("#drafts-btn-text").textContent()).toBe("Drafts");
-  // Read the same way, and for the same reason: SH-292 puts the subject line
-  // inside `renderDraftsList()` above its `clear(list)`, so it repaints in the
-  // same synchronous call. A retrying assertion would poll through Alpha's
-  // name and pass on Beta's, which is the whole failure mode.
-  expect(await page.locator("#drafts-subject").textContent()).toBe(
-    "BB · Beta Project",
-  );
-  // The header is the control's own name and never the data's -- exact text,
-  // so a future change that folds the project into it (the shape SH-292's
-  // council rejected, on a `1rem/700` box shared by six modals with no
-  // truncation) fails here.
+  // Draft discovery is global: Alpha's draft remains reachable while Beta's
+  // board vocabulary is still loading, with its owner stated on the row.
+  expect(await page.locator("#drafts-btn-text").textContent()).toBe("1 Drafts");
   await expect(page.locator("#drafts-modal .modal-header")).toHaveText("Drafts");
-  // The council dissent's guard. `renderDraftsList()` clears the list before
-  // it branches, which is the only reason an open popover cannot show Alpha's
-  // rows inside Beta -- an ordering nothing else ties to this decision. Pinned
-  // here so a refactor that breaks it fails a test rather than a user.
-  await expect(page.locator("#drafts-list .drafts-row")).toHaveCount(0);
-  await expect(page.locator("#drafts-list")).toHaveText("Loading this project's drafts…");
-  // Repaint, not dismissal: the popover keeps its place across a board-to-board
-  // switch, because Beta has an honest answer to repaint into. It is dismissed
-  // only where its owning button goes away -- the next test.
-  await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
-
-  // And Beta's own answer, once it arrives, is an *earned* negative -- the
-  // claim the loading line exists to stop being made prematurely.
-  await expect(page.locator("#drafts-btn-text")).toHaveText("No Drafts", {
-    timeout: DATA_DELAY_MS * 3,
-  });
-  await expect(page.locator("#drafts-list")).toHaveText(
-    "No drafts in this project.",
+  await expect(page.locator("#drafts-list .drafts-row")).toHaveCount(1);
+  await expect(page.locator("#drafts-list .drafts-row-project")).toHaveText(
+    "AA · Alpha Project",
   );
+  await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
 });
 
-test("the Drafts button belongs to the board, and its popover does not outlive it", async ({
+test("the Drafts button and popover are available on every dashboard screen", async ({
   page,
   request,
 }) => {
@@ -384,11 +344,8 @@ test("the Drafts button belongs to the board, and its popover does not outlive i
   await seedToken(page);
   await page.goto("/");
 
-  // Home has no project, so there is no draft count to state. Before SH-284
-  // this button was the one topbar control `renderScreen()` never gated, so it
-  // sat here showing whatever count it last held -- or a hardcoded "No Drafts"
-  // on a fresh load, a claim about nothing at all.
-  await expect(page.locator("#drafts-btn")).toBeHidden();
+  await expect(page.locator("#drafts-btn")).toBeVisible();
+  await expect(page.locator("#drafts-btn-text")).toHaveText("1 Drafts");
 
   await openProject(page, "Alpha Project");
   await expect(page.locator("#drafts-btn")).toBeVisible();
@@ -398,21 +355,18 @@ test("the Drafts button belongs to the board, and its popover does not outlive i
   await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
   await expect(page.locator("#drafts-list .drafts-row")).toHaveCount(1);
 
-  // The open popover's backdrop covers the topbar, and since SH-299 marks it
-  // `inert` the keyboard is covered too -- so no gesture leaves the board with
-  // the popover still up. The asynchronous route named above still does:
-  // `fetchReposOnce()` calls `goHome()` when the open project is deleted by
-  // another client, which is the caller this assertion is really about.
+  // Drive navigation structurally behind the modal: because Drafts is global,
+  // neither its owning control nor its rows become orphaned on Home.
   await activateBehindOverlay(page.locator("#home-btn"));
 
-  await expect(page.locator("#drafts-btn")).toBeHidden();
-  // The popover must not be left orphaned on a screen with no owning control
-  // and no project: its rows lead to `openCreateModal()`, whose `state.data`
-  // guard passes on data the user has navigated away from.
-  await expect(page.locator("#drafts-modal")).not.toHaveClass(/open/);
+  await expect(page.locator("#drafts-btn")).toBeVisible();
+  await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
+  await expect(page.locator("#drafts-list .drafts-row")).toHaveCount(1);
 
+  await page.locator("#drafts-close").click();
   await page.locator("#settings-btn").click();
-  await expect(page.locator("#drafts-btn")).toBeHidden();
+  await expect(page.locator("#drafts-btn")).toBeVisible();
+  await expect(page.locator("#drafts-btn-text")).toHaveText("1 Drafts");
 });
 
 /**
@@ -533,7 +487,7 @@ function holdDataFor(page: import("@playwright/test").Page, slug: string) {
   );
 }
 
-test("a project whose data never arrives names the failure, once there is one to name", async ({
+test("a board data failure does not poison the global Drafts surface", async ({
   page,
   request,
   browserName,
@@ -568,12 +522,11 @@ test("a project whose data never arrives names the failure, once there is one to
   await page.locator("#drafts-btn").click();
   await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
 
-  // Held, not yet refused: nothing has completed, so the loading line is the
-  // honest one and the error would be a lie. This is the assertion a
-  // `state.fetchOk` implementation fails — that flag is already `false` here.
+  // The global catalog answered independently of Alpha's held board data.
   const list = page.locator("#drafts-list");
   const newBtn = page.locator("#new-story-btn");
-  await expect(list).toHaveText("Loading this project's drafts…");
+  await expect(list.locator(".drafts-row")).toHaveCount(1);
+  await expect(list).toContainText(DRAFT_TITLE);
   await expect(newBtn).toHaveAttribute(
     "title",
     "Loading this project's states, types and labels…",
@@ -581,34 +534,19 @@ test("a project whose data never arrives names the failure, once there is one to
 
   await alphaData.refuse();
 
-  // And now there is something to name. Both controls say it, in the same
-  // words about their own subject, because both draw the sentence from
-  // `readinessNote()` — the drift the story asks to be designed out.
-  await expect(list).toHaveText("Couldn't load this project's drafts. Retrying…");
+  // Only the board-scoped create vocabulary reports the board failure.
+  await expect(list.locator(".drafts-row")).toHaveCount(1);
   await expect(newBtn).toHaveAttribute(
     "title",
     "Couldn't load this project's states, types and labels. Retrying…",
   );
-  // Unchanged by the failure, both deliberately: `#new-story-btn` stays
-  // disabled (SH-265 — the modal it opens is built once from a `meta()` that
-  // never arrived), and the Drafts button stays operable and neutral. "No
-  // Drafts" here would be the specific wrong answer for a project that has
-  // one, and the count is not merely late now but unknown — exact text,
-  // since "Drafts" is a suffix of "1 Drafts".
+  // `#new-story-btn` stays disabled, while Drafts keeps its catalog count.
   await expect(newBtn).toBeDisabled();
   await expect(page.locator("#drafts-btn")).toBeEnabled();
-  await expect(page.locator("#drafts-btn-text")).toHaveText("Drafts");
-
-  // SH-292, and this is the state its council found the case for. The two
-  // sentences above are deictics -- "this project's drafts" -- and until now
-  // nothing inside the overlay resolved them: `.backdrop` blurs the topbar
-  // and SH-299's `inert` takes it out of the accessibility tree entirely, so
-  // the only thing naming the project was behind both. That is survivable
-  // for the 2s loading window; it is not survivable here, because this state
-  // has no end. "Retrying…" is a claim the 25s poll keeps, so a user can sit
-  // in front of this sentence indefinitely, and an assistive-technology user
-  // has no route to the name at all.
-  await expect(page.locator("#drafts-subject")).toHaveText("AA · Alpha Project");
+  await expect(page.locator("#drafts-btn-text")).toHaveText("1 Drafts");
+  await expect(page.locator("#drafts-list .drafts-row-project")).toHaveText(
+    "AA · Alpha Project",
+  );
 });
 
 test("a project that answers after a failure drops the error where it stands", async ({
@@ -645,7 +583,7 @@ test("a project that answers after a failure drops the error where it stands", a
   await page.locator("#drafts-btn").click();
   await alphaData.refuse();
   const list = page.locator("#drafts-list");
-  await expect(list).toHaveText("Couldn't load this project's drafts. Retrying…");
+  await expect(list).toHaveText("No drafts.");
 
   // The claim is "Retrying…", so the repair must need no reload, no reopen and
   // no gesture: the store starts answering, and the very next arrival —
@@ -664,7 +602,7 @@ test("a project that answers after a failure drops the error where it stands", a
   await expect(page.locator("#drafts-btn-text")).toHaveText("1 Drafts");
 });
 
-test("one project's failure is not carried into the next project's loading window", async ({
+test("one board's failure never re-scopes the global Drafts surface", async ({
   page,
   browserName,
 }) => {
@@ -699,7 +637,7 @@ test("one project's failure is not carried into the next project's loading windo
   await page.locator("#drafts-btn").click();
   await alphaData.refuse();
   const list = page.locator("#drafts-list");
-  await expect(list).toHaveText("Couldn't load this project's drafts. Retrying…");
+  await expect(list).toHaveText("No drafts.");
 
   // The popover's backdrop covers the topbar, and since SH-299 the keyboard
   // too, so the switch goes through the selector's own listeners — the same
@@ -710,10 +648,9 @@ test("one project's failure is not carried into the next project's loading windo
     page.locator("#projsel-menu .projsel-item", { hasText: "Beta Project" }),
   );
 
-  // Beta has not failed. Beta has not answered either — and a settled flag
-  // that were a bare boolean, rather than the project it settled for, would
-  // report Alpha's failure as Beta's here, on Beta's very first paint.
-  await expect(list).toHaveText("Loading this project's drafts…");
+  // Beta's board has not answered, but the catalog-backed Drafts surface is
+  // unchanged and still makes its earned global empty claim.
+  await expect(list).toHaveText("No drafts.");
   await expect(page.locator("#new-story-btn")).toHaveAttribute(
     "title",
     "Loading this project's states, types and labels…",
@@ -744,7 +681,7 @@ test("one project's failure is not carried into the next project's loading windo
  * registers, `DELETE` removes), so rewriting the catalog reply is what a
  * `story project set --name` on another machine looks like from here.
  */
-test("a project renamed elsewhere renames the open popover, not just the topbar", async ({
+test("a project renamed elsewhere renames its global draft rows, not just the topbar", async ({
   page,
   request,
 }) => {
@@ -787,7 +724,9 @@ test("a project renamed elsewhere renames the open popover, not just the topbar"
   await openProject(page, "Alpha Project");
   await page.locator("#drafts-btn").click();
   await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
-  await expect(page.locator("#drafts-subject")).toHaveText("AA · Alpha Project");
+  await expect(page.locator("#drafts-list .drafts-row-project")).toHaveText(
+    "AA · Alpha Project",
+  );
 
   // From here the board's own data can repaint nothing: `renderAll()` runs
   // only on a parsed 200, and `markDataSettled()` already fired for this
@@ -806,7 +745,7 @@ test("a project renamed elsewhere renames the open popover, not just the topbar"
   await expect(page.locator("#projsel-label")).toHaveText(
     "AA · Alpha Project Renamed Elsewhere",
   );
-  await expect(page.locator("#drafts-subject")).toHaveText(
+  await expect(page.locator("#drafts-list .drafts-row-project")).toHaveText(
     "AA · Alpha Project Renamed Elsewhere",
   );
 });
