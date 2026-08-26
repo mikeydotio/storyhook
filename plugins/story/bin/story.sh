@@ -3149,6 +3149,47 @@ _release_fallback_clause() {
   esac
 }
 
+# _close_release_window <window-name> — close the story's window if this verb
+# may, and publish what happened as RELEASE_WINDOW / RELEASE_CLOSED.
+#
+# `CMP_WINDOW_STATUS` alone is the wrong input here. `_complete_prepare`
+# classifies it only when the CALLER is inside tmux, which is right for the
+# question SH-308 added it for — "is this window MINE, which `complete` must
+# not close" — but it cannot answer "does a window exist" for a shell that is
+# not attached to the server. From there a live story window classifies as
+# `none`, so `unclaim` would leave it open while reporting nothing, and `reset`
+# would delete a worktree out from under a shell still running in it. `reap`
+# has never had this gap because it kills unconditionally and reports nothing.
+#
+# So the `none` case asks `_close_story_window` itself and takes its RETURN
+# VALUE as the classifier — the same source of truth reap uses, rather than a
+# second copy of the lookup. `self` is unreachable from outside tmux by
+# construction (it requires $TMUX_PANE), so nothing is being skipped: a caller
+# with no pane of their own cannot be standing in the window being closed.
+#
+# `_complete_prepare` is deliberately NOT widened to drop its $TMUX gate:
+# `complete` counts an `open` window in CMP_ACTIONS and closes one in
+# `execute`, so lifting the gate would change what `complete` does from outside
+# tmux, which is a different verb's behaviour and a different story's decision.
+RELEASE_WINDOW=""
+RELEASE_CLOSED=false
+_close_release_window() {
+  local wname="$1"
+  RELEASE_WINDOW="$CMP_WINDOW_STATUS"
+  RELEASE_CLOSED=false
+  case "$CMP_WINDOW_STATUS" in
+    self) return 0 ;;
+    open) _close_story_window "$wname" && RELEASE_CLOSED=true || RELEASE_CLOSED=false ;;
+    *)
+      if _close_story_window "$wname"; then
+        RELEASE_WINDOW="open"
+        RELEASE_CLOSED=true
+      fi
+      ;;
+  esac
+  return 0
+}
+
 # cmd_unclaim <story-id> [--comment <text> | --no-comment] — hand a claim back
 # and close the story's tmux window. The worktree and branch are REPORTED and
 # left exactly as found; `reset` is the verb that removes them.
@@ -3169,8 +3210,12 @@ cmd_unclaim() {
   esac
 
   if [ -n "$DRY_RUN" ]; then
+    # The window line is previewed unless it is the caller's own, which is
+    # reap's own convention: without looking, nothing here can know whether a
+    # window exists, and a preview that under-promises is as misleading as one
+    # that over-promises.
     local -a dry_cmds=("story unclaim $id")
-    [ "$CMP_WINDOW_STATUS" = "open" ] && dry_cmds+=("tmux kill-window -t <window of $CMP_WNAME>")
+    [ "$CMP_WINDOW_STATUS" != "self" ] && dry_cmds+=("tmux kill-window -t <window of $CMP_WNAME>")
     local dry_json
     dry_json=$(printf '%s\n' "${dry_cmds[@]}" | jq -R -s 'split("\n")|map(select(length>0))')
     jq -n --arg id "$id" --argjson cmds "$dry_json" --arg msg "$REL_MESSAGE" '
@@ -3181,14 +3226,12 @@ cmd_unclaim() {
     return 0
   fi
 
-  local closed=false
-  if [ "$CMP_WINDOW_STATUS" = "open" ]; then
-    _close_story_window "$CMP_WNAME" && closed=true || closed=false
-  fi
+  _close_release_window "$CMP_WNAME"
+  local closed="$RELEASE_CLOSED"
 
   local display="[story] unclaim $id: released from \`$REL_FROM\` back to \`$REL_TO\`."
   display="$display$(_release_fallback_clause)"
-  case "$CMP_WINDOW_STATUS" in
+  case "$RELEASE_WINDOW" in
     open) [ "$closed" = true ] \
             && display="$display Closed its tmux window \`$CMP_WNAME\`." \
             || display="$display Its tmux window \`$CMP_WNAME\` could not be closed." ;;
@@ -3200,7 +3243,7 @@ cmd_unclaim() {
   fi
 
   jq -n --arg id "$id" --arg from "$REL_FROM" --arg to "$REL_TO" \
-        --arg fallback "$REL_FALLBACK" --arg window "$CMP_WINDOW_STATUS" \
+        --arg fallback "$REL_FALLBACK" --arg window "$RELEASE_WINDOW" \
         --argjson closed "$closed" --arg wtpath "$CMP_WT_PATH" \
         --arg wtstatus "$CMP_WT_STATUS" --arg display "$display" '
     {
@@ -3287,13 +3330,24 @@ cmd_reset() {
       dry_cmds+=("git worktree remove --force $CMP_WT_PATH" "git worktree prune")
     fi
     [ "$CMP_BR_STATUS" != "missing" ] && dry_cmds+=("git branch -D $CMP_WT_BRANCH")
-    [ "$CMP_WINDOW_STATUS" = "open" ] && dry_cmds+=("tmux kill-window -t <window of $CMP_WNAME>")
+    [ "$CMP_WINDOW_STATUS" != "self" ] && dry_cmds+=("tmux kill-window -t <window of $CMP_WNAME>")
     local dry_json
     dry_json=$(printf '%s\n' "${dry_cmds[@]:-}" | jq -R -s 'split("\n")|map(select(length>0))')
-    jq -n --arg id "$id" --argjson cmds "$dry_json" --argjson forced "$REL_FORCE" '
+    # The sentence is a PROJECTION of the command list, never a fixed one
+    # written beside it. "would delete its worktree, its branch and its tmux
+    # window" is a false statement whenever there is no worktree or no branch,
+    # and a preview is the one place the reader has nothing else to check it
+    # against. Written as a jq projection rather than as shell string-building
+    # so the two structurally cannot drift.
+    jq -n --arg id "$id" --argjson cmds "$dry_json" --argjson forced "$REL_FORCE" \
+          --argjson unclaimed "$([ "$REL_RESULT" = "ok" ] && printf true || printf false)" '
       {
         ok: true, dry_run: true, id: $id, forced: $forced, commands: $cmds,
-        display: ("[story] DRY RUN reset: would release " + $id + ", then delete its worktree, its branch and its tmux window.")
+        display: ("[story] DRY RUN reset " + $id + ": would "
+          + (if $unclaimed then "release it" else "release nothing (it is not claimed)" end)
+          + ", then run: "
+          + ($cmds | map(select(startswith("story unclaim") | not)) | join("; "))
+          + ".")
       }'
     return 0
   fi
@@ -3325,10 +3379,10 @@ cmd_reset() {
     fi
   fi
 
-  local closed=false
-  if [ "$CMP_WINDOW_STATUS" = "open" ]; then
-    _close_story_window "$CMP_WNAME" && closed=true || closed=false
-  fi
+  # `self` already refused above, so this can only find somebody else's window
+  # — or one this caller could not see from outside tmux.
+  _close_release_window "$CMP_WNAME"
+  local closed="$RELEASE_CLOSED"
 
   local display="[story] reset $id: "
   if [ "$unclaimed" = true ]; then
@@ -3356,7 +3410,7 @@ cmd_reset() {
         --arg from "$REL_FROM" --arg to "$REL_TO" --arg fallback "$REL_FALLBACK" \
         --argjson forced "$REL_FORCE" --argjson rwt "$removed_wt" --argjson rbr "$removed_br" \
         --arg wtfail "$wt_fail" --arg brfail "$br_fail" \
-        --arg window "$CMP_WINDOW_STATUS" --argjson closed "$closed" \
+        --arg window "$RELEASE_WINDOW" --argjson closed "$closed" \
         --argjson unpushed "$CMP_BR_UNPUSHED" --arg display "$display" '
     {
       ok: true, id: $id, forced: $forced,

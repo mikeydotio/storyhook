@@ -178,6 +178,22 @@ assert_eq "$(jqf "$out" .unclaim_conflict)" "todo" "conflict: names the state ac
 assert_contains "$(jqf "$out" .display)" "was not claimed" "conflict: display says so"
 wt_exists "$wcf" && fail_test "conflict: worktree survived the teardown"
 
+# --- a window the CALLER cannot see is still closed -------------------------
+# Same gap as unclaim's, and worse here: a reset from outside tmux used to
+# delete the worktree while leaving a live shell running inside the deleted
+# directory. The `self-window` refusal is unreachable from such a caller by
+# construction, since it needs a $TMUX_PANE of their own.
+iw=$(new_story "$repo" "Window I cannot see")
+wiw=$(mk_dispatched "$repo" "$iw")
+claim_it "$iw"
+out=$(cd "$repo" \
+  && FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$wiw")" \
+     bash "$SCRIPT" --project "$slug" reset "$iw" 2>&1)
+assert_eq "$(jqf "$out" .ok)" "true" "invisible-window: ok"
+assert_eq "$(jqf "$out" .window)" "open" "invisible-window: found and reported as open"
+assert_eq "$(jqf "$out" .closed_window)" "true" "invisible-window: and actually closed"
+wt_exists "$wiw" && fail_test "invisible-window: worktree survived"
+
 # --- nothing on disk is not an error ---------------------------------------
 nd=$(new_story "$repo" "Nothing to remove")
 claim_it "$nd"
@@ -186,6 +202,22 @@ assert_eq "$(jqf "$out" .ok)" "true" "nothing: ok"
 assert_eq "$(jqf "$out" '.removed.worktree')" "false" "nothing: no worktree to remove"
 assert_eq "$(jqf "$out" '.removed.branch')" "false" "nothing: no branch to remove"
 assert_eq "$(state_of "$nd")" "todo" "nothing: the claim was still released"
+
+# A dry run with nothing on disk must not PROMISE a teardown it would not do.
+# The sentence is a projection of the command list printed beside it, so the
+# two structurally cannot disagree -- and with no worktree and no branch the
+# only thing it may claim is the window close.
+nd2=$(new_story "$repo" "Nothing to remove either")
+claim_it "$nd2"
+out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" --project "$slug" reset "$nd2" 2>&1)
+assert_eq "$(jqf "$out" .ok)" "true" "dry-nothing: ok"
+case "$(jqf "$out" .display)" in
+*"worktree"*) fail_test "dry-nothing: display names a worktree that does not exist" ;;
+esac
+case "$(jqf "$out" .display)" in
+*"branch"*) fail_test "dry-nothing: display names a branch that does not exist" ;;
+esac
+assert_contains "$(jqf "$out" .display)" "kill-window" "dry-nothing: it does still name the window close"
 
 # --- dry run: every refusal still runs, nothing is written -----------------
 dr=$(new_story "$repo" "Dry run me")
@@ -196,6 +228,8 @@ assert_eq "$(jqf "$out" .ok)" "true" "dry: ok"
 assert_eq "$(jqf "$out" .dry_run)" "true" "dry: flagged"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" "git worktree remove" "dry: previews the removal"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" "git branch -D" "dry: previews the branch deletion"
+assert_contains "$(jqf "$out" .display)" "git worktree remove" \
+  "dry: the sentence names exactly the commands printed beside it"
 wt_exists "$wdr" || fail_test "dry: worktree was actually removed"
 assert_eq "$(state_of "$dr")" "in-progress" "dry: the story did NOT move"
 
