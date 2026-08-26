@@ -70,6 +70,10 @@ source: tests/golden_cli.rs
         },
         {
           "at": "[timestamp]",
+          "kind": "StoryStateCleared"
+        },
+        {
+          "at": "[timestamp]",
           "kind": "StoryRelationshipAdded",
           "other_id": "SH-3",
           "relation": "parent-of"

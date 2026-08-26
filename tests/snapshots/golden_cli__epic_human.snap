@@ -2,11 +2,11 @@
 source: tests/golden_cli.rs
 ---
 $ story epic list
-SH-1 [todo] (critical) [epic] Design the storage engine (0/3)
+SH-1 [in-progress] (critical) [epic] Design the storage engine (0/3)
 
 $ story epic show SH-1
 SH-1 Design the storage engine
-state: todo (OPEN)
+state: in-progress (OPEN)
 draft: no
 assignee: -
 priority: critical
