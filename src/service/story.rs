@@ -15,7 +15,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::domain::{
-    Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState, active_state,
+    Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState, active_state, has_children,
     normalize_labels, undefined_state_error,
 };
 use crate::error::AppError;
@@ -359,6 +359,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
             }
 
             let (story_no, row) = resolve_open_story(&*tx, project, &prefix, id)?;
+            refuse_epic_state_change(&row.snapshot)?;
             let target = states
                 .get(state)
                 .cloned()
@@ -494,6 +495,9 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
             let plan = plan_field_edits(&*tx, project, &states, &row.snapshot, edits, &now)?;
             if plan.events.is_empty() {
                 return Err(AppError::Usage("no fields to update".to_string()).into());
+            }
+            if plan.moved_to.is_some() {
+                refuse_epic_state_change(&row.snapshot)?;
             }
             let snapshot = append_and_fold(
                 tx,
@@ -702,6 +706,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         Ok(self.ctx.store().read(|tx| {
             let prefix = project_prefix(tx, project)?;
             let (story_no, row) = resolve_story(tx, project, &prefix, id)?;
+            refuse_epic_state_change(&row.snapshot)?;
             if !row.archived {
                 return Err(AppError::Validation(format!("story `{id}` is already open")).into());
             }
@@ -739,6 +744,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
             let ordered = tx.states(project)?;
             let states = state_map(&ordered);
             let (story_no, row) = resolve_story(&*tx, project, &prefix, id)?;
+            refuse_epic_state_change(&row.snapshot)?;
             if !row.archived {
                 return Err(AppError::Validation(format!("story `{id}` is already open")).into());
             }
@@ -994,6 +1000,16 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
             );
         }
     }
+}
+
+fn refuse_epic_state_change(story: &StorySnapshot) -> Result<(), AppError> {
+    if has_children(story) {
+        return Err(AppError::Validation(format!(
+            "story `{}` is an epic because it has children; its state is computed and cannot be moved directly",
+            story.id
+        )));
+    }
+    Ok(())
 }
 
 /// A slug-keyed view of an ordered state list.

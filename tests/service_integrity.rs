@@ -693,13 +693,10 @@ fn a_blocked_obviation_repair_is_named_on_the_failure_path() {
 /// and this is where that is recorded.
 ///
 /// A dangling relation needs a `story_relations` row naming a story that does
-/// not exist (foreign key); a second parent needs two `child-of` rows for one
-/// story (unique index); a read-model row with no events needs the events
+/// not exist (foreign key); a read-model row with no events needs the events
 /// deleted (append-only trigger). Each is refused by the schema rather than
 /// detected by the doctor afterwards — the defect class is gone, not the
-/// coverage. The checks stay in [`compute_integrity_issues`] because they are
-/// also what `story show` and `list --flagged` compute, and because the
-/// importer wave has to be able to report them about *legacy* data.
+/// coverage. Multiple parents are intentionally representable as of SH-446.
 ///
 /// [`compute_integrity_issues`]: storyhook::domain::compute_integrity_issues
 #[test]
@@ -707,11 +704,6 @@ fn the_shapes_doctor_used_to_find_are_now_refused_by_the_schema() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let child = new_story(&ctx, "child");
-    let first = new_story(&ctx, "first parent");
-    let second = new_story(&ctx, "second parent");
-    RelationService::new(&ctx)
-        .relate(&first, "parent-of", &child, false)
-        .expect("relating");
     drop(ctx);
 
     let dangling = try_append_to_one_end(
@@ -725,23 +717,6 @@ fn the_shapes_doctor_used_to_find_are_now_refused_by_the_schema() {
     )
     .expect_err("a relation to a story that does not exist");
     assert!(dangling.to_string().contains("FOREIGN KEY"), "{dangling:?}");
-
-    let two_parents = try_append_to_one_end(
-        &fixture,
-        &child,
-        &[StoryEvent::StoryRelationshipAdded {
-            at: FIXTURE_NOW.to_string(),
-            other_id: second.clone(),
-            relation: "child-of".to_string(),
-        }],
-    )
-    .expect_err("a second parent");
-    assert!(
-        two_parents
-            .to_string()
-            .contains("a story may have at most one parent"),
-        "{two_parents:?}"
-    );
 
     let connection = Connection::open(fixture.store().path()).expect("opening the database");
     let deleted = connection
@@ -2892,10 +2867,8 @@ fn excused() -> Vec<(FindingCode, &'static str)> {
     vec![
         (
             FindingCode::MultipleParents,
-            "the store refuses it: `append_events` raises `a story may have at most one \
-             parent` at the fold, so no supported path can build one. The check survives \
-             for data written before that invariant existed — see \
-             `the_shapes_doctor_used_to_find_are_now_refused_by_the_schema`",
+            "legacy wire code retained for compatibility; SH-446 made multiple parents \
+             intentional, so the domain no longer emits this finding",
         ),
         (
             FindingCode::DanglingRelation,

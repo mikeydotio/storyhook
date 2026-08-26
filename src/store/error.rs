@@ -41,7 +41,7 @@ pub enum StoreError {
     Busy(String),
 
     /// A write would have left the database in a state the schema forbids:
-    /// a second parent, an asymmetric relation, a self-relation.
+    /// an asymmetric relation, a self-relation, or a dangling edge.
     #[error("{0}")]
     Invariant(String),
 
@@ -170,17 +170,10 @@ impl StoreError {
 ///
 /// The schema's invariants are enforced by named indexes, triggers, and CHECK
 /// constraints; SQLite reports the object's name, so translating here is the
-/// difference between "UNIQUE constraint failed" and "a story may have at most
-/// one parent".
+/// difference between a raw constraint failure and a domain-level explanation.
 fn constraint_detail(error: &rusqlite::Error) -> String {
     let raw = error.to_string();
-    // SQLite names the *columns* a unique index covers, not the index. The
-    // single-parent rule is the only unique constraint on exactly
-    // `(project_id, story_no)` of `story_relations`, so those columns identify
-    // it unambiguously.
-    if raw.contains("story_relations.project_id, story_relations.story_no") {
-        "a story may have at most one parent".to_string()
-    } else if raw.contains("story_relations") && raw.contains("FOREIGN KEY") {
+    if raw.contains("story_relations") && raw.contains("FOREIGN KEY") {
         "that relation names a story that does not exist, or a relation type storyhook does not \
          know"
             .to_string()

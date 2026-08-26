@@ -3197,26 +3197,20 @@ macro_rules! store_conformance_suite {
                 );
             }
 
-            /// The second family of SH-60: stories with two parents, which
-            /// survived indefinitely because nothing rejected the write that
-            /// created them.
             #[test]
-            fn a_story_cannot_be_given_a_second_parent() {
+            fn a_story_may_belong_to_multiple_parents() {
                 let f = <$fixture>::create();
                 let project = seed(f.store(), "alpha", "SH");
                 let first_parent = new_story(f.store(), project, "First parent");
                 let second_parent = new_story(f.store(), project, "Second parent");
                 let child = new_story(f.store(), project, "Child");
                 link(f.store(), project, first_parent, "parent-of", child).unwrap();
+                link(f.store(), project, second_parent, "parent-of", child).unwrap();
 
-                let error = link(f.store(), project, second_parent, "parent-of", child)
-                    .expect_err("a second parent must be refused");
-
-                assert!(matches!(error, StoreError::Invariant(_)), "{error}");
-                assert!(error.to_string().contains("one parent"), "{error}");
                 let parents = f.store().read(|tx| tx.relations_to(project, child)).unwrap();
-                assert_eq!(parents.len(), 1);
-                assert_eq!(parents[0].story_no, first_parent);
+                assert_eq!(parents.len(), 2);
+                assert!(parents.iter().any(|edge| edge.story_no == first_parent));
+                assert!(parents.iter().any(|edge| edge.story_no == second_parent));
             }
 
             #[test]
@@ -4214,7 +4208,7 @@ macro_rules! store_conformance_suite {
             }
 
             #[test]
-            fn isolation_single_parent_is_enforced_per_project() {
+            fn isolation_parent_relations_are_scoped_per_project() {
                 let f = <$fixture>::create();
                 let (alpha, beta) = twin_projects(f.store());
                 link(
@@ -4225,8 +4219,8 @@ macro_rules! store_conformance_suite {
                     StoryNo::new(2),
                 )
                 .unwrap();
-                // beta's SH-2 has no parent, so the same edge must be allowed
-                // there — the constraint is scoped, not global.
+                // The same ids in beta are independent rows, so the same edge
+                // there must not collide with alpha's relation.
                 link(
                     f.store(),
                     beta,

@@ -87,13 +87,13 @@ tbody tr:hover { background:var(--table-hover); }
 <div class="stat-card"><div class="stat-value">11</div><div class="stat-label">Open</div></div>
 <div class="stat-card"><div class="stat-value">3</div><div class="stat-label">Closed</div></div>
 <div class="stat-card"><div class="stat-value">3</div><div class="stat-label">Blocked</div></div>
-<div class="stat-card"><div class="stat-value">8</div><div class="stat-label">Ready</div></div>
+<div class="stat-card"><div class="stat-value">7</div><div class="stat-label">Ready</div></div>
 </div>
 
 <div class="section">
 <div class="section-title">State Distribution</div>
-<div class="bar-chart"><div class="bar-segment" style="width:21.4%;background:#3b82f6" title="done: 3 (21%)"></div><div class="bar-segment" style="width:7.1%;background:#10b981" title="in-progress: 1 (7%)"></div><div class="bar-segment" style="width:7.1%;background:#f59e0b" title="review: 1 (7%)"></div><div class="bar-segment" style="width:64.3%;background:#ef4444" title="todo: 9 (64%)"></div></div>
-<div class="legend"><span class="legend-item"><span class="legend-dot" style="background:#3b82f6"></span>done 3 (21%)</span><span class="legend-item"><span class="legend-dot" style="background:#10b981"></span>in-progress 1 (7%)</span><span class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span>review 1 (7%)</span><span class="legend-item"><span class="legend-dot" style="background:#ef4444"></span>todo 9 (64%)</span></div>
+<div class="bar-chart"><div class="bar-segment" style="width:21.4%;background:#3b82f6" title="done: 3 (21%)"></div><div class="bar-segment" style="width:14.3%;background:#10b981" title="in-progress: 2 (14%)"></div><div class="bar-segment" style="width:7.1%;background:#f59e0b" title="review: 1 (7%)"></div><div class="bar-segment" style="width:57.1%;background:#ef4444" title="todo: 8 (57%)"></div></div>
+<div class="legend"><span class="legend-item"><span class="legend-dot" style="background:#3b82f6"></span>done 3 (21%)</span><span class="legend-item"><span class="legend-dot" style="background:#10b981"></span>in-progress 2 (14%)</span><span class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span>review 1 (7%)</span><span class="legend-item"><span class="legend-dot" style="background:#ef4444"></span>todo 8 (57%)</span></div>
 </div>
 
 <div class="section">
@@ -111,7 +111,7 @@ tbody tr:hover { background:var(--table-hover); }
 <table>
 <thead><tr><th>ID</th><th>Title</th><th>State</th><th>Priority</th><th>Labels</th><th>Assignee</th><th>Updated</th></tr></thead>
 <tbody>
-<tr class="row-ready"><td class="col-id">SH-1</td><td>Design the storage engine</td><td>todo</td><td><span class="priority-badge priority-critical">critical</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
+<tr><td class="col-id">SH-1</td><td>Design the storage engine</td><td>in-progress</td><td><span class="priority-badge priority-critical">critical</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
 <tr class="row-ready"><td class="col-id">SH-5</td><td>Fix the id collision across worktrees</td><td>todo</td><td><span class="priority-badge priority-critical">critical</span></td><td><span class="label">defect</span></td><td>grace-hopper</td><td class="col-date">[date]</td></tr>
 <tr class="row-blocked"><td class="col-id">SH-3</td><td>Implement the SQLite engine</td><td>in-progress</td><td><span class="priority-badge priority-high">high</span></td><td><span class="label">backend</span> <span class="label">phase:1</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
 <tr class="row-ready"><td class="col-id">SH-2</td><td>Define the Store trait</td><td>todo</td><td><span class="priority-badge priority-high">high</span></td><td><span class="label">api</span> <span class="label">backend</span> <span class="label">phase:1</span></td><td>ada-lovelace</td><td class="col-date">[date]</td></tr>

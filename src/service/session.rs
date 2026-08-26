@@ -11,7 +11,8 @@ use std::collections::BTreeMap;
 use std::io::Write;
 
 use crate::domain::{
-    Priority, StorySnapshot, active_state, has_children, is_claimable, ready_order,
+    Priority, StorySnapshot, active_state, apply_computed_epic_states, has_children, is_claimable,
+    ready_order,
 };
 use crate::error::AppError;
 use crate::help_topics;
@@ -106,12 +107,13 @@ impl<'ctx, S: Store> SessionService<'ctx, S> {
         // transaction so `is_claimable` can resolve the active state (SH-236)
         // against a snapshot consistent with the stories it's checked against.
         let loaded = self.ctx.store().read(|tx| {
-            let stories = tx
-                .stories(project, &StoryQuery::all().archived(false))?
+            let mut stories = tx
+                .stories(project, &StoryQuery::all())?
                 .into_iter()
                 .map(|row| (row.snapshot.id.clone(), row.snapshot))
                 .collect::<BTreeMap<String, StorySnapshot>>();
             let states = tx.states(project)?;
+            apply_computed_epic_states(&mut stories, &states);
             Ok((stories, states))
         });
         let (stories, states) = match loaded {
@@ -125,7 +127,10 @@ impl<'ctx, S: Store> SessionService<'ctx, S> {
         };
 
         let active = active_state(&states);
-        let open: Vec<&StorySnapshot> = stories.values().collect();
+        let open: Vec<&StorySnapshot> = stories
+            .values()
+            .filter(|story| story.superstate == crate::domain::SuperState::Open)
+            .collect();
         let ready: Vec<&StorySnapshot> = open
             .iter()
             .copied()
@@ -137,7 +142,7 @@ impl<'ctx, S: Store> SessionService<'ctx, S> {
             ready.len()
         ));
 
-        if let Some(next) = highest_priority(ready) {
+        if let Some(next) = highest_priority(ready, &stories) {
             let priority = if next.priority == Priority::None {
                 String::new()
             } else {
@@ -223,9 +228,12 @@ fn write_sentinel(cwd: &std::path::Path, sentinel: &DispatchSentinel) -> Result<
 /// The most urgent ready story — [`domain::ready_order`](crate::domain::ready_order)'s
 /// first element, so the story this names is always the one `story next`
 /// would offer first (SH-63).
-fn highest_priority(ready: Vec<&StorySnapshot>) -> Option<&StorySnapshot> {
+fn highest_priority<'a>(
+    ready: Vec<&'a StorySnapshot>,
+    stories: &BTreeMap<String, StorySnapshot>,
+) -> Option<&'a StorySnapshot> {
     let mut sorted = ready;
-    sorted.sort_by(|a, b| ready_order(a, b));
+    sorted.sort_by(|a, b| ready_order(a, b, stories));
     sorted.into_iter().next()
 }
 
@@ -421,6 +429,7 @@ fn event_detail(event: &crate::domain::StoryEvent) -> String {
     match event {
         E::StoryCreated { title, state, .. } => format!("created in {state} — {title}"),
         E::StoryStateChanged { state, .. } => format!("state → {state}"),
+        E::StoryStateCleared { .. } => "state cleared (computed from children)".to_string(),
         E::StoryClosedAndArchived { state, .. } => format!("closed and archived in {state}"),
         E::StoryDeleted { reason, .. } => format!("deleted — {reason}"),
         E::StoryCommentAdded { text, .. } => format!("comment — {}", first_line(text)),

@@ -184,7 +184,7 @@ pub fn create_story(store: &SqliteStore, project: ProjectId, title: &str, at: &s
 /// This is the shape the relation service is meant to take: under the old
 /// design the two halves were two separate operations, so a failure between
 /// them left a half-written relation that survived indefinitely (SH-60). Here
-/// a rejected edge — a second parent, a relation to a story that does not
+/// a rejected edge — a self-relation or a relation to a story that does not
 /// exist — rolls back both halves together.
 pub fn link_atomic(
     store: &SqliteStore,

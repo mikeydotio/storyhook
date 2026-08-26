@@ -443,7 +443,8 @@ pub fn priority_breakdown(stories: &[StorySnapshot]) -> PriorityBreakdown {
 
 /// The stories this project offers as work to pick up, ranked the way `story
 /// next` ranks them: [`domain::ready_order`](crate::domain::ready_order),
-/// priority then story number. Sorting by priority alone (as this used to)
+/// own priority, parent epic priority, then story number. Sorting by priority
+/// alone (as this used to)
 /// has no second key at all, so two same-priority stories fell back to
 /// whatever order `stories` arrived in — the same tie SH-63 fixed on the CLI
 /// side.
@@ -464,12 +465,17 @@ pub fn priority_breakdown(stories: &[StorySnapshot]) -> PriorityBreakdown {
 /// invalid state this signature cannot express.
 pub fn ready_stories(data: &DataStore) -> Vec<&StorySnapshot> {
     let readiness = data.readiness();
+    let stories: std::collections::BTreeMap<&str, &StorySnapshot> = data
+        .stories
+        .iter()
+        .map(|story| (story.id.as_str(), story))
+        .collect();
     let mut ready: Vec<&StorySnapshot> = data
         .stories
         .iter()
         .filter(|story| readiness.is_claimable(story))
         .collect();
-    ready.sort_by(|a, b| ready_order(a, b));
+    ready.sort_by(|a, b| ready_order(a, b, &stories));
     ready
 }
 
@@ -548,6 +554,7 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: updated_at.to_string(),
             state: state.to_string(),
+            state_computed: false,
             superstate: if state == "done" {
                 SuperState::Closed
             } else {

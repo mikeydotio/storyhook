@@ -1861,9 +1861,11 @@ A dependency is a scheduling fact, not a severity claim.
     blocker above its dependent — that is the inflation error where
     every prerequisite of a critical becomes critical and the level
     saturates.
-  - parent-of: an epic's priority is the MAX of its children, never
-    the sum, and is reporting-only — story next never surfaces a
-    story that has children.
+  - parent-of: an epic keeps its own stored priority, independent of
+    every child. story next never surfaces the epic itself, but among
+    ready children with equal own priority, their nearest parent epic's
+    priority is the first tie-breaker. With several parents, the most
+    urgent parent wins; a parentless story uses its own priority again.
   - relates-to transmits nothing, ever.
   - duplicate-of is not a priority edge: collapse duplicates to one
     story rather than triaging the same defect twice.
@@ -2063,6 +2065,9 @@ When to use:
   To define dependencies, hierarchy, or other links between stories.
   Use blocks/blocked-by to control execution order. 'story next'
   respects blocking relationships.
+  A story with children is a structural epic: its state is computed
+  recursively from those children, it is not directly actionable, and
+  it may share a child with other epics. Parent cycles are refused.
 
 Examples:
   story relate SH-1 blocks SH-2
