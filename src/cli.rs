@@ -166,8 +166,9 @@ Usage:
              [--include-archived]                      (also show archived stories; implies --include-closed)
              [--all]                                   (--include-closed --include-archived)
   story next [--count <n>] [--phase <N>] [--claim]
-  story claim (<id> | --next) [--phase <N>] [--comment <text> | --no-comment]
-                              [--dry-run]           (take a story, atomically)
+  story claim <id> [--comment <text> | --no-comment] [--dry-run]
+  story claim --next [--phase <N>] [--comment <text> | --no-comment]
+                     [--dry-run]                    (take a story, atomically)
   story summary
   story report [--html]
   story search <query>
@@ -2064,8 +2065,9 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
     }
 }
 
-const CLAIM_USAGE: &str = "usage: story claim (<id> | --next) [--phase <N>] \
-                           [--comment <text> | --no-comment] [--dry-run]";
+const CLAIM_USAGE: &str = "usage: story claim <id> [--comment <text> | --no-comment] \
+                           [--dry-run]\n       story claim --next [--phase <N>] [--comment \
+                           <text> | --no-comment] [--dry-run]";
 
 const PROJECT_USAGE: &str = "usage: story project new [--prefix <PREFIX>] [--name <NAME>] \
                              [--attach <PATH> | --no-attach] [--no-agents-md] | delete \
