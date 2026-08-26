@@ -635,7 +635,7 @@ pub enum Response {
     /// instead of having to parse a sentence.
     MessageWithWarnings(String, Vec<String>),
     Story(Box<StoryView>),
-    /// `story next --claim` (SH-344): the story claimed, and the state it was
+    /// `story claim` (SH-476): the story claimed, and the state it was
     /// claimed *from* — a fact only this command produces, since every other
     /// writer already knows the state it started from without being told.
     ///
@@ -754,9 +754,9 @@ struct JsonEnvelope<'a> {
     settings: Option<&'a [SettingView]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     project: Option<&'a ProjectView>,
-    /// `story next --claim` only (SH-344): the state the claimed story came
-    /// out of, so a caller that has to undo its own claim — the plugin's
-    /// dispatch rollback — knows what to move back to. Absent everywhere else.
+    /// `story claim` only (SH-476): the state the claimed story came out of,
+    /// so a caller that has to undo its own claim — the plugin's dispatch
+    /// rollback — knows what to move back to. Absent everywhere else.
     #[serde(skip_serializing_if = "Option::is_none")]
     claimed_from: Option<&'a str>,
     #[serde(default, skip_serializing_if = "<[_]>::is_empty")]

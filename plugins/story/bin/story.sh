@@ -31,7 +31,7 @@
 #                    no worktree, branch, tmux, or other safety gate.
 #
 #   dispatch --next  SH-344's NEXT MODE — the id-less sibling. Instead of a
-#                    caller-named id, claims whatever `story next --claim`
+#                    caller-named id, claims whatever `story claim --next`
 #                    picks — atomically, in one storyhook write transaction —
 #                    then follows the identical worktree/window/prompt path
 #                    above. Built for a caller dispatching several stories at
@@ -39,7 +39,7 @@
 #                    calls are handed N DIFFERENT stories, where N concurrent
 #                    `dispatch <id>` calls naming the SAME id would have one
 #                    winner and N-1 `claim-conflict` refusals. Mutually
-#                    exclusive with <id> — `--claim` picks the top-priority
+#                    exclusive with <id> — `--next` picks the top-priority
 #                    ready story, so it has no way to honor a caller-supplied
 #                    one, and `dispatch <id>`'s own CAS claim is unchanged.
 #
@@ -923,7 +923,7 @@ cmd_dispatch() {
   # the silent ignore this verb used to give a stray trailing token —
   # matching view/list/capture/doctor/complete-plan, which already reject
   # extras. --next (SH-344) is the id-less mode: it claims whatever
-  # `story next --claim` picks, atomically, rather than a caller-named id —
+  # `story claim --next` picks, atomically, rather than a caller-named id —
   # see the NEXT MODE section below for why this is a second mode and not a
   # rewrite of the id-directed claim.
   local id="" auto="" want_next="" force="" requested_agent=""
@@ -996,16 +996,23 @@ cmd_dispatch() {
   local title state pre_claim_state claim_cmd_desc claim_state
   local claim_transitioned=false reused_claim=false
   if [ -n "$want_next" ]; then
-    # NEXT MODE (SH-344): a single `story next --claim` call does what ID
+    # NEXT MODE (SH-344): a single `story claim --next` call does what ID
     # MODE's steps 4-6 plus its CAS move do for a caller-named id — pick a
     # ready story AND claim it — but atomically, inside one write
     # transaction, so two concurrent `dispatch --next` callers are handed
     # two DIFFERENT stories rather than one winner and N-1 `claim-conflict`
     # refusals. This is a second mode, not a replacement for ID MODE's CAS:
-    # `--claim` picks whatever is top-priority, so it has no way to honor a
+    # `--next` picks whatever is top-priority, so it has no way to honor a
     # caller-supplied id, and ID MODE's `--if-state` CAS stays exactly as it
     # was.
-    claim_cmd_desc="story next --claim"
+    #
+    # --no-comment (SH-477): the claim's default comment names the CALLING
+    # process's tmux window, which here is the dispatcher's own, not the
+    # window dispatch is about to create for the work. That window cannot be
+    # named yet either — its name derives from the id this very call is what
+    # produces. So the claim stays silent rather than recording a window the
+    # work will not happen in (SH-476: never a fabricated window).
+    claim_cmd_desc="story claim --next --no-comment"
     local next_json next_result next_cmd_ran
     if [ -n "$DRY_RUN" ]; then
       # Dry-run: a claim is a WRITE, so preview with the plain, non-claiming
@@ -1014,8 +1021,8 @@ cmd_dispatch() {
       next_cmd_ran="story next"
       next_json=$(story_cli next --json 2>/dev/null) || true
     else
-      next_cmd_ran="story next --claim"
-      next_json=$(story_cli --actor dispatch next --claim --json 2>/dev/null) || true
+      next_cmd_ran="story claim --next --no-comment"
+      next_json=$(story_cli --actor dispatch claim --next --no-comment --json 2>/dev/null) || true
     fi
     next_result=$(printf '%s' "$next_json" | jq -r '.result // ""' 2>/dev/null || printf '')
     if [ "$next_result" != "ok" ]; then
