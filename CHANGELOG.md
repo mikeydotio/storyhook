@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Removed
+- **BREAKING:** `story.sh work`, the `story-work` skill, and the
+  `[plugin].tracking` key are removed. Claiming is `story claim <id> | --next`
+  (SH-476) and the `/story` router routes it directly, so the helper's
+  hand-rolled pick-read-move-retry loop and the skill that fronted it have
+  nothing left to do. `[plugin].tracking` retires with them: it was documented
+  as three levels, was read at exactly one call site, and its `verbose` level
+  never had an implementation. Its successor is per-invocation —
+  `story claim --comment <text>` or `--no-comment` — rather than a standing
+  preference. `[plugin].enabled`, the hooks kill switch, is unaffected and is
+  now the table's only key. Deliberately carries no version bump: batched with
+  the other breaking changes above for one major release (SH-478)
 - **BREAKING:** `story next --claim` is removed. `story next` is a pure read
   again; claiming is `story claim <id> | --next`, the one atomic claim verb
   (SH-476). There is no deprecation arm — the flag is simply no longer

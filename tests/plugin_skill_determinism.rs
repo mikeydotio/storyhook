@@ -236,5 +236,5 @@ fn every_skill_uses_common_frontmatter() {
         );
     }
 
-    assert_eq!(checked, 10, "the shared package must expose all ten skills");
+    assert_eq!(checked, 9, "the shared package must expose all nine skills");
 }

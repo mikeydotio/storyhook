@@ -42,8 +42,8 @@ an explicit trust/review step before Codex runs them.
 
 **Requires the store-backed `story` CLI (1.0+).** Since plugin 0.4.0, story data
 lives in storyhook's global store behind a local daemon — not in a `.storyhook/`
-directory — and the plugin's enable/tracking switches live in the repository's
-`.storyhook.toml` under `[plugin]` (they moved from `.storyhook/plugin-config.toml`).
+directory — and the plugin's `enabled` switch lives in the repository's
+`.storyhook.toml` under `[plugin]` (it moved from `.storyhook/plugin-config.toml`).
 Repositories still carrying a `.storyhook/` tree migrate once with `story migrate`.
 
 ## Layout
@@ -91,13 +91,12 @@ and then runs the same packaged helper, preserving the one-JSON-object contract.
 | `context [--full]` | `/story-context` |
 | `sync [--since <d>]` | `/story-sync` |
 | `handoff [--since <d>]` | `/story-handoff` |
-| `work [story-id]` | `/story-work` |
 | `triage` | `/story-triage` |
 | `scaffold-agents-md [--path <file>]` | shared setup's canonical `AGENTS.md` merge, including the project-new no-duplicate case |
 | `scaffold-claude-md [--path <file>]` | the legacy Claude-specific `CLAUDE.md` integration |
 
 The auxiliary lifecycle verbs (SH-308) route not through this skill but through their own standalone
-skills (`skills/story-context`, `story-sync`, `story-handoff`, `story-work`,
+skills (`skills/story-context`, `story-sync`, `story-handoff`,
 `story-triage`, `story-setup`), and through `references/ensure-cli.md`, which six of the
 nine standalone skills load — same one-JSON-object contract, same "route and render" rule,
 different door in. `triage` is read-only: it gathers and classifies findings, but the

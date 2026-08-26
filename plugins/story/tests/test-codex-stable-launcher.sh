@@ -19,8 +19,7 @@ for skill in \
   "$PLUGIN_ROOT/skills/story-plan/SKILL.md" \
   "$PLUGIN_ROOT/skills/story-setup/SKILL.md" \
   "$PLUGIN_ROOT/skills/story-sync/SKILL.md" \
-  "$PLUGIN_ROOT/skills/story-triage/SKILL.md" \
-  "$PLUGIN_ROOT/skills/story-work/SKILL.md"
+  "$PLUGIN_ROOT/skills/story-triage/SKILL.md"
 do
   assert_contains "$(cat "$skill")" 'references/helper-command.md' \
     "$(basename "$(dirname "$skill")") loads the provider-aware resolver"

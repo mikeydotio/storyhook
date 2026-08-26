@@ -71,10 +71,13 @@ for hook in post-git stop-handoff; do
   assert_eq "$(reached)" "yes" "$hook: a pointer with no [plugin] table defaults to enabled"
 
   # --- SH-47: the unquoted form, which is what storyhook itself writes ---
+  # The second key is deliberate: `[plugin]` is a user-authored table, so the
+  # reader must pick `enabled` out of one that carries keys it has never heard
+  # of rather than reading whatever line comes first.
   write_pointer "$IDENTITY
 [plugin]
 enabled = false
-tracking = \"normal\"
+some-key-this-plugin-never-defined = \"ignored\"
 "
   out=$(run_hook "$hook" "$repo")
   assert_eq "$(reached)" "no" "$hook: unquoted enabled = false disables the hook"
