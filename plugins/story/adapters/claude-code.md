@@ -11,7 +11,7 @@ from that invocation; do not rely on a magic environment variable.
 Run `bash "<story-helper>" dispatch <id> --agent=<agent>`, adding `--auto` and/or `--force`
 only when the user requested them. Use the user's explicit agent when present; otherwise use
 `--agent=claude`. Never pass the compatibility-only `claude-code` token through this
-interface. `--force` reuses a named story's existing `in-progress` claim without another
+interface. `--force` reuses a named story's existing claim without another
 state transition; it does not override any worktree, branch, tmux, or provider safety gate.
 
 - `ok:false`: show `display` and stop. Common causes include a missing or closed story, an

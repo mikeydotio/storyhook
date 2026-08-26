@@ -32,7 +32,7 @@ authority, so do not guess a displayed name or re-derive the workflow from memor
 |---|---|
 | No operation supplied | Run **List → Pick** below. |
 | A story id such as `SH-45` | Run **View + Offer** below. A bare token is an id only if it matches `^[A-Za-z0-9]+-[0-9]+$`. |
-| `do <id> [--auto] [--force] [--agent=claude|codex]` | Run **Provider dispatch** below. `--force` is only for a named story already at `in-progress`; it reuses that claim without writing another transition. |
+| `do <id> [--auto] [--force] [--agent=claude|codex]` | Run **Provider dispatch** below. `--force` is only for a named story already in the project's active-role state (`in-progress` unless the project moved the role); it reuses that claim without writing another transition. |
 | `view <id>` | Run `bash "<story-helper>" view <id>`, show `display`, stop. |
 | `new <description>` | Load `<plugin-root>/references/story-new.md` and follow it. |
 | `complete <id>` | Load `<plugin-root>/references/story-complete.md` and follow it. |
@@ -87,7 +87,7 @@ without one.
   `STORYHOOK_PROJECT`, then the nearest committed `.storyhook.toml`, then the repository's
   registered origin. Do not infer project identity in prose.
 - `STORY_DRY_RUN=1` previews side-effecting helper verbs for tests and advanced callers.
-- `do <id> --force` bypasses only the already-in-progress refusal. It does not bypass
+- `do <id> --force` bypasses only the already-claimed refusal. It does not bypass
   worktree, branch, tmux, provider-readiness, or prompt-delivery safety checks, and it cannot
   be combined with the helper-only `dispatch --next` mode.
 - Storyhook stories are not GitHub issues. Do not invent issue-label or `Closes #N`

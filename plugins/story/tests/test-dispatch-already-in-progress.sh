@@ -24,7 +24,10 @@ assert_eq "$still_ready" "false" "fixture sanity: an in-progress story is exclud
 
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$id" 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "already-in-progress: ok:false"
-assert_contains "$(jqf "$out" .display)" "already in-progress" "already-in-progress: reason names it"
+# SH-481: the guard names the state it actually compared against, so the slug
+# is quoted as a literal token rather than run into the prose -- it is a
+# project-configurable value now, not the one word this message could assume.
+assert_contains "$(jqf "$out" .display)" "already \`in-progress\`" "already-in-progress: reason names it"
 
 # No worktree created, no additional state churn.
 [ -d "$repo/.claude/worktrees" ] && fail_test "already-in-progress: a worktree was created despite the refusal"
