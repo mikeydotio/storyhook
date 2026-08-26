@@ -439,9 +439,63 @@ Examples:
   story claim --next --dry-run      # Say what would happen, write nothing
 
 Related:
-  story next   — See what is ready without taking it
+  story next    — See what is ready without taking it
+  story unclaim — Hand a claim back
+  story move    — Move a story between states without claiming semantics
+  story show    — Read a story in full
+"#,
+        );
+
+        m.insert(
+            "unclaim",
+            r#"story unclaim <id> [--comment <text> | --no-comment] [--dry-run]
+
+Hand a claim back. The inverse of 'story claim', and the store half of it:
+the state change and its comment, never a tmux window and never a worktree.
+
+The story returns to the state it was claimed FROM. Nothing records that
+anywhere, so it is derived from the story's own event log inside the same
+write transaction that performs the release — no bookkeeping, no --to flag,
+and every caller gets it for free because the store answers the question
+instead of the caller carrying the answer around. Its --json answer carries
+"unclaimed_from", the active state the story left; where it landed is already
+the story's own state.
+
+A story somebody else has moved since you claimed it is answered with
+result:"conflict", exit 9, with .actual naming the state found. A story that
+is not claimed at all is the same answer.
+
+When the state it was claimed from cannot be restored, the story returns to
+'todo' instead, and this is said out loud rather than performed silently —
+in the result, and in the default comment. Three cases, each reported as
+"restore_fallback" in --json:
+
+  no-prior-state        The story was created directly in the active state
+                        (story new --state in-progress), so there is no
+                        earlier state to go back to.
+  prior-state-removed   That state has since been removed from this
+                        project's vocabulary.
+  prior-state-closed    That state is no longer OPEN, so restoring the story
+                        to it would close the story rather than release it.
+
+An unclaim comments by default, naming where the story went and whether that
+was where it came from. --comment <text> replaces that sentence with your own
+— written verbatim, fallback or not, because it is yours — and --no-comment
+posts none. The comment is written in the same transaction as the release, so
+an unclaim never lands with its comment missing.
+
+--dry-run reads for real and writes symbolically: every refusal a real
+unclaim would make is still made, and nothing is written.
+
+Examples:
+  story unclaim SH-42                  # Hand SH-42 back where it came from
+  story unclaim SH-42 --no-comment     # ...quietly
+  story unclaim SH-42 --dry-run        # Say what would happen, write nothing
+
+Related:
+  story claim  — Take a story to work on
   story move   — Move a story between states without claiming semantics
-  story show   — Read a story in full
+  story log    — See every state this story has been in
 "#,
         );
 
