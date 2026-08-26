@@ -74,6 +74,7 @@ fn snapshot(id: &str, title: &str) -> StorySnapshot {
         created_at: "2026-07-28T09:00:00Z".to_string(),
         updated_at: "2026-07-28T09:30:00Z".to_string(),
         state: "todo".to_string(),
+        state_computed: false,
         superstate: SuperState::Open,
         assignee: None,
         awaiting: None,

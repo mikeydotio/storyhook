@@ -241,6 +241,14 @@ pub const MIGRATIONS: &[Migration] = &[
         // `apply` checks every foreign key again before committing.
         foreign_keys_off: true,
     },
+    Migration {
+        version: 20,
+        name: "computed_epic_state",
+        sql: include_str!("schema/0020_computed_epic_state.sql"),
+        // Appends authoritative events, updates their materialized snapshots,
+        // and drops one index. No referenced table is rebuilt.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

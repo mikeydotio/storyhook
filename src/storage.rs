@@ -1027,6 +1027,7 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
             state: "todo".to_string(),
+            state_computed: false,
             superstate: SuperState::Open,
             assignee: None,
             awaiting: None,

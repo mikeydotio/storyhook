@@ -7,12 +7,9 @@
 //! [`storyhook::store::test_support`] now, which bypasses the *service* layer
 //! without bypassing the schema.
 //!
-//! Note what that distinction buys, and what it costs. Two of the three shapes
-//! below — a dangling relation, a second parent — the schema now refuses
-//! outright, so the doctor cannot be shown them at all and the defect *class*
-//! is gone (`service_integrity.rs::the_shapes_doctor_used_to_find_are_now_
-//! refused_by_the_schema` pins that). What remains reachable is the
-//! genuinely-still-possible kind: a relation whose two ends' *histories*
+//! Note what that distinction buys, and what it costs. A dangling relation is
+//! refused by the schema, while multiple parents are intentional as of SH-446.
+//! What remains worth fabricating is a relation whose two ends' *histories*
 //! disagree, and a story whose type names something the project's catalog does
 //! not define.
 

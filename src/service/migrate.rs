@@ -15,7 +15,7 @@
 //!    mint the second copy of a project, which is the exact corruption this
 //!    program was written to end.
 //!
-//! # The two SH-60 families, and the one rule that settles both
+//! # Repairing SH-60 relations without changing their meaning
 //!
 //! A **one-sided relation** — `SH-1` claims `parent-of SH-2` while `SH-2`'s
 //! history never mentions it — is repairable without inventing anything: the
@@ -23,19 +23,9 @@
 //! the instant the surviving half was written and inserted in timestamp order.
 //! Nothing is dropped, and both histories then fold to the same edge.
 //!
-//! **Multiple parents** is the other family, and the two are not independent:
-//! completing a one-sided `parent-of` is the thing that hands a story a second
-//! parent. This repository's own tree is the worked example — ten one-sided
-//! relations, and completing them naively produces five stories with two
-//! parents each.
-//!
-//! One rule settles both: **agreement beats assertion**. A parentage recorded
-//! by *both* stories outranks one recorded by a single story, so the unilateral
-//! claim is retracted rather than completed. When the rule has nothing to weigh
-//! — two mutual parents, or several that all disagree — the migration refuses
-//! and names them, because at that point storyhook would be inventing an
-//! answer. [`settle_parent_conflicts`] holds the whole argument, including why
-//! refusing every conflict outright was rejected.
+//! Multiple parents are intentional (SH-446), so the same repair applies to a
+//! one-sided `parent-of` edge as to every other relation: complete its missing
+//! inverse. Import never chooses a winning parent or retracts a valid claim.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -64,8 +54,9 @@ pub enum RepairKind {
     /// The missing half of a relation only the far end's history claimed. An
     /// addition: nothing is dropped, and both ends then agree.
     CompletedInverse,
-    /// A parentage only one history asserted, annulled because the same child
-    /// has a parent both histories agree on.
+    /// Legacy report shape retained for callers that deserialize or construct
+    /// migration reports produced before SH-446. New migrations never emit it:
+    /// multiple parents are now intentional and unilateral claims are completed.
     RetractedUnilateralParent {
         /// The story that had more than one parent.
         child: String,
@@ -87,7 +78,8 @@ pub struct Repair {
     /// completes or annuls, never the migration's, so a story's `updated_at`
     /// does not jump to the day it was migrated.
     pub at: String,
-    /// Which of the two repairs this is.
+    /// Which repair this is. SH-446 migrations emit only
+    /// [`RepairKind::CompletedInverse`].
     pub kind: RepairKind,
 }
 
@@ -165,6 +157,8 @@ pub struct MigrationReport {
     pub repairs: Vec<Repair>,
     /// Legacy histories extended with current required metadata events.
     pub metadata_repairs: Vec<MetadataRepair>,
+    /// Structural epics whose legacy histories gained StoryStateCleared.
+    pub computed_epics: Vec<String>,
     /// Every event kind this binary does not understand, retained anyway.
     pub unknown_events: Vec<RetainedUnknown>,
     /// The settings this migration found in the tree, as lines describing
@@ -250,15 +244,8 @@ impl MigrationReport {
                 .filter(|repair| repair.kind == RepairKind::CompletedInverse)
                 .count();
             out.push_str(&format!(
-                "  repairs (SH-60): {completed} one-sided relation{} completed, {} unilateral \
-                 parent claim{} retracted\n",
+                "  repairs (SH-60): {completed} one-sided relation{} completed\n",
                 if completed == 1 { "" } else { "s" },
-                self.repairs.len() - completed,
-                if self.repairs.len() - completed == 1 {
-                    ""
-                } else {
-                    "s"
-                }
             ));
             for repair in &self.repairs {
                 out.push_str(&format!("    {repair}\n"));
@@ -276,6 +263,18 @@ impl MigrationReport {
                 "  required metadata: {types} type default{}, {priorities} low-priority default{}\n",
                 if types == 1 { "" } else { "s" },
                 if priorities == 1 { "" } else { "s" }
+            ));
+        }
+
+        if !self.computed_epics.is_empty() {
+            out.push_str(&format!(
+                "  computed epic state: {} authorit{} cleared\n",
+                self.computed_epics.len(),
+                if self.computed_epics.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                }
             ));
         }
 
@@ -349,6 +348,7 @@ struct PlannedStory {
     events: Vec<RawEvent>,
     snapshot: StorySnapshot,
     archived: bool,
+    is_epic: bool,
 }
 
 impl MigrationPlan {
@@ -396,6 +396,24 @@ impl MigrationPlan {
         refusals.into_result(&project.root)?;
 
         let mut stories = Vec::new();
+        let mut structural_epics: BTreeSet<String> = snapshots
+            .values()
+            .filter(|snapshot| {
+                snapshot
+                    .relationships
+                    .iter()
+                    .any(|edge| edge.relation == "parent-of")
+            })
+            .map(|snapshot| snapshot.id.clone())
+            .collect();
+        structural_epics.extend(
+            repairs
+                .iter()
+                .filter(|repair| {
+                    repair.kind == RepairKind::CompletedInverse && repair.relation == "parent-of"
+                })
+                .map(|repair| repair.story.clone()),
+        );
         let default_type = project
             .types
             .first()
@@ -439,6 +457,7 @@ impl MigrationPlan {
                 id: story.id.clone(),
                 story_no,
                 archived: story.archived,
+                is_epic: structural_epics.contains(&story.id),
                 snapshot,
             });
         }
@@ -491,7 +510,12 @@ impl MigrationPlan {
             dry_run,
             stories: self.stories.len(),
             events: self.stories.iter().map(|s| s.events.len()).sum::<usize>()
-                + self.metadata_repairs.len(),
+                + self.metadata_repairs.len()
+                + self
+                    .stories
+                    .iter()
+                    .filter(|story| story.is_epic && !story.snapshot.state_computed)
+                    .count(),
             archived: self.stories.iter().filter(|s| s.archived).count(),
             deleted: self.stories.iter().filter(|s| s.snapshot.deleted).count(),
             states: self.project.states.len(),
@@ -500,6 +524,12 @@ impl MigrationPlan {
             next_story_no: u64::try_from(self.highest.get()).unwrap_or(0) + 1,
             repairs: self.repairs.clone(),
             metadata_repairs: self.metadata_repairs.clone(),
+            computed_epics: self
+                .stories
+                .iter()
+                .filter(|story| story.is_epic && !story.snapshot.state_computed)
+                .map(|story| story.id.clone())
+                .collect(),
             unknown_events: self
                 .project
                 .unknown_events()
@@ -605,7 +635,18 @@ impl MigrationPlan {
                     // is worse than one that admits it was told nothing.
                     &Provenance::unrecorded(),
                 )?;
-                let defaults = restore_default_events(&story.snapshot, &default_type, at);
+                let mut defaults = restore_default_events(&story.snapshot, &default_type, at);
+                // A one-sided child-of claim can make this story an epic only
+                // after relation repair adds parent-of to its history, which
+                // the pre-repair snapshot passed above cannot see.
+                if story.is_epic
+                    && !story.snapshot.state_computed
+                    && !defaults
+                        .iter()
+                        .any(|event| matches!(event, StoryEvent::StoryStateCleared { .. }))
+                {
+                    defaults.push(StoryEvent::StoryStateCleared { at: at.to_string() });
+                }
                 let head = if defaults.is_empty() {
                     raw_head
                 } else {
@@ -840,13 +881,9 @@ fn undefined_state_hint(project: &LegacyProject, story: &LegacyStory, error: &Ap
     )
 }
 
-/// Decides every repair, and refuses every violation no rule can settle.
-///
-/// Two passes, in this order and for a reason. Parent conflicts are settled
-/// *first*, because the second pass would otherwise fabricate the very event
-/// that creates one: completing a one-sided `parent-of` is what hands a story
-/// its second parent. Anything the first pass annuls is then excluded from the
-/// second.
+/// Completes every one-sided relation and refuses shapes the store still cannot
+/// represent. Multiple parent claims need no special case: SH-446 made them a
+/// supported hierarchy, so preserving every claim is the lossless answer.
 fn plan_repairs(
     project: &LegacyProject,
     snapshots: &BTreeMap<String, StorySnapshot>,
@@ -867,20 +904,11 @@ fn plan_repairs(
         })
         .collect();
 
-    let mut repairs = settle_parent_conflicts(project, snapshots, &claims, refusals);
-    // The annulled edges, by value: a retraction means the second pass must
-    // *not* fabricate the mirror of the claim it just withdrew.
-    let annulled: BTreeSet<(String, String)> = repairs
-        .iter()
-        .map(|repair| (repair.story.clone(), repair.other.clone()))
-        .collect();
+    let mut repairs = Vec::new();
 
     for (id, snapshot) in snapshots {
         for edge in &snapshot.relationships {
             let other = edge.other_id.as_str();
-            if annulled.contains(&(id.clone(), other.to_string())) {
-                continue;
-            }
             if other == id {
                 refusals.push(format!(
                     "story `{id}` relates to itself (`{}`); the store cannot hold an edge with \
@@ -921,172 +949,6 @@ fn plan_repairs(
     repairs
         .sort_by(|a, b| (&a.story, &a.relation, &a.other).cmp(&(&b.story, &b.relation, &b.other)));
     repairs
-}
-
-/// Which stories claim to be a story's parent, and from which side.
-#[derive(Default)]
-struct ParentClaim {
-    /// The child's own history says `child-of`.
-    by_child: bool,
-    /// The parent's own history says `parent-of`.
-    by_parent: bool,
-}
-
-impl ParentClaim {
-    fn mutual(&self) -> bool {
-        self.by_child && self.by_parent
-    }
-}
-
-/// Settles every story that more than one story claims as a child.
-///
-/// # The rule: agreement beats assertion
-///
-/// The store allows one parent per story, and a legacy tree can hold several
-/// because nothing ever refused the write. Resolving that needs a rule, and
-/// there is exactly one that is *evidence-based* rather than arbitrary: a
-/// parentage **both** histories record outranks one that only a single history
-/// asserts. The unilateral claim is annulled with a `StoryRelationshipRemoved`
-/// event stamped at the instant of the claim it retracts, so the fold reads
-/// "asserted and never mutual" rather than "true until the migration".
-///
-/// Nothing is deleted. The original `StoryRelationshipAdded` is imported
-/// verbatim like every other event, the retraction sits beside it in the log,
-/// and the report names every one. What changes is the *read model*: an epic
-/// loses children it claimed alone.
-///
-/// # What is refused instead
-///
-/// When the rule cannot decide — two parents that both agree, or several that
-/// all disagree — the migration stops and names them. There is no evidence to
-/// weigh, and picking by id order or by timestamp would be storyhook inventing
-/// an answer to a question only the operator can settle.
-///
-/// The alternative to all of this was refusing every multi-parent tree
-/// outright. It was rejected once the remedy was written down: every story
-/// involved in this repository's own five conflicts is *archived*, and
-/// `story unrelate` resolves open stories only — so the advice would have been
-/// "reopen five closed stories, unrelate, re-close", which rewrites more
-/// history than the retraction does.
-fn settle_parent_conflicts(
-    project: &LegacyProject,
-    snapshots: &BTreeMap<String, StorySnapshot>,
-    claims: &BTreeMap<&str, BTreeSet<(&str, &str)>>,
-    refusals: &mut Refusals,
-) -> Vec<Repair> {
-    let mut parents: BTreeMap<&str, BTreeMap<&str, ParentClaim>> = BTreeMap::new();
-    for (id, snapshot) in snapshots {
-        for edge in &snapshot.relationships {
-            match edge.relation.as_str() {
-                "child-of" => {
-                    parents
-                        .entry(id)
-                        .or_default()
-                        .entry(&edge.other_id)
-                        .or_default()
-                        .by_child = true;
-                }
-                "parent-of" => {
-                    parents
-                        .entry(&edge.other_id)
-                        .or_default()
-                        .entry(id)
-                        .or_default()
-                        .by_parent = true;
-                }
-                _ => {}
-            }
-        }
-    }
-
-    let mut repairs = Vec::new();
-    for (child, found) in &parents {
-        if found.len() < 2 {
-            continue;
-        }
-        // A parent named by a story that is not in this tree is a dangling
-        // edge, which the second pass refuses on its own terms. Counting it
-        // here as well would report one broken edge as two problems.
-        let present: Vec<(&&str, &ParentClaim)> = found
-            .iter()
-            .filter(|(parent, _)| claims.contains_key(**parent))
-            .collect();
-        if present.len() < 2 {
-            continue;
-        }
-
-        let mutual: Vec<&str> = present
-            .iter()
-            .filter(|(_, claim)| claim.mutual())
-            .map(|(parent, _)| **parent)
-            .collect();
-        if mutual.len() != 1 {
-            refusals.push(describe_undecidable_parents(child, &present, &mutual));
-            continue;
-        }
-
-        let winner = mutual[0];
-        for (parent, claim) in &present {
-            let parent = **parent;
-            if parent == winner {
-                continue;
-            }
-            // Exactly one side asserts this parentage; that side is the one
-            // whose history gains the retraction.
-            let (story, relation, other) = if claim.by_child {
-                (child.to_string(), "child-of", parent)
-            } else {
-                (parent.to_string(), "parent-of", *child)
-            };
-            repairs.push(Repair {
-                at: claim_instant(project, snapshots, &story, relation, other),
-                story,
-                relation: relation.to_string(),
-                other: other.to_string(),
-                kind: RepairKind::RetractedUnilateralParent {
-                    child: (*child).to_string(),
-                    winner: winner.to_string(),
-                },
-            });
-        }
-    }
-    repairs
-}
-
-/// The refusal for a parent conflict the agreement rule cannot settle.
-fn describe_undecidable_parents(
-    child: &str,
-    present: &[(&&str, &ParentClaim)],
-    mutual: &[&str],
-) -> String {
-    let described: Vec<String> = present
-        .iter()
-        .map(|(parent, claim)| {
-            let side = if claim.mutual() {
-                "both histories agree"
-            } else if claim.by_child {
-                "claimed only by the child"
-            } else {
-                "claimed only by the parent"
-            };
-            format!("`{parent}` ({side})")
-        })
-        .collect();
-    let why = if mutual.len() > 1 {
-        format!(
-            "{} of them are agreed by both ends, so there is no weaker claim to annul",
-            mutual.len()
-        )
-    } else {
-        "none of them is agreed by both ends, so there is no stronger claim to keep".to_string()
-    };
-    format!(
-        "story `{child}` has {} parents — {} — and the store allows one. {why}. Decide which \
-         parentage is real, drop the others, and run this again; storyhook will not choose \
-         between claims it has no evidence to rank.",
-        present.len(),
-        described.join(", ")
-    )
 }
 
 /// When the surviving half of a one-sided relation was written.
@@ -1140,9 +1002,8 @@ fn claim_instant(
 /// `fold_story` takes it from the last event it sees, so an edge stamped 2025
 /// appended to a story closed in 2025 would be fine, while the same edge
 /// appended after later activity would rewrite when the story last moved. A
-/// retraction goes immediately after the claim it annuls — it carries that
-/// claim's own timestamp, and the fold then reads "asserted, never mutual"
-/// rather than "true until someone ran a migration".
+/// compatibility repair is inserted immediately after other events at the
+/// same instant, preserving chronology and the original bytes.
 fn raw_events(story: &LegacyStory, repairs: &[Repair]) -> Vec<RawEvent> {
     let mut events: Vec<RawEvent> = story
         .events

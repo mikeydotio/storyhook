@@ -358,11 +358,10 @@ fn doctor_fix_sweeps_the_catalog_even_when_the_project_keeps_a_finding() {
 /// handed one that folds to nothing.
 ///
 /// Nor can *this same shape* be provoked any other way through the data
-/// layer, which was searched rather than assumed. The only other constraint a
-/// repair event can reach is the single-parent unique index, and its
-/// precondition is unrepresentable: the mirror trigger materializes the
-/// inverse on insert, so no story can hold two `child-of` rows even for the
-/// length of a statement. `STORYHOOK_FAULT` cannot stand in for it either — it
+/// layer, which was searched rather than assumed. SH-446 removed the former
+/// single-parent unique index because multiple parents are now intentional;
+/// the remaining relation constraints are established before a repair reaches
+/// this point. `STORYHOOK_FAULT` cannot stand in for it either — it
 /// delivers `SIGKILL`, so the process dies and the arm's control flow is never
 /// reached at all.
 ///

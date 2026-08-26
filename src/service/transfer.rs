@@ -28,7 +28,7 @@ use crate::domain::provenance::Provenance;
 use crate::domain::remote::{OwnedOrigin, RemoteUrl};
 use crate::domain::{
     ImportStory, Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState, TypeDef,
-    fold_story, normalize_labels, relation_edges,
+    fold_story, has_children, normalize_labels, relation_edges,
 };
 use crate::error::AppError;
 use crate::output::{ReferencedBy, StoryView};
@@ -1125,6 +1125,14 @@ pub(super) fn restore_default_events(
         events.push(StoryEvent::StoryPrioritySet {
             at: now.to_string(),
             priority: Priority::Low,
+        });
+    }
+    // Exports written before SH-446 can contain a structural epic but no event
+    // clearing its own state authority. Current exports already fold with the
+    // marker set and therefore pass through byte-for-byte.
+    if has_children(snapshot) && !snapshot.state_computed {
+        events.push(StoryEvent::StoryStateCleared {
+            at: now.to_string(),
         });
     }
     events
