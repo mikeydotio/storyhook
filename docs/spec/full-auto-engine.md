@@ -505,6 +505,20 @@ touch on-disk state at all. Its destructive sibling `story reset <id>` deletes
 the worktree and branch for a clean restart, and **the engine never calls it**
 — see the restart policy below.
 
+As built (SH-484), both are `story.sh` verbs — `story.sh unclaim <id>` and
+`story.sh reset <id> [--force]` — because the window and the worktree are tmux
+and git mechanics, which is also why neither is reachable over MCP. Two details
+of the plugin half bear on the engine. First, `story.sh unclaim` refuses when
+the story is not in the active-role state (`unclaim-conflict`) and leaves the
+window alone, so a lane whose story somebody else has already moved is reported
+rather than torn down on a claim the engine no longer holds. Second, when the
+caller's own pane is the lane's window, `unclaim` performs the release and
+leaves that window open, naming the skip — it never refuses on that ground,
+which is what lets a lane release itself. `reset` refuses that case instead
+(`self-window`), and `--force` does not override it; since the engine never
+calls `reset`, that refusal is a guard for a human, not a constraint on the
+engine.
+
 **`unclaim` restores the state a story was claimed from**, derived from the
 story's own event log inside its own transaction — `StoryStateChanged` records
 only the destination, so it is a short replay rather than a field read. The

@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # story.sh's writes declare WHICH code path made them (SH-246).
 #
-# storyhook records the command it dispatched against every event, but both the
-# dispatch claim and its rollback are `story move` — so the trail cannot tell
-# them apart on the command alone. That is exactly the ambiguity that made
+# storyhook records the command it dispatched against every event. When SH-246
+# was filed both the dispatch claim and its rollback were `story move`, so the
+# trail could not tell them apart on the command alone; SH-484 later put the
+# rollback through `story unclaim`, which separates them a second way. The
+# actor is still the guarantee -- it is what holds if either half is ever
+# re-spelled again. That is exactly the ambiguity that made
 # SH-239's reversion take a store dump and three source files to explain: a
 # story went to `in-progress` and back to `todo` 106 seconds later, and nothing
 # recorded that dispatch had released a claim it could not fulfil.
@@ -70,10 +73,17 @@ assert_eq "$claim_actor" "1" "the claim is labelled story.sh:dispatch"
 rollback_actor=$(printf '%s' "$log" | jq -r '[.log[] | select(.actor == "story.sh:dispatch-rollback")] | length')
 assert_eq "$rollback_actor" "1" "the claim-rollback is labelled story.sh:dispatch-rollback"
 
-# The point of the pair: same command, different actor. A verb-only record
-# would have collapsed these two rows into one indistinguishable pair.
-commands=$(printf '%s' "$log" | jq -r '[.log[] | select(.actor != null) | .command] | unique | join(",")')
-assert_eq "$commands" "set-state" "both writes are the same command — only the actor separates them"
+# The point of the pair, and what changed under it (SH-484): the claim and its
+# rollback used to be the SAME command (`set-state`) with only the actor to
+# separate them -- the ambiguity SH-246 added actors for. The rollback now
+# routes through `story unclaim`, so the trail separates them TWICE over. The
+# actor assertions above are still the load-bearing ones: they hold whichever
+# command each half is spelled as, and they are what a future re-spelling of
+# either half must not break. This assertion records the current spelling and
+# would notice a silent re-collapse onto one command.
+commands=$(printf '%s' "$log" | jq -r '[.log[] | select(.actor != null) | .command] | unique | sort | join(",")')
+assert_eq "$commands" "set-state,unclaim" \
+  "the claim is a set-state and its rollback is an unclaim — separable by command as well as by actor"
 
 # Nothing storyhook wrote is allowed to claim an actor it was not given: a
 # plain `story new` in this repo declared nothing.
