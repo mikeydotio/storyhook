@@ -7,7 +7,7 @@ already resolved the installed plugin root and its absolute `<story-helper>` pat
 
 Run `bash "<story-helper>" dispatch <id> --agent=<agent>`, adding `--auto` and/or `--force`
 only when the user requested them. Use the user's explicit agent when present; otherwise use
-`--agent=codex`. `--force` reuses a named story's existing `in-progress` claim without
+`--agent=codex`. `--force` reuses a named story's existing claim without
 another state transition; it does not override any worktree, branch, tmux, or provider
 safety gate.
 

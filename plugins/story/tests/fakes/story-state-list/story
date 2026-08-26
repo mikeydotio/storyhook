@@ -38,7 +38,18 @@ if [ -n "${STORY_CLAIM_STATE_MISSING:-}" ] && is_claim_call "$@"; then
 fi
 
 if is_state_list "$@"; then
-  [ -z "${STORY_STATE_LIST_LOG:-}" ] || printf 'state list\n' >>"$STORY_STATE_LIST_LOG"
+  # SH-481: log WHICH form was asked for, not merely that something was.
+  # cmd_dispatch now has two readers of this command with opposite costs --
+  # story_active_state's plain read resolves the claim target on EVERY
+  # dispatch, while missing_claim_state_vocabulary's `--json` read is the
+  # failure-only classifier SH-440 added. A log that cannot tell them apart
+  # can no longer pin the classifier as failure-only.
+  if [ -n "${STORY_STATE_LIST_LOG:-}" ]; then
+    case " $* " in
+      *' --json '*) printf 'state list --json\n' >>"$STORY_STATE_LIST_LOG" ;;
+      *) printf 'state list\n' >>"$STORY_STATE_LIST_LOG" ;;
+    esac
+  fi
   case "${STORY_STATE_LIST_MODE:-real}" in
     missing)
       printf '{"result":"ok","message":"todo (OPEN) — 1 open\\nblocked (OPEN)\\ndone (CLOSED)"}\n'
@@ -54,6 +65,14 @@ if is_state_list "$@"; then
       ;;
     whitespace)
       printf '{"result":"ok","message":"\\n   \\n"}\n'
+      exit 0
+      ;;
+    substring)
+      # SH-481: `in-progress` is absent, but another slug CONTAINS it. The
+      # membership test became a caller-supplied slug when the claim target
+      # did, so a substring match over the whole message would read this
+      # vocabulary as defining `in-progress` and withhold the diagnosis.
+      printf '{"result":"ok","message":"todo (OPEN) — 1 open\\nin-progress-review (OPEN)\\ndone (CLOSED)"}\n'
       exit 0
       ;;
   esac
