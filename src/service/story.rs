@@ -14,13 +14,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::cli::UnclaimComment;
 use crate::domain::{
     Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState, active_state, has_children,
     normalize_labels, undefined_state_error,
 };
 use crate::error::AppError;
 use crate::event_hooks::HookEventType;
-use crate::output::{HideStatePlan, PurgePlan, UndeletePlan};
+use crate::output::{HideStatePlan, PurgePlan, UnclaimFallback, UnclaimOutcome, UndeletePlan};
 use crate::store::{
     EventSeq, ExpectedSeq, ProjectId, ReadOps, Store, StoryNo, StoryQuery, StoryRow, WriteOps,
 };
@@ -67,6 +68,117 @@ fn claim_comment_events(comment: Option<&str>, now: &str) -> Vec<StoryEvent> {
         })
         .into_iter()
         .collect()
+}
+
+/// Where `story unclaim` sends a story when the replay cannot answer
+/// (SH-483).
+///
+/// `todo` by user determination, and specifically because SH-125 makes it a
+/// [`REQUIRED_STATE`](crate::domain::REQUIRED_STATES) that is OPEN — so the
+/// fallback can never itself fail to resolve on a conforming project, which
+/// is the whole reason a fallback is permitted to exist at all.
+/// `unclaim_fallback_state_is_a_required_open_state` is what keeps the two
+/// facts from drifting apart.
+pub const UNCLAIM_FALLBACK_STATE: &str = "todo";
+
+/// Where a claimed story should be put back, and why it is not always where
+/// it came from (SH-483).
+///
+/// Three refusals of the replayed origin, all real, and each classified
+/// rather than collapsed into one "could not restore":
+///
+/// 1. no origin at all — the story was created directly in the active state;
+/// 2. the origin is no longer a state this project defines;
+/// 3. the origin is no longer OPEN, so restoring the story to it would
+///    *close* the story rather than release it.
+///
+/// Pure, and separate from the two service methods for exactly that reason:
+/// the real release and its dry run must not be able to disagree about where
+/// the story is going.
+fn resolve_unclaim_destination(
+    id: &str,
+    events: &[StoryEvent],
+    active: &str,
+    states: &BTreeMap<String, StateDef>,
+) -> UnclaimOutcome {
+    let fallback = |reason: UnclaimFallback| UnclaimOutcome {
+        id: id.to_string(),
+        from: active.to_string(),
+        restored_to: UNCLAIM_FALLBACK_STATE.to_string(),
+        fallback: Some(reason),
+    };
+    let Some(origin) = crate::domain::state_claimed_from(events, active) else {
+        return fallback(UnclaimFallback::NoPriorState);
+    };
+    let Some(def) = states.get(&origin) else {
+        return fallback(UnclaimFallback::PriorStateRemoved(origin));
+    };
+    if def.super_state != SuperState::Open {
+        return fallback(UnclaimFallback::PriorStateClosed(origin));
+    }
+    UnclaimOutcome {
+        id: id.to_string(),
+        from: active.to_string(),
+        restored_to: origin,
+        fallback: None,
+    }
+}
+
+/// The release's own comment, as the extra events
+/// [`state_transition_events`] folds into the transition batch.
+///
+/// The sibling of [`claim_comment_events`], and it takes the whole
+/// [`UnclaimComment`] rather than an `Option<&str>` because
+/// [`UnclaimComment::Default`] is composed *here* — in the store, inside the
+/// write transaction — where the destination and the fallback are known.
+/// That is the deliberate opposite of a claim's default, which names the
+/// caller's own host and tmux window and so can only be composed by the
+/// client.
+///
+/// A [`Custom`](UnclaimComment::Custom) sentence is written verbatim, a
+/// fallback notwithstanding: it is the caller's own text and splicing into it
+/// would corrupt what they meant to say. The fallback is reported in
+/// [`UnclaimOutcome::fallback`] on every path regardless, which is where a
+/// caller reads it.
+fn unclaim_comment_events(
+    comment: &UnclaimComment,
+    outcome: &UnclaimOutcome,
+    now: &str,
+) -> Vec<StoryEvent> {
+    let text = match comment {
+        UnclaimComment::Suppressed => return Vec::new(),
+        UnclaimComment::Custom(text) => text.clone(),
+        UnclaimComment::Default => default_unclaim_comment(outcome),
+    };
+    vec![StoryEvent::StoryCommentAdded {
+        at: now.to_string(),
+        text,
+    }]
+}
+
+/// The sentence an unclaim posts when the caller named no text of their own.
+///
+/// It names no host and no tmux window, unlike a claim's, and that is not an
+/// omission: "starting work *here*" is a locational fact and "I am done
+/// holding this" is not, and who performed the write is already recorded
+/// structurally on the event by [`Provenance`](crate::store::Provenance)
+/// (SH-246). What it does name is the pair a reader cannot recover otherwise
+/// — where the story went, and whether that was where it came from.
+#[must_use]
+pub fn default_unclaim_comment(outcome: &UnclaimOutcome) -> String {
+    match &outcome.fallback {
+        None => format!(
+            "Unclaimed from {}; restored to {}, the state it was claimed from",
+            outcome.from, outcome.restored_to
+        ),
+        Some(fallback) => format!(
+            "Unclaimed from {}; restored to {} rather than the state it was claimed from, \
+             because {}",
+            outcome.from,
+            outcome.restored_to,
+            fallback.explain(&outcome.from)
+        ),
+    }
 }
 
 /// What a `--dry-run` claim would have written.
@@ -620,6 +732,137 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
             &now,
         );
         Ok((before, snapshot))
+    }
+
+    /// `story unclaim <id>` (SH-483) — moves one story out of the project's
+    /// active state and back to the state it was claimed from, returning the
+    /// snapshot it left, the one it landed in, and what became of it.
+    ///
+    /// The inverse of [`Self::claim_story`] and atomic for the same reason:
+    /// the state is read, the origin is replayed out of the story's own event
+    /// log, the comment is composed and the transition is appended inside one
+    /// `BEGIN IMMEDIATE` write transaction. There is no second round trip for
+    /// a caller's witness to go stale across, so this takes no `--if-state`.
+    ///
+    /// # The origin, and why nothing records it
+    ///
+    /// `StoryStateChanged` carries only the destination state, so where a
+    /// story was claimed *from* is derived by
+    /// [`domain::state_claimed_from`](crate::domain::state_claimed_from)
+    /// rather than stored: no schema change, no column, no `--to` flag, and
+    /// every caller — a human, MCP, the Full Auto engine — gets restoration
+    /// for free because the store answers the question instead of the caller
+    /// carrying the answer around.
+    ///
+    /// # The fallback, and why it is loud
+    ///
+    /// [`UNCLAIM_FALLBACK_STATE`] when the replay cannot answer, the origin
+    /// is no longer a state this project defines, or it is no longer OPEN.
+    /// Reported in [`UnclaimOutcome::fallback`] on every path and written
+    /// into the default comment on the path that writes one: a silent
+    /// substitution here is a wrong answer stored about where the work came
+    /// from.
+    ///
+    /// # The one race that survives, and how it is reported
+    ///
+    /// Somebody else moving the story first. Answered with
+    /// [`AppError::StateConflict`] — `result:"conflict"`, exit 9 — naming the
+    /// *real* active slug as `expected`, not a pseudo-state. A claim's
+    /// precondition is any state but the active one and so cannot be named by
+    /// one slug ([`UNCLAIMED`]); an unclaim's precondition is exactly that
+    /// slug, so naming it is the truth.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::Validation`] when the project has no active state to
+    /// release from, or when the story is closed;
+    /// [`AppError::NotFound`] when no such story exists;
+    /// [`AppError::StateConflict`] when the story is not currently claimed.
+    pub fn unclaim_story(
+        &self,
+        id: &str,
+        comment: &UnclaimComment,
+    ) -> Result<(StorySnapshot, StorySnapshot, UnclaimOutcome), AppError> {
+        let now = self.ctx.now();
+        let project = self.ctx.project();
+        let (before, snapshot, outcome) = self.ctx.store().write(|tx| {
+            let active = active_state(&tx.states(project)?).ok_or_else(no_active_state_error)?;
+            let states = tx.state_map(project)?;
+            let prefix = project_prefix(&*tx, project)?;
+            let (story_no, row) = resolve_open_story(&*tx, project, &prefix, id)?;
+            if row.state != active.slug {
+                return Err(AppError::StateConflict(active.slug.clone(), row.state.clone()).into());
+            }
+            let stored = tx.events_for(project, story_no)?;
+            let known: Vec<StoryEvent> = stored.iter().filter_map(|e| e.known().cloned()).collect();
+            let outcome =
+                resolve_unclaim_destination(&row.snapshot.id, &known, &active.slug, &states);
+            let target = states
+                .get(&outcome.restored_to)
+                .cloned()
+                .ok_or_else(|| undefined_state_error(&outcome.restored_to, &states))?;
+            let events = state_transition_events(
+                &target,
+                row.awaiting.is_some(),
+                &now,
+                unclaim_comment_events(comment, &outcome, &now),
+            );
+            let snapshot = append_and_fold(
+                tx,
+                project,
+                story_no,
+                &prefix,
+                &states,
+                ExpectedSeq::Exact(row.head_seq),
+                &events,
+                self.ctx.provenance(),
+            )?;
+            Ok((row.snapshot, snapshot, outcome))
+        })?;
+
+        self.fire_transition_hooks(
+            &before.id,
+            &before.title,
+            &before.state,
+            &snapshot.state,
+            &snapshot,
+            &now,
+        );
+        Ok((before, snapshot, outcome))
+    }
+
+    /// What a `--dry-run` unclaim of `id` would do, without writing anything.
+    ///
+    /// Every refusal the real release makes is made here too — no active
+    /// state, no such story, a closed story, one that is not claimed —
+    /// because a dry run that reports a plan the real command would refuse is
+    /// worse than no dry run at all.
+    ///
+    /// # Errors
+    ///
+    /// The same set [`Self::unclaim_story`] returns.
+    pub fn plan_unclaim(&self, id: &str) -> Result<UnclaimOutcome, AppError> {
+        let project = self.ctx.project();
+        Ok(self.ctx.store().read(|tx| {
+            let active = active_state(&tx.states(project)?).ok_or_else(no_active_state_error)?;
+            let states = tx.state_map(project)?;
+            let prefix = project_prefix(tx, project)?;
+            let (story_no, row) = resolve_open_story(tx, project, &prefix, id)?;
+            if row.state != active.slug {
+                return Err(AppError::StateConflict(active.slug.clone(), row.state.clone()).into());
+            }
+            let stored = tx.events_for(project, story_no)?;
+            let known: Vec<StoryEvent> = stored.iter().filter_map(|e| e.known().cloned()).collect();
+            let outcome =
+                resolve_unclaim_destination(&row.snapshot.id, &known, &active.slug, &states);
+            // The same lookup the real path performs, so a project missing
+            // `todo` outright is refused here too rather than promised a
+            // destination that does not exist.
+            if !states.contains_key(&outcome.restored_to) {
+                return Err(undefined_state_error(&outcome.restored_to, &states).into());
+            }
+            Ok(outcome)
+        })?)
     }
 
     /// What a `--dry-run` claim of `id` would do, without writing anything.
@@ -1780,4 +2023,253 @@ fn surviving_claims(
         }
     }
     Ok(claims.into_iter().collect())
+}
+
+/// The pure halves of `story unclaim` (SH-483): where a release goes, and the
+/// sentence it posts. Both are decided without a store, which is what lets
+/// them be proved without one.
+#[cfg(test)]
+mod unclaim_tests {
+    use super::{
+        StateDef, UNCLAIM_FALLBACK_STATE, UnclaimComment, UnclaimFallback, UnclaimOutcome,
+        default_unclaim_comment, resolve_unclaim_destination, unclaim_comment_events,
+    };
+    use crate::domain::{REQUIRED_STATES, StoryEvent, SuperState};
+    use std::collections::BTreeMap;
+
+    /// The guarantee the fallback rests on. `todo` may be substituted for a
+    /// state that cannot be restored only because SH-125 makes it a state
+    /// every project has, in a superstate a story can actually sit open in —
+    /// a fallback that could itself fail to resolve is not a fallback.
+    #[test]
+    fn unclaim_fallback_state_is_a_required_open_state() {
+        let required = REQUIRED_STATES
+            .iter()
+            .find(|state| state.slug == UNCLAIM_FALLBACK_STATE)
+            .expect("the unclaim fallback must be a state every project is required to have");
+        assert_eq!(required.super_state, SuperState::Open);
+    }
+
+    fn states(defs: &[(&str, SuperState)]) -> BTreeMap<String, StateDef> {
+        defs.iter()
+            .map(|(slug, super_state)| {
+                (
+                    (*slug).to_string(),
+                    StateDef {
+                        slug: (*slug).to_string(),
+                        super_state: super_state.clone(),
+                        role: None,
+                        description: None,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn ordinary_states() -> BTreeMap<String, StateDef> {
+        states(&[
+            ("todo", SuperState::Open),
+            ("triage", SuperState::Open),
+            ("in-progress", SuperState::Open),
+            ("done", SuperState::Closed),
+        ])
+    }
+
+    fn created(state: &str) -> StoryEvent {
+        StoryEvent::StoryCreated {
+            at: "2026-08-26T00:00:00Z".to_string(),
+            title: "A story".to_string(),
+            state: state.to_string(),
+        }
+    }
+
+    fn moved(state: &str) -> StoryEvent {
+        StoryEvent::StoryStateChanged {
+            at: "2026-08-26T00:00:01Z".to_string(),
+            state: state.to_string(),
+        }
+    }
+
+    #[test]
+    fn an_ordinary_release_restores_the_state_it_was_claimed_from() {
+        let outcome = resolve_unclaim_destination(
+            "SH-1",
+            &[created("todo"), moved("triage"), moved("in-progress")],
+            "in-progress",
+            &ordinary_states(),
+        );
+        assert_eq!(
+            outcome,
+            UnclaimOutcome {
+                id: "SH-1".to_string(),
+                from: "in-progress".to_string(),
+                restored_to: "triage".to_string(),
+                fallback: None,
+            }
+        );
+    }
+
+    /// Fallback 1: `story new --state in-progress`.
+    #[test]
+    fn a_story_created_in_the_active_state_falls_back_and_says_why() {
+        let outcome = resolve_unclaim_destination(
+            "SH-1",
+            &[created("in-progress")],
+            "in-progress",
+            &ordinary_states(),
+        );
+        assert_eq!(outcome.restored_to, UNCLAIM_FALLBACK_STATE);
+        assert_eq!(outcome.fallback, Some(UnclaimFallback::NoPriorState));
+    }
+
+    /// Fallback 2: `story state remove triage` between the claim and the
+    /// release.
+    #[test]
+    fn an_origin_the_project_no_longer_defines_falls_back_naming_it() {
+        let outcome = resolve_unclaim_destination(
+            "SH-1",
+            &[created("todo"), moved("triage"), moved("in-progress")],
+            "in-progress",
+            &states(&[
+                ("todo", SuperState::Open),
+                ("in-progress", SuperState::Open),
+                ("done", SuperState::Closed),
+            ]),
+        );
+        assert_eq!(outcome.restored_to, UNCLAIM_FALLBACK_STATE);
+        assert_eq!(
+            outcome.fallback,
+            Some(UnclaimFallback::PriorStateRemoved("triage".to_string()))
+        );
+    }
+
+    /// Fallback 3, and the one with teeth: restoring a story to a state that
+    /// has since been reclassified CLOSED would *close* the story instead of
+    /// releasing it.
+    #[test]
+    fn an_origin_that_is_no_longer_open_falls_back_rather_than_closing_the_story() {
+        let outcome = resolve_unclaim_destination(
+            "SH-1",
+            &[created("todo"), moved("triage"), moved("in-progress")],
+            "in-progress",
+            &states(&[
+                ("todo", SuperState::Open),
+                ("triage", SuperState::Closed),
+                ("in-progress", SuperState::Open),
+                ("done", SuperState::Closed),
+            ]),
+        );
+        assert_eq!(outcome.restored_to, UNCLAIM_FALLBACK_STATE);
+        assert_eq!(
+            outcome.fallback,
+            Some(UnclaimFallback::PriorStateClosed("triage".to_string()))
+        );
+    }
+
+    /// A story genuinely claimed out of `todo` lands in `todo` with **no**
+    /// fallback recorded. The destination alone cannot distinguish a
+    /// restoration from a substitution, which is exactly why the flag exists
+    /// separately from it.
+    #[test]
+    fn landing_in_todo_on_purpose_is_not_a_fallback() {
+        let outcome = resolve_unclaim_destination(
+            "SH-1",
+            &[created("todo"), moved("in-progress")],
+            "in-progress",
+            &ordinary_states(),
+        );
+        assert_eq!(outcome.restored_to, "todo");
+        assert_eq!(outcome.fallback, None);
+    }
+
+    fn outcome(restored_to: &str, fallback: Option<UnclaimFallback>) -> UnclaimOutcome {
+        UnclaimOutcome {
+            id: "SH-1".to_string(),
+            from: "in-progress".to_string(),
+            restored_to: restored_to.to_string(),
+            fallback,
+        }
+    }
+
+    #[test]
+    fn the_default_sentence_names_both_ends_of_the_move() {
+        assert_eq!(
+            default_unclaim_comment(&outcome("triage", None)),
+            "Unclaimed from in-progress; restored to triage, the state it was claimed from"
+        );
+    }
+
+    /// The determination's own requirement: a substituted destination is said
+    /// out loud in the auto-comment, never left for a reader to infer from a
+    /// state they were not expecting.
+    #[test]
+    fn the_default_sentence_says_when_the_destination_was_substituted() {
+        for fallback in [
+            UnclaimFallback::NoPriorState,
+            UnclaimFallback::PriorStateRemoved("triage".to_string()),
+            UnclaimFallback::PriorStateClosed("triage".to_string()),
+        ] {
+            let text = default_unclaim_comment(&outcome("todo", Some(fallback.clone())));
+            assert!(
+                text.contains("rather than the state it was claimed from"),
+                "{}: {text}",
+                fallback.code()
+            );
+            assert!(
+                text.contains(&fallback.explain("in-progress")),
+                "{}: {text}",
+                fallback.code()
+            );
+        }
+    }
+
+    /// A caller's own sentence is written verbatim, fallback or not: splicing
+    /// into text somebody else wrote would corrupt what they meant to say.
+    /// The fallback still reaches them through `UnclaimOutcome::fallback`.
+    #[test]
+    fn a_custom_sentence_is_never_edited_by_the_fallback() {
+        let events = unclaim_comment_events(
+            &UnclaimComment::Custom("handing this back".to_string()),
+            &outcome("todo", Some(UnclaimFallback::NoPriorState)),
+            "2026-08-26T00:00:02Z",
+        );
+        assert_eq!(
+            events,
+            vec![StoryEvent::StoryCommentAdded {
+                at: "2026-08-26T00:00:02Z".to_string(),
+                text: "handing this back".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn no_comment_writes_no_event_at_all() {
+        assert!(
+            unclaim_comment_events(
+                &UnclaimComment::Suppressed,
+                &outcome("todo", None),
+                "2026-08-26T00:00:02Z",
+            )
+            .is_empty()
+        );
+    }
+
+    /// The three fallback codes are distinct and stable, because a `--json`
+    /// caller branches on them.
+    #[test]
+    fn every_fallback_code_is_distinct() {
+        let codes = [
+            UnclaimFallback::NoPriorState.code(),
+            UnclaimFallback::PriorStateRemoved("x".to_string()).code(),
+            UnclaimFallback::PriorStateClosed("x".to_string()).code(),
+        ];
+        let mut unique = codes.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            codes.len(),
+            "codes must be distinct: {codes:?}"
+        );
+    }
 }

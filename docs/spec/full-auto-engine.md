@@ -510,10 +510,15 @@ story's own event log inside its own transaction — `StoryStateChanged` records
 only the destination, so it is a short replay rather than a field read. The
 engine therefore needs no `claimed_from` column, no explicit `story move`, and
 no second release path: it calls `unclaim` and the store answers the question.
-Where the replay cannot answer — a story created directly into the active state,
-or a prior state since removed from the vocabulary — it falls back to `todo` and
-**says so**. A silent substitution there would store a wrong answer about where
-the work came from.
+Where the replay cannot answer it falls back to `todo` and **says so** — in the
+result and in the default comment. A silent substitution there would store a
+wrong answer about where the work came from. As built (SH-483) there are three
+such cases, each reported under its own `restore_fallback` code: a story created
+directly into the active state (`no-prior-state`), a prior state since removed
+from the vocabulary (`prior-state-removed`), and a prior state since
+reclassified CLOSED (`prior-state-closed`) — the third was found during
+implementation and matters most, because restoring a story to it would *close*
+the story rather than release it.
 
 ## Control surfaces
 

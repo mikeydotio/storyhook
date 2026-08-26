@@ -40,6 +40,10 @@ fn sets_awaiting(invocation: &Invocation) -> bool {
         | Invocation::Next { .. }
         // A claim's comment is a comment, never an `awaiting` reason (SH-476).
         | Invocation::Claim { .. }
+        // Nor is an unclaim's (SH-483). It clears no `awaiting` either: the
+        // release is an ordinary OPEN-to-OPEN transition, and
+        // `state_transition_events` only clears `awaiting` on a close.
+        | Invocation::Unclaim { .. }
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }

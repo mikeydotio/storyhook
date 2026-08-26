@@ -21,7 +21,7 @@ use storyhook::cli::{
     AbandonedAction, Attach, AttachmentAction, ClaimComment, ClaimTarget, CrashesAction,
     DaemonAction, EpicAction, GithubAuthAction, GraphMode, HistoryAction, HooksAction, Invocation,
     MemberInput, NewProjectRequest, NewProjectSpec, PhaseAction, PluginAction, ProjectAction,
-    SettingsAction, StateAction, StoreAction, TokenAction, TypeAction, WebAction,
+    SettingsAction, StateAction, StoreAction, TokenAction, TypeAction, UnclaimComment, WebAction,
 };
 use storyhook::domain::finding::{Finding, FindingCode, FindingData};
 use storyhook::domain::{
@@ -32,8 +32,8 @@ use storyhook::error::{AppError, IntegrityDetail, WireError};
 use storyhook::output::{
     BlockedChainView, ConfirmationPlan, DeletePlan, GraphOverview, GraphView, PhaseView,
     ProjectSnapshotView, PurgePlan, ReferencedBy, Response, SetPrefixPlan, SettingKind,
-    SettingSource, SettingView, StaleInfo, StoryView, SummaryView, UndeletePlan, render_error,
-    render_response,
+    SettingSource, SettingView, StaleInfo, StoryView, SummaryView, UnclaimFallback, UnclaimOutcome,
+    UndeletePlan, render_error, render_response,
 };
 use storyhook::store::{GlobalSeq, PrLink};
 
@@ -283,6 +283,32 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
         (
             "claimed",
             Response::Claimed(Box::new(maximal_view()), "todo".to_string()),
+        ),
+        // Both sides of `UnclaimOutcome::fallback`, per this test's own
+        // instruction about nullable fields (SH-483).
+        (
+            "unclaimed",
+            Response::Unclaimed(
+                Box::new(maximal_view()),
+                Box::new(UnclaimOutcome {
+                    id: "SH-1".to_string(),
+                    from: "in-progress".to_string(),
+                    restored_to: "triage".to_string(),
+                    fallback: None,
+                }),
+            ),
+        ),
+        (
+            "unclaimed_fallback",
+            Response::Unclaimed(
+                Box::new(maximal_view()),
+                Box::new(UnclaimOutcome {
+                    id: "SH-1".to_string(),
+                    from: "in-progress".to_string(),
+                    restored_to: "todo".to_string(),
+                    fallback: Some(UnclaimFallback::PriorStateRemoved("triage".to_string())),
+                }),
+            ),
         ),
         (
             "stories_empty",
@@ -714,6 +740,7 @@ fn the_response_corpus_covers_every_variant() {
             Response::MessageWithWarnings(..) => "message_with_warnings",
             Response::Story(_) => "story",
             Response::Claimed(..) => "claimed",
+            Response::Unclaimed(..) => "unclaimed",
             Response::Stories { .. } => "stories",
             Response::Summary(_) => "summary",
             Response::Graph(_) => "graph",
@@ -729,11 +756,12 @@ fn the_response_corpus_covers_every_variant() {
         }
     }
 
-    const EVERY_VARIANT: [&str; 16] = [
+    const EVERY_VARIANT: [&str; 17] = [
         "message",
         "message_with_warnings",
         "story",
         "claimed",
+        "unclaimed",
         "stories",
         "summary",
         "graph",
@@ -779,6 +807,7 @@ fn response_variants_travel_as_snake_case_keys() {
         ("message_with_warnings", "message_with_warnings"),
         ("story_minimal", "story"),
         ("claimed", "claimed"),
+        ("unclaimed", "unclaimed"),
         ("stories_empty", "stories"),
         ("summary", "summary"),
         ("graph_overview", "graph"),
@@ -1559,6 +1588,24 @@ fn invocation_corpus() -> Vec<Invocation> {
             comment: ClaimComment::Default,
             dry_run: false,
         },
+        // All three `UnclaimComment` states cross the wire, and `Default`
+        // most of all: unlike a claim's, it is *meant* to arrive unresolved
+        // and be composed by the store (SH-483).
+        Invocation::Unclaim {
+            id: "SH-1".to_string(),
+            comment: UnclaimComment::Default,
+            dry_run: false,
+        },
+        Invocation::Unclaim {
+            id: "SH-1".to_string(),
+            comment: UnclaimComment::Custom("done for now".to_string()),
+            dry_run: false,
+        },
+        Invocation::Unclaim {
+            id: "SH-1".to_string(),
+            comment: UnclaimComment::Suppressed,
+            dry_run: true,
+        },
         Invocation::Attachment {
             action: AttachmentAction::List {
                 id: "SH-1".to_string(),
@@ -1594,6 +1641,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Search { .. } => "Search",
         Invocation::Next { .. } => "Next",
         Invocation::Claim { .. } => "Claim",
+        Invocation::Unclaim { .. } => "Unclaim",
         Invocation::Summary => "Summary",
         Invocation::Report { .. } => "Report",
         Invocation::Doctor { .. } => "Doctor",
@@ -1662,7 +1710,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        64,
+        65,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }
