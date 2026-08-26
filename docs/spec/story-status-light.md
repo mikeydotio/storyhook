@@ -215,6 +215,11 @@ silently lost if the badge had swallowed it behind a single `blocked[st.id]` gat
 
 ### SH-277: the list view's `.state-pill`, and a second renderer found reading the wrong slug
 
+SH-446 later replaced the epic-specific display promotion described below with
+structural epics whose `state` is recursively computed before this renderer sees
+them. The SH-407 leaf-story `display_state` override remains; the SH-165 details
+in this section are retained as the history of why every renderer was unified.
+
 Colouring `.state-pill` turned out to need a prerequisite fix first, not just new CSS.
 Every other renderer in the file already read `display_state || state` — the board's
 column placement, the drag-drop no-op guard, the render diff, and this story's own

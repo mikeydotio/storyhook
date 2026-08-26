@@ -2,7 +2,7 @@
 source: tests/golden_cli.rs
 ---
 $ story search engine
-SH-1 [todo] (critical) [epic] Design the storage engine
+SH-1 [in-progress] (critical) [epic] Design the storage engine
 SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1]
 
 $ story search worktrees
@@ -14,11 +14,11 @@ SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1
 SH-4 [review] (medium) [normal] Write the migration runner [backend]
 
 $ story search ENGINE
-SH-1 [todo] (critical) [epic] Design the storage engine
+SH-1 [in-progress] (critical) [epic] Design the storage engine
 SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1]
 
 $ story search the storage engine
-SH-1 [todo] (critical) [epic] Design the storage engine
+SH-1 [in-progress] (critical) [epic] Design the storage engine
 
 $ story search nothing-matches-this
 no stories found

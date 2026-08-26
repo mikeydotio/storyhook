@@ -111,8 +111,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::domain::{
-    StateDef, StoryEvent, active_state, default_open_state, parse_duration, scan_story_refs,
-    short_sha,
+    StateDef, StoryEvent, active_state, default_open_state, has_children, parse_duration,
+    scan_story_refs, short_sha,
 };
 use crate::error::AppError;
 use crate::store::{ExpectedSeq, ProjectId, ReadOps, Store, StoreError, StoryNo, WriteOps};
@@ -196,6 +196,9 @@ enum NotMovedReason {
     /// never the project's default *open* one, so this is the more specific,
     /// more actionable of the two.
     StoryIsClosed,
+    /// Structural epics derive state from their children and cannot be claimed
+    /// by a commit mention.
+    StoryIsEpic,
     /// The story has already moved out of the project's default open state.
     NotInDefaultState,
 }
@@ -220,6 +223,9 @@ impl NotMovedReason {
             NotMovedReason::StoryIsClosed => {
                 format!("linked without moving: {ids} (the story is closed)")
             }
+            NotMovedReason::StoryIsEpic => format!(
+                "linked without moving: {ids} (the story is an epic; its state is computed from children)"
+            ),
             NotMovedReason::NotInDefaultState => format!(
                 "linked without moving: {ids} (already out of the project's default open state)"
             ),
@@ -544,6 +550,9 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
             let outcome = match (active, default_open) {
                 (Err(reason), _) => LinkOutcome::NotMoved(reason),
                 (Ok(_), _) if row.archived => LinkOutcome::NotMoved(NotMovedReason::StoryIsClosed),
+                (Ok(_), _) if has_children(&row.snapshot) => {
+                    LinkOutcome::NotMoved(NotMovedReason::StoryIsEpic)
+                }
                 (Ok(active), Some(default_open)) if row.snapshot.state == default_open.slug => {
                     events.extend(state_transition_events(
                         active,
@@ -977,6 +986,10 @@ mod tests {
             (
                 NotMovedReason::StoryIsClosed,
                 "linked without moving: SH-1, SH-2 (the story is closed)",
+            ),
+            (
+                NotMovedReason::StoryIsEpic,
+                "linked without moving: SH-1, SH-2 (the story is an epic; its state is computed from children)",
             ),
             (
                 NotMovedReason::NotInDefaultState,

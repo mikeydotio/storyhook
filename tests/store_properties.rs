@@ -19,8 +19,8 @@ use proptest::prelude::*;
 use store_support::{append_and_fold, default_states, link_atomic, new_store, seed_project};
 use storyhook::domain::{Priority, StoryEvent, fold_story};
 use storyhook::store::{
-    EventSeq, ExpectedSeq, LinkSource, ProjectId, RawEvent, ReadOps, SqliteStore, Store,
-    StoreError, StoryNo, StoryQuery, WriteOps, diff_read_model,
+    EventSeq, ExpectedSeq, LinkSource, ProjectId, RawEvent, ReadOps, SqliteStore, Store, StoryNo,
+    StoryQuery, WriteOps, diff_read_model,
 };
 
 /// 64 cases per store-backed property: enough to explore the operation space
@@ -201,7 +201,7 @@ fn arb_op() -> impl Strategy<Value = Op> {
 
 /// Runs a script against a real store, returning the stories it created.
 ///
-/// Operations that the schema refuses — a second parent, a self-relation — are
+/// Operations that the schema refuses — such as a self-relation — are
 /// *skipped*, not treated as failures: the point of the property is that
 /// whatever does land leaves the read model consistent, and a rejected write is
 /// the store working.
@@ -529,32 +529,30 @@ fn the_generator_produces_relations() {
     assert!(diff_read_model(&store, project).unwrap().is_clean());
 }
 
-/// The script runner must not swallow a genuine store failure.
-///
-/// It skips *refused* relations on purpose — a rejected second parent is the
-/// schema working — so this pins that a refusal is what is being skipped, and
-/// that the refusal really happens.
+/// Multiple parent epics are a supported shape and remain symmetric.
 #[test]
-fn a_second_parent_is_refused_and_leaves_no_trace() {
+fn a_second_parent_is_persisted_on_both_ends() {
     let (_dir, store) = new_store();
     let project = seed_project(&store, "alpha", "SH");
     let ops = vec![(0, Op::Create), (0, Op::Create), (0, Op::Create)];
     let stories = run_script(&store, project, &ops);
 
     link_atomic(&store, project, stories[0], "parent-of", stories[2]).unwrap();
-    let error = link_atomic(&store, project, stories[1], "parent-of", stories[2])
-        .expect_err("a second parent must be refused");
-    assert!(matches!(error, StoreError::Invariant(_)), "{error}");
+    link_atomic(&store, project, stories[1], "parent-of", stories[2]).unwrap();
 
-    // Both halves rolled back together: the refused writer's own history must
-    // not have gained a relationship event either.
-    let events = store.read(|tx| tx.events_for(project, stories[1])).unwrap();
-    assert!(
-        events
-            .iter()
-            .all(|e| !matches!(e.known(), Some(StoryEvent::StoryRelationshipAdded { .. }))),
-        "the rejected link left an event behind"
-    );
+    let child = store
+        .read(|tx| tx.story(project, stories[2]))
+        .unwrap()
+        .expect("child exists");
+    let mut parents: Vec<_> = child
+        .snapshot
+        .relationships
+        .iter()
+        .filter(|edge| edge.relation == "child-of")
+        .map(|edge| edge.other_id.as_str())
+        .collect();
+    parents.sort_unstable();
+    assert_eq!(parents, ["SH-1", "SH-2"]);
     assert!(diff_read_model(&store, project).unwrap().is_clean());
     assert_eq!(
         store

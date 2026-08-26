@@ -35,7 +35,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::domain::{StoryEvent, SuperState};
+use crate::domain::{StoryEvent, SuperState, has_children};
 use crate::error::AppError;
 use crate::github::api::{GithubApi, GithubApiFactory};
 use crate::output::Response;
@@ -176,7 +176,7 @@ pub fn run_check<S: Store>(
                 // Only when the link asked for it, and only while there is
                 // still something to close — a story a person already closed
                 // by hand is not reopened-and-reclosed by this.
-                if link.close_on_merge && !row.archived {
+                if link.close_on_merge && !row.archived && !has_children(&row.snapshot) {
                     let closed_state = states
                         .values()
                         .find(|state| state.super_state == SuperState::Closed)

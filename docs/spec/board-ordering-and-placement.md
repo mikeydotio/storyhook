@@ -54,7 +54,7 @@ cycle — is never virtually completed, so it and downstream work stay unranked.
 
 `next_ids` reaches the wire on `GET .../data` (`src/api/rest.rs`) as a top-level
 array, alongside the existing `ready_ids`/`blocked_ids`. It is **not** the same set
-as `ready_ids`: `ready_ids` means claimable now, includes epics for badge rendering,
+as `ready_ids`: `ready_ids` means claimable now, excludes structural epics,
 and is not an ordered queue. `next_ids` is the exact ordered answer
 `story next --count N` would give and may additionally include future stories
 that an earlier entry unlocks.
@@ -172,6 +172,10 @@ itself), so a board-local guard shaped "literal state equals default open" would
 fire on it too, silently overriding the already-shipped in-progress placement.
 
 ### Precedence when both promotions apply
+
+> **Superseded for epics by SH-446:** epic state is now recursively computed
+> from children before board placement. The following precedence discussion is
+> retained as the SH-407 design history for the leaf-story display override.
 
 An epic can be eligible for both promotions at once: it has an active child (SH-165
 wants "in-progress") and it is itself blocked (SH-407 wants "blocked"). Council

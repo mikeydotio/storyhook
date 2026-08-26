@@ -9,7 +9,7 @@ use storyhook::domain::StoryEvent;
 use storyhook::domain::remote::RemoteUrl;
 use storyhook::domain::secret::GithubToken;
 use storyhook::service::pr_check::run_check;
-use storyhook::service::{NewStoryInput, PrLinkService, StoryService};
+use storyhook::service::{NewStoryInput, PrLinkService, RelationService, StoryService};
 use storyhook::store::{ReadOps, Store, WriteOps};
 use storyhook_test_support::{FakeGithubApiFactory, ServiceFixture};
 
@@ -100,6 +100,59 @@ fn check_closes_the_story_when_a_close_on_merge_link_merges() {
             .filter_map(storyhook::store::StoredEvent::known)
             .any(|e| matches!(e, StoryEvent::StoryPrMerged { url, .. } if url == URL)),
         "a StoryPrMerged event must have been appended"
+    );
+}
+
+#[test]
+fn check_records_an_epics_merge_without_closing_its_computed_state() {
+    let fixture = ServiceFixture::new();
+    configure_remote(&fixture, "acme", "widgets");
+    let epic_id = create(&fixture, "Computed epic");
+    let child_id = create(&fixture, "Actionable child");
+    let ctx = fixture.ctx().with_github_token(Some(token()));
+    RelationService::new(&ctx)
+        .relate(&epic_id, "parent-of", &child_id, false)
+        .expect("making the story structural");
+    PrLinkService::new(&ctx).link(&epic_id, URL, true).unwrap();
+
+    let fake = FakeGithubApiFactory::new();
+    fake.seed_pull_request(7, "closed", true);
+
+    run_check(&ctx, &fake, Some(epic_id.as_str())).expect("checking the epic's pull request");
+
+    let project = fixture.project();
+    let story_no = storyhook::store::StoryNo::parse_id("SH", &epic_id).unwrap();
+    let row = fixture
+        .store()
+        .read(|tx| tx.story(project, story_no))
+        .unwrap()
+        .expect("epic exists");
+    assert!(!row.archived, "a merged PR must not directly close an epic");
+    assert!(
+        row.snapshot.state_computed,
+        "the epic must retain computed-state authority"
+    );
+
+    let events = fixture
+        .store()
+        .read(|tx| tx.events_for(project, story_no))
+        .unwrap();
+    let known: Vec<_> = events
+        .iter()
+        .filter_map(storyhook::store::StoredEvent::known)
+        .collect();
+    assert!(
+        known
+            .iter()
+            .any(|event| matches!(event, StoryEvent::StoryPrMerged { url, .. } if url == URL)),
+        "the external merge observation must still be recorded"
+    );
+    assert!(
+        !known.iter().any(|event| matches!(
+            event,
+            StoryEvent::StoryStateChanged { .. } | StoryEvent::StoryClosedAndArchived { .. }
+        )),
+        "the observation must not append a direct state transition"
     );
 }
 

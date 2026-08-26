@@ -29,7 +29,7 @@ $ story move SH-1 not-a-state
 exit: 2
 stdout: <empty>
 stderr: 
-error: state `not-a-state` is not defined
+error: story `SH-1` is an epic because it has children; its state is computed and cannot be moved directly
 
 
 $ story list --state
