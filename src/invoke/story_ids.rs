@@ -28,7 +28,9 @@
 //! and two independent reviewers each found a different subset. A hand-kept
 //! list of id-bearing verbs is exactly the thing that was already wrong.
 
-use crate::cli::{AttachmentAction, EpicAction, GraphMode, HistoryAction, Invocation, PhaseAction};
+use crate::cli::{
+    AttachmentAction, ClaimTarget, EpicAction, GraphMode, HistoryAction, Invocation, PhaseAction,
+};
 use crate::error::AppError;
 use crate::service::Ctx;
 use crate::store::{ProjectRecord, ReadOps, Store, StoreError, StoryRef};
@@ -217,6 +219,12 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         Invocation::SetAwaiting { id, on, .. } | Invocation::ClearAwaiting { id, on } => {
             std::iter::once(id).chain(on.iter_mut()).collect()
         }
+        // `story claim 9` expands the same way `story show 9` does; the
+        // `--next` form names no story at all (SH-476).
+        Invocation::Claim { target, .. } => match target {
+            ClaimTarget::Story(id) => vec![id],
+            ClaimTarget::Next { .. } => Vec::new(),
+        },
         Invocation::BulkUpdate { updates } => updates.iter_mut().map(|(id, _)| id).collect(),
         Invocation::PrCheck { id } => id.iter_mut().collect(),
 

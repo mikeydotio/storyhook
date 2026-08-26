@@ -18,10 +18,10 @@
 //! pins that a hop through JSON changes neither.
 
 use storyhook::cli::{
-    AbandonedAction, Attach, AttachmentAction, CrashesAction, DaemonAction, EpicAction,
-    GithubAuthAction, GraphMode, HistoryAction, HooksAction, Invocation, MemberInput,
-    NewProjectRequest, NewProjectSpec, PhaseAction, PluginAction, ProjectAction, SettingsAction,
-    StateAction, StoreAction, TokenAction, TypeAction, WebAction,
+    AbandonedAction, Attach, AttachmentAction, ClaimComment, ClaimTarget, CrashesAction,
+    DaemonAction, EpicAction, GithubAuthAction, GraphMode, HistoryAction, HooksAction, Invocation,
+    MemberInput, NewProjectRequest, NewProjectSpec, PhaseAction, PluginAction, ProjectAction,
+    SettingsAction, StateAction, StoreAction, TokenAction, TypeAction, WebAction,
 };
 use storyhook::domain::finding::{Finding, FindingCode, FindingData};
 use storyhook::domain::{
@@ -1541,6 +1541,26 @@ fn invocation_corpus() -> Vec<Invocation> {
                 name: None,
             },
         },
+        // Both `ClaimTarget` arms and all three `ClaimComment` states cross
+        // the wire, since the whole point of the three-state comment is that
+        // it travels as a choice rather than as resolved text (SH-476).
+        Invocation::Claim {
+            target: ClaimTarget::Story("SH-1".to_string()),
+            comment: ClaimComment::Custom("mine".to_string()),
+            dry_run: false,
+        },
+        Invocation::Claim {
+            target: ClaimTarget::Next {
+                phase: Some("1".to_string()),
+            },
+            comment: ClaimComment::Suppressed,
+            dry_run: true,
+        },
+        Invocation::Claim {
+            target: ClaimTarget::Next { phase: None },
+            comment: ClaimComment::Default,
+            dry_run: false,
+        },
         Invocation::Attachment {
             action: AttachmentAction::List {
                 id: "SH-1".to_string(),
@@ -1575,6 +1595,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Log { .. } => "Log",
         Invocation::Search { .. } => "Search",
         Invocation::Next { .. } => "Next",
+        Invocation::Claim { .. } => "Claim",
         Invocation::Summary => "Summary",
         Invocation::Report { .. } => "Report",
         Invocation::Doctor { .. } => "Doctor",
@@ -1643,7 +1664,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        63,
+        64,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

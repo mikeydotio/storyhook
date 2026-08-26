@@ -38,6 +38,8 @@ fn sets_awaiting(invocation: &Invocation) -> bool {
         | Invocation::List { .. }
         | Invocation::Search { .. }
         | Invocation::Next { .. }
+        // A claim's comment is a comment, never an `awaiting` reason (SH-476).
+        | Invocation::Claim { .. }
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }

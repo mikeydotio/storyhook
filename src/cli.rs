@@ -166,6 +166,9 @@ Usage:
              [--include-archived]                      (also show archived stories; implies --include-closed)
              [--all]                                   (--include-closed --include-archived)
   story next [--count <n>] [--phase <N>] [--claim]
+  story claim <id> [--comment <text> | --no-comment] [--dry-run]
+  story claim --next [--phase <N>] [--comment <text> | --no-comment]
+                     [--dry-run]                    (take a story, atomically)
   story summary
   story report [--html]
   story search <query>
@@ -278,6 +281,65 @@ pub enum MemberInput {
     Github(String),
 }
 
+/// Which story `story claim` (SH-476) is about.
+///
+/// An enum rather than an `Option<String>` beside a `bool`, so the two forms
+/// cannot both be set and cannot both be absent. `--phase` lives inside
+/// [`Next`](Self::Next) for the same reason: `story claim <id> --phase 1` has
+/// nowhere to put the phase, so the parser refuses it at the one point it
+/// could have been written and no later layer ever meets the combination.
+///
+/// This is the better version of the rule SH-344 had to state as a refusal:
+/// `next --claim` needed a guard rejecting `--count` other than 1, where a
+/// dedicated verb makes the impossible combination unrepresentable.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClaimTarget {
+    /// `story claim <id>` — that named story, claimed atomically.
+    Story(String),
+    /// `story claim --next [--phase <N>]` — whatever `story next` would
+    /// answer, selected and claimed inside one write transaction.
+    Next {
+        /// `--phase <N>`, carried over from `story next --claim`.
+        phase: Option<String>,
+    },
+}
+
+/// What `story claim` posts alongside the claim (SH-476).
+///
+/// Three states, not `Option<String>`, because "the caller said nothing" and
+/// "the caller said not to" are different instructions and only one of them
+/// can be answered by composing text. The comment is **not** opt-in: a claim
+/// comments by default, `--comment <text>` replaces that text, and
+/// `--no-comment` suppresses it.
+///
+/// # Why [`Default`](Self::Default) is resolved client-side
+///
+/// The default sentence names the *caller's* host and tmux window, and the
+/// daemon is in neither: `story` parses locally and sends an
+/// [`crate::invoke::InvokeRequest`] over `/api/v1/invoke`, `$TMUX` is
+/// per-process, and one daemon serves every client of its store. So
+/// `Default` is resolved by [`crate::claim_comment::resolve`] after parsing
+/// and before the request is built — the same place, and for the same
+/// reason, that `$STORYHOOK_ACTOR`, the piped stdin and the GitHub
+/// credential are read.
+///
+/// Resolving it in the parser instead was not an option: `parse_invocation`
+/// is pure, which is what lets `tests/trailing_arguments.rs` provoke every
+/// verb in the grammar — `story daemon install` included — with no side
+/// effects at all.
+///
+/// A `Default` that still reaches the daemon is *refused*, never filled in
+/// there. See [`crate::claim_comment::UNRESOLVED_REFUSAL`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClaimComment {
+    /// Neither flag given: the client composes the sentence.
+    Default,
+    /// `--comment <text>` — this text instead of the default one.
+    Custom(String),
+    /// `--no-comment` — no comment at all.
+    Suppressed,
+}
+
 /// Every command storyhook can execute, fully parsed and validated for
 /// *shape* — field values stay as the raw strings the user typed, because
 /// interpreting them needs project data the parser cannot see.
@@ -357,6 +419,22 @@ pub enum Invocation {
         /// one story, so a count that promises more would be a lie for every
         /// entry past the first.
         claim: bool,
+    },
+    /// `story claim (<id> | --next)` (SH-476) — the one atomic claim verb.
+    ///
+    /// One of the two forms is required and they are mutually exclusive, which
+    /// [`ClaimTarget`] makes unrepresentable rather than merely refused: a
+    /// bare `story claim` has no `ClaimTarget` to build and is answered with
+    /// the usage line. That is deliberate for a *mutating* verb — a script
+    /// that dropped its id argument must never silently claim whatever
+    /// happened to sort first.
+    Claim {
+        /// Which story: a named one, or whatever `story next` would answer.
+        target: ClaimTarget,
+        /// What to post alongside the claim.
+        comment: ClaimComment,
+        /// `--dry-run`: read for real, write symbolically.
+        dry_run: bool,
     },
     Summary,
     Report {
@@ -1443,6 +1521,17 @@ static VERB_FLAGS: &[VerbFlags] = &[
         flags: &[value("count"), value("phase"), bare("claim")],
     },
     VerbFlags {
+        verb: "claim",
+        subcommand: None,
+        flags: &[
+            value("phase"),
+            value("comment"),
+            bare("next"),
+            bare("no-comment"),
+            bare("dry-run"),
+        ],
+    },
+    VerbFlags {
         verb: "set",
         subcommand: None,
         flags: &[
@@ -1898,6 +1987,7 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "state" => parse_state(args),
         "list" => parse_list(args),
         "next" => parse_next(args),
+        "claim" => parse_claim(args),
         "summary" => {
             expect_no_more(&args[1..], "usage: story summary")?;
             Ok(Invocation::Summary)
@@ -1974,6 +2064,10 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         ))),
     }
 }
+
+const CLAIM_USAGE: &str = "usage: story claim <id> [--comment <text> | --no-comment] \
+                           [--dry-run]\n       story claim --next [--phase <N>] [--comment \
+                           <text> | --no-comment] [--dry-run]";
 
 const PROJECT_USAGE: &str = "usage: story project new [--prefix <PREFIX>] [--name <NAME>] \
                              [--attach <PATH> | --no-attach] [--no-agents-md] | delete \
@@ -2781,6 +2875,106 @@ fn parse_next(args: &[String]) -> Result<Invocation, AppError> {
         count,
         phase,
         claim,
+    })
+}
+
+/// `story claim (<id> | --next) [--phase <N>] [--comment <text> | --no-comment]
+/// [--dry-run]` (SH-476).
+///
+/// The two forms are checked against each other *after* the flag loop rather
+/// than as the loop runs, so `story claim --next SH-1` and `story claim SH-1
+/// --next` are refused identically — flag order is never meaning here.
+fn parse_claim(args: &[String]) -> Result<Invocation, AppError> {
+    let mut id: Option<String> = None;
+    let mut next = false;
+    let mut phase: Option<String> = None;
+    let mut comment: Option<String> = None;
+    let mut no_comment = false;
+    let mut dry_run = false;
+    let mut index = 1;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--next" => {
+                next = true;
+                index += 1;
+            }
+            "--phase" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(CLAIM_USAGE.to_string()))?;
+                phase = Some(value.clone());
+                index += 2;
+            }
+            // The value is required, never optional: an optional-value
+            // `--comment` would read `story claim SH-1 --comment --json` as a
+            // comment saying `--json`, which is the SH-357 shape one layer
+            // over — a word that lands somewhere nobody meant it to.
+            "--comment" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(CLAIM_USAGE.to_string()))?;
+                comment = Some(value.clone());
+                index += 2;
+            }
+            "--no-comment" => {
+                no_comment = true;
+                index += 1;
+            }
+            "--dry-run" => {
+                dry_run = true;
+                index += 1;
+            }
+            word if id.is_none() && !word.starts_with('-') => {
+                id = Some(word.to_string());
+                index += 1;
+            }
+            _ => return Err(AppError::Usage(CLAIM_USAGE.to_string())),
+        }
+    }
+
+    let target = match (id, next) {
+        (Some(_), true) => {
+            return Err(AppError::Usage(format!(
+                "`story claim <id>` and `story claim --next` are two different requests; \
+                 name one\n{CLAIM_USAGE}"
+            )));
+        }
+        // A bare `story claim` is refused rather than resolved to `--next`.
+        // This is a mutating call: a script whose id argument came out empty
+        // must not silently claim whatever happened to sort first.
+        (None, false) => {
+            return Err(AppError::Usage(format!(
+                "`story claim` needs a story id or `--next`\n{CLAIM_USAGE}"
+            )));
+        }
+        (Some(id), false) => {
+            if phase.is_some() {
+                return Err(AppError::Usage(format!(
+                    "`--phase` narrows what `--next` picks and means nothing beside an \
+                     explicit id\n{CLAIM_USAGE}"
+                )));
+            }
+            ClaimTarget::Story(id)
+        }
+        (None, true) => ClaimTarget::Next { phase },
+    };
+
+    let comment = match (comment, no_comment) {
+        (Some(_), true) => {
+            return Err(AppError::Usage(format!(
+                "`--comment` and `--no-comment` say opposite things; name one\n{CLAIM_USAGE}"
+            )));
+        }
+        (Some(text), false) => ClaimComment::Custom(text),
+        (None, true) => ClaimComment::Suppressed,
+        (None, false) => ClaimComment::Default,
+    };
+
+    Ok(Invocation::Claim {
+        target,
+        comment,
+        dry_run,
     })
 }
 
@@ -4345,7 +4539,11 @@ fn join_tokens(tokens: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{EpicAction, Invocation, PluginAction, TypeAction, parse_invocation};
+    use super::{
+        ClaimComment, ClaimTarget, EpicAction, Invocation, PluginAction, TypeAction,
+        parse_invocation,
+    };
+    use crate::error::AppError;
 
     #[test]
     fn routes_move_command() {
@@ -4392,6 +4590,130 @@ mod tests {
                 }
             }
         );
+    }
+
+    // --- `story claim` (SH-476) ---
+
+    fn claim(args: &[&str]) -> Result<Invocation, AppError> {
+        parse_invocation(&args.iter().map(|s| (*s).to_string()).collect::<Vec<_>>())
+    }
+
+    /// The default is neither form, and neither is guessed at.
+    #[test]
+    fn a_bare_claim_names_both_forms_rather_than_picking_one() {
+        let error = claim(&["claim"]).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("--next"), "{message}");
+        assert!(message.contains("story id"), "{message}");
+    }
+
+    #[test]
+    fn claim_by_id_carries_no_phase_and_the_default_comment() {
+        assert_eq!(
+            claim(&["claim", "SH-1"]).unwrap(),
+            Invocation::Claim {
+                target: ClaimTarget::Story("SH-1".to_string()),
+                comment: ClaimComment::Default,
+                dry_run: false,
+            }
+        );
+    }
+
+    #[test]
+    fn claim_next_carries_its_phase() {
+        assert_eq!(
+            claim(&["claim", "--next", "--phase", "2"]).unwrap(),
+            Invocation::Claim {
+                target: ClaimTarget::Next {
+                    phase: Some("2".to_string())
+                },
+                comment: ClaimComment::Default,
+                dry_run: false,
+            }
+        );
+    }
+
+    /// Flag order is never meaning: both spellings of the same mistake are
+    /// refused identically.
+    #[test]
+    fn an_id_and_next_are_refused_in_either_order() {
+        for args in [
+            vec!["claim", "SH-1", "--next"],
+            vec!["claim", "--next", "SH-1"],
+        ] {
+            let message = claim(&args).unwrap_err().to_string();
+            assert!(message.contains("two different requests"), "{message}");
+        }
+    }
+
+    /// `--phase` has nowhere to be stored beside an explicit id, so the
+    /// parser is the last place it could have been written.
+    #[test]
+    fn phase_beside_an_id_is_refused() {
+        let message = claim(&["claim", "SH-1", "--phase", "1"])
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("--phase"), "{message}");
+    }
+
+    #[test]
+    fn comment_and_no_comment_are_the_three_states() {
+        let expect = |args: &[&str], comment: ClaimComment| {
+            assert_eq!(
+                claim(args).unwrap(),
+                Invocation::Claim {
+                    target: ClaimTarget::Story("SH-1".to_string()),
+                    comment,
+                    dry_run: false,
+                }
+            );
+        };
+        expect(&["claim", "SH-1"], ClaimComment::Default);
+        expect(
+            &["claim", "SH-1", "--comment", "mine"],
+            ClaimComment::Custom("mine".to_string()),
+        );
+        expect(&["claim", "SH-1", "--no-comment"], ClaimComment::Suppressed);
+
+        let message = claim(&["claim", "SH-1", "--comment", "x", "--no-comment"])
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("opposite"), "{message}");
+    }
+
+    /// The value is required, always. An optional-value `--comment` would
+    /// read `story claim SH-1 --comment --json` as a comment saying `--json`
+    /// — SH-357's shape, a word landing where nobody meant it to.
+    #[test]
+    fn comment_takes_the_next_token_as_its_value() {
+        assert!(claim(&["claim", "SH-1", "--comment"]).is_err());
+        assert_eq!(
+            claim(&["claim", "SH-1", "--comment", "--json"]).unwrap(),
+            Invocation::Claim {
+                target: ClaimTarget::Story("SH-1".to_string()),
+                comment: ClaimComment::Custom("--json".to_string()),
+                dry_run: false,
+            }
+        );
+    }
+
+    #[test]
+    fn dry_run_is_a_bare_flag_on_both_forms() {
+        assert!(matches!(
+            claim(&["claim", "SH-1", "--dry-run"]).unwrap(),
+            Invocation::Claim { dry_run: true, .. }
+        ));
+        assert!(matches!(
+            claim(&["claim", "--next", "--dry-run"]).unwrap(),
+            Invocation::Claim { dry_run: true, .. }
+        ));
+    }
+
+    /// A second positional lands nowhere, so it is refused (SH-357).
+    #[test]
+    fn a_trailing_word_is_refused() {
+        assert!(claim(&["claim", "SH-1", "junk"]).is_err());
+        assert!(claim(&["claim", "--next", "junk"]).is_err());
     }
 
     // --- `story block`/`story unblock` --on (SH-398) ---

@@ -387,6 +387,13 @@ fn main() {
         // commands over a label nothing needs.
         Err(_) => None,
     };
+    // `story claim`'s default comment names the caller's own host and tmux
+    // window (SH-476), and this is the process that has both — the daemon is
+    // in neither. Read here for exactly the reason `$STORYHOOK_ACTOR` above
+    // and the piped stdin below are, and *after* parsing rather than inside
+    // it, because `parse_invocation` is pure and must stay so. Every other
+    // invocation passes through untouched.
+    let invocation = storyhook::claim_comment::resolve(invocation);
     let request = InvokeRequest::new(invocation)
         .no_hooks(flags.no_hooks)
         .stdin(piped)

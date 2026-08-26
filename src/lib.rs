@@ -2,6 +2,7 @@
 
 pub mod api;
 pub mod block_notice;
+pub mod claim_comment;
 pub mod cli;
 pub mod clipboard;
 pub mod daemon;
