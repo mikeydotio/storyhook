@@ -66,8 +66,8 @@
 #      safety check.
 #
 #   2. READY-STATE GATE (new — the literal ask of issue #40). Queries
-#      `story list --ready --json` (the same ground truth `story-work` and
-#      every other interactive skill already rely on — reusing it here
+#      `story list --ready --json` (the same ground truth every interactive
+#      skill already relies on — reusing it here
 #      avoids re-implementing `is_ready()`'s open/awaiting/obviated-by/
 #      blocked-by logic in bash and risking drift from the Rust
 #      implementation) and refuses if <id> isn't a member, building a
@@ -135,10 +135,10 @@ DISPATCH_PROTOCOL=1
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/session.sh"
 
 # storyhook_pointer / read_plugin_config (the `[plugin]` table reader
-# hook_is_enabled already relies on) live in ../hooks/lib.sh. `cmd_work`
-# (SH-308) reuses read_plugin_config for the `tracking` key rather than a
-# second hand-rolled TOML reader — this one is already quote-agnostic and
-# table-aware (SH-47), which a fresh one would have to relearn from scratch.
+# hook_is_enabled already relies on) live in ../hooks/lib.sh. `enabled`, the
+# hooks kill switch, is the only key anything reads: `tracking` retired with
+# the `work` verb (SH-478), and its successor is `story claim --no-comment`,
+# a per-invocation choice rather than a standing preference.
 # shellcheck source=../hooks/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../hooks/lib.sh"
 
@@ -357,11 +357,6 @@ PASTE_SETTLE_DELAY="${STORY_PASTE_SETTLE_DELAY:-0.2}"
 READY_ACCEPT_PATTERN="${STORY_READY_ACCEPT_PATTERN:-esc to interrupt|Working|Thinking|Crunching|tokens|to interrupt}"
 CAPTURE_LINES="${STORY_CAPTURE_LINES:-200}"
 DRY_RUN="${STORY_DRY_RUN:-}"
-# cmd_work's no-argument path re-picks after a lost claim race (SH-346): each
-# loss shrinks the ready pool, so this is a runaway guard, not a tuning knob —
-# a caller racing this many concurrent claimants against this few ready
-# stories is a scenario worth surfacing, not silently absorbing.
-WORK_CLAIM_MAX_ATTEMPTS="${STORY_WORK_CLAIM_MAX_ATTEMPTS:-10}"
 # State `complete` closes a story into. Empty means "ask the CLI for the
 # project's state catalog and take the first CLOSED-superstate entry" — see
 # story_closed_state.
@@ -1068,8 +1063,8 @@ cmd_dispatch() {
     state=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
 
     # SH-481: the state meaning "claimed" is whichever one carries this
-    # project's `active` role — the SAME resolver cmd_work and cmd_list
-    # already use — not the literal `in-progress`. SH-125 requires
+    # project's `active` role — the SAME resolver cmd_list already uses —
+    # not the literal `in-progress`. SH-125 requires
     # `in-progress` to exist in every project, but the role is assigned
     # separately, and `is_claimable` (src/domain.rs) drops a story from
     # readiness only when its state equals the ACTIVE-ROLE one. A project that
@@ -1600,8 +1595,8 @@ story_state_list() {
 }
 
 # story_active_state — the slug meaning "claimed / being worked": the state
-# carrying the `active` role, else "in-progress". Mirrors the convention
-# story-work already follows.
+# carrying the `active` role, else "in-progress". The same convention the
+# CLI's own `story claim` resolves server-side.
 story_active_state() {
   local found=""
   found=$(story_state_list | awk -F' *\\(' '
@@ -1875,134 +1870,6 @@ cmd_handoff() {
 
   jq -n --arg display "$body" --argjson summary "$summary_json" '
     {ok:true, display:$display, summary:$summary}'
-}
-
-# ---- subcommand: work --------------------------------------------------------
-#
-# cmd_work [story-id] — SH-308. Everything skills/story-work/SKILL.md used to
-# spell out as five ordered, mutable-state-dependent steps: pick a story
-# (explicit id, or `story next` when none given), read the `[plugin].tracking`
-# key via read_plugin_config (../hooks/lib.sh — already quote-agnostic and
-# table-aware, SH-47; not a second hand-rolled TOML reader), resolve the
-# active-role state via story_active_state (the SAME resolver `list` already
-# uses to exclude an already-claimed story from readiness), move the story
-# into it, and comment "Starting work on this story" unless tracking is
-# `quiet`. The skill's own step 6 (present working context) stays prose on
-# purpose — summarizing what a story's children and completed dependencies
-# MEAN is judgment, not a fact this script could assert instead.
-#
-# SH-346: the pick (read) and the claim (write) used to be two independent
-# calls with nothing between them — two concurrent `work <id>` calls, or two
-# concurrent no-argument calls landing on the same `story next` pick, could
-# both "win". The claim below now goes through the SAME `--if-state` CAS
-# primitive cmd_dispatch's own claim uses (see its Step 6). The two entry
-# points diverge only in what a lost race MEANS: an explicit id is a specific
-# request, so a conflict there is a hard refusal (`reason:"claim-conflict"`,
-# mirroring cmd_dispatch's own ID MODE); the no-argument path asked for ANY
-# ready story, so a conflict there just means a rival took the one `story
-# next` picked — re-pick and try again, bounded by WORK_CLAIM_MAX_ATTEMPTS so
-# a pathologically contended pool refuses instead of looping forever.
-cmd_work() {
-  local id="${1:-}"
-  [ "$#" -le 1 ] || fail "usage: story.sh work [story-id]"
-  require_story
-
-  local explicit=false
-  [ -n "$id" ] && explicit=true
-
-  local tracking active_state
-  tracking=$(read_plugin_config tracking normal)
-  active_state=$(story_active_state)
-
-  local show_json result state body attempt=0
-  local mv_json mv_result
-  while :; do
-    attempt=$((attempt + 1))
-
-    if [ "$explicit" = false ]; then
-      [ "$attempt" -le "$WORK_CLAIM_MAX_ATTEMPTS" ] || \
-        refuse "claim-conflict" "gave up after $WORK_CLAIM_MAX_ATTEMPTS claim attempts -- every story \`story next\` handed out was claimed by a rival before this session's own claim landed. Try again, or claim a specific story with \`/story-work <id>\`."
-
-      local next_json next_result
-      next_json=$(story_cli next --json 2>/dev/null) || true
-      next_result=$(printf '%s' "$next_json" | jq -r '.result // ""' 2>/dev/null || printf '')
-      if [ "$next_result" != "ok" ]; then
-        fail "$(printf '%s' "$next_json" | jq -r '.error // "story next emitted no result"' 2>/dev/null)"
-      fi
-      id=$(printf '%s' "$next_json" | jq -r '.story.story.id // ""')
-      if [ -z "$id" ]; then
-        # `result:"ok"` with no `.story` key is "nothing ready" — a real
-        # answer, not a failure (mirrors _load_ready_stories' own contract).
-        # A fully-raced pool degrades to exactly this: once every ready story
-        # is claimed, `story next` reports the same outcome a cold call would.
-        jq -n --arg msg "$(printf '%s' "$next_json" | jq -r '.message // "no ready stories"')" '
-          {ok:true, id:"", picked:false,
-           display:("[story] " + $msg + " -- try `/story-triage`.")}'
-        return 0
-      fi
-    fi
-
-    valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
-
-    show_json=$(story_cli show "$id" --json 2>/dev/null) || true
-    result=$(printf '%s' "$show_json" | jq -r '.result // ""' 2>/dev/null || printf '')
-    if [ "$result" != "ok" ]; then
-      fail "$(printf '%s' "$show_json" | jq -r --arg id "$id" '.error // ("story `" + $id + "` not found")' 2>/dev/null)"
-    fi
-    id=$(canonical_story_id "$show_json" "$id")
-    # The CAS witness: the state --if-state guards against having changed
-    # since THIS read, not since some earlier one from a prior loop pass.
-    state=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
-
-    body=$(story_cli show "$id" 2>/dev/null || printf '')
-
-    if [ -n "$DRY_RUN" ]; then
-      local -a commands=("story move $id $active_state --if-state $state")
-      [ "$tracking" != "quiet" ] && commands+=("story comment $id \"Starting work on this story\"")
-      local cmds_json
-      cmds_json=$(printf '%s\n' "${commands[@]}" | jq -R -s 'split("\n")|map(select(length>0))')
-      jq -n --arg id "$id" --arg state "$active_state" --arg tracking "$tracking" \
-            --argjson cmds "$cmds_json" --arg body "$body" '
-        {ok:true, dry_run:true, id:$id, picked:true, state:$state, tracking:$tracking,
-         commands:$cmds, display:$body}'
-      return 0
-    fi
-
-    mv_json=$(story_cli move "$id" "$active_state" --if-state "$state" --json 2>/dev/null) || true
-    mv_result=$(printf '%s' "$mv_json" | jq -r '.result // ""' 2>/dev/null || printf '')
-
-    if [ "$mv_result" = "conflict" ]; then
-      if [ "$explicit" = true ]; then
-        refuse "claim-conflict" "story $id changed state before it could be claimed (expected \`$state\`, now \`$(printf '%s' "$mv_json" | jq -r '.actual // "?"' 2>/dev/null)\`) -- another session likely won the race."
-      fi
-      # No-argument path: a rival claimed the story `story next` picked. The
-      # ready pool has shrunk by one -- re-pick rather than fail outright,
-      # since the caller asked for ANY ready story, not this specific one.
-      continue
-    fi
-
-    break
-  done
-
-  local moved=false commented=false move_note=""
-  if [ "$mv_result" = "ok" ]; then
-    moved=true
-  else
-    move_note=" Could not move $id to \`$active_state\`: $(printf '%s' "$mv_json" | jq -r '.error // "story move emitted no result"' 2>/dev/null)"
-  fi
-
-  if [ "$moved" = true ] && [ "$tracking" != "quiet" ]; then
-    story_cli comment "$id" "Starting work on this story" >/dev/null 2>&1 && commented=true
-  fi
-
-  jq -n --arg id "$id" --arg state "$active_state" --arg tracking "$tracking" \
-        --argjson moved "$moved" --argjson commented "$commented" \
-        --arg body "$body" --arg note "$move_note" '
-    {
-      ok:true, id:$id, picked:true, state:$state, tracking:$tracking,
-      moved:$moved, commented:$commented,
-      display: ($body + (if $note == "" then "" else "\n\n" + $note end))
-    }'
 }
 
 # ---- subcommand: triage -------------------------------------------------------
@@ -3156,9 +3023,8 @@ case "${1:-}" in
   context)    shift; cmd_context "$@" ;;
   sync)       shift; cmd_sync "$@" ;;
   handoff)    shift; cmd_handoff "$@" ;;
-  work)       shift; cmd_work "$@" ;;
   triage)     shift; cmd_triage "$@" ;;
   scaffold-claude-md) shift; cmd_scaffold_claude_md "$@" ;;
   scaffold-agents-md) shift; cmd_scaffold_agents_md "$@" ;;
-  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] [--force] [--agent=claude|codex] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | doctor | capture <story-id> | ensure-cli | context [--full] | sync [--since <d>] | handoff [--since <d>] | work [story-id] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
+  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] [--force] [--agent=claude|codex] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | doctor | capture <story-id> | ensure-cli | context [--full] | sync [--since <d>] | handoff [--since <d>] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
 esac
