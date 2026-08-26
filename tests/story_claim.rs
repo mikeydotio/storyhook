@@ -14,7 +14,7 @@
 //! `storyhook::claim_comment::default_comment`, which needs no tmux at all.
 
 use predicates::prelude::*;
-use storyhook_test_support::{Project, TestEnv};
+use storyhook_test_support::{Project, TestEnv, scratch_dir_named};
 
 /// A project with a claimable state and nothing else assumed.
 fn project() -> Project<'static> {
@@ -418,7 +418,7 @@ fn inside_tmux_the_default_names_the_window_this_pane_is_in() {
     let project = project();
     let id = project.new_story("Claimable");
 
-    let fake_dir = tempfile::tempdir().expect("a directory for the fake tmux");
+    let fake_dir = scratch_dir_named("fake-tmux");
     let argv_log = fake_dir.path().join("argv");
     let fake = fake_dir.path().join("tmux");
     let mut script = std::fs::File::create(&fake).expect("creating the fake tmux");
