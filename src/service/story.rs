@@ -27,6 +27,62 @@ use crate::store::{
 
 use super::{Ctx, Intent, append_and_fold, project_prefix, resolve_open_story, resolve_story};
 
+/// The pseudo-state a lost claim reports as its `expected` half.
+///
+/// Not a slug any project defines, and deliberately so: a claim's
+/// precondition is *any* state other than the project's active one, and
+/// naming a single slug there would be a lie a caller could act on.
+/// [`AppError::StateConflict`]'s other half already carries a synthesized
+/// word for the same reason — a `--if-state` conflict against a deleted story
+/// reports `actual: "deleted"`.
+pub const UNCLAIMED: &str = "unclaimed";
+
+/// What both claim verbs say when the project has no state to claim into.
+///
+/// One constructor rather than a literal per site: three call sites now
+/// (`claim <id>`, `claim --next`, and the two dry-run planners) and a
+/// hand-copied sentence is the shape this project has already paid for
+/// repeatedly.
+fn no_active_state_error() -> AppError {
+    AppError::Validation(
+        "no state has role `active`, and this project does not have exactly two OPEN states \
+         — a claim has no state to resolve into; set one with `story state set <slug> --role \
+         active`"
+            .to_string(),
+    )
+}
+
+/// The claim's own comment, as the extra events
+/// [`state_transition_events`] folds into the transition batch.
+///
+/// One `Vec` either way, so the comment travels in the *same*
+/// `append_and_fold` call as the state change rather than a second write. A
+/// claim that landed with a comment that did not would be a partial write of
+/// one intended action.
+fn claim_comment_events(comment: Option<&str>, now: &str) -> Vec<StoryEvent> {
+    comment
+        .map(|text| StoryEvent::StoryCommentAdded {
+            at: now.to_string(),
+            text: text.to_string(),
+        })
+        .into_iter()
+        .collect()
+}
+
+/// What a `--dry-run` claim would have written.
+///
+/// Only what the *write* would have been: every read the real claim performs
+/// has already happened for real by the time one of these exists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaimPlan {
+    /// The story that would be claimed, canonicalized.
+    pub id: String,
+    /// The state it would be claimed out of.
+    pub from: String,
+    /// The state it would be claimed into — the project's active-role one.
+    pub to: String,
+}
+
 /// Everything `story new` can set at creation time.
 ///
 /// A struct rather than seven positional arguments because almost every field
@@ -431,18 +487,12 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     pub fn claim_next(
         &self,
         phase: Option<&str>,
+        comment: Option<&str>,
     ) -> Result<Option<(StorySnapshot, StorySnapshot)>, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
         let claimed = self.ctx.store().write(|tx| {
-            let active = active_state(&tx.states(project)?).ok_or_else(|| {
-                AppError::Validation(
-                    "no state has role `active`, and this project does not have exactly two \
-                     OPEN states — `story next --claim` has no state to resolve a claim into; \
-                     set one with `story state set <slug> --role active`"
-                        .to_string(),
-                )
-            })?;
+            let active = active_state(&tx.states(project)?).ok_or_else(no_active_state_error)?;
             let states = tx.state_map(project)?;
             let query = super::QueryService::new(&*tx, project, &now);
             let Some(candidate) = query.next(1, phase)?.into_iter().next() else {
@@ -450,7 +500,12 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
             };
             let prefix = project_prefix(&*tx, project)?;
             let (story_no, row) = resolve_open_story(&*tx, project, &prefix, &candidate.story.id)?;
-            let events = state_transition_events(&active, row.awaiting.is_some(), &now, Vec::new());
+            let events = state_transition_events(
+                &active,
+                row.awaiting.is_some(),
+                &now,
+                claim_comment_events(comment, &now),
+            );
             let snapshot = append_and_fold(
                 tx,
                 project,
@@ -476,6 +531,154 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
             &now,
         );
         Ok(Some((before, snapshot)))
+    }
+
+    /// `story claim <id>` (SH-476) — moves one *named* story into the
+    /// project's active state, and returns the snapshot it came from beside
+    /// the one it landed in.
+    ///
+    /// The sibling of [`Self::claim_next`], and atomic for the same reason:
+    /// the state is read and the transition is appended inside one
+    /// `BEGIN IMMEDIATE` write transaction, so the read-then-move window the
+    /// hand-rolled `show` + `move --if-state` dance had is not merely
+    /// narrowed, it does not exist. That is why this takes no `--if-state`
+    /// witness from the caller: there is no second round trip for a witness
+    /// to go stale across.
+    ///
+    /// # The one race that survives, and how it is reported
+    ///
+    /// Somebody else claiming the story first. That is answered with
+    /// [`AppError::StateConflict`] — `result:"conflict"`, exit 9, `.actual`
+    /// naming the state found — exactly as `story move --if-state` answers a
+    /// lost compare-and-swap, so a caller reads both the same way.
+    ///
+    /// `expected` carries the pseudo-state [`UNCLAIMED`]. A claim's
+    /// precondition is not one slug — it is *any* state other than the
+    /// active one — so naming a single slug there would be a lie. The pair
+    /// already carries a synthesized word on the other side for the same
+    /// reason: [`Self::set_state`]'s conflict reports `actual: "deleted"`,
+    /// which is not a state slug either.
+    ///
+    /// # What this deliberately does not check
+    ///
+    /// Readiness. A caller naming a specific id is making a specific request,
+    /// and the ready-gate belongs to the dispatcher that decides whether work
+    /// should start at all (`story.sh`'s `cmd_dispatch`, which keeps its
+    /// own). [`Self::claim_next`] needs no such gate:
+    /// [`QueryService::next`](super::QueryService::next) only ever answers
+    /// with ready stories.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::Validation`] when the project has no state a claim can
+    /// resolve to, or when the story is closed;
+    /// [`AppError::NotFound`] when no such story exists;
+    /// [`AppError::StateConflict`] when the story is already claimed.
+    pub fn claim_story(
+        &self,
+        id: &str,
+        comment: Option<&str>,
+    ) -> Result<(StorySnapshot, StorySnapshot), AppError> {
+        let now = self.ctx.now();
+        let project = self.ctx.project();
+        let (before, snapshot) = self.ctx.store().write(|tx| {
+            let active = active_state(&tx.states(project)?).ok_or_else(no_active_state_error)?;
+            let states = tx.state_map(project)?;
+            let prefix = project_prefix(&*tx, project)?;
+            let (story_no, row) = resolve_open_story(&*tx, project, &prefix, id)?;
+            if row.state == active.slug {
+                return Err(
+                    AppError::StateConflict(UNCLAIMED.to_string(), row.state.clone()).into(),
+                );
+            }
+            let events = state_transition_events(
+                &active,
+                row.awaiting.is_some(),
+                &now,
+                claim_comment_events(comment, &now),
+            );
+            let snapshot = append_and_fold(
+                tx,
+                project,
+                story_no,
+                &prefix,
+                &states,
+                ExpectedSeq::Exact(row.head_seq),
+                &events,
+                self.ctx.provenance(),
+            )?;
+            Ok((row.snapshot, snapshot))
+        })?;
+
+        self.fire_transition_hooks(
+            &before.id,
+            &before.title,
+            &before.state,
+            &snapshot.state,
+            &snapshot,
+            &now,
+        );
+        Ok((before, snapshot))
+    }
+
+    /// What a `--dry-run` claim of `id` would do, without writing anything.
+    ///
+    /// Every refusal the real claim makes is made here too — no active state,
+    /// no such story, a closed story, an already-claimed one — because a dry
+    /// run that reports a plan the real command would refuse is worse than no
+    /// dry run at all. Only the write is symbolic; the reads are real, which
+    /// is the same asymmetry `story decompose --dry-run` and `story migrate
+    /// --dry-run` already follow.
+    ///
+    /// Returns the story's id and the state it would be claimed out of and
+    /// into.
+    ///
+    /// # Errors
+    ///
+    /// The same set [`Self::claim_story`] returns.
+    pub fn plan_claim_story(&self, id: &str) -> Result<ClaimPlan, AppError> {
+        let project = self.ctx.project();
+        Ok(self.ctx.store().read(|tx| {
+            let active = active_state(&tx.states(project)?).ok_or_else(no_active_state_error)?;
+            let prefix = project_prefix(tx, project)?;
+            let (_, row) = resolve_open_story(tx, project, &prefix, id)?;
+            if row.state == active.slug {
+                return Err(
+                    AppError::StateConflict(UNCLAIMED.to_string(), row.state.clone()).into(),
+                );
+            }
+            Ok(ClaimPlan {
+                id: row.snapshot.id.clone(),
+                from: row.state.clone(),
+                to: active.slug.clone(),
+            })
+        })?)
+    }
+
+    /// What a `--dry-run` `story claim --next` would do, without writing.
+    ///
+    /// `Ok(None)` is "nothing is ready", the same real answer
+    /// [`Self::claim_next`] gives.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::Validation`] when the project has no state a claim can
+    /// resolve to.
+    pub fn plan_claim_next(&self, phase: Option<&str>) -> Result<Option<ClaimPlan>, AppError> {
+        let now = self.ctx.now();
+        let project = self.ctx.project();
+        Ok(self.ctx.store().read(|tx| {
+            let active = active_state(&tx.states(project)?).ok_or_else(no_active_state_error)?;
+            let query = super::QueryService::new(tx, project, &now);
+            let Some(candidate) = query.next(1, phase)?.into_iter().next() else {
+                return Ok(None);
+            };
+            Ok(Some(ClaimPlan {
+                id: candidate.story.id.clone(),
+                from: candidate.story.state.clone(),
+                to: active.slug.clone(),
+            }))
+        })?)
     }
 
     /// Applies a batch of field edits to an open story, returning the

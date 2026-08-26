@@ -872,7 +872,10 @@ pub fn tool_for_variant(invocation: &Invocation) -> Option<&'static str> {
         Invocation::SetFields { .. } => Some("story_set"),
         Invocation::Context { .. } => Some("story_context"),
 
-        Invocation::Help
+        // SH-479 gives `story claim` a curated tool of its own; until it
+        // lands, an agent over MCP has no atomic claim at all.
+        Invocation::Claim { .. }
+        | Invocation::Help
         | Invocation::Project { .. }
         | Invocation::Publish { .. }
         | Invocation::MemberAdd { .. }
