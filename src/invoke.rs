@@ -28,9 +28,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::cli::{
     AbandonedAction, Attach, AttachmentAction, ClaimComment, ClaimTarget, CrashesAction,
-    DaemonAction, EpicAction, HELP_TEXT, HistoryAction, HooksAction, Invocation,
-    NewProjectRequest, PhaseAction, PluginAction,
-    ProjectAction, SettingsAction, StateAction, StoreAction, TokenAction, TypeAction, WebAction,
+    DaemonAction, EpicAction, HELP_TEXT, HistoryAction, HooksAction, Invocation, NewProjectRequest,
+    PhaseAction, PluginAction, ProjectAction, SettingsAction, StateAction, StoreAction,
+    TokenAction, TypeAction, WebAction,
 };
 use crate::domain::provenance::{ActorLabel, Provenance};
 use crate::domain::{FieldEdit, StateChanges, SuperState, TypeChanges, TypeDef};
