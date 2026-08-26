@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- `story.sh unclaim <id>` and `story.sh reset <id> [--force]` — the plugin half
+  of releasing a claim, reached as `/story unclaim <id>` and `/story reset
+  <id>`. `unclaim` releases the claim through `story unclaim` and closes the
+  story's tmux window; **nothing on disk is touched**, and the surviving
+  worktree is reported rather than quietly left behind. `reset` does the same
+  and then deletes the worktree *and* the branch, for a story abandoned by a
+  crash or a reboot where restarting beats inheriting. `reset` refuses — naming
+  what it found, nothing mutated — on a dirty worktree, on commits that exist
+  on no remote, and on a locked worktree; one `--force` overrides all three,
+  because all three ask one question: is this recoverable anywhere else?
+  Merged-ness deliberately gates nothing (a branch pushed to `origin` and
+  merged nowhere is fully recoverable; a branch that never left this disk is
+  not, and `git branch -d` calls both unmerged). A protected branch refuses and
+  `--force` does not override it. Called from inside the story's own tmux
+  window, `unclaim` still releases and reports that it left that window open,
+  while `reset` refuses (`self-window`) rather than deleting the ground its
+  caller is standing on. Both take `--comment <text>` / `--no-comment`, and
+  both preview under `STORY_DRY_RUN=1`. `story.sh dispatch`'s claim-rollback
+  path now routes through the same verb instead of hand-rolling its own `story
+  move` (SH-484)
 - `story unclaim <id>` — the inverse of `story claim`, and the store half of
   it: the state change and its comment, never a tmux window and never a
   worktree. The story returns to the state it was claimed **from**, replayed
