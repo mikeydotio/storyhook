@@ -38,7 +38,7 @@ authority, so do not guess a displayed name or re-derive the workflow from memor
 | `complete <id>` | Load `<plugin-root>/references/story-complete.md` and follow it. |
 | `capture <id>` | Run **Provider dispatch** below in capture mode. |
 | `doctor` | Run **Provider dispatch** below in doctor mode. |
-| `work [id]` | Load `<plugin-root>/skills/story-work/SKILL.md` and pass the id through. |
+| `claim <id>` or `claim --next` | Run **Claim** below. One of the two is required; a bare `claim` is refused rather than resolved to `--next`. |
 | `context [--full]` | Load `<plugin-root>/skills/story-context/SKILL.md` and pass the flag through. |
 | `setup` | Load `<plugin-root>/skills/story-setup/SKILL.md`. |
 | `sync [--since <duration>]` | Load `<plugin-root>/skills/story-sync/SKILL.md` and pass the flag through. |
@@ -69,14 +69,43 @@ authority, so do not guess a displayed name or re-derive the workflow from memor
    structured question mechanism when available.
 4. If the answer is no, stop. If yes, run **Provider dispatch** for the id.
 
+## Claim
+
+Claiming is the one operation this router runs against the `story` CLI directly rather than
+through the helper: `story claim` is a single atomic invocation with nothing to orchestrate,
+so wrapping it would only add a second JSON shape to keep in step. This is the same reason
+`story-triage`'s resolution commands are direct CLI calls.
+
+1. Load `<plugin-root>/references/ensure-cli.md` and follow it. Do not continue until it passes.
+2. Run `story claim <id>` for a named story, or `story claim --next` to take whichever story
+   `story next` would answer with. Exactly one of the two — never both, and never neither.
+   Pass through `--phase <N>` (with `--next` only), `--comment <text>` or `--no-comment`, and
+   `--dry-run` when the user asked for them.
+3. A conflict — another session claimed the story first — is reported as `result:"conflict"`
+   with `.actual` naming the state found, and exit code 9. Show it and stop; it is not a
+   transient error to retry.
+4. `--next` with nothing ready answers `no ready stories`. That is an answer, not a failure:
+   show it, suggest `triage`, and stop.
+5. On success the command renders the claimed story in full — the state it came out of, then
+   title, priority, labels, state, comments, and relationships.
+
+### Present working context
+
+Show that rendering. Then summarize what the story is about and what needs to be done. If the
+story has child stories, list them. If it has dependencies that are already done, note what was
+completed. Proceed with the implementation work from there.
+
+This synthesis is yours to write. The claim answers with facts; what they *mean* is judgment,
+and no command can assert it for you.
+
 ## Provider dispatch
 
 Dispatch, capture, and doctor depend on terminal behavior that differs by agent host. Load
 the matching file from `<plugin-root>/adapters/` and follow it. For dispatch, an explicit
 `--agent=claude|codex` selects that provider even when it differs from the active host; without
 one, the adapter supplies its own host as the default. If no adapter exists for the
-active host, explain that the provider-specific operation is unavailable and suggest the `story-work` skill for safe
-in-session work. Never invoke a different provider's adapter or report dispatch success
+active host, explain that the provider-specific operation is unavailable and suggest `claim <id>` for
+safe in-session work. Never invoke a different provider's adapter or report dispatch success
 without one.
 
 ## Shared notes

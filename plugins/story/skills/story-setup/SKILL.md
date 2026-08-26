@@ -41,15 +41,11 @@ storyhook reads this table and never rewrites it, so it is safe to edit by hand:
 [plugin]
 # Set to false to turn the session hooks off entirely.
 enabled = true
-
-# Tracking verbosity: "quiet", "normal", or "verbose"
-# quiet   = minimal output, no auto-comments
-# normal  = status updates and session handoffs
-# verbose = detailed logging with progress comments
-tracking = "normal"
 ```
 
-Ask the user if they want to adjust the tracking level.
+`enabled` is the only key this table defines. Whether a claim posts a comment is a
+per-invocation choice — `story claim --comment <text>` or `--no-comment` — not a standing
+setting.
 
 ### 4. Project agent instructions
 
