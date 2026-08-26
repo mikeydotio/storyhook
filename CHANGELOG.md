@@ -5,6 +5,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- `story unclaim <id>` — the inverse of `story claim`, and the store half of
+  it: the state change and its comment, never a tmux window and never a
+  worktree. The story returns to the state it was claimed **from**, replayed
+  from its own event log inside the same write transaction rather than
+  recorded anywhere, so no schema column, no `--to` flag and no caller has to
+  carry the answer around. When that state cannot be restored — the story was
+  created directly in the active state, or that state has since been removed
+  or reclassified CLOSED — it returns to `todo` and the substitution is
+  reported (`restore_fallback` in `--json`, a `note:` line in human output,
+  and the default comment) rather than performed silently. Compare-and-swap
+  guarded: a story somebody else has moved is answered `result:"conflict"`
+  with `.actual`, never overwritten. `--comment <text>` replaces the default
+  sentence, `--no-comment` posts none, `--dry-run` reads for real and writes
+  symbolically (SH-483)
+
 ### Removed
 - **BREAKING:** `story.sh work`, the `story-work` skill, and the
   `[plugin].tracking` key are removed. Claiming is `story claim <id> | --next`

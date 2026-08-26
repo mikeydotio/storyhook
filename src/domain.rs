@@ -2115,6 +2115,60 @@ pub fn active_state(states: &[StateDef]) -> Option<StateDef> {
     (open.len() == 2).then(|| open[1].clone())
 }
 
+/// The state a story sat in immediately before it most recently *entered*
+/// `active` — what `story unclaim` restores it to (SH-483).
+///
+/// `StoryStateChanged` records only the destination state, so this is a short
+/// replay rather than a field read: the story's own event log is walked in
+/// order, the literal state is tracked, and the answer is taken from one step
+/// before the last entry into `active`.
+///
+/// # Why "entry" and not "the most recent event naming it"
+///
+/// `story move <id> in-progress` twice appends two `StoryStateChanged` events
+/// that both name the active slug. "The state before the most recent one"
+/// would then be the active state itself, and unclaiming would restore the
+/// story to where it already is. The rule is a **run boundary**: the last
+/// index whose state is `active` and whose predecessor is not. The
+/// created-directly-into-`active` case — the first of the three fallbacks
+/// `story unclaim` has to answer for — falls out of the same expression as
+/// index 0, rather than needing a check of its own.
+///
+/// # The three events, and why they are exactly these three
+///
+/// The same three arms [`fold_story`] assigns `state` from, so the replay's
+/// idea of "the story's state at step k" and the read model's cannot disagree.
+/// A fourth event that moved a story would be invisible here and would make
+/// this answer a plausible lie.
+///
+/// `None` means the replay cannot answer: the story never entered `active`
+/// from anywhere, either because it was created there or because it has never
+/// been there at all. The caller decides what to do about that —
+/// `StoryService::unclaim_story` falls back to `todo` and says so.
+#[must_use]
+pub fn state_claimed_from(events: &[StoryEvent], active: &str) -> Option<String> {
+    let mut timeline: Vec<&str> = Vec::new();
+    for event in events {
+        match event {
+            StoryEvent::StoryCreated { state, .. }
+            | StoryEvent::StoryStateChanged { state, .. }
+            | StoryEvent::StoryClosedAndArchived { state, .. } => timeline.push(state.as_str()),
+            _ => {}
+        }
+    }
+
+    let mut entry = None;
+    for (index, state) in timeline.iter().enumerate() {
+        if *state == active && (index == 0 || timeline[index - 1] != active) {
+            entry = Some(index);
+        }
+    }
+    let index = entry?;
+    // Index 0 is the story being *created* in the active state: there is no
+    // earlier step to restore, which is a real answer and not a failure.
+    (index > 0).then(|| timeline[index - 1].to_string())
+}
+
 /// The project's first configured OPEN state.
 pub fn default_open_state(states: &[StateDef]) -> Option<StateDef> {
     states
@@ -6759,5 +6813,125 @@ mod ready_order_properties {
             };
             prop_assert_eq!(ids_of(&a), ids_of(&b));
         }
+    }
+}
+
+/// `state_claimed_from` — the replay `story unclaim` restores a story with
+/// (SH-483).
+#[cfg(test)]
+mod claimed_from_tests {
+    use super::{StoryEvent, state_claimed_from};
+
+    fn created(state: &str) -> StoryEvent {
+        StoryEvent::StoryCreated {
+            at: "2026-08-26T00:00:00Z".to_string(),
+            title: "A story".to_string(),
+            state: state.to_string(),
+        }
+    }
+
+    fn moved(state: &str) -> StoryEvent {
+        StoryEvent::StoryStateChanged {
+            at: "2026-08-26T00:00:01Z".to_string(),
+            state: state.to_string(),
+        }
+    }
+
+    /// A comment between the moves must not disturb the replay: only the
+    /// three state-bearing events count.
+    fn commented() -> StoryEvent {
+        StoryEvent::StoryCommentAdded {
+            at: "2026-08-26T00:00:02Z".to_string(),
+            text: "noise".to_string(),
+        }
+    }
+
+    #[test]
+    fn the_ordinary_claim_restores_the_state_it_came_from() {
+        let events = [created("todo"), commented(), moved("in-progress")];
+        assert_eq!(
+            state_claimed_from(&events, "in-progress"),
+            Some("todo".to_string())
+        );
+    }
+
+    /// A story claimed out of a state that is neither of the two required
+    /// open ones is the whole reason this is a replay rather than a constant.
+    #[test]
+    fn a_custom_open_state_is_restored_as_readily_as_todo() {
+        let events = [created("todo"), moved("triage"), moved("in-progress")];
+        assert_eq!(
+            state_claimed_from(&events, "in-progress"),
+            Some("triage".to_string())
+        );
+    }
+
+    /// The LAST claim's origin, not the first: a story taken, released and
+    /// taken again comes back to where the second claim found it.
+    #[test]
+    fn the_most_recent_entry_wins_over_an_earlier_one() {
+        let events = [
+            created("todo"),
+            moved("in-progress"),
+            moved("todo"),
+            moved("blocked"),
+            moved("in-progress"),
+        ];
+        assert_eq!(
+            state_claimed_from(&events, "in-progress"),
+            Some("blocked".to_string())
+        );
+    }
+
+    /// The run-boundary rule, and the reason it is a rule. `story move <id>
+    /// in-progress` against a story already there appends a second
+    /// `StoryStateChanged` naming the same slug; reading "the state before
+    /// the most recent event naming active" would answer `in-progress` and
+    /// unclaim would restore the story to where it already is.
+    #[test]
+    fn a_repeated_move_into_the_active_state_does_not_become_its_own_origin() {
+        let events = [
+            created("todo"),
+            moved("in-progress"),
+            moved("in-progress"),
+            moved("in-progress"),
+        ];
+        assert_eq!(
+            state_claimed_from(&events, "in-progress"),
+            Some("todo".to_string())
+        );
+    }
+
+    /// Fallback case 1: `story new --state in-progress`. There is no earlier
+    /// step, and saying so is a real answer rather than a failure.
+    #[test]
+    fn a_story_created_in_the_active_state_has_no_origin_to_restore() {
+        let events = [created("in-progress"), commented()];
+        assert_eq!(state_claimed_from(&events, "in-progress"), None);
+    }
+
+    /// Created in the active state, then moved away and back: the second
+    /// entry has an origin even though the first did not.
+    #[test]
+    fn created_active_then_re_entered_restores_the_second_entrys_origin() {
+        let events = [created("in-progress"), moved("todo"), moved("in-progress")];
+        assert_eq!(
+            state_claimed_from(&events, "in-progress"),
+            Some("todo".to_string())
+        );
+    }
+
+    /// A story that has never been in the active state at all. `story
+    /// unclaim` refuses such a story before it ever asks, but the function is
+    /// pure and answers honestly on its own.
+    #[test]
+    fn a_story_that_never_entered_the_active_state_answers_nothing() {
+        let events = [created("todo"), moved("blocked")];
+        assert_eq!(state_claimed_from(&events, "in-progress"), None);
+    }
+
+    #[test]
+    fn a_story_with_no_events_answers_nothing() {
+        assert_eq!(state_claimed_from(&[], "in-progress"), None);
     }
 }
