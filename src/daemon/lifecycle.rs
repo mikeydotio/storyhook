@@ -1598,14 +1598,15 @@ pub fn served_deadline(command: &str, cwd: &Path) -> Duration {
 /// [`crate::cli::Invocation`] it can read `updates.len()` from — the number
 /// is not guessed, it is the exact list the command is about to attempt.
 ///
-/// `story claim` (SH-476) gets the same [`transition_pair_timeout`] widening
-/// as `set-state`/`set-fields` above, for the identical reason: a claim is a
-/// `StoryStateChanged` transition wearing a different verb, so it fires the
-/// same `on_state_change`/`on_close` pair those two commands do. Without it, a
-/// claim whose transition hooks run gets the ordinary deadline and times out
-/// intermittently with nothing saying why. `story next` is a pure read since
-/// SH-477 and keeps the general allowance below, and so does `story claim
-/// --dry-run`, which fires no hook because it writes nothing.
+/// `story claim` (SH-476) and `story unclaim` (SH-483) get the same
+/// [`transition_pair_timeout`] widening as `set-state`/`set-fields` above,
+/// for the identical reason: each is a `StoryStateChanged` transition wearing
+/// a different verb, so both fire the same `on_state_change`/`on_close` pair
+/// those two commands do. Without it, a claim whose transition hooks run gets
+/// the ordinary deadline and times out intermittently with nothing saying
+/// why. `story next` is a pure read since SH-477 and keeps the general
+/// allowance below, and so do the two verbs' `--dry-run` forms, which fire no
+/// hook because they write nothing.
 ///
 /// [`transition_pair_timeout`]: crate::event_hooks::transition_pair_timeout
 #[must_use]
@@ -1618,6 +1619,7 @@ pub fn served_deadline_for(invocation: &crate::cli::Invocation, cwd: &Path) -> D
     if matches!(
         invocation,
         crate::cli::Invocation::Claim { dry_run: false, .. }
+            | crate::cli::Invocation::Unclaim { dry_run: false, .. }
     ) {
         let allowance = crate::event_hooks::transition_pair_timeout(cwd).unwrap_or(Duration::ZERO);
         return SERVED_DEADLINE + allowance;

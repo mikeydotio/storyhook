@@ -169,6 +169,8 @@ Usage:
   story claim <id> [--comment <text> | --no-comment] [--dry-run]
   story claim --next [--phase <N>] [--comment <text> | --no-comment]
                      [--dry-run]                    (take a story, atomically)
+  story unclaim <id> [--comment <text> | --no-comment]
+                     [--dry-run]                    (hand it back where it came from)
   story summary
   story report [--html]
   story search <query>
@@ -342,6 +344,38 @@ pub enum ClaimComment {
     Suppressed,
 }
 
+/// What `story unclaim` posts alongside the release (SH-483).
+///
+/// The same three shapes as [`ClaimComment`], and deliberately **not** the
+/// same type, because the two disagree about the one thing that matters:
+/// where [`Default`](Self::Default) is resolved.
+///
+/// A claim's default sentence names the *caller's* host and tmux window, so
+/// only the client can compose it and a `Default` reaching the daemon is
+/// refused ([`crate::claim_comment::UNRESOLVED_REFUSAL`]). An unclaim's
+/// default names the state the story is being restored to and whether that
+/// was the state it was claimed from or the `todo` fallback — two facts that
+/// do not exist until the write transaction is already open, and that the
+/// client structurally cannot know. So this `Default` travels to the store
+/// on purpose and is composed there.
+///
+/// Collapsing the two onto one enum would make each one's promise about
+/// `Default` unstatable, since they are opposite promises. They share the
+/// shape and never the contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UnclaimComment {
+    /// Neither flag given: the store composes the sentence.
+    Default,
+    /// `--comment <text>` — this text instead of the default one.
+    ///
+    /// The caller's own sentence, never edited. A fallback restoration is
+    /// still reported in the *result*; it is not spliced into text somebody
+    /// else wrote.
+    Custom(String),
+    /// `--no-comment` — no comment at all.
+    Suppressed,
+}
+
 /// Every command storyhook can execute, fully parsed and validated for
 /// *shape* — field values stay as the raw strings the user typed, because
 /// interpreting them needs project data the parser cannot see.
@@ -434,6 +468,23 @@ pub enum Invocation {
         target: ClaimTarget,
         /// What to post alongside the claim.
         comment: ClaimComment,
+        /// `--dry-run`: read for real, write symbolically.
+        dry_run: bool,
+    },
+    /// `story unclaim <id>` (SH-483) — the inverse of [`Claim`](Self::Claim),
+    /// and the store half of it: the state change and its comment, never a
+    /// tmux window and never a worktree, which belong to
+    /// `plugins/story/bin/story.sh` and are SH-484's.
+    ///
+    /// No `--next` form and no pseudo-target enum. "Whichever story I happen
+    /// to be holding" is not a question the store can answer — a store serves
+    /// every client at once and nothing records which of them claimed what —
+    /// so this names its story, always.
+    Unclaim {
+        /// The story to release.
+        id: String,
+        /// What to post alongside the release.
+        comment: UnclaimComment,
         /// `--dry-run`: read for real, write symbolically.
         dry_run: bool,
     },
@@ -1533,6 +1584,11 @@ static VERB_FLAGS: &[VerbFlags] = &[
         ],
     },
     VerbFlags {
+        verb: "unclaim",
+        subcommand: None,
+        flags: &[value("comment"), bare("no-comment"), bare("dry-run")],
+    },
+    VerbFlags {
         verb: "set",
         subcommand: None,
         flags: &[
@@ -1989,6 +2045,7 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "list" => parse_list(args),
         "next" => parse_next(args),
         "claim" => parse_claim(args),
+        "unclaim" => parse_unclaim(args),
         "summary" => {
             expect_no_more(&args[1..], "usage: story summary")?;
             Ok(Invocation::Summary)
@@ -2069,6 +2126,9 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
 const CLAIM_USAGE: &str = "usage: story claim <id> [--comment <text> | --no-comment] \
                            [--dry-run]\n       story claim --next [--phase <N>] [--comment \
                            <text> | --no-comment] [--dry-run]";
+
+const UNCLAIM_USAGE: &str = "usage: story unclaim <id> [--comment <text> | --no-comment] \
+                             [--dry-run]";
 
 const PROJECT_USAGE: &str = "usage: story project new [--prefix <PREFIX>] [--name <NAME>] \
                              [--attach <PATH> | --no-attach] [--no-agents-md] | delete \
@@ -2961,6 +3021,73 @@ fn parse_claim(args: &[String]) -> Result<Invocation, AppError> {
 
     Ok(Invocation::Claim {
         target,
+        comment,
+        dry_run,
+    })
+}
+
+/// `story unclaim <id> [--comment <text> | --no-comment] [--dry-run]`
+/// (SH-483).
+///
+/// [`parse_claim`]'s shape, minus the two things unclaim has no use for:
+/// there is no `--next` form to be mutually exclusive with, and no `--phase`,
+/// because neither selects anything here — the story is named or the command
+/// is refused.
+///
+/// A word that lands nowhere is refused by the loop's own catch-all, which is
+/// the same guarantee [`expect_no_more`] gives a fixed-arity arm (SH-357).
+fn parse_unclaim(args: &[String]) -> Result<Invocation, AppError> {
+    let mut id: Option<String> = None;
+    let mut comment: Option<String> = None;
+    let mut no_comment = false;
+    let mut dry_run = false;
+    let mut index = 1;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            // The value is required, never optional — see `parse_claim`.
+            "--comment" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(UNCLAIM_USAGE.to_string()))?;
+                comment = Some(value.clone());
+                index += 2;
+            }
+            "--no-comment" => {
+                no_comment = true;
+                index += 1;
+            }
+            "--dry-run" => {
+                dry_run = true;
+                index += 1;
+            }
+            word if id.is_none() && !word.starts_with('-') => {
+                id = Some(word.to_string());
+                index += 1;
+            }
+            _ => return Err(AppError::Usage(UNCLAIM_USAGE.to_string())),
+        }
+    }
+
+    let Some(id) = id else {
+        return Err(AppError::Usage(format!(
+            "`story unclaim` needs a story id\n{UNCLAIM_USAGE}"
+        )));
+    };
+
+    let comment = match (comment, no_comment) {
+        (Some(_), true) => {
+            return Err(AppError::Usage(format!(
+                "`--comment` and `--no-comment` say opposite things; name one\n{UNCLAIM_USAGE}"
+            )));
+        }
+        (Some(text), false) => UnclaimComment::Custom(text),
+        (None, true) => UnclaimComment::Suppressed,
+        (None, false) => UnclaimComment::Default,
+    };
+
+    Ok(Invocation::Unclaim {
+        id,
         comment,
         dry_run,
     })
@@ -4529,7 +4656,7 @@ fn join_tokens(tokens: &[String]) -> String {
 mod tests {
     use super::{
         ClaimComment, ClaimTarget, EpicAction, Invocation, PluginAction, TypeAction,
-        parse_invocation,
+        UnclaimComment, parse_invocation,
     };
     use crate::error::AppError;
 
@@ -4702,6 +4829,95 @@ mod tests {
     fn a_trailing_word_is_refused() {
         assert!(claim(&["claim", "SH-1", "junk"]).is_err());
         assert!(claim(&["claim", "--next", "junk"]).is_err());
+    }
+
+    // --- `story unclaim` (SH-483) ---
+
+    fn unclaim(args: &[&str]) -> Result<Invocation, AppError> {
+        parse_invocation(&args.iter().map(|s| (*s).to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn unclaim_needs_an_id_and_says_so() {
+        let error = unclaim(&["unclaim"]).unwrap_err();
+        assert!(
+            error.to_string().contains("needs a story id"),
+            "unexpected refusal: {error}"
+        );
+    }
+
+    #[test]
+    fn unclaim_by_id_carries_the_default_comment() {
+        assert_eq!(
+            unclaim(&["unclaim", "SH-1"]).unwrap(),
+            Invocation::Unclaim {
+                id: "SH-1".to_string(),
+                comment: UnclaimComment::Default,
+                dry_run: false,
+            }
+        );
+    }
+
+    #[test]
+    fn unclaims_three_comment_states_are_all_reachable() {
+        let expect = |args: &[&str], want: UnclaimComment| {
+            let Invocation::Unclaim { comment, .. } = unclaim(args).unwrap() else {
+                panic!("not an unclaim: {args:?}");
+            };
+            assert_eq!(comment, want, "for {args:?}");
+        };
+        expect(&["unclaim", "SH-1"], UnclaimComment::Default);
+        expect(
+            &["unclaim", "SH-1", "--comment", "back to you"],
+            UnclaimComment::Custom("back to you".to_string()),
+        );
+        expect(
+            &["unclaim", "SH-1", "--no-comment"],
+            UnclaimComment::Suppressed,
+        );
+    }
+
+    #[test]
+    fn unclaims_comment_and_no_comment_together_are_refused() {
+        let message = unclaim(&["unclaim", "SH-1", "--comment", "x", "--no-comment"])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            message.contains("say opposite things"),
+            "unexpected refusal: {message}"
+        );
+    }
+
+    /// The value is required, never optional — otherwise `story unclaim SH-1
+    /// --comment --json` posts a comment saying `--json` (SH-357's shape).
+    #[test]
+    fn unclaims_comment_takes_the_next_token_as_its_value() {
+        assert!(unclaim(&["unclaim", "SH-1", "--comment"]).is_err());
+        assert_eq!(
+            unclaim(&["unclaim", "SH-1", "--comment", "--json"]).unwrap(),
+            Invocation::Unclaim {
+                id: "SH-1".to_string(),
+                comment: UnclaimComment::Custom("--json".to_string()),
+                dry_run: false,
+            }
+        );
+    }
+
+    #[test]
+    fn unclaims_dry_run_is_a_bare_flag() {
+        assert!(matches!(
+            unclaim(&["unclaim", "SH-1", "--dry-run"]).unwrap(),
+            Invocation::Unclaim { dry_run: true, .. }
+        ));
+    }
+
+    /// A second positional lands nowhere, so it is refused (SH-357). Unclaim
+    /// has no `--next` form for a stray word to be read as, which makes the
+    /// refusal the only correct answer rather than one of two.
+    #[test]
+    fn a_trailing_word_after_an_unclaim_is_refused() {
+        assert!(unclaim(&["unclaim", "SH-1", "junk"]).is_err());
+        assert!(unclaim(&["unclaim", "SH-1", "--next"]).is_err());
     }
 
     // --- `story block`/`story unblock` --on (SH-398) ---

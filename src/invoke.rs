@@ -30,7 +30,7 @@ use crate::cli::{
     AbandonedAction, Attach, AttachmentAction, ClaimComment, ClaimTarget, CrashesAction,
     DaemonAction, EpicAction, HELP_TEXT, HistoryAction, HooksAction, Invocation, NewProjectRequest,
     PhaseAction, PluginAction, ProjectAction, SettingsAction, StateAction, StoreAction,
-    TokenAction, TypeAction, WebAction,
+    TokenAction, TypeAction, UnclaimComment, WebAction,
 };
 use crate::domain::provenance::{ActorLabel, Provenance};
 use crate::domain::{FieldEdit, StateChanges, SuperState, TypeChanges, TypeDef};
@@ -691,6 +691,11 @@ pub fn dispatch<S: Store>(
             comment,
             dry_run,
         } => dispatch_claim(ctx, target, comment, dry_run),
+        Invocation::Unclaim {
+            id,
+            comment,
+            dry_run,
+        } => dispatch_unclaim(ctx, &id, &comment, dry_run),
         Invocation::Summary => query(ctx, |service| service.summary())
             .map(|summary| Response::Summary(Box::new(summary))),
         Invocation::Report { html } => {
@@ -1372,6 +1377,60 @@ fn dispatch_claim<S: Store>(
     };
     match ctx.story_view(&before.id)? {
         Response::Story(view) => Ok(Response::Claimed(view, before.state)),
+        other => Err(AppError::Storage(format!(
+            "internal: story view answered with {other:?}"
+        ))),
+    }
+}
+
+/// `story unclaim <id>` (SH-483) — the inverse of [`dispatch_claim`].
+///
+/// No client-side comment resolution to check for, and that is the whole
+/// asymmetry between the two: a claim's default sentence names the caller's
+/// host and tmux window, so an unresolved `Default` reaching here is a bug
+/// and is refused. An unclaim's default names the destination and the
+/// fallback, which do not exist until the write transaction is open, so
+/// `Default` arriving here is the intended path and the store composes it.
+fn dispatch_unclaim<S: Store>(
+    ctx: &Ctx<'_, S>,
+    id: &str,
+    comment: &UnclaimComment,
+    dry_run: bool,
+) -> Result<Response, AppError> {
+    let service = StoryService::new(ctx);
+
+    if dry_run {
+        let plan = service.plan_unclaim(id)?;
+        let mut lines = vec![format!(
+            "would unclaim {} — {} -> {}",
+            plan.id, plan.from, plan.restored_to
+        )];
+        if let Some(fallback) = &plan.fallback {
+            lines.push(format!(
+                "note: would restore to {} rather than the state it was claimed from, because {}",
+                plan.restored_to,
+                fallback.explain(&plan.from)
+            ));
+        }
+        match comment {
+            UnclaimComment::Suppressed => lines.push(format!("would not comment on {}", plan.id)),
+            UnclaimComment::Custom(text) => {
+                lines.push(format!("would comment on {}: {text}", plan.id));
+            }
+            // Composed from the plan, so a dry run shows the sentence the
+            // real command would actually write rather than a description of
+            // one — including the fallback clause.
+            UnclaimComment::Default => {
+                let text = crate::service::default_unclaim_comment(&plan);
+                lines.push(format!("would comment on {}: {text}", plan.id));
+            }
+        }
+        return Ok(Response::Message(lines.join("\n")));
+    }
+
+    let (before, _snapshot, outcome) = service.unclaim_story(id, comment)?;
+    match ctx.story_view(&before.id)? {
+        Response::Story(view) => Ok(Response::Unclaimed(view, Box::new(outcome))),
         other => Err(AppError::Storage(format!(
             "internal: story view answered with {other:?}"
         ))),
@@ -2398,6 +2457,7 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::Search { .. }
         | Invocation::Next { .. }
         | Invocation::Claim { .. }
+        | Invocation::Unclaim { .. }
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
@@ -2602,6 +2662,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Search { .. } => "search",
         Invocation::Next { .. } => "next",
         Invocation::Claim { .. } => "claim",
+        Invocation::Unclaim { .. } => "unclaim",
         Invocation::Summary => "summary",
         Invocation::Report { .. } => "report",
         Invocation::Doctor { .. } => "doctor",
@@ -3526,6 +3587,7 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Search { .. }
         | Invocation::Next { .. }
         | Invocation::Claim { .. }
+        | Invocation::Unclaim { .. }
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }

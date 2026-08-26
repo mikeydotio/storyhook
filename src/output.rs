@@ -191,6 +191,87 @@ pub struct UndeletePlan {
     pub deleted_reason: Option<String>,
 }
 
+/// What `story unclaim` did, or would do (SH-483).
+///
+/// One type for both the real release and its `--dry-run` plan: the two
+/// answer the identical question and a second struct would only be an
+/// opportunity for them to drift.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnclaimOutcome {
+    /// The story released, canonicalized.
+    pub id: String,
+    /// The project's active-role state — the one it was released *from*.
+    pub from: String,
+    /// Where it landed: the state it was claimed from, or
+    /// [`UnclaimFallback`]'s destination when the replay could not answer.
+    pub restored_to: String,
+    /// Why [`restored_to`](Self::restored_to) is the fallback rather than the
+    /// state the story was claimed from. `None` on an ordinary release.
+    ///
+    /// Never silent: a substituted destination is a wrong answer stored about
+    /// where the work came from, so it is reported in the result on every
+    /// path and in the default comment on the path that writes one.
+    pub fallback: Option<UnclaimFallback>,
+}
+
+/// Why `story unclaim` could not restore the state a story was claimed from
+/// (SH-483).
+///
+/// Three cases, all real, and each one names what it could not use rather
+/// than merely admitting it substituted something.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UnclaimFallback {
+    /// The story was created directly in the active state — `story new
+    /// --state in-progress` — so there is no earlier state to go back to.
+    NoPriorState,
+    /// The state it was claimed from has since been removed from the
+    /// project's vocabulary (`story state remove`).
+    PriorStateRemoved(String),
+    /// The state it was claimed from is no longer an OPEN state, so
+    /// restoring the story to it would close the story.
+    PriorStateClosed(String),
+}
+
+impl UnclaimFallback {
+    /// The stable slug a `--json` caller branches on.
+    ///
+    /// A code rather than the sentence below, for the reason SH-372 settled
+    /// one field over: a consumer that has to pattern-match prose is a
+    /// consumer that breaks when the prose is improved.
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::NoPriorState => "no-prior-state",
+            Self::PriorStateRemoved(_) => "prior-state-removed",
+            Self::PriorStateClosed(_) => "prior-state-closed",
+        }
+    }
+
+    /// The clause the human rendering and the default comment both end in.
+    ///
+    /// `active` is the state being released, which only the first case needs
+    /// to name — and it needs to name it because "created directly in it" is
+    /// meaningless without it.
+    #[must_use]
+    pub fn explain(&self, active: &str) -> String {
+        match self {
+            Self::NoPriorState => {
+                format!(
+                    "this story was created in {active}, so there is no earlier state to restore"
+                )
+            }
+            Self::PriorStateRemoved(slug) => {
+                format!(
+                    "the state it was claimed from ({slug}) is no longer defined by this project"
+                )
+            }
+            Self::PriorStateClosed(slug) => {
+                format!("the state it was claimed from ({slug}) is no longer open")
+            }
+        }
+    }
+}
+
 /// What a bulk "Archive" on a CLOSED-superstate column would hide, read
 /// before anything is (SH-43).
 ///
@@ -643,6 +724,12 @@ pub enum Response {
     /// one more envelope field (`claimed_from`), so every existing
     /// `.story.story.id` consumer reads a claim exactly like a `next`.
     Claimed(Box<StoryView>, String),
+    /// `story unclaim` (SH-483): the story released, and what became of it.
+    ///
+    /// The mirror of [`Claimed`](Self::Claimed) and rendered the same way —
+    /// the same `.story` key, plus envelope fields naming the state it left
+    /// and, when the destination was substituted, why.
+    Unclaimed(Box<StoryView>, Box<UnclaimOutcome>),
     /// Several stories at once — `story list`, `story next` with a count,
     /// `story import`, `story decompose`, `story epic list`.
     ///
@@ -759,6 +846,17 @@ struct JsonEnvelope<'a> {
     /// rollback — knows what to move back to. Absent everywhere else.
     #[serde(skip_serializing_if = "Option::is_none")]
     claimed_from: Option<&'a str>,
+    /// `story unclaim` only (SH-483): the active state the story was released
+    /// from. The mirror of [`claimed_from`](Self::claimed_from), and needed
+    /// for the same reason — where it *landed* is already
+    /// `.story.story.state`, and where it came from is nowhere else.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unclaimed_from: Option<&'a str>,
+    /// `story unclaim` only (SH-483): the [`UnclaimFallback::code`] when the
+    /// story could not be restored to the state it was claimed from. Absent
+    /// on an ordinary release, which is what makes its presence the signal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    restore_fallback: Option<&'a str>,
     #[serde(default, skip_serializing_if = "<[_]>::is_empty")]
     warnings: &'a [String],
     #[serde(default, skip_serializing_if = "<[_]>::is_empty")]
@@ -831,6 +929,8 @@ fn render_json(response: &Response) -> String {
         Response::Message(message) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
             claimed_from: None,
+            unclaimed_from: None,
+            restore_fallback: None,
             message: Some(message),
             story: None,
             stories: None,
@@ -849,6 +949,8 @@ fn render_json(response: &Response) -> String {
             serde_json::to_string_pretty(&JsonEnvelope {
                 result: "ok",
                 claimed_from: None,
+                unclaimed_from: None,
+                restore_fallback: None,
                 message: Some(message),
                 story: None,
                 stories: None,
@@ -867,6 +969,8 @@ fn render_json(response: &Response) -> String {
         Response::Story(view) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
             claimed_from: None,
+            unclaimed_from: None,
+            restore_fallback: None,
             message: None,
             story: Some(view.as_ref()),
             stories: None,
@@ -884,6 +988,27 @@ fn render_json(response: &Response) -> String {
         Response::Claimed(view, claimed_from) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
             claimed_from: Some(claimed_from.as_str()),
+            unclaimed_from: None,
+            restore_fallback: None,
+            message: None,
+            story: Some(view.as_ref()),
+            stories: None,
+            summary: None,
+            graph: None,
+            issues: None,
+            findings: None,
+            advice: None,
+            phases: None,
+            settings: None,
+            project: None,
+            warnings: &view.warnings,
+            flagged_reasons: &view.flagged_reasons,
+        }),
+        Response::Unclaimed(view, outcome) => serde_json::to_string_pretty(&JsonEnvelope {
+            result: "ok",
+            claimed_from: None,
+            unclaimed_from: Some(outcome.from.as_str()),
+            restore_fallback: outcome.fallback.as_ref().map(UnclaimFallback::code),
             message: None,
             story: Some(view.as_ref()),
             stories: None,
@@ -905,6 +1030,8 @@ fn render_json(response: &Response) -> String {
         } => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
             claimed_from: None,
+            unclaimed_from: None,
+            restore_fallback: None,
             message: message.as_deref(),
             story: None,
             stories: Some(views),
@@ -922,6 +1049,8 @@ fn render_json(response: &Response) -> String {
         Response::Summary(summary) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
             claimed_from: None,
+            unclaimed_from: None,
+            restore_fallback: None,
             message: None,
             story: None,
             stories: None,
@@ -939,6 +1068,8 @@ fn render_json(response: &Response) -> String {
         Response::Graph(graph) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
             claimed_from: None,
+            unclaimed_from: None,
+            restore_fallback: None,
             message: None,
             story: None,
             stories: None,
@@ -956,6 +1087,8 @@ fn render_json(response: &Response) -> String {
         Response::Issues(issues) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
             claimed_from: None,
+            unclaimed_from: None,
+            restore_fallback: None,
             message: None,
             story: None,
             stories: None,
@@ -982,6 +1115,8 @@ fn render_json(response: &Response) -> String {
         Response::PhaseList(phase_views) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
             claimed_from: None,
+            unclaimed_from: None,
+            restore_fallback: None,
             message: None,
             story: None,
             stories: None,
@@ -999,6 +1134,8 @@ fn render_json(response: &Response) -> String {
         Response::ProjectSettings(settings) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
             claimed_from: None,
+            unclaimed_from: None,
+            restore_fallback: None,
             message: None,
             story: None,
             stories: None,
@@ -1016,6 +1153,8 @@ fn render_json(response: &Response) -> String {
         Response::Project(view) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
             claimed_from: None,
+            unclaimed_from: None,
+            restore_fallback: None,
             message: None,
             story: None,
             stories: None,
@@ -1077,6 +1216,21 @@ fn render_human(response: &Response) -> String {
                 view.story.state,
                 render_story(view)
             )
+        }
+        Response::Unclaimed(view, outcome) => {
+            let mut body = format!(
+                "unclaimed {} — {} -> {}\n",
+                outcome.id, outcome.from, outcome.restored_to
+            );
+            if let Some(fallback) = &outcome.fallback {
+                body.push_str(&format!(
+                    "note: restored to {} rather than the state it was claimed from, because {}\n",
+                    outcome.restored_to,
+                    fallback.explain(&outcome.from)
+                ));
+            }
+            body.push_str(&render_story(view));
+            body
         }
         Response::Stories {
             views: stories,
