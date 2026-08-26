@@ -311,7 +311,10 @@ fn comment_replaces_the_default_text() {
     let project = project();
     let id = project.new_story("Claimable");
 
-    json(&project, &["claim", &id, "--comment", "picked up by the loop"]);
+    json(
+        &project,
+        &["claim", &id, "--comment", "picked up by the loop"],
+    );
 
     assert_eq!(comments(&project, &id), vec!["picked up by the loop"]);
 }
