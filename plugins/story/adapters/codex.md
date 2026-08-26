@@ -29,6 +29,19 @@ therefore defaults to the safe solo charter; `STORY_COUNCIL=on` is the explicit 
   the selected provider and independently confirms readiness, Plan mode, bracketed paste,
   and Storyhook project integrity.
 
+## Release (`unclaim <id>`, `reset <id>`)
+
+Reached as `$story unclaim <id>` and `$story reset <id>`. Run
+`bash "<story-helper>" unclaim <id>` or `bash "<story-helper>" reset <id>`, adding `--force`
+(reset only) and `--comment <text>` / `--no-comment` only when the user asked for them. Show
+`display` and stop. Both close the story's tmux window, which is why they are documented per
+host rather than only in the shared router.
+
+- `unclaim` leaves the `.codex/worktrees/<id>` worktree and its branch exactly as found;
+  `reset` deletes both.
+- From the story's own window, `unclaim` still releases the claim and reports that it left the
+  window open, while `reset` refuses with `self-window` and `--force` does not override it.
+
 ## Hooks and trust
 
 Codex discovers this installed plugin's `hooks/hooks.json`. The same SessionStart,
