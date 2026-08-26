@@ -187,10 +187,64 @@ them:
 
 ## The tool surface
 
-Sixteen tools, curated to the loop an agent actually runs — not a 1:1 mirror of the CLI's 64
+Eighteen tools, curated to the loop an agent actually runs — not a 1:1 mirror of the CLI's 64
 `Invocation` variants. `story help mcp` lists them; `src/mcp/tools.rs::TOOLS` is the
-authoritative table. Every tool takes `project` (required) and, on a write, `actor`
-(optional) — never a working directory, since a stdio session has none of its own to offer.
+authoritative table, and `tests/mcp_tool_drift.rs` derives the help topic's list from it in
+both directions rather than letting the two be kept in step by hand. Every tool takes
+`project` (required) and, on a write, `actor` (optional) — never a working directory, since a
+stdio session has none of its own to offer.
+
+### `story_claim` and `story_unclaim`, and why their defaults disagree (SH-479)
+
+`story_claim` is the reason an MCP agent can take work at all. Before it, the only writing
+tool that could move a story was `story_move`, which cannot compare-and-swap on the state it
+just read without a round trip in between — precisely the race `story claim` exists to close,
+and MCP agents are exactly the population running several sessions against one project.
+`story_next` stays a pure read and points at `story_claim` for the taking case, mirroring the
+pointer `story_list` already carries toward `story_next`.
+
+The two tools disagree about what an omitted `comment` means, and the disagreement is
+**derived, not chosen**:
+
+| | omitted `comment` builds | who composes the default |
+|---|---|---|
+| `story_claim` | `--no-comment` | the client — and this server is the wrong client |
+| `story_unclaim` | nothing at all | the store, which owns the facts |
+
+A claim's default sentence names the *caller's* host and tmux window, so
+`cli::ClaimComment::Default` is resolved client-side by `claim_comment::resolve` and a
+`Default` that reaches the daemon is refused outright (`claim_comment::UNRESOLVED_REFUSAL`).
+Emitting no flag would therefore make this tool's most common call fail every time with an
+`internal:` message no agent can act on — measured, not argued: deleting the `--no-comment`
+arm makes `tests/mcp_server.rs`'s round-trip test fail with exactly that refusal at exit 2.
+
+Resolving it here instead was rejected. `resolve` reads this process's own `$TMUX` and
+hostname, and this server is long-lived and started by an agent host, so it would name
+whichever shell happened to launch it, on every call, forever — the SH-246 mistake one layer
+out, which the "No ambient state" scan below already forbids for `project` and `actor`. SH-490
+reached the identical conclusion for `story.sh dispatch`'s own claim, on the identical
+grounds: a caller with nothing honest to say says nothing, and a fabricated window is never
+acceptable. An agent that wants the claim to record who took the story passes `comment`.
+
+An unclaim's default names the state the story is being restored to and whether that was a
+fallback — two facts that do not exist until the write transaction is already open. It travels
+to the store and is composed there, so it arrives over MCP intact. This is the payoff of
+SH-483's decision to keep `ClaimComment` and `UnclaimComment` as two types that share a shape
+and never a contract: one enum would have made this asymmetry unstatable.
+
+Three further boundaries, all deliberate:
+
+- **`dry_run` is on neither tool.** An MCP caller that wants to know what a claim *would* do
+  calls `story_next` or `story_show`.
+- **`story reset` is not reachable over MCP at all**, and `story_unclaim`'s description says
+  so. It is git and tmux mechanics living in `plugins/story/bin/story.sh` (SH-484), the same
+  reason `dispatch` and `reap` have never been tools. `story_unclaim` releases the claim in
+  the tracker; a worktree and a tmux window created for the story survive untouched.
+- **`build_claim` states exactly one cross-field rule in its own vocabulary** — exactly one of
+  `id` or `next`, never both, never neither — because `parse_claim`'s usage line answers about
+  `<id>` and `--next`, which are not what an MCP caller typed. Everything else (`phase` beside
+  an explicit `id`) is relayed from the parser, whose own message names the thing the caller
+  got wrong.
 
 Deliberately absent: anything that asks a human to confirm interactively (`purge`,
 `hide-state`, an unforced `reopen` of a soft-deleted story), `github-sync` and its first-run
@@ -232,7 +286,17 @@ the command it drives actually accepts:
 - **No `structuredContent`** — same section.
 - **Sixteen tools, not "~15"** — `story_label` and `story_unblock`/`story_block` as a pair
   rounded the curated set to sixteen; the number was always approximate in the plan that
-  authorized this story.
+  authorized this story. SH-479 later took it to eighteen with `story_claim` and
+  `story_unclaim`.
+- **`story help mcp`'s tool list stopped being hand-maintained** (SH-479). It was a second
+  copy of `TOOLS` kept in step by whoever remembered — the shape SH-136/SH-198/SH-258/
+  SH-260/SH-360 have already cost this project five times over, and it was noticed while
+  adding two entries to it. `tests/mcp_tool_drift.rs`'s
+  `every_curated_tool_is_listed_in_the_mcp_help_topic` now compares the two as sets in both
+  directions, reading only the topic's `Tools:` block — never the whole topic, since
+  `story_new`, `story_prioritize` and `story_context` are all named again under `Related:`,
+  where a scan would report a tool as listed after it had been dropped from the list a reader
+  actually reads.
 - **`verb_is_recognized` in `src/cli.rs` gained one more special case** (`verb == "mcp"`,
   beside the existing `verb == "tui"`), so `story mcp --help` explains the command via its
   help topic rather than the parser reporting an unknown command — exactly `tui`'s own

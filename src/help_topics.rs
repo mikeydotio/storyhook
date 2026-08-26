@@ -1071,6 +1071,8 @@ records who made the change, the same way $STORYHOOK_ACTOR does for the CLI.
 Tools:
   story_list        List open stories with filters
   story_next        The highest-priority ready story or stories
+  story_claim       Take a story to work on, atomically
+  story_unclaim     Hand a claimed story back
   story_show        Full details for one story
   story_search      Full-text search
   story_summary     Counts by state and priority
@@ -1092,7 +1094,15 @@ What is not here:
   destructive enough to ask a human to confirm (like 'story purge') are not
   exposed as tools. Use the CLI directly for those.
 
+A claim over MCP posts no comment unless you pass one. The 'story claim'
+command composes a default sentence naming the caller's host and tmux window;
+this server is long-lived and started by an agent host, so its own host and
+terminal describe whoever launched it, not whoever is calling. An unclaim's
+default sentence is composed in the store, so it needs no such caution and is
+posted as usual. Neither tool exposes --dry-run.
+
 Related:
+  story help claim  — the verb story_claim and story_unclaim drive
   story help priority-rubric — what story_new's and story_prioritize's
                                level argument means
   story help --compact — a CLI reference for a host without MCP support

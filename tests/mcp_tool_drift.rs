@@ -38,7 +38,7 @@ fn map(pairs: &[(&str, Value)]) -> Map<String, Value> {
 fn every_curated_tool_has_a_reverse_entry_in_tool_for_variant() {
     assert_eq!(
         TOOLS.len(),
-        16,
+        18,
         "the curated tool count changed — update this floor deliberately"
     );
     // The tool table's field metadata (`FieldSpec`/`FieldKind`) lives in a
@@ -67,6 +67,13 @@ fn every_curated_tool_has_a_reverse_entry_in_tool_for_variant() {
         // call" construction.
         if tool.name == "story_set" {
             minimal.insert("title".to_string(), json!("x"));
+        }
+        // `story_claim` is the same shape of cross-field rule: exactly one of
+        // `id` or `next`, which two independent optional `FieldSpec`s cannot
+        // state between them. `story claim` with neither is refused on purpose
+        // (SH-476) — a mutating verb never resolves a dropped argument.
+        if tool.name == "story_claim" {
+            minimal.insert("id".to_string(), json!("SH-1"));
         }
         let built = (tool.build_argv)(&minimal).unwrap_or_else(|e| {
             panic!(
@@ -176,6 +183,169 @@ fn story_next_defaults_count_to_one_exactly_as_the_cli_does() {
     let via_tool = call("story_next", &map(&[("project", json!("SH"))]));
     let via_cli = cli::parse_invocation(&argv(&["next"])).unwrap();
     assert_eq!(via_tool, via_cli);
+}
+
+/// A claim over MCP comments only when the caller supplied text: no
+/// `comment` argument builds `--no-comment`, never the CLI's client-composed
+/// default. `ClaimComment::Default` is resolved in the *caller's* process and
+/// a `Default` reaching the daemon is refused outright
+/// (`claim_comment::UNRESOLVED_REFUSAL`), so a tool that emitted no flag would
+/// fail on its own most common call. See `docs/spec/mcp-server.md`.
+#[test]
+fn story_claim_by_id_matches_the_equivalent_cli_invocation() {
+    let via_tool = call(
+        "story_claim",
+        &map(&[("project", json!("SH")), ("id", json!("SH-1"))]),
+    );
+    let via_cli = cli::parse_invocation(&argv(&["claim", "SH-1", "--no-comment"])).unwrap();
+    assert_eq!(via_tool, via_cli);
+}
+
+#[test]
+fn story_claim_with_a_comment_matches_the_equivalent_cli_invocation() {
+    let via_tool = call(
+        "story_claim",
+        &map(&[
+            ("project", json!("SH")),
+            ("id", json!("SH-1")),
+            ("comment", json!("picked up by the agent")),
+        ]),
+    );
+    let via_cli = cli::parse_invocation(&argv(&[
+        "claim",
+        "SH-1",
+        "--comment",
+        "picked up by the agent",
+    ]))
+    .unwrap();
+    assert_eq!(via_tool, via_cli);
+}
+
+#[test]
+fn story_claim_next_matches_the_equivalent_cli_invocation() {
+    let via_tool = call(
+        "story_claim",
+        &map(&[
+            ("project", json!("SH")),
+            ("next", json!(true)),
+            ("phase", json!("2")),
+            ("comment", json!("taking the top of the queue")),
+        ]),
+    );
+    let via_cli = cli::parse_invocation(&argv(&[
+        "claim",
+        "--next",
+        "--phase",
+        "2",
+        "--comment",
+        "taking the top of the queue",
+    ]))
+    .unwrap();
+    assert_eq!(via_tool, via_cli);
+}
+
+/// The one cross-field rule this tool states in its own vocabulary rather
+/// than relaying `parse_claim`'s usage line: the CLI's message names `<id>`
+/// and `--next`, which are not what an MCP caller typed.
+#[test]
+fn story_claim_refuses_neither_id_nor_next_naming_its_own_fields() {
+    let tool = TOOLS.iter().find(|t| t.name == "story_claim").unwrap();
+    let error = (tool.build_argv)(&map(&[("project", json!("SH"))]))
+        .expect_err("a claim naming no story must be refused, never resolved to --next");
+    assert!(
+        error.contains("`id`") && error.contains("`next`"),
+        "the refusal must name the tool's own fields: {error}"
+    );
+}
+
+#[test]
+fn story_claim_refuses_id_and_next_together() {
+    let tool = TOOLS.iter().find(|t| t.name == "story_claim").unwrap();
+    let error = (tool.build_argv)(&map(&[
+        ("project", json!("SH")),
+        ("id", json!("SH-1")),
+        ("next", json!(true)),
+    ]))
+    .expect_err("`id` and `next` are two different requests");
+    assert!(
+        error.contains("`id`") && error.contains("`next`"),
+        "the refusal must name the tool's own fields: {error}"
+    );
+}
+
+/// `next: false` is the same statement as omitting it — a JSON caller that
+/// spells every field out must not be read as having asked for `--next`.
+#[test]
+fn story_claim_reads_next_false_as_no_next_at_all() {
+    let via_tool = call(
+        "story_claim",
+        &map(&[
+            ("project", json!("SH")),
+            ("id", json!("SH-1")),
+            ("next", json!(false)),
+        ]),
+    );
+    let via_cli = cli::parse_invocation(&argv(&["claim", "SH-1", "--no-comment"])).unwrap();
+    assert_eq!(via_tool, via_cli);
+}
+
+/// An unclaim's default sentence is composed in the STORE (SH-483), not in
+/// the caller's process, so it travels over MCP intact and this tool emits no
+/// comment flag at all when the caller named no text. The opposite of
+/// `story_claim`'s default, for a reason that lives in where each `Default`
+/// is resolved rather than in taste.
+#[test]
+fn story_unclaim_matches_the_equivalent_cli_invocation() {
+    let via_tool = call(
+        "story_unclaim",
+        &map(&[("project", json!("SH")), ("id", json!("SH-1"))]),
+    );
+    let via_cli = cli::parse_invocation(&argv(&["unclaim", "SH-1"])).unwrap();
+    assert_eq!(via_tool, via_cli);
+}
+
+#[test]
+fn story_unclaim_with_a_comment_matches_the_equivalent_cli_invocation() {
+    let via_tool = call(
+        "story_unclaim",
+        &map(&[
+            ("project", json!("SH")),
+            ("id", json!("SH-1")),
+            ("comment", json!("handing it back")),
+        ]),
+    );
+    let via_cli =
+        cli::parse_invocation(&argv(&["unclaim", "SH-1", "--comment", "handing it back"])).unwrap();
+    assert_eq!(via_tool, via_cli);
+}
+
+/// `--dry-run` is deliberately not a field on either tool (SH-479): an MCP
+/// caller that wants to know what would happen calls `story_next` or
+/// `story_show`, and a mutating tool whose most cautious argument is a bare
+/// boolean is one typo away from a claim nobody made.
+#[test]
+fn neither_claim_tool_exposes_dry_run() {
+    for name in ["story_claim", "story_unclaim"] {
+        let tool = TOOLS.iter().find(|t| t.name == name).unwrap();
+        assert!(
+            tool.fields.iter().all(|field| field.name != "dry_run"),
+            "{name} declares a dry_run field"
+        );
+    }
+    assert!(matches!(
+        call(
+            "story_claim",
+            &map(&[("project", json!("SH")), ("id", json!("SH-1"))])
+        ),
+        Invocation::Claim { dry_run: false, .. }
+    ));
+    assert!(matches!(
+        call(
+            "story_unclaim",
+            &map(&[("project", json!("SH")), ("id", json!("SH-1"))])
+        ),
+        Invocation::Unclaim { dry_run: false, .. }
+    ));
 }
 
 #[test]
@@ -425,6 +595,55 @@ fn story_context_matches_the_equivalent_cli_invocation() {
 }
 
 // ---------------------------------------------------------------------------
+// 2b. The tool descriptions carry the three sentences their stories require.
+//     Wiring fences in SH-360's exact sense: each proves the sentence exists,
+//     never that it reads well. A tool table that grows a tool without them
+//     is the thing being caught; prose quality is a reviewer's job.
+// ---------------------------------------------------------------------------
+
+fn description_of(name: &str) -> &'static str {
+    TOOLS
+        .iter()
+        .find(|tool| tool.name == name)
+        .unwrap_or_else(|| panic!("no tool named {name} — this test's own name is stale"))
+        .description
+}
+
+/// A model choosing between `story_next` and `story_claim` must be able to
+/// choose on the fact that one of them writes (SH-479).
+#[test]
+fn story_claims_description_says_it_mutates() {
+    let description = description_of("story_claim");
+    assert!(
+        description.to_lowercase().contains("mutat"),
+        "story_claim must say it mutates: {description}"
+    );
+}
+
+/// `story_next` answers the question; `story_claim` takes the answer. The
+/// pointer mirrors the one `story_list` already carries toward `story_next`.
+#[test]
+fn story_nexts_description_points_at_story_claim() {
+    let description = description_of("story_next");
+    assert!(
+        description.contains("story_claim"),
+        "story_next must point at story_claim for the claiming case: {description}"
+    );
+}
+
+/// MCP reaches only the CLI layer, so `story reset` — a plugin verb over git
+/// and tmux — is not reachable from here and the description has to say so
+/// rather than leave an agent to discover it (SH-483, SH-484).
+#[test]
+fn story_unclaims_description_says_reset_is_not_reachable_over_mcp() {
+    let description = description_of("story_unclaim");
+    assert!(
+        description.contains("reset"),
+        "story_unclaim must name `story reset` as the thing MCP cannot do: {description}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 3. No second schema: `json_schema` in `src/mcp/tools.rs` is the only site
 //    under `src/mcp/` that constructs a `"properties"` key.
 // ---------------------------------------------------------------------------
@@ -524,5 +743,69 @@ fn nothing_under_src_mcp_reads_the_process_environment_or_its_cwd() {
          travel as explicit tool arguments or values resolved once at process start in \
          src/main.rs, never read fresh, per call, from this long-lived process's own \
          environment or working directory."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 5. The help topic's tool list is derived from the same table, not kept by
+//    hand beside it. `story help mcp` is how a host without `tools/list`
+//    finds out what exists, and it was a hand-maintained list — the shape
+//    SH-136/SH-198/SH-258/SH-260/SH-360 have already cost this project five
+//    times over. Adopted while adding the seventeenth and eighteenth tools
+//    (SH-479), per this project's own scope rubric.
+// ---------------------------------------------------------------------------
+
+/// The `story_*` names listed under `Tools:` in `story help mcp`.
+///
+/// The block alone, never the whole topic: `story_new`, `story_prioritize`
+/// and `story_context` are all named again in the topic's `Related:` section,
+/// so a scan over the full text would report a tool as listed after it had
+/// been dropped from the list a reader actually reads.
+fn tools_named_in_the_help_topic() -> Vec<String> {
+    let topic = storyhook::help_topics::get_help_topic("mcp")
+        .expect("`story help mcp` must exist — the MCP server's own reference");
+    let mut lines = topic.lines().skip_while(|line| line.trim() != "Tools:");
+    assert!(
+        lines.next().is_some(),
+        "`story help mcp` has no `Tools:` block, so this scan proved nothing"
+    );
+    let names: Vec<String> = lines
+        .take_while(|line| !line.trim().is_empty())
+        .map(|line| {
+            line.split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect();
+    assert!(
+        !names.is_empty(),
+        "`story help mcp`'s `Tools:` block is empty, so this scan proved nothing"
+    );
+    names
+}
+
+#[test]
+fn every_curated_tool_is_listed_in_the_mcp_help_topic() {
+    let listed = tools_named_in_the_help_topic();
+    let declared: Vec<&str> = TOOLS.iter().map(|tool| tool.name).collect();
+
+    let missing: Vec<&&str> = declared
+        .iter()
+        .filter(|name| !listed.iter().any(|entry| entry == *name))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "{missing:?} are curated tools that `story help mcp` does not list — a host without \
+         tools/list would never learn they exist"
+    );
+
+    let stale: Vec<&String> = listed
+        .iter()
+        .filter(|entry| !declared.contains(&entry.as_str()))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "`story help mcp` lists {stale:?}, which the curated table no longer declares"
     );
 }
