@@ -65,7 +65,8 @@ pub enum FindingCode {
     RequiredStates,
     /// A type whose slug no command can address (SH-134).
     UnaddressableType,
-    /// A story with more than one parent.
+    /// Legacy wire code retained for reports written before SH-446. Multiple
+    /// parents are now intentional and current integrity checks do not emit it.
     MultipleParents,
     /// A relation pointing at a story that does not exist.
     DanglingRelation,

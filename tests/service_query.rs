@@ -14,7 +14,7 @@
 //! defect in passing.
 //!
 //! `summary` and `context`'s ready lists rank by `domain::ready_order`
-//! (priority, then story number) instead of bare story number, a total order
+//! (own priority, parent epic priority, then story number) instead of bare story number, a total order
 //! the legacy `priority, created_at` comparator did not have (SH-63). The
 //! lexicographic answer those two used to give was never a promise anyone
 //! could rely on: it was whichever order a `BTreeMap` happened to iterate two
@@ -35,8 +35,8 @@ use storyhook::cli::GraphMode;
 use storyhook::domain::{StorySnapshot, SuperState};
 use storyhook::output::StoryView;
 use storyhook::service::{
-    Clock, Ctx, ListFilters, NewStoryInput, PrLinkService, QueryService, RelationService,
-    StoryService,
+    Clock, ConfigService, Ctx, ListFilters, NewStoryInput, PrLinkService, QueryService,
+    RelationService, StoryService,
 };
 use storyhook::store::{ProjectId, SqliteStore, Store};
 use storyhook_test_support::{FIXTURE_NOW, ServiceFixture};
@@ -811,7 +811,7 @@ fn referenced_by_comment_mentions_only_arrive_on_show_not_list() {
 }
 
 #[test]
-fn an_epic_in_todo_with_an_active_child_shows_a_promoted_display_state() {
+fn an_epic_with_an_active_child_has_computed_active_state() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let epic = new_story(&ctx, "epic");
@@ -824,15 +824,136 @@ fn an_epic_in_todo_with_an_active_child_shows_a_promoted_display_state() {
         .expect("moving the child");
 
     let shown = query(&fixture, |service| service.show(&epic));
-    assert_eq!(
-        shown.story.state, "todo",
-        "the epic's own state is untouched"
-    );
-    assert_eq!(shown.display_state.as_deref(), Some("in-progress"));
+    assert_eq!(shown.story.state, "in-progress");
+    assert!(shown.story.state_computed);
+    assert_eq!(shown.display_state, None);
 }
 
 #[test]
-fn a_blocked_epic_keeps_its_display_state_even_with_an_active_child() {
+fn nested_epics_compute_recursively_and_never_enter_verifying() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    ConfigService::new(&ctx)
+        .add_state("verifying", SuperState::Open, None, None)
+        .expect("adding a verifying state");
+    let outer = new_story(&ctx, "outer epic");
+    let inner = new_story(&ctx, "inner epic");
+    let child = new_story(&ctx, "child");
+    let relations = RelationService::new(&ctx);
+    relations
+        .relate(&outer, "parent-of", &inner, false)
+        .expect("nesting");
+    relations
+        .relate(&inner, "parent-of", &child, false)
+        .expect("adding a leaf");
+
+    StoryService::new(&ctx)
+        .set_state(&child, "verifying", None, None, None)
+        .expect("verifying the leaf");
+    for id in [&inner, &outer] {
+        let shown = query(&fixture, |service| service.show(id));
+        assert_eq!(shown.story.state, "in-progress");
+        assert!(shown.story.state_computed);
+    }
+
+    StoryService::new(&ctx)
+        .set_state(&child, "blocked", None, None, None)
+        .expect("blocking the leaf");
+    assert_eq!(
+        query(&fixture, |service| service.show(&outer)).story.state,
+        "blocked"
+    );
+
+    StoryService::new(&ctx)
+        .set_state(&child, "done", None, None, None)
+        .expect("closing the leaf");
+    assert_eq!(
+        query(&fixture, |service| service.show(&outer)).story.state,
+        "done"
+    );
+}
+
+#[test]
+fn a_draft_child_keeps_an_otherwise_blocked_epic_at_todo() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let epic = new_story(&ctx, "epic");
+    let blocked = new_story(&ctx, "blocked child");
+    let draft = StoryService::new(&ctx)
+        .create(&NewStoryInput {
+            title: "draft child".to_string(),
+            draft: true,
+            ..NewStoryInput::default()
+        })
+        .expect("creating a draft")
+        .id;
+    let relations = RelationService::new(&ctx);
+    relations
+        .relate(&epic, "parent-of", &blocked, false)
+        .expect("adding blocked child");
+    relations
+        .relate(&epic, "parent-of", &draft, false)
+        .expect("adding draft child");
+    StoryService::new(&ctx)
+        .set_awaiting(&blocked, "external answer")
+        .expect("blocking by awaiting");
+
+    assert_eq!(
+        query(&fixture, |service| service.show(&epic)).story.state,
+        "todo"
+    );
+    relations
+        .relate(&epic, "parent-of", &draft, true)
+        .expect("removing draft child");
+    assert_eq!(
+        query(&fixture, |service| service.show(&epic)).story.state,
+        "blocked"
+    );
+}
+
+#[test]
+fn closed_children_use_a_unanimous_non_done_state_or_fall_back_to_done() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    ConfigService::new(&ctx)
+        .add_state("canceled", SuperState::Closed, None, None)
+        .expect("adding a second closed state");
+    let unanimous = new_story(&ctx, "unanimous epic");
+    let mixed = new_story(&ctx, "mixed epic");
+    let canceled_a = new_story(&ctx, "canceled a");
+    let canceled_b = new_story(&ctx, "canceled b");
+    let done = new_story(&ctx, "done child");
+    let relations = RelationService::new(&ctx);
+    relations
+        .relate(&unanimous, "parent-of", &canceled_a, false)
+        .unwrap();
+    relations
+        .relate(&mixed, "parent-of", &canceled_b, false)
+        .unwrap();
+    relations.relate(&mixed, "parent-of", &done, false).unwrap();
+    let stories = StoryService::new(&ctx);
+    stories
+        .set_state(&canceled_a, "canceled", None, None, None)
+        .unwrap();
+    stories
+        .set_state(&canceled_b, "canceled", None, None, None)
+        .unwrap();
+    stories.set_state(&done, "done", None, None, None).unwrap();
+
+    assert_eq!(
+        query(&fixture, |service| service.show(&unanimous))
+            .story
+            .state,
+        "canceled"
+    );
+    assert_eq!(
+        query(&fixture, |service| service.show(&mixed)).story.state,
+        "done"
+    );
+}
+
+#[test]
+fn an_epic_refuses_a_direct_state_change() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let epic = new_story(&ctx, "epic");
@@ -840,18 +961,10 @@ fn a_blocked_epic_keeps_its_display_state_even_with_an_active_child() {
     RelationService::new(&ctx)
         .relate(&epic, "parent-of", &child, false)
         .expect("relating");
-    StoryService::new(&ctx)
+    let error = StoryService::new(&ctx)
         .set_state(&epic, "blocked", None, None, None)
-        .expect("blocking the epic");
-    StoryService::new(&ctx)
-        .set_state(&child, "in-progress", None, None, None)
-        .expect("moving the child");
-
-    let shown = query(&fixture, |service| service.show(&epic));
-    assert_eq!(
-        shown.display_state, None,
-        "blocked is a deliberate signal (SH-126); an active child must not override it"
-    );
+        .expect_err("epic state is computed");
+    assert!(error.to_string().contains("computed"), "{error}");
 }
 
 /// SH-407: a story sitting in `todo` with an open `blocked-by` edge onto a
@@ -876,12 +989,10 @@ fn a_todo_story_blocked_by_an_open_story_shows_a_promoted_display_state() {
     assert_eq!(shown.display_state.as_deref(), Some("blocked"));
 }
 
-/// SH-407 council verdict, recorded on that story (`story show SH-407`):
-/// an epic eligible for BOTH promotions at once — an active child, and an
-/// open blocker on the epic's own record — shows "blocked", not
-/// "in-progress".
+/// An epic's own legacy blocker metadata is not actionable work and therefore
+/// does not override the state recursively computed from its children.
 #[test]
-fn blocked_wins_over_an_active_child_promotion_end_to_end() {
+fn an_epics_own_blocker_does_not_override_child_state() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let epic = new_story(&ctx, "epic");
@@ -898,7 +1009,8 @@ fn blocked_wins_over_an_active_child_promotion_end_to_end() {
         .expect("moving the child");
 
     let shown = query(&fixture, |service| service.show(&epic));
-    assert_eq!(shown.display_state.as_deref(), Some("blocked"));
+    assert_eq!(shown.story.state, "in-progress");
+    assert_eq!(shown.display_state, None);
 }
 
 #[test]
@@ -1004,8 +1116,7 @@ fn report_datas_next_ids_agrees_with_next_by_two_different_routes() {
 
 /// SH-407: `next_ids` excludes a parent the same way `story next` does —
 /// `execution_queue`'s `!has_children` filter applies to both callers, so an
-/// epic never appears in the dashboard's "Next" sort even though it is
-/// itself `is_claimable` and therefore does appear in `ready_ids`.
+/// epic never appears in either actionable roster.
 #[test]
 fn report_datas_next_ids_excludes_parents_the_way_next_does() {
     let fixture = ServiceFixture::new();
@@ -1017,7 +1128,7 @@ fn report_datas_next_ids_excludes_parents_the_way_next_does() {
         .expect("relating");
 
     let report = query(&fixture, |service| service.report_data());
-    assert!(report.ready_ids.contains(&epic));
+    assert!(!report.ready_ids.contains(&epic));
     assert!(!report.next_ids.contains(&epic));
     assert!(report.next_ids.contains(&child));
 }

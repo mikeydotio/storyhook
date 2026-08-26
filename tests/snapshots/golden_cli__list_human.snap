@@ -3,7 +3,7 @@ source: tests/golden_cli.rs
 ---
 $ story list
 2 closed stories match but are not shown — add --include-closed or --all; 1 deleted story is not listed (story search finds it)
-SH-1 [todo] (critical) [epic] Design the storage engine (0/3)
+SH-1 [in-progress] (critical) [epic] Design the storage engine (0/3)
 SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
 SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1]
 SH-4 [review] (medium) [normal] Write the migration runner [backend]
@@ -16,7 +16,6 @@ SH-11 [todo] (low) [normal] Audit error codes
 SH-12 [todo] (high) [normal] Harden concurrent writes
 
 $ story list --state todo
-SH-1 [todo] (critical) [epic] Design the storage engine (0/3)
 SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
 SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
 SH-6 [todo] (low) [spike] Benchmark the rebuild path
@@ -45,7 +44,7 @@ $ story list --type none
 no stories found
 
 $ story list --priority critical,high
-SH-1 [todo] (critical) [epic] Design the storage engine (0/3)
+SH-1 [in-progress] (critical) [epic] Design the storage engine (0/3)
 SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
 SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1]
 SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
@@ -78,7 +77,6 @@ SH-6 [todo] (low) [spike] Benchmark the rebuild path
 SH-9 [todo] (medium) [normal] Add the daemon transport [phase:2]
 
 $ story list --ready
-SH-1 [todo] (critical) [epic] Design the storage engine (0/3)
 SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
 SH-4 [review] (medium) [normal] Write the migration runner [backend]
 SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
@@ -99,7 +97,7 @@ no stories found
 
 $ story list --created-after 2000-01-01
 2 closed stories match but are not shown — add --include-closed or --all; 1 deleted story is not listed (story search finds it)
-SH-1 [todo] (critical) [epic] Design the storage engine (0/3)
+SH-1 [in-progress] (critical) [epic] Design the storage engine (0/3)
 SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
 SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1]
 SH-4 [review] (medium) [normal] Write the migration runner [backend]
@@ -116,7 +114,7 @@ no stories found
 
 $ story list --updated-after 2000-01-01
 2 closed stories match but are not shown — add --include-closed or --all; 1 deleted story is not listed (story search finds it)
-SH-1 [todo] (critical) [epic] Design the storage engine (0/3)
+SH-1 [in-progress] (critical) [epic] Design the storage engine (0/3)
 SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
 SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1]
 SH-4 [review] (medium) [normal] Write the migration runner [backend]
@@ -129,7 +127,6 @@ SH-11 [todo] (low) [normal] Audit error codes
 SH-12 [todo] (high) [normal] Harden concurrent writes
 
 $ story list --state todo --priority critical
-SH-1 [todo] (critical) [epic] Design the storage engine (0/3)
 SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
 
 $ story list --type normal --label backend
@@ -139,7 +136,7 @@ SH-4 [review] (medium) [normal] Write the migration runner [backend]
 
 $ story list --include-closed
 1 deleted story is not listed (story search finds it)
-SH-1 [todo] (critical) [epic] Design the storage engine (0/3)
+SH-1 [in-progress] (critical) [epic] Design the storage engine (0/3)
 SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
 SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1]
 SH-4 [review] (medium) [normal] Write the migration runner [backend]
@@ -155,7 +152,7 @@ SH-14 [done] (medium) [spike] Prototype the archive format
 
 $ story list --include-archived
 1 deleted story is not listed (story search finds it)
-SH-1 [todo] (critical) [epic] Design the storage engine (0/3)
+SH-1 [in-progress] (critical) [epic] Design the storage engine (0/3)
 SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
 SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1]
 SH-4 [review] (medium) [normal] Write the migration runner [backend]
@@ -171,7 +168,7 @@ SH-14 [done] (medium) [spike] Prototype the archive format
 
 $ story list --all
 1 deleted story is not listed (story search finds it)
-SH-1 [todo] (critical) [epic] Design the storage engine (0/3)
+SH-1 [in-progress] (critical) [epic] Design the storage engine (0/3)
 SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
 SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1]
 SH-4 [review] (medium) [normal] Write the migration runner [backend]

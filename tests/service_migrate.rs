@@ -57,8 +57,8 @@ fn the_real_tree_migrates_with_every_count_the_baseline_recorded() {
     );
     assert_eq!(
         report.events,
-        486 + report.repairs.len() + report.metadata_repairs.len(),
-        "every original event, plus exactly one per relation or metadata repair — a migration adds, it does not drop"
+        486 + report.repairs.len() + report.metadata_repairs.len() + report.computed_epics.len(),
+        "every original event, plus exactly one per relation, metadata, or computed-epic repair — a migration adds, it does not drop"
     );
 
     let snapshots = store_snapshots(&store);
@@ -162,33 +162,15 @@ fn the_real_trees_fifteen_sh_60_violations_are_all_accounted_for() {
         .iter()
         .filter(|r| r.kind == RepairKind::CompletedInverse)
         .collect();
-    let retracted: Vec<_> = report
-        .repairs
-        .iter()
-        .filter(|r| r.kind != RepairKind::CompletedInverse)
-        .collect();
-
-    // Ten one-sided claims and five stories with two parents — the fifteen
-    // `story doctor` violations this repository has carried for months. Five of
-    // the ten one-sided claims are completed; the other five are the unilateral
-    // parent claims, and retracting them is what settles all five conflicts.
-    assert_eq!(completed.len(), 5, "{:#?}", report.repairs);
-    assert_eq!(retracted.len(), 5, "{:#?}", report.repairs);
+    // Ten one-sided claims are completed. The resulting five multi-parent
+    // stories are valid under SH-446, so none of their parentage is retracted.
+    assert_eq!(completed.len(), 10, "{:#?}", report.repairs);
+    assert_eq!(report.repairs.len(), 10, "{:#?}", report.repairs);
 
     for repair in &report.repairs {
         assert!(
             repair.at.as_str() < "2026-05",
             "a repair carries the instant of the claim it settles, never the migration's: {repair}"
-        );
-    }
-    for repair in retracted {
-        let RepairKind::RetractedUnilateralParent { child, winner } = &repair.kind else {
-            unreachable!()
-        };
-        assert_ne!(winner, &repair.story, "the winner is the surviving parent");
-        assert!(
-            child == &repair.other || child == &repair.story,
-            "a retraction names the child it was about: {repair:?}"
         );
     }
 }
@@ -259,23 +241,36 @@ fn a_one_sided_relation_is_completed_at_the_instant_it_was_claimed() {
 
 #[test]
 fn a_repair_older_than_a_storys_last_event_does_not_move_its_updated_at() {
-    // The other half of "timestamp order, not append". ADA-1's own history runs
-    // to 00:09; give ADA-2 a one-sided claim stamped *earlier* than that, so
-    // the repair on ADA-1 has to land in the middle of its log.
+    // The other half of "timestamp order, not append". Give a fully-specified
+    // leaf a final event at 00:09, then repair onto it a one-sided claim stamped
+    // *earlier*. Using a leaf keeps SH-446's current-time epic marker out of the
+    // timestamp invariant this test predates.
     let (_tree, root) = custom_config_tree();
+    std::fs::write(
+        root.join(".storyhook/open/stories/ADA-5.jsonl"),
+        [
+            r#"{"kind":"StoryCreated","at":"2026-01-04T00:00:00Z","title":"Timestamp leaf","state":"todo"}"#,
+            r#"{"kind":"StoryPrioritySet","at":"2026-01-04T00:01:00Z","priority":"low"}"#,
+            r#"{"kind":"StoryTypeSet","at":"2026-01-04T00:02:00Z","story_type":"story"}"#,
+            r#"{"kind":"StoryCommentAdded","at":"2026-01-04T00:09:00Z","text":"last activity"}"#,
+        ]
+        .join("\n")
+            + "\n",
+    )
+    .unwrap();
     append_raw(
         &root,
         "ADA-2",
-        r#"{"kind":"StoryRelationshipAdded","at":"2026-01-03T00:02:30Z","other_id":"ADA-1","relation":"blocks"}"#,
+        r#"{"kind":"StoryRelationshipAdded","at":"2026-01-04T00:02:30Z","other_id":"ADA-5","relation":"blocks"}"#,
     );
 
     let (_dir, store, report) = migrate(&root);
     assert_eq!(report.repairs.len(), 1, "{:#?}", report.repairs);
-    assert_eq!(report.repairs[0].story, "ADA-1");
+    assert_eq!(report.repairs[0].story, "ADA-5");
 
     let snapshots = store_snapshots(&store);
     assert_eq!(
-        snapshots["ADA-1"].updated_at, "2026-01-03T00:09:00Z",
+        snapshots["ADA-5"].updated_at, "2026-01-04T00:09:00Z",
         "appending the repair instead would have rewound this story's last-activity time by \
          six minutes, and every `story list --stale` answer with it"
     );
@@ -285,7 +280,7 @@ fn a_repair_older_than_a_storys_last_event_does_not_move_its_updated_at() {
             let project = tx.projects()?.first().unwrap().id;
             tx.events_for(
                 project,
-                storyhook::store::StoryNo::parse_id("ADA", "ADA-1").unwrap(),
+                storyhook::store::StoryNo::parse_id("ADA", "ADA-5").unwrap(),
             )
         })
         .expect("reading");
@@ -300,7 +295,7 @@ fn a_repair_older_than_a_storys_last_event_does_not_move_its_updated_at() {
 }
 
 #[test]
-fn a_unilateral_parent_claim_loses_to_one_both_ends_record() {
+fn a_unilateral_parent_claim_is_completed_alongside_one_both_ends_record() {
     let (_tree, root) = custom_config_tree();
     // ADA-1 ↔ ADA-2 is mutual. ADA-3 unilaterally claims ADA-2 as well.
     append_raw(
@@ -319,14 +314,13 @@ fn a_unilateral_parent_claim_loses_to_one_both_ends_record() {
     .unwrap();
 
     let (_dir, store, report) = migrate(&root);
-    let retraction = report
+    let completion = report
         .repairs
         .iter()
-        .find(|r| r.kind != RepairKind::CompletedInverse)
-        .unwrap_or_else(|| panic!("expected a retraction, got {:#?}", report.repairs));
-    assert_eq!(retraction.story, "ADA-5", "the unilateral claimant loses");
-    assert_eq!(retraction.relation, "parent-of");
-    assert_eq!(retraction.other, "ADA-2");
+        .find(|repair| repair.story == "ADA-2" && repair.other == "ADA-5")
+        .unwrap_or_else(|| panic!("expected an inverse completion, got {:#?}", report.repairs));
+    assert_eq!(completion.kind, RepairKind::CompletedInverse);
+    assert_eq!(completion.relation, "child-of");
 
     let snapshots = store_snapshots(&store);
     assert!(
@@ -334,16 +328,22 @@ fn a_unilateral_parent_claim_loses_to_one_both_ends_record() {
             .relationships
             .iter()
             .any(|edge| edge.relation == "child-of" && edge.other_id == "ADA-1"),
-        "the parentage both ends recorded survives"
+        "the existing parentage survives"
     );
     assert!(
-        !snapshots["ADA-5"]
+        snapshots["ADA-5"]
             .relationships
             .iter()
-            .any(|edge| edge.other_id == "ADA-2"),
-        "the unilateral claim is gone from the read model"
+            .any(|edge| edge.relation == "parent-of" && edge.other_id == "ADA-2"),
+        "the second valid parentage survives"
     );
-    // The original assertion is still in the log; only the fold changed.
+    assert!(
+        snapshots["ADA-2"]
+            .relationships
+            .iter()
+            .any(|edge| edge.relation == "child-of" && edge.other_id == "ADA-5"),
+        "the missing inverse is completed"
+    );
     let events = store
         .read(|tx| {
             let project = tx.projects()?.first().unwrap().id;
@@ -355,17 +355,51 @@ fn a_unilateral_parent_claim_loses_to_one_both_ends_record() {
         events
             .iter()
             .any(|e| e.kind == "StoryRelationshipAdded" && e.at == "2026-02-01T00:01:00Z"),
-        "the claim itself must be imported verbatim — a retraction annuls it, it does not \
-         rewrite history"
+        "the original assertion must be imported verbatim"
     );
     assert!(
-        events.iter().any(|e| e.kind == "StoryRelationshipRemoved"),
-        "and the retraction sits beside it, auditable"
+        events
+            .iter()
+            .all(|event| event.kind != "StoryRelationshipRemoved"),
+        "valid parentage must never be retracted"
     );
 }
 
 #[test]
-fn two_parents_that_both_agree_are_refused_because_no_rule_can_rank_them() {
+fn a_repaired_parent_edge_also_clears_the_new_epics_state_authority() {
+    let (_tree, root) = custom_config_tree();
+    std::fs::write(
+        root.join(".storyhook/open/stories/ADA-5.jsonl"),
+        format!(
+            "{}\n",
+            r#"{"kind":"StoryCreated","at":"2026-02-01T00:00:00Z","title":"Parent named only by child","state":"todo"}"#
+        ),
+    )
+    .unwrap();
+    append_raw(
+        &root,
+        "ADA-2",
+        r#"{"kind":"StoryRelationshipAdded","at":"2026-02-01T00:01:00Z","other_id":"ADA-5","relation":"child-of"}"#,
+    );
+
+    let (_dir, store, report) = migrate(&root);
+    assert!(report.computed_epics.iter().any(|id| id == "ADA-5"));
+    let project = store.read(|tx| tx.projects()).unwrap()[0].id;
+    let story_no = storyhook::store::StoryNo::parse_id("ADA", "ADA-5").unwrap();
+    let (row, events) = store
+        .read(|tx| {
+            Ok((
+                tx.story(project, story_no)?.expect("repaired epic exists"),
+                tx.events_for(project, story_no)?,
+            ))
+        })
+        .unwrap();
+    assert!(row.snapshot.state_computed);
+    assert!(events.iter().any(|event| event.kind == "StoryStateCleared"));
+}
+
+#[test]
+fn two_parents_that_both_agree_are_preserved() {
     let (_tree, root) = custom_config_tree();
     std::fs::write(
         root.join(".storyhook/open/stories/ADA-5.jsonl"),
@@ -382,17 +416,28 @@ fn two_parents_that_both_agree_are_refused_because_no_rule_can_rank_them() {
         r#"{"kind":"StoryRelationshipAdded","at":"2026-02-01T00:01:00Z","other_id":"ADA-5","relation":"child-of"}"#,
     );
 
-    let message = refusal(&root);
-    assert!(message.contains("ADA-2"), "{message}");
+    let (_dir, store, report) = migrate(&root);
     assert!(
-        message.contains("both histories agree"),
-        "the refusal must say why the rule cannot decide: {message}"
+        report
+            .repairs
+            .iter()
+            .all(|repair| repair.kind == RepairKind::CompletedInverse),
+        "migration may only complete missing halves: {:#?}",
+        report.repairs
     );
-    assert!(message.contains("storyhook will not choose"), "{message}");
+    let snapshots = store_snapshots(&store);
+    let mut parents: Vec<_> = snapshots["ADA-2"]
+        .relationships
+        .iter()
+        .filter(|edge| edge.relation == "child-of")
+        .map(|edge| edge.other_id.as_str())
+        .collect();
+    parents.sort_unstable();
+    assert_eq!(parents, ["ADA-1", "ADA-5"]);
 }
 
 #[test]
-fn parents_that_all_disagree_are_refused_too() {
+fn unilateral_parent_claims_are_all_completed() {
     let (_tree, root) = custom_config_tree();
     // ADA-2's only mutual parent is ADA-1; take that away and leave two
     // unilateral claims, so there is nothing to prefer.
@@ -414,8 +459,25 @@ fn parents_that_all_disagree_are_refused_too() {
     )
     .unwrap();
 
-    let message = refusal(&root);
-    assert!(message.contains("no stronger claim to keep"), "{message}");
+    let (_dir, store, report) = migrate(&root);
+    assert_eq!(report.repairs.len(), 2, "{:#?}", report.repairs);
+    assert!(
+        report
+            .repairs
+            .iter()
+            .all(|repair| repair.kind == RepairKind::CompletedInverse),
+        "both one-sided claims are completed: {:#?}",
+        report.repairs
+    );
+    let snapshots = store_snapshots(&store);
+    let mut parents: Vec<_> = snapshots["ADA-2"]
+        .relationships
+        .iter()
+        .filter(|edge| edge.relation == "child-of")
+        .map(|edge| edge.other_id.as_str())
+        .collect();
+    parents.sort_unstable();
+    assert_eq!(parents, ["ADA-1", "ADA-5"]);
 }
 
 #[test]
@@ -946,7 +1008,15 @@ fn the_custom_config_tree_brings_its_whole_configuration_surface() {
     );
     assert_eq!(snapshots["ADA-1"].labels, ["analytical", "phase:1"]);
     assert_eq!(snapshots["ADA-1"].comments.len(), 1);
-    assert_eq!(snapshots["ADA-1"].state, "review");
+    assert_eq!(
+        snapshots["ADA-1"].state, "todo",
+        "a structural epic reports its child-derived state, not its dormant legacy state"
+    );
+    assert!(snapshots["ADA-1"].state_computed);
+    assert!(
+        report.computed_epics.iter().any(|id| id == "ADA-1"),
+        "the report names the compatibility event that cleared state authority"
+    );
 }
 
 #[test]

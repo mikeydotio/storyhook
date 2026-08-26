@@ -526,7 +526,7 @@ Direct relationship inputs `story relate`/`story unrelate` accept — this is th
 
 - `blocks` / `blocked-by` — the only dependency edge; a chain of these is what `story graph`
   walks for critical-path and blocked-by analysis
-- `parent-of` / `child-of` — hierarchy; see the scheduling and single-parent notes below
+- `parent-of` / `child-of` — hierarchy; see the epic scheduling notes below
 - `duplicate-of` — no direction, same edge either way
 - `relates-to` / `related-to` — a plain, undirected link with no scheduling meaning
 - `obviates` / `obviated-by`
@@ -541,7 +541,11 @@ Notes:
 
 - Directional relationships automatically create their inverse on the related story.
 - Mutual relationships create matching links on both stories.
-- `parent-of` implies scheduling edges and enforces a single-parent rule for the child.
+- A story with children is a structural epic. Its state is computed recursively from its
+  children, it carries no actionable steps of its own, and it does not appear in `story next`.
+- An epic's priority remains stored independently. Among equal-priority ready stories,
+  `story next` uses the most urgent direct parent epic as its first tie-breaker; a story may
+  belong to several epics.
 - New parent/child links that would create a cycle are rejected.
 
 ## Storage model

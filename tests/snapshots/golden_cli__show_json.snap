@@ -7,8 +7,7 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
-        "display_state": "in-progress",
-        "head_global_seq": 52,
+        "head_global_seq": 53,
         "progress": {
           "children_done": 0,
           "children_total": 3
@@ -34,7 +33,8 @@ source: tests/golden_cli.rs
               "relation": "parent-of"
             }
           ],
-          "state": "todo",
+          "state": "in-progress",
+          "state_computed": true,
           "story_type": "epic",
           "superstate": "OPEN",
           "title": "Design the storage engine",
@@ -48,7 +48,7 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
-        "head_global_seq": 61,
+        "head_global_seq": 62,
         "story": {
           "assignee": "grace-hopper",
           "awaiting": null,
@@ -90,7 +90,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "story": {
         "display_state": "blocked",
-        "head_global_seq": 65,
+        "head_global_seq": 66,
         "story": {
           "awaiting": "waiting on the benchmark harness",
           "comments": [],
@@ -136,7 +136,7 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
-        "head_global_seq": 66,
+        "head_global_seq": 67,
         "story": {
           "awaiting": null,
           "comments": [],
@@ -172,7 +172,7 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
-        "head_global_seq": 69,
+        "head_global_seq": 70,
         "story": {
           "awaiting": null,
           "closed_at": "[timestamp]",
@@ -196,7 +196,7 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
-        "head_global_seq": 73,
+        "head_global_seq": 74,
         "story": {
           "awaiting": null,
           "closed_at": "[timestamp]",

@@ -1284,6 +1284,58 @@ fn a_pre_types_restore_installs_the_stock_catalog_before_normalizing() {
 }
 
 #[test]
+fn an_older_export_gains_computed_state_authority_for_its_epic() {
+    use storyhook::domain::StoryEvent;
+    use storyhook::service::transfer::ExportedEvent;
+
+    let fixture = ServiceFixture::new();
+    let parent = create(&fixture, "Legacy epic");
+    let child = create(&fixture, "Legacy child");
+    storyhook::service::RelationService::new(&fixture.ctx())
+        .relate(&parent, "parent-of", &child, false)
+        .expect("creating the current structural epic");
+    let mut legacy_export = export(&fixture);
+    for story in &mut legacy_export.stories {
+        story.events.retain(|event| {
+            !matches!(
+                event,
+                ExportedEvent::Known(StoryEvent::StoryStateCleared { .. })
+            )
+        });
+    }
+
+    let (store, dir) = empty_store();
+    transfer::import_project(
+        &store,
+        dir.path(),
+        &Clock::Fixed("2026-08-24T12:00:00Z".to_string()),
+        &legacy_export,
+        false,
+    )
+    .expect("restoring an export written before SH-446");
+
+    let project = restored_project(&store, dir.path());
+    let parent_no = StoryNo::parse_id("SH", &parent).unwrap();
+    let (row, events) = store
+        .read(|tx| {
+            Ok((
+                tx.story(project.id, parent_no)?.expect("parent exists"),
+                tx.events_for(project.id, parent_no)?,
+            ))
+        })
+        .expect("reading the restored epic");
+    assert!(row.snapshot.state_computed);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.kind == "StoryStateCleared")
+            .count(),
+        1,
+        "restore appends exactly one authority-clearing event"
+    );
+}
+
+#[test]
 fn a_project_round_trips_through_export_and_import_byte_for_byte() {
     let fixture = ServiceFixture::new();
     fixture.add_member("ada", "Ada Lovelace", Some("ada"));

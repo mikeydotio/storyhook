@@ -9,9 +9,9 @@ Stories: 14 (11 open, 3 closed)
 ## State Distribution
 
 - done: 3
-- in-progress: 1
+- in-progress: 2
 - review: 1
-- todo: 9
+- todo: 8
 
 ## Type Distribution
 
@@ -21,13 +21,13 @@ Stories: 14 (11 open, 3 closed)
 - normal: 7
 - spike: 2
 
-## Ready to Work (8 total)
+## Ready to Work (7 total)
 
-- SH-1 Design the storage engine (critical)
 - SH-5 Fix the id collision across worktrees (critical)
 - SH-2 Define the Store trait (high)
 - SH-12 Harden concurrent writes (high)
 - SH-4 Write the migration runner (medium)
+- SH-10 Ship the CLI shim (medium)
 
 ## Blocked (3)
 
@@ -46,9 +46,9 @@ $ story context --format json
   "blocked_count": 3,
   "by_state": {
     "done": 3,
-    "in-progress": 1,
+    "in-progress": 2,
     "review": 1,
-    "todo": 9
+    "todo": 8
   },
   "by_type": {
     "bug": 1,
@@ -59,14 +59,8 @@ $ story context --format json
   },
   "closed": 3,
   "open": 11,
-  "ready_count": 8,
+  "ready_count": 7,
   "ready_stories": [
-    {
-      "id": "SH-1",
-      "priority": "critical",
-      "state": "todo",
-      "title": "Design the storage engine"
-    },
     {
       "id": "SH-5",
       "priority": "critical",
@@ -90,6 +84,12 @@ $ story context --format json
       "priority": "medium",
       "state": "review",
       "title": "Write the migration runner"
+    },
+    {
+      "id": "SH-10",
+      "priority": "medium",
+      "state": "todo",
+      "title": "Ship the CLI shim"
     }
   ],
   "total_stories": 14
@@ -103,9 +103,9 @@ Stories: 14 (11 open, 3 closed)
 ## State Distribution
 
 - done: 3
-- in-progress: 1
+- in-progress: 2
 - review: 1
-- todo: 9
+- todo: 8
 
 ## Type Distribution
 
@@ -115,13 +115,13 @@ Stories: 14 (11 open, 3 closed)
 - normal: 7
 - spike: 2
 
-## Ready to Work (8 total)
+## Ready to Work (7 total)
 
-- SH-1 Design the storage engine (critical)
 - SH-5 Fix the id collision across worktrees (critical)
 - SH-2 Define the Store trait (high)
 - SH-12 Harden concurrent writes (high)
 - SH-4 Write the migration runner (medium)
+- SH-10 Ship the CLI shim (medium)
 
 ## Blocked (3)
 
@@ -140,7 +140,7 @@ $ story handoff
 
 ## Created (11)
 
-- SH-1 Design the storage engine [todo]
+- SH-1 Design the storage engine [in-progress]
 - SH-2 Define the Store trait [todo]
 - SH-3 Implement the SQLite engine [in-progress]
 - SH-4 Write the migration runner [review]
@@ -165,7 +165,7 @@ $ story handoff --since 7d
 
 ## Created (11)
 
-- SH-1 Design the storage engine [todo]
+- SH-1 Design the storage engine [in-progress]
 - SH-2 Define the Store trait [todo]
 - SH-3 Implement the SQLite engine [in-progress]
 - SH-4 Write the migration runner [review]
@@ -190,7 +190,7 @@ $ story handoff --since 2h
 
 ## Created (11)
 
-- SH-1 Design the storage engine [todo]
+- SH-1 Design the storage engine [in-progress]
 - SH-2 Define the Store trait [todo]
 - SH-3 Implement the SQLite engine [in-progress]
 - SH-4 Write the migration runner [review]

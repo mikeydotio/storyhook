@@ -24,7 +24,8 @@ use storyhook::domain::{
 };
 use storyhook::error::AppError;
 use storyhook::service::{
-    ConfigService, Ctx, NewStoryInput, StateListing, StoryService, config::state_usage,
+    ConfigService, Ctx, NewStoryInput, RelationService, StateListing, StoryService,
+    config::state_usage,
 };
 use storyhook::store::{ReadOps, SqliteStore, Store, StoryNo, WriteOps};
 use storyhook_test_support::{FIXTURE_NOW, ServiceFixture, default_states};
@@ -608,6 +609,37 @@ fn an_empty_state_is_removed_without_ceremony() {
         .expect("removing an empty state");
     assert_eq!(moved, 0);
     assert_eq!(slugs(&fixture), ["todo", "in-progress", "blocked", "done"]);
+}
+
+#[test]
+fn removing_a_state_migrates_an_epics_dormant_fallback_without_restoring_authority() {
+    let fixture = with_a_spare_state();
+    let ctx = fixture.ctx();
+    let parent = StoryService::new(&ctx)
+        .create(&NewStoryInput {
+            title: "epic".to_string(),
+            state: Some(SPARE.to_string()),
+            ..NewStoryInput::default()
+        })
+        .expect("creating in the removable state")
+        .id;
+    let child = new_story(&ctx, "child");
+    RelationService::new(&ctx)
+        .relate(&parent, "parent-of", &child, false)
+        .expect("turning the parent into an epic");
+    assert!(snapshot(&fixture, &parent).state_computed);
+    assert_eq!(listing(&fixture, SPARE).usage.open, 0);
+    assert_eq!(listing(&fixture, "todo").usage.open, 2);
+
+    let moved = ConfigService::new(&ctx)
+        .remove_state(SPARE, Some("todo"))
+        .expect("removing the dormant fallback state");
+
+    assert_eq!(moved, 1);
+    let parent = snapshot(&fixture, &parent);
+    assert_eq!(parent.state, "todo");
+    assert!(parent.state_computed, "the replacement remains dormant");
+    assert!(!slugs(&fixture).contains(&SPARE.to_string()));
 }
 
 #[test]

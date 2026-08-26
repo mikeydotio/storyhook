@@ -29,7 +29,8 @@ source: tests/golden_cli.rs
                 "relation": "parent-of"
               }
             ],
-            "state": "todo",
+            "state": "in-progress",
+            "state_computed": true,
             "story_type": "epic",
             "superstate": "OPEN",
             "title": "Design the storage engine",
@@ -234,7 +235,8 @@ source: tests/golden_cli.rs
                 "relation": "parent-of"
               }
             ],
-            "state": "todo",
+            "state": "in-progress",
+            "state_computed": true,
             "story_type": "epic",
             "superstate": "OPEN",
             "title": "Design the storage engine",
@@ -300,7 +302,8 @@ source: tests/golden_cli.rs
                 "relation": "parent-of"
               }
             ],
-            "state": "todo",
+            "state": "in-progress",
+            "state_computed": true,
             "story_type": "epic",
             "superstate": "OPEN",
             "title": "Design the storage engine",

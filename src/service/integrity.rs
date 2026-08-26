@@ -14,7 +14,7 @@
 //! made possible.
 //!
 //! The legacy doctor asked only about *stories*: dangling relations, missing
-//! inverses, multiple parents, parent/child cycles, unknown types. Those are
+//! inverses, parent/child cycles, unknown types. Those are
 //! all properties of the snapshots — and a snapshot is a **cache** of a fold of
 //! a story's events. If the cache and the events disagree, every one of those
 //! answers is computed from the wrong input, and the legacy doctor could not
@@ -811,8 +811,8 @@ fn plan_repair(
         // unaddressable type slug (SH-134) and a story typed with one the
         // catalog does not define: the only repairs available are a rename the
         // write path bans and retyping stories the user never mentioned.
-        // Multiple parents and a parent/child cycle: which edge is the wrong
-        // one is not this command's to guess. An extra row: re-folding does
+        // A parent/child cycle: which edge is the wrong one is not this
+        // command's to guess. An extra row: re-folding does
         // not remove it. A fold failure and a torn event payload: the evidence
         // is the thing that is damaged, and overwriting it with a guess would
         // destroy what an operator needs to read. And an unstructured finding

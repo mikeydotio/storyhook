@@ -33,7 +33,7 @@ source: tests/golden_cli.rs
           ],
           [
             "in-progress",
-            1
+            2
           ],
           [
             "review",
@@ -41,7 +41,7 @@ source: tests/golden_cli.rs
           ],
           [
             "todo",
-            9
+            8
           ]
         ],
         "by_type": [
@@ -67,45 +67,10 @@ source: tests/golden_cli.rs
           ]
         ],
         "flagged_count": 0,
-        "ready_count": 8,
+        "ready_count": 7,
         "ready_stories": [
           {
-            "display_state": "in-progress",
-            "head_global_seq": 52,
-            "progress": {
-              "children_done": 0,
-              "children_total": 3
-            },
-            "story": {
-              "awaiting": null,
-              "comments": [],
-              "created_at": "[timestamp]",
-              "id": "SH-1",
-              "priority": "critical",
-              "priority_assessed": true,
-              "relationships": [
-                {
-                  "other_id": "SH-2",
-                  "relation": "parent-of"
-                },
-                {
-                  "other_id": "SH-3",
-                  "relation": "parent-of"
-                },
-                {
-                  "other_id": "SH-4",
-                  "relation": "parent-of"
-                }
-              ],
-              "state": "todo",
-              "story_type": "epic",
-              "superstate": "OPEN",
-              "title": "Design the storage engine",
-              "updated_at": "[timestamp]"
-            }
-          },
-          {
-            "head_global_seq": 61,
+            "head_global_seq": 62,
             "story": {
               "assignee": "grace-hopper",
               "awaiting": null,
@@ -140,7 +105,7 @@ source: tests/golden_cli.rs
             }
           },
           {
-            "head_global_seq": 62,
+            "head_global_seq": 63,
             "story": {
               "assignee": "ada-lovelace",
               "awaiting": null,
@@ -194,7 +159,7 @@ source: tests/golden_cli.rs
             }
           },
           {
-            "head_global_seq": 67,
+            "head_global_seq": 68,
             "story": {
               "awaiting": null,
               "comments": [],
@@ -215,6 +180,23 @@ source: tests/golden_cli.rs
               "story_type": "normal",
               "superstate": "OPEN",
               "title": "Write the migration runner",
+              "updated_at": "[timestamp]"
+            }
+          },
+          {
+            "head_global_seq": 34,
+            "story": {
+              "awaiting": null,
+              "comments": [],
+              "created_at": "[timestamp]",
+              "id": "SH-10",
+              "priority": "medium",
+              "priority_assessed": true,
+              "relationships": [],
+              "state": "todo",
+              "story_type": "normal",
+              "superstate": "OPEN",
+              "title": "Ship the CLI shim",
               "updated_at": "[timestamp]"
             }
           }
@@ -255,7 +237,7 @@ source: tests/golden_cli.rs
           ],
           [
             "in-progress",
-            1
+            2
           ],
           [
             "review",
@@ -263,7 +245,7 @@ source: tests/golden_cli.rs
           ],
           [
             "todo",
-            9
+            8
           ]
         ],
         "by_type": [
@@ -289,45 +271,10 @@ source: tests/golden_cli.rs
           ]
         ],
         "flagged_count": 0,
-        "ready_count": 8,
+        "ready_count": 7,
         "ready_stories": [
           {
-            "display_state": "in-progress",
-            "head_global_seq": 52,
-            "progress": {
-              "children_done": 0,
-              "children_total": 3
-            },
-            "story": {
-              "awaiting": null,
-              "comments": [],
-              "created_at": "[timestamp]",
-              "id": "SH-1",
-              "priority": "critical",
-              "priority_assessed": true,
-              "relationships": [
-                {
-                  "other_id": "SH-2",
-                  "relation": "parent-of"
-                },
-                {
-                  "other_id": "SH-3",
-                  "relation": "parent-of"
-                },
-                {
-                  "other_id": "SH-4",
-                  "relation": "parent-of"
-                }
-              ],
-              "state": "todo",
-              "story_type": "epic",
-              "superstate": "OPEN",
-              "title": "Design the storage engine",
-              "updated_at": "[timestamp]"
-            }
-          },
-          {
-            "head_global_seq": 61,
+            "head_global_seq": 62,
             "story": {
               "assignee": "grace-hopper",
               "awaiting": null,
@@ -362,7 +309,7 @@ source: tests/golden_cli.rs
             }
           },
           {
-            "head_global_seq": 62,
+            "head_global_seq": 63,
             "story": {
               "assignee": "ada-lovelace",
               "awaiting": null,
@@ -416,7 +363,7 @@ source: tests/golden_cli.rs
             }
           },
           {
-            "head_global_seq": 67,
+            "head_global_seq": 68,
             "story": {
               "awaiting": null,
               "comments": [],
@@ -437,6 +384,23 @@ source: tests/golden_cli.rs
               "story_type": "normal",
               "superstate": "OPEN",
               "title": "Write the migration runner",
+              "updated_at": "[timestamp]"
+            }
+          },
+          {
+            "head_global_seq": 34,
+            "story": {
+              "awaiting": null,
+              "comments": [],
+              "created_at": "[timestamp]",
+              "id": "SH-10",
+              "priority": "medium",
+              "priority_assessed": true,
+              "relationships": [],
+              "state": "todo",
+              "story_type": "normal",
+              "superstate": "OPEN",
+              "title": "Ship the CLI shim",
               "updated_at": "[timestamp]"
             }
           }

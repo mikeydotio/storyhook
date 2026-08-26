@@ -185,12 +185,12 @@ impl<'ctx, S: Store> GroupingService<'ctx, S> {
 
     // --- epics -------------------------------------------------------------
 
-    /// Every story typed `epic`, in story-number order.
+    /// Every structural epic (a story with at least one child), in story-number order.
     pub fn epics(&self) -> Result<Vec<StoryView>, AppError> {
         let project = self.ctx.project();
         Ok(self.ctx.store().read(|tx| {
             let mut views = story_views(tx, project, false)?;
-            views.retain(|view| view.story.story_type.as_deref() == Some("epic"));
+            views.retain(|view| crate::domain::has_children(&view.story));
             sort_story_views(&mut views);
             Ok(views)
         })?)
@@ -224,8 +224,9 @@ impl<'ctx, S: Store> GroupingService<'ctx, S> {
 
     /// Makes `story_id` a child of `epic_id`.
     ///
-    /// A `parent-of` edge and nothing else, so the single-parent rule and the
-    /// cycle check are the relation service's, written once.
+    /// A `parent-of` edge and nothing else, so computed-state activation and
+    /// the cycle check are the relation service's, written once. A child may
+    /// belong to several epics.
     pub fn add_to_epic(&self, epic_id: &str, story_id: &str) -> Result<(), AppError> {
         let quiet = self.quiet();
         RelationService::new(&quiet).relate(epic_id, "parent-of", story_id, false)?;

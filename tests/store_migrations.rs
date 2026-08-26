@@ -2828,3 +2828,106 @@ fn migration_nineteen_rolls_back_when_a_project_has_no_default_type() {
         "DDL inside the failed migration rolled back"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Migration 20: structural epics have computed state (SH-446)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn migration_twenty_clears_existing_epic_state_and_drops_the_single_parent_index() {
+    use storyhook::domain::provenance::Provenance;
+    use storyhook::domain::{Priority, TypeDef, fold_story};
+    use storyhook::service::project::default_states;
+    use storyhook::store::{EventSeq, ExpectedSeq, NewProject, ReadOps, WriteOps};
+
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..19]).unwrap();
+    let project = store
+        .write(|tx| {
+            let project = tx.create_project(&NewProject {
+                uuid: "computed-epic".into(),
+                slug: "computed-epic".into(),
+                name: "Computed epic".into(),
+                prefix: "SH".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+            })?;
+            tx.put_states(project, &default_states())?;
+            tx.put_types(
+                project,
+                &[TypeDef {
+                    slug: "normal".into(),
+                    description: None,
+                    emoji: None,
+                }],
+            )?;
+            let states = tx.state_map(project)?;
+            for (story_no, title, relation, other_id) in [
+                (StoryNo::new(1), "parent", "parent-of", "SH-2"),
+                (StoryNo::new(2), "child", "child-of", "SH-1"),
+            ] {
+                let events = vec![
+                    StoryEvent::StoryCreated {
+                        at: "2026-01-01T00:00:00Z".into(),
+                        title: title.into(),
+                        state: "todo".into(),
+                    },
+                    StoryEvent::StoryTypeSet {
+                        at: "2026-01-01T00:01:00Z".into(),
+                        story_type: "normal".into(),
+                    },
+                    StoryEvent::StoryPrioritySet {
+                        at: "2026-01-01T00:02:00Z".into(),
+                        priority: Priority::Low,
+                    },
+                    StoryEvent::StoryRelationshipAdded {
+                        at: "2026-01-01T00:03:00Z".into(),
+                        other_id: other_id.into(),
+                        relation: relation.into(),
+                    },
+                ];
+                let allocated = tx.allocate_story_no(project)?;
+                assert_eq!(allocated, story_no);
+                let head = tx.append_events(
+                    project,
+                    story_no,
+                    ExpectedSeq::Exact(EventSeq::new(0)),
+                    &events,
+                    &Provenance::unrecorded(),
+                )?;
+                let snapshot = fold_story(&story_no.to_id("SH"), &events, &states)?;
+                tx.put_story(project, &snapshot, head)?;
+            }
+            Ok(project)
+        })
+        .unwrap();
+
+    store.migrate().unwrap();
+
+    let parent = store
+        .read(|tx| tx.story(project, StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    assert!(parent.snapshot.state_computed);
+    let last = store
+        .read(|tx| tx.events_for(project, StoryNo::new(1)))
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(last.kind, "StoryStateCleared");
+    assert!(matches!(
+        last.known(),
+        Some(StoryEvent::StoryStateCleared { .. })
+    ));
+
+    let conn = Connection::open(store.path()).unwrap();
+    let index_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'index' AND name = 'idx_story_relations_single_parent'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(index_count, 0);
+}

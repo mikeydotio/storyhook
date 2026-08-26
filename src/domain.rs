@@ -357,6 +357,18 @@ pub struct StorySnapshot {
     pub updated_at: String,
     pub state: String,
     pub superstate: SuperState,
+    /// Whether [`state`](Self::state) is a derived epic state rather than an
+    /// authoritative field from this story's own event history.
+    ///
+    /// The first `parent-of` edge appends [`StoryStateCleared`](StoryEvent::StoryStateCleared),
+    /// and removing the last child appends a normal [`StoryStateChanged`](StoryEvent::StoryStateChanged)
+    /// carrying the state the epic computed immediately before it stopped being
+    /// one. The non-null `state` string remains in the materialized snapshot as
+    /// a backward-compatible dormant fallback while this flag is true; query
+    /// projection replaces it with the recursively computed value before any
+    /// supported read surface sees it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub state_computed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
     #[serde(default)]
@@ -508,6 +520,14 @@ pub enum StoryEvent {
     StoryStateChanged {
         at: String,
         state: String,
+    },
+    /// Removes this story's own state from authority when it gains its first
+    /// child. The materialized snapshot retains its last string only as a
+    /// compatibility fallback; [`StorySnapshot::state_computed`] marks it as
+    /// dormant until a later [`StoryStateChanged`](Self::StoryStateChanged)
+    /// restores ordinary leaf semantics.
+    StoryStateCleared {
+        at: String,
     },
     StoryRelationshipAdded {
         at: String,
@@ -847,7 +867,7 @@ fn git_link_subject(text: &str) -> Option<&str> {
 /// It cannot drift: `every_known_kind_is_a_variant_and_every_variant_is_known`
 /// reads serde's own `unknown variant, expected one of …` list back out of the
 /// derive and compares it to this array.
-pub const EVENT_KINDS: [&str; 29] = [
+pub const EVENT_KINDS: [&str; 30] = [
     "StoryCreated",
     "StoryCommentAdded",
     "StoryCommentRetracted",
@@ -856,6 +876,7 @@ pub const EVENT_KINDS: [&str; 29] = [
     "StoryAwaitingSet",
     "StoryAwaitingCleared",
     "StoryStateChanged",
+    "StoryStateCleared",
     "StoryRelationshipAdded",
     "StoryRelationshipRemoved",
     "StoryPrioritySet",
@@ -900,6 +921,7 @@ pub fn event_kind(event: &StoryEvent) -> &'static str {
         StoryEvent::StoryAwaitingSet { .. } => "StoryAwaitingSet",
         StoryEvent::StoryAwaitingCleared { .. } => "StoryAwaitingCleared",
         StoryEvent::StoryStateChanged { .. } => "StoryStateChanged",
+        StoryEvent::StoryStateCleared { .. } => "StoryStateCleared",
         StoryEvent::StoryRelationshipAdded { .. } => "StoryRelationshipAdded",
         StoryEvent::StoryRelationshipRemoved { .. } => "StoryRelationshipRemoved",
         StoryEvent::StoryPrioritySet { .. } => "StoryPrioritySet",
@@ -968,6 +990,7 @@ pub fn last_activity_type(events: &[StoryEvent]) -> &'static str {
             StoryEvent::StoryAwaitingSet { .. } => "awaiting-set",
             StoryEvent::StoryAwaitingCleared { .. } => "awaiting-cleared",
             StoryEvent::StoryStateChanged { .. } => "state-change",
+            StoryEvent::StoryStateCleared { .. } => "state-cleared",
             StoryEvent::StoryRelationshipAdded { .. } => "relationship-added",
             StoryEvent::StoryRelationshipRemoved { .. } => "relationship-removed",
             StoryEvent::StoryPrioritySet { .. } => "priority-set",
@@ -1439,6 +1462,7 @@ pub fn fold_story(
     let mut created_at = None;
     let mut updated_at = None;
     let mut state = None;
+    let mut state_computed = false;
     let mut assignee = None;
     let mut awaiting = None;
     let mut priority = Priority::None;
@@ -1542,6 +1566,7 @@ pub fn fold_story(
                 state: story_state,
             } => {
                 state = Some(story_state.clone());
+                state_computed = false;
                 updated_at = Some(at.clone());
                 // Moving into an OPEN state is what *reopening* is, so it
                 // retracts the closure markers. Without this the fold is not
@@ -1563,6 +1588,13 @@ pub fn fold_story(
                     deleted = false;
                     deleted_reason = None;
                 }
+            }
+            StoryEvent::StoryStateCleared { at } => {
+                // Keep the last literal in `state` as the non-null read-model
+                // fallback, but remove its authority. Query projection derives
+                // the effective state from children while this latch is set.
+                state_computed = true;
+                updated_at = Some(at.clone());
             }
             StoryEvent::StoryPrioritySet {
                 at,
@@ -1636,6 +1668,7 @@ pub fn fold_story(
                 state: story_state,
             } => {
                 state = Some(story_state.clone());
+                state_computed = false;
                 updated_at = Some(at.clone());
                 // Symmetric with `StoryStateChanged` above, and SH-130 is why.
                 //
@@ -1818,6 +1851,7 @@ pub fn fold_story(
         updated_at,
         state,
         superstate,
+        state_computed,
         assignee,
         awaiting,
         priority,
@@ -1903,8 +1937,8 @@ pub fn is_mutual_relation(relation: &str) -> bool {
 ///    fact. Silencing only the first would trade one false finding for another,
 ///    since the inverse check on that same edge runs next.
 /// 2. **An unattested story's claims are not evidence.** Its edges are left out
-///    of the hierarchy graph, so no `MultipleParents` or `ParentChildCycle` is
-///    asserted on the strength of an edge only it claims.
+///    of the hierarchy graph, so no `ParentChildCycle` is asserted on the
+///    strength of an edge only it claims.
 /// 3. **An unattested story is never a finding's subject.** Its own checks —
 ///    here, and the label and type checks in
 ///    `crate::service::IntegrityService`'s story pass — are skipped rather than
@@ -1937,15 +1971,6 @@ pub fn compute_integrity_issues(
         if unattested.contains(&story.id) {
             continue;
         }
-        let parent_count = graph.parents_of(&story.id).len();
-
-        if parent_count > 1 {
-            issues.entry(story.id.clone()).or_default().push(
-                Finding::new(FindingCode::MultipleParents, "story has multiple parents")
-                    .about(&story.id),
-            );
-        }
-
         for relation in &story.relationships {
             // Rule 1: unknown, not absent. Both checks below are about what the
             // far end does or does not hold, and this one holds no readable
@@ -2069,8 +2094,8 @@ pub fn compute_progress(
     })
 }
 
-/// The state a story moves into when a commit first mentions it, and the same
-/// answer an epic's display state (below) promotes to.
+/// The state a story moves into when a commit first mentions it, and the
+/// canonical aggregate used when an epic has active or verifying children.
 ///
 /// The explicit `active` role wins; failing that, a project with exactly two
 /// OPEN states is assumed to mean "todo, then the other one". The heuristic is
@@ -2107,38 +2132,169 @@ pub fn default_type(types: &[TypeDef]) -> Option<TypeDef> {
     types.first().cloned()
 }
 
-/// The state at which a story's Web-board card should be shown, when that
-/// differs from its own literal [`StorySnapshot::state`].
+/// Replaces every structural epic's dormant state with its recursive effective
+/// state. A story is an epic because it has a `parent-of` edge, never because
+/// it carries a particular type.
 ///
-/// Two independent promotions, checked in this precedence order — a SH-407
-/// council verdict, recorded on that story (`story show SH-407`): an
-/// epic with children typically has *some* active child for most of its
-/// life, a near-permanent and so low-information condition, while a
-/// structural blocker on the story's own record is the rarer, more
-/// actionable fact — and every renderer that shows a *reference* to this
-/// story elsewhere on the board (a blocker chip on another card) reads
-/// `display_state` too, so painting a genuinely-stuck epic as "active"
-/// would mislead board-wide, not just on its own card.
-///
-/// 1. **Blocked** (SH-407) — `!`[`is_ready`]: an `awaiting` reason, an open
-///    `obviated-by` edge, or a `blocked-by` edge onto a story that is still
-///    open. Reuses `is_ready` itself rather than a second implementation of
-///    its clauses (SH-240 is this project's own account of what duplicating
-///    that predicate costs); its `state == "blocked"` and draft clauses are
-///    moot by the time this runs, since this function's own eligibility
-///    guard below has already ruled both out.
-/// 2. **Active child** (SH-165) — the story `has_children`, and at least
-///    one child sits in the project's active state.
-///
-/// Eligible for either promotion only when [`StorySnapshot::draft`] is
-/// `false` and the story is parked in the project's neutral default open
-/// state (what [`default_open_state`] resolves to) — mirrors the guard
-/// `GitService::record_commit` already applies before an auto-transition,
-/// so a state a human deliberately chose (`blocked`, or any other custom
-/// Open state) is never silently overridden, and a not-yet-published draft
-/// is never display-promoted before anyone decided it should exist.
-/// Returns `None` when no override applies, meaning the caller should fall
-/// back to the story's own `state`.
+/// The source map is cloned once so every result in a projection is computed
+/// from the same snapshot. Recursion is memoized, making epic-of-epic chains
+/// linear in the hierarchy size; the visiting set is a final totality guard for
+/// damaged stores even though relation admission and doctor both reject
+/// parent/child cycles.
+pub fn apply_computed_epic_states(
+    stories: &mut BTreeMap<String, StorySnapshot>,
+    states: &[StateDef],
+) {
+    let source = stories.clone();
+    let mut memo = BTreeMap::<String, (String, SuperState)>::new();
+    let mut visiting = BTreeSet::<String>::new();
+    for id in source.keys() {
+        let _ = computed_epic_state(id, &source, states, &mut memo, &mut visiting);
+    }
+
+    for (id, (state, superstate)) in memo {
+        let Some(story) = stories.get_mut(&id) else {
+            continue;
+        };
+        if !has_children(story) {
+            continue;
+        }
+        story.state = state;
+        story.superstate = superstate;
+        story.state_computed = true;
+        if story.superstate == SuperState::Open {
+            story.hidden_at = None;
+        }
+    }
+}
+
+fn computed_epic_state(
+    id: &str,
+    stories: &BTreeMap<String, StorySnapshot>,
+    states: &[StateDef],
+    memo: &mut BTreeMap<String, (String, SuperState)>,
+    visiting: &mut BTreeSet<String>,
+) -> Option<(String, SuperState)> {
+    if let Some(answer) = memo.get(id) {
+        return Some(answer.clone());
+    }
+    let story = stories.get(id)?.clone();
+    if !visiting.insert(id.to_string()) {
+        return Some((story.state, story.superstate));
+    }
+
+    let child_ids: Vec<String> = story
+        .relationships
+        .iter()
+        .filter(|relation| relation.relation == "parent-of")
+        .map(|relation| relation.other_id.clone())
+        .collect();
+    if child_ids.is_empty() {
+        visiting.remove(id);
+        let answer = (story.state, story.superstate);
+        memo.insert(id.to_string(), answer.clone());
+        return Some(answer);
+    }
+
+    let children: Vec<(StorySnapshot, String, SuperState)> = child_ids
+        .iter()
+        .filter_map(|child_id| {
+            let child = stories.get(child_id)?.clone();
+            let (state, superstate) =
+                computed_epic_state(child_id, stories, states, memo, visiting)?;
+            Some((child, state, superstate))
+        })
+        .collect();
+
+    let state = if !children.is_empty()
+        && children
+            .iter()
+            .all(|(_, _, superstate)| *superstate == SuperState::Closed)
+    {
+        let first = &children[0].1;
+        if first != "done" && children.iter().all(|(_, state, _)| state == first) {
+            first.clone()
+        } else {
+            "done".to_string()
+        }
+    } else {
+        let incomplete: Vec<&(StorySnapshot, String, SuperState)> = children
+            .iter()
+            .filter(|(_, _, superstate)| *superstate == SuperState::Open)
+            .collect();
+        let all_incomplete_blocked = !incomplete.is_empty()
+            && incomplete.iter().all(|(child, state, _)| {
+                blocked_for_epic(child, state, stories, states, memo, visiting)
+            });
+        if all_incomplete_blocked {
+            "blocked".to_string()
+        } else if incomplete.iter().any(|(_, state, _)| {
+            state == "in-progress"
+                || state == "verifying"
+                || states.iter().any(|definition| {
+                    definition.slug == *state
+                        && definition.role.as_deref() == Some(STATE_ROLE_ACTIVE)
+                })
+        }) {
+            // The required state is the canonical aggregate. This also makes
+            // the explicit "an epic is never verifying" rule structural.
+            "in-progress".to_string()
+        } else {
+            default_open_state(states)
+                .map(|definition| definition.slug)
+                .unwrap_or_else(|| story.state.clone())
+        }
+    };
+
+    let superstate = states
+        .iter()
+        .find(|definition| definition.slug == state)
+        .map(|definition| definition.super_state.clone())
+        .unwrap_or_else(|| {
+            if state == "done" {
+                SuperState::Closed
+            } else {
+                SuperState::Open
+            }
+        });
+    let answer = (state, superstate);
+    visiting.remove(id);
+    memo.insert(id.to_string(), answer.clone());
+    Some(answer)
+}
+
+fn blocked_for_epic(
+    child: &StorySnapshot,
+    effective_state: &str,
+    stories: &BTreeMap<String, StorySnapshot>,
+    states: &[StateDef],
+    memo: &mut BTreeMap<String, (String, SuperState)>,
+    visiting: &mut BTreeSet<String>,
+) -> bool {
+    if child.draft {
+        return false;
+    }
+    if effective_state == "blocked" || child.awaiting.is_some() {
+        return true;
+    }
+    if child
+        .relationships
+        .iter()
+        .any(|relation| relation.relation == "obviated-by")
+    {
+        return true;
+    }
+    child.relationships.iter().any(|relation| {
+        relation.relation == "blocked-by"
+            && computed_epic_state(&relation.other_id, stories, states, memo, visiting)
+                .is_some_and(|(_, superstate)| superstate == SuperState::Open)
+    })
+}
+
+/// The state at which a non-epic Web-board card should be shown when its own
+/// blocking metadata disagrees with its literal state. Epic state is already
+/// projected by [`apply_computed_epic_states`]; `display_state` now keeps only
+/// the independent SH-407 blocked-card presentation rule.
 pub fn compute_display_state(
     story: &StorySnapshot,
     all_stories: &BTreeMap<String, StorySnapshot>,
@@ -2155,23 +2311,7 @@ pub fn compute_display_state(
     if !is_ready(story, all_stories) {
         return Some("blocked".to_string());
     }
-
-    if !has_children(story) {
-        return None;
-    }
-    let active = active_state(states)?;
-
-    let has_active_child = story
-        .relationships
-        .iter()
-        .filter(|r| r.relation == "parent-of")
-        .any(|r| {
-            all_stories
-                .get(r.other_id.as_str())
-                .is_some_and(|child| child.state == active.slug)
-        });
-
-    has_active_child.then_some(active.slug)
+    None
 }
 
 /// A by-id view of a project's stories — what [`is_ready`]'s `blocked-by`
@@ -2253,7 +2393,9 @@ pub fn is_ready(story: &StorySnapshot, all_stories: &impl StoryIndex) -> bool {
     true
 }
 
-/// Whether `story` is [`is_ready`] *and* nobody has claimed it yet.
+/// Whether `story` is an actionable leaf that is [`is_ready`] *and* nobody
+/// has claimed it yet. Structural epics are planning containers and therefore
+/// never claimable even when their recursively computed state is open.
 ///
 /// `active` is the state [`active_state`] resolves to: the one a claim
 /// (`story move <id> in-progress`, or a first commit mention) puts a story
@@ -2279,13 +2421,33 @@ pub fn is_claimable(
     all_stories: &impl StoryIndex,
     active: Option<&StateDef>,
 ) -> bool {
-    if !is_ready(story, all_stories) {
+    if has_children(story) || !is_ready(story, all_stories) {
         return false;
     }
     active.is_none_or(|state| story.state != state.slug)
 }
 
-/// The order ready work is offered in: `priority ASC, then story number ASC`.
+/// The priority of the nearest parent epic for ready-order purposes.
+///
+/// Every direct `child-of` target is structurally an epic because the inverse
+/// is its `parent-of` edge. Multiple parents are legal; the most urgent of
+/// those equally-near parents wins, so membership in a critical epic cannot be
+/// masked by simultaneous membership in a less urgent one. A parentless story
+/// uses its own priority, which neither promotes nor demotes independent work.
+pub fn parent_epic_priority(story: &StorySnapshot, all_stories: &impl StoryIndex) -> Priority {
+    story
+        .relationships
+        .iter()
+        .filter(|relation| relation.relation == "child-of")
+        .filter_map(|relation| all_stories.story(&relation.other_id))
+        .filter(|parent| has_children(parent))
+        .map(|parent| parent.priority.clone())
+        .min()
+        .unwrap_or_else(|| story.priority.clone())
+}
+
+/// The order ready work is offered in: story priority, nearest parent-epic
+/// priority, story number, then id — all ascending.
 ///
 /// A **total** order: the pair (priority, number) is unique within a project,
 /// because [`story_number`] is. Two stories can never tie on both keys the way
@@ -2306,9 +2468,16 @@ pub fn is_claimable(
 /// even for two ids [`story_number`] cannot parse (a hand-imported document
 /// predating the id grammar SH-117 introduced), where both sides would
 /// otherwise tie at `u64::MAX`.
-pub fn ready_order(a: &StorySnapshot, b: &StorySnapshot) -> std::cmp::Ordering {
+pub fn ready_order(
+    a: &StorySnapshot,
+    b: &StorySnapshot,
+    all_stories: &impl StoryIndex,
+) -> std::cmp::Ordering {
     a.priority
         .cmp(&b.priority)
+        .then_with(|| {
+            parent_epic_priority(a, all_stories).cmp(&parent_epic_priority(b, all_stories))
+        })
         .then_with(|| story_number(&a.id).cmp(&story_number(&b.id)))
         .then_with(|| a.id.cmp(&b.id))
 }
@@ -4788,6 +4957,7 @@ mod tests {
             created_at: "2026-03-13T00:00:00Z".to_string(),
             updated_at: "2026-03-13T00:00:00Z".to_string(),
             state: "blocked".to_string(),
+            state_computed: false,
             superstate: SuperState::Open,
             assignee: None,
             awaiting: None,
@@ -4826,6 +4996,7 @@ mod tests {
             created_at: "2026-03-13T00:00:00Z".to_string(),
             updated_at: "2026-03-13T00:00:00Z".to_string(),
             state: "in-progress".to_string(),
+            state_computed: false,
             superstate: SuperState::Open,
             assignee: None,
             awaiting: None,
@@ -4929,6 +5100,7 @@ mod tests {
             created_at: "2026-03-13T00:00:00Z".to_string(),
             updated_at: "2026-03-13T00:00:00Z".to_string(),
             state: "todo".to_string(),
+            state_computed: false,
             superstate: SuperState::Open,
             assignee: None,
             awaiting: None,
@@ -5097,6 +5269,7 @@ mod tests {
                 created_at: "2026-03-13T00:00:00Z".to_string(),
                 updated_at: "2026-03-13T00:00:00Z".to_string(),
                 state: "todo".to_string(),
+                state_computed: false,
                 superstate: SuperState::Open,
                 assignee: None,
                 awaiting: None,
@@ -5125,6 +5298,7 @@ mod tests {
                 created_at: "2026-03-13T00:00:00Z".to_string(),
                 updated_at: "2026-03-13T00:00:00Z".to_string(),
                 state: "todo".to_string(),
+                state_computed: false,
                 superstate: SuperState::Open,
                 assignee: None,
                 awaiting: None,
@@ -5159,6 +5333,7 @@ mod tests {
                 created_at: "2026-03-13T00:00:00Z".to_string(),
                 updated_at: "2026-03-13T00:00:00Z".to_string(),
                 state: "todo".to_string(),
+                state_computed: false,
                 superstate: SuperState::Open,
                 assignee: None,
                 awaiting: None,
@@ -5187,6 +5362,7 @@ mod tests {
                 created_at: "2026-03-13T00:00:00Z".to_string(),
                 updated_at: "2026-03-13T00:00:00Z".to_string(),
                 state: "todo".to_string(),
+                state_computed: false,
                 superstate: SuperState::Open,
                 assignee: None,
                 awaiting: None,
@@ -5895,130 +6071,6 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn epic_in_todo_with_an_in_progress_child_is_promoted() {
-        let mut stories = sample_story_map();
-        stories.get_mut("SH-2").unwrap().state = "in-progress".to_string();
-        let epic = stories.get("SH-1").unwrap();
-
-        assert_eq!(
-            compute_display_state(epic, &stories, &conforming_states()),
-            Some("in-progress".to_string())
-        );
-    }
-
-    #[test]
-    fn epic_in_todo_with_no_active_child_is_not_promoted() {
-        let stories = sample_story_map(); // every story starts "todo"
-        let epic = stories.get("SH-1").unwrap();
-
-        assert_eq!(
-            compute_display_state(epic, &stories, &conforming_states()),
-            None
-        );
-    }
-
-    #[test]
-    fn a_blocked_epic_is_never_promoted_even_with_an_active_child() {
-        let mut stories = sample_story_map();
-        stories.get_mut("SH-1").unwrap().state = "blocked".to_string();
-        stories.get_mut("SH-2").unwrap().state = "in-progress".to_string();
-        let epic = stories.get("SH-1").unwrap();
-
-        assert_eq!(
-            compute_display_state(epic, &stories, &conforming_states()),
-            None,
-            "blocked is a deliberate human signal (SH-126); an active child must not paper over it"
-        );
-    }
-
-    #[test]
-    fn an_epic_already_in_progress_is_not_re_promoted() {
-        let mut stories = sample_story_map();
-        stories.get_mut("SH-1").unwrap().state = "in-progress".to_string();
-        stories.get_mut("SH-2").unwrap().state = "in-progress".to_string();
-        let epic = stories.get("SH-1").unwrap();
-
-        assert_eq!(
-            compute_display_state(epic, &stories, &conforming_states()),
-            None,
-            "already showing in-progress, so there is nothing to override"
-        );
-    }
-
-    #[test]
-    fn a_closed_epic_is_never_promoted() {
-        let mut stories = sample_story_map();
-        stories.get_mut("SH-1").unwrap().state = "done".to_string();
-        stories.get_mut("SH-1").unwrap().superstate = SuperState::Closed;
-        stories.get_mut("SH-2").unwrap().state = "in-progress".to_string();
-        let epic = stories.get("SH-1").unwrap();
-
-        assert_eq!(
-            compute_display_state(epic, &stories, &conforming_states()),
-            None
-        );
-    }
-
-    #[test]
-    fn a_leaf_story_with_no_children_is_never_promoted() {
-        let mut stories = sample_story_map();
-        stories.get_mut("SH-4").unwrap().state = "in-progress".to_string();
-        let leaf = stories.get("SH-3").unwrap(); // childless, parked in "todo"
-
-        assert_eq!(
-            compute_display_state(leaf, &stories, &conforming_states()),
-            None
-        );
-    }
-
-    #[test]
-    fn only_direct_children_count_toward_promotion() {
-        let mut stories = sample_story_map();
-        // SH-1 -> SH-2 -> SH-3; only SH-3 (a grandchild of SH-1) goes active.
-        stories.get_mut("SH-3").unwrap().state = "in-progress".to_string();
-        let epic = stories.get("SH-1").unwrap();
-
-        assert_eq!(
-            compute_display_state(epic, &stories, &conforming_states()),
-            None,
-            "SH-3 is SH-2's child, not SH-1's — compute_progress makes the same direct-only cut"
-        );
-    }
-
-    #[test]
-    fn a_custom_active_role_state_is_what_gets_promoted_to() {
-        let mut stories = sample_story_map();
-        stories.get_mut("SH-2").unwrap().state = "doing".to_string();
-        let epic = stories.get("SH-1").unwrap();
-        let states = [
-            state("todo", SuperState::Open, None),
-            state("doing", SuperState::Open, Some(STATE_ROLE_ACTIVE)),
-            state("done", SuperState::Closed, None),
-        ];
-
-        assert_eq!(
-            compute_display_state(epic, &stories, &states),
-            Some("doing".to_string())
-        );
-    }
-
-    #[test]
-    fn no_active_state_resolvable_means_no_promotion() {
-        let mut stories = sample_story_map();
-        stories.get_mut("SH-2").unwrap().state = "in-progress".to_string();
-        let epic = stories.get("SH-1").unwrap();
-        // Three custom OPEN states, no role configured: active_state() can't guess.
-        let states = [
-            state("todo", SuperState::Open, None),
-            state("in-progress", SuperState::Open, None),
-            state("blocked", SuperState::Open, None),
-            state("done", SuperState::Closed, None),
-        ];
-
-        assert_eq!(compute_display_state(epic, &stories, &states), None);
-    }
-
     // --- compute_display_state's blocked arm (SH-407) ---------------------
 
     #[test]
@@ -6108,32 +6160,6 @@ mod tests {
         );
     }
 
-    /// SH-407 council verdict, recorded on that story (`story show SH-407`):
-    /// when a story qualifies for both promotions at once, blocked wins.
-    #[test]
-    fn blocked_wins_over_an_active_child_promotion() {
-        let mut stories = sample_story_map();
-        stories.get_mut("SH-2").unwrap().state = "in-progress".to_string();
-        stories
-            .get_mut("SH-1")
-            .unwrap()
-            .relationships
-            .push(StoryRelation {
-                relation: "blocked-by".to_string(),
-                other_id: "SH-4".to_string(),
-            });
-        let epic = stories.get("SH-1").unwrap();
-
-        assert_eq!(
-            compute_display_state(epic, &stories, &conforming_states()),
-            Some("blocked".to_string()),
-            "an active child is a near-permanent, low-information signal for a multi-child \
-             epic; a structural blocker on the epic's own record is the rarer, more \
-             actionable fact, and every renderer that shows a *reference* to this story \
-             elsewhere on the board reads display_state too"
-        );
-    }
-
     // --- ready_order / story_number (SH-63) -------------------------------
 
     fn ready_snapshot(id: &str, priority: Priority, created_at: &str) -> StorySnapshot {
@@ -6143,6 +6169,7 @@ mod tests {
             created_at: created_at.to_string(),
             updated_at: created_at.to_string(),
             state: "todo".to_string(),
+            state_computed: false,
             superstate: SuperState::Open,
             assignee: None,
             awaiting: None,
@@ -6165,7 +6192,12 @@ mod tests {
     }
 
     fn ready_order_ids(mut stories: Vec<StorySnapshot>) -> Vec<String> {
-        stories.sort_by(ready_order);
+        let index: BTreeMap<_, _> = stories
+            .iter()
+            .cloned()
+            .map(|story| (story.id.clone(), story))
+            .collect();
+        stories.sort_by(|a, b| ready_order(a, b, &index));
         stories.into_iter().map(|s| s.id).collect()
     }
 
@@ -6201,6 +6233,58 @@ mod tests {
             ready_snapshot("SH-99", Priority::Critical, "2026-01-01T00:00:00Z"),
         ]);
         assert_eq!(ids, ["SH-99", "SH-1"]);
+    }
+
+    #[test]
+    fn ready_order_uses_the_most_urgent_parent_for_equal_priority_leaves() {
+        let mut critical_parent =
+            ready_snapshot("SH-10", Priority::Critical, "2026-01-01T00:00:00Z");
+        let mut low_parent = ready_snapshot("SH-11", Priority::Low, "2026-01-01T00:00:00Z");
+        let mut other_parent = ready_snapshot("SH-12", Priority::Medium, "2026-01-01T00:00:00Z");
+        let mut promoted = ready_snapshot("SH-2", Priority::High, "2026-01-01T00:00:00Z");
+        let mut ordinary = ready_snapshot("SH-1", Priority::High, "2026-01-01T00:00:00Z");
+        critical_parent.relationships.push(StoryRelation {
+            relation: "parent-of".to_string(),
+            other_id: promoted.id.clone(),
+        });
+        low_parent.relationships.push(StoryRelation {
+            relation: "parent-of".to_string(),
+            other_id: promoted.id.clone(),
+        });
+        other_parent.relationships.push(StoryRelation {
+            relation: "parent-of".to_string(),
+            other_id: ordinary.id.clone(),
+        });
+        promoted.relationships.extend([
+            StoryRelation {
+                relation: "child-of".to_string(),
+                other_id: critical_parent.id.clone(),
+            },
+            StoryRelation {
+                relation: "child-of".to_string(),
+                other_id: low_parent.id.clone(),
+            },
+        ]);
+        ordinary.relationships.push(StoryRelation {
+            relation: "child-of".to_string(),
+            other_id: other_parent.id.clone(),
+        });
+        let index: BTreeMap<_, _> = [
+            critical_parent,
+            low_parent,
+            other_parent,
+            promoted.clone(),
+            ordinary.clone(),
+        ]
+        .into_iter()
+        .map(|story| (story.id.clone(), story))
+        .collect();
+
+        assert_eq!(
+            ready_order(&promoted, &ordinary, &index),
+            std::cmp::Ordering::Less,
+            "the critical parent wins before story number; the low second parent cannot mask it"
+        );
     }
 
     #[test]
@@ -6612,6 +6696,7 @@ mod ready_order_properties {
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
             state: "todo".to_string(),
+            state_computed: false,
             superstate: SuperState::Open,
             assignee: None,
             awaiting: None,
@@ -6661,8 +6746,13 @@ mod ready_order_properties {
 
             let mut a = permute(&canonical, &seed_a);
             let mut b = permute(&canonical, &seed_b);
-            a.sort_by(ready_order);
-            b.sort_by(ready_order);
+            let index: std::collections::BTreeMap<_, _> = canonical
+                .iter()
+                .cloned()
+                .map(|story| (story.id.clone(), story))
+                .collect();
+            a.sort_by(|left, right| ready_order(left, right, &index));
+            b.sort_by(|left, right| ready_order(left, right, &index));
 
             let ids_of = |stories: &[StorySnapshot]| -> Vec<String> {
                 stories.iter().map(|s| s.id.clone()).collect()

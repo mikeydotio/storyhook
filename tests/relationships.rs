@@ -132,7 +132,7 @@ fn archived_ancestors_still_participate_in_derived_relationships() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .args(["move", "SH-1", "done"])
+        .args(["move", "SH-3", "done"])
         .assert()
         .success();
 
