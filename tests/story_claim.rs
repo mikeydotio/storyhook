@@ -399,6 +399,88 @@ fn the_comment_lands_in_the_same_batch_as_the_state_change() {
     );
 }
 
+/// The tmux branch of the default sentence, end to end through the real
+/// binary, against a **fake** `tmux` on `PATH`.
+///
+/// A fake rather than the real thing, and rather than a `test.skip` when tmux
+/// is absent: a test that quietly does not run on a machine without tmux is
+/// the SH-306 shape — a check whose silence reads as a pass. The fake also
+/// records its own argv, which is the half a unit test of
+/// `default_comment` structurally cannot reach: that the pane from
+/// `$TMUX_PANE` is actually passed through with `-t`, so the answer describes
+/// *this* pane's window rather than whichever window the attached client
+/// happens to be looking at.
+#[test]
+fn inside_tmux_the_default_names_the_window_this_pane_is_in() {
+    use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let project = project();
+    let id = project.new_story("Claimable");
+
+    let fake_dir = tempfile::tempdir().expect("a directory for the fake tmux");
+    let argv_log = fake_dir.path().join("argv");
+    let fake = fake_dir.path().join("tmux");
+    let mut script = std::fs::File::create(&fake).expect("creating the fake tmux");
+    write!(
+        script,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" > {}\nprintf 'work:7\\n'\n",
+        argv_log.display()
+    )
+    .expect("writing the fake tmux");
+    drop(script);
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))
+        .expect("making the fake tmux executable");
+
+    // Prepended to the harness's own PATH, not the parent process's: that is
+    // what puts the `story` binary under test where the daemon's own
+    // `$PATH`-identity check (SH-404) expects it.
+    let path = format!(
+        "{}:{}",
+        fake_dir.path().display(),
+        project.env().path_with_binary().to_string_lossy()
+    );
+    project
+        .story()
+        .env("PATH", path)
+        .env("TMUX", "/tmp/tmux-501/default,1,0")
+        .env("TMUX_PANE", "%9")
+        .args(["claim", &id])
+        .assert()
+        .success();
+
+    assert_eq!(
+        comments(&project, &id),
+        vec![format!(
+            "Starting work on this story in {} tmux window work:7",
+            hostname()
+        )]
+    );
+
+    let argv = std::fs::read_to_string(&argv_log).expect("the fake tmux ran");
+    assert!(
+        argv.contains("-t %9"),
+        "the probe must ask about THIS pane, not the attached client's: {argv}"
+    );
+    assert!(
+        argv.contains("#{session_name}:#{window_index}"),
+        "the probe must ask for session:window: {argv}"
+    );
+}
+
+/// This machine's hostname, read the way `claim_comment` reads it.
+fn hostname() -> String {
+    String::from_utf8(
+        std::process::Command::new("hostname")
+            .output()
+            .expect("running hostname")
+            .stdout,
+    )
+    .expect("a UTF-8 hostname")
+    .trim()
+    .to_string()
+}
+
 // --- dry run ---------------------------------------------------------------
 
 #[test]
