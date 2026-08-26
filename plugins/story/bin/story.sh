@@ -41,7 +41,9 @@
 #                    winner and N-1 `claim-conflict` refusals. Mutually
 #                    exclusive with <id> — `--next` picks the top-priority
 #                    ready story, so it has no way to honor a caller-supplied
-#                    one, and `dispatch <id>`'s own CAS claim is unchanged.
+#                    one. Since SH-482 both modes claim through the SAME verb,
+#                    `story claim`; they differ only in how the story is
+#                    chosen.
 #
 # DELIBERATE DEVIATIONS from the agentics storywork.sh this was forked from:
 #
@@ -661,19 +663,22 @@ enter_checkout() {
 # story's own event log rather than carried around by this script — which means
 # the note reports where the story ACTUALLY landed, fallback included, instead
 # of where the caller assumed it would. `--no-comment` because dispatch's own
-# claim is silent (`story claim --next --no-comment`, and ID MODE's bare `story
-# move`): a dispatch that rolled itself back cleanly did, in the end, nothing,
-# and a comment saying otherwise would be the only trace of a non-event.
+# claim is silent in BOTH modes (`story claim --next --no-comment` and, since
+# SH-482, `story claim <id> --no-comment`): a dispatch that rolled itself back
+# cleanly did, in the end, nothing, and a comment saying otherwise would be the
+# only trace of a non-event.
 #
-# <pre-claim-state> survives as a PARAMETER even though the release no longer
-# needs it, because the FAILURE message does: on a project with no `active`
-# role, this script's own `story_active_state` (which falls back to
-# `in-progress`) and the CLI's (which falls back to the second OPEN state, or
-# to nothing at all) can disagree, so an ID-MODE claim can be released by a CAS
-# the CLI resolves differently. That narrow divergence closes structurally when
-# SH-482 puts ID MODE's claim through `story claim <id>` too; until then the
-# stranded-story warning names the exact manual move that always works, so a
-# copy-pasteable escape exists in the one corner the verb cannot cover.
+# THE DIVERGENCE THIS DOC USED TO WARN ABOUT IS CLOSED (SH-482). Both halves of
+# the pair now go through a CLI verb, so both resolve the active-role state the
+# same way, in the same process, from the same table: an ID-MODE claim can no
+# longer be released by a CAS the CLI resolves differently from the slug this
+# script picked, because this script no longer picks one.
+#
+# <pre-claim-state> survives as a PARAMETER even so, because the FAILURE
+# message still needs it — the warning names a copy-pasteable manual move for
+# an operator whose `unclaim` itself refused. It now carries the CLI's own
+# `claimed_from` rather than this script's earlier `show` read, so the two
+# sides of that sentence cannot disagree either.
 # <claimed-state> likewise stays REQUIRED, not defaulted: under `set -u` a
 # forgotten argument aborts loudly, where a default of `in-progress` would
 # quietly reinstate the wrong-guard stranding SH-481 was filed for.
@@ -932,7 +937,8 @@ cmd_dispatch() {
   # extras. --next (SH-344) is the id-less mode: it claims whatever
   # `story claim --next` picks, atomically, rather than a caller-named id —
   # see the NEXT MODE section below for why this is a second mode and not a
-  # rewrite of the id-directed claim.
+  # rewrite of the id-directed claim, which since SH-482 goes through the same
+  # verb as `story claim <id>`.
   local id="" auto="" want_next="" force="" requested_agent=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -999,19 +1005,21 @@ cmd_dispatch() {
   # --next, id-less) — that converge on the same four facts ($id, $title,
   # $state, $pre_claim_state) plus a $claim_cmd_desc for the dry-run preview,
   # so everything from here on (worktree, tmux, the claim-rollback path) runs
-  # identically regardless of which one produced them.
+  # identically regardless of which one produced them. Since SH-482 both write
+  # through `story claim`, so those four facts are read out of one response
+  # shape on both paths as well.
   local title state pre_claim_state claim_cmd_desc claim_state
   local claim_transitioned=false reused_claim=false
   if [ -n "$want_next" ]; then
-    # NEXT MODE (SH-344): a single `story claim --next` call does what ID
-    # MODE's steps 4-6 plus its CAS move do for a caller-named id — pick a
-    # ready story AND claim it — but atomically, inside one write
-    # transaction, so two concurrent `dispatch --next` callers are handed
-    # two DIFFERENT stories rather than one winner and N-1 `claim-conflict`
-    # refusals. This is a second mode, not a replacement for ID MODE's CAS:
-    # `--next` picks whatever is top-priority, so it has no way to honor a
-    # caller-supplied id, and ID MODE's `--if-state` CAS stays exactly as it
-    # was.
+    # NEXT MODE (SH-344): a single `story claim --next` call does steps 4-6 in
+    # one go for an id nobody named — pick a ready story AND claim it,
+    # atomically, inside one write transaction, so two concurrent
+    # `dispatch --next` callers are handed two DIFFERENT stories rather than
+    # one winner and N-1 `claim-conflict` refusals. This is a second mode
+    # rather than a replacement for ID MODE, because `--next` picks whatever
+    # is top-priority and so has no way to honor a caller-supplied id — but
+    # since SH-482 the two modes reach the store through the SAME verb, and
+    # what remains different between them is only how the story is CHOSEN.
     #
     # --no-comment (SH-477): the claim's default comment names the CALLING
     # process's tmux window, which here is the dispatcher's own, not the
@@ -1051,7 +1059,10 @@ cmd_dispatch() {
       claim_transitioned=true
     fi
   else
-    # ID MODE: unchanged from before SH-344.
+    # ID MODE: a caller-named story, so the guards below have a specific id to
+    # answer about and the claim honors it rather than picking. Steps 4-5 are
+    # this mode's alone — NEXT MODE's story arrives already claimed and already
+    # ready by construction — and step 6 is the shared verb.
     #
     # Step 4: story exists. Every read here is REAL, even under dry-run
     # (issue.sh's own asymmetry: reads always run for real, only writes are
@@ -1125,29 +1136,62 @@ cmd_dispatch() {
         fail "story $id is not ready to work on ($reason) — run \`story show $id\` for details."
       fi
 
-      # The ordinary id-directed claim target is this project's active-role
-      # state, resolved once above. The forced pre-claimed path above never
-      # reaches this move and therefore never writes a redundant transition.
-      claim_cmd_desc="story move $id $claim_state --if-state $pre_claim_state"
+      # SH-482: the claim IS `story claim <id>` — the same verb NEXT MODE
+      # reaches through `--next`, so both dispatch modes now write through one
+      # primitive. What that buys over the `show` + `move --if-state` dance it
+      # replaces is that the active-role target, the compare-and-swap and the
+      # `claimed_from` answer are all resolved inside the CLI's own write
+      # transaction: this script no longer holds a second opinion about any of
+      # them, which is the drift SH-481 was filed for.
+      #
+      # --no-comment for the reason SH-477 gave NEXT MODE: `story claim`'s
+      # default sentence names the CALLING process's tmux window, which here is
+      # the DISPATCHER's, not the window this dispatch is about to open for the
+      # work. A claim that named it would be recording a window the work will
+      # not happen in, and SH-476's determination forbids a fabricated one
+      # outright. What dispatch should say once that window genuinely exists is
+      # SH-490's question, for both modes at once, and is deliberately not
+      # answered here.
+      #
+      # The precondition NARROWS, which is the whole behaviour delta of the
+      # collapse and is stated rather than glossed. `--if-state` refused any
+      # state change at all between this script's `show` and its write; the verb
+      # refuses exactly "already claimed" (SH-476: a claim's precondition is not
+      # one slug, it is any state but the active one). The race the refusal
+      # exists for is still refused — and more strongly, since the verb CASes on
+      # the story's head sequence inside one transaction rather than on a
+      # witness read a round trip earlier — while the transitions that stop
+      # being refused were ones the old message described falsely anyway.
+      #
+      # The forced pre-claimed path above never reaches this claim and therefore
+      # never writes a redundant transition.
+      claim_cmd_desc="story claim $id --no-comment"
 
       if [ -z "$DRY_RUN" ]; then
-        local move_json move_result move_error states
-        move_json=$(story_cli --actor dispatch move "$id" "$claim_state" --if-state "$state" --json 2>/dev/null) || true
-        move_result=$(printf '%s' "$move_json" | jq -r '.result // ""' 2>/dev/null || printf '')
-        case "$move_result" in
+        local claim_json claim_result claim_error states
+        claim_json=$(story_cli --actor dispatch claim "$id" --no-comment --json 2>/dev/null) || true
+        claim_result=$(printf '%s' "$claim_json" | jq -r '.result // ""' 2>/dev/null || printf '')
+        case "$claim_result" in
           ok)
-            state="$claim_state"
+            # Both facts come from the claim's own answer rather than from
+            # $claim_state and the earlier `show`: `.claimed_from` is the state
+            # the CLI actually moved the story out of, and `.story.story.state`
+            # is a fresh read taken after the transition hooks ran, so a hook
+            # that moved the story again is visible here instead of being
+            # overwritten by what this script assumed.
+            pre_claim_state=$(printf '%s' "$claim_json" | jq -r '.claimed_from // ""' 2>/dev/null || printf '')
+            state=$(printf '%s' "$claim_json" | jq -r '.story.story.state // ""' 2>/dev/null || printf '')
             claim_transitioned=true ;;
           conflict)
-            refuse "claim-conflict" "story $id changed state before it could be claimed (expected \`$state\`, now \`$(printf '%s' "$move_json" | jq -r '.actual // "?"' 2>/dev/null)\`) — another dispatch likely won the race." ;;
+            refuse "claim-conflict" "story $id was claimed before this dispatch could claim it (now \`$(printf '%s' "$claim_json" | jq -r '.actual // "?"' 2>/dev/null)\`) — another dispatch likely won the race." ;;
           *)
-            move_error=$(printf '%s' "$move_json" | jq -r '.error // ""' 2>/dev/null) || true
-            [ -n "$move_error" ] || move_error="story move emitted no result"
+            claim_error=$(printf '%s' "$claim_json" | jq -r '.error // ""' 2>/dev/null) || true
+            [ -n "$claim_error" ] || claim_error="story claim emitted no result"
             if states=$(missing_claim_state_vocabulary "$claim_state"); then
               refuse "claim-state-missing" \
-                "story $id cannot be claimed: this Storyhook project's state vocabulary has no \`$claim_state\` state (it defines: $states) — run \`story doctor --fix\` in this repo to add it, then re-run this dispatch. (\`story move\` reported: $move_error)"
+                "story $id cannot be claimed: this Storyhook project's state vocabulary has no \`$claim_state\` state (it defines: $states) — run \`story doctor --fix\` in this repo to add it, then re-run this dispatch. (\`story claim\` reported: $claim_error)"
             fi
-            fail "story move $id $claim_state failed: $move_error." ;;
+            fail "story claim $id failed: $claim_error." ;;
         esac
       fi
     fi
