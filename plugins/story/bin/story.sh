@@ -2478,6 +2478,35 @@ _story_worktree_status() {
   printf 'removable'
 }
 
+# _close_story_window <window-name> — best-effort tmux window close. Returns 0
+# if a window was found and killed, 1 if there was no such window (or no tmux
+# at all), which is never an error to any caller: a story whose window is
+# already gone is a story with one less thing to clean up.
+#
+# pane_for_window / display-message / kill-window each swallow their own
+# errors, so the only question worth asking is whether a pane was found. The
+# window-id lookup is preferred over killing the pane directly because a window
+# holding several panes must die whole; the pane fallback is what runs when a
+# tmux too old (or a fixture too thin) does not answer `#{window_id}`.
+#
+# Extracted from cmd_reap for SH-484: `unclaim` and `reset` close the same
+# window by the same rule, and three copies of a teardown step is the shape
+# this project has paid for repeatedly (SH-136, SH-198, SH-258, SH-260/276,
+# SH-360). What differs between the three verbs is WHEN they call it and
+# whether they are allowed to, never how the window is found.
+_close_story_window() {
+  local wname="$1" pane window
+  pane=$(pane_for_window "$wname") || pane=""
+  [ -n "$pane" ] || return 1
+  window=$(tmux display-message -p -t "$pane" '#{window_id}' 2>/dev/null || printf '')
+  if [ -n "$window" ]; then
+    tmux kill-window -t "$window" 2>/dev/null || true
+  else
+    tmux kill-window -t "$pane" 2>/dev/null || true
+  fi
+  return 0
+}
+
 # _complete_prepare <id> — shared by plan and execute. Resolves the story,
 # the target paths, and the classification of each, into caller-visible
 # globals. Freshens origin/<default> exactly ONCE here so both verbs judge
@@ -2951,20 +2980,9 @@ cmd_reap() {
   [ -n "$wt_fail" ] && display="$display $wt_fail."
   [ -n "$br_fail" ] && display="$display $br_fail."
 
-  # Best-effort, LAST: pane_for_window / display-message / kill-window all
-  # swallow their own errors already (no tmux, no such window), so nothing
-  # here needs its own guard past "was a pane found at all". Mirrors
-  # cmd_doctor's own window/pane fallback.
-  local pane window
-  pane=$(pane_for_window "$CMP_WNAME") || pane=""
-  if [ -n "$pane" ]; then
-    window=$(tmux display-message -p -t "$pane" '#{window_id}' 2>/dev/null || printf '')
-    if [ -n "$window" ]; then
-      tmux kill-window -t "$window" 2>/dev/null || true
-    else
-      tmux kill-window -t "$pane" 2>/dev/null || true
-    fi
-  fi
+  # Best-effort, LAST -- see _close_story_window for why nothing here needs a
+  # guard past "was a pane found at all".
+  _close_story_window "$CMP_WNAME" || true
 
   jq -n --arg id "$id" --argjson rwt "$reaped_wt" --argjson rbr "$reaped_br" \
         --arg wtfail "$wt_fail" --arg brfail "$br_fail" --arg display "$display" '
