@@ -194,6 +194,12 @@ both directions rather than letting the two be kept in step by hand. Every tool 
 `project` (required) and, on a write, `actor` (optional) — never a working directory, since a
 stdio session has none of its own to offer.
 
+Deliberately absent: anything that asks a human to confirm interactively (`purge`,
+`hide-state`, an unforced `reopen` of a soft-deleted story), `github-sync` and its first-run
+setup wizard, bulk/import/export operations, and administrative surfaces (`daemon`, `token`,
+`store`, `plugin`). All of these remain reachable through the CLI; a later story can widen the
+tool surface following the same anti-drift discipline if a real workflow needs one of them.
+
 ### `story_claim` and `story_unclaim`, and why their defaults disagree (SH-479)
 
 `story_claim` is the reason an MCP agent can take work at all. Before it, the only writing
@@ -246,15 +252,9 @@ Three further boundaries, all deliberate:
   an explicit `id`) is relayed from the parser, whose own message names the thing the caller
   got wrong.
 
-Deliberately absent: anything that asks a human to confirm interactively (`purge`,
-`hide-state`, an unforced `reopen` of a soft-deleted story), `github-sync` and its first-run
-setup wizard, bulk/import/export operations, and administrative surfaces (`daemon`, `token`,
-`store`, `plugin`). All of these remain reachable through the CLI; a later story can widen the
-tool surface following the same anti-drift discipline if a real workflow needs one of them.
-
 ## Anti-drift mechanism
 
-Four checks, all in `tests/mcp_tool_drift.rs` and `src/mcp/tools.rs` unless noted, aimed
+Five checks, all in `tests/mcp_tool_drift.rs` and `src/mcp/tools.rs` unless noted, aimed
 squarely at the failure that killed v1 — a tool's declared shape silently drifting from what
 the command it drives actually accepts:
 
@@ -278,6 +278,11 @@ the command it drives actually accepts:
 4. **No ambient state.** A source-text scan over the same file set forbids `std::env::var` and
    `current_dir` anywhere under `src/mcp/` — the stateless-bridge contract made structurally
    unrepresentable rather than merely documented.
+5. **One list of tools, not two** (SH-479). `story help mcp` is how a host without
+   `tools/list` learns what exists, and its `Tools:` block was a hand-kept copy of `TOOLS`.
+   `every_curated_tool_is_listed_in_the_mcp_help_topic` derives both sides and compares them
+   as sets in both directions — a curated tool the topic never mentions, and a topic entry the
+   table no longer declares, each fail by name.
 
 ## As built
 
