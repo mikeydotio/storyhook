@@ -54,6 +54,21 @@ out=$(
 )
 assert_eq "$(jqf "$out" .reason)" "null" "empty state list: no unproven classification"
 
+# SH-481: a vocabulary that merely CONTAINS the claim state as a substring
+# does not define it. The membership test became an exact match on each line's
+# first field when the target became a parameter; a substring test would
+# withhold the diagnosis here and report the generic move failure instead.
+repo_sub=$(mk_story_repo SUB)
+id_sub=$(new_story "$repo_sub" "Substring-only state list")
+out=$(
+  cd "$repo_sub" \
+    && PATH="$fake_dir:$PATH" STORY_REAL_BIN="$real_story" STORY_CLAIM_STATE_MISSING=1 \
+      STORY_STATE_LIST_MODE=substring \
+      STORY_TARGET_SESSION=test bash "$SCRIPT" dispatch "$id_sub" 2>&1
+)
+assert_eq "$(jqf "$out" .reason)" "claim-state-missing" "substring state list: still a positive absence"
+assert_contains "$(jqf "$out" .display)" "in-progress-review" "substring state list: reports the observed vocabulary"
+
 repo_space=$(mk_story_repo SPC)
 id_space=$(new_story "$repo_space" "Whitespace state list")
 out=$(
@@ -65,7 +80,15 @@ out=$(
 assert_eq "$(jqf "$out" .reason)" "null" "whitespace state list: no unproven classification"
 
 # The confirming read belongs only to the already-failed claim path. A normal
-# successful dispatch through the same proxy must never call `state list`.
+# successful dispatch must never pay for it.
+#
+# SH-481 narrowed what that can be asserted over. cmd_dispatch now resolves its
+# claim target through story_active_state on EVERY dispatch, which is a plain
+# `state list`, so "never calls state list at all" is no longer the property --
+# it would fail on the correct behaviour. The classifier is the `--json`
+# reader, and it is that read which must stay failure-only. The plain read is
+# pinned at exactly one so a future resolver called per-attempt is still
+# caught.
 repo_happy=$(mk_story_repo HAP)
 id_happy=$(new_story "$repo_happy" "Successful claim")
 state_log=$(mktemp /tmp/story-state-list-log.XXXXXX)
@@ -81,7 +104,10 @@ out=$(
       bash "$SCRIPT" dispatch "$id_happy" 2>&1
 )
 assert_eq "$(jqf "$out" .ok)" "true" "successful claim: ok:true"
-[ ! -s "$state_log" ] || fail_test "successful claim: paid for a failure-only state-list read"
+classifier_reads=$(grep -c -- '--json' "$state_log" || true)
+assert_eq "$classifier_reads" "0" "successful claim: paid for a failure-only state-list read"
+resolver_reads=$(grep -cx 'state list' "$state_log" || true)
+assert_eq "$resolver_reads" "1" "successful claim: resolves the claim target exactly once"
 
 # The classifier necessarily reads Storyhook's current human-rendered state
 # list because the JSON response does not expose structured state rows. Pin the

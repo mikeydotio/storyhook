@@ -80,7 +80,7 @@ and then runs the same packaged helper, preserving the one-JSON-object contract.
 |---|---|
 | `list` | bare `/story` |
 | `view <id>` | `/story view`, `/story <id>` |
-| `dispatch <id> [--auto] [--force] [--agent=claude\|codex]` | `/story do`; `--force` reuses an existing `in-progress` claim without another state transition |
+| `dispatch <id> [--auto] [--force] [--agent=claude\|codex]` | `/story do`; `--force` reuses an existing claim without another state transition |
 | `dispatch --next [--auto] [--agent=claude\|codex]` | not routed by any skill (SH-344) — the id-less sibling: claims whatever `story next --claim` picks atomically, so a caller dispatching several stories at once (a fleet, a loop) gets a distinct story per call instead of racing the same id |
 | `create --title …` | `/story new` |
 | `complete <plan\|execute> <id> [--no-close] [--no-clean] [--force]` | `/story complete` |
@@ -156,7 +156,7 @@ Worth knowing before changing anything here:
   checkout, a recorded path that is gone, a directory that is not a git
   repository, or a checkout recorded as a *linked worktree* — each names the way
   out, and each lands ahead of `dispatch`'s compare-and-swap claim so a refusal
-  never strands a story at in-progress. A worktree that is not where the checkout
+  never strands a story in the claimed state. A worktree that is not where the checkout
   says it should be is reported, never reconstructed from the caller's own
   repository.
 - **`--project <slug>` is story.sh's own global option**, stripped before the
@@ -166,15 +166,15 @@ Worth knowing before changing anything here:
   `{"stories":[]}` on any error, so a refusal read as "No ready stories to pick
   up" — an empty answer for the tool whose job is handing out work (SH-163).
   `_load_ready_stories` fails loudly and carries the CLI's own diagnostic.
-- **`is_ready()` is not "unclaimed".** It returns true for an already
-  in-progress story, so `dispatch` carries its own guard and `list` filters the
+- **`is_ready()` is not "unclaimed".** It returns true for an already claimed
+  story, so `dispatch` carries its own guard and `list` filters the
   active state out.
 - **The claim is a hard precondition, not a trailing best-effort.** Storyhook's
   `state` *is* the claim marker, so `dispatch` claims via `--if-state` CAS
   before any side effect, and rolls the claim back if a later step fails.
 - **Forced redispatch reuses a claim; it never rewrites or owns it.** `/story do
   <id> --force` is accepted only as the exception to the named story's
-  already-`in-progress` refusal. It skips the readiness lookup and redundant
+  already-claimed refusal. It skips the readiness lookup and redundant
   move for that one state, reports `reused_claim:true`/`claim_transitioned:false`,
   and leaves the pre-existing state untouched if a later dispatch step fails.
   Worktree, branch, tmux, provider-readiness and prompt-delivery checks remain
