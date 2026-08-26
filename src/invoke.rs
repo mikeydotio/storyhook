@@ -669,47 +669,21 @@ pub fn dispatch<S: Store>(
                 warnings: Vec::new(),
             })
         }
-        Invocation::Next {
-            count,
-            phase,
-            claim,
-        } => {
-            if claim {
-                // The CLI parser (and every other door onto `Invocation`)
-                // refuses `claim` together with a `count` other than 1
-                // before this arm ever runs — see `parse_next`'s own guard —
-                // so there is exactly one story to answer with or none.
-                // `next --claim` posts no comment; the comment is `story claim`'s
-                // (SH-476), and this verb retires in SH-477.
-                match StoryService::new(ctx).claim_next(phase.as_deref(), None)? {
-                    Some((before, _snapshot)) => match ctx.story_view(&before.id)? {
-                        // A fresh read, taken after `claim_next`'s own
-                        // transition hooks ran — same reasoning as every
-                        // other write arm's `ctx.story_view(&id)` call: a
-                        // hook may itself have written to the story.
-                        Response::Story(view) => Ok(Response::Claimed(view, before.state)),
-                        other => Err(AppError::Storage(format!(
-                            "internal: story view answered with {other:?}"
-                        ))),
-                    },
-                    None => Ok(Response::Message("no ready stories".to_string())),
-                }
+        Invocation::Next { count, phase } => {
+            let mut ready = query(ctx, |service| service.next(count, phase.as_deref()))?;
+            // One story is answered as a story, not as a list of one:
+            // `story next` is a question with a singular answer, and its
+            // `--json` consumers read `.story`.
+            if ready.is_empty() {
+                Ok(Response::Message("no ready stories".to_string()))
+            } else if count == 1 {
+                Ok(Response::Story(Box::new(ready.remove(0))))
             } else {
-                let mut ready = query(ctx, |service| service.next(count, phase.as_deref()))?;
-                // One story is answered as a story, not as a list of one:
-                // `story next` is a question with a singular answer, and its
-                // `--json` consumers read `.story`.
-                if ready.is_empty() {
-                    Ok(Response::Message("no ready stories".to_string()))
-                } else if count == 1 {
-                    Ok(Response::Story(Box::new(ready.remove(0))))
-                } else {
-                    Ok(Response::Stories {
-                        views: ready,
-                        message: None,
-                        warnings: Vec::new(),
-                    })
-                }
+                Ok(Response::Stories {
+                    views: ready,
+                    message: None,
+                    warnings: Vec::new(),
+                })
             }
         }
         Invocation::Claim {

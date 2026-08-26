@@ -46,10 +46,10 @@ assert_contains "$(jqf "$out" .worktree_path)" "/.codex/worktrees/" \
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch --next 2>&1)
 assert_eq "$(jqf "$out" .ok)" "true" "dry-run: ok:true"
 assert_eq "$(jqf "$out" .dry_run)" "true" "dry-run: dry_run:true"
-assert_eq "$(jqf "$out" .id)" "$id" "dry-run: previews the story --claim would pick"
+assert_eq "$(jqf "$out" .id)" "$id" "dry-run: previews the story --next would pick"
 assert_eq "$(jqf "$out" .state)" "todo" "dry-run: state shown is the PRE-claim state — nothing was written"
-assert_eq "$(jqf "$out" '.commands[0]')" "story next --claim" "dry-run: the claim command previewed is next --claim, not move --if-state"
-assert_contains "$(jqf "$out" .display)" 'would claim it via `story next --claim`' "dry-run: display names the next-mode claim command"
+assert_eq "$(jqf "$out" '.commands[0]')" "story claim --next --no-comment" "dry-run: the claim command previewed is claim --next, not move --if-state"
+assert_contains "$(jqf "$out" .display)" 'would claim it via `story claim --next --no-comment`' "dry-run: display names the next-mode claim command"
 [ -d "$repo/.claude/worktrees" ] && fail_test "dry-run: a worktree was created despite dry-run"
 untouched_state=$(cd "$repo" && story show "$id" --json | jq -r '.story.story.state')
 assert_eq "$untouched_state" "todo" "dry-run: the story CLI itself confirms nothing was claimed"

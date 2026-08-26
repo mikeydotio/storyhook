@@ -81,7 +81,7 @@ and then runs the same packaged helper, preserving the one-JSON-object contract.
 | `list` | bare `/story` |
 | `view <id>` | `/story view`, `/story <id>` |
 | `dispatch <id> [--auto] [--force] [--agent=claude\|codex]` | `/story do`; `--force` reuses an existing claim without another state transition |
-| `dispatch --next [--auto] [--agent=claude\|codex]` | not routed by any skill (SH-344) — the id-less sibling: claims whatever `story next --claim` picks atomically, so a caller dispatching several stories at once (a fleet, a loop) gets a distinct story per call instead of racing the same id |
+| `dispatch --next [--auto] [--agent=claude\|codex]` | not routed by any skill (SH-344) — the id-less sibling: claims whatever `story claim --next` picks atomically, so a caller dispatching several stories at once (a fleet, a loop) gets a distinct story per call instead of racing the same id |
 | `create --title …` | `/story new` |
 | `complete <plan\|execute> <id> [--no-close] [--no-clean] [--force]` | `/story complete` |
 | `reap <id>` | not routed by the skill (SH-208) — the `--auto` charter's own final act; see below |

@@ -354,7 +354,7 @@ Related:
 
         m.insert(
             "next",
-            r#"story next [--count <n>] [--phase <N>] [--claim]
+            r#"story next [--count <n>] [--phase <N>]
 
 Get the story execution order, highest priority first while respecting
 dependencies. The first result is ready now. With --count above 1, each later
@@ -365,28 +365,25 @@ instead of removing the dependent from the answer entirely.
 Stories with an awaiting/manual blocker, an obviated-by edge, a dependency
 cycle, or an open predecessor that this queue cannot execute remain absent.
 
---claim atomically moves the answer into the project's active state
-(normally in-progress) before returning it, so two callers racing this
-command at once are handed two different stories rather than one winner
-and a refusal. Refused together with --count above 1: a claim holds
-exactly one story. Its --json answer carries "claimed_from", the state
-the story came out of.
+This is a pure read: it answers a question and writes nothing. Taking the
+answer is 'story claim --next', which selects and claims inside one write
+transaction, so two callers racing it are handed two different stories.
 
 When to use:
   At session start to pick your first task, or after completing a story
   to find the next one. Prefer this over 'story list' when you need a
-  single actionable item. Prefer --claim over a separate 'story move'
-  whenever more than one script or agent may be picking up work from the
-  same project at once.
+  single actionable item. If you are about to start work on the answer,
+  use 'story claim --next' instead — asking and then taking are two round
+  trips with a race between them.
 
 Examples:
   story next                # Top-priority ready story
   story next --count 3      # First 3 stories in execution order
   story next --phase 1      # Top-priority ready story in phase 1
-  story next --claim        # Claim the top-priority ready story atomically
   story next --json         # Structured JSON output
 
 Related:
+  story claim         — Take the answer atomically instead of just reading it
   story load-context  — Full project overview (use first in a new session)
   story list          — All stories with filters (use for exploration)
   story graph         — Dependency visualization (use to understand blockers)
@@ -1217,7 +1214,7 @@ Commands returning a single story ("story" field):
   story relate <a> <rel> <b>       -> "story": StoryView (of story a)
   story set <id> --field value     -> "story": StoryView
   story next                       -> "story": StoryView (single result)
-  story next --claim                -> "story": StoryView, plus "claimed_from"
+  story claim <id> | --next        -> "story": StoryView, plus "claimed_from"
 
   StoryView object:
     {

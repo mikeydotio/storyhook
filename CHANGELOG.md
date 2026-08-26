@@ -3,6 +3,19 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Removed
+- **BREAKING:** `story next --claim` is removed. `story next` is a pure read
+  again; claiming is `story claim <id> | --next`, the one atomic claim verb
+  (SH-476). There is no deprecation arm — the flag is simply no longer
+  declared, so it draws the ordinary unknown-flag refusal. `--json` callers of
+  the claiming form move to `story claim --next --json`, whose envelope is
+  unchanged (`.story` plus `.claimed_from`); note the new verb comments by
+  default, so a caller that wants the old silence passes `--no-comment`.
+  Deliberately carries no version bump: this is batched with other breaking
+  changes for one major release (SH-477)
+
 ## [v2.2.0] - 2026-08-24
 
 ### Added

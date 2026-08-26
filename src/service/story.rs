@@ -457,10 +457,10 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         Ok(snapshot)
     }
 
-    /// `story next --claim` (SH-344) — picks the same story
-    /// [`QueryService::next`](super::QueryService::next) would, and moves it
-    /// into the project's active state before returning it, both inside one
-    /// write transaction.
+    /// `story claim --next` (SH-476, the mechanism SH-344 introduced) — picks
+    /// the same story [`QueryService::next`](super::QueryService::next) would,
+    /// and moves it into the project's active state before returning it, both
+    /// inside one write transaction.
     ///
     /// That single transaction is the whole correctness argument: a write
     /// transaction is `BEGIN IMMEDIATE`, exclusive among writers, so
