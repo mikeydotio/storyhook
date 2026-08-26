@@ -569,7 +569,6 @@ prefix = "SH"
 
 [plugin]          # optional, user-authored; storyhook reads it and never writes it
 enabled = true
-tracking = "normal"
 ```
 
 Behavior:

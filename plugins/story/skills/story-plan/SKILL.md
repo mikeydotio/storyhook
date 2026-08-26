@@ -57,5 +57,5 @@ Run `story graph --critical-path` to display the dependency structure and identi
 
 ### 6. Suggest next steps
 
-- If stories are ready to work on, suggest the `story-work` skill to start on the first story in the critical path
+- If stories are ready to work on, suggest the router's `claim <id>` route to start on the first story in the critical path
 - If the plan needs further refinement, suggest the `story-triage` skill to review and adjust priorities

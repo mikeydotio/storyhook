@@ -4,4 +4,3 @@ prefix = "SH"
 
 [plugin]
 enabled = true
-tracking = "normal"

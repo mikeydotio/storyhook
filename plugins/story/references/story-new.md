@@ -24,7 +24,7 @@ file it.
 If the description names a file, symbol, or area, take **one** look (`Grep` or
 `Read`) so your questions are informed. No agents, no deep research — this is a
 filing flow, not an investigation. If the story turns out to need investigation,
-that is what provider dispatch or the `story-work` skill is for once it is filed.
+that is what provider dispatch or the router's `claim` route is for once it is filed.
 
 ## 4. Interrogate
 
