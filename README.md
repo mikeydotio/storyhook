@@ -380,6 +380,8 @@ story epic add <epic-id> <story-id>
 
 story list [--state <slug>] [--assignee <member>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts] [--unassessed] [--include-closed] [--include-archived] [--all]
 story next [--count <n>] [--phase <N>] [--claim]
+story claim <id> [--comment <text> | --no-comment] [--dry-run]
+story claim --next [--phase <N>] [--comment <text> | --no-comment] [--dry-run]
 story summary
 story report [--html]
 story search <query>
@@ -792,6 +794,7 @@ Three commands support AI coding agent workflows:
 
 - `story context` -- generates a project overview document (states, priorities, relationships, and ready work) suitable for the start of an AI session. Use `--format json` for structured output.
 - `story next` -- surfaces the highest-priority unblocked story so an agent can pick up work without manual triage. Use `--count <n>` for the sequential execution order: each result virtually completes before the next is chosen, allowing a dependency-blocked story to appear after its blocker. Use `--claim` when more than one agent may be running against the same project at once: it atomically moves the immediately actionable answer into the project's active state before returning it, so two agents racing this command are handed two different stories instead of racing a separate `story move`.
+- `story claim (<id> | --next)` -- takes a story to work on, atomically. One of the two forms is required and they are mutually exclusive: a bare `story claim` is refused rather than resolved to `--next`, because this writes, and a script whose id argument came out empty must not silently claim whatever happened to sort first. The move into the project's active state happens inside one write transaction either way, so two callers racing it are handed two different stories rather than one winner and a corrupt second claim; a story somebody else already holds is answered with `result:"conflict"` and `.actual` naming the state found. A claim comments by default (`--comment <text>` replaces the text, `--no-comment` posts none), in the same transaction as the claim itself, and `--dry-run` reads for real while writing symbolically.
 - `story handoff --since <duration>` -- generates a session handoff document summarizing what changed during a work session (e.g. `--since 2h`). Useful when passing context between agents or between an agent and a human.
 
 ### MCP server

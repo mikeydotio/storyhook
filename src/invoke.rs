@@ -27,9 +27,10 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::{
-    AbandonedAction, Attach, AttachmentAction, CrashesAction, DaemonAction, EpicAction, HELP_TEXT,
-    HistoryAction, HooksAction, Invocation, NewProjectRequest, PhaseAction, PluginAction,
-    ProjectAction, SettingsAction, StateAction, StoreAction, TokenAction, TypeAction, WebAction,
+    AbandonedAction, Attach, AttachmentAction, ClaimComment, ClaimTarget, CrashesAction,
+    DaemonAction, EpicAction, HELP_TEXT, HistoryAction, HooksAction, Invocation, NewProjectRequest,
+    PhaseAction, PluginAction, ProjectAction, SettingsAction, StateAction, StoreAction,
+    TokenAction, TypeAction, WebAction,
 };
 use crate::domain::provenance::{ActorLabel, Provenance};
 use crate::domain::{FieldEdit, StateChanges, SuperState, TypeChanges, TypeDef};
@@ -678,7 +679,9 @@ pub fn dispatch<S: Store>(
                 // refuses `claim` together with a `count` other than 1
                 // before this arm ever runs — see `parse_next`'s own guard —
                 // so there is exactly one story to answer with or none.
-                match StoryService::new(ctx).claim_next(phase.as_deref())? {
+                // `next --claim` posts no comment; the comment is `story claim`'s
+                // (SH-476), and this verb retires in SH-477.
+                match StoryService::new(ctx).claim_next(phase.as_deref(), None)? {
                     Some((before, _snapshot)) => match ctx.story_view(&before.id)? {
                         // A fresh read, taken after `claim_next`'s own
                         // transition hooks ran — same reasoning as every
@@ -709,6 +712,11 @@ pub fn dispatch<S: Store>(
                 }
             }
         }
+        Invocation::Claim {
+            target,
+            comment,
+            dry_run,
+        } => dispatch_claim(ctx, target, comment, dry_run),
         Invocation::Summary => query(ctx, |service| service.summary())
             .map(|summary| Response::Summary(Box::new(summary))),
         Invocation::Report { html } => {
@@ -1335,6 +1343,67 @@ fn normalized_remote(url: &str) -> Result<crate::domain::remote::RemoteUrl, AppE
 ///
 /// Its consumer is `plugins/story/bin/story.sh`, whose `dispatch` verb is
 /// the one operation in storyhook that genuinely needs a directory.
+/// `story claim (<id> | --next)` (SH-476) — the one atomic claim verb.
+///
+/// Both forms answer with [`Response::Claimed`] and its `claimed_from`
+/// envelope field verbatim, because a claim is a claim however the story was
+/// chosen: the view is a fresh read taken *after* the transition hooks ran,
+/// the same as every other write arm's `ctx.story_view(&id)`, since a hook may
+/// itself have written to the story.
+fn dispatch_claim<S: Store>(
+    ctx: &Ctx<'_, S>,
+    target: ClaimTarget,
+    comment: ClaimComment,
+    dry_run: bool,
+) -> Result<Response, AppError> {
+    // A `Default` that reached here was never resolved by the client that
+    // composed the request. Refused, never filled in: this process cannot see
+    // the caller's tmux session, and its own hostname would be a coincidence
+    // rather than an answer.
+    let comment = match comment {
+        ClaimComment::Default => {
+            return Err(AppError::Validation(
+                crate::claim_comment::UNRESOLVED_REFUSAL.to_string(),
+            ));
+        }
+        ClaimComment::Custom(text) => Some(text),
+        ClaimComment::Suppressed => None,
+    };
+    let service = StoryService::new(ctx);
+
+    if dry_run {
+        let plan = match &target {
+            ClaimTarget::Story(id) => Some(service.plan_claim_story(id)?),
+            ClaimTarget::Next { phase } => service.plan_claim_next(phase.as_deref())?,
+        };
+        let Some(plan) = plan else {
+            return Ok(Response::Message("no ready stories".to_string()));
+        };
+        let mut lines = vec![format!(
+            "would claim {} — {} -> {}",
+            plan.id, plan.from, plan.to
+        )];
+        if let Some(text) = &comment {
+            lines.push(format!("would comment on {}: {text}", plan.id));
+        }
+        return Ok(Response::Message(lines.join("\n")));
+    }
+
+    let claimed = match &target {
+        ClaimTarget::Story(id) => Some(service.claim_story(id, comment.as_deref())?),
+        ClaimTarget::Next { phase } => service.claim_next(phase.as_deref(), comment.as_deref())?,
+    };
+    let Some((before, _snapshot)) = claimed else {
+        return Ok(Response::Message("no ready stories".to_string()));
+    };
+    match ctx.story_view(&before.id)? {
+        Response::Story(view) => Ok(Response::Claimed(view, before.state)),
+        other => Err(AppError::Storage(format!(
+            "internal: story view answered with {other:?}"
+        ))),
+    }
+}
+
 fn dispatch_project_show<S: Store>(ctx: &Ctx<'_, S>) -> Result<Response, AppError> {
     let view = CatalogService::new(ctx.store()).describe(ctx.project())?;
     Ok(Response::Project(Box::new(view)))
@@ -2354,6 +2423,7 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::List { .. }
         | Invocation::Search { .. }
         | Invocation::Next { .. }
+        | Invocation::Claim { .. }
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
@@ -2557,6 +2627,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::List { .. } => "list",
         Invocation::Search { .. } => "search",
         Invocation::Next { .. } => "next",
+        Invocation::Claim { .. } => "claim",
         Invocation::Summary => "summary",
         Invocation::Report { .. } => "report",
         Invocation::Doctor { .. } => "doctor",
@@ -3480,6 +3551,7 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::List { .. }
         | Invocation::Search { .. }
         | Invocation::Next { .. }
+        | Invocation::Claim { .. }
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }

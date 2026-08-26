@@ -132,6 +132,16 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // only pipe at all is *stdin*, which this end closes. Lived at
     // `src/web.rs` until SH-250 moved it beside its second caller.
     ("src/clipboard.rs", "&argv[0]", Kind::Waited),
+    // `claim_comment::tmux_window` — `tmux display-message -p`, asked once
+    // per `story claim` so the default comment can name the caller's own
+    // window (SH-476). `Reads`: stdout is a pipe. Hardened on
+    // `daemon/tailnet.rs`'s model rather than `env/git_env.rs`'s, because
+    // unlike `git` the program on the other end is a *client of a running
+    // server*, and a wedged tmux server is exactly the case where an
+    // unbounded read would hold a mutating command open forever. Own process
+    // group, bounded wait, whole group killed on timeout, and the timeout is
+    // reported rather than swallowed.
+    ("src/claim_comment.rs", "\"tmux\"", Kind::Reads),
     // `web::open_in_browser` — `open`/`xdg-open`, or `$BROWSER`.
     // `Waited`: `.status()` with both output streams `Stdio::null()`, so no
     // pipe exists for a descendant to hold. A browser it launches routinely

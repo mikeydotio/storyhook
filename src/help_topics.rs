@@ -395,6 +395,60 @@ Related:
         );
 
         m.insert(
+            "claim",
+            r#"story claim <id> [--comment <text> | --no-comment] [--dry-run]
+story claim --next [--phase <N>] [--comment <text> | --no-comment] [--dry-run]
+
+Take a story to work on, atomically. One of <id> or --next is required and
+they are mutually exclusive: a bare 'story claim' is refused rather than
+resolved to --next, because this writes, and a script whose id argument came
+out empty must not silently claim whatever happened to sort first.
+
+The claim moves the story into the state carrying this project's 'active'
+role (normally in-progress), and it does so inside one write transaction, so
+two callers racing this command are handed two different stories rather than
+one winner and a corrupt second claim. Its --json answer carries
+"claimed_from", the state the story came out of.
+
+  <id>      That story. Already claimed by somebody else? The answer is
+            result:"conflict", exit 9, with .actual naming the state found.
+  --next    Whatever 'story next' would answer. Nothing ready is reported as
+            "no ready stories", which is an answer, not a failure.
+  --phase <N>
+            Narrows what --next picks. Meaningless beside an explicit id, and
+            refused there rather than ignored.
+
+A claim comments by default:
+
+    Starting work on this story in <host> tmux window <session>:<window>
+
+Outside tmux the window clause is omitted entirely — never a placeholder.
+--comment <text> replaces that sentence with your own; --no-comment posts
+none. The comment is written in the same transaction as the claim, so a claim
+never lands with its comment missing.
+
+--dry-run reads for real and writes symbolically: every refusal a real claim
+would make is still made, and nothing is written.
+
+When to use:
+  Whenever you are about to start work, and always in preference to a
+  separate 'story move' — that is two round trips with a race between them.
+
+Examples:
+  story claim SH-42                 # Claim a specific story
+  story claim --next                # Claim the top-priority ready story
+  story claim --next --phase 1      # ...restricted to phase 1
+  story claim SH-42 --no-comment    # Claim it quietly
+  story claim --next --dry-run      # Say what would happen, write nothing
+
+Related:
+  story next   — See what is ready without taking it
+  story move   — Move a story between states without claiming semantics
+  story show   — Read a story in full
+"#,
+        );
+
+        m.insert(
             "state",
             r#"story state list
 story state add <slug> --super OPEN|CLOSED [--role active] [--description "<text>"]
