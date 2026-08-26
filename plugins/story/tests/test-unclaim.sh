@@ -99,6 +99,24 @@ assert_eq "$(jqf "$out" .ok)" "true" "no-window: ok"
 assert_eq "$(jqf "$out" .window)" "none" "no-window: reported as none"
 assert_eq "$(jqf "$out" .closed_window)" "false" "no-window: nothing was closed"
 
+# --- a window the CALLER cannot see is still closed -------------------------
+# `_complete_prepare` classifies the window only when the caller is itself
+# inside tmux, which answers "is this mine" but not "does one exist". From a
+# shell outside the server a live story window used to classify as `none` and
+# be left open in silence. `unclaim` now asks the closer itself and reports
+# what it actually found -- and a caller with no pane of their own structurally
+# cannot be standing in the window being closed.
+ow=$(new_story "$repo" "Window I cannot see")
+claim_it "$ow"
+kills_before=$(kill_count)
+out=$(cd "$repo" \
+  && FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$ow")" \
+     bash "$SCRIPT" --project "$slug" unclaim "$ow" 2>&1)
+assert_eq "$(jqf "$out" .ok)" "true" "invisible-window: ok"
+assert_eq "$(jqf "$out" .window)" "open" "invisible-window: found and reported as open"
+assert_eq "$(jqf "$out" .closed_window)" "true" "invisible-window: and actually closed"
+[ "$(kill_count)" -gt "$kills_before" ] || fail_test "invisible-window: no kill-window call was made"
+
 # --- the comment flags reach the CLI verbatim -------------------------------
 cm=$(new_story "$repo" "With a reason")
 claim_it "$cm"
@@ -136,6 +154,11 @@ assert_eq "$(jqf "$out" .ok)" "true" "dry: ok"
 assert_eq "$(jqf "$out" .dry_run)" "true" "dry: flagged"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" "story unclaim" "dry: previews the release"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" "kill-window" "dry: previews the window close"
+assert_eq "$(cd "$repo" \
+  && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%0' "$dr")" \
+     STORY_DRY_RUN=1 bash "$SCRIPT" --project "$slug" unclaim "$dr" 2>&1 \
+  | jq -r '.commands|join(" ")' | grep -c 'kill-window' || true)" "0" \
+  "dry: a preview from the story's own window does NOT promise to close it"
 assert_eq "$(state_of "$dr")" "in-progress" "dry: the story did NOT move"
 assert_eq "$(kill_count)" "$kills_before" \
   "dry: no window was closed"
