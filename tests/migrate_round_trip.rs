@@ -76,11 +76,13 @@ use std::path::Path;
 use legacy_support::{
     MIGRATION_AT, custom_config_tree, golden_export_path, migrate, real_tree, store_snapshots,
 };
-use storyhook::domain::StorySnapshot;
+use storyhook::domain::{StorySnapshot, fold_story};
 use storyhook::service::transfer::ProjectExport;
 use storyhook::service::{Clock, Ctx, GitService, StoryService, TransferService};
 use storyhook::storage;
-use storyhook::store::{ReadOps, SqliteStore, Store as _, WriteOps as _};
+use storyhook::store::{
+    ReadOps, SqliteStore, Store as _, StoryQuery, WriteOps as _, partition_known,
+};
 
 /// The store's project as an export document.
 fn export(store: &SqliteStore) -> ProjectExport {
@@ -121,6 +123,28 @@ fn legacy_snapshots(root: &Path) -> BTreeMap<String, StorySnapshot> {
         .collect()
 }
 
+/// Every stored history folded without query-time epic-state projection.
+///
+/// The rollback contract compares the event-sourced artifact that crosses the
+/// export boundary. Effective epic state is intentionally a read projection
+/// and has its own query regressions.
+fn stored_snapshots(store: &SqliteStore) -> BTreeMap<String, StorySnapshot> {
+    store
+        .read(|tx| {
+            let project = tx.projects()?.first().expect("one project").id;
+            let states = tx.state_map(project)?;
+            let mut snapshots = BTreeMap::new();
+            for row in tx.stories(project, &StoryQuery::all())? {
+                let stored = tx.events_for(project, row.story_no)?;
+                let (known, _unknown) = partition_known(row.story_no, &stored);
+                let snapshot = fold_story(&row.snapshot.id, &known, &states)?;
+                snapshots.insert(snapshot.id.clone(), snapshot);
+            }
+            Ok(snapshots)
+        })
+        .expect("folding stored histories")
+}
+
 /// Runs the whole loop for one legacy tree and asserts the two read models are
 /// identical, story by story.
 fn assert_round_trips(root: &Path, expected_stories: usize) {
@@ -130,7 +154,7 @@ fn assert_round_trips(root: &Path, expected_stories: usize) {
     let document = export(&store);
     let (_dir, rebuilt) = rebuild_legacy_tree(&document);
 
-    let from_store = store_snapshots(&store);
+    let from_store = stored_snapshots(&store);
     let from_legacy = legacy_snapshots(&rebuilt);
 
     assert_eq!(
@@ -668,7 +692,13 @@ fn the_real_trees_export_equals_the_golden_document_modulo_the_repairs() {
                         .ok()
                         .as_ref()
                         == Some(&event)
-            });
+            }) || (report.computed_epics.contains(&ours.id)
+                && serde_json::to_value(storyhook::domain::StoryEvent::StoryStateCleared {
+                    at: MIGRATION_AT.to_string(),
+                })
+                .ok()
+                .as_ref()
+                    == Some(&event));
             if named {
                 accounted += 1;
             } else {
@@ -691,7 +721,7 @@ fn the_real_trees_export_equals_the_golden_document_modulo_the_repairs() {
     );
     assert_eq!(
         accounted,
-        report.repairs.len() + report.metadata_repairs.len(),
+        report.repairs.len() + report.metadata_repairs.len() + report.computed_epics.len(),
         "every repair the report names must actually appear in the document, and nothing else"
     );
     assert_eq!(report.repairs.len(), 10);

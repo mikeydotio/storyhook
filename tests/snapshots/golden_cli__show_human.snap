@@ -3,7 +3,7 @@ source: tests/golden_cli.rs
 ---
 $ story show SH-1
 SH-1 Design the storage engine
-state: todo (OPEN)
+state: in-progress (OPEN)
 draft: no
 assignee: -
 priority: critical

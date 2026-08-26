@@ -97,7 +97,7 @@ Supported relationships:
 
 Constraints:
 
-- child may have only one parent
+- child may have only one parent *(historical constraint; SH-446 later made multiple parents intentional)*
 - parent may have many children
 - no parent/child cycles
 - `parent-of` implies scheduling semantics (`starts-before`, `finishes-after`)

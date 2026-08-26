@@ -24,12 +24,13 @@
 //! `unrelate` relaxes `b` uniformly, for every kind and every role.
 
 use crate::domain::{
-    StoryEvent, StoryRelation, StorySnapshot, relation_edges, would_create_parent_cycle,
+    StoryEvent, StorySnapshot, has_children, relation_edges, would_create_parent_cycle,
 };
 use crate::error::AppError;
 use crate::event_hooks::HookEventType;
 use crate::store::{ExpectedSeq, ReadOps, Store};
 
+use super::story::state_transition_events;
 use super::{Ctx, append_and_fold, project_prefix, query, resolve_open_story, resolve_story};
 
 /// What [`RelationService::relate`] did.
@@ -246,8 +247,8 @@ impl<'ctx, S: Store> RelationService<'ctx, S> {
     ///
     /// Both ends are appended to, folded, and written back before the
     /// transaction commits, so there is no interval in which one story claims
-    /// an edge the other does not. A rejected edge — a second parent, a cycle —
-    /// rolls both halves back together.
+    /// an edge the other does not. A rejected edge — such as a cycle — rolls
+    /// both halves back together. Multiple parents are intentional.
     pub fn relate(
         &self,
         a: &str,
@@ -310,15 +311,20 @@ impl<'ctx, S: Store> RelationService<'ctx, S> {
 
             if !remove {
                 let stories = query::story_map(&*tx, project)?;
-                validate_parent_constraints(
-                    &stories,
-                    a,
-                    b,
-                    relation,
-                    &a_row.snapshot,
-                    &b_row.snapshot,
-                )?;
+                validate_parent_constraints(&stories, a, b, relation)?;
             }
+
+            // Read the effective state before removing the edge: if this is a
+            // parent's last child, that exact computed answer is what the
+            // explicit StoryStateChanged below must stamp into its now-leaf
+            // history. After removal there is deliberately nothing left from
+            // which to recompute it.
+            let states = tx.state_map(project)?;
+            let effective_before = if remove {
+                Some(query::story_map(&*tx, project)?)
+            } else {
+                None
+            };
 
             let mut a_events = Vec::new();
             let mut b_events = Vec::new();
@@ -358,11 +364,52 @@ impl<'ctx, S: Store> RelationService<'ctx, S> {
                 }
             }
 
+            if !remove {
+                if gains_first_child(&a_row.snapshot, &a_events) {
+                    a_events.push(StoryEvent::StoryStateCleared { at: now.clone() });
+                }
+                if gains_first_child(&b_row.snapshot, &b_events) {
+                    b_events.push(StoryEvent::StoryStateCleared { at: now.clone() });
+                }
+            } else if let Some(effective) = &effective_before {
+                if loses_last_child(&a_row.snapshot, &a_events)
+                    && let Some(state) = effective.get(a)
+                {
+                    let target = states.get(&state.state).ok_or_else(|| {
+                        AppError::Validation(format!(
+                            "epic `{a}` computed undefined state `{}`",
+                            state.state
+                        ))
+                    })?;
+                    a_events.extend(state_transition_events(
+                        target,
+                        a_row.snapshot.awaiting.is_some(),
+                        &now,
+                        Vec::new(),
+                    ));
+                }
+                if loses_last_child(&b_row.snapshot, &b_events)
+                    && let Some(state) = effective.get(b)
+                {
+                    let target = states.get(&state.state).ok_or_else(|| {
+                        AppError::Validation(format!(
+                            "epic `{b}` computed undefined state `{}`",
+                            state.state
+                        ))
+                    })?;
+                    b_events.extend(state_transition_events(
+                        target,
+                        b_row.snapshot.awaiting.is_some(),
+                        &now,
+                        Vec::new(),
+                    ));
+                }
+            }
+
             if a_events.is_empty() && b_events.is_empty() {
                 return Ok(RelationOutcome::Unchanged { remove });
             }
 
-            let states = tx.state_map(project)?;
             // `b` first, so that the snapshot returned for `a` is folded after
             // both halves exist. Either order commits atomically; this one
             // means the answer the caller renders is the final state rather
@@ -421,36 +468,41 @@ fn has_relation(story: &StorySnapshot, relation: &str, other_id: &str) -> bool {
         .any(|candidate| candidate.relation == relation && candidate.other_id == other_id)
 }
 
-/// The two rules that make the parent hierarchy a tree: at most one parent per
-/// story, and no cycles.
+fn gains_first_child(story: &StorySnapshot, events: &[StoryEvent]) -> bool {
+    !has_children(story)
+        && events.iter().any(|event| {
+            matches!(
+                event,
+                StoryEvent::StoryRelationshipAdded { relation, .. }
+                    if relation == "parent-of"
+            )
+        })
+}
+
+fn loses_last_child(story: &StorySnapshot, events: &[StoryEvent]) -> bool {
+    story
+        .relationships
+        .iter()
+        .filter(|relation| relation.relation == "parent-of")
+        .count()
+        == 1
+        && events.iter().any(|event| {
+            matches!(
+                event,
+                StoryEvent::StoryRelationshipRemoved { relation, .. }
+                    if relation == "parent-of"
+            )
+        })
+}
+
+/// The one rule that keeps the parent hierarchy acyclic. Multiple parents are
+/// valid: each parent computes independently from its own children.
 fn validate_parent_constraints(
     stories: &std::collections::BTreeMap<String, StorySnapshot>,
     a: &str,
     b: &str,
     relation: &str,
-    a_story: &StorySnapshot,
-    b_story: &StorySnapshot,
 ) -> Result<(), AppError> {
-    let check: Option<(&StorySnapshot, &str)> = match relation {
-        "parent-of" => Some((b_story, a)),
-        "child-of" => Some((a_story, b)),
-        _ => None,
-    };
-
-    if let Some((story, expected_parent)) = check {
-        let has_other_parent = story
-            .relationships
-            .iter()
-            .filter(|candidate: &&StoryRelation| candidate.relation == "child-of")
-            .any(|candidate| candidate.other_id != expected_parent);
-        if has_other_parent {
-            return Err(AppError::Validation(format!(
-                "story `{}` already has a different parent",
-                story.id
-            )));
-        }
-    }
-
     match relation {
         "parent-of" if would_create_parent_cycle(stories, a, b) => Err(AppError::Validation(
             format!("adding `parent-of` from `{a}` to `{b}` would create a cycle"),

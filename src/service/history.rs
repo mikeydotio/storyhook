@@ -32,7 +32,9 @@
 //! that no longer exists** — and `restore` refuses those loudly, naming the
 //! field, rather than silently leaving the story where it was.
 
-use crate::domain::{StoryEvent, StorySnapshot, fold_story, normalize_labels};
+use crate::domain::{
+    StoryEvent, StorySnapshot, SuperState, fold_story, has_children, normalize_labels,
+};
 use crate::error::AppError;
 use crate::store::{ExpectedSeq, ReadOps, Store, StoryNo, partition_known};
 
@@ -54,16 +56,22 @@ pub fn restore<S: Store>(
     let now = ctx.now();
     let project = ctx.project();
 
-    let (story_no, current, states, prefix) = ctx.store().read(|tx| {
+    let (story_no, current, states, prefix, effective) = ctx.store().read(|tx| {
         let prefix = project_prefix(tx, project)?;
         let (story_no, _row) = resolve_story(tx, project, &prefix, id)?;
         let stored = tx.events_for(project, story_no)?;
         let (known, _unknown) = partition_known(story_no, &stored);
-        Ok((story_no, known, tx.state_map(project)?, prefix))
+        let effective = super::query::story_map(tx, project)?.remove(&story_no.to_id(&prefix));
+        Ok((story_no, known, tx.state_map(project)?, prefix, effective))
     })?;
 
     let public = story_no.to_id(&prefix);
-    let before = fold_story(&public, &current, &states)?;
+    let mut before = fold_story(&public, &current, &states)?;
+    if let Some(effective) = effective {
+        before.state = effective.state;
+        before.superstate = effective.superstate;
+        before.state_computed = effective.state_computed;
+    }
     let after = if target.is_empty() {
         None
     } else {
@@ -268,7 +276,23 @@ fn compensate(
     // State last among the scalar fields: moving into an OPEN state is what
     // *reopening* is, and it retracts the closure markers — so it has to be the
     // event that lands, not one an earlier field edit precedes.
-    if before.state != after.state {
+    if before.state_computed && !has_children(after) {
+        events.push(StoryEvent::StoryStateChanged {
+            at: at.clone(),
+            state: before.state.clone(),
+        });
+        if before.superstate == SuperState::Closed {
+            if before.awaiting.is_some() {
+                events.push(StoryEvent::StoryAwaitingCleared { at: at.clone() });
+            }
+            events.push(StoryEvent::StoryClosedAndArchived {
+                at: at.clone(),
+                state: before.state.clone(),
+            });
+        }
+    } else if !before.state_computed && after.state_computed && has_children(after) {
+        events.push(StoryEvent::StoryStateCleared { at: at.clone() });
+    } else if before.state != after.state {
         events.push(StoryEvent::StoryStateChanged {
             at: at.clone(),
             state: after.state.clone(),

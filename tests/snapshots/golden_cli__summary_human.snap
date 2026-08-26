@@ -5,9 +5,9 @@ $ story summary
 stories: 14 (11 open, 3 closed)
 by state:
   done: 3
-  in-progress: 1
+  in-progress: 2
   review: 1
-  todo: 9
+  todo: 8
 by priority:
   critical: 2
   high: 3
@@ -21,21 +21,21 @@ by type:
   spike: 2
 blocked: 3
 flagged: 0
-ready: 8
+ready: 7
 ready stories:
-  SH-1 [todo] (critical) Design the storage engine
   SH-5 [todo] (critical) Fix the id collision across worktrees
   SH-2 [todo] (high) Define the Store trait
   SH-12 [todo] (high) Harden concurrent writes
   SH-4 [review] (medium) Write the migration runner
+  SH-10 [todo] (medium) Ship the CLI shim
 
 $ story report
 stories: 14 (11 open, 3 closed)
 by state:
   done: 3
-  in-progress: 1
+  in-progress: 2
   review: 1
-  todo: 9
+  todo: 8
 by priority:
   critical: 2
   high: 3
@@ -49,10 +49,10 @@ by type:
   spike: 2
 blocked: 3
 flagged: 0
-ready: 8
+ready: 7
 ready stories:
-  SH-1 [todo] (critical) Design the storage engine
   SH-5 [todo] (critical) Fix the id collision across worktrees
   SH-2 [todo] (high) Define the Store trait
   SH-12 [todo] (high) Harden concurrent writes
   SH-4 [review] (medium) Write the migration runner
+  SH-10 [todo] (medium) Ship the CLI shim

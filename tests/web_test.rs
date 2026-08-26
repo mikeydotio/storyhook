@@ -1229,6 +1229,15 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     // compute_display_state can promote it into that column.
     assert!(body.contains("var shownState = v.display_state || st.state;"));
 
+    // SH-446: both Board and List consume filteredStories(), so this one
+    // persisted toggle hides structural epics (the views with progress
+    // rollups) everywhere by default and Clear Filters restores that default.
+    assert!(body.contains(r#"id="toggle-epics"> Show epics"#));
+    assert!(body.contains("showEpics: false"));
+    assert!(body.contains("if (!f.showEpics && v.progress) return false;"));
+    assert!(body.contains("state.filter.showEpics = this.checked;"));
+    assert!(body.contains(r#"$("toggle-epics").checked = false;"#));
+
     // SH-217: the markdown renderer -- builds DOM nodes directly (never an
     // HTML string, see the sink-pin assertions above), and its link
     // scheme allowlist by name so a future edit that widens it is a
