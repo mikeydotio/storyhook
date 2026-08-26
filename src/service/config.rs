@@ -33,8 +33,8 @@ use crate::cli::MemberInput;
 use crate::domain::provenance::Provenance;
 use crate::domain::{
     FieldEdit, Member, StateChanges, StateDef, StateUsage, StoryEvent, SuperState, TypeChanges,
-    TypeDef, validate_required_states, validate_state_defs_for_write, validate_type_glyph,
-    validate_type_slug,
+    TypeDef, has_children, validate_required_states, validate_state_defs_for_write,
+    validate_type_glyph, validate_type_slug,
 };
 use crate::error::AppError;
 use crate::store::{ExpectedSeq, ProjectId, ReadOps, Store, StoryQuery, WriteOps};
@@ -502,9 +502,12 @@ pub fn state_usage(
         .into_iter()
         .map(|state| (state.slug, StateUsage::default()))
         .collect();
-    for row in tx.stories(project, &StoryQuery::all().deleted(false))? {
-        let entry = usage.entry(row.state.clone()).or_default();
-        if row.archived {
+    for story in super::query::story_map(tx, project)?
+        .into_values()
+        .filter(|story| !story.deleted)
+    {
+        let entry = usage.entry(story.state.clone()).or_default();
+        if story.superstate == SuperState::Closed {
             entry.archived += 1;
         } else {
             entry.open += 1;
@@ -526,12 +529,38 @@ fn resolve_migration(
     move_stories_to: Option<&str>,
     action: &str,
 ) -> Result<Option<StateDef>, AppError> {
+    let effective = super::query::story_map(tx, project)?;
     let open = state_usage(tx, project)?
         .get(slug)
         .map_or(0, |usage| usage.open);
-    if open == 0 {
+    let dormant = tx
+        .stories(project, &StoryQuery::all().state(slug).deleted(false))?
+        .into_iter()
+        .filter(|row| {
+            has_children(&row.snapshot)
+                && effective
+                    .get(&row.snapshot.id)
+                    .is_some_and(|story| story.state != slug)
+        })
+        .count();
+    let migrations = open + dormant;
+    if migrations == 0 {
         return Ok(None);
     }
+    let occupancy = if dormant == 0 {
+        format!("holds {open} open {}", plural_stories(open))
+    } else if open == 0 {
+        format!(
+            "has {dormant} computed epic fallback {}",
+            plural_stories(dormant)
+        )
+    } else {
+        format!(
+            "holds {open} open {} and has {dormant} computed epic fallback {}",
+            plural_stories(open),
+            plural_stories(dormant)
+        )
+    };
 
     let candidates: Vec<&StateDef> = next_states
         .iter()
@@ -539,16 +568,14 @@ fn resolve_migration(
         .collect();
     if candidates.is_empty() {
         return Err(AppError::Validation(format!(
-            "cannot {action} state `{slug}`: it holds {open} open {}, and there is no other state to move them into",
-            plural_stories(open)
+            "cannot {action} state `{slug}`: it {occupancy}, and there is no other state to move them into"
         )));
     }
 
     let Some(target) = move_stories_to else {
         let names: Vec<&str> = candidates.iter().map(|state| state.slug.as_str()).collect();
         return Err(AppError::Validation(format!(
-            "cannot {action} state `{slug}` while it holds {open} open {}: name the state they move into (one of: {})",
-            plural_stories(open),
+            "cannot {action} state `{slug}` while it {occupancy}: name the state they move into (one of: {})",
             names.join(", ")
         )));
     };
@@ -582,22 +609,33 @@ fn migrate_occupants(
 ) -> Result<usize, AppError> {
     let prefix = project_prefix(&*tx, project)?;
     let states = tx.state_map(project)?;
-    let occupants = tx.stories(
-        project,
-        &StoryQuery::all().state(from).archived(false).deleted(false),
-    )?;
+    let occupants: Vec<_> = tx
+        .stories(project, &StoryQuery::all().state(from).deleted(false))?
+        .into_iter()
+        .filter(|row| !row.archived || has_children(&row.snapshot))
+        .collect();
 
     for row in &occupants {
         let mut events = vec![StoryEvent::StoryCommentAdded {
             at: now.to_string(),
             text: format!("[states] moved from `{from}` to `{}`", to.slug),
         }];
-        events.extend(state_transition_events(
-            to,
-            row.awaiting.is_some(),
-            now,
-            Vec::new(),
-        ));
+        if has_children(&row.snapshot) {
+            events.push(StoryEvent::StoryStateChanged {
+                at: now.to_string(),
+                state: to.slug.clone(),
+            });
+            events.push(StoryEvent::StoryStateCleared {
+                at: now.to_string(),
+            });
+        } else {
+            events.extend(state_transition_events(
+                to,
+                row.awaiting.is_some(),
+                now,
+                Vec::new(),
+            ));
+        }
         append_and_fold(
             tx,
             project,

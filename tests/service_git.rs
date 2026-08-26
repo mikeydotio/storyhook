@@ -19,7 +19,7 @@ use std::process::Command;
 
 use storyhook::domain::{CommitReference, StoryEvent, StorySnapshot};
 use storyhook::error::AppError;
-use storyhook::service::{Clock, GitService, NewStoryInput, StoryService};
+use storyhook::service::{Clock, GitService, NewStoryInput, RelationService, StoryService};
 use storyhook::store::{ProjectSettings, ReadOps, Store, StoryNo, WriteOps, partition_known};
 use storyhook_test_support::{ServiceFixture, default_states};
 
@@ -767,6 +767,25 @@ fn a_colon_trailer_claims_and_moves_the_story() {
         message.contains(&format!("{id}: todo \u{2192} in-progress")),
         "{message}"
     );
+}
+
+#[test]
+fn a_claiming_commit_links_an_epic_without_moving_its_computed_state() {
+    let fixture = ServiceFixture::new();
+    git_init(&fixture);
+    let epic = create(&fixture, "epic");
+    let child = create(&fixture, "child");
+    RelationService::new(&fixture.ctx())
+        .relate(&epic, "parent-of", &child, false)
+        .expect("creating the structural epic");
+    commit_with_body(&fixture, "feat: land the thing", &format!("Closes: {epic}"));
+
+    let message = sync(&fixture).expect("syncing");
+    assert!(message.contains("the story is an epic"), "{message}");
+    let epic = snapshot_of(&fixture, StoryNo::new(1));
+    assert_eq!(epic.state, "todo");
+    assert!(epic.state_computed);
+    assert_eq!(epic.referenced_by_commits.len(), 1);
 }
 
 /// The decisive case the council split on: here the colon is a Conventional

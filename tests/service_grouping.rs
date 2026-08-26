@@ -273,7 +273,7 @@ fn phases_list_in_numeric_order_not_label_text_order() {
 // --- epics -----------------------------------------------------------------
 
 #[test]
-fn an_epic_is_a_story_typed_epic() {
+fn an_epic_is_a_story_with_children_regardless_of_type() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     fixture
@@ -290,8 +290,13 @@ fn an_epic_is_a_story_typed_epic() {
         .expect("adding the epic type");
 
     let service = GroupingService::new(&ctx);
-    let epic = service.create_epic("the big one").expect("creating");
-    assert_eq!(epic.story_type.as_deref(), Some("epic"));
+    let typed = service.create_epic("typed placeholder").expect("creating");
+    assert_eq!(typed.story_type.as_deref(), Some("epic"));
+    let structural = new_story(&ctx, "the structural epic");
+    let child = new_story(&ctx, "the child");
+    service
+        .add_to_epic(&structural, &child)
+        .expect("adding a child");
 
     new_story(&ctx, "not an epic");
     let listed: Vec<String> = service
@@ -300,7 +305,7 @@ fn an_epic_is_a_story_typed_epic() {
         .into_iter()
         .map(|view| view.story.id)
         .collect();
-    assert_eq!(listed, [epic.id]);
+    assert_eq!(listed, [structural]);
 }
 
 #[test]
@@ -352,7 +357,7 @@ fn adding_the_same_story_to_an_epic_twice_changes_nothing() {
 }
 
 #[test]
-fn a_story_cannot_be_given_a_second_epic() {
+fn a_story_may_belong_to_multiple_epics() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let first = new_story(&ctx, "first epic");
@@ -361,13 +366,20 @@ fn a_story_cannot_be_given_a_second_epic() {
     let service = GroupingService::new(&ctx);
 
     service.add_to_epic(&first, &child).expect("adding");
-    let error = service.add_to_epic(&second, &child).unwrap_err();
-    assert!(error.to_string().contains("already has a different parent"));
+    service
+        .add_to_epic(&second, &child)
+        .expect("adding to a second epic");
     assert_eq!(
         relations(&snapshot(&fixture, &child)),
-        [("child-of".to_string(), first)]
+        [
+            ("child-of".to_string(), first.clone()),
+            ("child-of".to_string(), second.clone()),
+        ]
     );
-    assert!(relations(&snapshot(&fixture, &second)).is_empty());
+    assert_eq!(
+        relations(&snapshot(&fixture, &second)),
+        [("parent-of".to_string(), child)]
+    );
 }
 
 #[test]

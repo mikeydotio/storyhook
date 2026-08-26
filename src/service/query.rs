@@ -24,8 +24,8 @@
 //! path it reports with a different, meaningless one.
 //!
 //! `summary`, `report` and `context`'s ready lists rank by
-//! [`domain::ready_order`](crate::domain::ready_order) (priority, then story
-//! number) instead of bare story number — a total order the legacy comparator
+//! [`domain::ready_order`](crate::domain::ready_order) (own priority, parent
+//! epic priority, then story number) instead of bare story number — a total order the legacy comparator
 //! did not have (SH-63). `next` extends that comparator into a dependency-aware
 //! execution order: each result virtually completes before the next is chosen,
 //! so a blocked successor can appear after its blocker (SH-450).
@@ -191,10 +191,12 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
         // routing both through the same one — `list` (SH-409) now excludes
         // closed/archived/deleted by default too, but independently, via its
         // own `is_visible` pass, not this query.
-        let story_rows = self.tx.stories(
-            self.project,
-            &StoryQuery::all().archived(false).draft(false),
-        )?;
+        // Do not pre-filter on the materialized `archived` column: an epic's
+        // stored state is deliberately dormant while its effective state is
+        // derived from children. Apply OPEN visibility after that projection.
+        let story_rows = self
+            .tx
+            .stories(self.project, &StoryQuery::all().draft(false))?;
         // Carried alongside `stories`, not merged into it, for the
         // Drafts popover and its count badge — see the field's own doc
         // comment on `ProjectSnapshotView`.
@@ -202,11 +204,29 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
             .tx
             .stories(self.project, &StoryQuery::all().draft(true))?;
 
-        // `head_global_seqs` (SH-336) is read off the same rows `stories`
-        // and `drafts` already fetched — no extra store trip.
+        let mut effective = story_map(self.tx, self.project)?;
+        let stories: Vec<_> = story_rows
+            .iter()
+            .filter_map(|row| effective.remove(&row.snapshot.id))
+            .filter(|story| story.superstate == SuperState::Open && !story.deleted)
+            .collect();
+        let drafts: Vec<_> = draft_rows
+            .iter()
+            .filter_map(|row| effective.remove(&row.snapshot.id))
+            .collect();
+        // `head_global_seqs` (SH-336) covers exactly the projected snapshots
+        // returned above, even though effective OPEN filtering had to happen
+        // after the broader materialized-row read.
+        let visible_ids: BTreeSet<&str> = stories
+            .iter()
+            .chain(drafts.iter())
+            .map(|story| story.id.as_str())
+            .collect();
         let mut head_global_seqs = BTreeMap::new();
         for row in story_rows.iter().chain(draft_rows.iter()) {
-            head_global_seqs.insert(row.snapshot.id.clone(), row.head_global_seq);
+            if visible_ids.contains(row.snapshot.id.as_str()) {
+                head_global_seqs.insert(row.snapshot.id.clone(), row.head_global_seq);
+            }
         }
 
         Ok(ProjectSnapshotView {
@@ -214,8 +234,8 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
             prefix: project.prefix,
             states: self.tx.states(self.project)?,
             members: self.tx.members(self.project)?,
-            stories: story_rows.into_iter().map(|row| row.snapshot).collect(),
-            drafts: draft_rows.into_iter().map(|row| row.snapshot).collect(),
+            stories,
+            drafts,
             head_global_seqs,
         })
     }
@@ -381,7 +401,8 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
     /// open dependency constrains order instead of making its successor
     /// permanently absent (SH-450). Leaf stories only: a parent whose children
     /// are ready is not itself work. Every available frontier is sorted by
-    /// [`domain::ready_order`]: priority, then story number — a total order, so
+    /// [`domain::ready_order`]: own priority, parent epic priority, then story
+    /// number — a total order, so
     /// asking twice with nothing changed in between always returns the same
     /// list (SH-63).
     pub fn next(&self, count: usize, phase: Option<&str>) -> Result<Vec<StoryView>, AppError> {
@@ -404,7 +425,7 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
             .into_iter()
             .filter(|view| is_claimable(&view.story, &stories, active.as_ref()))
             .collect();
-        sort_ready(&mut ready);
+        sort_ready(&mut ready, &stories);
         summary.ready_count = ready.len();
         ready.truncate(READY_PREVIEW);
         summary.ready_stories = ready;
@@ -459,12 +480,17 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
     pub fn report_summary(&self) -> Result<SummaryView, AppError> {
         let data = self.report_data()?;
         let ready_ids: BTreeSet<String> = data.ready_ids.into_iter().collect();
+        let stories: BTreeMap<String, StorySnapshot> = data
+            .stories
+            .iter()
+            .map(|view| (view.story.id.clone(), view.story.clone()))
+            .collect();
         let mut ready: Vec<StoryView> = data
             .stories
             .into_iter()
             .filter(|view| ready_ids.contains(&view.story.id))
             .collect();
-        sort_ready(&mut ready);
+        sort_ready(&mut ready, &stories);
 
         let mut summary = data.summary;
         summary.ready_count = ready.len();
@@ -596,7 +622,7 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
             .iter()
             .filter(|view| is_claimable(&view.story, &stories, active.as_ref()))
             .collect();
-        ready.sort_by(|a, b| domain::ready_order(&a.story, &b.story));
+        ready.sort_by(|a, b| domain::ready_order(&a.story, &b.story, &stories));
         let ready_count = ready.len();
         ready.truncate(READY_PREVIEW);
 
@@ -776,16 +802,15 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
     /// output: `search` numerically via [`sort_story_views`], `handoff`
     /// per-bucket (SH-64). This traversal order is otherwise unobserved.
     fn all_stories_legacy_order(&self) -> Result<Vec<StorySnapshot>, AppError> {
-        let mut all = Vec::new();
-        for archived in [false, true] {
-            let mut rows = self
-                .tx
-                .stories(self.project, &StoryQuery::all().archived(archived))?
-                .into_iter()
-                .map(|row| row.snapshot)
-                .collect::<Vec<_>>();
-            rows.sort_by(|a, b| a.id.cmp(&b.id));
-            all.append(&mut rows);
+        let stories = story_map(self.tx, self.project)?;
+        let mut all = Vec::with_capacity(stories.len());
+        for superstate in [SuperState::Open, SuperState::Closed] {
+            all.extend(
+                stories
+                    .values()
+                    .filter(|story| story.superstate == superstate)
+                    .cloned(),
+            );
         }
         Ok(all)
     }
@@ -926,10 +951,12 @@ pub(crate) fn story_map(
     tx: &impl ReadOps,
     project: ProjectId,
 ) -> Result<BTreeMap<String, StorySnapshot>, AppError> {
-    Ok(story_rows(tx, project)?
+    let mut stories: BTreeMap<String, StorySnapshot> = story_rows(tx, project)?
         .into_iter()
         .map(|(id, row)| (id, row.snapshot))
-        .collect())
+        .collect();
+    domain::apply_computed_epic_states(&mut stories, &tx.states(project)?);
+    Ok(stories)
 }
 
 /// Every story in the project as a view, with the cross-story facts —
@@ -954,10 +981,12 @@ pub fn story_views(
         .iter()
         .map(|(id, row)| (id.clone(), row.head_global_seq))
         .collect();
-    let stories: BTreeMap<String, StorySnapshot> = rows
+    let mut stories: BTreeMap<String, StorySnapshot> = rows
         .into_iter()
         .map(|(id, row)| (id, row.snapshot))
         .collect();
+    let states = tx.states(project)?;
+    domain::apply_computed_epic_states(&mut stories, &states);
     // SH-286's rule reaches here too, and for the same reason it reaches the
     // doctor: absence from this map is not absence from the project, and a
     // `StoryView` that says otherwise is `story show` printing a dangling
@@ -975,7 +1004,6 @@ pub fn story_views(
         .filter_map(|story| compute_progress(story, &stories).map(|p| (story.id.clone(), p)))
         .collect();
 
-    let states = tx.states(project)?;
     let display_state: BTreeMap<String, String> = stories
         .values()
         .filter_map(|story| {
@@ -1214,8 +1242,8 @@ fn type_label(story: &StorySnapshot) -> String {
 /// [`domain::ready_order`] over a list of views — the ready-list ordering
 /// shared by `summary`, `report` and `context`. `execution_queue` uses the
 /// same tuple as its ordered frontier rather than sorting a completed list.
-fn sort_ready(views: &mut [StoryView]) {
-    views.sort_by(|a, b| domain::ready_order(&a.story, &b.story));
+fn sort_ready(views: &mut [StoryView], stories: &BTreeMap<String, StorySnapshot>) {
+    views.sort_by(|a, b| domain::ready_order(&a.story, &b.story, stories));
 }
 
 /// The execution queue `story next --count N` hands out, in full and in order.
@@ -1282,16 +1310,21 @@ fn execution_queue(
         }
     }
 
-    let mut frontier = BTreeSet::<(Priority, u64, &str)>::new();
+    let mut frontier = BTreeSet::<(Priority, Priority, u64, &str)>::new();
     for (id, count) in &predecessor_counts {
         if *count == 0 {
             let story = &candidates[id].story;
-            frontier.insert((story.priority.clone(), domain::story_number(id), id));
+            frontier.insert((
+                story.priority.clone(),
+                domain::parent_epic_priority(story, stories),
+                domain::story_number(id),
+                id,
+            ));
         }
     }
 
     let mut execution = Vec::with_capacity(candidates.len());
-    while let Some((_, _, id)) = frontier.pop_first() {
+    while let Some((_, _, _, id)) = frontier.pop_first() {
         execution.push(candidates[id].clone());
         if let Some(blocked) = successors.get(id) {
             for successor in blocked {
@@ -1303,6 +1336,7 @@ fn execution_queue(
                     let story = &candidates[successor].story;
                     frontier.insert((
                         story.priority.clone(),
+                        domain::parent_epic_priority(story, stories),
                         domain::story_number(successor),
                         successor,
                     ));

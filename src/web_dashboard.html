@@ -1409,6 +1409,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       <div class="fdd" id="fdd-states"></div>
       <div class="fdd" id="fdd-columns"></div>
       <label class="filter-toggle"><input type="checkbox" id="toggle-closed" checked> Show closed</label>
+      <label class="filter-toggle"><input type="checkbox" id="toggle-epics"> Show epics</label>
       <label class="filter-toggle"><input type="checkbox" id="toggle-archived"> Show archived</label>
       <label class="filter-toggle"><input type="checkbox" id="toggle-hide-empty-columns"> Hide empty columns</label>
     </div>
@@ -1987,7 +1988,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * and two call sites holding the same instance would silently share
    * mutations. */
   function defaultFilter() {
-    return { text: "", priorities: [], assignees: [], types: [], states: [], showClosed: true };
+    return { text: "", priorities: [], assignees: [], types: [], states: [], showClosed: true, showEpics: false };
   }
 
   function loadPersistedFilters() {
@@ -5332,7 +5333,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   /** Applies the shared search/priority/assignee/type/state filters and the
-   * "show closed" toggle. Board and List both render from this. */
+   * visibility toggles. Board and List both render from this. */
   function filteredStories() {
     if (!state.data) return [];
     var f = state.filter;
@@ -5340,6 +5341,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return state.data.stories.filter(function(v) {
       var st = v.story;
       if (!f.showClosed && stateSuperstate(st.state) === "CLOSED") return false;
+      if (!f.showEpics && v.progress) return false;
       if (!state.showArchived && st.hidden_at) return false;
       if (text) {
         var hay = (st.id + " " + st.title + " " + (st.labels || []).join(" ")).toLowerCase();
@@ -5412,7 +5414,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       var a = was.story, b = newById[id].story;
       var fields = [];
       // Column membership is `display_state || state` (SH-165) — comparing
-      // literal `state` alone would miss an epic's card moving columns
+      // literal `state` alone would miss a derived display-state override
       // purely because a child's state changed, and silently skip its
       // move/flash animation.
       var aSlug = was.display_state || a.state, bSlug = newById[id].display_state || b.state;
@@ -6212,6 +6214,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       savePersistedFilters();
       renderView();
     });
+    $("toggle-epics").checked = !!state.filter.showEpics;
+    $("toggle-epics").addEventListener("change", function() {
+      state.filter.showEpics = this.checked;
+      savePersistedFilters();
+      renderView();
+    });
     $("toggle-archived").checked = state.showArchived;
     $("toggle-archived").addEventListener("change", function() {
       state.showArchived = this.checked;
@@ -6228,6 +6236,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       state.filter = defaultFilter();
       $("search-input").value = "";
       $("toggle-closed").checked = true;
+      $("toggle-epics").checked = false;
       resetFilterDropdownUI();
       savePersistedFilters();
       renderView();
@@ -9611,6 +9620,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     state.fetchSettledFor = null;
     $("search-input").value = state.filter.text;
     $("toggle-closed").checked = state.filter.showClosed;
+    $("toggle-epics").checked = !!state.filter.showEpics;
     localStorage.setItem("storyhook.repoId", id);
     renderScreen();
     fetchData();

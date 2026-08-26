@@ -1076,6 +1076,13 @@ cmd_dispatch() {
     # documents the same ordering hazard from the other side).
     claim_state=$(story_active_state)
 
+    # Structural epics are planning containers, not executable work. Their
+    # state is recursively computed from children, so neither the ordinary
+    # claim nor --force may turn one into a directly-dispatched story.
+    if printf '%s' "$show_json" | jq -e 'any(.story.story.relationships[]?; .relation == "parent-of")' >/dev/null 2>&1; then
+      fail "story $id is an epic because it has children; dispatch a ready child instead (the epic's state is computed from its children)."
+    fi
+
     # Step 5 (deviation #1 — see header): ALREADY-CLAIMED GUARD. Checked
     # before the ready-gate for its more specific message — since SH-236 the
     # ready-gate below would also catch this, just less helpfully.

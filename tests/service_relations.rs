@@ -460,6 +460,12 @@ fn unrelating_from_a_closed_target_succeeds_for_every_kind() {
     // closed story's scope, so it relaxes uniformly, including for
     // parent-of/child-of, unlike the add side.
     for (asked, _, _) in RELATION_PAIRS {
+        // If `a child-of b`, then b's computed state cannot be CLOSED while
+        // its subject child a remains OPEN; that old setup is structurally
+        // impossible now that epic state derives from children.
+        if asked == "child-of" {
+            continue;
+        }
         let fixture = ServiceFixture::new();
         let ctx = fixture.ctx();
         let a = new_story(&ctx, "a");
@@ -496,7 +502,47 @@ fn an_unsupported_relation_names_itself() {
 }
 
 #[test]
-fn a_story_may_not_have_two_parents() {
+fn first_and_last_child_edges_clear_then_restore_authoritative_state() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let parent = new_story(&ctx, "parent");
+    let child = new_story(&ctx, "child");
+    let relations = RelationService::new(&ctx);
+    relations
+        .relate(&parent, "parent-of", &child, false)
+        .expect("adding the first child");
+
+    let computed = snapshot(&fixture, &parent);
+    assert!(computed.state_computed);
+    assert_eq!(
+        computed.state, "todo",
+        "the stored value is only a fallback"
+    );
+
+    StoryService::new(&ctx)
+        .set_state(&child, "in-progress", None, None, None)
+        .expect("moving the child");
+    relations
+        .relate(&parent, "parent-of", &child, true)
+        .expect("removing the last child");
+
+    let restored = snapshot(&fixture, &parent);
+    assert!(!restored.state_computed);
+    assert_eq!(restored.state, "in-progress");
+    let no = StoryNo::parse_id("SH", &parent).unwrap();
+    let kinds: Vec<_> = fixture
+        .store()
+        .read(|tx| tx.events_for(fixture.project(), no))
+        .unwrap()
+        .into_iter()
+        .map(|event| event.kind)
+        .collect();
+    assert!(kinds.iter().any(|kind| kind == "StoryStateCleared"));
+    assert_eq!(kinds.last().map(String::as_str), Some("StoryStateChanged"));
+}
+
+#[test]
+fn a_story_may_have_two_parents() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let parent = new_story(&ctx, "parent");
@@ -505,20 +551,15 @@ fn a_story_may_not_have_two_parents() {
     let service = RelationService::new(&ctx);
     service.relate(&parent, "parent-of", &child, false).unwrap();
 
-    let error = service
+    service
         .relate(&other_parent, "parent-of", &child, false)
-        .unwrap_err();
-    assert_eq!(
-        validation_message(error),
-        format!("story `{child}` already has a different parent")
-    );
-    // Neither half of the rejected edge survives.
-    assert!(relations(&fixture, &other_parent).is_empty());
-    assert_eq!(relations(&fixture, &child).len(), 1);
+        .expect("adding a second parent");
+    assert_eq!(relations(&fixture, &other_parent).len(), 1);
+    assert_eq!(relations(&fixture, &child).len(), 2);
 }
 
 #[test]
-fn the_second_parent_rule_holds_when_asked_for_from_the_child() {
+fn a_second_parent_may_be_added_from_the_child_side() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let parent = new_story(&ctx, "parent");
@@ -527,10 +568,10 @@ fn the_second_parent_rule_holds_when_asked_for_from_the_child() {
     let service = RelationService::new(&ctx);
     service.relate(&child, "child-of", &parent, false).unwrap();
 
-    let error = service
+    service
         .relate(&child, "child-of", &other_parent, false)
-        .unwrap_err();
-    assert!(validation_message(error).contains("already has a different parent"));
+        .expect("adding a second parent");
+    assert_eq!(relations(&fixture, &child).len(), 2);
 }
 
 #[test]
@@ -564,8 +605,8 @@ fn a_longer_parent_cycle_is_refused() {
 
 #[test]
 fn removing_a_relation_skips_the_parent_rules() {
-    // A project that already violates the single-parent rule must still be
-    // able to take an edge back out.
+    // Removal can only shrink a hierarchy, so it skips the add-only cycle
+    // guard and remains available as the way to repair one.
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let parent = new_story(&ctx, "parent");
