@@ -8,7 +8,9 @@
 //! help topic, a plugin comment or a doc comment naming a flag the parser
 //! refuses is a docs-versus-behaviour mismatch, and this project prices that
 //! at the severity of the capability it misdescribes rather than as a docs
-//! nit (SH-478's own measurement of `[plugin].tracking`).
+//! nit — SH-478's own measurement of the plugin-config key it retired
+//! alongside the work verb, named by description here for the reason its own
+//! fence states.
 //!
 //! Derived over `git ls-files` rather than a hand-maintained list of the
 //! places that mention it — the shape that has already cost this project five
