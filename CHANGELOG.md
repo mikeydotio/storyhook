@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- `story_claim` and `story_unclaim` as MCP tools, taking the curated surface to
+  eighteen. Before this an agent reaching storyhook over MCP had **no atomic
+  claim at all**: `story_next` never exposed the old `--claim` flag, so its only
+  option was `story_move`, which cannot compare-and-swap on the state it just
+  read without a round trip in between — precisely the race `story claim` exists
+  to close, and MCP agents are exactly the population running several sessions
+  against one project. `story_claim` takes `id` **or** `next` (exactly one, never
+  neither — a mutating call never resolves a dropped argument), plus `phase` and
+  `comment`; `story_unclaim` takes `id` and `comment`. `story_next` stays a pure
+  read and now points at `story_claim` for the taking case. Neither exposes
+  `--dry-run`, and there is no `story_reset`: tearing down a worktree and a tmux
+  window is git and tmux mechanics that MCP does not reach, which
+  `story_unclaim`'s own description says rather than leaving an agent to
+  discover. The two tools disagree about an omitted `comment` — a claim posts
+  none, an unclaim posts the store's own default — because a claim's default
+  sentence names the *caller's* host and tmux window and this long-lived server
+  is not the caller, where an unclaim's names facts the store owns (SH-479)
 - `story.sh unclaim <id>` and `story.sh reset <id> [--force]` — the plugin half
   of releasing a claim, reached as `/story unclaim <id>` and `/story reset
   <id>`. `unclaim` releases the claim through `story unclaim` and closes the
