@@ -2597,6 +2597,23 @@ _complete_prepare() {
     CMP_BR_STATUS="unmerged"
   fi
 
+  # How many of this branch's commits exist on NO remote (SH-484). A DIFFERENT
+  # question from CMP_BR_STATUS, which is about merged-ness: a branch pushed to
+  # `origin/worktree-<id>` and never merged anywhere scores 0 here and
+  # `unmerged` above, and only this number answers "would deleting it destroy
+  # something nothing else has". `reset` is the only verb that takes a verdict
+  # on it — `complete` and `reap` refuse `unmerged` outright, which is strictly
+  # stronger — but it is derived HERE with the other classifications so one
+  # place decides what is true and each verb decides only what to do about it.
+  #
+  # A repository with no remotes at all counts every commit as unpushed, which
+  # is the conservative reading and the correct one: there is nowhere else for
+  # that work to be.
+  CMP_BR_UNPUSHED=0
+  if [ "$CMP_BR_STATUS" != "missing" ]; then
+    CMP_BR_UNPUSHED=$(git rev-list --count "refs/heads/$CMP_WT_BRANCH" --not --remotes 2>/dev/null || printf '0')
+  fi
+
   # Nothing at all under the project's checkout is REPORTED, never
   # reconstructed. There is deliberately no fallback to the caller's own
   # repository for a worktree dispatched before `project link checkout` recorded
@@ -2995,6 +3012,357 @@ cmd_reap() {
     + { display: $display }'
 }
 
+# ---- release: unclaim and reset ---------------------------------------------
+#
+# `unclaim` and `reset` are the two halves of handing a story back, split by
+# what they are allowed to destroy (SH-484):
+#
+#   unclaim  release the claim, comment, close the window. NOTHING on disk.
+#   reset    the same, then delete the worktree AND the branch.
+#
+# Both are the inverse of `story claim`, and both delegate the state change
+# itself to `story unclaim` (SH-483) rather than composing a `story move`: the
+# state a story was claimed FROM is derived from its own event log inside the
+# release transaction, so no caller has to carry that answer around, and the
+# `todo` fallback is reported rather than substituted silently.
+#
+# SELF-TERMINATION resolves differently for the two, and the asymmetry is
+# deliberate. `unclaim` touches nothing on disk, so when the caller's own pane
+# is the story's window it does everything it was asked to do and SKIPS ONLY
+# the window kill, naming the skip. Killing that pane would destroy the very
+# answer SH-483 requires be said out loud — which state the story went back
+# to, and whether that was a fallback. `reset` cannot skip its destructive
+# step, because that step is the verb, and skipping the window kill instead
+# would leave a live shell pointed at a deleted directory; so `reset` refuses,
+# and `--force` does not override it. That is why reap's answer (kill last,
+# after flushing) fits neither: reap is charter-only, its prose says nothing
+# after it can be observed, and its result answers nothing a caller needs.
+
+UNCLAIM_USAGE="usage: story.sh unclaim <story-id> [--comment <text> | --no-comment]"
+RESET_USAGE="usage: story.sh reset <story-id> [--force] [--comment <text> | --no-comment]"
+
+# _parse_release_args <usage> <allow-force> <args...> — the flag loop `unclaim`
+# and `reset` share, into REL_ID / REL_COMMENT_MODE / REL_COMMENT_TEXT /
+# REL_FORCE. `--comment` and `--no-comment` together are refused here rather
+# than deferred to the CLI, so the refusal arrives in the helper's own JSON
+# shape — the one the router reads — instead of as a passed-through CLI error.
+REL_ID=""
+REL_COMMENT_MODE=""
+REL_COMMENT_TEXT=""
+REL_FORCE=false
+_parse_release_args() {
+  local usage="$1" allow_force="$2"
+  shift 2
+  REL_ID=""; REL_COMMENT_MODE=""; REL_COMMENT_TEXT=""; REL_FORCE=false
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --comment)
+        [ "$#" -ge 2 ] || fail "--comment needs the text to post. $usage"
+        [ "$REL_COMMENT_MODE" != "none" ] \
+          || fail "--comment and --no-comment cannot be combined — pick one. $usage"
+        REL_COMMENT_MODE="text"
+        REL_COMMENT_TEXT="$2"
+        shift 2
+        ;;
+      --no-comment)
+        [ "$REL_COMMENT_MODE" != "text" ] \
+          || fail "--comment and --no-comment cannot be combined — pick one. $usage"
+        REL_COMMENT_MODE="none"
+        shift
+        ;;
+      --force)
+        [ "$allow_force" = true ] || fail "$usage"
+        REL_FORCE=true
+        shift
+        ;;
+      -*) fail "unknown option \`$1\`. $usage" ;;
+      *)
+        [ -z "$REL_ID" ] || fail "$usage"
+        REL_ID="$1"
+        shift
+        ;;
+    esac
+  done
+  [ -n "$REL_ID" ] || fail "$usage"
+}
+
+# _release_story <actor> <id> — run `story unclaim` for the caller and publish
+# its answer as REL_RESULT (ok|conflict|error) plus the fields that answer go
+# with. Under STORY_DRY_RUN the CLI's own --dry-run is used, which reads for
+# REAL: a release that would conflict conflicts in the preview too, rather than
+# previewing something that could not happen.
+REL_RESULT=""
+REL_FROM=""
+REL_TO=""
+REL_FALLBACK=""
+REL_EXPECTED=""
+REL_ACTUAL=""
+REL_ERROR=""
+REL_MESSAGE=""
+_release_story() {
+  local actor="$1" id="$2" json
+  local -a args=(unclaim "$id" --json)
+  case "$REL_COMMENT_MODE" in
+    text) args+=(--comment "$REL_COMMENT_TEXT") ;;
+    none) args+=(--no-comment) ;;
+  esac
+  [ -z "$DRY_RUN" ] || args+=(--dry-run)
+
+  json=$(story_cli --actor "$actor" "${args[@]}" 2>/dev/null) || true
+  REL_RESULT=$(printf '%s' "$json" | jq -r '.result // "error"' 2>/dev/null || printf 'error')
+  REL_FROM=$(printf '%s' "$json" | jq -r '.unclaimed_from // ""' 2>/dev/null || printf '')
+  REL_TO=$(printf '%s' "$json" | jq -r '.story.story.state // ""' 2>/dev/null || printf '')
+  REL_FALLBACK=$(printf '%s' "$json" | jq -r '.restore_fallback // ""' 2>/dev/null || printf '')
+  REL_EXPECTED=$(printf '%s' "$json" | jq -r '.expected // ""' 2>/dev/null || printf '')
+  REL_ACTUAL=$(printf '%s' "$json" | jq -r '.actual // ""' 2>/dev/null || printf '')
+  REL_ERROR=$(printf '%s' "$json" | jq -r '.error // "no answer from the story CLI"' 2>/dev/null \
+    || printf 'no answer from the story CLI')
+  REL_MESSAGE=$(printf '%s' "$json" | jq -r '.message // ""' 2>/dev/null || printf '')
+}
+
+# _release_fallback_clause — one sentence naming why the story did not go back
+# where it came from, or nothing at all. SH-483 requires the substitution be
+# said out loud; this is the plugin's half of saying it.
+_release_fallback_clause() {
+  case "$REL_FALLBACK" in
+    "") : ;;
+    no-prior-state)
+      printf ' It was created directly in that state, so there was no earlier state to restore (no-prior-state).' ;;
+    prior-state-removed)
+      printf ' The state it was claimed from has since been removed from this project (prior-state-removed).' ;;
+    prior-state-closed)
+      printf ' The state it was claimed from is no longer OPEN, so restoring it would have closed the story (prior-state-closed).' ;;
+    *)
+      printf ' Its claimed-from state could not be restored (%s).' "$REL_FALLBACK" ;;
+  esac
+}
+
+# cmd_unclaim <story-id> [--comment <text> | --no-comment] — hand a claim back
+# and close the story's tmux window. The worktree and branch are REPORTED and
+# left exactly as found; `reset` is the verb that removes them.
+cmd_unclaim() {
+  _parse_release_args "$UNCLAIM_USAGE" false "$@"
+  _complete_prepare "$REL_ID"
+  local id="$CMP_ID"
+
+  _release_story unclaim "$id"
+  case "$REL_RESULT" in
+    ok) : ;;
+    conflict)
+      # A lost CAS means no claim of ours was released, so no window of anyone
+      # else's is closed over it either.
+      refuse "unclaim-conflict" \
+        "story.sh unclaim: $id is not claimed (expected \`$REL_EXPECTED\`, found \`$REL_ACTUAL\`) — another session may have moved it. Nothing was released and its tmux window was left alone." ;;
+    *) fail "story unclaim $id failed: $REL_ERROR" ;;
+  esac
+
+  if [ -n "$DRY_RUN" ]; then
+    local -a dry_cmds=("story unclaim $id")
+    [ "$CMP_WINDOW_STATUS" = "open" ] && dry_cmds+=("tmux kill-window -t <window of $CMP_WNAME>")
+    local dry_json
+    dry_json=$(printf '%s\n' "${dry_cmds[@]}" | jq -R -s 'split("\n")|map(select(length>0))')
+    jq -n --arg id "$id" --argjson cmds "$dry_json" --arg msg "$REL_MESSAGE" '
+      {
+        ok: true, dry_run: true, id: $id, commands: $cmds,
+        display: ("[story] DRY RUN unclaim " + $id + ": " + $msg)
+      }'
+    return 0
+  fi
+
+  local closed=false
+  if [ "$CMP_WINDOW_STATUS" = "open" ]; then
+    _close_story_window "$CMP_WNAME" && closed=true || closed=false
+  fi
+
+  local display="[story] unclaim $id: released from \`$REL_FROM\` back to \`$REL_TO\`."
+  display="$display$(_release_fallback_clause)"
+  case "$CMP_WINDOW_STATUS" in
+    open) [ "$closed" = true ] \
+            && display="$display Closed its tmux window \`$CMP_WNAME\`." \
+            || display="$display Its tmux window \`$CMP_WNAME\` could not be closed." ;;
+    self) display="$display Its tmux window \`$CMP_WNAME\` was left open — it is the one you are in, and closing it would have destroyed this answer. Close it yourself when you are done." ;;
+    *)    : ;;
+  esac
+  if [ "$CMP_WT_STATUS" != "missing" ]; then
+    display="$display Its worktree \`$CMP_WT_PATH\` ($CMP_WT_STATUS) was left in place — \`story.sh reset $id\` is the verb that removes it."
+  fi
+
+  jq -n --arg id "$id" --arg from "$REL_FROM" --arg to "$REL_TO" \
+        --arg fallback "$REL_FALLBACK" --arg window "$CMP_WINDOW_STATUS" \
+        --argjson closed "$closed" --arg wtpath "$CMP_WT_PATH" \
+        --arg wtstatus "$CMP_WT_STATUS" --arg display "$display" '
+    {
+      ok: true, id: $id,
+      unclaimed_from: $from, restored_to: $to
+    }
+    + (if $fallback == "" then {} else {restore_fallback: $fallback} end)
+    + {
+      window: $window, closed_window: $closed,
+      worktree_path: $wtpath, worktree_status: $wtstatus,
+      display: $display
+    }'
+}
+
+# cmd_reset <story-id> [--force] — unclaim, then delete the worktree AND the
+# branch. For a story inadvertently abandoned (a crash, a reboot) where
+# restarting beats inheriting somebody else's half-finished scratch directory.
+#
+# Every `--force`-able refusal below asks ONE question — "am I about to destroy
+# something that is not recoverable elsewhere?" — which is why there is one
+# flag and not three. The two refusals `--force` does NOT cover are the two
+# that ask something else: a protected branch is a repository-level statement
+# rather than a scratch artifact, and self-termination is about destroying the
+# caller's own ground mid-command.
+#
+# UNPUSHED, not UNMERGED, is the branch question here — see CMP_BR_UNPUSHED in
+# _complete_prepare. reap refuses `unmerged`, which is strictly stronger and
+# would refuse the case this verb exists for; `deletable`/`unmerged` therefore
+# does not gate anything here, and the deletion is `git branch -D` rather than
+# delete_merged_local_branch for exactly that reason.
+cmd_reset() {
+  _parse_release_args "$RESET_USAGE" true "$@"
+  _complete_prepare "$REL_ID"
+  local id="$CMP_ID"
+
+  # Refusals first, most-absolute first, before anything at all is mutated.
+  if [ "$CMP_WINDOW_STATUS" = "self" ]; then
+    refuse "self-window" \
+      "story.sh reset: $id's tmux window \`$CMP_WNAME\` is the one you are in — resetting it would delete this shell's own ground mid-command. Run it from another window (\`--force\` does not override this)."
+  fi
+  if [ "$CMP_WT_STATUS" = "current" ]; then
+    refuse "current-worktree" \
+      "story.sh reset: you are standing in $id's worktree ($CMP_WT_PATH) — removing it would leave this shell in a deleted directory. \`cd\` out of it first (\`--force\` does not override this)."
+  fi
+  if [ "$CMP_BR_STATUS" = "protected" ]; then
+    refuse "protected-branch" \
+      "story.sh reset: $id's branch ($CMP_WT_BRANCH) is protected — refusing to delete it, and \`--force\` does not override this."
+  fi
+  if [ "$REL_FORCE" != true ]; then
+    case "$CMP_WT_STATUS" in
+      locked)
+        refuse "locked-worktree" \
+          "story.sh reset: $id's worktree ($CMP_WT_PATH) is locked — somebody took that lock deliberately. Unlock it, or pass \`--force\`." ;;
+      dirty)
+        refuse "dirty-worktree" \
+          "story.sh reset: $id's worktree ($CMP_WT_PATH) has uncommitted changes, which exist nowhere else — refusing to discard them. Commit them, or pass \`--force\` to destroy them." ;;
+    esac
+    if [ "$CMP_BR_UNPUSHED" -gt 0 ]; then
+      # refuse_with, not refuse: the COUNT is the evidence for this verdict,
+      # and a refusal that only says "some" makes the operator run git
+      # themselves to decide whether to override it.
+      refuse_with "unpushed-commits" \
+        "story.sh reset: $id's branch ($CMP_WT_BRANCH) has $CMP_BR_UNPUSHED commit(s) on no remote — refusing to discard work nothing else has. Push the branch, or pass \`--force\`." \
+        "$(jq -n --argjson n "$CMP_BR_UNPUSHED" '{unpushed: $n}')"
+    fi
+  fi
+
+  _release_story reset "$id"
+  local unclaimed=false conflict=""
+  case "$REL_RESULT" in
+    ok) unclaimed=true ;;
+    # A conflict PROVES no claim is held: the story is not in the active state,
+    # so nobody is working it through the state machine. The worktree is still
+    # litter `reap` refuses to touch (the story is open), and this is the verb
+    # for that, so the teardown proceeds and the conflict is reported.
+    conflict) conflict="$REL_ACTUAL" ;;
+    *) fail "story unclaim $id failed: $REL_ERROR — nothing was removed." ;;
+  esac
+
+  if [ -n "$DRY_RUN" ]; then
+    local -a dry_cmds=()
+    [ "$REL_RESULT" = "ok" ] && dry_cmds+=("story unclaim $id")
+    if [ "$CMP_WT_STATUS" != "missing" ]; then
+      dry_cmds+=("git worktree remove --force $CMP_WT_PATH" "git worktree prune")
+    fi
+    [ "$CMP_BR_STATUS" != "missing" ] && dry_cmds+=("git branch -D $CMP_WT_BRANCH")
+    [ "$CMP_WINDOW_STATUS" = "open" ] && dry_cmds+=("tmux kill-window -t <window of $CMP_WNAME>")
+    local dry_json
+    dry_json=$(printf '%s\n' "${dry_cmds[@]:-}" | jq -R -s 'split("\n")|map(select(length>0))')
+    jq -n --arg id "$id" --argjson cmds "$dry_json" --argjson forced "$REL_FORCE" '
+      {
+        ok: true, dry_run: true, id: $id, forced: $forced, commands: $cmds,
+        display: ("[story] DRY RUN reset: would release " + $id + ", then delete its worktree, its branch and its tmux window.")
+      }'
+    return 0
+  fi
+
+  local removed_wt=false removed_br=false wt_fail="" br_fail=""
+  if [ "$CMP_WT_STATUS" != "missing" ]; then
+    # --force unconditionally: a dirty worktree that got this far was either
+    # clean or explicitly acknowledged above, and git's own veto would only
+    # re-litigate a decision already taken. A LOCKED one needs --force twice,
+    # which is git's own spelling for "yes, the lock too".
+    local -a rm_args=(worktree remove --force "$CMP_WT_PATH")
+    if [ "$CMP_WT_STATUS" = "locked" ]; then
+      rm_args=(worktree remove --force --force "$CMP_WT_PATH")
+    fi
+    if git "${rm_args[@]}" >/dev/null 2>&1; then
+      git worktree prune >/dev/null 2>&1 || true
+      removed_wt=true
+    else
+      wt_fail="git worktree remove refused for $CMP_WT_PATH"
+    fi
+  fi
+  if [ "$CMP_BR_STATUS" != "missing" ]; then
+    if [ -n "$wt_fail" ]; then
+      br_fail="branch $CMP_WT_BRANCH left in place: its worktree could not be removed"
+    elif git branch -D "$CMP_WT_BRANCH" >/dev/null 2>&1; then
+      removed_br=true
+    else
+      br_fail="could not delete branch $CMP_WT_BRANCH"
+    fi
+  fi
+
+  local closed=false
+  if [ "$CMP_WINDOW_STATUS" = "open" ]; then
+    _close_story_window "$CMP_WNAME" && closed=true || closed=false
+  fi
+
+  local display="[story] reset $id: "
+  if [ "$unclaimed" = true ]; then
+    display="${display}released from \`$REL_FROM\` back to \`$REL_TO\`$(_release_fallback_clause)"
+    display="${display%.} — "
+  else
+    display="${display}the story was not claimed (it is \`$conflict\`), so nothing was released — "
+  fi
+  if [ "$removed_wt" = true ]; then
+    display="${display}removed worktree \`$CMP_WT_PATH\`, "
+  else
+    display="${display}worktree already gone, "
+  fi
+  if [ "$removed_br" = true ]; then
+    display="${display}deleted branch \`$CMP_WT_BRANCH\`."
+  else
+    display="${display}branch already gone."
+  fi
+  [ "$closed" = true ] && display="$display Closed its tmux window \`$CMP_WNAME\`."
+  [ -n "$wt_fail" ] && display="$display $wt_fail."
+  [ -n "$br_fail" ] && display="$display $br_fail."
+  [ "$REL_FORCE" = true ] && display="$display (\`--force\`)"
+
+  jq -n --arg id "$id" --argjson unclaimed "$unclaimed" --arg conflict "$conflict" \
+        --arg from "$REL_FROM" --arg to "$REL_TO" --arg fallback "$REL_FALLBACK" \
+        --argjson forced "$REL_FORCE" --argjson rwt "$removed_wt" --argjson rbr "$removed_br" \
+        --arg wtfail "$wt_fail" --arg brfail "$br_fail" \
+        --arg window "$CMP_WINDOW_STATUS" --argjson closed "$closed" \
+        --argjson unpushed "$CMP_BR_UNPUSHED" --arg display "$display" '
+    {
+      ok: true, id: $id, forced: $forced,
+      unclaimed: $unclaimed
+    }
+    + (if $conflict == "" then {} else {unclaim_conflict: $conflict} end)
+    + (if $unclaimed then {unclaimed_from: $from, restored_to: $to} else {} end)
+    + (if $fallback == "" then {} else {restore_fallback: $fallback} end)
+    + {
+      removed: { worktree: $rwt, branch: $rbr },
+      unpushed: $unpushed,
+      window: $window, closed_window: $closed
+    }
+    + (if $wtfail == "" then {} else {worktree_error: $wtfail} end)
+    + (if $brfail == "" then {} else {branch_error: $brfail} end)
+    + { display: $display }'
+}
+
 # ---- router -----------------------------------------------------------------
 
 # `--project <slug>` is story.sh's own global option, stripped here and
@@ -3032,6 +3400,8 @@ case "${1:-}" in
   dispatch)   shift; cmd_dispatch "$@" ;;
   complete)   shift; cmd_complete "$@" ;;
   reap)       shift; cmd_reap "$@" ;;
+  unclaim)    shift; cmd_unclaim "$@" ;;
+  reset)      shift; cmd_reset "$@" ;;
   view)       shift; cmd_view "$@" ;;
   list)       shift; cmd_list "$@" ;;
   create)     shift; cmd_create "$@" ;;
@@ -3044,5 +3414,5 @@ case "${1:-}" in
   triage)     shift; cmd_triage "$@" ;;
   scaffold-claude-md) shift; cmd_scaffold_claude_md "$@" ;;
   scaffold-agents-md) shift; cmd_scaffold_agents_md "$@" ;;
-  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] [--force] [--agent=claude|codex] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | doctor | capture <story-id> | ensure-cli | context [--full] | sync [--since <d>] | handoff [--since <d>] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
+  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] [--force] [--agent=claude|codex] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | unclaim <story-id> [--comment <t> | --no-comment] | reset <story-id> [--force] [--comment <t> | --no-comment] | doctor | capture <story-id> | ensure-cli | context [--full] | sync [--since <d>] | handoff [--since <d>] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
 esac
