@@ -85,6 +85,8 @@ and then runs the same packaged helper, preserving the one-JSON-object contract.
 | `create --title …` | `/story new` |
 | `complete <plan\|execute> <id> [--no-close] [--no-clean] [--force]` | `/story complete` |
 | `reap <id>` | not routed by the skill (SH-208) — the `--auto` charter's own final act; see below |
+| `unclaim <id> [--comment <t> \| --no-comment]` | `/story unclaim` (SH-484) — the inverse of `claim`: release the claim through `story unclaim`, then close the story's tmux window. Nothing on disk is touched |
+| `reset <id> [--force] [--comment <t> \| --no-comment]` | `/story reset` (SH-484) — everything `unclaim` does, then deletes the worktree and the branch, for a story abandoned by a crash where restarting beats inheriting |
 | `capture <id>` | `/story capture` |
 | `doctor` | `/story doctor` |
 | `ensure-cli` | the CLI-availability check six standalone skills used to hand-roll in prose |
@@ -165,6 +167,25 @@ Worth knowing before changing anything here:
   `{"stories":[]}` on any error, so a refusal read as "No ready stories to pick
   up" — an empty answer for the tool whose job is handing out work (SH-163).
   `_load_ready_stories` fails loudly and carries the CLI's own diagnostic.
+- **`unclaim` and `reset` differ only in what they may destroy, and their
+  self-termination verdicts follow from that** (SH-484). Both release the claim
+  through `story unclaim` (SH-483), which derives the state a story was claimed
+  FROM out of its own event log and says so when it has to fall back to `todo`.
+  `unclaim` touches nothing on disk, so called from inside the story's own tmux
+  window it does the release and skips only the window kill, naming the skip —
+  closing that pane would destroy the very answer the fallback rule exists to
+  state. `reset` cannot skip its destructive step, and skipping the window kill
+  instead would leave a live shell in a deleted directory, so it refuses
+  outright, `--force` included.
+- **`reset` asks whether work is RECOVERABLE, not whether it is MERGED.** Its
+  three `--force`-able refusals — a dirty worktree, commits on no remote, a
+  locked worktree — are one question wearing three hats, which is why there is
+  one flag. Merged-ness is the wrong question here and is why `reap`'s
+  `unmerged` veto is not reused: a branch pushed to `origin` and merged nowhere
+  is fully recoverable, and a branch that only ever lived on this disk is not
+  recoverable at all, yet `git branch -d` calls both unmerged.
+  `protected-branch`, `self-window` and `current-worktree` ask something else
+  entirely and `--force` does not reach them.
 - **`is_ready()` is not "unclaimed".** It returns true for an already claimed
   story, so `dispatch` carries its own guard and `list` filters the
   active state out.
