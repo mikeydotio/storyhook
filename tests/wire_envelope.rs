@@ -1141,12 +1141,10 @@ fn invocation_corpus() -> Vec<Invocation> {
         Invocation::Next {
             count: 3,
             phase: Some("2".to_string()),
-            claim: false,
         },
         Invocation::Next {
             count: 1,
             phase: None,
-            claim: true,
         },
         Invocation::Summary,
         Invocation::Report { html: true },

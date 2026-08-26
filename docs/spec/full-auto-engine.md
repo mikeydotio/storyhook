@@ -496,8 +496,8 @@ unguarded.
 
 Claiming is one verb, `story claim <id> | --next` (epic SH-475): both forms
 mutating, exactly one required, so a dropped argument can never silently claim
-whatever happened to be top-priority. `story next --claim` is removed by SH-477;
-`story next` goes back to being a pure read. Releasing a claim is its inverse,
+whatever happened to be top-priority. SH-477 removed the claiming mode SH-344
+had bolted onto `story next`, so `story next` is a pure read again. Releasing a claim is its inverse,
 `story unclaim <id>` (SH-483, with its plugin half in SH-484) — the primitive
 `stop --now` routes through rather than composing its own `story move`.
 `unclaim` restores the claim's state and closes the lane's window; it does not
@@ -667,7 +667,7 @@ SH-465 are `blocked-by` them.
 ### The claim primitive this engine depends on
 
 Epic **SH-475** collapses claiming onto one verb, `story claim <id> | --next`,
-and removes `story next --claim` (SH-477). SH-455 and SH-465 are both
+and removes the claiming mode `story next` used to carry (SH-477). SH-455 and SH-465 are both
 `blocked-by` SH-476, the verb itself. Nothing about the engine's design changes
 — the claim is still atomic, still serial across lanes, and the store is still
 the arbiter of a race. Only the spelling of the primitive moves.

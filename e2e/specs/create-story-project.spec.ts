@@ -29,7 +29,7 @@ import {
  *     the cross-project target deliberately over "Delta Project": Delta is
  *     reserved as Dispatch Auto's own claim target
  *     (`scripts/run-e2e.sh`'s own comment), and a stray story there could
- *     change what `story next --claim` hands out. SH-485 reads Delta only as
+ *     change what `story claim --next` hands out. SH-485 reads Delta only as
  *     the third writable project's vocabulary and suppresses its target-proof
  *     POST before bytes leave the renderer, so that reservation stays intact.
  *   - "Gamma Archive" (prefix GA) -- no checkout (`--no-attach`), so its

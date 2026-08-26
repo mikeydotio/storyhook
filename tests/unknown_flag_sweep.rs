@@ -307,7 +307,6 @@ fn every_declared_flag_is_accepted_by_its_verb() {
         (&["list"], "--include-archived", None),
         (&["list"], "--all", None),
         (&["next"], "--count", Some("2")),
-        (&["next"], "--claim", None),
         (&["claim"], "--next", None),
         (&["claim", "--next"], "--phase", Some("1")),
         (&["claim", "SH-1"], "--comment", Some("text")),

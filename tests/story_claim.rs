@@ -183,6 +183,58 @@ fn claiming_next_respects_the_phase_filter() {
     assert_eq!(claimed["story"]["story"]["id"], in_phase);
 }
 
+/// A claim TAKES its answer, so the next caller must be given a different one.
+/// Inherited from the claiming mode SH-344 bolted onto `story next`, which is
+/// the guarantee that mode existed for.
+///
+/// The sequential twin of `concurrent_claimants_are_handed_distinct_stories`
+/// below, kept beside it deliberately: this one is deterministic and cheap,
+/// and it fails on a claim that answers without writing at all, which the
+/// racing version could in principle explain away as contention.
+#[test]
+fn claiming_next_twice_hands_out_two_different_stories() {
+    let project = project();
+    let first = project.new_story("First");
+    let second = project.new_story("Second");
+
+    assert_eq!(
+        json(&project, &["claim", "--next"])["story"]["story"]["id"],
+        first
+    );
+    assert_eq!(
+        json(&project, &["claim", "--next"])["story"]["story"]["id"],
+        second
+    );
+}
+
+/// One claim, one transition — never a second `StoryStateChanged` for the
+/// same move. The `--next` twin of the assertion
+/// `concurrent_claimants_of_one_id_yield_exactly_one_winner` makes for an id.
+#[test]
+fn claiming_next_writes_exactly_one_state_changed_event() {
+    use storyhook::store::{ReadOps as _, Store as _};
+
+    let project = project();
+    let id = project.new_story("Claimable work");
+
+    json(&project, &["claim", "--next"]);
+
+    let store = project.open_store();
+    let project_id = project.project_id(&store);
+    let story_no = project.story_no(&store, &id);
+    let events = store
+        .read(|tx| tx.events_for(project_id, story_no))
+        .expect("reading the story's events");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.kind == "StoryStateChanged")
+            .count(),
+        1,
+        "exactly one StoryStateChanged event must be recorded: {events:#?}"
+    );
+}
+
 #[test]
 fn claiming_next_with_nothing_ready_reports_no_ready_stories() {
     let project = project();
@@ -257,7 +309,7 @@ fn claiming_a_story_that_does_not_exist_is_refused() {
     assert_eq!(code, Some(3), "{envelope}");
 }
 
-/// Inherited from `next --claim` (SH-344): with no state carrying the
+/// Inherited from SH-344's claiming mode: with no state carrying the
 /// `active` role and no two-OPEN-state fallback, a claim has nowhere to go.
 /// The refusal names the fix.
 #[test]
