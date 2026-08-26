@@ -650,22 +650,33 @@ enter_checkout() {
 # succeeds and a LATER step still hard-fails (worktree/branch collision, `git
 # worktree add`, `tmux new-window`), the story would otherwise be left
 # permanently stuck in the claimed state with no worktree, no window, and no
-# session — silent. This attempts a best-effort CAS move BACK to
-# <pre-claim-state>, guarded by --if-state <claimed-state> so a genuine
-# concurrent transition away from it is never clobbered, and
-# echoes a clause for the failure message naming the outcome either way. A
+# session — silent. This releases the claim through `story unclaim` (SH-484)
+# and echoes a clause for the failure message naming the outcome either way. A
 # forced redispatch of an already-claimed story passes false because this
 # dispatch did not create the claim and therefore must not roll it back.
 #
-# <claimed-state> is a PARAMETER rather than the literal `in-progress` (SH-481):
-# the state meaning "claimed" is whichever one carries the project's `active`
-# role, and a rollback guarded against the wrong state silently matches
-# nothing — leaving the story stranded claimed with no worktree, which is the
-# exact outcome this helper exists to prevent. Both ID MODE and NEXT MODE pass
-# the state the story is actually sitting in after their own claim. It is
-# REQUIRED, not defaulted: under `set -u` a forgotten argument aborts loudly,
-# where a default of `in-progress` would quietly reinstate the very
-# wrong-guard stranding this parameter was added to prevent.
+# ROUTED THROUGH THE VERB, not a hand-rolled `story move` (SH-484). `unclaim`
+# is a compare-and-swap on the project's active-role state, so the guard SH-481
+# had to fix here is now the CLI's own, and the destination is derived from the
+# story's own event log rather than carried around by this script — which means
+# the note reports where the story ACTUALLY landed, fallback included, instead
+# of where the caller assumed it would. `--no-comment` because dispatch's own
+# claim is silent (`story claim --next --no-comment`, and ID MODE's bare `story
+# move`): a dispatch that rolled itself back cleanly did, in the end, nothing,
+# and a comment saying otherwise would be the only trace of a non-event.
+#
+# <pre-claim-state> survives as a PARAMETER even though the release no longer
+# needs it, because the FAILURE message does: on a project with no `active`
+# role, this script's own `story_active_state` (which falls back to
+# `in-progress`) and the CLI's (which falls back to the second OPEN state, or
+# to nothing at all) can disagree, so an ID-MODE claim can be released by a CAS
+# the CLI resolves differently. That narrow divergence closes structurally when
+# SH-482 puts ID MODE's claim through `story claim <id>` too; until then the
+# stranded-story warning names the exact manual move that always works, so a
+# copy-pasteable escape exists in the one corner the verb cannot cover.
+# <claimed-state> likewise stays REQUIRED, not defaulted: under `set -u` a
+# forgotten argument aborts loudly, where a default of `in-progress` would
+# quietly reinstate the wrong-guard stranding SH-481 was filed for.
 # dispatch_ready_note — one clause naming WHY the readiness check gave up, from
 # the globals it sets (wait_ready_sentinel's reasons since SH-231; wait_ready's
 # own "timeout" default survives for cmd_doctor's still-unported call). A
@@ -761,14 +772,15 @@ claim_rollback_note() {
     printf ' The pre-existing `%s` state was left unchanged.' "$claimed_state"
     return 0
   fi
-  local rb_json rb_result
-  rb_json=$(story_cli --actor dispatch-rollback move "$id" "$pre_state" --if-state "$claimed_state" --json 2>/dev/null) || true
+  local rb_json rb_result rb_to
+  rb_json=$(story_cli --actor dispatch-rollback unclaim "$id" --no-comment --json 2>/dev/null) || true
   rb_result=$(printf '%s' "$rb_json" | jq -r '.result // ""' 2>/dev/null || printf '')
   if [ "$rb_result" = "ok" ]; then
-    printf ' Rolled the claim back to `%s`.' "$pre_state"
+    rb_to=$(printf '%s' "$rb_json" | jq -r '.story.story.state // "?"' 2>/dev/null || printf '?')
+    printf ' Rolled the claim back to `%s`.' "$rb_to"
   else
-    printf ' WARNING: story %s is now stranded at `%s` with no worktree/window — run `story move %s %s --if-state %s` to un-stick it.' \
-      "$id" "$claimed_state" "$id" "$pre_state" "$claimed_state"
+    printf ' WARNING: story %s is now stranded at `%s` with no worktree/window — run `story unclaim %s`, or `story move %s %s --if-state %s` if that refuses.' \
+      "$id" "$claimed_state" "$id" "$id" "$pre_state" "$claimed_state"
   fi
 }
 
