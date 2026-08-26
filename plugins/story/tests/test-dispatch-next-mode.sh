@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # SH-344's NEXT MODE: `story.sh dispatch --next` claims whatever
-# `story next --claim` picks, atomically, rather than a caller-named id.
+# `story claim --next` picks, atomically, rather than a caller-named id.
 # Same happy-path shape as test-dispatch-happy.sh, but exercised against the
-# REAL story CLI's `next --claim` primitive rather than a caller-supplied id
+# REAL story CLI's `claim --next` primitive rather than a caller-supplied id
 # — a fake would risk drifting from `is_claimable`'s actual priority/number
 # ordering, exactly the thing the atomic claim exists to get right.
 source "$(dirname "$0")/lib.sh"

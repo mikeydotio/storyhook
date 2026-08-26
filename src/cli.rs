@@ -165,7 +165,7 @@ Usage:
              [--include-closed]                        (also show closed, unarchived stories)
              [--include-archived]                      (also show archived stories; implies --include-closed)
              [--all]                                   (--include-closed --include-archived)
-  story next [--count <n>] [--phase <N>] [--claim]
+  story next [--count <n>] [--phase <N>]
   story claim <id> [--comment <text> | --no-comment] [--dry-run]
   story claim --next [--phase <N>] [--comment <text> | --no-comment]
                      [--dry-run]                    (take a story, atomically)
@@ -289,9 +289,10 @@ pub enum MemberInput {
 /// nowhere to put the phase, so the parser refuses it at the one point it
 /// could have been written and no later layer ever meets the combination.
 ///
-/// This is the better version of the rule SH-344 had to state as a refusal:
-/// `next --claim` needed a guard rejecting `--count` other than 1, where a
-/// dedicated verb makes the impossible combination unrepresentable.
+/// This is the better version of the rule SH-344's claiming mode had to state
+/// as a refusal: bolted onto `story next`, it needed a guard rejecting
+/// `--count` other than 1, where a dedicated verb makes the impossible
+/// combination unrepresentable rather than merely rejected.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClaimTarget {
     /// `story claim <id>` — that named story, claimed atomically.
@@ -299,7 +300,8 @@ pub enum ClaimTarget {
     /// `story claim --next [--phase <N>]` — whatever `story next` would
     /// answer, selected and claimed inside one write transaction.
     Next {
-        /// `--phase <N>`, carried over from `story next --claim`.
+        /// `--phase <N>` — narrow the selection to one phase label,
+        /// exactly as `story next --phase` narrows the same query.
         phase: Option<String>,
     },
 }
@@ -408,17 +410,16 @@ pub enum Invocation {
     Search {
         query: String,
     },
+    /// `story next [--count <n>] [--phase <N>]` — a pure read (SH-477).
+    ///
+    /// Answers a question and writes nothing. Taking the answer is
+    /// [`Claim`](Self::Claim)'s job: SH-344's claiming mode lived here as a
+    /// `--claim` flag until SH-477 removed it, because two spellings for one
+    /// atomic operation is drift, and only the dedicated verb can honor a
+    /// caller-named id as well as `--next`.
     Next {
         count: usize,
         phase: Option<String>,
-        /// Atomically move the answer into the project's active state before
-        /// returning it (SH-344) — closes the read-then-move race between
-        /// `story next` and a caller's own `story move <id> <active>`, which
-        /// otherwise lets two parallel agents both be handed the same story.
-        /// Refused together with `--count` above `1`: a claim holds exactly
-        /// one story, so a count that promises more would be a lie for every
-        /// entry past the first.
-        claim: bool,
     },
     /// `story claim (<id> | --next)` (SH-476) — the one atomic claim verb.
     ///
@@ -1518,7 +1519,7 @@ static VERB_FLAGS: &[VerbFlags] = &[
     VerbFlags {
         verb: "next",
         subcommand: None,
-        flags: &[value("count"), value("phase"), bare("claim")],
+        flags: &[value("count"), value("phase")],
     },
     VerbFlags {
         verb: "claim",
@@ -2821,12 +2822,17 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
     })
 }
 
+/// `story next [--count <n>] [--phase <N>]` — a pure read.
+///
+/// SH-344's `--claim` was removed here by SH-477; claiming is
+/// [`parse_claim`]'s verb. Nothing replaces the flag and no deprecation arm
+/// survives: the word is simply not declared, so the ordinary unknown-flag
+/// refusal names it, which is the same answer any other typo gets.
 fn parse_next(args: &[String]) -> Result<Invocation, AppError> {
     let mut count = 1;
     let mut phase = None;
-    let mut claim = false;
     let mut index = 1;
-    let usage = "usage: story next [--count <n>] [--phase <N>] [--claim]";
+    let usage = "usage: story next [--count <n>] [--phase <N>]";
 
     while index < args.len() {
         match args[index].as_str() {
@@ -2851,31 +2857,13 @@ fn parse_next(args: &[String]) -> Result<Invocation, AppError> {
                 phase = Some(value.clone());
                 index += 2;
             }
-            "--claim" => {
-                claim = true;
-                index += 1;
-            }
             _ => {
                 return Err(AppError::Usage(usage.to_string()));
             }
         }
     }
 
-    // A claim holds exactly one story — `--count` above 1 promising several
-    // while only the first is actually taken would be a silent lie for every
-    // entry past it, so the combination is refused outright rather than
-    // resolved by picking a behavior nobody asked for.
-    if claim && count != 1 {
-        return Err(AppError::Usage(
-            "--claim cannot be combined with --count other than 1".to_string(),
-        ));
-    }
-
-    Ok(Invocation::Next {
-        count,
-        phase,
-        claim,
-    })
+    Ok(Invocation::Next { count, phase })
 }
 
 /// `story claim (<id> | --next) [--phase <N>] [--comment <text> | --no-comment]
