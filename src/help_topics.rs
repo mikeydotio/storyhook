@@ -396,8 +396,8 @@ Related:
 
         m.insert(
             "claim",
-            r#"story claim (<id> | --next) [--phase <N>] [--comment <text> | --no-comment]
-                  [--dry-run]
+            r#"story claim <id> [--comment <text> | --no-comment] [--dry-run]
+story claim --next [--phase <N>] [--comment <text> | --no-comment] [--dry-run]
 
 Take a story to work on, atomically. One of <id> or --next is required and
 they are mutually exclusive: a bare 'story claim' is refused rather than
