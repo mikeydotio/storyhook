@@ -16,6 +16,9 @@
 //! no side effects at all.
 
 use std::process::Command;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 use crate::cli::{ClaimComment, Invocation};
 
@@ -99,6 +102,20 @@ fn hostname() -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
+/// How long the tmux probe is given before it is killed and the sentence
+/// degrades to the host alone.
+///
+/// A `tmux display-message` against a live server answers in milliseconds —
+/// it is one round trip over a unix socket to a process that is already
+/// running, since `$TMUX` being set is what got us here. The bound is not
+/// about how long that should take, then; it is about a *wedged* server, and
+/// it is derived rather than picked: the same value
+/// [`TAILNET_PROBE_TIMEOUT`](crate::daemon::tailnet::TAILNET_PROBE_TIMEOUT)
+/// gives the other "ask the machine about itself, degrade quietly if it will
+/// not say" probe in this codebase. Two probes of the same kind should not
+/// have two opinions about how patient to be.
+const TMUX_PROBE_TIMEOUT: Duration = crate::daemon::tailnet::TAILNET_PROBE_TIMEOUT;
+
 /// The caller's `session:window`, or `None` when this process is not in tmux
 /// or tmux cannot be asked.
 ///
@@ -119,11 +136,50 @@ fn tmux_window() -> Option<String> {
     if let Some(pane) = std::env::var_os("TMUX_PANE") {
         command.arg("-t").arg(pane);
     }
-    command.arg("#{session_name}:#{window_index}");
-    let output = command.output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
+    command
+        .arg("#{session_name}:#{window_index}")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    // Its own process group, so a timeout kills whatever the probe started as
+    // well as the probe itself — killing the leader alone leaves its children
+    // orphaned, still running, and still holding the pipe this process is
+    // reading. Modelled on `daemon::tailnet::tailscale_status_json`, which is
+    // the same shape of question and carries the same hazard.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    let child = command.spawn().ok()?;
+    let pid = child.id();
+
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+
+    let output = match rx.recv_timeout(TMUX_PROBE_TIMEOUT) {
+        Ok(Ok(output)) if output.status.success() => output,
+        Ok(_) => return None,
+        Err(_) => {
+            // Reported, never silent: a probe that wedged is why the comment
+            // is about to name no window, and a reader who is inside tmux
+            // deserves to know which of the two happened.
+            eprintln!(
+                "warning: `tmux display-message` did not answer within {}s; the claim's \
+                 comment will name this host only",
+                TMUX_PROBE_TIMEOUT.as_secs()
+            );
+            #[cfg(unix)]
+            // SAFETY: the group id of a process this process just spawned and
+            // has not yet reaped, so it cannot have been recycled onto an
+            // unrelated group. The reaper thread above is still in
+            // `wait_with_output`, so the killed process is collected rather
+            // than left a zombie.
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+            return None;
+        }
+    };
     let window = String::from_utf8_lossy(&output.stdout).trim().to_string();
     // A tmux that answered with nothing, or with only the separator, has told
     // us no window — the same as not being asked.
