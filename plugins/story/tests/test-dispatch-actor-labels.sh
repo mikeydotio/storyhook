@@ -80,10 +80,13 @@ assert_eq "$rollback_actor" "1" "the claim-rollback is labelled story.sh:dispatc
 # actor assertions above are still the load-bearing ones: they hold whichever
 # command each half is spelled as, and they are what a future re-spelling of
 # either half must not break. This assertion records the current spelling and
-# would notice a silent re-collapse onto one command.
+# would notice a silent re-collapse onto one command. SH-482 re-spelled the
+# claim half a second time — `set-state` -> `claim`, once ID MODE stopped
+# hand-rolling the move — which is exactly the maintenance this assertion
+# exists to demand rather than a signal that anything drifted.
 commands=$(printf '%s' "$log" | jq -r '[.log[] | select(.actor != null) | .command] | unique | sort | join(",")')
-assert_eq "$commands" "set-state,unclaim" \
-  "the claim is a set-state and its rollback is an unclaim — separable by command as well as by actor"
+assert_eq "$commands" "claim,unclaim" \
+  "the claim is a claim and its rollback is an unclaim — separable by command as well as by actor"
 
 # Nothing storyhook wrote is allowed to claim an actor it was not given: a
 # plain `story new` in this repo declared nothing.

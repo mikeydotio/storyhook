@@ -58,6 +58,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   sentence, `--no-comment` posts none, `--dry-run` reads for real and writes
   symbolically (SH-483)
 
+### Changed
+- `story.sh dispatch <id>` claims through `story claim <id> --no-comment`
+  instead of hand-rolling the same compare-and-swap out of `story show` plus
+  `story move --if-state`. Both dispatch modes now reach the store through one
+  primitive — `--next` has since SH-477 — so the active-role target, the
+  compare-and-swap and the `claimed_from` answer are all resolved inside the
+  CLI's own write transaction and the helper holds no second opinion about any
+  of them. One user-visible consequence, and it narrows what dispatch refuses:
+  the precondition was *the exact state `story show` had just reported*, so any
+  state change in that window was refused as `claim-conflict`; it is now
+  *not already claimed*. The race the refusal exists for is still refused, and
+  more strongly — the verb compare-and-swaps on the story's head sequence
+  inside one transaction rather than on a witness read a round trip earlier —
+  while the transitions that stop being refused were ones the old message
+  ("another dispatch likely won the race") described falsely anyway. The claim
+  stays silent for the reason `--next` does: `story claim`'s default sentence
+  names the *calling* process's tmux window, which inside dispatch is the
+  dispatcher's own, not the window dispatch is about to open for the work
+  (SH-482)
+
 ### Removed
 - **BREAKING:** `story.sh work`, the `story-work` skill, and the
   `[plugin].tracking` key are removed. Claiming is `story claim <id> | --next`
