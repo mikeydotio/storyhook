@@ -206,6 +206,57 @@ fn build_next(args: &Map<String, Value>) -> Result<Vec<String>, String> {
     Ok(argv)
 }
 
+/// `story claim (<id> | --next)` (SH-476), reached over MCP (SH-479).
+///
+/// Two rules are answered here rather than relayed from `parse_claim`, and
+/// both are about *vocabulary*: a caller of this tool filled in JSON fields
+/// named `id` and `next`, where `parse_claim`'s usage line answers about
+/// `<id>` and `--next`. Every other cross-field rule — `phase` beside an
+/// explicit `id`, chiefly — is left to the parser, whose own message names
+/// exactly the thing the caller got wrong and needs no translation.
+///
+/// **A claim with no `comment` argument posts no comment**, which is not what
+/// the CLI does. See [`CLAIM_FIELDS`]'s `comment` entry for why this door
+/// cannot have the CLI's default.
+fn build_claim(args: &Map<String, Value>) -> Result<Vec<String>, String> {
+    let mut argv = vec!["claim".to_string()];
+    match (str_arg(args, "id"), bool_arg(args, "next")) {
+        (Some(_), true) => {
+            return Err("`id` and `next` are two different requests; name one".to_string());
+        }
+        // Never resolved to `next`. This call writes, and a model that left
+        // `id` out of the object it was assembling must not be answered by
+        // claiming whatever happened to sort first (SH-476).
+        (None, false) => {
+            return Err("`story_claim` needs either `id` (claim that named story) or `next`                         (claim whatever story_next would answer). It has no default: this                         call moves a story into the active state, so an absent `id` is                         refused rather than resolved."
+                .to_string());
+        }
+        (Some(id), false) => argv.push(id),
+        (None, true) => argv.push("--next".to_string()),
+    }
+    push_opt(&mut argv, args, "phase", "--phase");
+    match str_arg(args, "comment") {
+        Some(text) => {
+            argv.push("--comment".to_string());
+            argv.push(text);
+        }
+        None => argv.push("--no-comment".to_string()),
+    }
+    Ok(argv)
+}
+
+/// `story unclaim <id>` (SH-483), reached over MCP (SH-479).
+///
+/// Shorter than [`build_claim`] in the one way that matters: an absent
+/// `comment` emits no flag at all, so the invocation carries
+/// [`cli::UnclaimComment::Default`] and the *store* composes the sentence.
+/// It can, because that sentence names facts the store owns.
+fn build_unclaim(args: &Map<String, Value>) -> Result<Vec<String>, String> {
+    let mut argv = vec!["unclaim".to_string(), require_str(args, "id")?];
+    push_opt(&mut argv, args, "comment", "--comment");
+    Ok(argv)
+}
+
 fn build_show(args: &Map<String, Value>) -> Result<Vec<String>, String> {
     Ok(vec!["show".to_string(), require_str(args, "id")?])
 }
@@ -443,6 +494,56 @@ const NEXT_FIELDS: &[FieldSpec] = &[
         kind: FieldKind::Str,
         required: false,
         description: "Restrict to this phase.",
+    },
+];
+
+/// `story_claim`'s arguments.
+///
+/// `dry_run` is deliberately absent (SH-479). An MCP caller that wants to
+/// know what a claim *would* do calls `story_next` or `story_show`; a
+/// mutating tool whose most cautious argument is one boolean among several is
+/// a tool a model can set to `false` by accident.
+const CLAIM_FIELDS: &[FieldSpec] = &[
+    FieldSpec {
+        name: "id",
+        kind: FieldKind::Str,
+        required: false,
+        description: "The story to claim, e.g. \"SH-42\". Exactly one of `id` or `next` is                        required; a call naming neither is refused, never resolved to `next`.",
+    },
+    FieldSpec {
+        name: "next",
+        kind: FieldKind::Bool,
+        required: false,
+        description: "Claim whatever story_next would answer, selected and claimed inside one                        write transaction so two agents racing for the same queue cannot both                        be handed it. Exactly one of `id` or `next` is required.",
+    },
+    FieldSpec {
+        name: "phase",
+        kind: FieldKind::Str,
+        required: false,
+        description: "Restrict what `next` picks to this phase, exactly as story_next's own                        `phase` narrows the same query. It selects nothing beside an explicit                        `id` and is refused there.",
+    },
+    FieldSpec {
+        name: "comment",
+        kind: FieldKind::Str,
+        required: false,
+        description: "Text to post on the story alongside the claim, in the same write. Omit                        it and NO comment is posted. This differs from the `story claim`                        command, which composes a default sentence naming the caller's host                        and tmux window: this server is long-lived and started by an agent                        host, so its own host and terminal describe whoever launched it rather                        than whoever is calling, and a fabricated answer is worse than none.                        Pass your own sentence here if the claim should say who took the                        story.",
+    },
+];
+
+/// `story_unclaim`'s arguments — see [`CLAIM_FIELDS`] for why `dry_run` is
+/// absent from both.
+const UNCLAIM_FIELDS: &[FieldSpec] = &[
+    FieldSpec {
+        name: "id",
+        kind: FieldKind::Str,
+        required: true,
+        description: "The story to release. There is no \"whichever one I am holding\" form:                        one store serves every client at once and nothing records which of                        them claimed what.",
+    },
+    FieldSpec {
+        name: "comment",
+        kind: FieldKind::Str,
+        required: false,
+        description: "Text to post alongside the release. Omit it and the store composes its                        own sentence, naming the state the story is being restored to and                        whether that was a fallback — facts the store owns, so unlike                        story_claim's comment this default survives the trip over MCP intact.",
     },
 ];
 
@@ -736,9 +837,35 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "story_next",
-        description: "The highest-priority ready story or stories.",
+        description: "The highest-priority ready story or stories. A pure read — it answers \
+                      the question and writes nothing. To take the answer, use story_claim.",
         fields: NEXT_FIELDS,
         build_argv: build_next,
+    },
+    ToolDef {
+        name: "story_claim",
+        description: "Take a story to work on. MUTATES: it moves the story into the \
+                      project's active state (usually in-progress) in one atomic write, and \
+                      refuses — naming the state the story is actually in — if another \
+                      session got there first. Name the story with `id`, or set `next` to \
+                      take whatever story_next would answer. Use story_next instead to see \
+                      what is available without taking it.",
+        fields: CLAIM_FIELDS,
+        build_argv: build_claim,
+    },
+    ToolDef {
+        name: "story_unclaim",
+        description: "Hand a claimed story back. MUTATES: it moves the story out of the \
+                      active state and back to the state it was claimed from — or to todo, \
+                      reported rather than silently substituted, when that state cannot be \
+                      restored. Guarded the same way story_claim is, so a story someone else \
+                      has since moved is reported rather than overwritten. This releases the \
+                      claim in the tracker and nothing else: a git worktree or tmux window \
+                      created for the story survives untouched. Tearing those down is \
+                      `story reset`, which is git and tmux mechanics run from a shell and is \
+                      deliberately not reachable over MCP.",
+        fields: UNCLAIM_FIELDS,
+        build_argv: build_unclaim,
     },
     ToolDef {
         name: "story_show",
@@ -872,12 +999,10 @@ pub fn tool_for_variant(invocation: &Invocation) -> Option<&'static str> {
         Invocation::SetFields { .. } => Some("story_set"),
         Invocation::Context { .. } => Some("story_context"),
 
-        // SH-479 gives `story claim` and `story unclaim` curated tools of
-        // their own; until it lands, an agent over MCP has no atomic claim at
-        // all, and no way to hand one back.
-        Invocation::Claim { .. }
-        | Invocation::Unclaim { .. }
-        | Invocation::Help
+        Invocation::Claim { .. } => Some("story_claim"),
+        Invocation::Unclaim { .. } => Some("story_unclaim"),
+
+        Invocation::Help
         | Invocation::Project { .. }
         | Invocation::Publish { .. }
         | Invocation::MemberAdd { .. }

@@ -162,6 +162,192 @@ fn a_full_story_lifecycle_through_the_curated_tools() {
     );
 }
 
+/// A helper for the claim tests: every comment on a story, oldest first.
+fn comments_of(mcp: &mut McpSession, slug: &str, id: &str) -> Vec<String> {
+    let shown = mcp.call("story_show", json!({ "project": slug, "id": id }));
+    assert_eq!(shown["isError"], false, "story_show failed: {shown}");
+    let value: Value = serde_json::from_str(text_of(&shown)).expect("story_show's text is JSON");
+    value["story"]["story"]["comments"]
+        .as_array()
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|entry| entry["text"].as_str().unwrap_or_default().to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Creates one story and returns its id.
+fn seed(mcp: &mut McpSession, slug: &str, title: &str) -> String {
+    let created = mcp.call("story_new", json!({ "project": slug, "title": title }));
+    assert_eq!(created["isError"], false, "story_new failed: {created}");
+    let value: Value = serde_json::from_str(text_of(&created)).expect("story_new's text is JSON");
+    value["story"]["story"]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("story_new did not report an id: {value}"))
+        .to_string()
+}
+
+/// The whole point of SH-479: before it, an agent over MCP could only
+/// `story_move`, which cannot compare-and-swap on the state it just read
+/// without a round trip in between.
+#[test]
+fn claiming_and_releasing_a_story_round_trips_through_the_curated_tools() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let project = env.project().prefix("SH").build();
+    let slug = project.slug();
+    let mut mcp = McpSession::spawn(&env, project.path());
+    let id = seed(&mut mcp, &slug, "Claimable over MCP");
+
+    let claimed = mcp.call("story_claim", json!({ "project": slug, "id": id }));
+    assert_eq!(claimed["isError"], false, "story_claim failed: {claimed}");
+    let claimed_json: Value = serde_json::from_str(text_of(&claimed)).expect("JSON");
+    assert_eq!(claimed_json["story"]["story"]["state"], "in-progress");
+
+    let released = mcp.call("story_unclaim", json!({ "project": slug, "id": id }));
+    assert_eq!(
+        released["isError"], false,
+        "story_unclaim failed: {released}"
+    );
+    let released_json: Value = serde_json::from_str(text_of(&released)).expect("JSON");
+    assert_eq!(released_json["result"], "ok");
+    assert_eq!(released_json["story"]["story"]["state"], "todo");
+    assert_eq!(released_json["unclaimed_from"], "in-progress");
+}
+
+/// The asymmetry between the two tools' defaults, proved end to end rather
+/// than argued. A claim's default sentence names the *caller's* host and tmux
+/// window and is composed client-side, so this long-lived server — started by
+/// whichever shell the agent host happened to run it from — has nothing
+/// honest to say and says nothing. An unclaim's default is composed in the
+/// store, so it arrives complete.
+#[test]
+fn a_claim_over_mcp_is_silent_by_default_and_an_unclaim_is_not() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let project = env.project().prefix("SH").build();
+    let slug = project.slug();
+    let mut mcp = McpSession::spawn(&env, project.path());
+    let id = seed(&mut mcp, &slug, "Silent claim");
+
+    let claimed = mcp.call("story_claim", json!({ "project": slug, "id": id }));
+    assert_eq!(claimed["isError"], false, "story_claim failed: {claimed}");
+    assert!(
+        comments_of(&mut mcp, &slug, &id).is_empty(),
+        "a claim with no `comment` argument must post nothing at all"
+    );
+
+    let released = mcp.call("story_unclaim", json!({ "project": slug, "id": id }));
+    assert_eq!(
+        released["isError"], false,
+        "story_unclaim failed: {released}"
+    );
+    let posted = comments_of(&mut mcp, &slug, &id);
+    assert_eq!(
+        posted.len(),
+        1,
+        "the release's own default comment is composed in the store and must survive the \
+         trip over MCP: {posted:?}"
+    );
+}
+
+#[test]
+fn a_comment_argument_is_what_the_claim_posts() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let project = env.project().prefix("SH").build();
+    let slug = project.slug();
+    let mut mcp = McpSession::spawn(&env, project.path());
+    let id = seed(&mut mcp, &slug, "Spoken claim");
+
+    let claimed = mcp.call(
+        "story_claim",
+        json!({ "project": slug, "id": id, "comment": "claimed by the review agent" }),
+    );
+    assert_eq!(claimed["isError"], false, "story_claim failed: {claimed}");
+    assert_eq!(
+        comments_of(&mut mcp, &slug, &id),
+        vec!["claimed by the review agent".to_string()]
+    );
+}
+
+#[test]
+fn claiming_next_takes_the_story_story_next_would_have_answered() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let project = env.project().prefix("SH").build();
+    let slug = project.slug();
+    let mut mcp = McpSession::spawn(&env, project.path());
+    let low = seed(&mut mcp, &slug, "Later");
+    let high = seed(&mut mcp, &slug, "Sooner");
+    let raised = mcp.call(
+        "story_prioritize",
+        json!({ "project": slug, "id": high, "priority": "critical" }),
+    );
+    assert_eq!(raised["isError"], false, "{raised}");
+
+    let claimed = mcp.call("story_claim", json!({ "project": slug, "next": true }));
+    assert_eq!(claimed["isError"], false, "story_claim failed: {claimed}");
+    let claimed_json: Value = serde_json::from_str(text_of(&claimed)).expect("JSON");
+    assert_eq!(claimed_json["story"]["story"]["id"], high.as_str());
+    assert_eq!(claimed_json["story"]["story"]["state"], "in-progress");
+    assert_ne!(claimed_json["story"]["story"]["id"], low.as_str());
+}
+
+/// A mutating tool that named no story is refused before anything is written
+/// — never resolved to `next`, which is `story claim`'s own rule (SH-476) and
+/// matters more here, where the caller is a model filling in a JSON object.
+#[test]
+fn a_claim_naming_neither_id_nor_next_is_a_tool_error_that_writes_nothing() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let project = env.project().prefix("SH").build();
+    let slug = project.slug();
+    let mut mcp = McpSession::spawn(&env, project.path());
+    let id = seed(&mut mcp, &slug, "Must not be claimed by accident");
+
+    let refused = mcp.call("story_claim", json!({ "project": slug }));
+    assert_eq!(refused["isError"], true, "{refused}");
+    let text = text_of(&refused);
+    assert!(
+        text.contains("id") && text.contains("next"),
+        "the refusal must name both fields: {text}"
+    );
+
+    let shown = mcp.call("story_show", json!({ "project": slug, "id": id }));
+    let value: Value = serde_json::from_str(text_of(&shown)).expect("JSON");
+    assert_eq!(
+        value["story"]["story"]["state"], "todo",
+        "a refused claim must have written nothing"
+    );
+}
+
+#[test]
+fn claiming_a_story_someone_else_holds_is_a_tool_error_naming_the_actual_state() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let project = env.project().prefix("SH").build();
+    let slug = project.slug();
+    let mut mcp = McpSession::spawn(&env, project.path());
+    let id = seed(&mut mcp, &slug, "Contended");
+
+    let first = mcp.call("story_claim", json!({ "project": slug, "id": id }));
+    assert_eq!(first["isError"], false, "{first}");
+
+    let second = mcp.call("story_claim", json!({ "project": slug, "id": id }));
+    assert_eq!(
+        second["isError"], true,
+        "a second claim must be refused: {second}"
+    );
+    let text = text_of(&second);
+    assert!(
+        text.contains("in-progress"),
+        "the refusal must name the state the story is actually in: {text}"
+    );
+}
+
 #[test]
 fn story_new_with_omitted_metadata_inherits_the_service_defaults() {
     let env = TestEnv::isolated();

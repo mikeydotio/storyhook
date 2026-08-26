@@ -801,11 +801,12 @@ Three commands support AI coding agent workflows:
 ### MCP server
 
 `story mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io) server on
-stdin/stdout, exposing a curated set of sixteen tools (`story_list`, `story_next`,
-`story_new`, `story_move`, and so on — `story help mcp` lists them all) to an agent host that
-speaks the protocol, over the same `/api/v1/invoke` door every other client uses. A tool call
-is exactly as safe, and exactly as visible in a story's write history, as the equivalent typed
-command. Every tool names its own `project` explicitly, since a long-lived server process has
+stdin/stdout, exposing a curated set of eighteen tools (`story_list`, `story_next`,
+`story_claim`, `story_new`, `story_move`, and so on — `story help mcp` lists them all) to an
+agent host that speaks the protocol, over the same `/api/v1/invoke` door every other client
+uses. A tool call is exactly as safe, and exactly as visible in a story's write history, as
+the equivalent typed command. `story_claim` and `story_unclaim` are how an agent takes and
+hands back work atomically; `story_next` stays a pure read. Every tool names its own `project` explicitly, since a long-lived server process has
 no working directory of its own to infer one from. See `docs/spec/mcp-server.md` for the
 design, including why this is not the first time storyhook has shipped one.
 
