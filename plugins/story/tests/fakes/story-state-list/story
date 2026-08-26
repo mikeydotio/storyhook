@@ -5,6 +5,10 @@
 # or skewed store can produce. Every other command reaches the real CLI except
 # `state list`, whose controlled modes prove the diagnosis degrades rather than
 # guesses when confirmation is unavailable.
+#
+# An intercept that stops matching cannot go quietly green here either: the
+# real claim would succeed and every `.ok == false` assertion in the test would
+# fail.
 set -euo pipefail
 
 real="${STORY_REAL_BIN:?STORY_REAL_BIN must point at the real story binary}"
@@ -20,6 +24,11 @@ is_state_list() {
   [ "${1:-}" = state ] && [ "${2:-}" = list ]
 }
 
+# SH-482 retargeted this: cmd_dispatch's ID MODE claimed with
+# `move <id> <active> --if-state <state>` until it was collapsed onto the
+# `story claim` verb. The error answered below is unchanged, because what it
+# models is unchanged — a store whose vocabulary lacks the state the claim
+# resolves into, which SH-125's invariant makes otherwise unconstructable.
 is_claim_call() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -28,8 +37,7 @@ is_claim_call() {
       *) break ;;
     esac
   done
-  [ "${1:-}" = move ] && [ "${3:-}" = in-progress ] \
-    && [ "${4:-}" = --if-state ]
+  [ "${1:-}" = claim ]
 }
 
 if [ -n "${STORY_CLAIM_STATE_MISSING:-}" ] && is_claim_call "$@"; then

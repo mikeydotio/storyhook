@@ -97,14 +97,21 @@ case ",$ready_ids," in
   *",$id,"*) fail_test "claim: the claimed story is still in list --ready" ;;
 esac
 
-# --- the dry-run preview names the state it would actually write ------------
-dry_id=$(new_story "$repo" "Dry-run preview names the real target")
+# --- the dry-run preview no longer names a target at all --------------------
+# SH-482 collapsed this claim onto `story claim <id>`, which resolves the
+# active-role state inside its own write transaction. So the preview names the
+# VERB and no state, and this leg's assertion inverts: a state slug appearing
+# here again would mean the script had re-acquired the second opinion that was
+# SH-481's defect. Where the target actually lands is asserted for real above,
+# against the store, which is the stronger question anyway.
+dry_id=$(new_story "$repo" "Dry-run preview names the verb, not a target")
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$dry_id" 2>&1)
 assert_eq "$(jqf "$out" .ok)" "true" "dry-run: ok:true"
-assert_contains "$(jqf "$out" '.commands[0]')" "move $dry_id doing" \
-  "dry-run: previewed claim command targets the active-role state"
+assert_eq "$(jqf "$out" '.commands[0]')" "story claim $dry_id --no-comment" \
+  "dry-run: previewed claim command is the verb"
 case "$(jqf "$out" '.commands[0]')" in
-  *in-progress*) fail_test "dry-run: previewed claim command still names in-progress" ;;
+  *in-progress* | *doing* | *--if-state*)
+    fail_test "dry-run: previewed claim command names a client-resolved target state" ;;
 esac
 dry_state=$(cd "$repo" && story show "$dry_id" --json | jq -r '.story.story.state')
 assert_eq "$dry_state" "todo" "dry-run: no claim was actually written"
@@ -126,7 +133,7 @@ assert_contains "$(jqf "$out" .display)" "--force" "guard: offers the force reme
 out=$(cd "$guard_repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$guard_id" --force 2>&1)
 assert_eq "$(jqf "$out" .ok)" "true" "force: ok:true reusing an active-role claim"
 assert_eq "$(jqf "$out" .reused_claim)" "true" "force: reused_claim:true"
-assert_eq "$(jqf "$out" '.commands | map(select(startswith("story move"))) | length')" "0" \
+assert_eq "$(jqf "$out" '.commands | map(select(startswith("story claim"))) | length')" "0" \
   "force: no redundant claim transition is planned"
 assert_contains "$(jqf "$out" .display)" "doing" "force: the reuse note names the active-role state"
 

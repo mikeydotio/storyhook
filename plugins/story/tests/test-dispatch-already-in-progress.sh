@@ -44,9 +44,12 @@ assert_eq "$(jqf "$out" .forced)" "true" "forced dry-run: forced:true"
 assert_eq "$(jqf "$out" .reused_claim)" "true" "forced dry-run: reused_claim:true"
 assert_eq "$(jqf "$out" .claim_transitioned)" "false" "forced dry-run: claim_transitioned:false"
 assert_contains "$(jqf "$out" .display)" "reuse its existing" "forced dry-run: display names claim reuse"
+# SH-482 re-spelled the claim as `story claim <id>`. Retargeted rather than
+# left alone: a negative case that names a command the script can no longer
+# emit is a filter nothing can match, which passes forever and proves nothing.
 commands=$(jqf "$out" '.commands | join("\n")')
 case "$commands" in
-  *"story move $id in-progress"*)
+  *"story claim $id"* | *"story move $id in-progress"*)
     fail_test "forced dry-run: command list contains a redundant state transition" ;;
 esac
 
