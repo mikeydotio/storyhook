@@ -171,7 +171,10 @@ fn an_epic_with_no_live_children_still_refuses_a_direct_move() {
         .assert()
         .failure()
         .stderr(predicates::str::contains(
-            "is an epic because it has children",
+            // SH-499 rewrote this message: children are no longer given as the
+            // cause, because they never were the cause. Anchored on the part
+            // that is invariant under that correction.
+            "is an epic",
         ));
 }
 

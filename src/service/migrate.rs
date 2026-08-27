@@ -396,13 +396,25 @@ impl MigrationPlan {
         refusals.into_result(&project.root)?;
 
         let mut stories = Vec::new();
+        // Epics are TYPED, not inferred from a `parent-of` edge (SH-499). This
+        // is the migration's copy of the conflation, and it is a persisted one:
+        // what it decides gets a `StoryStateCleared` event appended to a legacy
+        // history, latching `state_computed` forever. A legacy story that
+        // merely had a sub-task would have been imported as a folder and would
+        // never have got its own state back.
+        //
+        // The edge still matters — it is what makes a typed epic's state
+        // dormant — so both halves are required, exactly as `gains_first_child`
+        // requires both on the live path.
+        let is_typed_epic = |id: &str| snapshots.get(id).is_some_and(crate::domain::is_epic);
         let mut structural_epics: BTreeSet<String> = snapshots
             .values()
             .filter(|snapshot| {
-                snapshot
-                    .relationships
-                    .iter()
-                    .any(|edge| edge.relation == "parent-of")
+                crate::domain::is_epic(snapshot)
+                    && snapshot
+                        .relationships
+                        .iter()
+                        .any(|edge| edge.relation == "parent-of")
             })
             .map(|snapshot| snapshot.id.clone())
             .collect();
@@ -410,7 +422,9 @@ impl MigrationPlan {
             repairs
                 .iter()
                 .filter(|repair| {
-                    repair.kind == RepairKind::CompletedInverse && repair.relation == "parent-of"
+                    repair.kind == RepairKind::CompletedInverse
+                        && repair.relation == "parent-of"
+                        && is_typed_epic(&repair.story)
                 })
                 .map(|repair| repair.story.clone()),
         );

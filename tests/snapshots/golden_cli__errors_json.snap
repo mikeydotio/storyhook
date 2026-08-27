@@ -25,7 +25,7 @@ stderr: <empty>
 $ story move SH-1 not-a-state --json
 exit: 2
 stdout: 
-{"error":"story `SH-1` is an epic because it has children; its state is computed and cannot be moved directly","exit_code":2,"result":"error"}
+{"error":"story `SH-1` is an epic, so its state is computed from its children and cannot be moved directly; move a child instead, or change this story's type if it is not a folder","exit_code":2,"result":"error"}
 
 stderr: <empty>
 

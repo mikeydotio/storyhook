@@ -31,9 +31,16 @@ fn described(title: &str) -> ImportStory {
 }
 
 fn create(fixture: &ServiceFixture, title: &str) -> String {
+    create_typed(fixture, title, None)
+}
+
+/// [`create`], with an explicit story type — needed since SH-499, where
+/// epic-ness is the type rather than the presence of children.
+fn create_typed(fixture: &ServiceFixture, title: &str, story_type: Option<&str>) -> String {
     StoryService::new(&fixture.ctx())
         .create(&NewStoryInput {
             title: title.to_string(),
+            story_type: story_type.map(str::to_string),
             ..NewStoryInput::default()
         })
         .expect("creating a story")
@@ -1289,11 +1296,18 @@ fn an_older_export_gains_computed_state_authority_for_its_epic() {
     use storyhook::service::transfer::ExportedEvent;
 
     let fixture = ServiceFixture::new();
-    let parent = create(&fixture, "Legacy epic");
+    // SH-499: typed, not inferred. The import path's compatibility event fires
+    // for an EPIC missing its state-authority marker, and an ordinary story
+    // that merely has a child must not acquire one -- that would convert it
+    // into a folder permanently, at the moment it entered the store.
+    storyhook::service::ConfigService::new(&fixture.ctx())
+        .add_type("epic", None, None)
+        .expect("adding the epic type");
+    let parent = create_typed(&fixture, "Legacy epic", Some("epic"));
     let child = create(&fixture, "Legacy child");
     storyhook::service::RelationService::new(&fixture.ctx())
         .relate(&parent, "parent-of", &child, false)
-        .expect("creating the current structural epic");
+        .expect("creating the current epic");
     let mut legacy_export = export(&fixture);
     for story in &mut legacy_export.stories {
         story.events.retain(|event| {
