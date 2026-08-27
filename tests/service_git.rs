@@ -100,9 +100,16 @@ fn run_git(fixture: &ServiceFixture, args: &[&str]) {
 }
 
 fn create(fixture: &ServiceFixture, title: &str) -> String {
+    create_typed(fixture, title, None)
+}
+
+/// [`create`], with an explicit story type — needed since SH-499, where
+/// epic-ness is the type rather than the presence of children.
+fn create_typed(fixture: &ServiceFixture, title: &str, story_type: Option<&str>) -> String {
     StoryService::new(&fixture.ctx())
         .create(&NewStoryInput {
             title: title.to_string(),
+            story_type: story_type.map(str::to_string),
             ..NewStoryInput::default()
         })
         .expect("creating a story")
@@ -773,7 +780,13 @@ fn a_colon_trailer_claims_and_moves_the_story() {
 fn a_claiming_commit_links_an_epic_without_moving_its_computed_state() {
     let fixture = ServiceFixture::new();
     git_init(&fixture);
-    let epic = create(&fixture, "epic");
+    // SH-499: typed, because this test is about an EPIC's computed state
+    // surviving a claiming commit. An ordinary story with a child has no
+    // computed state to preserve.
+    storyhook::service::ConfigService::new(&fixture.ctx())
+        .add_type("epic", None, None)
+        .expect("adding the epic type");
+    let epic = create_typed(&fixture, "epic", Some("epic"));
     let child = create(&fixture, "child");
     RelationService::new(&fixture.ctx())
         .relate(&epic, "parent-of", &child, false)

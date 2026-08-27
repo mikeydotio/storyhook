@@ -1230,11 +1230,17 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains("var shownState = v.display_state || st.state;"));
 
     // SH-446: both Board and List consume filteredStories(), so this one
-    // persisted toggle hides structural epics (the views with progress
-    // rollups) everywhere by default and Clear Filters restores that default.
+    // persisted toggle hides epics everywhere by default and Clear Filters
+    // restores that default.
+    //
+    // SH-499 changed WHAT it hides. The predicate read `v.progress`, which is
+    // present for any parent, so an ordinary story that gained one sub-task was
+    // hidden from the board by default. Epic-ness is the TYPE, and progress
+    // stays a fact about children rather than a role -- so the filter reads the
+    // type and this assertion follows it.
     assert!(body.contains(r#"id="toggle-epics"> Show epics"#));
     assert!(body.contains("showEpics: false"));
-    assert!(body.contains("if (!f.showEpics && v.progress) return false;"));
+    assert!(body.contains(r#"if (!f.showEpics && st.story_type === "epic") return false;"#));
     assert!(body.contains("state.filter.showEpics = this.checked;"));
     assert!(body.contains(r#"$("toggle-epics").checked = false;"#));
 
