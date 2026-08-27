@@ -37,6 +37,19 @@ async function expectIconShape(locator: Locator): Promise<void> {
   expect(box!.height).toBeGreaterThan(0);
 }
 
+async function expectDisclosureShape(
+  locator: Locator,
+  direction: "right" | "down",
+): Promise<void> {
+  await expectIconShape(locator);
+  await expect(locator).toHaveAttribute("aria-hidden", "true");
+  await expect(locator).toHaveAttribute("data-direction", direction);
+  await expect(locator).toHaveAttribute("stroke", "currentColor");
+  const box = await locator.boundingBox();
+  expect(box!.width).toBeCloseTo(14, 1);
+  expect(box!.height).toBeCloseTo(14, 1);
+}
+
 function buttonIcon(page: Page, id: string): Locator {
   return page.locator(`#${id} svg.icon`);
 }
@@ -91,4 +104,52 @@ test("the statuses editor's back link renders an svg icon alongside its text", a
   const backLink = page.locator(".back-link");
   await expectIconShape(backLink.locator("svg.icon"));
   await expect(backLink).toHaveText(/All projects/);
+});
+
+test("every hidden-content control draws a consistently sized disclosure chevron", async ({
+  page,
+}) => {
+  await openProject(page, "Alpha Project");
+
+  await expectDisclosureShape(
+    page.locator("#projsel-btn .disclosure-icon"),
+    "down",
+  );
+
+  const filterToggle = page.locator("#filter-toggle-btn");
+  const filterIcon = page.locator("#filter-toggle-chevron");
+  await expectDisclosureShape(filterIcon, "right");
+  await expect(filterToggle).toHaveAccessibleName("Filters");
+  expect(
+    await filterIcon.evaluate(
+      (icon) =>
+        getComputedStyle(icon).stroke ===
+        getComputedStyle(icon.parentElement!).color,
+    ),
+  ).toBe(true);
+
+  await filterToggle.click();
+  await expectDisclosureShape(filterIcon, "down");
+  for (const icon of await page.locator(".fdd-btn .fdd-caret").all()) {
+    await expectDisclosureShape(icon, "down");
+  }
+
+  const card = page.locator(".card", { hasText: "Wire up the auth flow" });
+  await card.click();
+  const sectionIcons = page.locator(".section-toggle .disclosure-icon");
+  expect(await sectionIcons.count()).toBeGreaterThan(0);
+  for (const icon of await sectionIcons.all()) {
+    const direction = (await icon.getAttribute("data-direction")) as
+      | "right"
+      | "down";
+    await expectDisclosureShape(icon, direction);
+  }
+  await page.locator("#drawer-close").click();
+
+  await card.click({ button: "right" });
+  const submenuIcons = page.locator(".ctxmenu-arrow");
+  expect(await submenuIcons.count()).toBeGreaterThan(0);
+  for (const icon of await submenuIcons.all()) {
+    await expectDisclosureShape(icon, "right");
+  }
 });
