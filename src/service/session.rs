@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 
 use crate::domain::{
-    Priority, StorySnapshot, active_state, apply_computed_epic_states, has_children, is_claimable,
+    Priority, StorySnapshot, active_state, apply_computed_epic_states, is_claimable, is_epic,
     ready_order,
 };
 use crate::error::AppError;
@@ -134,7 +134,7 @@ impl<'ctx, S: Store> SessionService<'ctx, S> {
         let ready: Vec<&StorySnapshot> = open
             .iter()
             .copied()
-            .filter(|story| is_claimable(story, &stories, active.as_ref()) && !has_children(story))
+            .filter(|story| is_claimable(story, &stories, active.as_ref()) && !is_epic(story))
             .collect();
         message.push_str(&format!(
             "  {} open stories, {} ready\n",

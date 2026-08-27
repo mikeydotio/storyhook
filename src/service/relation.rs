@@ -24,7 +24,7 @@
 //! `unrelate` relaxes `b` uniformly, for every kind and every role.
 
 use crate::domain::{
-    StoryEvent, StorySnapshot, has_children, relation_edges, would_create_parent_cycle,
+    StoryEvent, StorySnapshot, has_children, is_epic, relation_edges, would_create_parent_cycle,
 };
 use crate::error::AppError;
 use crate::event_hooks::HookEventType;
@@ -468,8 +468,21 @@ fn has_relation(story: &StorySnapshot, relation: &str, other_id: &str) -> bool {
         .any(|candidate| candidate.relation == relation && candidate.other_id == other_id)
 }
 
+/// Whether this write makes `story` an epic that must surrender its own state.
+///
+/// Gated on the TYPE as well as the edge (SH-499). Acquiring a child is what
+/// *triggers* the surrender, but only a folder surrenders: an ordinary story
+/// that gains a sub-task keeps its own state, and must, or it silently stops
+/// being work the moment somebody links something to it.
+///
+/// This is the persisted half of the conflation and the half a projection-only
+/// fix would miss. `StoryStateCleared` is an EVENT: it latches
+/// `state_computed` in the fold and outlives any read-time projection, so a
+/// story that was wrongly cleared stays wrongly cleared until a
+/// `StoryStateChanged` overwrites it.
 fn gains_first_child(story: &StorySnapshot, events: &[StoryEvent]) -> bool {
-    !has_children(story)
+    is_epic(story)
+        && !has_children(story)
         && events.iter().any(|event| {
             matches!(
                 event,

@@ -2056,6 +2056,41 @@ pub fn compute_integrity_issues(
     issues
 }
 
+/// The slug of the built-in type that means "this story is a folder".
+///
+/// Shipped by `service::project::default_types` and assigned by
+/// `service::grouping` when it creates one. A project that does not define it
+/// simply has no epics, which is coherent rather than a gap: nothing carries
+/// the type, so every story keeps its own state.
+pub const EPIC_TYPE_SLUG: &str = "epic";
+
+/// Whether `story` is an epic — a folder that exists to group its children.
+///
+/// **Epic-ness is the TYPE, never the presence of children** (SH-499, user
+/// determination 2026-08-27). All epics are folders; not every story with
+/// children is one. A bug that spawned a follow-up, or a chore with a single
+/// sub-task, is ordinary work that happens to have an edge — its state is its
+/// own, it can be moved, and `story next` should offer it.
+///
+/// This module used to answer the question with [`has_children`], and said so
+/// as intent rather than as an accident. That conflation meant a story became a
+/// folder by acquiring one relationship: its state was overwritten with a
+/// computed one, direct moves were refused, the ready queue skipped it, dispatch
+/// refused it and the board hid it. Nobody chose any of that.
+///
+/// [`has_children`] survives for the question it actually answers — *does this
+/// story have children* — which is a fact rather than a role, and is what
+/// progress is counted from.
+#[must_use]
+pub fn is_epic(story: &StorySnapshot) -> bool {
+    story.story_type.as_deref() == Some(EPIC_TYPE_SLUG)
+}
+
+/// Whether `story` holds at least one `parent-of` edge.
+///
+/// A fact about relationships, and **not** the test for whether a story is an
+/// epic — see [`is_epic`], and SH-499 for why the two were once the same
+/// function.
 pub fn has_children(story: &StorySnapshot) -> bool {
     story
         .relationships
@@ -2214,9 +2249,11 @@ pub fn default_type(types: &[TypeDef]) -> Option<TypeDef> {
     types.first().cloned()
 }
 
-/// Replaces every structural epic's dormant state with its recursive effective
-/// state. A story is an epic because it has a `parent-of` edge, never because
-/// it carries a particular type.
+/// Replaces every epic's dormant state with its recursive effective state.
+///
+/// A story is an epic because it is TYPED one ([`is_epic`]), never because it
+/// has a `parent-of` edge. This doc used to assert the opposite as intent; that
+/// was the SH-499 defect, and the sentence is deleted rather than softened.
 ///
 /// The source map is cloned once so every result in a projection is computed
 /// from the same snapshot. Recursion is memoized, making epic-of-epic chains
@@ -2238,7 +2275,7 @@ pub fn apply_computed_epic_states(
         let Some(story) = stories.get_mut(&id) else {
             continue;
         };
-        if !has_children(story) {
+        if !is_epic(story) {
             continue;
         }
         story.state = state;
@@ -2263,6 +2300,17 @@ fn computed_epic_state(
     let story = stories.get(id)?.clone();
     if !visiting.insert(id.to_string()) {
         return Some((story.state, story.superstate));
+    }
+
+    // A NON-EPIC contributes its own state and stops the recursion here, even
+    // when it has children of its own (SH-499). Without this a normal story
+    // sitting under an epic would still be measured by ITS children, so the
+    // conflation would survive one level down from where it was deleted.
+    if !is_epic(&story) {
+        visiting.remove(id);
+        let answer = (story.state, story.superstate);
+        memo.insert(id.to_string(), answer.clone());
+        return Some(answer);
     }
 
     let child_ids: Vec<String> = story
@@ -2510,7 +2558,7 @@ pub fn is_claimable(
     all_stories: &impl StoryIndex,
     active: Option<&StateDef>,
 ) -> bool {
-    if has_children(story) || !is_ready(story, all_stories) {
+    if is_epic(story) || !is_ready(story, all_stories) {
         return false;
     }
     active.is_none_or(|state| story.state != state.slug)
@@ -2518,8 +2566,11 @@ pub fn is_claimable(
 
 /// The priority of the nearest parent epic for ready-order purposes.
 ///
-/// Every direct `child-of` target is structurally an epic because the inverse
-/// is its `parent-of` edge. Multiple parents are legal; the most urgent of
+/// Only a `child-of` target that is actually an EPIC confers its priority
+/// (SH-499): urgency is inherited from the initiative a story belongs to, and a
+/// normal story that happens to have children is not one. This filter used to
+/// read `has_children` and its doc used to claim every `child-of` target was
+/// "structurally an epic". Multiple parents are legal; the most urgent of
 /// those equally-near parents wins, so membership in a critical epic cannot be
 /// masked by simultaneous membership in a less urgent one. A parentless story
 /// uses its own priority, which neither promotes nor demotes independent work.
@@ -2529,7 +2580,7 @@ pub fn parent_epic_priority(story: &StorySnapshot, all_stories: &impl StoryIndex
         .iter()
         .filter(|relation| relation.relation == "child-of")
         .filter_map(|relation| all_stories.story(&relation.other_id))
-        .filter(|parent| has_children(parent))
+        .filter(|parent| is_epic(parent))
         .map(|parent| parent.priority.clone())
         .min()
         .unwrap_or_else(|| story.priority.clone())
@@ -6332,6 +6383,13 @@ mod tests {
         let mut other_parent = ready_snapshot("SH-12", Priority::Medium, "2026-01-01T00:00:00Z");
         let mut promoted = ready_snapshot("SH-2", Priority::High, "2026-01-01T00:00:00Z");
         let mut ordinary = ready_snapshot("SH-1", Priority::High, "2026-01-01T00:00:00Z");
+        // SH-499: only an EPIC confers its priority on a child. These three
+        // used to be parents by edge alone, which is the conflation that story
+        // removed -- urgency is inherited from the initiative a story belongs
+        // to, and a normal story that happens to have children is not one.
+        for parent in [&mut critical_parent, &mut low_parent, &mut other_parent] {
+            parent.story_type = Some(super::EPIC_TYPE_SLUG.to_string());
+        }
         critical_parent.relationships.push(StoryRelation {
             relation: "parent-of".to_string(),
             other_id: promoted.id.clone(),

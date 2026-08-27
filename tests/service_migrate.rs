@@ -372,7 +372,13 @@ fn a_repaired_parent_edge_also_clears_the_new_epics_state_authority() {
         root.join(".storyhook/open/stories/ADA-5.jsonl"),
         format!(
             "{}\n",
-            r#"{"kind":"StoryCreated","at":"2026-02-01T00:00:00Z","title":"Parent named only by child","state":"todo"}"#
+            // SH-499: typed `epic`, because that is what this test is about --
+            // an EPIC discovered only through a child's one-sided `child-of`
+            // claim must still lose its state authority once relation repair
+            // completes the edge. Untyped, it is an ordinary story that gained
+            // a child, and keeping its own state is now the correct outcome.
+            r#"{"kind":"StoryCreated","at":"2026-02-01T00:00:00Z","title":"Parent named only by child","state":"todo"}
+{"kind":"StoryTypeSet","at":"2026-02-01T00:00:30Z","story_type":"epic"}"#
         ),
     )
     .unwrap();
@@ -1008,14 +1014,28 @@ fn the_custom_config_tree_brings_its_whole_configuration_surface() {
     );
     assert_eq!(snapshots["ADA-1"].labels, ["analytical", "phase:1"]);
     assert_eq!(snapshots["ADA-1"].comments.len(), 1);
+    // SH-499: ADA-1 is typed `spike` and has a child. It is therefore NOT an
+    // epic, and keeps its own legacy state — the assertion used to read `todo`
+    // with `state_computed` set, because migration inferred epic-ness from the
+    // `parent-of` edge and cleared the story's authority over its own state.
+    //
+    // That inference was the persisted half of the conflation on the import
+    // path: it appended `StoryStateCleared` to a legacy history, so a story
+    // that merely had a sub-task was imported as a folder and could never get
+    // its state back. Inverted rather than deleted, because this is now the
+    // clearest statement of the rule anywhere in the migration suite.
     assert_eq!(
-        snapshots["ADA-1"].state, "todo",
-        "a structural epic reports its child-derived state, not its dormant legacy state"
+        snapshots["ADA-1"].state, "review",
+        "a typed non-epic keeps its own legacy state even though it has a child"
     );
-    assert!(snapshots["ADA-1"].state_computed);
     assert!(
-        report.computed_epics.iter().any(|id| id == "ADA-1"),
-        "the report names the compatibility event that cleared state authority"
+        !snapshots["ADA-1"].state_computed,
+        "and migration must not clear its authority over that state"
+    );
+    assert!(
+        !report.computed_epics.iter().any(|id| id == "ADA-1"),
+        "and the report does not claim to have cleared it either (SH-499): ADA-1 \
+         is typed `spike`, so having a child never made it a folder"
     );
 }
 
