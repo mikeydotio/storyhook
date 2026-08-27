@@ -28,6 +28,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use storyhook_test_support::scratch_dir_named;
 use tempfile::TempDir;
 
 /// The repository root, which is this package's manifest directory.
@@ -68,7 +69,11 @@ fn run(dir: &Path, version: &str) -> Output {
 
 /// A throwaway repository with one commit and no `VERSION` yet.
 fn new_repo() -> TempDir {
-    let dir = tempfile::tempdir().expect("tempdir");
+    // Never `tempfile::tempdir()`: $TMPDIR is Spotlight-indexed, and these
+    // fixtures build real git repositories -- exactly the many-small-files
+    // shape that backs `mds_stores` up. The harness's own scratch root is
+    // outside the index.
+    let dir = scratch_dir_named("release-tag");
     let p = dir.path();
     git(p, &["init", "-q", "-b", "main"]);
     git(p, &["config", "user.email", "t@t"]);
