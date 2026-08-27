@@ -1,5 +1,6 @@
 import { test, expect } from "./support";
 import { openFilters, openProject, seedToken } from "./support";
+import type { Locator } from "@playwright/test";
 
 /**
  * SH-235: the filter bar's dropdowns, checkboxes and sort buttons collapse
@@ -28,6 +29,20 @@ test.beforeEach(async ({ page }) => {
   await openProject(page, "Alpha Project");
 });
 
+async function expectDisclosureIcon(
+  locator: Locator,
+  direction: "right" | "down",
+): Promise<void> {
+  await expect(locator).toBeVisible();
+  await expect(locator).toHaveAttribute("aria-hidden", "true");
+  await expect(locator).toHaveAttribute("data-direction", direction);
+  await expect(locator).toHaveAttribute("stroke", "currentColor");
+  const box = await locator.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box!.width).toBeCloseTo(14, 1);
+  expect(box!.height).toBeCloseTo(14, 1);
+}
+
 test("the panel defaults collapsed, with the toggle's ARIA and chevron matching", async ({
   page,
 }) => {
@@ -36,7 +51,8 @@ test("the panel defaults collapsed, with the toggle's ARIA and chevron matching"
     "aria-expanded",
     "false",
   );
-  await expect(page.locator("#filter-toggle-chevron")).toHaveText("▸");
+  await expectDisclosureIcon(page.locator("#filter-toggle-chevron"), "right");
+  await expect(page.locator("#filter-toggle-btn")).toHaveAccessibleName("Filters");
   // Always visible regardless -- the point of the redesign.
   await expect(page.locator("#filter-count")).toBeVisible();
   await expect(page.locator("#filter-clear")).toBeVisible();
@@ -52,7 +68,7 @@ test("clicking the toggle opens the panel and its dropdowns become usable", asyn
     "aria-expanded",
     "true",
   );
-  await expect(page.locator("#filter-toggle-chevron")).toHaveText("▾");
+  await expectDisclosureIcon(page.locator("#filter-toggle-chevron"), "down");
 
   await page.locator("#fdd-priorities .fdd-btn").click();
   await expect(page.locator("#fdd-priorities .fdd-panel")).toBeVisible();

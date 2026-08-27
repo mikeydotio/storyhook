@@ -115,7 +115,7 @@ test("a state filter absent from the next project is pruned, with a toast, not s
   ).toBeVisible();
   await expect(page.locator("#filter-count")).toHaveText("1 / 1");
   // The dropdown itself reflects the prune too: no lingering "(1)" badge.
-  await expect(page.locator("#fdd-states .fdd-btn")).toHaveText("State▾");
+  await expect(page.locator("#fdd-states .fdd-btn")).toHaveText("State");
 });
 
 test("sort order carries over across a project switch", async ({ page }) => {

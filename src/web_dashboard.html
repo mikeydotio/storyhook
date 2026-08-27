@@ -300,6 +300,13 @@ button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-
    bytes, comments included, so a literal, un-suffixed glyph pasted into a
    doc comment would trip its own fence. */
 svg.icon { width: 1em; height: 1em; display: block; flex: none; }
+/* SH-447: disclosure indicators are shapes, not font glyphs. The old
+   U+25B8/U+25BE characters occupied a 9-10px font box here while their
+   visible triangular ink occupied only a fraction of it, producing the
+   undersized controls in the report. A fixed 14px SVG keeps the compact
+   chrome compact while making the stroke legible and identical on every
+   platform; `currentColor` keeps theme, hover and active-state inheritance. */
+svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: none; }
 .connection { display: flex; align-items: center; gap: 0.375rem; font-size: 0.75rem; color: var(--fg-muted); }
 .conn-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--fg-faint); transition: background 0.2s; }
 .conn-dot.live { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
@@ -477,7 +484,7 @@ svg.icon { width: 1em; height: 1em; display: block; flex: none; }
    opened the panel this session still sees that a filter is narrowing the
    board. */
 .filter-toggle-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
-.filter-toggle-btn .chevron { display: inline-block; width: 0.625rem; font-size: 0.625rem; }
+.filter-toggle-btn .disclosure-icon { flex-shrink: 0; }
 .filter-panel {
   display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
   padding: 0 1.25rem 0.75rem;
@@ -490,7 +497,7 @@ svg.icon { width: 1em; height: 1em; display: block; flex: none; }
 }
 .fdd-btn:hover { border-color: var(--fg-faint); color: var(--fg); }
 .fdd-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
-.fdd-caret { font-size: 0.5625rem; opacity: 0.6; }
+.fdd-caret { opacity: 0.7; }
 .fdd-panel {
   position: absolute; top: calc(100% + 0.375rem); left: 0; min-width: 11.5rem; max-height: 16rem; overflow-y: auto;
   background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius-sm);
@@ -773,7 +780,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   color: var(--fg-faint); min-height: var(--tap-min);
 }
 .section-toggle:hover { color: var(--fg-muted); }
-.section-toggle .chevron { display: inline-block; width: 0.625rem; font-size: 0.625rem; text-transform: none; }
+.section-toggle .disclosure-icon { flex-shrink: 0; }
 .section-toggle .section-count { font-weight: 400; text-transform: none; letter-spacing: normal; }
 .referenced-by-list { display: flex; flex-direction: column; gap: 0.375rem; }
 .referenced-by-row { display: flex; align-items: baseline; gap: 0.4375rem; font-size: 0.8125rem; }
@@ -1017,7 +1024,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .ctxmenu-item[aria-disabled="true"] { cursor: not-allowed; opacity: 0.55; }
 .ctxmenu-item.danger { color: var(--danger); }
 .ctxmenu-sep { height: 1px; background: var(--border); margin: 0.25rem 0.25rem; }
-.ctxmenu-arrow { margin-left: auto; opacity: 0.6; font-size: 0.6875rem; }
+.ctxmenu-arrow { margin-left: auto; opacity: 0.7; }
 /* SH-305: the per-column sort menu's `role="menuitemradio"` items -- same
    always-reserve-the-width, toggle-visibility idiom as `.projsel-item-check`
    so the label doesn't shift left/right as the checked item changes. */
@@ -1368,7 +1375,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       <div class="projsel" id="projsel">
         <button type="button" class="projsel-btn" id="projsel-btn" aria-haspopup="true" aria-expanded="false" aria-controls="projsel-menu">
           <span class="projsel-label" id="projsel-label">Loading…</span>
-          <span class="fdd-caret">▾</span>
+          <svg class="icon disclosure-icon fdd-caret" data-direction="down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
         </button>
         <div class="fdd-panel projsel-panel" id="projsel-menu" role="menu" aria-label="Switch project" hidden></div>
       </div>
@@ -1397,7 +1404,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   <div class="filter-bar" id="filter-bar">
     <div class="filter-summary" id="filter-summary">
       <button type="button" class="filter-toggle-btn" id="filter-toggle-btn" aria-expanded="false" aria-controls="filter-panel">
-        <span class="chevron" id="filter-toggle-chevron">▸</span> Filters
+        <svg class="icon disclosure-icon" id="filter-toggle-chevron" data-direction="right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg> Filters
       </button>
       <span class="filter-count" id="filter-count"></span>
       <button type="button" class="filter-clear" id="filter-clear">Clear filters</button>
@@ -2330,6 +2337,29 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       svg.appendChild(shapeNode);
     });
     return svg;
+  }
+
+  /** Builds the 14px directional indicator shared by every control that
+   * reveals hidden content (SH-447). Keeping the two paths here means a
+   * JS-built disclosure cannot drift from the static project/filter icons'
+   * geometry, while `data-direction` gives browser tests a semantic state
+   * to assert without coupling to path coordinates. */
+  function disclosureIcon(direction) {
+    var paths = {
+      right: "m9 18 6-6-6-6",
+      down: "m6 9 6 6 6-6"
+    };
+    var icon = svgIcon([["path", { d: paths[direction] }]], { strokeWidth: 2.5 });
+    icon.classList.add("disclosure-icon");
+    icon.dataset.direction = direction;
+    return icon;
+  }
+
+  function setDisclosureDirection(icon, direction) {
+    var path = icon && icon.querySelector("path");
+    if (!path) return;
+    path.setAttribute("d", direction === "down" ? "m6 9 6 6 6-6" : "m9 18 6-6-6-6");
+    icon.dataset.direction = direction;
   }
 
   function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
@@ -4922,6 +4952,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       }
       var disabled = !!entry.disabled;
       if (entry.submenu) {
+        var arrow = disclosureIcon("right");
+        arrow.classList.add("ctxmenu-arrow");
         node.appendChild(el("div", {
           class: "ctxmenu-item",
           role: "menuitem",
@@ -4934,7 +4966,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
             if (disabled) return;
             openSubmenu(evt.currentTarget, entry.submenu);
           }
-        }, [entry.label, el("span", { class: "ctxmenu-arrow" }, ["▸"])]));
+        }, [entry.label, arrow]));
         return;
       }
       var checked = entry.checked;
@@ -6058,9 +6090,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     clear(container);
     var label = FILTER_DROPDOWNS[key].label;
 
-    var btn = el("button", { type: "button", class: "fdd-btn" }, [
-      label, el("span", { class: "fdd-caret" }, ["▾"])
-    ]);
+    var caret = disclosureIcon("down");
+    caret.classList.add("fdd-caret");
+    var btn = el("button", { type: "button", class: "fdd-btn" }, [label, caret]);
     var panel = el("div", { class: "fdd-panel" }, []);
     panel.hidden = true;
 
@@ -6104,7 +6136,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var count = state.filter[key].length;
     clear(btn);
     btn.appendChild(document.createTextNode(FILTER_DROPDOWNS[key].label + (count ? " (" + count + ")" : "")));
-    btn.appendChild(el("span", { class: "fdd-caret" }, ["▾"]));
+    var caret = disclosureIcon("down");
+    caret.classList.add("fdd-caret");
+    btn.appendChild(caret);
     btn.classList.toggle("active", count > 0 || openFilterDropdown === key);
   }
 
@@ -6131,9 +6165,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     container.dataset.fingerprint = fingerprint;
     clear(container);
 
-    var btn = el("button", { type: "button", class: "fdd-btn" }, [
-      "Columns", el("span", { class: "fdd-caret" }, ["▾"])
-    ]);
+    var caret = disclosureIcon("down");
+    caret.classList.add("fdd-caret");
+    var btn = el("button", { type: "button", class: "fdd-btn" }, ["Columns", caret]);
     var panel = el("div", { class: "fdd-panel" }, []);
     panel.hidden = true;
 
@@ -6180,7 +6214,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var count = state.hiddenColumns.length;
     clear(btn);
     btn.appendChild(document.createTextNode("Columns" + (count ? " (" + count + ")" : "")));
-    btn.appendChild(el("span", { class: "fdd-caret" }, ["▾"]));
+    var caret = disclosureIcon("down");
+    caret.classList.add("fdd-caret");
+    btn.appendChild(caret);
     btn.classList.toggle("active", count > 0 || openFilterDropdown === "columns");
   }
 
@@ -6194,7 +6230,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function syncFilterToggle(visible, total) {
     $("filter-panel").hidden = !state.filtersOpen;
     $("filter-toggle-btn").setAttribute("aria-expanded", String(state.filtersOpen));
-    $("filter-toggle-chevron").textContent = state.filtersOpen ? "▾" : "▸";
+    setDisclosureDirection($("filter-toggle-chevron"), state.filtersOpen ? "down" : "right");
     $("filter-toggle-btn").classList.toggle("active", !!total && visible !== total);
   }
 
@@ -9070,10 +9106,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * still says whether there's anything under it. */
   function buildSectionToggle(key, label, count) {
     var open = state.drawerSections[key];
-    var children = [
-      el("span", { class: "chevron" }, [open ? "▾" : "▸"]),
-      label
-    ];
+    var children = [disclosureIcon(open ? "down" : "right"), label];
     if (typeof count === "number") {
       children.push(el("span", { class: "section-count" }, [" (" + count + ")"]));
     }
