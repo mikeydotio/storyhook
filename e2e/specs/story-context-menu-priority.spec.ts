@@ -150,9 +150,23 @@ test("picking a priority repaints the card, and the menu and the drawer both rep
   await openSetPriority(page, card);
   const submenu = priorityMenu(page);
   await expect(submenu.locator('[aria-checked="true"]')).toContainText("critical");
+  // Exactly one item is checked -- the point this pair was making, expressed
+  // without naming a level the menu no longer offers.
+  await expect(submenu.locator('[aria-checked="true"]')).toHaveCount(1);
+  // SH-495: this used to assert `none` was present and unchecked. SH-449
+  // ("require story metadata defaults") deliberately removed Priority::None
+  // from the frontend's offered list -- `PRIORITIES` in `src/api/rest.rs`
+  // went from 5 to 4 -- so the item does not exist and the old assertion
+  // failed with "element(s) not found" rather than a wrong value.
+  //
+  // Inverted rather than deleted: this now PINS SH-449's decision. `none`
+  // remains a real level the CLI can set (`story prioritize <id> none`, the
+  // rubric's "deliberately parked"), so a future edit that quietly puts it
+  // back in a casual right-click menu is a product change and should have to
+  // argue with a red test rather than slip in.
   await expect(
     submenu.locator(".ctxmenu-item", { hasText: "none" }),
-  ).toHaveAttribute("aria-checked", "false");
+  ).toHaveCount(0);
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
 
