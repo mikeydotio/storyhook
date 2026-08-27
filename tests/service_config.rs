@@ -615,10 +615,22 @@ fn an_empty_state_is_removed_without_ceremony() {
 fn removing_a_state_migrates_an_epics_dormant_fallback_without_restoring_authority() {
     let fixture = with_a_spare_state();
     let ctx = fixture.ctx();
+    // Typed `epic`, not merely given a child (SH-499): epic-ness is the type,
+    // and it is the type that makes this story's state dormant. Relating alone
+    // used to be enough, which is the conflation that story removed.
+    //
+    // This fixture's project ships `bug, feature` and no `epic`, so the type has
+    // to be added first — which is itself SH-499's rule in miniature: a project
+    // that does not define `epic` has no epics, and nothing in it can have its
+    // state computed for it.
+    ConfigService::new(&ctx)
+        .add_type("epic", None, None)
+        .expect("adding the epic type to this fixture's project");
     let parent = StoryService::new(&ctx)
         .create(&NewStoryInput {
             title: "epic".to_string(),
             state: Some(SPARE.to_string()),
+            story_type: Some("epic".to_string()),
             ..NewStoryInput::default()
         })
         .expect("creating in the removable state")
@@ -626,7 +638,7 @@ fn removing_a_state_migrates_an_epics_dormant_fallback_without_restoring_authori
     let child = new_story(&ctx, "child");
     RelationService::new(&ctx)
         .relate(&parent, "parent-of", &child, false)
-        .expect("turning the parent into an epic");
+        .expect("giving the epic a child");
     assert!(snapshot(&fixture, &parent).state_computed);
     assert_eq!(listing(&fixture, SPARE).usage.open, 0);
     assert_eq!(listing(&fixture, "todo").usage.open, 2);
