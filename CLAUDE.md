@@ -724,16 +724,26 @@ Standing rules for every wave:
   instead.
 - **`display_state` answers "where does this card render" for any story, not just an
   epic's** (SH-407). `domain::compute_display_state` (renamed from
-  `compute_epic_display_state`) now carries two independent promotions under one
-  eligibility guard — a story in the project's neutral default open state, non-draft —
-  and blocked wins when both apply: SH-165's original (an epic with an active child
-  promotes to the active state) and SH-407's addition (a story that is itself
-  `!is_ready` promotes to `"blocked"`). Every renderer that reads
-  `display_state || story.state` inherits a fix here for free, which is the whole
-  reason SH-407 chose to extend this field rather than add a second, board-local
-  placement rule — see `docs/spec/board-ordering-and-placement.md` for the design and
-  the two council verdicts it was decided by (`story show SH-407`, SH-363: never the
-  council's own directory, which resolves on no fresh clone).
+  `compute_epic_display_state`) promotes a story that is itself `!is_ready` to
+  `"blocked"`, under one eligibility guard — a story in the project's neutral default
+  open state, non-draft. Every renderer that reads `display_state || story.state`
+  inherits a fix here for free, which is the whole reason SH-407 chose to extend this
+  field rather than add a second, board-local placement rule — see
+  `docs/spec/board-ordering-and-placement.md` for the design and the two council
+  verdicts it was decided by (`story show SH-407`, SH-363: never the council's own
+  directory, which resolves on no fresh clone).
+  **SH-165's epic promotion is no longer one of them** (SH-446). This bullet described
+  two promotions — the other being "an epic with an active child promotes to the active
+  state" — until `apply_computed_epic_states` replaced it: an epic's state is now
+  *computed and projected onto the story itself*, recursively and memoized, rather than
+  overlaid at render time by a second field. So the two mechanisms are no longer
+  siblings, and which one a reader wants depends on the question: `display_state` for
+  "this story's own blocking metadata disagrees with its literal state",
+  `apply_computed_epic_states` for "this story's state is its children's". The projection
+  sets `state_computed`, which is the flag that tells the two apart on the wire.
+  A story is an epic **because it has a `parent-of` edge**, never because of its type —
+  and `has_children` tests only for that edge, which is the SH-497 defect: deletion is
+  soft, so the edge outlives the child.
 - **The forward-compat gate needed a write-side twin, or a newer binary could break an older
   one's store on the way in** (SH-404). SH-54 refuses an older binary that opens a *newer*
   store — the read side. Nothing stopped the opposite: a `cargo build` binary (debug or

@@ -1,5 +1,6 @@
 import { test, expect } from "./support";
 import {
+  showEpics,
   cleanUpCreatedStories,
   deleteStory,
   openProject,
@@ -113,6 +114,12 @@ test("an epic's list pill shows the state its card actually sits in, not its own
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
+  // SH-495: adding the child made this story an epic, and SH-446 hides epics
+  // by default -- so its list row disappears here and every assertion below
+  // reports "element(s) not found" rather than a wrong pill. This test is
+  // about what an epic's pill SAYS, so the epic has to be visible to say it.
+  await showEpics(page);
+
   // Not yet promoted -- the epic's own literal state is still `todo`, and
   // its list pill/dot must read exactly like any other unpromoted todo
   // story: stateColor()'s quiet default, no title, no disagreement to name.
@@ -127,8 +134,14 @@ test("an epic's list pill shows the state its card actually sits in, not its own
     (el) => getComputedStyle(el).backgroundColor,
   );
 
-  // Promotes the epic's display_state to in-progress (compute_display_state,
-  // SH-165) without touching its own literal `state`, which stays `todo`.
+  // Moving the child moves the EPIC's own recorded state to in-progress.
+  //
+  // SH-495: this used to read "promotes the epic's display_state ... without
+  // touching its own literal `state`, which stays `todo`" -- SH-165's
+  // promotion, which `domain::compute_display_state` no longer performs.
+  // SH-446 ("compute epic state from children") replaced it: the epic's state
+  // genuinely moves rather than being overlaid at render time, and
+  // compute_display_state now promotes only to "blocked" (SH-407's half).
   await page.locator('#view-toggle button[data-view="board"]').click();
   await moveToState(page, childTitle, "in-progress");
   await expect(
@@ -140,7 +153,13 @@ test("an epic's list pill shows the state its card actually sits in, not its own
   const row = await listRow(page, epicId);
   const pill = row.locator(".state-pill");
   await expect(pill).toHaveText("in-progress");
-  await expect(pill).toHaveAttribute("title", /recorded state is todo/);
+  // No title, and its ABSENCE is now the assertion. `buildStatePill` names
+  // both words only when display_state and the recorded state disagree; since
+  // SH-446 an epic's own state moves, so there is no disagreement left to
+  // name. Asserted rather than dropped: a title reappearing here would mean
+  // the two notions had diverged again, which is exactly what this test
+  // exists to notice.
+  await expect(pill).not.toHaveAttribute("title", /.+/);
   // `in-progress` carries stateColor()'s "active" anchor -> --accent,
   // proving the semantic mapping (not the positional palette) drives the
   // promoted pill exactly as it drives storyLight() and the column dot.

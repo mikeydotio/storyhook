@@ -2067,12 +2067,7 @@ pub fn compute_progress(
     story: &StorySnapshot,
     all_stories: &BTreeMap<String, StorySnapshot>,
 ) -> Option<ProgressRollup> {
-    let children: Vec<&str> = story
-        .relationships
-        .iter()
-        .filter(|r| r.relation == "parent-of")
-        .map(|r| r.other_id.as_str())
-        .collect();
+    let children: Vec<&StorySnapshot> = live_children(story, all_stories);
 
     if children.is_empty() {
         return None;
@@ -2081,17 +2076,50 @@ pub fn compute_progress(
     let children_total = children.len();
     let children_done = children
         .iter()
-        .filter(|child_id| {
-            all_stories
-                .get(**child_id)
-                .is_some_and(|s| s.superstate == SuperState::Closed)
-        })
+        .filter(|child| child.superstate == SuperState::Closed)
         .count();
 
     Some(ProgressRollup {
         children_done,
         children_total,
     })
+}
+
+/// The children of `story` that actually exist — the one definition of "child"
+/// this module has, so the epic's state, its progress and its identity cannot
+/// answer three different questions (SH-497).
+///
+/// A `parent-of` edge is not a child. Deletion here is SOFT: the row survives
+/// with its `state` slug kept as a truthful record and its `superstate` forced
+/// to CLOSED (issue #18), so `all_stories.get(child_id)` succeeds and the child
+/// reads exactly like a *finished* one. That is how deleting an epic's last
+/// child silently reported the epic **done** rather than stranding it — a
+/// completion nobody chose, carrying `state_computed: true` so it read as
+/// authoritative rather than stale.
+///
+/// A child that is absent from the map is dropped for the same reason and by
+/// the same rule: whatever it is, it is not something this epic can be measured
+/// against. `computed_epic_state` already dropped those (its `?` on the map
+/// lookup); this makes progress agree rather than leaving the two surfaces to
+/// disagree about what a child is.
+///
+/// What this deliberately does NOT decide is whether the story is an epic at
+/// all. That stays [`has_children`], which tests the *edge*, so an epic whose
+/// children are all deleted keeps its computed state and keeps refusing a
+/// direct move — it must be deleted or given children (user determination,
+/// 2026-08-27, on SH-497). Identity and measurement are different questions and
+/// this answers only the second.
+fn live_children<'a>(
+    story: &StorySnapshot,
+    all_stories: &'a BTreeMap<String, StorySnapshot>,
+) -> Vec<&'a StorySnapshot> {
+    story
+        .relationships
+        .iter()
+        .filter(|relation| relation.relation == "parent-of")
+        .filter_map(|relation| all_stories.get(&relation.other_id))
+        .filter(|child| !child.deleted)
+        .collect()
 }
 
 /// The state a story moves into when a commit first mentions it, and the
@@ -2250,10 +2278,17 @@ fn computed_epic_state(
         return Some(answer);
     }
 
+    // A deleted child is not a child (SH-497). Dropped BEFORE the recursion,
+    // so a deleted subtree contributes nothing at all rather than contributing
+    // a CLOSED superstate that the "every child is closed" branch below would
+    // read as completion.
     let children: Vec<(StorySnapshot, String, SuperState)> = child_ids
         .iter()
         .filter_map(|child_id| {
             let child = stories.get(child_id)?.clone();
+            if child.deleted {
+                return None;
+            }
             let (state, superstate) =
                 computed_epic_state(child_id, stories, states, memo, visiting)?;
             Some((child, state, superstate))
