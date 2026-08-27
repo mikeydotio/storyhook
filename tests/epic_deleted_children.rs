@@ -89,7 +89,10 @@ fn an_epic_whose_only_child_is_deleted_reads_todo_rather_than_done() {
     let before = show(p, "SH-1");
     assert_eq!(before["story"]["story"]["state"], "todo");
 
-    story(p).args(["delete", "SH-2", "abandoned"]).assert().success();
+    story(p)
+        .args(["delete", "SH-2", "abandoned"])
+        .assert()
+        .success();
 
     let after = show(p, "SH-1");
     assert_eq!(
@@ -110,7 +113,10 @@ fn a_deleted_child_is_not_counted_in_progress() {
     let dir = epic_with_children(1);
     let p = dir.path();
 
-    story(p).args(["delete", "SH-2", "abandoned"]).assert().success();
+    story(p)
+        .args(["delete", "SH-2", "abandoned"])
+        .assert()
+        .success();
 
     let after = show(p, "SH-1");
     assert!(
@@ -127,7 +133,10 @@ fn surviving_children_still_drive_the_state_after_a_sibling_is_deleted() {
     let dir = epic_with_children(2);
     let p = dir.path();
 
-    story(p).args(["delete", "SH-2", "abandoned"]).assert().success();
+    story(p)
+        .args(["delete", "SH-2", "abandoned"])
+        .assert()
+        .success();
     story(p)
         .args(["move", "SH-3", "in-progress"])
         .assert()
@@ -152,13 +161,18 @@ fn an_epic_with_no_live_children_still_refuses_a_direct_move() {
     let dir = epic_with_children(1);
     let p = dir.path();
 
-    story(p).args(["delete", "SH-2", "abandoned"]).assert().success();
+    story(p)
+        .args(["delete", "SH-2", "abandoned"])
+        .assert()
+        .success();
 
     story(p)
         .args(["move", "SH-1", "in-progress"])
         .assert()
         .failure()
-        .stderr(predicates::str::contains("is an epic because it has children"));
+        .stderr(predicates::str::contains(
+            "is an epic because it has children",
+        ));
 }
 
 #[test]
@@ -170,7 +184,10 @@ fn an_epic_with_no_live_children_can_still_be_deleted() {
     let dir = epic_with_children(1);
     let p = dir.path();
 
-    story(p).args(["delete", "SH-2", "abandoned"]).assert().success();
+    story(p)
+        .args(["delete", "SH-2", "abandoned"])
+        .assert()
+        .success();
     story(p)
         .args(["delete", "SH-1", "abandoned too"])
         .assert()
@@ -184,7 +201,10 @@ fn giving_a_childless_epic_a_new_child_makes_its_state_follow_again() {
     let dir = epic_with_children(1);
     let p = dir.path();
 
-    story(p).args(["delete", "SH-2", "abandoned"]).assert().success();
+    story(p)
+        .args(["delete", "SH-2", "abandoned"])
+        .assert()
+        .success();
     story(p).args(["new", "replacement"]).assert().success();
     story(p)
         .args(["relate", "SH-1", "parent-of", "SH-3"])
