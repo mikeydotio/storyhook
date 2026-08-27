@@ -88,8 +88,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   never had an implementation. Its successor is per-invocation —
   `story claim --comment <text>` or `--no-comment` — rather than a standing
   preference. `[plugin].enabled`, the hooks kill switch, is unaffected and is
-  now the table's only key. Deliberately carries no version bump: batched with
-  the other breaking changes above for one major release (SH-478)
+  now the table's only key. Ships in this MINOR release rather than waiting for
+  a major, by user determination 2026-08-26 superseding the 2026-08-25 decision
+  to batch it: the Full Auto epic (SH-452) builds on the claim verb, and
+  holding a release back would mean that work not benefiting from it (SH-478)
 - **BREAKING:** `story next --claim` is removed. `story next` is a pure read
   again; claiming is `story claim <id> | --next`, the one atomic claim verb
   (SH-476). There is no deprecation arm — the flag is simply no longer
@@ -97,8 +99,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   the claiming form move to `story claim --next --json`, whose envelope is
   unchanged (`.story` plus `.claimed_from`); note the new verb comments by
   default, so a caller that wants the old silence passes `--no-comment`.
-  Deliberately carries no version bump: this is batched with other breaking
-  changes for one major release (SH-477)
+  Ships in this MINOR release rather than waiting for a major, by user
+  determination 2026-08-26 superseding the 2026-08-25 decision to batch it —
+  see the entry above for the reason, which applies to both (SH-477)
 
 ## [v2.2.0] - 2026-08-24
 
