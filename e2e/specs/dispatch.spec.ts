@@ -228,7 +228,23 @@ test("a tab authenticates once on load, and dispatch needs no second prompt (AC2
   // SH-304: the headline is composed from typed fields and the script's own
   // prose is demoted to the detail line -- still on screen, still in the
   // aria-live region, no longer the whole notice.
-  await expect(refusedToast.locator(".notice-detail")).toContainText("already in-progress");
+  //
+  // SH-495: anchored on "not redispatching", NOT on the state slug. This
+  // assertion used to read "already in-progress" and broke when SH-481 stopped
+  // cmd_dispatch hardcoding `in-progress` and started interpolating the
+  // project's active-role slug -- which arrives backticked, so the substring no
+  // longer matched. Re-pinning it as "already `in-progress`" would compile and
+  // pass and would be the same defect on the assertion side: a second
+  // hardcoding of exactly the literal SH-481 removed, which a project that
+  // moves the `active` role would break again. The invariant phrase is the one
+  // that carries no slug.
+  //
+  // This is the ONLY spec that asserts against story.sh's real message. The six
+  // sibling files matching this text seed their own `payload: { display: ... }`
+  // and assert against their own fixture, so they are self-consistent by
+  // construction and were never affected -- measured, because SH-495 was filed
+  // suspecting all seven.
+  await expect(refusedToast.locator(".notice-detail")).toContainText("not redispatching");
   // And a refusal is durable now: it outlives the 9s lifetime SH-196 gave it
   // and the 3s one a success gets, because nothing else in this UI records
   // that the dispatch didn't happen. Dismissed only by its own button.

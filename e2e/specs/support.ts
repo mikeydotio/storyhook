@@ -426,6 +426,30 @@ export async function openFilters(page: Page): Promise<void> {
 }
 
 /**
+ * Turns on the "Show epics" filter, so a story that has become an epic is
+ * rendered at all (SH-495).
+ *
+ * SH-446 made `showEpics: false` the default, and the board and list views
+ * both drop anything carrying `progress` while it is off
+ * (`src/web_dashboard.html`'s filter predicate). A story is not an epic
+ * until it HAS a child, so a spec that creates one, adds a child and then
+ * looks for its card sees the card vanish mid-test -- which reads as
+ * "element not found" rather than as a filter doing its job. Call this
+ * AFTER the child is added.
+ *
+ * Idempotent: an already-checked box is left alone rather than toggled off,
+ * so a spec may call it without first knowing the state.
+ */
+export async function showEpics(page: Page): Promise<void> {
+  await openFilters(page);
+  const toggle = page.locator("#toggle-epics");
+  if (!(await toggle.isChecked())) {
+    await toggle.check();
+  }
+  await expect(toggle).toBeChecked();
+}
+
+/**
  * Deletes the "todo"-column story titled `title` through the drawer's
  * footer Delete button and the shared delete-confirmation modal (SH-197),
  * and waits for the card to disappear. Was six near-identical copies (one
@@ -1097,30 +1121,63 @@ export function cleanUpCreatedStories(projectName: string): void {
     const storyUrl = (id: string) =>
       `/api/repos/${encodeURIComponent(slug)}/story/${encodeURIComponent(id)}`;
 
-    for (const story of await storiesInProject(request, projectName)) {
-      if (baseline.has(story.id)) continue;
-      if (story.superstate !== "OPEN") {
-        const reopened = await request.post(`${storyUrl(story.id)}/reopen`, {
+    // CHILDREN BEFORE PARENTS, discovered by fixpoint rather than by sorting
+    // (SH-495). Since SH-446 an epic's state is COMPUTED from its children, so
+    // the store refuses to move one directly -- and a closed story has to be
+    // reopened before it can be deleted (the reason this helper reopens at
+    // all, above). A closed epic therefore cannot be removed until its
+    // children are gone and it has stopped being an epic.
+    //
+    // Passes rather than a topological sort because `/data` gives this helper
+    // `{id, superstate}` and no relationship at all: each pass removes
+    // whatever is currently a leaf, which dissolves the next layer up. That
+    // needs no graph, terminates on any shape, and costs one extra round trip
+    // per level of nesting -- which in this suite is one.
+    //
+    // A pass that removes NOTHING while work remains is the only failure
+    // condition, and it reports every refusal it collected rather than the
+    // first: with several strays, the first error is rarely the informative
+    // one. This is still loud (SH-245) -- a cleanup that quietly gives up
+    // leaves exactly the stray it exists to remove, and the next spec pays.
+    let refusals: string[] = [];
+    let remaining = (await storiesInProject(request, projectName)).filter(
+      (story) => !baseline.has(story.id),
+    );
+    while (remaining.length > 0) {
+      const before = remaining.length;
+      refusals = [];
+      for (const story of remaining) {
+        if (story.superstate !== "OPEN") {
+          const reopened = await request.post(`${storyUrl(story.id)}/reopen`, {
+            headers,
+            data: {},
+          });
+          if (!reopened.ok()) {
+            refusals.push(
+              `POST ${story.id}/reopen answered ${reopened.status()}: ${await reopened.text()}`,
+            );
+            continue;
+          }
+        }
+        const deleted = await request.delete(storyUrl(story.id), {
           headers,
-          data: {},
+          data: { reason: "e2e afterEach cleanup (SH-245)" },
         });
-        if (!reopened.ok()) {
-          throw new Error(
-            `cleanUpCreatedStories: POST ${story.id}/reopen answered ` +
-              `${reopened.status()}: ${await reopened.text()}`,
+        if (!deleted.ok()) {
+          refusals.push(
+            `DELETE ${story.id} answered ${deleted.status()}: ${await deleted.text()}`,
           );
         }
       }
-      const deleted = await request.delete(storyUrl(story.id), {
-        headers,
-        data: { reason: "e2e afterEach cleanup (SH-245)" },
-      });
-      // Loud on failure: a cleanup that quietly gives up leaves exactly the
-      // stray it exists to remove, and the next spec pays for it instead.
-      if (!deleted.ok()) {
+      remaining = (await storiesInProject(request, projectName)).filter(
+        (story) => !baseline.has(story.id),
+      );
+      if (remaining.length >= before) {
         throw new Error(
-          `cleanUpCreatedStories: DELETE ${story.id} answered ` +
-            `${deleted.status()}: ${await deleted.text()}`,
+          `cleanUpCreatedStories: a full pass removed nothing and ` +
+            `${remaining.length} story/stories remain ` +
+            `(${remaining.map((s) => s.id).join(", ")}). Refusals:\n  ` +
+            refusals.join("\n  "),
         );
       }
     }
