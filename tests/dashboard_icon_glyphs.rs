@@ -27,6 +27,19 @@
 //! correctly, or draws the right icon. That half belongs to
 //! `e2e/specs/icon-shapes.spec.ts` and `icon-shapes.mobile.spec.ts`.
 //!
+//! ## `no_raw_disclosure_triangle_is_left`
+//!
+//! SH-447 supersedes SH-444's original exception for U+25B8 BLACK
+//! RIGHT-POINTING SMALL TRIANGLE and U+25BE BLACK DOWN-POINTING SMALL
+//! TRIANGLE. They have deterministic text presentation, but the reported
+//! dashboard proved that was not sufficient: at the 9-10px font sizes used
+//! by the Filters and dropdown controls, the visible triangle occupied only
+//! a fraction of its already-small font box. Every control whose indicator
+//! means “reveals hidden content” now draws the same fixed 14px SVG chevron.
+//! The source scan below prevents either raw character from silently
+//! returning through static markup or a JS-built control; the browser spec
+//! proves the resulting shapes' size and direction.
+//!
 //! ## `no_pictographic_character_is_left_unqualified`
 //!
 //! A second, independent instance of the same undetermined-presentation
@@ -176,6 +189,25 @@ fn every_btn_icon_span_holds_a_shape() {
     }
 }
 
+fn raw_disclosure_triangles(source: &str) -> Vec<(char, u32)> {
+    source
+        .chars()
+        .filter(|c| matches!(*c as u32, 0x25B8 | 0x25BE))
+        .map(|c| (c, c as u32))
+        .collect()
+}
+
+#[test]
+fn no_raw_disclosure_triangle_is_left() {
+    let source = dashboard();
+    let offenders = raw_disclosure_triangles(&source);
+    assert!(
+        offenders.is_empty(),
+        "src/web_dashboard.html contains raw disclosure triangle character(s): {offenders:?}. \
+         Hidden-content controls must use the fixed-size inline SVG disclosure icon (SH-447)."
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Positive control -- SH-364's doctrine: a parser that stopped matching must
 // not report a clean tree by accident.
@@ -213,6 +245,18 @@ fn the_pictograph_scan_can_still_see_an_offender() {
 }
 
 #[test]
+fn the_disclosure_scan_can_still_see_both_directions() {
+    let right = char::from_u32(0x25B8).unwrap();
+    let down = char::from_u32(0x25BE).unwrap();
+    let offending = format!("<button>{right} Filters</button><button>State {down}</button>");
+    assert_eq!(
+        raw_disclosure_triangles(&offending),
+        vec![(right, 0x25B8), (down, 0x25BE)]
+    );
+    assert!(raw_disclosure_triangles("<button><svg></svg> Filters</button>").is_empty());
+}
+
+#[test]
 fn the_scan_finds_no_offenders_in_the_real_tree() {
     // Belt-and-braces over the two #[test] fences above: proves the corpus
     // floor in `every_btn_icon_span_holds_a_shape` was not met by luck --
@@ -220,6 +264,7 @@ fn the_scan_finds_no_offenders_in_the_real_tree() {
     // the assembled fixtures.
     let source = dashboard();
     assert!(unqualified_pictographs(&source).is_empty());
+    assert!(raw_disclosure_triangles(&source).is_empty());
     for span in btn_icon_span_contents(&source) {
         assert!(span.contains("<svg"));
     }
