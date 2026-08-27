@@ -8,7 +8,9 @@
 
 use storyhook::domain::{StoryRelation, StorySnapshot, SuperState};
 use storyhook::error::AppError;
-use storyhook::service::{Ctx, NewStoryInput, RelationOutcome, RelationService, StoryService};
+use storyhook::service::{
+    ConfigService, Ctx, NewStoryInput, RelationOutcome, RelationService, StoryService,
+};
 use storyhook::store::{ReadOps, SqliteStore, Store, StoryNo};
 use storyhook_test_support::ServiceFixture;
 
@@ -21,6 +23,33 @@ fn new_story(ctx: &Ctx<'_, SqliteStore>, title: &str) -> String {
             ..NewStoryInput::default()
         })
         .expect("creating a story")
+        .id
+}
+
+/// [`new_story`], typed `epic`.
+///
+/// SH-499: epic-ness is the TYPE. Relating a child no longer clears a story's
+/// authority over its own state, so a test about that clearing has to create a
+/// real epic. The type is added on first use because `ServiceFixture` ships
+/// `bug, feature` — a project that does not define `epic` has no epics.
+fn new_epic(ctx: &Ctx<'_, SqliteStore>, title: &str) -> String {
+    if !ConfigService::new(ctx)
+        .list_types()
+        .expect("listing types")
+        .iter()
+        .any(|t| t.slug == "epic")
+    {
+        ConfigService::new(ctx)
+            .add_type("epic", None, None)
+            .expect("adding the epic type");
+    }
+    StoryService::new(ctx)
+        .create(&NewStoryInput {
+            title: title.to_string(),
+            story_type: Some("epic".to_string()),
+            ..NewStoryInput::default()
+        })
+        .expect("creating an epic")
         .id
 }
 
@@ -505,7 +534,7 @@ fn an_unsupported_relation_names_itself() {
 fn first_and_last_child_edges_clear_then_restore_authoritative_state() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
-    let parent = new_story(&ctx, "parent");
+    let parent = new_epic(&ctx, "parent");
     let child = new_story(&ctx, "child");
     let relations = RelationService::new(&ctx);
     relations
