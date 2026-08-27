@@ -9,7 +9,9 @@ use storyhook::domain::StoryEvent;
 use storyhook::domain::remote::RemoteUrl;
 use storyhook::domain::secret::GithubToken;
 use storyhook::service::pr_check::run_check;
-use storyhook::service::{NewStoryInput, PrLinkService, RelationService, StoryService};
+use storyhook::service::{
+    ConfigService, NewStoryInput, PrLinkService, RelationService, StoryService,
+};
 use storyhook::store::{ReadOps, Store, WriteOps};
 use storyhook_test_support::{FakeGithubApiFactory, ServiceFixture};
 
@@ -18,9 +20,19 @@ fn token() -> GithubToken {
 }
 
 fn create(fixture: &ServiceFixture, title: &str) -> String {
+    create_typed(fixture, title, None)
+}
+
+/// [`create`], with an explicit story type.
+///
+/// Needed since SH-499: epic-ness is the TYPE, not the presence of children, so
+/// a test about an epic has to say so rather than manufacturing one out of a
+/// `parent-of` edge.
+fn create_typed(fixture: &ServiceFixture, title: &str, story_type: Option<&str>) -> String {
     StoryService::new(&fixture.ctx())
         .create(&NewStoryInput {
             title: title.to_string(),
+            story_type: story_type.map(str::to_string),
             ..NewStoryInput::default()
         })
         .expect("creating a story")
@@ -107,7 +119,13 @@ fn check_closes_the_story_when_a_close_on_merge_link_merges() {
 fn check_records_an_epics_merge_without_closing_its_computed_state() {
     let fixture = ServiceFixture::new();
     configure_remote(&fixture, "acme", "widgets");
-    let epic_id = create(&fixture, "Computed epic");
+    // This fixture's project ships `bug, feature`; the type has to exist before
+    // a story can carry it. SH-499's rule in miniature: a project that does not
+    // define `epic` has no epics.
+    ConfigService::new(&fixture.ctx())
+        .add_type("epic", None, None)
+        .expect("adding the epic type");
+    let epic_id = create_typed(&fixture, "Computed epic", Some("epic"));
     let child_id = create(&fixture, "Actionable child");
     let ctx = fixture.ctx().with_github_token(Some(token()));
     RelationService::new(&ctx)
