@@ -418,7 +418,12 @@ if [ -n "$bump" ]; then
   # install — all of which are wasted if it refuses. It reports a refusal as
   # JSON on stdout and exits 0, so the answer has to be read out of the body
   # rather than taken from the exit status.
-  if [ "$dry_run" = 0 ]; then
+  #
+  # SH-494: this runs under --dry-run too. `validate` is a pure read, and
+  # skipping it made a dry run report a clean plan for a release that could not
+  # actually start -- which is what a dry run exists to rule out. A rehearsal
+  # whose verdict differs from the real run's is worse than no rehearsal.
+  if true; then
     validation="$("$SEMVER_CLI" validate 2>/dev/null || true)"
     if printf '%s' "$validation" | grep -q '"status"[[:space:]]*:[[:space:]]*"FAIL"'; then
       printf '%s\n' "$validation" \
@@ -606,7 +611,31 @@ fi
 
 step "Tagging and pushing $next_version"
 note "pushing the tag is what starts .github/workflows/release.yml"
-run git tag -a "$next_version" -m "$next_version"
+
+# SH-494: the tag goes on the commit that MODIFIED VERSION, never on whatever
+# HEAD happens to be. At this point HEAD is the merge commit `gh pr merge`
+# produced, and the release commit is its parent -- so a bare `git tag -a
+# "$next_version"` (which is what this line used to be) tags the merge, and
+# `semver-cli`'s `tag_correct_commit` check then fails for the NEXT release
+# rather than this one. v2.2.0 shipped that way and v2.3.0 could not begin.
+#
+# `release-tag-commit.sh` answers by running semver's own query rather than by
+# carrying a SHA captured earlier, so the two cannot drift; it refuses rather
+# than guessing, and a refusal here is fatal because tagging the wrong commit
+# is the entire defect.
+release_commit=""
+if [ "$dry_run" = 0 ]; then
+    release_commit="$(scripts/release-tag-commit.sh "$next_version")" \
+        || die "cannot determine which commit to tag for $next_version (see above). \
+Nothing has been tagged; the bump is already on main, so fix the cause and tag by hand."
+    info "tagging      ${release_commit} ($(git log -1 --format=%s "$release_commit"))"
+    if [ "$release_commit" = "$(git rev-parse HEAD)" ]; then
+        note "the release commit IS HEAD here — no merge commit intervened"
+    fi
+else
+    release_commit="<release-commit>"
+fi
+run git tag -a "$next_version" -m "$next_version" "$release_commit"
 run git -c "url.https://github.com/.insteadOf=git@github.com:" push origin "$next_version"
 
 # ---------------------------------------------------------------------------
