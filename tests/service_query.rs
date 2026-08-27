@@ -79,6 +79,34 @@ fn new_story(ctx: &Ctx<'_, SqliteStore>, title: &str) -> String {
         .id
 }
 
+/// [`new_story`], typed `epic`.
+///
+/// Since SH-499 epic-ness is the TYPE, not the presence of children, so a test
+/// about an epic has to say so — relating a child no longer manufactures one.
+/// The type is added on first use because `ServiceFixture` ships `bug, feature`
+/// and nothing else; a project that does not define `epic` has no epics, which
+/// is SH-499's rule rather than a fixture quirk.
+fn new_epic(ctx: &Ctx<'_, SqliteStore>, title: &str) -> String {
+    if !ConfigService::new(ctx)
+        .list_types()
+        .expect("listing types")
+        .iter()
+        .any(|t| t.slug == "epic")
+    {
+        ConfigService::new(ctx)
+            .add_type("epic", None, None)
+            .expect("adding the epic type");
+    }
+    StoryService::new(ctx)
+        .create(&NewStoryInput {
+            title: title.to_string(),
+            story_type: Some("epic".to_string()),
+            ..NewStoryInput::default()
+        })
+        .expect("creating an epic")
+        .id
+}
+
 /// Twelve stories, so that `SH-10`, `SH-11` and `SH-12` exist to sort wrongly.
 fn twelve_stories(fixture: &ServiceFixture) {
     let ctx = fixture.ctx();
@@ -722,7 +750,7 @@ fn show_finds_archived_and_deleted_stories_as_well_as_open_ones() {
 fn search_returns_bare_views_with_no_cross_story_facts() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
-    let parent = new_story(&ctx, "parent");
+    let parent = new_epic(&ctx, "parent");
     let child = new_story(&ctx, "child");
     RelationService::new(&ctx)
         .relate(&parent, "parent-of", &child, false)
@@ -814,7 +842,7 @@ fn referenced_by_comment_mentions_only_arrive_on_show_not_list() {
 fn an_epic_with_an_active_child_has_computed_active_state() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
-    let epic = new_story(&ctx, "epic");
+    let epic = new_epic(&ctx, "epic");
     let child = new_story(&ctx, "child");
     RelationService::new(&ctx)
         .relate(&epic, "parent-of", &child, false)
@@ -836,8 +864,8 @@ fn nested_epics_compute_recursively_and_never_enter_verifying() {
     ConfigService::new(&ctx)
         .add_state("verifying", SuperState::Open, None, None)
         .expect("adding a verifying state");
-    let outer = new_story(&ctx, "outer epic");
-    let inner = new_story(&ctx, "inner epic");
+    let outer = new_epic(&ctx, "outer epic");
+    let inner = new_epic(&ctx, "inner epic");
     let child = new_story(&ctx, "child");
     let relations = RelationService::new(&ctx);
     relations
@@ -877,7 +905,7 @@ fn nested_epics_compute_recursively_and_never_enter_verifying() {
 fn a_draft_child_keeps_an_otherwise_blocked_epic_at_todo() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
-    let epic = new_story(&ctx, "epic");
+    let epic = new_epic(&ctx, "epic");
     let blocked = new_story(&ctx, "blocked child");
     let draft = StoryService::new(&ctx)
         .create(&NewStoryInput {
@@ -918,8 +946,8 @@ fn closed_children_use_a_unanimous_non_done_state_or_fall_back_to_done() {
     ConfigService::new(&ctx)
         .add_state("canceled", SuperState::Closed, None, None)
         .expect("adding a second closed state");
-    let unanimous = new_story(&ctx, "unanimous epic");
-    let mixed = new_story(&ctx, "mixed epic");
+    let unanimous = new_epic(&ctx, "unanimous epic");
+    let mixed = new_epic(&ctx, "mixed epic");
     let canceled_a = new_story(&ctx, "canceled a");
     let canceled_b = new_story(&ctx, "canceled b");
     let done = new_story(&ctx, "done child");
@@ -956,7 +984,7 @@ fn closed_children_use_a_unanimous_non_done_state_or_fall_back_to_done() {
 fn an_epic_refuses_a_direct_state_change() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
-    let epic = new_story(&ctx, "epic");
+    let epic = new_epic(&ctx, "epic");
     let child = new_story(&ctx, "child");
     RelationService::new(&ctx)
         .relate(&epic, "parent-of", &child, false)
@@ -995,7 +1023,7 @@ fn a_todo_story_blocked_by_an_open_story_shows_a_promoted_display_state() {
 fn an_epics_own_blocker_does_not_override_child_state() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
-    let epic = new_story(&ctx, "epic");
+    let epic = new_epic(&ctx, "epic");
     let child = new_story(&ctx, "child");
     let blocker = new_story(&ctx, "epic's own blocker");
     RelationService::new(&ctx)
@@ -1017,7 +1045,7 @@ fn an_epics_own_blocker_does_not_override_child_state() {
 fn next_offers_leaves_only_and_honours_count_and_phase() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
-    let parent = new_story(&ctx, "epic");
+    let parent = new_epic(&ctx, "epic");
     let child = new_story(&ctx, "leaf");
     let other = new_story(&ctx, "unrelated");
     RelationService::new(&ctx)
@@ -1121,7 +1149,7 @@ fn report_datas_next_ids_agrees_with_next_by_two_different_routes() {
 fn report_datas_next_ids_excludes_parents_the_way_next_does() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
-    let epic = new_story(&ctx, "epic");
+    let epic = new_epic(&ctx, "epic");
     let child = new_story(&ctx, "child");
     RelationService::new(&ctx)
         .relate(&epic, "parent-of", &child, false)
