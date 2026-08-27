@@ -13,10 +13,22 @@ use storyhook::service::{NewStoryInput, SessionService, StoryService};
 use storyhook_test_support::{FIXTURE_NOW, ServiceFixture};
 
 fn create(fixture: &ServiceFixture, title: &str, priority: Option<&str>) -> String {
+    create_typed(fixture, title, priority, None)
+}
+
+/// [`create`], with an explicit story type — needed since SH-499, where
+/// epic-ness is the type rather than the presence of children.
+fn create_typed(
+    fixture: &ServiceFixture,
+    title: &str,
+    priority: Option<&str>,
+    story_type: Option<&str>,
+) -> String {
     StoryService::new(&fixture.ctx())
         .create(&NewStoryInput {
             title: title.to_string(),
             priority: priority.map(str::to_string),
+            story_type: story_type.map(str::to_string),
             ..NewStoryInput::default()
         })
         .expect("creating a story")
@@ -155,18 +167,50 @@ fn the_next_line_breaks_a_tie_by_story_number_not_by_id_string() {
 }
 
 #[test]
-fn a_parent_with_children_is_never_the_next_story() {
+fn an_epic_is_never_the_next_story_but_an_ordinary_parent_is() {
+    // SH-499 renamed and split this. It was `a_parent_with_children_is_never_
+    // the_next_story`, which is the rule that story removed: epic-ness is the
+    // TYPE, so an ordinary story that happens to have a sub-task is work and
+    // must be offered. Both halves are asserted here, because a fix that simply
+    // stopped excluding parents would pass the second alone.
     let fixture = ServiceFixture::new();
-    let parent = create(&fixture, "Umbrella", Some("critical"));
+    storyhook::service::ConfigService::new(&fixture.ctx())
+        .add_type("epic", None, None)
+        .expect("adding the epic type");
+    let epic = create_typed(&fixture, "Umbrella", Some("critical"), Some("epic"));
     let child = create(&fixture, "Real work", None);
     storyhook::service::RelationService::new(&fixture.ctx())
-        .relate(&parent, "parent-of", &child, false)
+        .relate(&epic, "parent-of", &child, false)
         .expect("relating");
 
     let context = context(&fixture);
     assert!(
         context.contains(&format!("Next: {child} — Real work")),
-        "the parent must not be offered as work: {context}"
+        "an epic must not be offered as work: {context}"
+    );
+    assert!(
+        !context.contains(&format!("Next: {epic}")),
+        "and specifically not this one: {context}"
+    );
+}
+
+#[test]
+fn an_ordinary_story_with_a_sub_task_is_still_offered_as_work() {
+    // The other half, and the user-visible consequence SH-499 was filed for: a
+    // bug that spawned a follow-up used to vanish from the queue entirely, so
+    // nothing would ever pick it up again.
+    let fixture = ServiceFixture::new();
+    let parent = create(&fixture, "A bug that spawned a follow-up", Some("critical"));
+    let sub_task = create(&fixture, "The follow-up", None);
+    storyhook::service::RelationService::new(&fixture.ctx())
+        .relate(&parent, "parent-of", &sub_task, false)
+        .expect("relating");
+
+    let context = context(&fixture);
+    assert!(
+        context.contains(&format!("Next: {parent}")),
+        "a normal parent is ordinary work and outranks its lower-priority \
+         sub-task: {context}"
     );
 }
 
