@@ -24,6 +24,11 @@
 //!
 //! Getting only the first half would close the reported failure and quietly
 //! hand every abandoned epic back to the board as a movable card.
+//!
+//! The fixtures type their parent `epic` on purpose (SH-499): today every gate
+//! infers epic-ness from the `parent-of` edge, which is itself a defect, so
+//! naming the type keeps these tests asserting the intended design rather than
+//! the accident they would otherwise depend on.
 
 #![allow(clippy::disallowed_methods)]
 
@@ -51,7 +56,17 @@ fn epic_with_children(children: usize) -> tempfile::TempDir {
         .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
-    story(p).args(["new", "epic"]).assert().success();
+    // Typed `epic` explicitly, not left to acquire epic-ness from its edge.
+    // SH-499: "is an epic because it has children" was never the intended
+    // design -- all epics are folders, but not every story with children is
+    // one -- and every behavioural gate currently asks `has_children` anyway.
+    // Typing the parent states the design these tests mean to assert, and
+    // keeps them green through that correction instead of pinning the
+    // accident.
+    story(p)
+        .args(["new", "epic", "--type", "epic"])
+        .assert()
+        .success();
     for n in 0..children {
         story(p)
             .args(["new", &format!("child {n}")])
