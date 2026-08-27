@@ -82,10 +82,18 @@ test("right-click a card shows Copy ID, Copy URL, Copy Description, in that orde
   await expect(items.nth(1)).toHaveText("Copy URL");
   await expect(items.nth(2)).toHaveText("Copy Description");
   await expect(items.nth(3)).toHaveText("Dispatch");
-  // toContainText, not toHaveText: the item's own submenu arrow (▸) is
-  // part of its text content too.
-  await expect(items.nth(4)).toContainText("Set Status");
-  await expect(items.nth(5)).toContainText("Set Priority");
+  // SH-447's submenu chevron is a decorative SVG, so the accessible label
+  // and text content are now exactly the action name.
+  await expect(items.nth(4)).toHaveText("Set Status");
+  await expect(items.nth(5)).toHaveText("Set Priority");
+  await expect(items.nth(4).locator(".ctxmenu-arrow")).toHaveAttribute(
+    "data-direction",
+    "right",
+  );
+  await expect(items.nth(5).locator(".ctxmenu-arrow")).toHaveAttribute(
+    "data-direction",
+    "right",
+  );
   await expect(items.nth(6)).toHaveText("Delete");
   // Still 3, not 4: Set Priority joined the Set Status group rather than
   // adding a fourth rule -- this is what proves that.

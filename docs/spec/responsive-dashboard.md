@@ -358,16 +358,24 @@ needs `createElementNS`, which `el()`'s own `document.createElement` can't provi
 topbar's own `.btn-icon` class; the other four controls are covered behaviorally, by
 `e2e/specs/icon-shapes.spec.ts` and `icon-shapes.mobile.spec.ts`.
 
-**The boundary against typographic marks**, decided the same day: caret/chevron/
-triangle/arrow/check/bullet characters (`▾ ▸ ▲ ▼ ↑ ↓ ● ✓ ×`) stay characters. None of
-these are pictographic — they live in Latin-1 Supplement, Arrows, Geometric Shapes, or
-Dingbats-with-`Emoji_Presentation=No` — so every UI font covers them and neither
-fallback-font weight nor presentation ambiguity applies. Several are also pinned as
-exact text by existing e2e contracts (`filter-bar-disclosure.spec.ts`,
-`board-sort.spec.ts`, `board-sort-tiebreak.spec.ts`, `column-visibility.spec.ts`,
-`filter-persistence.spec.ts`, `status-flags.spec.ts`,
-`story-context-menu-priority.spec.ts`), so converting them would be a materially
-larger, purely cosmetic change touching surfaces nothing reported as broken.
+**The boundary against typographic marks was narrowed by SH-447.** Sort/reorder
+arrows, checks, bullets and close marks (`▲ ▼ ↑ ↓ ● ✓ ×`) stay characters: they are
+covered by UI fonts, have deterministic text presentation, and several remain pinned
+as exact text by existing e2e contracts. A disclosure indicator is different even
+though its presentation is also deterministic. The reported Filters and dropdown
+triangles sat in 9–10px font boxes and their visible ink occupied only a fraction of
+that box, making every adjacent hidden-content affordance look undersized. All controls
+whose indicator means “reveals hidden content” therefore use one 14px inline SVG
+chevron: project and filter dropdowns, the Filters and drawer-section disclosures, and
+context-menu submenus. `data-direction=right|down` names their visual state without
+making the decorative SVG part of the accessible name; the owning button's existing
+`aria-expanded` remains authoritative where the control is persistent.
+
+`tests/dashboard_icon_glyphs.rs::no_raw_disclosure_triangle_is_left` fences the source
+against restoring U+25B8/U+25BE through either static markup or JS construction.
+`filter-bar-disclosure.spec.ts` and `icon-shapes.spec.ts` verify the live SVG geometry,
+direction, inherited colour, accessible name and ARIA state. Native `<select>` carets
+remain browser-owned for the cross-engine reasons in “Tap targets (D3)” above.
 
 **The same undetermined-presentation defect, generalized:** any pictographic
 character anywhere in this file — not just an icon control — must carry a trailing
