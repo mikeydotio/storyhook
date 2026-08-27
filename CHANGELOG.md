@@ -78,6 +78,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   dispatcher's own, not the window dispatch is about to open for the work
   (SH-482)
 
+### Fixed
+- An epic whose children are all deleted no longer reports itself **done**.
+  Deletion is soft: the row survives with its `state` slug kept as a truthful
+  record and its `superstate` forced to `CLOSED`, so a deleted child resolved
+  successfully and read exactly like a *finished* one — and `computed_epic_state`
+  reached its "every child is closed" branch and closed the parent. The epic
+  completed itself in a state nobody chose, carrying `state_computed: true` so
+  the value read as authoritative rather than stale, and it then refused every
+  direct move because it still held the `parent-of` edge. One definition of
+  "child" now serves the epic's state and its progress alike (`live_children`):
+  a `parent-of` edge to a story that is deleted, or absent, is not a child. The
+  asymmetry is deliberate — the epic's **identity** still comes from the edge, so
+  a childless epic reads `todo`/`OPEN` and still refuses a direct move: it must
+  be deleted, or given children. Found by the browser suite's own fixture
+  teardown, which could not remove a parent that insisted it was closed (SH-497)
+
 ### Removed
 - **BREAKING:** `story.sh work`, the `story-work` skill, and the
   `[plugin].tracking` key are removed. Claiming is `story claim <id> | --next`
