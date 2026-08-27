@@ -6383,6 +6383,13 @@ mod tests {
         let mut other_parent = ready_snapshot("SH-12", Priority::Medium, "2026-01-01T00:00:00Z");
         let mut promoted = ready_snapshot("SH-2", Priority::High, "2026-01-01T00:00:00Z");
         let mut ordinary = ready_snapshot("SH-1", Priority::High, "2026-01-01T00:00:00Z");
+        // SH-499: only an EPIC confers its priority on a child. These three
+        // used to be parents by edge alone, which is the conflation that story
+        // removed -- urgency is inherited from the initiative a story belongs
+        // to, and a normal story that happens to have children is not one.
+        for parent in [&mut critical_parent, &mut low_parent, &mut other_parent] {
+            parent.story_type = Some(super::EPIC_TYPE_SLUG.to_string());
+        }
         critical_parent.relationships.push(StoryRelation {
             relation: "parent-of".to_string(),
             other_id: promoted.id.clone(),
