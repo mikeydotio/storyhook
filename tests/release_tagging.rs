@@ -98,7 +98,10 @@ fn it_names_the_release_commit_and_not_the_merge_that_landed_it() {
     git(p, &["switch", "-qc", "release/v2.3.0"]);
     let release_commit = commit_version(p, "v2.3.0", "chore(release): v2.3.0");
     git(p, &["switch", "-q", "main"]);
-    git(p, &["merge", "-q", "--no-ff", "release/v2.3.0", "-m", "Merge PR"]);
+    git(
+        p,
+        &["merge", "-q", "--no-ff", "release/v2.3.0", "-m", "Merge PR"],
+    );
 
     let head = git(p, &["rev-parse", "HEAD"]);
     assert_ne!(
@@ -130,7 +133,10 @@ fn it_agrees_with_the_question_semver_actually_asks() {
     git(p, &["switch", "-qc", "release/v9.9.9"]);
     commit_version(p, "v9.9.9", "chore(release): v9.9.9");
     git(p, &["switch", "-q", "main"]);
-    git(p, &["merge", "-q", "--no-ff", "release/v9.9.9", "-m", "Merge PR"]);
+    git(
+        p,
+        &["merge", "-q", "--no-ff", "release/v9.9.9", "-m", "Merge PR"],
+    );
 
     let semver_would_pick = git(p, &["log", "-1", "--format=%H", "--", "VERSION"]);
     let out = run(p, "v9.9.9");
