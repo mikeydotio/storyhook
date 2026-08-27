@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cli::UnclaimComment;
 use crate::domain::{
-    Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState, active_state, has_children,
+    Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState, active_state, is_epic,
     normalize_labels, undefined_state_error,
 };
 use crate::error::AppError;
@@ -1448,10 +1448,18 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     }
 }
 
+/// Refuses a direct state change on an epic, whose state is computed from its
+/// children rather than set.
+///
+/// Gated on the TYPE (SH-499). It used to gate on `has_children`, and the
+/// message used to teach that rule to everyone who hit it — so an ordinary
+/// story that acquired one child became un-moveable and was told the reason was
+/// its children. Not every story with children is a folder.
 fn refuse_epic_state_change(story: &StorySnapshot) -> Result<(), AppError> {
-    if has_children(story) {
+    if is_epic(story) {
         return Err(AppError::Validation(format!(
-            "story `{}` is an epic because it has children; its state is computed and cannot be moved directly",
+            "story `{}` is an epic, so its state is computed from its children and cannot be moved directly; \
+move a child instead, or change this story's type if it is not a folder",
             story.id
         )));
     }

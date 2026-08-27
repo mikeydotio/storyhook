@@ -1101,11 +1101,16 @@ cmd_dispatch() {
     # documents the same ordering hazard from the other side).
     claim_state=$(story_active_state)
 
-    # Structural epics are planning containers, not executable work. Their
-    # state is recursively computed from children, so neither the ordinary
-    # claim nor --force may turn one into a directly-dispatched story.
-    if printf '%s' "$show_json" | jq -e 'any(.story.story.relationships[]?; .relation == "parent-of")' >/dev/null 2>&1; then
-      fail "story $id is an epic because it has children; dispatch a ready child instead (the epic's state is computed from its children)."
+    # Epics are planning containers, not executable work. Their state is
+    # recursively computed from children, so neither the ordinary claim nor
+    # --force may turn one into a directly-dispatched story.
+    #
+    # SH-499: an epic is a story TYPED `epic`, never one that merely holds a
+    # `parent-of` edge. This used to test the edge, so an ordinary story that
+    # gained one sub-task became permanently undispatchable and was told the
+    # reason was its children. Not every story with children is a folder.
+    if [ "$(printf '%s' "$show_json" | jq -r '.story.story.story_type // ""')" = "epic" ]; then
+      fail "story $id is an epic, so its state is computed from its children and it is not directly dispatchable; dispatch a ready child instead."
     fi
 
     # Step 5 (deviation #1 — see header): ALREADY-CLAIMED GUARD. Checked

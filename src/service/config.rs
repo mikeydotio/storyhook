@@ -33,8 +33,8 @@ use crate::cli::MemberInput;
 use crate::domain::provenance::Provenance;
 use crate::domain::{
     FieldEdit, Member, StateChanges, StateDef, StateUsage, StoryEvent, SuperState, TypeChanges,
-    TypeDef, has_children, validate_required_states, validate_state_defs_for_write,
-    validate_type_glyph, validate_type_slug,
+    TypeDef, is_epic, validate_required_states, validate_state_defs_for_write, validate_type_glyph,
+    validate_type_slug,
 };
 use crate::error::AppError;
 use crate::store::{ExpectedSeq, ProjectId, ReadOps, Store, StoryQuery, WriteOps};
@@ -537,7 +537,7 @@ fn resolve_migration(
         .stories(project, &StoryQuery::all().state(slug).deleted(false))?
         .into_iter()
         .filter(|row| {
-            has_children(&row.snapshot)
+            is_epic(&row.snapshot)
                 && effective
                     .get(&row.snapshot.id)
                     .is_some_and(|story| story.state != slug)
@@ -612,7 +612,7 @@ fn migrate_occupants(
     let occupants: Vec<_> = tx
         .stories(project, &StoryQuery::all().state(from).deleted(false))?
         .into_iter()
-        .filter(|row| !row.archived || has_children(&row.snapshot))
+        .filter(|row| !row.archived || is_epic(&row.snapshot))
         .collect();
 
     for row in &occupants {
@@ -620,7 +620,7 @@ fn migrate_occupants(
             at: now.to_string(),
             text: format!("[states] moved from `{from}` to `{}`", to.slug),
         }];
-        if has_children(&row.snapshot) {
+        if is_epic(&row.snapshot) {
             events.push(StoryEvent::StoryStateChanged {
                 at: now.to_string(),
                 state: to.slug.clone(),
