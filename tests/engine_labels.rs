@@ -38,7 +38,9 @@
 #![allow(clippy::disallowed_methods)]
 
 use assert_cmd::Command;
-use storyhook::domain::{LABEL_HUMAN_ONLY, LABEL_NO_AUTO};
+use storyhook::domain::{LABEL_HUMAN_ONLY, LABEL_NO_AUTO, RESERVED_LABELS};
+use storyhook::help_topics::get_help_topic;
+use storyhook::service::templates;
 use tempfile::{TempDir, tempdir};
 
 fn story(dir: &std::path::Path) -> Command {
@@ -379,4 +381,50 @@ fn both_labels_at_once_reads_as_human_only() {
         ("other", None),
     ]);
     assert_eq!(ids(&json(dir.path(), &["next"])), vec!["SH-2"]);
+}
+
+// ---------------------------------------------------------------------------
+// The reservation is documented wherever label guidance lives
+// ---------------------------------------------------------------------------
+
+/// Every document that teaches labels must name both reserved names, and the
+/// names come from `RESERVED_LABELS` rather than from string literals here —
+/// so a rename either reaches all four documents or fails this test.
+#[test]
+fn every_label_guidance_surface_names_both_reserved_labels() {
+    let surfaces: [(&str, String); 3] = [
+        (
+            "`story help label`",
+            get_help_topic("label")
+                .expect("the `label` topic must exist")
+                .to_string(),
+        ),
+        ("the scaffolded AGENTS.md", templates::agents_md("SH", "done")),
+        ("the scaffolded .cursorrules", templates::cursor_rules()),
+    ];
+
+    for (name, body) in &surfaces {
+        for label in RESERVED_LABELS {
+            assert!(
+                body.contains(label),
+                "{name} must document the reserved label `{label}`"
+            );
+        }
+        assert!(
+            body.to_lowercase().contains("reserved"),
+            "{name} must say the labels are reserved, not merely mention them"
+        );
+    }
+}
+
+/// The `label` topic has to say the thing that is easy to get wrong, not just
+/// list the names: `human-only` does not block a story.
+#[test]
+fn the_label_topic_says_human_only_does_not_block() {
+    let body = get_help_topic("label").expect("the `label` topic must exist");
+    let lowered = body.to_lowercase();
+    assert!(
+        lowered.contains("not blocked") || lowered.contains("does not block"),
+        "`story help label` must state that `{LABEL_HUMAN_ONLY}` leaves a story ready"
+    );
 }

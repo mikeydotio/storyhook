@@ -2139,9 +2139,33 @@ Examples:
   story label SH-1 backend
   story label SH-3 bug,urgent
 
+RESERVED LABELS
+  Two label names are reserved and mean something to the tooling.
+  Both stay ordinary labels otherwise — add and remove them the same
+  way, and filter on them with 'story list --label'.
+
+  no-auto      This work needs a person in the loop: questions may be
+               asked and a plan approved before anything is written.
+               It changes nothing about 'story next', which still
+               offers it, and it stays claimable by hand. Automation
+               skips it rather than holding a seat open for someone
+               who is asleep.
+
+  human-only   Only a person may do this work. 'story next' and
+               'story claim --next' never return it, at any count, so
+               it is never handed out as anyone's next assignment.
+
+               It is NOT blocked. The story stays ready everywhere a
+               person looks — 'story list --ready' carries it, every
+               ready count counts it, the board places its card by its
+               own state, and an epic whose only incomplete child is
+               human-only does not become blocked. Someone can pick it
+               up at any time; nothing is waiting on it.
+
 Related:
   story unlabel <id>       — Remove labels
   story list --label <csv> — Filter stories by label
+  story next               — The work queue the reserved labels affect
 "#,
         );
 
