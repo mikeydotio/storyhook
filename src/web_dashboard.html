@@ -980,6 +980,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 .modal-error { font-size: 0.75rem; color: var(--danger); }
 .modal-body p { font-size: 0.8125rem; color: var(--fg-muted); margin: 0; }
 .modal-body code { font-family: var(--mono); font-size: 0.75rem; background: var(--bg-sunken); padding: 0.0625rem 0.25rem; border-radius: var(--radius-sm); }
+.delete-alternative {
+  display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-sunken);
+}
+.delete-alternative-copy { flex: 1; font-size: 0.8125rem; line-height: 1.45; color: var(--fg-muted); }
 .dispatch-auto-option {
   display: flex; align-items: flex-start; gap: 0.625rem; padding: 0.75rem;
   border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-sunken);
@@ -1574,11 +1579,30 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   </div>
 </div>
 
+<div class="backdrop" id="close-modal-backdrop" data-overlay="close-modal" hidden></div>
+<div class="modal" id="close-modal" tabindex="-1" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="close-modal-header">
+  <div class="modal-header" id="close-modal-header">Close story</div>
+  <div class="modal-body">
+    <div id="close-modal-summary"></div>
+    <div class="field"><label for="close-reason">Reason</label>
+      <input type="text" id="close-reason" placeholder="Why is this story being closed?" autocomplete="off"></div>
+    <div class="modal-error" id="close-modal-error"></div>
+  </div>
+  <div class="modal-footer">
+    <button type="button" class="btn btn-ghost" id="close-modal-cancel">Cancel</button>
+    <button type="button" class="btn btn-primary" id="close-modal-submit">Close story</button>
+  </div>
+</div>
+
 <div class="backdrop" id="delete-modal-backdrop" data-overlay="delete-modal" hidden></div>
-<div class="modal" id="delete-modal" tabindex="-1" aria-hidden="true">
-  <div class="modal-header">Delete story</div>
+<div class="modal" id="delete-modal" tabindex="-1" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="delete-modal-header">
+  <div class="modal-header" id="delete-modal-header">Delete story</div>
   <div class="modal-body">
     <div id="delete-modal-summary"></div>
+    <div class="delete-alternative" id="delete-modal-alternative" hidden>
+      <span class="delete-alternative-copy">Need to preserve the story and its history? Close it with a reason instead.</span>
+      <button type="button" class="btn" id="delete-modal-close-instead">Close instead</button>
+    </div>
     <input type="text" id="delete-confirmation" placeholder="Type the story id to confirm" autocomplete="off">
     <div class="modal-error" id="delete-modal-error"></div>
   </div>
@@ -4659,6 +4683,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   var storySubmenuFocusIndex = -1;
   var storySubmenuParentItem = null;
 
+  /** Whether `st` can use the deliberate-abandonment path SH-505 added.
+   * The catalog check matters for a migrated project that already owned an
+   * OPEN state named `closed`: the CLI refuses `story close` there, so the
+   * dashboard must not advertise a button whose only outcome is that refusal. */
+  function canCloseStory(st) {
+    return stateSuperstate(st.state) === "OPEN" && meta().states.some(function(s) {
+      return s.slug === "closed" && s.super_state === "CLOSED";
+    });
+  }
+
   /** The menu's contents for `v` (a `{story, is_ready, is_blocked}`
    * summary record, the same shape `state.data.stories` holds) as plain
    * data -- nothing here touches the DOM, so every gating rule lives in one
@@ -4719,10 +4753,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         submenu: { ariaLabel: "Set priority", items: priorityMenuItems(st) }
       },
       { separator: true },
-      // Never hidden or disabled: unlike Dispatch/Set Status there is no
-      // in-flight or "cannot act yet" state to gate on -- the only thing
-      // standing between a click and a deletion is the modal's own
-      // required-reason confirmation, same as the drawer footer's Delete.
+      canCloseStory(st) ? {
+        label: "Close",
+        disabled: !!state.pending[st.id],
+        onSelect: function() { openCloseModal(st.id, st.title); }
+      } : null,
+      // Permanent deletion is available for OPEN and CLOSED stories alike;
+      // the server-authored plan and typed-id gate are its confirmation.
       { label: "Delete", danger: true, onSelect: function() { openDeleteModal(st.id); } }
     ].filter(Boolean));
   }
@@ -9294,7 +9331,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (!isClosed && currentRepoHasCheckout()) {
       footer.appendChild(dispatchButton(st));
     }
-    footer.appendChild(el("button", { class: "btn btn-danger", style: "margin-left:auto", onClick: function() {
+    var closeAvailable = canCloseStory(st);
+    if (closeAvailable) {
+      footer.appendChild(el("button", {
+        class: "btn",
+        style: "margin-left:auto",
+        disabled: !!state.pending[st.id],
+        onClick: function() { openCloseModal(st.id, st.title); }
+      }, ["Close"]));
+    }
+    footer.appendChild(el("button", { class: "btn btn-danger", style: closeAvailable ? null : "margin-left:auto", onClick: function() {
       openDeleteModal(st.id);
     } }, ["Delete"]));
   }
@@ -11711,6 +11757,71 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       .catch(function(err) { $("archive-modal-error").textContent = describeMutationFailure(err); });
   }
 
+  /** The story being deliberately closed, and the claim that prevents a held
+   * Enter or double press from issuing several state changes. Kept separate for
+   * the same subject-vs-request reason the delete modal documents below. */
+  var closeModalStoryId = null;
+  var closeModalInFlight = false;
+
+  function setCloseModalInFlight(value) {
+    closeModalInFlight = value;
+    $("close-modal-submit").disabled = value;
+    $("close-modal-cancel").disabled = value;
+  }
+
+  /** Opens the one close surface used by both the drawer, the context menu,
+   * and Delete's non-destructive alternative. The reason is a real comment,
+   * not `awaiting`, matching `story close`'s SetState representation. */
+  function openCloseModal(id, title) {
+    closeModalStoryId = id;
+    setCloseModalInFlight(false);
+    $("close-modal-summary").textContent =
+      "Close " + id + (title ? " — " + title : "") + "? The reason will be saved as a comment.";
+    $("close-reason").value = "";
+    $("close-modal-error").textContent = "";
+    showBackdrop("close-modal-backdrop");
+    activateOverlay("close-modal", "close-reason");
+    requestAnimationFrame(function() {
+      $("close-modal").classList.add("open");
+      $("close-modal").setAttribute("aria-hidden", "false");
+    });
+  }
+
+  function closeCloseModal() {
+    if (closeModalInFlight) return;
+    closeModalStoryId = null;
+    hideBackdrop("close-modal-backdrop");
+    $("close-modal").classList.remove("open");
+    $("close-modal").setAttribute("aria-hidden", "true");
+    releaseOverlay("close-modal");
+  }
+
+  function submitCloseStory() {
+    if (closeModalInFlight) return;
+    var id = closeModalStoryId;
+    if (!id) return;
+    var reason = $("close-reason").value.trim();
+    if (!reason) {
+      $("close-modal-error").textContent = "A closing reason is required.";
+      return;
+    }
+    setCloseModalInFlight(true);
+    api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/move", {
+      state: "closed",
+      comment: reason
+    })
+      .then(function(resp) {
+        setCloseModalInFlight(false);
+        closeCloseModal();
+        toast(id + " closed", "success");
+        handleMutationSuccess(resp);
+      })
+      .catch(function(err) {
+        setCloseModalInFlight(false);
+        $("close-modal-error").textContent = describeMutationFailure(err);
+      });
+  }
+
   /** The story id the delete modal (SH-197) is currently open for, or
    * `null`. Compared against `state.drawerId` in `submitDeleteStory` so the
    * drawer only closes when the deleted story is the one it's showing --
@@ -11764,10 +11875,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // resets its own claim here for the same reason.
     setDeleteModalInFlight(true);
     $("delete-modal-summary").textContent = "Preparing deletion plan for " + id + "…";
+    $("delete-modal-alternative").hidden = true;
     $("delete-confirmation").value = "";
     $("delete-modal-error").textContent = "";
     showBackdrop("delete-modal-backdrop");
-    activateOverlay("delete-modal", "delete-confirmation");
+    // WAI-ARIA's modal pattern recommends the least destructive initial focus
+    // for an irreversible action. Cancel is present before the async plan and
+    // never jumps out from under the user's focus when that plan arrives.
+    activateOverlay("delete-modal", "delete-modal-cancel");
     requestAnimationFrame(function() {
       $("delete-modal").classList.add("open");
       $("delete-modal").setAttribute("aria-hidden", "false");
@@ -11785,6 +11900,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           return;
         }
         deleteModalPlan = plan;
+        var story = findStory(plan.id);
+        $("delete-modal-alternative").hidden = !(story && canCloseStory(story.story));
         var claims = (plan.retracted || []).map(function(claim) {
           return claim[0] + " " + claim[1] + " " + plan.id;
         });
@@ -11803,6 +11920,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("delete-modal").classList.remove("open");
     $("delete-modal").setAttribute("aria-hidden", "true");
     releaseOverlay("delete-modal");
+  }
+
+  function closeInsteadOfDelete() {
+    var plan = deleteModalPlan;
+    if (!plan) return;
+    var story = findStory(plan.id);
+    if (!story || !canCloseStory(story.story)) return;
+    closeDeleteModal();
+    openCloseModal(plan.id, plan.title);
   }
 
   /** Submits a forced delete after the typed id matches the server plan. */
@@ -11935,8 +12061,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // an allowlist entry reading "this one is correct by accident", which is a
     // note that rots.
     bindEnterSubmit($("drop-blocked-reason-input"), submitDropBlockedReasonModal);
+    $("close-modal-cancel").addEventListener("click", closeCloseModal);
+    $("close-modal-backdrop").addEventListener("click", closeCloseModal);
+    $("close-modal-submit").addEventListener("click", submitCloseStory);
+    bindEnterSubmit($("close-reason"), submitCloseStory);
     $("delete-modal-cancel").addEventListener("click", closeDeleteModal);
     $("delete-modal-backdrop").addEventListener("click", closeDeleteModal);
+    $("delete-modal-close-instead").addEventListener("click", closeInsteadOfDelete);
     $("delete-modal-submit").addEventListener("click", submitDeleteStory);
     bindEnterSubmit($("delete-confirmation"), submitDeleteStory);
     $("drawer-close").addEventListener("click", closeDrawer);
@@ -11962,6 +12093,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           closeDispatchModal();
           return;
         }
+        // Close can be outstanding over the story drawer. It is the topmost
+        // surface, so Escape belongs to it alone; while its uncancelable request
+        // is in flight `closeCloseModal()` deliberately keeps it open.
+        if ($("close-modal").classList.contains("open")) {
+          closeCloseModal();
+          return;
+        }
         // Read BEFORE the closers run, not after (SH-324). An open editor
         // question yields to any open overlay — Escape belongs to the
         // topmost surface, and an overlay is always above the editor behind it
@@ -11971,7 +12109,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         // open, which is what lets it be called unconditionally here, the way
         // every closer beside it already is.
         var armedYieldsToNothing = overlayStack.length === 0;
-        closeDrawer(); closeDraftsModal(); cancelTokenModal(); closeArchiveModal(); closeDispatchModal(); skipDropBlockedReasonModal(); closeDeleteModal();
+        closeDrawer(); closeDraftsModal(); cancelTokenModal(); closeArchiveModal(); closeDispatchModal(); skipDropBlockedReasonModal(); closeCloseModal(); closeDeleteModal();
         if (armedYieldsToNothing) cancelStatusMove();
       }
     });
