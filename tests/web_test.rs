@@ -1970,6 +1970,52 @@ fn every_blocked_banner_sentence_comes_from_the_one_deriver() {
     }
 }
 
+/// SH-487, adopted while narrowing `compute_display_state`: `buildStatePill`'s
+/// promoted-card tooltip used to hardcode a CAUSE ("shown for an active
+/// child") that stopped being the only possible one when SH-446 removed the
+/// active-child arm, silently stating a falsehood on every promoted card
+/// since. The fix is to name no cause at all -- pinned here by requiring the
+/// corrected sentence and forbidding cause words the field's `display_state`
+/// promotion has carried across its history, so a future promotion arm can't
+/// reintroduce the same defect by hardcoding its own cause in the same spot.
+#[test]
+fn the_promoted_state_pill_title_names_no_cause_it_did_not_test() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let script = script(&body);
+
+    let fn_start = script
+        .find("function buildStatePill(v) {")
+        .expect("buildStatePill(v) must exist with this exact signature");
+    let close = "\n  }\n";
+    let fn_end = fn_start
+        + script[fn_start..]
+            .find(close)
+            .expect("buildStatePill's closing brace")
+        + close.len();
+    let body_slice = &script[fn_start..fn_end];
+
+    assert!(
+        body_slice.contains("\" (shown here; recorded state is \""),
+        "the promoted title must state only what the wire actually told us"
+    );
+    for cause in ["active child", "awaiting", "blocker"] {
+        assert!(
+            !body_slice.to_lowercase().contains(cause),
+            "buildStatePill's title named a specific cause ({cause:?}) it never tested -- \
+             compute_display_state has promoted a card for more than one reason across \
+             this field's history, and the field only ever carries the promoted slug"
+        );
+    }
+}
+
 /// The dashboard's `<style>` block, so a selector assertion below cannot
 /// accidentally match the same text in the markup that follows it --
 /// `.search-input` names both a CSS rule and a `class="search-input"`
