@@ -99,7 +99,7 @@ pub fn restore<S: Store>(
         .cloned()
         .partition(|event| !is_relation(event));
 
-    ctx.store().write(|tx| {
+    let cleanup = ctx.store().write(|tx| {
         if !story_events.is_empty() {
             append_and_fold(
                 tx,
@@ -152,10 +152,25 @@ pub fn restore<S: Store>(
                 ctx.provenance(),
             )?;
         }
-        Ok(())
+        let row = tx
+            .story(project, story_no)?
+            .ok_or_else(|| AppError::NotFound(format!("story `{id}` not found")))?;
+        if row.archived {
+            Ok(super::relation::retract_closed_blocker_edges(
+                tx,
+                project,
+                story_no,
+                &prefix,
+                &states,
+                &now,
+                ctx.provenance(),
+            )?)
+        } else {
+            Ok(Vec::new())
+        }
     })?;
 
-    Ok(compensation)
+    Ok(compensation.into_iter().chain(cleanup).collect())
 }
 
 /// Whether an event is one of the two relation events.

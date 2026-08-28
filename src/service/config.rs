@@ -615,7 +615,13 @@ fn migrate_occupants(
         .filter(|row| !row.archived || is_epic(&row.snapshot))
         .collect();
 
-    for row in &occupants {
+    for occupant in &occupants {
+        // A blocker closed earlier in this same batch may have appended a
+        // relationship removal to this occupant. Read its head again rather
+        // than trusting the batch-start row across those in-transaction writes.
+        let row = tx.story(project, occupant.story_no)?.ok_or_else(|| {
+            AppError::NotFound(format!("story `{}` not found", occupant.snapshot.id))
+        })?;
         let mut events = vec![StoryEvent::StoryCommentAdded {
             at: now.to_string(),
             text: format!("[states] moved from `{from}` to `{}`", to.slug),
@@ -646,6 +652,17 @@ fn migrate_occupants(
             &events,
             provenance,
         )?;
+        if !is_epic(&row.snapshot) && to.super_state == SuperState::Closed {
+            super::relation::retract_closed_blocker_edges(
+                tx,
+                project,
+                row.story_no,
+                &prefix,
+                &states,
+                now,
+                provenance,
+            )?;
+        }
     }
     Ok(occupants.len())
 }

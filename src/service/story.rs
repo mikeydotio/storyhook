@@ -15,6 +15,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cli::UnclaimComment;
+use crate::domain::provenance::Provenance;
 use crate::domain::{
     Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState, active_state, is_epic,
     normalize_labels, undefined_state_error,
@@ -551,15 +552,16 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                     awaiting: reason,
                 }))
                 .collect();
-            let events = state_transition_events(&target, row.awaiting.is_some(), &now, extra);
-            let snapshot = append_and_fold(
+            let snapshot = append_state_transition(
                 tx,
                 project,
                 story_no,
+                &row,
                 &prefix,
                 &states,
-                ExpectedSeq::Exact(row.head_seq),
-                &events,
+                &target,
+                &now,
+                extra,
                 self.ctx.provenance(),
             )?;
             Ok((row.snapshot, snapshot))
@@ -945,7 +947,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
             if plan.moved_to.is_some() {
                 refuse_epic_state_change(&row.snapshot)?;
             }
-            let snapshot = append_and_fold(
+            let mut snapshot = append_and_fold(
                 tx,
                 project,
                 story_no,
@@ -955,6 +957,26 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                 &plan.events,
                 self.ctx.provenance(),
             )?;
+            let closes = plan
+                .moved_to
+                .as_ref()
+                .and_then(|slug| states.get(slug))
+                .is_some_and(|target| target.super_state == SuperState::Closed);
+            if closes {
+                super::relation::retract_closed_blocker_edges(
+                    tx,
+                    project,
+                    story_no,
+                    &prefix,
+                    &states,
+                    &now,
+                    self.ctx.provenance(),
+                )?;
+                snapshot = tx
+                    .story(project, story_no)?
+                    .map(|row| row.snapshot)
+                    .ok_or_else(|| AppError::NotFound(format!("story `{id}` not found")))?;
+            }
             Ok((plan, row.snapshot, snapshot))
         })?;
 
@@ -1036,6 +1058,15 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                         reason: reason.to_string(),
                     },
                 ],
+                self.ctx.provenance(),
+            )?;
+            super::relation::retract_closed_blocker_edges(
+                tx,
+                project,
+                story_no,
+                &prefix,
+                &states,
+                &now,
                 self.ctx.provenance(),
             )?;
             Ok(())
@@ -1906,6 +1937,45 @@ fn push_state_change(
     plan.changes.push(format!("state -> {slug}"));
     plan.moved_to = Some(slug.to_string());
     Ok(())
+}
+
+/// Appends one state transition and, if its final destination is CLOSED,
+/// retracts every task dependency this story used to impose before the write
+/// transaction commits.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn append_state_transition(
+    tx: &mut impl WriteOps,
+    project: ProjectId,
+    story_no: StoryNo,
+    row: &StoryRow,
+    prefix: &str,
+    states: &BTreeMap<String, StateDef>,
+    target: &StateDef,
+    at: &str,
+    extra: Vec<StoryEvent>,
+    provenance: &Provenance,
+) -> Result<StorySnapshot, AppError> {
+    let events = state_transition_events(target, row.awaiting.is_some(), at, extra);
+    let snapshot = append_and_fold(
+        tx,
+        project,
+        story_no,
+        prefix,
+        states,
+        ExpectedSeq::Exact(row.head_seq),
+        &events,
+        provenance,
+    )?;
+    if target.super_state != SuperState::Closed {
+        return Ok(snapshot);
+    }
+
+    super::relation::retract_closed_blocker_edges(
+        tx, project, story_no, prefix, states, at, provenance,
+    )?;
+    tx.story(project, story_no)?
+        .map(|row| row.snapshot)
+        .ok_or_else(|| AppError::NotFound(format!("story `{}` not found", story_no.to_id(prefix))))
 }
 
 /// A JSON patch value that has to be a string.

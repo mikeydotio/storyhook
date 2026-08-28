@@ -17,11 +17,14 @@ reasons:
 3. A free-text `awaiting` **reason** — `StoryService::set_awaiting`, historically the
    only thing `story block <id> "<reason>"` could write.
 
-Only the relationship is a fact the store can act on: it clears itself the instant
-the blocker's superstate goes `CLOSED` (`is_ready`'s own `blocked-by` clause re-tests
-that every time), it is visible from both stories, and `story doctor` can audit it.
-A prose reason is inert — nothing watches whether the story it names has closed, so
-it survives exactly as long as somebody remembers to run `story unblock`.
+Only the relationship is a fact the store can act on: when the blocker's persisted
+superstate goes `CLOSED`, the same lifecycle transaction appends compensating
+`StoryRelationshipRemoved` events to every asserted history and retracts the
+materialized edge (SH-500). It is visible from both stories while it is actionable,
+and `story doctor` can audit it. Reopening the former blocker therefore does not
+silently reactivate old work. A prose reason is inert — nothing watches whether the
+story it names has closed, so it survives exactly as long as somebody remembers to
+run `story unblock`.
 
 Before this story, `story block` could only write the third signal. A blocker that
 was itself a story — the common case, and the one on SH-394 — had no way to become
