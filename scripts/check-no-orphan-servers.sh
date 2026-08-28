@@ -141,6 +141,43 @@ durable_report() {
     } >>"$dir/$(date -u +%Y%m%d).log" 2>/dev/null || true
 }
 
+# Ends every process the finder function named by $1 reports, and echoes
+# whatever is still alive afterwards. SIGTERM first, a bounded wait, then
+# SIGKILL, then verify -- a process that will not die even to SIGKILL is a
+# genuinely different fact (a wedged syscall, a respawning supervisor) from
+# one that was merely forgotten about, and only that one is worth failing on.
+#
+# Takes the NAME of a finder rather than a list of pids because the
+# verification has to ask the question again rather than re-check a list
+# captured before the signal was sent: a pid that has exited is gone from the
+# answer, which is exactly the difference being waited for.
+reap() {
+    local finder="$1" pids remaining term_deadline
+    pids="$("$finder")"
+    [ -n "$pids" ] || return 0
+
+    # shellcheck disable=SC2086
+    kill $pids 2>/dev/null || true
+
+    term_deadline=$((SECONDS + ORPHAN_KILL_GRACE_SECS))
+    remaining="$pids"
+    while [ "$SECONDS" -lt "$term_deadline" ]; do
+        remaining="$("$finder")"
+        [ -z "$remaining" ] && break
+        sleep 0.25
+    done
+
+    if [ -n "$remaining" ]; then
+        report "SIGTERM was not enough within ${ORPHAN_KILL_GRACE_SECS}s; escalating to SIGKILL" "$remaining"
+        # shellcheck disable=SC2086
+        kill -9 $remaining 2>/dev/null || true
+        sleep 0.5
+        remaining="$("$finder")"
+    fi
+
+    printf '%s' "$remaining"
+}
+
 if [ "$phase" = "postlude" ]; then
     deadline=$((SECONDS + ORPHAN_GRACE_SECS))
     while [ "$SECONDS" -lt "$deadline" ]; do
@@ -156,24 +193,7 @@ if [ "$phase" = "postlude" ]; then
     report "reaping test-spawned server process(es) this run leaked" "$pids"
     durable_report "postlude reap: SIGTERM" "$pids"
 
-    # shellcheck disable=SC2086
-    kill $pids 2>/dev/null || true
-
-    term_deadline=$((SECONDS + ORPHAN_KILL_GRACE_SECS))
-    remaining="$pids"
-    while [ "$SECONDS" -lt "$term_deadline" ]; do
-        remaining="$(matches)"
-        [ -z "$remaining" ] && break
-        sleep 0.25
-    done
-
-    if [ -n "$remaining" ]; then
-        report "SIGTERM was not enough within ${ORPHAN_KILL_GRACE_SECS}s; escalating to SIGKILL" "$remaining"
-        # shellcheck disable=SC2086
-        kill -9 $remaining 2>/dev/null || true
-        sleep 0.5
-        remaining="$(matches)"
-    fi
+    remaining="$(reap matches)"
 
     if [ -n "$remaining" ]; then
         report "survived SIGKILL -- a real leak, not the defence working" "$remaining"
