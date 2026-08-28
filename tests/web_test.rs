@@ -3724,7 +3724,14 @@ fn web_serve_api_data_meta_states_are_ordered() {
     // Must match .storyhook/states.toml insertion order, not alphabetical.
     assert_eq!(
         states,
-        vec!["todo", "in-progress", "blocked", "done", "archived"],
+        vec![
+            "todo",
+            "in-progress",
+            "blocked",
+            "done",
+            "closed",
+            "archived"
+        ],
         "states must be in configured order, not alphabetical"
     );
 
@@ -5607,6 +5614,21 @@ fn slugs(json: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
+/// One state out of a `states` payload, found by slug.
+///
+/// Several of these tests used to index the array positionally, which meant
+/// they were quietly asserting where the required floor ends as well as what
+/// they were actually about — and every one of them broke when the floor grew
+/// by one (SH-505). The slug is what each of them means.
+fn state_named<'a>(json: &'a serde_json::Value, slug: &str) -> &'a serde_json::Value {
+    json["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|state| state["slug"] == slug)
+        .unwrap_or_else(|| panic!("no state named `{slug}` in {json}"))
+}
+
 #[test]
 fn web_states_list_reports_config_and_counts_in_board_order() {
     let fixture = serve_project();
@@ -5616,7 +5638,10 @@ fn web_states_list_reports_config_and_counts_in_board_order() {
     fixture.seed(&["move", "SH-2", "done"]);
 
     let json = get_states(&fixture, port, repo_id);
-    assert_eq!(slugs(&json), vec!["todo", "in-progress", "blocked", "done"]);
+    assert_eq!(
+        slugs(&json),
+        vec!["todo", "in-progress", "blocked", "done", "closed"]
+    );
 
     let todo = &json["states"][0];
     assert_eq!(todo["super_state"], "OPEN");
@@ -5625,8 +5650,8 @@ fn web_states_list_reports_config_and_counts_in_board_order() {
     assert!(todo["role"].is_null());
     assert!(todo["description"].is_null());
 
-    assert_eq!(json["states"][1]["role"], "active");
-    assert_eq!(json["states"][3]["archived_count"], 1);
+    assert_eq!(state_named(&json, "in-progress")["role"], "active");
+    assert_eq!(state_named(&json, "done")["archived_count"], 1);
 }
 
 #[test]
@@ -5645,9 +5670,12 @@ fn web_states_create_adds_a_state_and_returns_the_new_list() {
     let json = json_body(resp);
     assert_eq!(
         slugs(&json),
-        vec!["todo", "in-progress", "blocked", "done", "review"]
+        vec!["todo", "in-progress", "blocked", "done", "closed", "review"]
     );
-    assert_eq!(json["states"][4]["description"], "Waiting on a reviewer");
+    assert_eq!(
+        state_named(&json, "review")["description"],
+        "Waiting on a reviewer"
+    );
     assert_eq!(slugs(&get_states(&fixture, port, repo_id)), slugs(&json));
 }
 
@@ -5758,11 +5786,14 @@ fn web_states_patch_reorders_the_collection() {
         patch_json(
             &fixture,
             &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states"),
-            r#"{"order":["done","todo","blocked","in-progress"]}"#,
+            r#"{"order":["done","todo","blocked","in-progress","closed"]}"#,
         )
         .unwrap(),
     );
-    assert_eq!(slugs(&json), vec!["done", "todo", "blocked", "in-progress"]);
+    assert_eq!(
+        slugs(&json),
+        vec!["done", "todo", "blocked", "in-progress", "closed"]
+    );
     assert_eq!(slugs(&get_states(&fixture, port, repo_id)), slugs(&json));
 }
 
@@ -5809,7 +5840,10 @@ fn web_states_a_state_named_reorder_is_still_addressable() {
         )
         .unwrap(),
     );
-    assert_eq!(json["states"][4]["description"], "an unfortunate name");
+    assert_eq!(
+        state_named(&json, "reorder")["description"],
+        "an unfortunate name"
+    );
 }
 
 #[test]
@@ -5824,11 +5858,18 @@ fn web_states_delete_removes_and_migrates() {
     // Occupied and no destination named: refused, nothing changed.
     let error = delete_json(&fixture, &url, "{}").unwrap_err();
     assert_eq!(status_of(error), 422);
-    assert_eq!(slugs(&get_states(&fixture, port, repo_id)).len(), 5);
+    assert_eq!(
+        slugs(&get_states(&fixture, port, repo_id)).len(),
+        storyhook::domain::REQUIRED_STATES.len() + 1,
+        "the floor, plus the one this test added"
+    );
 
     let json =
         json_body(delete_json(&fixture, &url, r#"{"move_stories_to":"in-progress"}"#).unwrap());
-    assert_eq!(slugs(&json), vec!["todo", "in-progress", "blocked", "done"]);
+    assert_eq!(
+        slugs(&json),
+        vec!["todo", "in-progress", "blocked", "done", "closed"]
+    );
     assert_eq!(json["states"][1]["open_count"], 1);
 }
 

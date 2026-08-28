@@ -413,6 +413,12 @@ pub struct StorySnapshot {
     /// `true` when the story was removed via `story delete` rather than
     /// closed through the normal state machine. A deleted story is always
     /// folded to `superstate: CLOSED` regardless of its `state` slug.
+    ///
+    /// Since SH-505 it also folds to the *abandoned* resting state and is
+    /// archived — see [`resting_state_for_closure`] and the `StoryDeleted` arm
+    /// of [`fold_story`]. The field itself goes when `story delete` becomes
+    /// permanent (SH-498), which is the change that leaves nothing for it to
+    /// describe.
     #[serde(default, skip_serializing_if = "is_false")]
     pub deleted: bool,
     /// The reason passed to `story delete`, when [`deleted`](Self::deleted)
@@ -1260,7 +1266,18 @@ pub struct RequiredState {
 /// [`STATE_ROLE_ACTIVE`]: the one-active rule in
 /// [`validate_state_defs_for_write`] already governs roles, and a project is
 /// free to put `active` on a state of its own.
-pub static REQUIRED_STATES: [RequiredState; 4] = [
+/// The slug of the state a story lands in when it is deliberately abandoned
+/// (SH-505) — and the state a legacy `StoryDeleted` event now folds into.
+///
+/// Named rather than searched for. Once there are two CLOSED states in
+/// [`REQUIRED_STATES`], `.find(|r| r.super_state == Closed)` answers whichever
+/// literal happens to come first in that array, so a reframe whose whole point
+/// is *which* CLOSED state a story rests in would be one edit away from
+/// silently reversing itself. [`UNCLAIM_FALLBACK_STATE`](crate::service::story::UNCLAIM_FALLBACK_STATE)
+/// is the same pattern for the same reason.
+pub const CLOSED_STATE_SLUG: &str = "closed";
+
+pub static REQUIRED_STATES: [RequiredState; 5] = [
     RequiredState {
         slug: "todo",
         super_state: SuperState::Open,
@@ -1277,37 +1294,57 @@ pub static REQUIRED_STATES: [RequiredState; 4] = [
         slug: "done",
         super_state: SuperState::Closed,
     },
+    // After `done`, deliberately. Three functions answer "the CLOSED state"
+    // with a bare `.find()` — `service::project::closed_state`, which names the
+    // state in every generated AGENTS.md, and `service::pr_check`, where a
+    // merged PR closes its story and abandonment would be a lie — and ordering
+    // is what keeps both answering `done`. The third,
+    // `resting_state_for_closure`, is the one that should answer `closed`, and
+    // it names the slug instead of relying on this position.
+    RequiredState {
+        slug: CLOSED_STATE_SLUG,
+        super_state: SuperState::Closed,
+    },
 ];
 
-/// The state a deleted story comes to rest in.
+/// The state an abandoned story comes to rest in.
 ///
-/// Deletion has to land the story somewhere CLOSED rather than merely stamp its
+/// Closure has to land the story somewhere CLOSED rather than merely stamp its
 /// superstate CLOSED, because the two are stored independently and a slug whose
 /// superstate contradicts the story's is the SH-130 defect exactly. Completing
 /// the derivation here — rather than overriding half of it — is what lets
 /// `stories.superstate` become a pure function of the slug and the catalog, and
 /// so what lets a composite foreign key express the rule.
 ///
-/// `done` is preferred and is what every conforming project gets:
-/// [`REQUIRED_STATES`] makes it CLOSED and unremovable, so the answer needs no
-/// ordering information — which matters, because the fold is handed a
-/// slug-keyed [`BTreeMap`] that iterates alphabetically and cannot tell which
-/// CLOSED state a project configured first.
+/// # The chain, and why every rung of it is load-bearing (SH-505)
 ///
-/// The two fallbacks are defensive rather than expected. A catalog reaching the
-/// store through `service::state_set` always carries `done`; one that somehow
-/// does not still gets a deterministic CLOSED slug, and a catalog with no CLOSED
-/// state at all leaves the story where it is, so the fold stays total and the
-/// schema — not a panic here — is what refuses the write.
-fn resting_state_for_deleted(states: &BTreeMap<String, StateDef>) -> Option<&StateDef> {
-    let required_closed = REQUIRED_STATES
-        .iter()
-        .find(|required| required.super_state == SuperState::Closed)
-        .map(|required| required.slug);
+/// 1. [`CLOSED_STATE_SLUG`], when the catalog defines it CLOSED. This is the
+///    answer for every conforming project, and it is named rather than searched
+///    for — see that constant.
+/// 2. Otherwise the pre-SH-505 chain: `done` if the catalog defines it CLOSED,
+///    else the alphabetically first CLOSED state the catalog has.
+/// 3. Otherwise `None`, leaving the story's own slug in place with its
+///    superstate forced CLOSED, so the fold stays total and the schema — not a
+///    panic here — refuses the write.
+///
+/// Rung 2 is not defensive padding. [`fold_story`] is not permitted to fail on
+/// its own history, and a catalog with no `closed` is reachable three ways: a
+/// legacy tree read through `storage::load_state_map`, a store not yet migrated
+/// past schema 21, and `service::migrate`'s pre-repair catalog. It is also what
+/// keeps a project that already owns an **OPEN** state called `closed` coherent:
+/// `with_required_states` refuses to reclassify one, migration 21 leaves those
+/// stories in `done`, and this answers `done` for them too — so the stored row
+/// and a fresh fold agree, and `story doctor` reports the catalog problem
+/// instead of an invented divergence.
+fn resting_state_for_closure(states: &BTreeMap<String, StateDef>) -> Option<&StateDef> {
+    let closed = |slug: &str| {
+        states
+            .get(slug)
+            .filter(|def| def.super_state == SuperState::Closed)
+    };
 
-    required_closed
-        .and_then(|slug| states.get(slug))
-        .filter(|def| def.super_state == SuperState::Closed)
+    closed(CLOSED_STATE_SLUG)
+        .or_else(|| closed("done"))
         .or_else(|| {
             states
                 .values()
@@ -1441,7 +1478,8 @@ pub fn with_required_states(states: &[StateDef]) -> Result<Vec<StateDef>, AppErr
     Ok(repaired)
 }
 
-/// `` `todo`, `in-progress`, `blocked` and `done` `` — for error messages.
+/// `` `todo`, `in-progress`, `blocked`, `done` and `closed` `` — for error
+/// messages.
 fn required_state_list() -> String {
     let slugs: Vec<String> = REQUIRED_STATES
         .iter()
@@ -1585,8 +1623,34 @@ pub fn fold_story(
                     .is_some_and(|def| def.super_state == SuperState::Open)
                 {
                     closed_at = None;
-                    deleted = false;
                     deleted_reason = None;
+                    // Retract the DELETION's own archive stamp, and only that
+                    // one (SH-505).
+                    //
+                    // The `StoryDeleted` arm stamps `hidden_at` so a
+                    // soft-deleted story stays as invisible as it was before
+                    // `closed` became an ordinary state. The post-loop
+                    // `superstate == OPEN` retraction below cannot undo that
+                    // stamp for a story that was deleted, reopened, and later
+                    // closed for real: it fires on the FINAL superstate, and
+                    // that history ends CLOSED. So the story would fold
+                    // archived where before SH-505 it folded visible.
+                    //
+                    // Guarding on `deleted` is what keeps this narrow. An
+                    // UNCONDITIONAL clear here also un-archives every story
+                    // that was archived, reopened for an edit, and closed
+                    // again — a far larger class, long-standing behaviour, and
+                    // nothing to do with deletion. Six such stories exist in
+                    // this repository's own tracker alone; the unconditional
+                    // version was written first and they are how it was
+                    // caught.
+                    //
+                    // Read before the latch is cleared, or the condition is
+                    // always false.
+                    if deleted {
+                        hidden_at = None;
+                    }
+                    deleted = false;
                 }
             }
             StoryEvent::StoryStateCleared { at } => {
@@ -1691,6 +1755,15 @@ pub fn fold_story(
                     closed_at = Some(at.clone());
                 }
             }
+            // Legacy only: nothing writes this kind since SH-505 made deletion
+            // permanent. It stays in `EVENT_KINDS` because the log is
+            // append-only history, and is read as *closure* — the story was
+            // abandoned, and archived so it stays exactly as invisible as it
+            // was when this meant "soft-deleted".
+            //
+            // `reason` is deliberately dropped rather than folded into a field:
+            // the writer always paired this event with a `[deleted] <reason>`
+            // comment, so the human record is already on the story.
             StoryEvent::StoryDeleted { at, reason } => {
                 deleted = true;
                 deleted_reason = Some(reason.clone());
@@ -1698,6 +1771,13 @@ pub fn fold_story(
                 if closed_at.is_none() {
                     closed_at = Some(at.clone());
                 }
+                // Stamped HERE, inside the arm, never after the loop. Stamped
+                // post-loop, a later `StoryUnhidden` would be clobbered on
+                // every refold and `story unarchive` would be a silent,
+                // permanent no-op on exactly the population migration 21
+                // creates. In the arm, `StoryUnhidden` wins by ordinary replay
+                // order.
+                hidden_at = Some(at.clone());
             }
             StoryEvent::StoryHidden { at } => {
                 hidden_at = Some(at.clone());
@@ -1788,7 +1868,7 @@ pub fn fold_story(
     // undeleted stories, so `remove_state` never saw them and the slug really
     // was removable — whereas `done` is unremovable under the SH-125 floor.
     let (state, superstate) = if deleted {
-        match resting_state_for_deleted(states) {
+        match resting_state_for_closure(states) {
             Some(resting) => (resting.slug.clone(), SuperState::Closed),
             // No CLOSED state exists to come to rest in. Keep the slug and stay
             // foldable; the schema refuses the write, which is a loud failure
@@ -2125,12 +2205,12 @@ pub fn compute_progress(
 /// answer three different questions (SH-497).
 ///
 /// A `parent-of` edge is not a child. Deletion here is SOFT: the row survives
-/// with its `state` slug kept as a truthful record and its `superstate` forced
-/// to CLOSED (issue #18), so `all_stories.get(child_id)` succeeds and the child
-/// reads exactly like a *finished* one. That is how deleting an epic's last
-/// child silently reported the epic **done** rather than stranding it — a
-/// completion nobody chose, carrying `state_computed: true` so it read as
-/// authoritative rather than stale.
+/// with its `superstate` forced to CLOSED (issue #18), so
+/// `all_stories.get(child_id)` succeeds and the child reads exactly like a
+/// *finished* one. That is how deleting an epic's last child silently reported
+/// the epic **done** rather than stranding it — a completion nobody chose,
+/// carrying `state_computed: true` so it read as authoritative rather than
+/// stale.
 ///
 /// A child that is absent from the map is dropped for the same reason and by
 /// the same rule: whatever it is, it is not something this epic can be measured
@@ -2144,6 +2224,16 @@ pub fn compute_progress(
 /// direct move — it must be deleted or given children (user determination,
 /// 2026-08-27, on SH-497). Identity and measurement are different questions and
 /// this answers only the second.
+///
+/// # What SH-505 changed, and what it deliberately did not
+///
+/// A soft-deleted child now folds to the *abandoned* resting state rather than
+/// to `done`, and is archived. Neither is visible here: this filter tests the
+/// `deleted` flag, which both spellings still set. The flag — and this rung
+/// with it — goes when `story delete` becomes permanent (SH-498), at which
+/// point a deleted child leaves no row and no edge and there is nothing left
+/// to filter. See `docs/spec/deletion-and-closure.md` for why an epic whose
+/// children were all *abandoned* is then allowed to compute `closed`.
 fn live_children<'a>(
     story: &StorySnapshot,
     all_stories: &'a BTreeMap<String, StorySnapshot>,
@@ -2329,7 +2419,8 @@ fn computed_epic_state(
     // A deleted child is not a child (SH-497). Dropped BEFORE the recursion,
     // so a deleted subtree contributes nothing at all rather than contributing
     // a CLOSED superstate that the "every child is closed" branch below would
-    // read as completion.
+    // read as completion. `live_children` drops the same ones by the same rule,
+    // so state and progress cannot disagree about what a child is.
     let children: Vec<(StorySnapshot, String, SuperState)> = child_ids
         .iter()
         .filter_map(|child_id| {
@@ -3741,13 +3832,13 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        FieldEdit, Priority, REQUIRED_STATES, STATE_ROLE_ACTIVE, StateChanges, StateDef,
-        StateUsage, StoryEvent, StoryRelation, StorySnapshot, SuperState, TypeDef, active_state,
-        compute_display_state, compute_progress, default_type, derive_family_relationships,
-        fold_story, has_children, is_claimable, is_ready, last_activity_type, normalize_labels,
-        ready_order, story_number, validate_event_for_append, validate_required_states,
-        validate_state_defs, validate_state_defs_for_write, validate_state_slug,
-        validate_type_slug, with_required_states, would_create_parent_cycle,
+        CLOSED_STATE_SLUG, FieldEdit, Priority, REQUIRED_STATES, STATE_ROLE_ACTIVE, StateChanges,
+        StateDef, StateUsage, StoryEvent, StoryRelation, StorySnapshot, SuperState, TypeDef,
+        active_state, compute_display_state, compute_progress, default_type,
+        derive_family_relationships, fold_story, has_children, is_claimable, is_ready,
+        last_activity_type, normalize_labels, ready_order, story_number, validate_event_for_append,
+        validate_required_states, validate_state_defs, validate_state_defs_for_write,
+        validate_state_slug, validate_type_slug, with_required_states, would_create_parent_cycle,
     };
 
     #[test]
@@ -3978,9 +4069,18 @@ mod tests {
     }
 
     #[test]
-    fn the_required_floor_is_todo_in_progress_blocked_and_done() {
+    fn the_required_floor_is_todo_in_progress_blocked_done_and_closed() {
         let slugs: Vec<&str> = REQUIRED_STATES.iter().map(|r| r.slug).collect();
-        assert_eq!(slugs, ["todo", "in-progress", "blocked", "done"]);
+        assert_eq!(slugs, ["todo", "in-progress", "blocked", "done", "closed"]);
+        // Order is load-bearing, not cosmetic: `closed` comes AFTER `done` so
+        // that `service::project::closed_state` and `service::pr_check`, which
+        // both take the first CLOSED state they find, keep answering `done`
+        // (SH-505).
+        let first_closed = REQUIRED_STATES
+            .iter()
+            .find(|r| r.super_state == SuperState::Closed)
+            .expect("the floor has a CLOSED state");
+        assert_eq!(first_closed.slug, "done");
         // Every one of them is a slug the CLI and the web router can address.
         for required in &REQUIRED_STATES {
             validate_state_slug(required.slug).expect("a required slug must be addressable");
@@ -3994,6 +4094,7 @@ mod tests {
             state("in-progress", SuperState::Open, Some("active")),
             state("blocked", SuperState::Open, None),
             state("done", SuperState::Closed, None),
+            state(CLOSED_STATE_SLUG, SuperState::Closed, None),
         ];
         validate_required_states(&states).unwrap();
     }
@@ -4040,7 +4141,7 @@ mod tests {
         let repaired = with_required_states(&states).unwrap();
         assert_eq!(
             board(&repaired),
-            "todo|in-progress|review*|blocked|done|wont-fix"
+            "todo|in-progress|review*|blocked|done|wont-fix|closed"
         );
         validate_required_states(&repaired).unwrap();
     }
@@ -4054,7 +4155,7 @@ mod tests {
             state("done", SuperState::Closed, None),
         ];
         let repaired = with_required_states(&states).unwrap();
-        assert_eq!(board(&repaired), "todo|in-progress|blocked|done");
+        assert_eq!(board(&repaired), "todo|in-progress|blocked|done|closed");
         validate_required_states(&repaired).unwrap();
     }
 
@@ -5399,6 +5500,228 @@ mod tests {
         .into_iter()
         .map(|state| (state.slug.clone(), state))
         .collect()
+    }
+
+    /// [`state_map`] plus the abandoned resting state — the catalog every
+    /// conforming project has had since SH-505. `state_map` deliberately does
+    /// NOT have it, which is what keeps
+    /// [`resting_state_for_closure`]'s `done` fallback exercised by every other
+    /// fold test in this module.
+    fn state_map_with_closed() -> BTreeMap<String, StateDef> {
+        let mut states = state_map();
+        states.insert(
+            CLOSED_STATE_SLUG.to_string(),
+            StateDef {
+                slug: CLOSED_STATE_SLUG.to_string(),
+                super_state: SuperState::Closed,
+                role: None,
+                description: None,
+            },
+        );
+        states
+    }
+
+    fn created_then(events: &[StoryEvent]) -> Vec<StoryEvent> {
+        let mut all = vec![StoryEvent::StoryCreated {
+            at: "2026-08-27T00:00:00Z".to_string(),
+            title: "A story".to_string(),
+            state: "todo".to_string(),
+        }];
+        all.extend_from_slice(events);
+        all
+    }
+
+    /// SH-505: a legacy `StoryDeleted` is read as *abandonment* — the story
+    /// comes to rest in `closed` rather than `done`, and is archived so it
+    /// stays as invisible as it was when this meant "soft-deleted".
+    #[test]
+    fn fold_story_deleted_rests_in_closed_and_archives() {
+        let story = fold_story(
+            "SH-1",
+            &created_then(&[StoryEvent::StoryDeleted {
+                at: "2026-08-27T00:01:00Z".to_string(),
+                reason: "created in error".to_string(),
+            }]),
+            &state_map_with_closed(),
+        )
+        .unwrap();
+
+        assert_eq!(story.state, CLOSED_STATE_SLUG);
+        assert_eq!(story.superstate, SuperState::Closed);
+        assert_eq!(
+            story.hidden_at.as_deref(),
+            Some("2026-08-27T00:01:00Z"),
+            "a soft-deleted story must fold archived, or it would appear on \
+             every board the moment `closed` became an ordinary state"
+        );
+    }
+
+    /// The regression the stamp's *placement* exists to prevent, and the reason
+    /// it lives inside the `StoryDeleted` arm rather than after the replay loop.
+    ///
+    /// Stamped after the loop, this fold would re-apply `hidden_at` on top of
+    /// the `StoryUnhidden` that follows it — so `story unarchive` would be a
+    /// silent, permanent no-op on exactly the population migration 21 creates.
+    #[test]
+    fn fold_story_unhiding_a_deleted_story_actually_unhides_it() {
+        let story = fold_story(
+            "SH-1",
+            &created_then(&[
+                StoryEvent::StoryDeleted {
+                    at: "2026-08-27T00:01:00Z".to_string(),
+                    reason: "created in error".to_string(),
+                },
+                StoryEvent::StoryUnhidden {
+                    at: "2026-08-27T00:02:00Z".to_string(),
+                },
+            ]),
+            &state_map_with_closed(),
+        )
+        .unwrap();
+
+        assert_eq!(story.state, CLOSED_STATE_SLUG);
+        assert_eq!(story.hidden_at, None, "`story unarchive` must be effective");
+    }
+
+    /// Delete, undelete, then close for real: the story must NOT re-archive
+    /// itself.
+    ///
+    /// The post-loop `superstate == OPEN` retraction cannot cover this — it
+    /// fires on the FINAL superstate, and this history ends CLOSED — so the
+    /// move into an OPEN state has to clear `hidden_at` itself, symmetric with
+    /// `closed_at`, which that arm has always cleared (SH-505).
+    #[test]
+    fn fold_story_deleted_then_reopened_then_closed_is_not_archived() {
+        let story = fold_story(
+            "SH-1",
+            &created_then(&[
+                StoryEvent::StoryDeleted {
+                    at: "2026-08-27T00:01:00Z".to_string(),
+                    reason: "created in error".to_string(),
+                },
+                StoryEvent::StoryStateChanged {
+                    at: "2026-08-27T00:02:00Z".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryStateChanged {
+                    at: "2026-08-27T00:03:00Z".to_string(),
+                    state: "done".to_string(),
+                },
+                StoryEvent::StoryClosedAndArchived {
+                    at: "2026-08-27T00:03:00Z".to_string(),
+                    state: "done".to_string(),
+                },
+            ]),
+            &state_map_with_closed(),
+        )
+        .unwrap();
+
+        assert_eq!(story.state, "done", "the undelete stands");
+        assert_eq!(story.superstate, SuperState::Closed);
+        assert_eq!(
+            story.hidden_at, None,
+            "closing a story for real is not archiving it"
+        );
+    }
+
+    /// The class an unconditional retraction would have broken, and did.
+    ///
+    /// A story archived, reopened for an edit, and closed again must stay
+    /// archived. That is long-standing behaviour with nothing to do with
+    /// deletion, and the first version of SH-505's retraction cleared
+    /// `hidden_at` on every move into an OPEN state — un-archiving six stories
+    /// in this repository's own tracker, found by running the migration against
+    /// a copy of it and reading `story doctor`.
+    #[test]
+    fn fold_story_archived_then_reopened_then_closed_stays_archived() {
+        let story = fold_story(
+            "SH-1",
+            &created_then(&[
+                StoryEvent::StoryStateChanged {
+                    at: "2026-08-27T00:01:00Z".to_string(),
+                    state: "done".to_string(),
+                },
+                StoryEvent::StoryClosedAndArchived {
+                    at: "2026-08-27T00:01:00Z".to_string(),
+                    state: "done".to_string(),
+                },
+                StoryEvent::StoryHidden {
+                    at: "2026-08-27T00:02:00Z".to_string(),
+                },
+                StoryEvent::StoryStateChanged {
+                    at: "2026-08-27T00:03:00Z".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryStateChanged {
+                    at: "2026-08-27T00:04:00Z".to_string(),
+                    state: "done".to_string(),
+                },
+                StoryEvent::StoryClosedAndArchived {
+                    at: "2026-08-27T00:04:00Z".to_string(),
+                    state: "done".to_string(),
+                },
+            ]),
+            &state_map_with_closed(),
+        )
+        .unwrap();
+
+        assert_eq!(story.superstate, SuperState::Closed);
+        assert_eq!(
+            story.hidden_at.as_deref(),
+            Some("2026-08-27T00:02:00Z"),
+            "reopening retracts the DELETION's archive stamp, never a hide the \
+             user asked for"
+        );
+    }
+
+    /// The fallback rung, and why it is not defensive padding: a catalog with
+    /// no `closed` is reachable from a legacy tree, from a store not yet
+    /// migrated past schema 21, and from `service::migrate`'s pre-repair
+    /// catalog. `fold_story` may not fail on its own history.
+    #[test]
+    fn fold_story_deleted_falls_back_to_done_when_the_catalog_has_no_closed() {
+        let story = fold_story(
+            "SH-1",
+            &created_then(&[StoryEvent::StoryDeleted {
+                at: "2026-08-27T00:01:00Z".to_string(),
+                reason: "created in error".to_string(),
+            }]),
+            &state_map(),
+        )
+        .unwrap();
+
+        assert_eq!(story.state, "done");
+        assert_eq!(story.superstate, SuperState::Closed);
+    }
+
+    /// A project that already owns an OPEN state called `closed` keeps its
+    /// soft-deleted stories in `done` — which is what lets migration 21 leave
+    /// those rows alone and still agree with a fresh fold.
+    #[test]
+    fn fold_story_deleted_ignores_a_closed_state_the_project_defines_as_open() {
+        let mut states = state_map();
+        states.insert(
+            CLOSED_STATE_SLUG.to_string(),
+            StateDef {
+                slug: CLOSED_STATE_SLUG.to_string(),
+                super_state: SuperState::Open,
+                role: None,
+                description: None,
+            },
+        );
+
+        let story = fold_story(
+            "SH-1",
+            &created_then(&[StoryEvent::StoryDeleted {
+                at: "2026-08-27T00:01:00Z".to_string(),
+                reason: "created in error".to_string(),
+            }]),
+            &states,
+        )
+        .unwrap();
+
+        assert_eq!(story.state, "done");
+        assert_eq!(story.superstate, SuperState::Closed);
     }
 
     fn sample_story_map() -> BTreeMap<String, StorySnapshot> {

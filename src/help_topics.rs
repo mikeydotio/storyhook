@@ -2393,6 +2393,48 @@ Related:
         );
 
         m.insert(
+            "close",
+            r#"story close <id> "<reason>"
+
+Retire a story that will not be done. The story moves to the `closed`
+state — CLOSED superstate, so it stops counting as open, ready, or a
+blocker — and the reason is recorded as a comment on it.
+
+A closed story keeps everything: its description, its comments, its
+labels and every relationship it has. That is the whole point. It is
+the record of a decision not to do something, which is worth as much
+as the record of doing it.
+
+`closed` behaves exactly like `done` in every other respect. The two
+differ in what they claim: `done` says the work was finished, `closed`
+says it was deliberately abandoned.
+
+Reopen one by moving it anywhere open — `story reopen <id>`, or
+`story move <id> <state>`.
+
+When to use:
+  For a superseded plan, an approach you tried and rejected, a story
+  overtaken by events. Anything you want to be able to find later and
+  read the reasoning for.
+
+  NOT for a story filed by mistake — under the wrong project, a
+  duplicate, a typo. Nothing about that is worth keeping; use
+  `story delete <id>` instead.
+
+Examples:
+  story close SH-3 "superseded by the approach in SH-9"
+  story close SH-7 "we are not doing per-user themes after all"
+
+Related:
+  story move <id> <state>  — The general form; `close` is this with
+                             the state fixed and the reason required
+  story delete <id>        — Remove a story that should never have
+                             existed
+  story reopen <id>        — Move a closed story back to open
+"#,
+        );
+
+        m.insert(
             "delete",
             r#"story delete <id> "<reason>"
 
@@ -2412,6 +2454,8 @@ Examples:
   story delete SH-7 "created in error"
 
 Related:
+  story close <id> "<reason>"  — Retire a story deliberately, keeping
+                                 it and everything it records
   story reopen <id> [--force]  — Undelete (reopen a deleted story)
   story purge <id> [--force]   — Remove a deleted story permanently
   story search                 — Find deleted stories
@@ -2914,6 +2958,7 @@ LIFECYCLE
   story show <id>                 Full details for a single story
   story move <id> <state>         Transition state (e.g., todo → in-progress → done)
   story reopen <id>               Reopen a closed story
+  story close <id> "<reason>"     Retire, keeping the record
   story delete <id> "<reason>"    Soft-delete with required reason
   story purge <id> --force        Permanently remove a deleted story (no undo)
 

@@ -218,6 +218,7 @@ Usage:
   story prioritize <id> <critical|high|medium|low>
   story label <id> <labels-csv>
   story unlabel <id> <labels-csv>
+  story close <id> "<reason>"                       (retire a story that will not be done)
   story reopen <id> [--force]
   story archive <id>                               (hide a closed story from the primary UI)
   story unarchive <id>
@@ -2097,6 +2098,7 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "comment" => parse_comment(args),
         "assign" => parse_assign(args),
         "move" => parse_move(args),
+        "close" => parse_close(args),
         "block" => parse_block(args),
         "unblock" => parse_unblock(args),
         "prioritize" => parse_prioritize(args),
@@ -4301,6 +4303,41 @@ fn parse_move(args: &[String]) -> Result<Invocation, AppError> {
         comment,
         if_state,
         awaiting,
+    })
+}
+
+/// `story close <id> "<reason>"` (SH-505) — retire a story that was
+/// deliberately not completed, keeping it and everything it records.
+///
+/// Sugar over [`Invocation::SetState`], not an invocation of its own. The state
+/// it moves to is a real one ([`crate::domain::CLOSED_STATE_SLUG`]) and the
+/// reason is a real comment, so this needs no new event kind, no new snapshot
+/// field, no dispatch arm, and no MCP or wire surface — `story move <id> closed
+/// "<reason>"` does exactly the same thing and is the same story afterwards.
+///
+/// What the sugar adds is the requirement: `move` takes an optional comment,
+/// and here the reason is the whole point of the verb, so a bare `story close
+/// <id>` is a usage error rather than a silently unexplained abandonment.
+///
+/// Deliberately NOT idempotent, inheriting `set_state`'s own rule: an
+/// already-closed story is refused, exactly as `story move <id> done` is. The
+/// reason travels as the comment rather than as `--reason`, because
+/// `set_state` refuses an `awaiting` reason on a CLOSED target.
+fn parse_close(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = "usage: story close <id> \"<reason>\"";
+    if args.len() < 3 {
+        return Err(AppError::Usage(usage.to_string()));
+    }
+    let reason = join_tokens(&args[2..]);
+    if reason.is_empty() {
+        return Err(AppError::Usage(usage.to_string()));
+    }
+    Ok(Invocation::SetState {
+        id: args[1].clone(),
+        state: crate::domain::CLOSED_STATE_SLUG.to_string(),
+        comment: Some(reason),
+        if_state: None,
+        awaiting: None,
     })
 }
 

@@ -77,11 +77,16 @@ fn slugs(fixture: &ServiceFixture) -> Vec<String> {
 }
 
 /// A project whose catalog predates the floor: no `blocked`.
+/// One state short of the floor, and exactly one — `blocked`. Carrying
+/// `closed` (SH-505) is what keeps that true: without it this fixture would be
+/// two short, and every assertion below about *the* missing state would be
+/// about a different subject.
 fn below_the_floor() -> ServiceFixture {
     ServiceFixture::with_states(&[
         state("todo", SuperState::Open),
         state("in-progress", SuperState::Open),
         state("done", SuperState::Closed),
+        state("closed", SuperState::Closed),
     ])
 }
 
@@ -109,7 +114,7 @@ fn state_of(fixture: &ServiceFixture, id: &str) -> String {
 // --- what the floor is -----------------------------------------------------
 
 #[test]
-fn the_floor_is_four_states_and_their_superstates() {
+fn the_floor_is_five_states_and_their_superstates() {
     let pairs: Vec<(&str, &SuperState)> = REQUIRED_STATES
         .iter()
         .map(|required| (required.slug, &required.super_state))
@@ -121,6 +126,12 @@ fn the_floor_is_four_states_and_their_superstates() {
             ("in-progress", &SuperState::Open),
             ("blocked", &SuperState::Open),
             ("done", &SuperState::Closed),
+            // After `done`, and the order is load-bearing: two functions take
+            // the FIRST CLOSED state they find — `service::project::
+            // closed_state`, which names the state in every generated
+            // AGENTS.md, and `service::pr_check`, where a merged PR closes its
+            // story and abandonment would be a lie (SH-505).
+            ("closed", &SuperState::Closed),
         ]
     );
 }
@@ -149,7 +160,10 @@ fn doctor_fix_adds_the_missing_state_and_says_so() {
         message.contains("added 1 required state"),
         "the repair must be reported, not silent: {message}"
     );
-    assert_eq!(slugs(&fixture), ["todo", "in-progress", "blocked", "done"]);
+    assert_eq!(
+        slugs(&fixture),
+        ["todo", "in-progress", "blocked", "done", "closed"]
+    );
     assert!(findings(&ctx).is_empty());
 }
 
@@ -162,7 +176,8 @@ fn doctor_fix_adds_nothing_to_a_conforming_project() {
     assert_eq!(message, "doctor found nothing to fix");
 }
 
-/// The `agentics` shape from the live store: `todo|done`, two states short.
+/// The `agentics` shape from the live store: `todo|done` — two states short
+/// when this was written, three since `closed` joined the floor (SH-505).
 #[test]
 fn doctor_fix_repairs_a_two_state_project_in_one_pass() {
     let fixture = ServiceFixture::with_states(&[
@@ -171,8 +186,11 @@ fn doctor_fix_repairs_a_two_state_project_in_one_pass() {
     ]);
     let ctx = fixture.ctx();
     let message = fix(&ctx).expect("fixing");
-    assert!(message.contains("added 2 required states"), "{message}");
-    assert_eq!(slugs(&fixture), ["todo", "in-progress", "blocked", "done"]);
+    assert!(message.contains("added 3 required states"), "{message}");
+    assert_eq!(
+        slugs(&fixture),
+        ["todo", "in-progress", "blocked", "done", "closed"]
+    );
 }
 
 /// The repair adds; it never reinterprets. Flipping this project's `done` to
@@ -220,7 +238,14 @@ fn a_repair_leaves_the_state_new_stories_open_in_alone() {
     );
     assert_eq!(
         slugs(&fixture),
-        ["backlog", "todo", "in-progress", "blocked", "done"],
+        [
+            "backlog",
+            "todo",
+            "in-progress",
+            "blocked",
+            "done",
+            "closed"
+        ],
         "a missing OPEN state joins the end of the OPEN run"
     );
 }
@@ -329,7 +354,7 @@ fn importing_a_document_below_the_floor_repairs_its_catalog() {
         .collect();
     assert_eq!(
         restored,
-        ["todo", "in-progress", "blocked", "done"],
+        ["todo", "in-progress", "blocked", "done", "closed"],
         "an import repairs rather than refuses: the document may be older than the floor"
     );
 }
@@ -349,6 +374,7 @@ fn doctor_notices_a_project_at_the_floor_with_no_active_role_state() {
         state("in-progress", SuperState::Open),
         state("blocked", SuperState::Open),
         state("done", SuperState::Closed),
+        state("closed", SuperState::Closed),
     ]);
     let ctx = fixture.ctx();
     assert!(
@@ -396,6 +422,7 @@ fn doctor_fix_does_not_guess_which_state_should_be_active() {
         state("in-progress", SuperState::Open),
         state("blocked", SuperState::Open),
         state("done", SuperState::Closed),
+        state("closed", SuperState::Closed),
     ]);
     let ctx = fixture.ctx();
     let message = fix(&ctx).expect("fixing");
@@ -508,4 +535,65 @@ fn doctor_fix_does_not_guess_a_blocked_reason() {
         awaiting.is_none(),
         "--fix must not have written a reason: {awaiting:?}"
     );
+}
+
+// --- the floor and its hand-written twins ----------------------------------
+
+/// `default_states` claims, in its own doc comment, to be "exactly
+/// [`REQUIRED_STATES`], in that order". Nothing checked it.
+///
+/// The claim is load-bearing in a way that is easy to miss: a project's catalog
+/// order is what `service::project::closed_state` and `service::pr_check` read
+/// when they take "the first CLOSED state", so a twin that drifted into listing
+/// `closed` before `done` would scaffold an AGENTS.md telling every agent to
+/// finish its work by abandoning the story, and would land every merged PR in
+/// the abandoned state — with the floor itself still correct and every test of
+/// the floor still green.
+///
+/// Two hand-written lists that must agree, with nothing checking they do, is
+/// the shape this project has already paid for in SH-136, SH-198, SH-258,
+/// SH-260/276 and SH-360. This is the check.
+#[test]
+fn the_default_catalog_is_the_floor_in_the_floors_own_order() {
+    let defaults: Vec<(&str, &SuperState)> = storyhook::service::project::default_states()
+        .iter()
+        .map(|state| {
+            (
+                Box::leak(state.slug.clone().into_boxed_str()) as &str,
+                Box::leak(Box::new(state.super_state.clone())) as &SuperState,
+            )
+        })
+        .collect();
+    let floor: Vec<(&str, &SuperState)> = REQUIRED_STATES
+        .iter()
+        .map(|required| (required.slug, &required.super_state))
+        .collect();
+
+    assert_eq!(
+        defaults, floor,
+        "`default_states` is a hand-written twin of the floor; when they \
+         disagree, a new project is either below the floor or orders its board \
+         differently from every repaired one"
+    );
+}
+
+/// The same claim for the two test-support twins, which decide what almost
+/// every fixture in this suite starts life with.
+///
+/// A fixture catalog that drifted below the floor would not fail loudly: it
+/// would make `story doctor` report a `RequiredStates` finding in tests that
+/// are about something else entirely, and every catalog edit those fixtures
+/// make would start being refused.
+#[test]
+fn the_test_support_catalogs_are_the_floor_too() {
+    let support: Vec<(String, SuperState)> = storyhook_test_support::default_states()
+        .into_iter()
+        .map(|state| (state.slug, state.super_state))
+        .collect();
+    let floor: Vec<(String, SuperState)> = REQUIRED_STATES
+        .iter()
+        .map(|required| (required.slug.to_string(), required.super_state.clone()))
+        .collect();
+
+    assert_eq!(support, floor, "storyhook_test_support::default_states");
 }
