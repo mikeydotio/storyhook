@@ -644,7 +644,10 @@ fn the_real_trees_export_equals_the_golden_document_modulo_the_repairs() {
             .iter()
             .find(|r| r.slug == extra.slug)
             .unwrap_or_else(|| {
-                panic!("the migration invented the state `{}`, which is not on the floor", extra.slug)
+                panic!(
+                    "the migration invented the state `{}`, which is not on the floor",
+                    extra.slug
+                )
             });
         assert_eq!(
             extra.super_state, required.super_state,

@@ -238,7 +238,14 @@ fn a_repair_leaves_the_state_new_stories_open_in_alone() {
     );
     assert_eq!(
         slugs(&fixture),
-        ["backlog", "todo", "in-progress", "blocked", "done", "closed"],
+        [
+            "backlog",
+            "todo",
+            "in-progress",
+            "blocked",
+            "done",
+            "closed"
+        ],
         "a missing OPEN state joins the end of the OPEN run"
     );
 }
