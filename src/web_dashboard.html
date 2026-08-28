@@ -6627,9 +6627,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var ready = readySet(), blocked = blockedSet();
     var byState = {};
     stories.forEach(function(v) {
-      // `display_state` overrides the column an epic's card lands in — e.g.
-      // an epic sitting in `todo` with an active child shows in `in-progress`
-      // (SH-165) — without touching the story's own literal `state`.
+      // `display_state` overrides the column a card lands in when a story's
+      // own blocking metadata says it needs a person (SH-407, narrowed by
+      // SH-487) — without touching the story's own literal `state`.
       var slug = v.display_state || v.story.state;
       (byState[slug] = byState[slug] || []).push(v);
     });

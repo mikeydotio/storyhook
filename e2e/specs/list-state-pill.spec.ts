@@ -212,3 +212,76 @@ test("an epic's list pill shows the state its card actually sits in, not its own
   await deleteStory(page, childTitle);
   await deleteStory(page, epicTitle);
 });
+
+test("SH-487: a leaf blocked by a story that itself needs a person shows a promoted pill naming no cause", async ({
+  page,
+}) => {
+  // The epic test above pins the SH-165/SH-446 promotion, which no longer
+  // reaches this field at all (an epic's state is projected directly onto
+  // `story.state`). This is the OTHER arm buildStatePill's title has to be
+  // honest about: `compute_display_state`'s own SH-407/SH-487 blocked
+  // promotion, on a plain leaf.
+  const blockerTitle = "SH-487 list pill -- blocker";
+  const workerTitle = "SH-487 list pill -- worker";
+  const blockerCard = await createStory(page, blockerTitle);
+  const blockerId = (await blockerCard.getAttribute("data-id"))!;
+  const workerCard = await createStory(page, workerTitle);
+  const workerId = (await workerCard.getAttribute("data-id"))!;
+
+  await workerCard.click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await page
+    .locator('input[placeholder="Story ID (e.g. SH-2)"]')
+    .fill(blockerId);
+  await page
+    .locator("#drawer-body .inline-add select")
+    .selectOption("blocked-by");
+  await page
+    .locator("#drawer-body .inline-add button", { hasText: "Add" })
+    .click();
+  await expect(page.locator(".rel-row", { hasText: blockerId })).toBeVisible();
+  await page.locator("#drawer-close").click();
+  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
+
+  // Still an ordinary open blocker: no promotion yet, still "todo".
+  const row = await listRow(page, workerId);
+  await expect(row.locator(".state-pill")).toHaveText("todo");
+  await expect(row.locator(".state-pill")).not.toHaveAttribute(
+    "title",
+    /.+/,
+  );
+
+  // Now the blocker needs a person -- the worker promotes transitively.
+  await page.locator('#view-toggle button[data-view="board"]').click();
+  await page.locator(".card", { hasText: blockerTitle }).click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await page
+    .locator('input[placeholder="Reason for blocking…"]')
+    .fill("waiting on legal");
+  await page.locator("#drawer-body button", { hasText: "Block" }).click();
+  await expect(page.locator(".banner-blocked")).toBeVisible();
+  await page.locator("#drawer-close").click();
+  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
+  await page.locator('#view-toggle button[data-view="list"]').click();
+
+  await expect(row.locator(".state-pill")).toHaveText("blocked", {
+    timeout: 8000,
+  });
+  await expect(row.locator(".state-pill")).toHaveAttribute(
+    "title",
+    "blocked (shown here; recorded state is todo)",
+  );
+
+  // Clearing the blocker's reason returns both cards to "todo" -- no edge
+  // is ever removed -- so the plain deleteStory() shape works for both.
+  await page.locator('#view-toggle button[data-view="board"]').click();
+  await page.locator(".card", { hasText: blockerTitle }).click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await page.locator("button", { hasText: "Unblock" }).click();
+  await expect(page.locator(".banner-blocked")).toHaveCount(0);
+  await page.locator("#drawer-close").click();
+  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
+
+  await deleteStory(page, workerTitle);
+  await deleteStory(page, blockerTitle);
+});

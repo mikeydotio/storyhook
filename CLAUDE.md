@@ -741,9 +741,24 @@ Standing rules for every wave:
   "this story's own blocking metadata disagrees with its literal state",
   `apply_computed_epic_states` for "this story's state is its children's". The projection
   sets `state_computed`, which is the flag that tells the two apart on the wire.
-  A story is an epic **because it has a `parent-of` edge**, never because of its type —
-  and `has_children` tests only for that edge, which is the SH-497 defect: deletion is
-  soft, so the edge outlives the child.
+  A story is an epic **because it is typed one** (`is_epic`, checking `story_type`),
+  never because it holds a `parent-of` edge — this bullet asserted the opposite until
+  corrected here; that was the SH-499 defect, and `apply_computed_epic_states`'s own
+  doc now states the correction directly rather than leaving it implicit.
+  `has_children` is a separate, narrower fact — whether a story holds at least one
+  `parent-of` edge, regardless of type — and it is what carries the SH-497 defect:
+  deletion is soft, so the edge outlives a deleted child, and `has_children` reads
+  true for a story whose only children are gone. **`display_state` inherits SH-499's
+  correction directly**: SH-487 narrows its blocked-card promotion from `!is_ready`
+  to `domain::needs_intervention` — a story blocked by an ordinary open story is not
+  what the Blocked column means, since it will clear itself as the backlog is worked;
+  `is_ready` itself, and therefore `story next`/claiming and `blocked_ids`/
+  `summary.blocked_count`/`story list --blocked`, are unchanged and still mean "not
+  ready" — measured against this project's own backlog on the day SH-487 was filed,
+  where 16 of 16 cards then sitting in Blocked were exactly the case being narrowed
+  away, none needing a person. `blocked_for_epic`'s identical `blocked-by` clause is
+  narrowed the same way, which is the only path that reaches the TUI, since it groups
+  a board column on `story.state` directly and never reads `display_state` at all.
 - **The forward-compat gate needed a write-side twin, or a newer binary could break an older
   one's store on the way in** (SH-404). SH-54 refuses an older binary that opens a *newer*
   store — the read side. Nothing stopped the opposite: a `cargo build` binary (debug or

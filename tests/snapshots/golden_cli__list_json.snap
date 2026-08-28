@@ -206,7 +206,6 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "display_state": "blocked",
           "head_global_seq": 65,
           "story": {
             "awaiting": null,
@@ -398,7 +397,6 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "display_state": "blocked",
           "head_global_seq": 65,
           "story": {
             "awaiting": null,
@@ -1094,7 +1092,6 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "display_state": "blocked",
           "head_global_seq": 65,
           "story": {
             "awaiting": null,
@@ -1588,7 +1585,6 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "display_state": "blocked",
           "head_global_seq": 65,
           "story": {
             "awaiting": null,
@@ -1878,7 +1874,6 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "display_state": "blocked",
           "head_global_seq": 65,
           "story": {
             "awaiting": null,
@@ -2322,7 +2317,6 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "display_state": "blocked",
           "head_global_seq": 65,
           "story": {
             "awaiting": null,
@@ -2641,7 +2635,6 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "display_state": "blocked",
           "head_global_seq": 65,
           "story": {
             "awaiting": null,
@@ -2960,7 +2953,6 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "display_state": "blocked",
           "head_global_seq": 65,
           "story": {
             "awaiting": null,

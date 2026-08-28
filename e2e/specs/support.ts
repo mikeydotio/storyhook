@@ -474,11 +474,15 @@ export async function deleteStory(page: Page, title: string): Promise<void> {
 /**
  * Deletes `title`'s "blocked"-column story through the drawer -- the same
  * shape as {@link deleteStory}, scoped to the Blocked column instead of
- * todo. SH-407: a story blocked by an `awaiting` reason or an open
- * `blocked-by`/`obviated-by` edge display-promotes out of "todo" and into
- * "blocked", which any spec that blocks its own worker story before
- * cleanup needs to account for -- three spec files each carried their own
- * copy of this before it was promoted here.
+ * todo. SH-407, narrowed by SH-487: a story that itself needs a person to
+ * clear it -- an `awaiting` reason, an open `obviated-by` edge, or a
+ * `blocked-by` edge onto something that ITSELF needs a person -- display-
+ * promotes out of "todo" and into "blocked", which any spec that blocks
+ * its own worker story before cleanup needs to account for. A plain
+ * `blocked-by` edge onto an ordinary open story does NOT promote (that is
+ * the natural procession of the backlog, not something needing a person),
+ * so a worker blocked only that way is still in "todo" and wants
+ * {@link deleteStory} instead.
  */
 export async function deleteBlockedStory(
   page: Page,

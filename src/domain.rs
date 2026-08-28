@@ -2491,6 +2491,124 @@ fn computed_epic_state(
     Some(answer)
 }
 
+/// The one state [`compute_display_state`] ever promotes a card to.
+pub const DISPLAY_PROMOTION_STATE: &str = "blocked";
+
+/// The recursive facts [`walk_needs_intervention`] needs about one story: its
+/// own blocking signals, and the state it is EFFECTIVELY in. Owned rather
+/// than a borrowed `&StorySnapshot` because the epic rollup's blocker is not
+/// always the state written on the snapshot itself — see
+/// [`BlockFacts::with_effective`].
+struct BlockFacts {
+    id: String,
+    state: String,
+    superstate: SuperState,
+    draft: bool,
+    awaiting: bool,
+    obviated: bool,
+    blockers: Vec<String>,
+}
+
+impl BlockFacts {
+    /// Read straight off a snapshot — correct for a map whose epic states
+    /// [`apply_computed_epic_states`] has already projected, which is what
+    /// [`needs_intervention`] is always called against.
+    fn of(story: &StorySnapshot) -> Self {
+        Self::with_effective(story, story.state.clone(), story.superstate.clone())
+    }
+
+    /// The same blocking metadata, with the effective state supplied
+    /// separately — the epic rollup's case, where `story` still carries its
+    /// own dormant state and the caller has already resolved the real one
+    /// (its own literal state, or [`computed_epic_state`]'s answer for it).
+    fn with_effective(story: &StorySnapshot, state: String, superstate: SuperState) -> Self {
+        Self {
+            id: story.id.clone(),
+            state,
+            superstate,
+            draft: story.draft,
+            awaiting: story.awaiting.is_some(),
+            obviated: story
+                .relationships
+                .iter()
+                .any(|relation| relation.relation == "obviated-by"),
+            blockers: story
+                .relationships
+                .iter()
+                .filter(|relation| relation.relation == "blocked-by")
+                .map(|relation| relation.other_id.clone())
+                .collect(),
+        }
+    }
+}
+
+/// The shared walk behind [`needs_intervention`] and the epic rollup's
+/// [`blocked_for_epic`]: whether `facts`, or anything it transitively depends
+/// on through an open `blocked-by` edge, needs a *person* to clear it rather
+/// than the backlog simply proceeding (SH-487).
+///
+/// `resolve` is the one thing the two callers disagree about: the display
+/// side reads a blocker's metadata straight off an already-epic-projected
+/// map, the epic rollup asks [`computed_epic_state`] for a blocker's
+/// effective state first. Everything else — which signals count, how a cycle
+/// is handled, memoization — is one implementation.
+///
+/// A back-edge to a node still on `visiting` is a real cycle (it never
+/// resolves), so it answers `true` immediately, without memoizing that
+/// answer itself — it is provisional to a call still unwinding. Every
+/// ancestor's answer *derived* from it is memoized normally once its own
+/// frame completes, which is sound: everything depending on an unresolvable
+/// cycle genuinely needs a person.
+fn walk_needs_intervention(
+    facts: &BlockFacts,
+    resolve: &mut impl FnMut(&str) -> Option<BlockFacts>,
+    visiting: &mut BTreeSet<String>,
+    memo: &mut BTreeMap<String, bool>,
+) -> bool {
+    if let Some(&cached) = memo.get(&facts.id) {
+        return cached;
+    }
+    if facts.superstate != SuperState::Open {
+        return false;
+    }
+    if facts.state == DISPLAY_PROMOTION_STATE || facts.awaiting || facts.obviated || facts.draft {
+        memo.insert(facts.id.clone(), true);
+        return true;
+    }
+    if !visiting.insert(facts.id.clone()) {
+        return true;
+    }
+    let result = facts.blockers.iter().any(|id| {
+        resolve(id).is_some_and(|blocker| walk_needs_intervention(&blocker, resolve, visiting, memo))
+    });
+    visiting.remove(&facts.id);
+    memo.insert(facts.id.clone(), result);
+    result
+}
+
+/// Whether clearing `story`'s blocks needs a *person*, rather than the
+/// backlog simply proceeding (SH-487).
+///
+/// Strictly narrower than `!is_ready(story, all_stories)`: every story this
+/// returns `true` for is also not ready, and the converse is exactly the case
+/// SH-487 was filed about — a story whose only obstacle is an ordinary open
+/// story that will be worked in its own turn needs no intervention, even
+/// though `story next`/claiming still correctly refuses it through
+/// `is_ready` (this function is not a work-allocation predicate).
+///
+/// `all_stories` must already have epic states projected
+/// ([`apply_computed_epic_states`]) — the epic rollup runs *inside* that
+/// projection and cannot read it yet, so it reaches this same walk through
+/// [`blocked_for_epic`] instead, which resolves a blocker's effective state
+/// itself.
+pub fn needs_intervention(story: &StorySnapshot, all_stories: &impl StoryIndex) -> bool {
+    let facts = BlockFacts::of(story);
+    let mut resolve = |id: &str| all_stories.story(id).map(BlockFacts::of);
+    let mut visiting = BTreeSet::new();
+    let mut memo = BTreeMap::new();
+    walk_needs_intervention(&facts, &mut resolve, &mut visiting, &mut memo)
+}
+
 fn blocked_for_epic(
     child: &StorySnapshot,
     effective_state: &str,
@@ -2499,30 +2617,43 @@ fn blocked_for_epic(
     memo: &mut BTreeMap<String, (String, SuperState)>,
     visiting: &mut BTreeSet<String>,
 ) -> bool {
+    // A draft CHILD does not make its epic blocked (a draft is a planning
+    // container nobody has published yet, not stuck work) — pinned by
+    // `a_draft_child_keeps_an_otherwise_blocked_epic_at_todo`. A draft
+    // BLOCKER, by contrast, does need a person (`story publish`); that
+    // asymmetry lives here, on the subject, which is why the shared walk
+    // below can treat "draft" uniformly as an intervention signal.
     if child.draft {
         return false;
     }
-    if effective_state == "blocked" || child.awaiting.is_some() {
-        return true;
-    }
-    if child
-        .relationships
-        .iter()
-        .any(|relation| relation.relation == "obviated-by")
-    {
-        return true;
-    }
-    child.relationships.iter().any(|relation| {
-        relation.relation == "blocked-by"
-            && computed_epic_state(&relation.other_id, stories, states, memo, visiting)
-                .is_some_and(|(_, superstate)| superstate == SuperState::Open)
-    })
+    // `incomplete` (this function's only caller) has already filtered to
+    // `SuperState::Open` children, so the subject's own superstate is always
+    // Open here.
+    let facts = BlockFacts::with_effective(child, effective_state.to_string(), SuperState::Open);
+    let mut resolve = |id: &str| -> Option<BlockFacts> {
+        let snapshot = stories.get(id)?;
+        let (state, superstate) = computed_epic_state(id, stories, states, memo, visiting)?;
+        Some(BlockFacts::with_effective(snapshot, state, superstate))
+    };
+    // Fresh per call rather than threaded through the whole
+    // `apply_computed_epic_states` pass: this keeps the state-resolution
+    // recursion (`memo`/`visiting`, over `parent-of`) and the intervention
+    // walk (over `blocked-by`) from ever needing to borrow the same map at
+    // once, at the cost of memoizing the intervention walk only within one
+    // child's own call rather than across the whole project. Real blocking
+    // chains in this tool are a handful of hops, so that cost is not one
+    // worth the extra complexity to remove.
+    let mut walking = BTreeSet::new();
+    let mut walk_memo = BTreeMap::new();
+    walk_needs_intervention(&facts, &mut resolve, &mut walking, &mut walk_memo)
 }
 
 /// The state at which a non-epic Web-board card should be shown when its own
 /// blocking metadata disagrees with its literal state. Epic state is already
 /// projected by [`apply_computed_epic_states`]; `display_state` now keeps only
-/// the independent SH-407 blocked-card presentation rule.
+/// the independent SH-487 blocked-card presentation rule (formerly SH-407 —
+/// narrowed by SH-487 from "not ready" to "needs a person", see
+/// [`needs_intervention`]).
 pub fn compute_display_state(
     story: &StorySnapshot,
     all_stories: &BTreeMap<String, StorySnapshot>,
@@ -2536,8 +2667,8 @@ pub fn compute_display_state(
         return None;
     }
 
-    if !is_ready(story, all_stories) {
-        return Some("blocked".to_string());
+    if needs_intervention(story, all_stories) {
+        return Some(DISPLAY_PROMOTION_STATE.to_string());
     }
     None
 }
@@ -3836,7 +3967,8 @@ mod tests {
         StateDef, StateUsage, StoryEvent, StoryRelation, StorySnapshot, SuperState, TypeDef,
         active_state, compute_display_state, compute_progress, default_type,
         derive_family_relationships, fold_story, has_children, is_claimable, is_ready,
-        last_activity_type, normalize_labels, ready_order, story_number, validate_event_for_append,
+        last_activity_type, needs_intervention, normalize_labels, ready_order, story_number,
+        validate_event_for_append,
         validate_required_states, validate_state_defs, validate_state_defs_for_write,
         validate_state_slug, validate_type_slug, with_required_states, would_create_parent_cycle,
     };
@@ -6534,24 +6666,270 @@ mod tests {
         ]
     }
 
-    // --- compute_display_state's blocked arm (SH-407) ---------------------
+    // --- compute_display_state's blocked arm (SH-407, narrowed by SH-487) -
 
-    #[test]
-    fn a_todo_story_blocked_by_an_open_story_is_promoted_to_blocked() {
-        let mut stories = sample_story_map();
+    fn blocked_by(stories: &mut BTreeMap<String, StorySnapshot>, subject: &str, blocker: &str) {
         stories
-            .get_mut("SH-3")
+            .get_mut(subject)
             .unwrap()
             .relationships
             .push(StoryRelation {
                 relation: "blocked-by".to_string(),
-                other_id: "SH-4".to_string(),
+                other_id: blocker.to_string(),
+            });
+    }
+
+    #[test]
+    fn a_todo_story_blocked_by_an_ordinary_open_story_is_not_promoted() {
+        // SH-487: SH-4 is a plain open `todo` leaf with no relationships of
+        // its own (see `sample_story_map`) — the ordinary shape of a planned
+        // backlog, not something a person needs to intervene on. This is the
+        // defect's own regression test: it used to assert `Some("blocked")`.
+        let mut stories = sample_story_map();
+        blocked_by(&mut stories, "SH-3", "SH-4");
+        let leaf = stories.get("SH-3").unwrap();
+
+        assert_eq!(
+            compute_display_state(leaf, &stories, &conforming_states()),
+            None,
+            "an ordinary open blocker will clear itself as the backlog is worked; \
+             the Blocked column is for blocks that need a person"
+        );
+    }
+
+    #[test]
+    fn a_blocker_that_itself_needs_a_person_promotes_its_dependent() {
+        // The positive case SH-487 keeps: SH-4 blocked-by nothing of its own,
+        // but carrying an `awaiting` reason, DOES need a person — so SH-3,
+        // which is blocked-by SH-4, is promoted transitively.
+        let mut stories = sample_story_map();
+        blocked_by(&mut stories, "SH-3", "SH-4");
+        stories.get_mut("SH-4").unwrap().awaiting = Some("vendor API access".to_string());
+        let leaf = stories.get("SH-3").unwrap();
+
+        assert_eq!(
+            compute_display_state(leaf, &stories, &conforming_states()),
+            Some("blocked".to_string())
+        );
+    }
+
+    #[test]
+    fn intervention_travels_the_whole_blocked_by_chain() {
+        // A 3-link chain (SH-1 <- SH-2 <- SH-3 <- SH-4, `sample_story_map`'s
+        // only four ids) where only the far end needs a person: every link
+        // in between promotes too, and clearing the far end's reason clears
+        // the whole chain in one write.
+        let mut stories = sample_story_map();
+        blocked_by(&mut stories, "SH-1", "SH-2");
+        blocked_by(&mut stories, "SH-2", "SH-3");
+        blocked_by(&mut stories, "SH-3", "SH-4");
+        stories.get_mut("SH-4").unwrap().awaiting = Some("legal review".to_string());
+        let states = conforming_states();
+
+        for id in ["SH-1", "SH-2", "SH-3"] {
+            assert_eq!(
+                compute_display_state(stories.get(id).unwrap(), &stories, &states),
+                Some("blocked".to_string()),
+                "{id} depends transitively on a story that needs a person"
+            );
+        }
+
+        stories.get_mut("SH-4").unwrap().awaiting = None;
+        for id in ["SH-1", "SH-2", "SH-3"] {
+            assert_eq!(
+                compute_display_state(stories.get(id).unwrap(), &stories, &states),
+                None,
+                "{id} clears the instant the one stuck link in the chain does"
+            );
+        }
+    }
+
+    #[test]
+    fn a_diamond_reports_intervention_once_and_only_through_the_stuck_arm() {
+        // SH-1 is blocked-by both SH-2 and SH-3; SH-2 and SH-3 are each
+        // blocked-by SH-4. Guards the memo against double-counting a shared
+        // blocker or short-circuiting on the wrong arm.
+        let mut stories = sample_story_map();
+        blocked_by(&mut stories, "SH-1", "SH-2");
+        blocked_by(&mut stories, "SH-1", "SH-3");
+        blocked_by(&mut stories, "SH-2", "SH-4");
+        blocked_by(&mut stories, "SH-3", "SH-4");
+        let states = conforming_states();
+
+        assert_eq!(
+            compute_display_state(stories.get("SH-1").unwrap(), &stories, &states),
+            None,
+            "SH-4 is ordinary open work; neither arm of the diamond needs a person"
+        );
+
+        stories.get_mut("SH-4").unwrap().awaiting = Some("waiting on legal".to_string());
+        assert_eq!(
+            compute_display_state(stories.get("SH-1").unwrap(), &stories, &states),
+            Some("blocked".to_string())
+        );
+    }
+
+    #[test]
+    fn a_blocked_by_cycle_needs_a_person_because_it_never_resolves() {
+        // SH-1 <-> SH-2 blocked-by each other. Neither can ever unblock on
+        // its own, so both need a person — and the walk must still return
+        // rather than recursing forever.
+        let mut stories = sample_story_map();
+        blocked_by(&mut stories, "SH-1", "SH-2");
+        blocked_by(&mut stories, "SH-2", "SH-1");
+        let states = conforming_states();
+
+        assert_eq!(
+            compute_display_state(stories.get("SH-1").unwrap(), &stories, &states),
+            Some("blocked".to_string())
+        );
+        assert_eq!(
+            compute_display_state(stories.get("SH-2").unwrap(), &stories, &states),
+            Some("blocked".to_string())
+        );
+    }
+
+    #[test]
+    fn a_story_hanging_off_a_blocked_by_cycle_also_needs_a_person() {
+        // SH-4 -> SH-1 <-> SH-2: the cycle is between SH-1 and SH-2; SH-4
+        // merely depends on it and must inherit the same unresolvable answer.
+        let mut stories = sample_story_map();
+        blocked_by(&mut stories, "SH-1", "SH-2");
+        blocked_by(&mut stories, "SH-2", "SH-1");
+        blocked_by(&mut stories, "SH-4", "SH-1");
+        let states = conforming_states();
+
+        assert_eq!(
+            compute_display_state(stories.get("SH-4").unwrap(), &stories, &states),
+            Some("blocked".to_string())
+        );
+    }
+
+    #[test]
+    fn a_draft_blocker_needs_a_person_to_publish_it() {
+        // The mirror of `a_draft_story_is_never_promoted_even_when_blocked`
+        // below: a draft SUBJECT is never judged, but a draft in the
+        // BLOCKER position does need a person (`story publish`).
+        let mut stories = sample_story_map();
+        blocked_by(&mut stories, "SH-3", "SH-4");
+        stories.get_mut("SH-4").unwrap().draft = true;
+        let leaf = stories.get("SH-3").unwrap();
+
+        assert_eq!(
+            compute_display_state(leaf, &stories, &conforming_states()),
+            Some("blocked".to_string())
+        );
+    }
+
+    #[test]
+    fn an_in_progress_blocker_is_ordinary_progress_not_intervention() {
+        let mut stories = sample_story_map();
+        blocked_by(&mut stories, "SH-3", "SH-4");
+        stories.get_mut("SH-4").unwrap().state = "in-progress".to_string();
+        let leaf = stories.get("SH-3").unwrap();
+
+        assert_eq!(
+            compute_display_state(leaf, &stories, &conforming_states()),
+            None,
+            "someone is already working the blocker; that is not a call for intervention"
+        );
+    }
+
+    #[test]
+    fn an_obviated_blocker_needs_a_person() {
+        let mut stories = sample_story_map();
+        blocked_by(&mut stories, "SH-3", "SH-4");
+        stories
+            .get_mut("SH-4")
+            .unwrap()
+            .relationships
+            .push(StoryRelation {
+                relation: "obviated-by".to_string(),
+                other_id: "SH-5".to_string(),
             });
         let leaf = stories.get("SH-3").unwrap();
 
         assert_eq!(
             compute_display_state(leaf, &stories, &conforming_states()),
             Some("blocked".to_string())
+        );
+    }
+
+    #[test]
+    fn a_blocker_in_the_literal_blocked_state_needs_a_person() {
+        let mut stories = sample_story_map();
+        blocked_by(&mut stories, "SH-3", "SH-4");
+        stories.get_mut("SH-4").unwrap().state = "blocked".to_string();
+        let leaf = stories.get("SH-3").unwrap();
+
+        assert_eq!(
+            compute_display_state(leaf, &stories, &conforming_states()),
+            Some("blocked".to_string())
+        );
+    }
+
+    #[test]
+    fn a_blocker_the_index_cannot_answer_for_does_not_block() {
+        // Mirrors `is_ready`'s own "absence is not blocking" rule, over both
+        // shapes `StoryIndex` is implemented for.
+        let mut stories = sample_story_map();
+        blocked_by(&mut stories, "SH-3", "SH-999");
+        assert!(!needs_intervention(stories.get("SH-3").unwrap(), &stories));
+
+        let borrowed: BTreeMap<&str, &StorySnapshot> =
+            stories.iter().map(|(id, s)| (id.as_str(), s)).collect();
+        assert!(!needs_intervention(stories.get("SH-3").unwrap(), &borrowed));
+    }
+
+    #[test]
+    fn needs_intervention_implies_not_ready() {
+        // The invariant the whole narrowing rests on: nothing this predicate
+        // calls `true` was ever ready, and the table below exercises at
+        // least one shape where the converse fails on purpose (an ordinary
+        // open blocker: not ready, but no intervention needed) so the
+        // implication is proved strict rather than checked vacuously.
+        let mut ordinary = sample_story_map();
+        blocked_by(&mut ordinary, "SH-3", "SH-4");
+
+        let mut awaiting_blocker = sample_story_map();
+        blocked_by(&mut awaiting_blocker, "SH-3", "SH-4");
+        awaiting_blocker.get_mut("SH-4").unwrap().awaiting = Some("x".to_string());
+
+        let mut own_awaiting = sample_story_map();
+        own_awaiting.get_mut("SH-3").unwrap().awaiting = Some("x".to_string());
+
+        let mut own_blocked_state = sample_story_map();
+        own_blocked_state.get_mut("SH-3").unwrap().state = "blocked".to_string();
+
+        let mut cycle = sample_story_map();
+        blocked_by(&mut cycle, "SH-2", "SH-3");
+        blocked_by(&mut cycle, "SH-3", "SH-2");
+
+        let cases: [(&BTreeMap<String, StorySnapshot>, &str); 5] = [
+            (&ordinary, "SH-3"),
+            (&awaiting_blocker, "SH-3"),
+            (&own_awaiting, "SH-3"),
+            (&own_blocked_state, "SH-3"),
+            (&cycle, "SH-2"),
+        ];
+
+        let mut saw_a_not_ready_case_needing_no_intervention = false;
+        for (stories, id) in cases {
+            let story = stories.get(id).unwrap();
+            let intervention = needs_intervention(story, stories);
+            let ready = is_ready(story, stories);
+            assert!(
+                !intervention || !ready,
+                "{id} needed intervention but was reported ready"
+            );
+            if !ready && !intervention {
+                saw_a_not_ready_case_needing_no_intervention = true;
+            }
+        }
+        assert!(
+            saw_a_not_ready_case_needing_no_intervention,
+            "the fixture must include at least one not-ready story that needs no \
+             intervention, or the implication is proved vacuously"
         );
     }
 
