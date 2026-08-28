@@ -600,7 +600,8 @@ impl MigrationPlan {
             // Repairing, not refusing: a legacy tree predates the required
             // floor, and refusing to migrate one because of a state it never
             // had would make old data unmovable rather than conforming.
-            write_states_repairing(tx, project, &self.project.states)?;
+            let repaired_states = write_states_repairing(tx, project, &self.project.states)?;
+            let repaired_state_map = state_map(&repaired_states);
             if !self.project.types.is_empty() {
                 tx.put_types(project, &self.project.types)?;
             } else {
@@ -681,7 +682,7 @@ impl MigrationPlan {
             for (story, head) in self.stories.iter().zip(heads) {
                 let stored = tx.events_for(project, story.story_no)?;
                 let (known, _unknown) = partition_known(story.story_no, &stored);
-                let snapshot = fold_story(&story.id, &known, &state_map(&self.project.states))?;
+                let snapshot = fold_story(&story.id, &known, &repaired_state_map)?;
                 tx.put_story(project, &snapshot, head)?;
             }
             tx.reserve_story_no(project, self.highest)?;

@@ -75,17 +75,16 @@ fn the_real_tree_migrates_with_every_count_the_baseline_recorded() {
     for snapshot in snapshots.values() {
         *per_state.entry(snapshot.state.as_str()).or_default() += 1;
     }
-    // SH-130 moves exactly one story: the corpus's single soft-deleted one,
-    // which is SH-20 — the very story this defect was filed about. It was
-    // `todo` while reading CLOSED, and now comes to rest in `done`, so `todo`
-    // loses one and `done` gains one.
+    // The corpus has exactly one legacy soft-deleted story, SH-20. It was
+    // `todo` while reading CLOSED; after the required-state repair it comes to
+    // rest in `closed`, so `todo` loses one and the repaired state gains one.
     //
     // The CLOSED count above is deliberately unchanged at 44. That is the check
     // that this moved a *slug* and reclassified nothing: if the repair had
     // altered any story's superstate, these two assertions would disagree.
     assert_eq!(
         per_state,
-        BTreeMap::from([("done", 44), ("todo", 17)]),
+        BTreeMap::from([("closed", 1), ("done", 43), ("todo", 17)]),
         "the frozen tree's stories land where they were, except the deleted one, \
          which now rests in a state that is genuinely CLOSED"
     );
