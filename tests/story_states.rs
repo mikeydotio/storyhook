@@ -95,7 +95,7 @@ fn state_list_reflects_order() {
     let dir = tempdir().unwrap();
     init(dir.path());
     story(dir.path())
-        .args(["state", "reorder", "done,todo,blocked,in-progress"])
+        .args(["state", "reorder", "done,todo,blocked,in-progress,closed"])
         .assert()
         .success();
 
@@ -511,13 +511,13 @@ fn state_reorder_accepts_csv_and_separate_arguments() {
     init(dir.path());
 
     story(dir.path())
-        .args(["state", "reorder", "done,todo,blocked,in-progress"])
+        .args(["state", "reorder", "done,todo,blocked,in-progress,closed"])
         .assert()
         .success()
         .stdout(predicate::str::contains("done, todo, blocked, in-progress"));
 
     story(dir.path())
-        .args(["state", "reorder", "todo", "in-progress", "blocked", "done"])
+        .args(["state", "reorder", "todo", "in-progress", "blocked", "done", "closed"])
         .assert()
         .success()
         .stdout(predicate::str::contains("todo, in-progress, blocked, done"));
@@ -530,7 +530,7 @@ fn state_reorder_changes_where_new_stories_land() {
     let dir = tempdir().unwrap();
     init(dir.path());
     story(dir.path())
-        .args(["state", "reorder", "in-progress,todo,blocked,done"])
+        .args(["state", "reorder", "in-progress,todo,blocked,done,closed"])
         .assert()
         .success();
 
@@ -562,7 +562,7 @@ fn state_reorder_rejects_unknown_slugs() {
     init(dir.path());
 
     story(dir.path())
-        .args(["state", "reorder", "todo,in-progress,blocked,done,nope"])
+        .args(["state", "reorder", "todo,in-progress,blocked,done,closed,nope"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("`nope` not found"));
