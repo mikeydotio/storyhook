@@ -255,9 +255,23 @@ abandoned_candidates() {
             else if (n == 2) age = t[1]*60 + t[2]
             else             next
             if (age < min_age) next
-            for (i = 3; i < NF; i++) {
-                if ($i == "--store-path") { print $1 "\t" $(i+1); next }
-            }
+
+            # Delimited by the VERB that follows it, never taken as the next
+            # whitespace field. A store path may contain a space -- macOS
+            # hands out home directories like `/Users/Ada Lovelace` without
+            # comment -- and a field-split read of `--store-path
+            # "/Users/Ada Lovelace/.../store.db"` yields `/Users/Ada`, which
+            # does not exist, which classifies the DEVELOPER OWN RUNNING
+            # DAEMON as abandoned and kills it. The verb is the one thing
+            # after the path whose spelling this script already knows.
+            head = index($0, "--store-path ")
+            if (head == 0) next
+            rest = substr($0, head + length("--store-path "))
+            cut = index(rest, " daemon --serve")
+            alias = index(rest, " web --serve")
+            if (alias > 0 && (cut == 0 || alias < cut)) cut = alias
+            if (cut == 0) next
+            print $1 "\t" substr(rest, 1, cut - 1)
         }'
 }
 

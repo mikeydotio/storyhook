@@ -479,16 +479,50 @@ fn postlude_fails_when_a_survivor_outlives_sigkill() {
     // own staggered schedule instead, so a captured batch cannot die as one
     // synchronized event until SIGKILL actually reaches it.
     //
-    // The lifespan is derived rather than picked, and it is what makes this
-    // case survive a loaded machine (SH-493). A worker that self-expires
-    // faster than the supervisor's spawn loop can be *stalled* lets the
-    // population reach zero, and the postlude's grace loop exits 0 on the
-    // first empty poll it sees — which is this case failing with an empty
-    // stderr, having proved nothing, measured at roughly one run in three once
-    // this file went from 7 tests to 12. One whole `ORPHAN_KILL_GRACE_SECS`
-    // is the span the population has to cover without a gap, so it is the span
-    // one worker lives.
-    let worker = fixture.shim(&format!("trap '' TERM\nsleep {}", orphan_kill_grace_secs()));
+    // The lifespan is a knob rather than a constant because this fixture has
+    // to satisfy two requirements that pull in opposite directions, and it
+    // used to try to satisfy both with one number (SH-493).
+    let worker = fixture.shim("trap '' TERM\nsleep \"${SHIM_LIFETIME:-0.6}\"");
+
+    // Requirement one: **something matching is alive at every instant** until
+    // SIGKILL. The postlude's grace loop exits 0 on the first empty poll it
+    // sees, so a momentary gap is this case passing the run over a clean tree
+    // — reported as a failure with an *empty stderr*, having proved nothing.
+    // That is what it did, roughly one run in three, once this file grew from
+    // 7 tests to 13: on a loaded machine the supervisor's spawn loop can stall
+    // for longer than a short-lived worker lives, and the population it is
+    // supposed to be maintaining reaches zero underneath it.
+    //
+    // Tuning the cadence and the lifespan against each other only moves that
+    // threshold, and the next test added to this file moves it back. So the
+    // requirement is met by construction instead: ONE worker, spawned once,
+    // that outlives the whole scenario. It cannot gap, because nothing about
+    // it depends on a loop keeping up.
+    let guarantor = Command::new(&worker)
+        .args([
+            "--store-path",
+            &fixture.live_store().display().to_string(),
+            "daemon",
+            "--serve",
+            "--port",
+            "0",
+        ])
+        .env(
+            "SHIM_LIFETIME",
+            (orphan_grace_secs() + 3 * orphan_kill_grace_secs()).to_string(),
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("fixture: spawning the continuous worker");
+    let _guarantor = ChildGuard::new(guarantor);
+
+    // Requirement two: **something matching is alive again within the 0.5s
+    // the script settles for after SIGKILL** — the one true race here, and
+    // the only thing the supervisor below is still needed for. Its workers
+    // keep their short lifespan, so the population stays around a dozen
+    // rather than a hundred.
     // A wall-clock deadline rather than a fixed iteration count: what matters
     // is covering the postlude's own worst case, not a specific spawn count,
     // and this must keep respawning regardless of which individual workers the
@@ -503,19 +537,14 @@ fn postlude_fails_when_a_survivor_outlives_sigkill() {
     // the supervisor is provably still respawning at the moment SIGKILL lands
     // — which is the entire condition this case exists to construct.
     // Runs as its OWN process, never under `target/debug/`, so it never
-    // matches the pattern itself — only the workers it spawns do. The 0.2s
-    // cadence against a 0.5s post-SIGKILL settle window keeps the one true
-    // race in this fixture — is something new alive the instant the postlude
-    // looks again after SIGKILL — resolving the same way every run, with two
-    // spawns landing inside that window rather than one. It was 0.05s against
-    // a 0.6s worker, which held ~12 workers alive; against a worker that now
-    // lives a whole SIGTERM wait it would hold a hundred, and the churn of
-    // spawning twenty processes a second was itself part of the load this
-    // case was losing to.
+    // matches the pattern itself — only the workers it spawns do. The 0.05s
+    // cadence against that 0.5s settle window is deliberately lopsided (~10
+    // fresh spawns expected in it, deterministically scheduled rather than
+    // left to chance).
     let supervisor = fixture.helper(
         "supervisor.sh",
         &format!(
-            "deadline=$((SECONDS + {}))\nwhile [ \"$SECONDS\" -lt \"$deadline\" ]; do\n  \"{}\" --store-path \"{}\" daemon --serve --port 0 &\n  sleep 0.2\ndone",
+            "deadline=$((SECONDS + {}))\nwhile [ \"$SECONDS\" -lt \"$deadline\" ]; do\n  \"{}\" --store-path \"{}\" daemon --serve --port 0 &\n  sleep 0.05\ndone",
             orphan_grace_secs() + 3 * orphan_kill_grace_secs(),
             worker.display(),
             fixture.live_store().display()
@@ -779,6 +808,45 @@ fn a_daemon_too_young_to_have_opened_its_store_is_left_alone() {
         "a daemon younger than ABANDONED_STORE_MIN_AGE_SECS has not been given \
          up on by anybody yet — its client is still inside SPAWN_DEADLINE — so \
          a missing store means it is starting, not abandoned\nstderr: {err}"
+    );
+
+    fixture.sweep();
+}
+
+/// A store path containing a space is read whole — the case that decides
+/// whether this rule can kill the developer's own daemon.
+///
+/// macOS hands out home directories like `/Users/Ada Lovelace` without
+/// comment, and the real store lives under one. Reading `--store-path`'s
+/// argument as the next whitespace-delimited field yields `/Users/Ada`, which
+/// does not exist, which classifies a perfectly healthy production daemon as
+/// abandoned and kills it — the single worst thing this rule could do, and
+/// invisible on any machine whose own paths happen to have no spaces.
+/// Delimiting on the verb that follows instead is what makes the read exact;
+/// this is the case that fails if anyone ever goes back to field-splitting.
+#[test]
+fn a_store_path_containing_a_space_is_read_whole_and_its_daemon_left_alone() {
+    let fixture = Fixture::new();
+    let spaced = fixture.path().join("Ada Lovelace/store.db");
+    std::fs::create_dir_all(spaced.parent().unwrap()).expect("fixture: creating a spaced dir");
+    std::fs::write(&spaced, b"exists, and is therefore nobody's to collect")
+        .expect("fixture: creating the spaced store");
+
+    let packaged = fixture.helper("package/story", SLEEPS_UNTIL_KILLED);
+    let child = spawn_matching(&packaged, &spaced);
+    let pid = child.id();
+    let _guard = ChildGuard::new(child);
+    wait_until_old_enough();
+
+    let out = fixture.run(&["preflight"]);
+    let err = stderr(&out);
+
+    assert!(
+        pid_running(pid),
+        "the store at {} EXISTS, so this daemon is not abandoned — a reader \
+         that stops at the first space sees a path that does not, and the \
+         daemon it kills on that reading is the developer's own\nstderr: {err}",
+        spaced.display()
     );
 
     fixture.sweep();
