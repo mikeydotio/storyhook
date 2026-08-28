@@ -399,7 +399,10 @@ fn every_label_guidance_surface_names_both_reserved_labels() {
                 .expect("the `label` topic must exist")
                 .to_string(),
         ),
-        ("the scaffolded AGENTS.md", templates::agents_md("SH", "done")),
+        (
+            "the scaffolded AGENTS.md",
+            templates::agents_md("SH", "done"),
+        ),
         ("the scaffolded .cursorrules", templates::cursor_rules()),
     ];
 
