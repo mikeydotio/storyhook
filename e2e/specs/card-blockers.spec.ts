@@ -157,11 +157,13 @@ test("a card names its open blocker in the badge; closing the blocker turns the 
 
   // The handoff SH-309 introduces: the worker has no other cause, so the
   // instant its last blocker clears it leaves blocked_ids and the badge
-  // disappears entirely -- while .card-blockers, which now exists purely
-  // to keep the cleared entry visible for its dwell, appears in the same
-  // render carrying it, still lit and marked cleared. Still lit, still
-  // green -- the dwell's whole point is that the reader sees *this*
-  // blocker turn green, not merely that the badge vanished.
+  // disappears entirely. SH-500 now removes the relationship from the new
+  // snapshot too, so recordClearedBlockers has to recover this worker/blocker
+  // pair from the old snapshot. .card-blockers, which exists purely to keep
+  // that removed entry visible for its dwell, appears in the same render
+  // carrying it, still lit and marked cleared. Still lit, still green -- the
+  // dwell's whole point is that the reader sees *this* blocker turn green,
+  // not merely that the badge vanished.
   await expect(workerCard.locator(".flag-blocked")).toHaveCount(0, {
     timeout: 8000,
   });

@@ -5486,21 +5486,23 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   var clearedBlockers = {};
   var BLOCKER_CLEARED_DWELL_MS = 4000;
 
-  /** Scans every `blocked-by` relationship across the whole snapshot for a
-   * blocker that crossed OPEN -> CLOSED between `oldData` and `newData`,
-   * recording each into `clearedBlockers`. Runs alongside `diffSnapshots`
-   * in `fetchData()`, before `oldData` is discarded, for the same reason:
-   * both need the snapshot pair, not just the fresh one. Not itself pure
-   * (it mutates the ledger) but returns whether it found anything new, so
-   * the caller knows whether a follow-up render is worth scheduling once
-   * the dwell elapses. */
+  /** Scans every OLD `blocked-by` relationship across the whole snapshot for
+   * a blocker that crossed OPEN -> CLOSED between `oldData` and `newData`,
+   * recording each into `clearedBlockers`. Closure durably retracts the edge,
+   * so the fresh snapshot is deliberately too late to discover which worker
+   * named that blocker (SH-500). Runs alongside `diffSnapshots` in
+   * `fetchData()`, before `oldData` is discarded, for the same reason: both
+   * need the snapshot pair, not just the fresh one. Not itself pure (it
+   * mutates the ledger) but returns whether it found anything new, so the
+   * caller knows whether a follow-up render is worth scheduling once the
+   * dwell elapses. */
   function recordClearedBlockers(oldData, newData, now) {
     if (!oldData || !newData) return false;
     var oldById = {}, newById = {};
     oldData.stories.forEach(function(v) { oldById[v.story.id] = v; });
     newData.stories.forEach(function(v) { newById[v.story.id] = v; });
     var found = false;
-    newData.stories.forEach(function(v) {
+    oldData.stories.forEach(function(v) {
       (v.story.relationships || []).forEach(function(r) {
         if (r.relation !== "blocked-by") return;
         var was = oldById[r.other_id], current = newById[r.other_id];
