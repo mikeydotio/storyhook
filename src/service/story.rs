@@ -22,7 +22,7 @@ use crate::domain::{
 };
 use crate::error::AppError;
 use crate::event_hooks::HookEventType;
-use crate::output::{HideStatePlan, PurgePlan, UnclaimFallback, UnclaimOutcome, UndeletePlan};
+use crate::output::{HideStatePlan, StoryDeletePlan, UnclaimFallback, UnclaimOutcome};
 use crate::store::{
     EventSeq, ExpectedSeq, ProjectId, ReadOps, Store, StoryNo, StoryQuery, StoryRow, WriteOps,
 };
@@ -34,9 +34,8 @@ use super::{Ctx, Intent, append_and_fold, project_prefix, resolve_open_story, re
 /// Not a slug any project defines, and deliberately so: a claim's
 /// precondition is *any* state other than the project's active one, and
 /// naming a single slug there would be a lie a caller could act on.
-/// [`AppError::StateConflict`]'s other half already carries a synthesized
-/// word for the same reason — a `--if-state` conflict against a deleted story
-/// reports `actual: "deleted"`.
+/// [`AppError::StateConflict`]'s other half is likewise a user-facing state
+/// description rather than an assertion that every value is a catalog slug.
 pub const UNCLAIMED: &str = "unclaimed";
 
 /// What both claim verbs say when the project has no state to claim into.
@@ -313,8 +312,6 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     /// does: verification that arrives after a story closes belongs on the
     /// story it verifies, not on whichever open story happened to be nearby.
     ///
-    /// A soft-deleted story still refuses — see
-    /// [`super::resolve_appendable_story`].
     pub fn comment(&self, id: &str, text: &str) -> Result<StorySnapshot, AppError> {
         let now = self.ctx.now();
         let snapshot = self.edit_story(id, Intent::Append, |_row, _states| {
@@ -517,13 +514,12 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
 
             if let Some(expected) = if_state {
                 let (_, current) = resolve_story(&*tx, project, &prefix, id)?;
-                if current.deleted || current.state != expected {
-                    let actual = if current.deleted {
-                        "deleted".to_string()
-                    } else {
-                        current.state.clone()
-                    };
-                    return Err(AppError::StateConflict(expected.to_string(), actual).into());
+                if current.state != expected {
+                    return Err(AppError::StateConflict(
+                        expected.to_string(),
+                        current.state.clone(),
+                    )
+                    .into());
                 }
             }
 
@@ -670,9 +666,8 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     /// `expected` carries the pseudo-state [`UNCLAIMED`]. A claim's
     /// precondition is not one slug — it is *any* state other than the
     /// active one — so naming a single slug there would be a lie. The pair
-    /// already carries a synthesized word on the other side for the same
-    /// reason: [`Self::set_state`]'s conflict reports `actual: "deleted"`,
-    /// which is not a state slug either.
+    /// already carries user-facing state descriptions on the other side for
+    /// the same reason.
     ///
     /// # What this deliberately does not check
     ///
@@ -1027,67 +1022,19 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         Ok(results.join("\n"))
     }
 
-    /// Soft-deletes a story: records the reason as a comment and as a
-    /// `StoryDeleted` event, which closes and archives it.
-    pub fn delete(&self, id: &str, reason: &str) -> Result<String, AppError> {
-        let now = self.ctx.now();
-        let project = self.ctx.project();
-        self.ctx.store().write(|tx| {
-            let prefix = project_prefix(&*tx, project)?;
-            let states = tx.state_map(project)?;
-            // An already-archived story is *not found* rather than *closed*:
-            // the legacy path looked for its open event log and said so.
-            let (story_no, row) = resolve_story(&*tx, project, &prefix, id)?;
-            if row.archived {
-                return Err(AppError::NotFound(format!("story `{id}` not found")).into());
-            }
-            append_and_fold(
-                tx,
-                project,
-                story_no,
-                &prefix,
-                &states,
-                ExpectedSeq::Exact(row.head_seq),
-                &[
-                    StoryEvent::StoryCommentAdded {
-                        at: now.clone(),
-                        text: format!("[deleted] {reason}"),
-                    },
-                    StoryEvent::StoryDeleted {
-                        at: now.clone(),
-                        reason: reason.to_string(),
-                    },
-                ],
-                self.ctx.provenance(),
-            )?;
-            super::relation::retract_closed_blocker_edges(
-                tx,
-                project,
-                story_no,
-                &prefix,
-                &states,
-                &now,
-                self.ctx.provenance(),
-            )?;
-            Ok(())
-        })?;
-        Ok(format!("deleted {id}: {reason}"))
-    }
-
-    /// Everything a [`purge`](Self::purge) would destroy. Writes nothing.
+    /// Everything a [`delete`](Self::delete) would destroy. Writes nothing.
     ///
     /// The first half of the two-step: this travels to whichever process has a
     /// terminal and becomes a prompt there, or — with `--json`, or no terminal
     /// — a refusal naming `--force`.
-    pub fn purge_plan(&self, id: &str) -> Result<PurgePlan, AppError> {
+    pub fn delete_plan(&self, id: &str) -> Result<StoryDeletePlan, AppError> {
         let project = self.ctx.project();
         Ok(self.ctx.store().read(|tx| {
             let prefix = project_prefix(tx, project)?;
-            let (story_no, row) = resolve_purgeable_story(tx, project, &prefix, id)?;
+            let (story_no, row) = resolve_story(tx, project, &prefix, id)?;
             let canonical = story_no.to_id(&prefix);
-            Ok(PurgePlan {
+            Ok(StoryDeletePlan {
                 title: row.snapshot.title.clone(),
-                deleted_reason: row.snapshot.deleted_reason.clone(),
                 events: tx.events_for(project, story_no)?.len(),
                 retracted: surviving_claims(tx, project, &prefix, story_no, &canonical)?,
                 id: canonical,
@@ -1097,18 +1044,9 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
 
     /// Removes a story permanently: its events, its row, and every trace of it.
     ///
-    /// **The only irreversible thing that can be done to a single story**, and
-    /// deliberately a verb of its own rather than a flag on `delete`. A flag
-    /// that turns a reversible act into an irreversible one is the wrong shape
-    /// — `story delete --hard` is one keystroke away from `story delete`, and
-    /// the two do incomparable things. `story project delete` sets the
-    /// precedent.
-    ///
-    /// It **refuses a story that has not been soft-deleted**, which is also the
-    /// answer to what soft delete is for now: the reversible tombstone, and the
-    /// required antechamber to the irreversible act. Everything a purge
-    /// destroys was already marked as unwanted, by someone, with a reason on
-    /// the record.
+    /// The only irreversible thing that can be done to a single story. The
+    /// caller must have passed through [`delete_plan`](Self::delete_plan), or
+    /// asserted the equivalent `--force` contract.
     ///
     /// Two steps, in this order, and the order is the whole of the correctness:
     ///
@@ -1124,12 +1062,12 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     /// The retractions are real events on real stories rather than a silent
     /// table edit, because that is what makes the claimant's history true: the
     /// edge genuinely was removed, at this moment, by this act.
-    pub fn purge(&self, id: &str) -> Result<String, AppError> {
+    pub fn delete(&self, id: &str) -> Result<String, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
         let (canonical, title, retracted, removed) = self.ctx.store().write(|tx| {
             let prefix = project_prefix(&*tx, project)?;
-            let (story_no, row) = resolve_purgeable_story(&*tx, project, &prefix, id)?;
+            let (story_no, row) = resolve_story(&*tx, project, &prefix, id)?;
             let canonical = story_no.to_id(&prefix);
             let retracted = surviving_claims(&*tx, project, &prefix, story_no, &canonical)?;
             let states = tx.state_map(project)?;
@@ -1157,7 +1095,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         })?;
 
         let mut message = format!(
-            "purged {canonical} — {title}\n{} event{} permanently deleted",
+            "deleted {canonical} — {title}\n{} event{} permanently deleted",
             removed.events,
             if removed.events == 1 { "" } else { "s" },
         );
@@ -1168,43 +1106,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         Ok(message)
     }
 
-    /// Everything an undelete of `id` would need to confirm, or `None` if
-    /// `id` is closed but was never soft-deleted — an ordinary reopen needs no
-    /// confirmation at all. Writes nothing.
-    ///
-    /// The first half of the two-step [`purge_plan`](Self::purge_plan)
-    /// already established: read before anything is asked, so the question
-    /// can travel to whichever process has a terminal. A service running
-    /// inside the daemon has none — [`reopen`](Self::reopen) prompting from
-    /// here directly, as it once did, meant `story reopen` could never
-    /// actually ask and always refused (SH-154).
-    pub fn reopen_plan(&self, id: &str) -> Result<Option<UndeletePlan>, AppError> {
-        let project = self.ctx.project();
-        Ok(self.ctx.store().read(|tx| {
-            let prefix = project_prefix(tx, project)?;
-            let (story_no, row) = resolve_story(tx, project, &prefix, id)?;
-            refuse_epic_state_change(&row.snapshot)?;
-            if !row.archived {
-                return Err(AppError::Validation(format!("story `{id}` is already open")).into());
-            }
-            if !row.deleted {
-                return Ok(None);
-            }
-            Ok(Some(UndeletePlan {
-                id: story_no.to_id(&prefix),
-                title: row.snapshot.title.clone(),
-                deleted_reason: row.snapshot.deleted_reason.clone(),
-            }))
-        })?)
-    }
-
     /// Reopens a closed story into the project's default open state.
-    ///
-    /// Unconditional — it does not ask whether a soft-deleted story should be
-    /// restored. By the time this runs that question is already settled:
-    /// either [`reopen_plan`](Self::reopen_plan) found nothing to ask, or the
-    /// caller already holds a `Yes` to the plan it returned. Mirrors
-    /// [`purge`](Self::purge), the same split for the same reason.
     ///
     /// This is a pure append. The legacy path rewrote the story's event log to
     /// strip its closure markers — history a store whose events are append-only
@@ -2038,32 +1940,6 @@ fn open_state_slugs(states: &[StateDef]) -> Vec<&str> {
         .filter(|state| state.super_state == SuperState::Open)
         .map(|state| state.slug.as_str())
         .collect()
-}
-
-/// [`resolve_story`], rejecting a story that has not been soft-deleted.
-///
-/// The purge's precondition, in one place, so the plan and the act cannot
-/// disagree about what is purgeable — a plan that described a story the act
-/// then refused would be a prompt for something that could never happen.
-///
-/// The refusal names `story delete` rather than merely saying no. Someone
-/// typing `story purge` has already decided the story should go; what they need
-/// is the step they skipped, not a lecture.
-fn resolve_purgeable_story(
-    tx: &impl ReadOps,
-    project: ProjectId,
-    prefix: &str,
-    id: &str,
-) -> Result<(StoryNo, StoryRow), AppError> {
-    let (story_no, row) = resolve_story(tx, project, prefix, id)?;
-    if !row.deleted {
-        return Err(AppError::Validation(format!(
-            "story `{id}` has not been deleted, so there is nothing to purge. Run \
-             `story delete {id} \"<reason>\"` first — soft delete is reversible, and \
-             purging is not."
-        )));
-    }
-    Ok((story_no, row))
 }
 
 /// Every edge a *surviving* story still claims into `story`, as `(id,

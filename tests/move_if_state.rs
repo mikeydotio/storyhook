@@ -256,7 +256,7 @@ fn move_if_state_against_deleted_story_reports_conflict_not_generic_error() {
         .to_string();
 
     story(dir.path())
-        .args(["delete", &id, "created in error"])
+        .args(["delete", &id, "--force"])
         .assert()
         .success();
 
@@ -277,13 +277,13 @@ fn move_if_state_against_deleted_story_reports_conflict_not_generic_error() {
         "a stale --if-state against a deleted story must not succeed"
     );
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(
-        json["result"], "conflict",
-        "a deleted story must still surface as a CAS conflict, not the generic \
-         closed-story validation error, even though the \
-         state slug itself never changed: {json}"
+    assert_eq!(json["result"], "error", "{json}");
+    assert!(
+        json["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("not found")),
+        "{json}"
     );
-    assert_eq!(json["expected"], original_state);
 }
 
 #[test]

@@ -165,9 +165,7 @@ fn a_deleted_story_occupies_no_state() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let id = new_story(&ctx, "doomed");
-    StoryService::new(&ctx)
-        .delete(&id, "not needed")
-        .expect("deleting");
+    StoryService::new(&ctx).delete(&id).expect("deleting");
     assert_eq!(listing(&fixture, "todo").usage.open, 0);
     assert_eq!(listing(&fixture, "todo").usage.archived, 0);
 }
@@ -716,9 +714,7 @@ fn a_deleted_story_does_not_hold_a_state_open() {
     let fixture = with_a_spare_state();
     let ctx = fixture.ctx();
     let id = story_in(&ctx, "doomed", SPARE);
-    StoryService::new(&ctx)
-        .delete(&id, "gone")
-        .expect("deleting");
+    StoryService::new(&ctx).delete(&id).expect("deleting");
 
     ConfigService::new(&ctx)
         .remove_state(SPARE, None)
@@ -727,24 +723,13 @@ fn a_deleted_story_does_not_hold_a_state_open() {
         slugs(&fixture),
         ["todo", "in-progress", "blocked", "done", "closed"]
     );
-    // SH-130 makes this stronger than it was. It used to assert the deleted
-    // story kept `SPARE` — "the slug its history records" — which meant the
-    // removal above left a story naming a state the catalog no longer defined.
-    // Deletion now lands the story in a required CLOSED state, so removing
-    // `SPARE` is safe for a better reason than "nobody was looking": nothing is
-    // in it. Which state that is became `closed` rather than `done` in SH-505 —
-    // a deletion is an abandonment, and `done` claimed the work was finished.
-    //
-    // Worth stating plainly, because the old fold comment claimed the
-    // superstate override protected against exactly this. It did not: it kept
-    // the *superstate* right while leaving the slug dangling, and `state_usage`
-    // counts only undeleted stories, so `remove_state` never saw the occupant
-    // at all.
-    assert_eq!(
-        snapshot(&fixture, &id).state,
-        "closed",
-        "a deleted story rests in a required CLOSED state, not in a slug that \
-         can be removed out from under it"
+    let no = StoryNo::parse_id("SH", &id).unwrap();
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.story(fixture.project(), no))
+            .unwrap()
+            .is_none()
     );
 }
 

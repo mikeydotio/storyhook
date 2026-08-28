@@ -1041,14 +1041,14 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
 
     // SH-197: one delete-confirmation modal, shared by the drawer footer's
     // Delete button and the context menu's Delete item, replacing the
-    // drawer's own inline typed-reason form.
+    // drawer's own inline confirmation form.
     assert!(body.contains(r#"id="delete-modal""#));
-    assert!(body.contains(r#"id="delete-reason""#));
+    assert!(body.contains(r#"id="delete-confirmation""#));
     assert!(body.contains(r#"id="delete-modal-submit""#));
     assert!(body.contains(r#"id="delete-modal-error""#));
     assert!(
         !body.contains("renderDeleteConfirm"),
-        "the inline typed-reason footer form was replaced by the shared delete modal"
+        "the inline confirmation footer form was replaced by the shared delete modal"
     );
 
     // SH-197: board cards and list rows carry a roving tabindex (WAI-ARIA
@@ -3360,7 +3360,7 @@ fn web_serve_api_data_excludes_deleted_stories() {
     let fixture = served();
     fixture.seed(&["new", "Build feature"]);
     fixture.seed(&["new", "Fix bug"]);
-    fixture.seed(&["delete", "SH-2", "duplicate"]);
+    fixture.seed(&["delete", "SH-2", "--force"]);
 
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
@@ -4708,144 +4708,6 @@ fn web_reopen_archived_story() {
     assert_eq!(story_field(&json, "superstate"), "OPEN");
 }
 
-/// Regression test for #23: `Invocation::Reopen` gained a `force` field (#18)
-/// that the web route didn't plumb through at all, so a soft-deleted story
-/// could never be undeleted via the API — only the CLI's `--force` reached
-/// it. Without `force` (an empty JSON body), reopening a deleted story must
-/// leave the story untouched.
-///
-/// **Updated for SH-154.** The guarded-undelete check used to be a hard
-/// refusal from inside the service layer (422, `AppError::Validation`) —
-/// which was itself a defect: a service running inside the daemon has no
-/// terminal to prompt at, so the check always refused regardless of who was
-/// asking or how. It now answers `Response::ConfirmationRequired` (409), the
-/// same two-step `delete`/`purge`/`set-prefix` already give the dashboard, so
-/// a browser client can draw its own confirmation modal instead of just
-/// failing.
-#[test]
-fn web_reopen_deleted_story_without_force_is_409_confirmation_required() {
-    let fixture = served();
-    fixture.seed(&["new", "Story"]);
-    fixture.seed(&["delete", "SH-1", "created in error"]);
-
-    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
-
-    let err = post_json(
-        &fixture,
-        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/reopen"),
-        "",
-    )
-    .unwrap_err();
-    assert_eq!(status_of(err), 409);
-
-    let show = fixture
-        .agent()
-        .get(format!(
-            "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"
-        ))
-        .call()
-        .unwrap();
-    let show_json: serde_json::Value =
-        serde_json::from_str(&show.into_body().read_to_string().unwrap()).unwrap();
-    assert_eq!(story_field(&show_json, "superstate"), "CLOSED");
-    assert_eq!(story_field(&show_json, "deleted"), true);
-}
-
-/// Companion to the test above: `{"force": true}` in the body mirrors the
-/// CLI's `story reopen <id> --force` and successfully undeletes.
-#[test]
-fn web_reopen_deleted_story_with_force_undeletes() {
-    let fixture = served();
-    fixture.seed(&["new", "Story"]);
-    fixture.seed(&["delete", "SH-1", "created in error"]);
-
-    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
-
-    let resp = post_json(
-        &fixture,
-        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/reopen"),
-        r#"{"force":true}"#,
-    )
-    .unwrap();
-    assert_eq!(resp.status(), 200);
-    let json: serde_json::Value =
-        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
-    assert_eq!(story_field(&json, "superstate"), "OPEN");
-    assert!(story_field(&json, "deleted").is_null());
-}
-
-#[test]
-fn web_reopen_malformed_json_is_400() {
-    let fixture = served();
-    fixture.seed(&["new", "Story"]);
-    fixture.seed(&["move", "SH-1", "done"]);
-
-    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
-
-    let err = post_json(
-        &fixture,
-        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/reopen"),
-        "not json",
-    )
-    .unwrap_err();
-    assert_eq!(status_of(err), 400);
-}
-
-/// Regression test for a defect where `route_reopen_story` constructed
-/// `Invocation::Reopen` without the `force` field `story reopen --force`
-/// added on the CLI side, which failed to compile at all. The fix passes
-/// `force: false`, so this route must keep behaving like an un-forced CLI
-/// `story reopen`: reopening a *soft-deleted* story requires confirmation
-/// rather than silently undeleting it (see `invoke.rs`'s `Invocation::
-/// Reopen` handler) — and, since the server has no TTY to prompt at, this
-/// must answer cleanly rather than hang waiting on stdin confirmation.
-///
-/// **Updated for SH-154**: "a clear error" was itself the defect that story
-/// fixed — see `web_reopen_deleted_story_without_force_is_409_confirmation_required`
-/// just above. What must still be true, and is all this test checks now, is
-/// that nothing gets silently undeleted and nothing hangs.
-#[test]
-fn web_reopen_soft_deleted_story_requires_confirmation_without_force() {
-    let fixture = served();
-    fixture.seed(&["new", "Story"]);
-
-    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
-
-    let del = delete_json(
-        &fixture,
-        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"),
-        r#"{"reason":"duplicate"}"#,
-    )
-    .unwrap();
-    assert_eq!(del.status(), 200);
-
-    let err = post_json(
-        &fixture,
-        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/reopen"),
-        "",
-    )
-    .unwrap_err();
-    let status = match err {
-        ureq::Error::StatusCode(code) => code,
-        other => panic!("expected status code error, got: {other}"),
-    };
-    assert_eq!(
-        status, 409,
-        "soft-deleted reopen must ask for confirmation, not silently undelete or hang"
-    );
-
-    let show = fixture
-        .agent()
-        .get(format!(
-            "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"
-        ))
-        .call()
-        .unwrap();
-    let show_json: serde_json::Value =
-        serde_json::from_str(&show.into_body().read_to_string().unwrap()).unwrap();
-    assert_eq!(story_field(&show_json, "deleted"), true, "not undeleted");
-}
-
 // --- Mutation API: PATCH multi-field ---
 
 #[test]
@@ -5162,46 +5024,7 @@ fn web_unlink_pr_without_guard_header_is_403() {
 // --- Mutation API: delete ---
 
 #[test]
-fn web_delete_story_soft_deletes_it() {
-    let fixture = served();
-    fixture.seed(&["new", "Story"]);
-
-    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
-
-    let resp = delete_json(
-        &fixture,
-        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"),
-        r#"{"reason":"duplicate"}"#,
-    )
-    .unwrap();
-    assert_eq!(resp.status(), 200);
-    let json: serde_json::Value =
-        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
-    assert_eq!(json["result"], "ok");
-    assert!(json["message"].as_str().unwrap().contains("deleted"));
-
-    // `story delete` is a soft delete (see cli_grammar.rs::delete_soft_deletes):
-    // the story is archived with a "[deleted] <reason>" comment rather than
-    // erased, so it remains fetchable for audit purposes.
-    let show = fixture
-        .agent()
-        .get(format!(
-            "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"
-        ))
-        .call()
-        .unwrap();
-    let show_json: serde_json::Value =
-        serde_json::from_str(&show.into_body().read_to_string().unwrap()).unwrap();
-    let comments = show_json["story"]["story"]["comments"].as_array().unwrap();
-    assert!(comments.iter().any(|c| {
-        c["text"]
-            .as_str()
-            .is_some_and(|t| t.contains("[deleted] duplicate"))
-    }));
-}
-
-#[test]
-fn web_delete_story_without_reason_is_400() {
+fn web_delete_story_requires_confirmation_without_force() {
     let fixture = served();
     fixture.seed(&["new", "Story"]);
 
@@ -5210,10 +5033,42 @@ fn web_delete_story_without_reason_is_400() {
     let err = delete_json(
         &fixture,
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"),
-        r#"{}"#,
+        r#"{"force":false}"#,
     )
     .unwrap_err();
-    assert_eq!(status_of(err), 400);
+    assert_eq!(status_of(err), 409);
+
+    fixture
+        .agent()
+        .get(format!(
+            "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"
+        ))
+        .call()
+        .unwrap();
+}
+
+#[test]
+fn web_delete_story_with_force_permanently_deletes_it() {
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let resp = delete_json(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"),
+        r#"{"force":true}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 200);
+    let err = fixture
+        .agent()
+        .get(format!(
+            "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"
+        ))
+        .call()
+        .unwrap_err();
+    assert_eq!(status_of(err), 404);
 }
 
 // --- Mutation API: malformed body ---
@@ -6000,7 +5855,7 @@ fn web_serve_repos_list_carries_each_projects_visible_drafts() {
     fixture.seed(&["new", "Live story"]);
     fixture.seed(&["new", "Visible sketch", "--draft"]);
     fixture.seed(&["new", "Discarded sketch", "--draft"]);
-    fixture.seed(&["delete", "SH-3", "discarded"]);
+    fixture.seed(&["delete", "SH-3", "--force"]);
 
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
     let catalog: serde_json::Value = serde_json::from_str(

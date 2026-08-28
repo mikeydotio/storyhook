@@ -856,7 +856,6 @@ fn dispatch(
             assignee,
             description,
         } => {
-            let desc = format!("Created story: {title}");
             let result = create_story_mutation(
                 invoker,
                 &title,
@@ -867,8 +866,10 @@ fn dispatch(
             );
             match result {
                 Ok((id, warnings)) => {
-                    // Story didn't exist before creation: events_before is empty
-                    push_undo(state, desc, id.clone(), Vec::new());
+                    // Creation is not placed on the undo stack: undoing it
+                    // would permanently delete the story without the typed
+                    // confirmation required by `story delete`.
+                    state.redo_stack.clear();
                     state.data =
                         DataStore::load(invoker).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
@@ -1289,12 +1290,6 @@ fn dispatch(
 
                 let story_id = entry.story_id.clone();
                 let events_before = entry.events_before.clone();
-                // An empty history means the story did not exist before the
-                // mutation, and `Restore` reads that as "it should not exist
-                // now" — so undoing a creation and undoing an edit are one
-                // invocation rather than two code paths. Since the flip that
-                // means the story is *deleted* rather than erased: the id stays
-                // spent and `story show` still answers.
                 let result = invoke(
                     invoker,
                     Invocation::History {
@@ -1940,7 +1935,7 @@ mod tests {
             &invoker,
             Invocation::Delete {
                 id: id.clone(),
-                reason: "raced".to_string(),
+                force: true,
             },
         )
         .expect("deleting the story out from under the drawer");

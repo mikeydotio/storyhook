@@ -205,7 +205,6 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         | Invocation::Unhide { id }
         | Invocation::Publish { id }
         | Invocation::Delete { id, .. }
-        | Invocation::Purge { id, .. }
         | Invocation::SetFields { id, .. }
         // `url` is a pull request URL, not a story id — excluded the same way
         // `Relate::relation` is.

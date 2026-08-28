@@ -3,7 +3,7 @@
 //!
 //! Four inputs bound `keydown` and called a submit function when
 //! `e.key === "Enter"`, with no `event.repeat` check. Measured against the
-//! unfixed build, one held Enter issued **nine** DELETEs from `#delete-reason`
+//! unfixed build, one held Enter issued **nine** DELETEs from the delete input
 //! and **nine** `POST /token` from `#token-input`; the delete path's extra
 //! requests failed into a field inside a modal the first success had already
 //! closed, so the user saw one success and nothing else. `bindEnterSubmit` is
@@ -22,7 +22,7 @@
 //! ## The predicate, and why it is this one
 //!
 //! After the fix, a correctly wired site contains **no `"Enter"` literal at
-//! all** — `bindEnterSubmit($("delete-reason"), submitDeleteStory)` names
+//! all** — `bindEnterSubmit($("delete-confirmation"), submitDeleteStory)` names
 //! neither the key nor the event. So the rule is simply:
 //!
 //! > Every line of dashboard *code* containing the literal `"Enter"` must be a

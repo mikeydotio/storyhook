@@ -174,7 +174,7 @@ them:
    inferred from ambient state that could drift mid-session.
 4. **The two-step protocols are never auto-forced.** `Response::ConfirmationRequired` and
    `Response::SetupRequired` are unreachable by this story's sixteen tools today (their
-   triggers — `Purge`, an unforced `Reopen` of a soft-deleted story, `HideState`,
+   triggers — an unforced `Delete`, `HideState`,
    `GithubSync`'s first-run setup — are none of the sixteen), but `server.rs` handles both
    defensively anyway: either produces a tool result with `isError: true` explaining that
    this transport does not support the interactive confirmation the CLI would ask for, and
@@ -194,8 +194,8 @@ both directions rather than letting the two be kept in step by hand. Every tool 
 `project` (required) and, on a write, `actor` (optional) — never a working directory, since a
 stdio session has none of its own to offer.
 
-Deliberately absent: anything that asks a human to confirm interactively (`purge`,
-`hide-state`, an unforced `reopen` of a soft-deleted story), `github-sync` and its first-run
+Deliberately absent: anything that asks a human to confirm interactively (`delete`,
+`hide-state`), `github-sync` and its first-run
 setup wizard, bulk/import/export operations, and administrative surfaces (`daemon`, `token`,
 `store`, `plugin`). All of these remain reachable through the CLI; a later story can widen the
 tool surface following the same anti-drift discipline if a real workflow needs one of them.

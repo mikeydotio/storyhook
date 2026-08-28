@@ -162,8 +162,8 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
 
     /// `story show <id>` — one story, with its derived family relationships.
     ///
-    /// Archived and deleted stories are found too: the legacy path looked in
-    /// the open directory *and* the archive, and a story is one row here.
+    /// Archived stories are found too: the legacy path looked in the open
+    /// directory *and* the archive, and a story is one row here.
     pub fn show(&self, id: &str) -> Result<StoryView, AppError> {
         match story_view(self.tx, self.project, id)? {
             crate::output::Response::Story(view) => Ok(*view),
@@ -189,7 +189,7 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
         // actionable" view, and the council verdict on SH-175 keeps that
         // curation separate from `story list`'s own filter chain rather than
         // routing both through the same one — `list` (SH-409) now excludes
-        // closed/archived/deleted by default too, but independently, via its
+        // closed/archived by default too, but independently, via its
         // own `is_visible` pass, not this query.
         // Do not pre-filter on the materialized `archived` column: an epic's
         // stored state is deliberately dormant while its effective state is
@@ -208,7 +208,7 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
         let stories: Vec<_> = story_rows
             .iter()
             .filter_map(|row| effective.remove(&row.snapshot.id))
-            .filter(|story| story.superstate == SuperState::Open && !story.deleted)
+            .filter(|story| story.superstate == SuperState::Open)
             .collect();
         let drafts: Vec<_> = draft_rows
             .iter()
@@ -249,9 +249,7 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
     /// Visibility (SH-409) is applied *after* every other filter, over the
     /// same conjunctive result: a caller who also passed `--label CLI` sees
     /// counts of hidden stories that carry that label, not every hidden
-    /// story in the project. Deleted stories never survive it, under any
-    /// combination of `--include-closed`/`--include-archived`/`--all` — the
-    /// CLI grammar has no flag that reaches [`is_visible`]'s `deleted` guard.
+    /// story in the project. A hard-deleted story has no row to filter.
     pub fn list(&self, filters: &ListFilters) -> Result<ListOutcome, AppError> {
         let mut views = self.story_views(false)?;
         let stories = view_map(&views);
@@ -1133,17 +1131,11 @@ fn bare_view(story: StorySnapshot) -> StoryView {
 /// Whether a story survives `story list`'s default visibility filter
 /// (SH-409).
 ///
-/// A soft-deleted story is never visible here, regardless of
-/// `show_closed`/`show_archived` — there is no flag in the CLI grammar that
-/// reaches this `deleted` guard, by design; `story search` (and `story show`)
-/// remain the way to find one. An archived (hidden) story is a *subset* of
-/// closed stories, not a sibling category — [`domain::fold_story`] clears
+/// An archived (hidden) story is a *subset* of closed stories, not a sibling
+/// category — [`domain::fold_story`] clears
 /// `hidden_at` the instant a story's superstate resolves back to OPEN — so
 /// `show_archived` alone, without `show_closed`, still has to reveal it.
 fn is_visible(story: &StorySnapshot, show_closed: bool, show_archived: bool) -> bool {
-    if story.deleted {
-        return false;
-    }
     match story.superstate {
         SuperState::Open => true,
         SuperState::Closed => {
@@ -1170,11 +1162,8 @@ fn is_visible(story: &StorySnapshot, show_closed: bool, show_archived: bool) -> 
 fn build_visibility_message(lifted_state: Option<&str>, hidden: &[StoryView]) -> Option<String> {
     let mut closed = 0usize;
     let mut archived = 0usize;
-    let mut deleted = 0usize;
     for view in hidden {
-        if view.story.deleted {
-            deleted += 1;
-        } else if view.story.hidden_at.is_some() {
+        if view.story.hidden_at.is_some() {
             archived += 1;
         } else {
             closed += 1;
@@ -1208,14 +1197,6 @@ fn build_visibility_message(lifted_state: Option<&str>, hidden: &[StoryView]) ->
             clauses.join(" and "),
             if hidden_count == 1 { "y" } else { "ies" },
             if hidden_count == 1 { "is" } else { "are" },
-        ));
-    }
-
-    if deleted > 0 {
-        parts.push(format!(
-            "{deleted} deleted stor{} not listed (story search finds {})",
-            if deleted == 1 { "y is" } else { "ies are" },
-            if deleted == 1 { "it" } else { "them" },
         ));
     }
 

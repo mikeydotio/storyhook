@@ -380,8 +380,7 @@ pub(crate) enum Intent {
     /// story is closed — see [`resolve_open_story`].
     Edit,
     /// Records an observation about the story without changing what it is.
-    /// Permitted on a closed story, refused on a deleted one — see
-    /// [`resolve_appendable_story`]. Granted to two writes so far: `story
+    /// Permitted on a closed story. Granted to two writes so far: `story
     /// comment` (SH-261 — a comment reaches only the comment list and
     /// `updated_at`) and `commit-sync`'s commit link (SH-279 —
     /// `StoryCommitLinked` reaches only `referenced_by_commits` and
@@ -402,7 +401,7 @@ impl Intent {
     ) -> Result<(StoryNo, StoryRow), AppError> {
         match self {
             Self::Edit => resolve_open_story(tx, project, prefix, id),
-            Self::Append => resolve_appendable_story(tx, project, prefix, id),
+            Self::Append => resolve_story(tx, project, prefix, id),
         }
     }
 }
@@ -442,49 +441,6 @@ pub(crate) fn closed_story_refusal(id: &str) -> String {
     format!(
         "story `{id}` is closed; reopen it with `story reopen {id}` to change it — a comment needs no reopen"
     )
-}
-
-/// [`resolve_story`], rejecting a story that has been soft-deleted but
-/// permitting one that is merely closed (SH-261).
-///
-/// **A closed story's log is already appendable**, which is what makes this the
-/// smaller of the two guards rather than a hole in the larger one: `hide` and
-/// `unhide` append to archived stories, `purge` appends relationship retractions
-/// onto closed claimants, and `history::restore` appends compensating events to
-/// anything. What was refused was not appending — it was appending *on a
-/// person's behalf*.
-///
-/// The line stops at `deleted`, and deliberately: [`StoryService::purge`]
-/// destroys every event on a soft-deleted story, so an observation recorded here
-/// is evidence with an expiry date nothing warns its author about. A soft-deleted
-/// story's futures are restoration and destruction, and `StoryService::delete`
-/// already reports an *already*-deleted story as not found — so permitting a
-/// comment on one would make a story writable that another verb insists does not
-/// exist.
-///
-/// `hidden` is not consulted. It is a display fact layered on a closed story, so
-/// a hidden story takes a comment and stays hidden.
-///
-/// A second caller reached this in SH-279 — `GitService::record_commit`,
-/// linking a commit that names a closed story — on the identical argument: a
-/// link reaches only `referenced_by_commits` and `updated_at`. Its refusal
-/// message below still reads as `comment`-specific because that caller never
-/// surfaces it verbatim; it re-reports the decline in `commit-sync`'s own
-/// voice instead (see `NotMovedReason` and `DeclinedReason` in `git.rs`).
-pub(crate) fn resolve_appendable_story(
-    tx: &impl ReadOps,
-    project: ProjectId,
-    prefix: &str,
-    id: &str,
-) -> Result<(StoryNo, StoryRow), AppError> {
-    let (story_no, row) = resolve_story(tx, project, prefix, id)?;
-    if row.deleted {
-        return Err(AppError::Validation(format!(
-            "story `{id}` is deleted and cannot be commented on; \
-             restore it first with `story reopen {id} --force`"
-        )));
-    }
-    Ok((story_no, row))
 }
 
 /// A project's story-id prefix.

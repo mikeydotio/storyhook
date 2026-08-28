@@ -107,9 +107,17 @@ fn the_real_trees_stories_fold_and_land_in_the_states_the_baseline_counted() {
         "per-state counts must account for every story: {per_state:?}"
     );
     assert_eq!(
-        folded.values().filter(|s| s.deleted).count(),
+        project
+            .stories
+            .iter()
+            .flat_map(|story| &story.events)
+            .filter(|event| matches!(
+                event.decoded,
+                Some(storyhook::domain::StoryEvent::StoryDeleted { .. })
+            ))
+            .count(),
         1,
-        "the frozen tree holds exactly one soft-deleted story"
+        "the frozen tree holds exactly one legacy StoryDeleted event"
     );
     assert_eq!(
         folded

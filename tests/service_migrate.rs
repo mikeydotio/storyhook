@@ -70,7 +70,6 @@ fn the_real_tree_migrates_with_every_count_the_baseline_recorded() {
             .count(),
         44
     );
-    assert_eq!(snapshots.values().filter(|s| s.deleted).count(), 1);
 
     let mut per_state: BTreeMap<&str, usize> = BTreeMap::new();
     for snapshot in snapshots.values() {
@@ -772,7 +771,7 @@ fn timestamps_and_event_order_survive_exactly() {
 }
 
 #[test]
-fn archived_stories_land_archived_and_the_deleted_one_stays_deleted() {
+fn archived_stories_and_legacy_deletions_land_archived() {
     let (_tree, root) = custom_config_tree();
     let (_dir, store, _report) = migrate(&root);
 
@@ -790,12 +789,9 @@ fn archived_stories_land_archived_and_the_deleted_one_stays_deleted() {
     assert!(by_id["ADA-3"].archived, "a closed story arrives archived");
     assert_eq!(by_id["ADA-3"].snapshot.state, "wont-fix");
     assert_eq!(by_id["ADA-3"].snapshot.superstate, SuperState::Closed);
-    assert!(by_id["ADA-4"].snapshot.deleted, "a soft delete survives");
-    assert_eq!(
-        by_id["ADA-4"].snapshot.deleted_reason.as_deref(),
-        Some("filed twice"),
-        "and so does its reason"
-    );
+    assert!(by_id["ADA-4"].archived, "a legacy deletion stays archived");
+    assert_eq!(by_id["ADA-4"].snapshot.state, "closed");
+    assert!(by_id["ADA-4"].snapshot.hidden_at.is_some());
     assert!(!by_id["ADA-1"].archived);
 }
 

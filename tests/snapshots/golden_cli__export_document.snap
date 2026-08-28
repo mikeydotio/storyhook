@@ -467,13 +467,18 @@ source: tests/golden_cli.rs
         },
         {
           "at": "[timestamp]",
-          "kind": "StoryCommentAdded",
-          "text": "[deleted] superseded by the global store"
+          "kind": "StoryStateChanged",
+          "state": "closed"
         },
         {
           "at": "[timestamp]",
-          "kind": "StoryDeleted",
-          "reason": "superseded by the global store"
+          "kind": "StoryCommentAdded",
+          "text": "superseded by the global store"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryClosedAndArchived",
+          "state": "closed"
         }
       ],
       "id": "SH-13"

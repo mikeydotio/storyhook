@@ -14,7 +14,7 @@
 //! | `story member add --typo` | a member named `typo` |
 //!
 //! and four attached junk to a write the user did ask for: `comment`'s body,
-//! `block`'s reason, `delete`'s audit reason, and a literal `--typo` label.
+//! `block`'s reason, `delete`'s id position, and a literal `--typo` label.
 //!
 //! This is SH-52's defect one wave later. That one was `--help` specifically,
 //! answered ahead of every verb parser; this is the rest of the flag space. The
@@ -318,7 +318,7 @@ fn every_declared_flag_is_accepted_by_its_verb() {
         (&["set", "SH-1"], "--title", Some("New")),
         (&["set", "SH-1"], "--unblocked", None),
         (&["move", "SH-1", "todo"], "--if-state", Some("todo")),
-        (&["reopen", "SH-1"], "--force", None),
+        (&["delete", "SH-1"], "--force", None),
         (&["report"], "--html", None),
         (&["doctor"], "--fix", None),
         (&["handoff"], "--since", Some("1d")),

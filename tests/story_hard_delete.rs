@@ -1,11 +1,4 @@
-//! `story purge` — the only irreversible thing that can be done to one story
-//! (SH-130, scope item 4).
-//!
-//! `story delete` is a soft delete and always has been. Until this verb existed
-//! a story created in error could not be removed at all: there was no purge,
-//! `events` was guarded by `events_reject_delete`, and the only way to get rid
-//! of one was a hand-written sqlite transaction against a production store —
-//! the exact thing SH-92 argued no user should ever be asked to do.
+//! `story delete` — permanent story removal (SH-498).
 //!
 //! Almost everything here is about the gate and the two consequences, rather
 //! than about the deletion. The deletion is one store call, covered by twelve
@@ -25,36 +18,15 @@ use storyhook::store::test_support::inject_events;
 use storyhook::store::{ReadOps, Store};
 use storyhook_test_support::{Project, TestEnv};
 
-/// A project with one story, soft-deleted and ready to purge.
-///
-/// Soft-deleting through the CLI rather than writing the row: the precondition
-/// under test is that a purge follows a *real* delete, and a fabricated one
-/// would prove the fixture rather than the rule.
-fn deleted_story(project: &Project<'_>, title: &str, reason: &str) -> String {
-    let id = project.new_story(title);
-    project.run(&["delete", &id, reason]).success();
-    id
-}
-
 fn project() -> Project<'static> {
     TestEnv::shared().project().build()
 }
 
-/// Two stories that claimed each other while both were alive, one of which has
-/// since been soft-deleted — the shape a real purge meets.
-///
-/// Relate happens before delete because that is the realistic history a purge
-/// finds — not because the CLI would refuse the other order. Since SH-207,
-/// `story relate <open> blocks <closed>` succeeds (a plain cross-reference
-/// onto a closed target is no longer rejected); only `parent-of`/`child-of`
-/// and a `relate` naming the closed story *first* still refuse.
-fn claimed_then_deleted(project: &Project<'_>) -> (String, String) {
+/// Two stories that claim each other before one is permanently deleted.
+fn claimed_story(project: &Project<'_>) -> (String, String) {
     let doomed = project.new_story("Created in error");
     let kept = project.new_story("Real work");
     project.run(&["relate", &kept, "blocks", &doomed]).success();
-    project
-        .run(&["delete", &doomed, "created in error"])
-        .success();
     (doomed, kept)
 }
 
@@ -76,7 +48,7 @@ fn event_kinds(project: &Project<'_>, id: &str) -> Vec<String> {
         .collect()
 }
 
-/// Every story id `story export` reports, deleted ones included.
+/// Every surviving story id `story export` reports.
 fn exported_ids(project: &Project<'_>) -> Vec<String> {
     project.json(&["export"])["stories"]
         .as_array()
@@ -98,47 +70,16 @@ fn production_shaped_connection(path: &std::path::Path) -> Connection {
     conn
 }
 
-// ---------------------------------------------------------------------------
-// The precondition
-// ---------------------------------------------------------------------------
-
 #[test]
-fn purging_a_story_that_was_never_deleted_is_refused() {
-    // The council's D4, and the answer to what soft delete is *for* now: the
-    // reversible tombstone, and the required antechamber to the irreversible
-    // act. Everything a purge destroys was already marked unwanted, by someone,
-    // with a reason on the record.
-    let project = project();
-    let id = project.new_story("Real work");
-
-    let out = project
-        .story()
-        .args(["purge", &id, "--force"])
-        .output()
-        .expect("running story purge");
-
-    assert!(!out.status.success(), "a live story must not be purgeable");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("story delete"),
-        "the refusal must name the step that was skipped: {stderr}"
-    );
-    assert!(
-        exported_ids(&project).contains(&id),
-        "a refused purge destroys nothing"
-    );
-}
-
-#[test]
-fn purging_a_story_that_does_not_exist_says_so() {
+fn deleting_a_story_that_does_not_exist_says_so() {
     let project = project();
     project.new_story("Real work");
 
     let out = project
         .story()
-        .args(["purge", "SH-404", "--force"])
+        .args(["delete", "SH-404", "--force"])
         .output()
-        .expect("running story purge");
+        .expect("running story delete");
 
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -158,13 +99,13 @@ fn without_force_and_without_a_terminal_it_refuses_and_names_the_flag() {
     // a CI job, or an agent. Defaulting to "no" there would be safe and silent
     // — how a script appears to work for months while never doing its job.
     let project = project();
-    let id = deleted_story(&project, "Created in error", "created in error");
+    let id = project.new_story("Created in error");
 
     let out = project
         .story()
-        .args(["purge", &id])
+        .args(["delete", &id])
         .output()
-        .expect("running story purge");
+        .expect("running story delete");
 
     assert_eq!(
         out.status.code(),
@@ -179,7 +120,7 @@ fn without_force_and_without_a_terminal_it_refuses_and_names_the_flag() {
     );
     assert!(
         exported_ids(&project).contains(&id),
-        "a refused purge destroys nothing"
+        "a refused delete destroys nothing"
     );
 }
 
@@ -187,23 +128,19 @@ fn without_force_and_without_a_terminal_it_refuses_and_names_the_flag() {
 fn the_refusal_says_what_would_have_been_destroyed() {
     // A flag named without the stakes is a flag people pass reflexively.
     let project = project();
-    let id = deleted_story(&project, "Created in error", "a duplicate of SH-1");
+    let id = project.new_story("Created in error");
 
     let out = project
         .story()
-        .args(["purge", &id])
+        .args(["delete", &id])
         .output()
-        .expect("running story purge");
+        .expect("running story delete");
     let stderr = String::from_utf8_lossy(&out.stderr);
 
     assert!(stderr.contains(&id), "the story is named: {stderr}");
     assert!(
         stderr.contains("Created in error"),
         "and titled, so the reader can tell it is the right one: {stderr}"
-    );
-    assert!(
-        stderr.contains("a duplicate of SH-1"),
-        "the deletion reason is the record of the decision: {stderr}"
     );
     assert!(
         stderr.contains("event"),
@@ -216,13 +153,13 @@ fn json_without_force_refuses_rather_than_prompting_into_the_stream() {
     // `--json` promises one self-describing document on stdout. A prompt
     // written there would corrupt it for every scripted caller.
     let project = project();
-    let id = deleted_story(&project, "Created in error", "created in error");
+    let id = project.new_story("Created in error");
 
     let out = project
         .story()
-        .args(["purge", &id, "--json"])
+        .args(["delete", &id, "--json"])
         .output()
-        .expect("running story purge");
+        .expect("running story delete");
 
     assert_eq!(out.status.code(), Some(2));
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -238,17 +175,17 @@ fn json_without_force_refuses_rather_than_prompting_into_the_stream() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_purged_story_leaves_nothing_behind() {
+fn a_deleted_story_leaves_nothing_behind() {
     let project = project();
-    let doomed = deleted_story(&project, "Created in error", "created in error");
+    let doomed = project.new_story("Created in error");
     let kept = project.new_story("Real work");
 
-    project.run(&["purge", &doomed, "--force"]).success();
+    project.run(&["delete", &doomed, "--force"]).success();
 
     assert_eq!(
         exported_ids(&project),
         vec![kept.clone()],
-        "the export is the whole project, deleted stories included"
+        "the export contains only surviving stories"
     );
     let shown = project
         .story()
@@ -260,17 +197,17 @@ fn a_purged_story_leaves_nothing_behind() {
 }
 
 #[test]
-fn a_purged_story_leaves_the_store_without_a_divergence() {
+fn a_deleted_story_leaves_the_store_without_a_divergence() {
     // Stronger than "the row is gone", and the reason the retraction exists:
     // `story doctor` rebuilds the read model from the events and compares. A
-    // purge that took the story but left a surviving claim pointing at it would
+    // delete that took the story but left a surviving claim pointing at it would
     // report a `relations` divergence that `--fix` could never repair, because
     // re-folding the claimant re-derives the same dead edge and the foreign key
     // refuses to write it.
     let project = project();
-    let (doomed, kept) = claimed_then_deleted(&project);
+    let (doomed, kept) = claimed_story(&project);
 
-    project.run(&["purge", &doomed, "--force"]).success();
+    project.run(&["delete", &doomed, "--force"]).success();
 
     project.run(&["doctor"]).success();
     assert_eq!(
@@ -282,17 +219,17 @@ fn a_purged_story_leaves_the_store_without_a_divergence() {
 }
 
 #[test]
-fn a_purged_story_number_is_never_reissued() {
+fn a_deleted_story_number_is_never_reissued() {
     // Reusing it would point every commit message, branch name and external
     // link naming the old story at a new and unrelated one. A gap is the
     // cheaper failure.
     let project = project();
-    let doomed = deleted_story(&project, "Created in error", "created in error");
+    let doomed = project.new_story("Created in error");
 
-    project.run(&["purge", &doomed, "--force"]).success();
+    project.run(&["delete", &doomed, "--force"]).success();
     let next = project.new_story("The story after");
 
-    assert_ne!(next, doomed, "the purged id must never come back");
+    assert_ne!(next, doomed, "the deleted id must never come back");
     assert_eq!(next, "SH-2", "and the counter carries on rather than back");
 }
 
@@ -303,9 +240,9 @@ fn a_purged_story_number_is_never_reissued() {
 #[test]
 fn a_surviving_claim_is_retracted_before_the_story_goes() {
     let project = project();
-    let (doomed, kept) = claimed_then_deleted(&project);
+    let (doomed, kept) = claimed_story(&project);
 
-    project.run(&["purge", &doomed, "--force"]).success();
+    project.run(&["delete", &doomed, "--force"]).success();
 
     let shown = project.json(&["show", &kept]);
     let relationships = shown["story"]["story"]["relationships"]
@@ -324,9 +261,9 @@ fn the_retraction_is_a_real_event_on_the_surviving_story() {
     // edge genuinely was removed, at this moment, by this act — which is also
     // what makes the rebuild oracle agree with the read model afterwards.
     let project = project();
-    let (doomed, kept) = claimed_then_deleted(&project);
+    let (doomed, kept) = claimed_story(&project);
 
-    project.run(&["purge", &doomed, "--force"]).success();
+    project.run(&["delete", &doomed, "--force"]).success();
 
     let kinds = event_kinds(&project, &kept);
     assert!(
@@ -337,16 +274,16 @@ fn the_retraction_is_a_real_event_on_the_surviving_story() {
 
 #[test]
 fn the_confirmation_names_the_claims_it_would_retract() {
-    // The one part of a purge that reaches beyond the story being purged, so it
+    // The one part of a delete that reaches beyond the story being deleted, so it
     // is stated up front rather than left as a surprise.
     let project = project();
-    let (doomed, kept) = claimed_then_deleted(&project);
+    let (doomed, kept) = claimed_story(&project);
 
     let out = project
         .story()
-        .args(["purge", &doomed])
+        .args(["delete", &doomed])
         .output()
-        .expect("running story purge");
+        .expect("running story delete");
     let stderr = String::from_utf8_lossy(&out.stderr);
 
     assert!(
@@ -380,12 +317,9 @@ fn a_story_that_never_claimed_the_edge_gets_no_retraction() {
         }],
     )
     .expect("injecting a one-sided claim");
-    project
-        .run(&["delete", &doomed, "created in error"])
-        .success();
     let before = event_kinds(&project, &bystander);
 
-    project.run(&["purge", &doomed, "--force"]).success();
+    project.run(&["delete", &doomed, "--force"]).success();
 
     assert_eq!(
         event_kinds(&project, &bystander),
@@ -397,7 +331,7 @@ fn a_story_that_never_claimed_the_edge_gets_no_retraction() {
 }
 
 // ---------------------------------------------------------------------------
-// The guard the purge narrowed
+// The guard the delete narrowed
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -405,7 +339,7 @@ fn the_append_only_guard_still_refuses_an_ordinary_deletion() {
     // Migration 5 narrows `events_reject_delete` by AND-ing a story clause onto
     // migration 3's project clause. Without this test a migration could widen
     // the guard while looking like it narrowed it, and every other test here
-    // would still pass — they all go through the purge, which is the one caller
+    // would still pass — they all go through the delete, which is the one caller
     // the predicate is supposed to admit.
     let project = project();
     let id = project.new_story("Real work");

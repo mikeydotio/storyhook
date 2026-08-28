@@ -588,10 +588,8 @@ enum Confirmed {
 /// says one keystroke is enough.
 ///
 /// The weight of the gate matches the weight of the act: a typed token is
-/// right for "erase every event this project has" and wrong for "reopen this
-/// deleted story" — the latter is undone by a plain `story delete` again, so
-/// asking for more than one keystroke would be asking the terminal to prove
-/// something the act itself does not require.
+/// right for "erase every event this project has" and wrong for a reversible
+/// bulk archive.
 ///
 /// Two cases cannot be asked at all, and both are refusals naming `--force`
 /// rather than assumptions either way:
@@ -637,7 +635,7 @@ fn confirm(plan: &storyhook::output::ConfirmationPlan, json: bool, quiet: bool) 
         let _ = std::io::stderr().flush();
         std::io::stdin().read_line(&mut answer).is_ok() && answer.trim() == token
     } else {
-        eprint!("Reopen (undelete) this deleted story? [y/N] ");
+        eprint!("{}", plan.confirmation_question());
         let _ = std::io::stderr().flush();
         std::io::stdin().read_line(&mut answer).is_ok()
             && matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")

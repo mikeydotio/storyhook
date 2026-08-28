@@ -138,10 +138,10 @@ fn a_closed_story_takes_a_comment_from_the_command_line() {
         .stdout(contains("(CLOSED)"));
 }
 
-/// The other half of SH-261's line: a soft-deleted story is a tombstone, and a
-/// tombstone takes no new observations.
+/// A permanently deleted story cannot receive new observations because its id
+/// no longer resolves.
 #[test]
-fn a_soft_deleted_story_refuses_a_comment_from_the_command_line() {
+fn a_deleted_story_is_not_found_when_commented_on() {
     let dir = tempdir().unwrap();
     Command::cargo_bin("story")
         .unwrap()
@@ -160,7 +160,7 @@ fn a_soft_deleted_story_refuses_a_comment_from_the_command_line() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .args(["delete", "SH-1", "filed twice"])
+        .args(["delete", "SH-1", "--force"])
         .assert()
         .success();
 
@@ -170,10 +170,7 @@ fn a_soft_deleted_story_refuses_a_comment_from_the_command_line() {
         .args(["comment", "SH-1", "one more thing"])
         .assert()
         .failure()
-        .stderr(contains(
-            "story `SH-1` is deleted and cannot be commented on",
-        ))
-        .stderr(contains("story reopen SH-1 --force"));
+        .stderr(contains("story `SH-1` not found"));
 }
 
 /// A comment naming another story surfaces on *that* story's `referenced_by`

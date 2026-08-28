@@ -38,7 +38,7 @@ import {
  *
  * | Input | Submits | One held Enter, before the fix |
  * |---|---|---|
- * | `#delete-reason` | `submitDeleteStory` | **9** DELETEs |
+ * | `#delete-confirmation` | `submitDeleteStory` | **9** DELETEs |
  * | `#token-input` | `submitTokenModal` | **9** `POST /token` |
  * | `.status-add-slug`, `.status-add-desc` | `statusMutation` | one POST per repeat |
  * | label-add (`[data-field="label-add"]`) | `POST …/labels` | one POST per repeat |
@@ -206,7 +206,9 @@ function credentialsFor(route: Route): Record<string, string> {
 const isMethodTo = (method: string, pattern: RegExp) => (route: Route) =>
   route.request().method() === method && pattern.test(route.request().url());
 
-const DELETE_STORY = isMethodTo("DELETE", /\/api\/repos\/[^/]+\/story\/[^/]+$/);
+const DELETE_STORY = (route: Route) =>
+  isMethodTo("DELETE", /\/api\/repos\/[^/]+\/story\/[^/]+$/)(route) &&
+  route.request().postDataJSON()?.force === true;
 const EXCHANGE_TOKEN = isMethodTo("POST", /\/token$/);
 const CREATE_STATUS = isMethodTo("POST", /\/api\/repos\/[^/]+\/states$/);
 const MOVE_STORY = isMethodTo("POST", /\/api\/repos\/[^/]+\/story\/[^/]+\/move$/);
@@ -225,7 +227,7 @@ test("a held Enter in the delete modal issues exactly one DELETE", async ({ page
   const deletes = await countAndHold(page, DELETE_STORY);
   const card = page.locator('.column[data-state="todo"] .card', { hasText: title });
   await openDeleteModal(page, card, "SH-362 repro");
-  await page.locator("#delete-reason").focus();
+  await page.locator("#delete-confirmation").focus();
   await holdKey(page, "Enter", REPEATS);
 
   // Read before releasing: every repeat has already run its handler by the time
@@ -357,7 +359,7 @@ test("a synthetic repeat-flagged Enter is ignored at a freshly opened surface", 
 
   const deletes = await countAndHold(page, DELETE_STORY);
   await openDeleteModal(page, card, "SH-362 synthetic repeat");
-  await dispatchEnter(page, "#delete-reason", true);
+  await dispatchEnter(page, "#delete-confirmation", true);
 
   expect(
     deletes.seen(),
@@ -369,7 +371,7 @@ test("a synthetic repeat-flagged Enter is ignored at a freshly opened surface", 
   // The twin, and it is not optional: without it "a dispatched KeyboardEvent
   // never reaches the handler" — a broken harness, or a guard that refused
   // every synthetic event — would satisfy the assertion above perfectly.
-  await dispatchEnter(page, "#delete-reason", false);
+  await dispatchEnter(page, "#delete-confirmation", false);
   expect(
     deletes.seen(),
     "an ordinary Enter must still submit — the same event, the same way, with only the repeat bit changed",
@@ -406,8 +408,8 @@ test("a second discrete Enter while the first request is in flight issues one re
 
   const deletes = await countAndHold(page, DELETE_STORY);
   await openDeleteModal(page, card, "SH-362 double press");
-  await page.locator("#delete-reason").press("Enter");
-  await page.locator("#delete-reason").press("Enter");
+  await page.locator("#delete-confirmation").press("Enter");
+  await page.locator("#delete-confirmation").press("Enter");
 
   expect(
     deletes.seen(),
@@ -487,7 +489,7 @@ test("discrete Enter presses still submit at every site", async ({ page, request
   await createStory(page, doomed);
   const card = page.locator('.column[data-state="todo"] .card', { hasText: doomed });
   await openDeleteModal(page, card, "SH-362 discrete press");
-  await page.locator("#delete-reason").press("Enter");
+  await page.locator("#delete-confirmation").press("Enter");
   await expect(page.locator("#delete-modal")).not.toHaveClass(/open/);
   await expect(card).not.toBeVisible();
 
@@ -536,7 +538,7 @@ test("a held Backspace still deletes more than one character", async ({ page }) 
   const card = page.locator('.column[data-state="todo"] .card', { hasText: title });
   await openDeleteModal(page, card, "");
 
-  const field = page.locator("#delete-reason");
+  const field = page.locator("#delete-confirmation");
   await field.fill("abcdefghij");
   await field.focus();
   await page.keyboard.press("Backspace");

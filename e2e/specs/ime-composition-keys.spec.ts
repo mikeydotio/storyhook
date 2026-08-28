@@ -42,7 +42,7 @@ import {
  * | Surface | What a composing key used to do |
  * |---|---|
  * | `#create-title` | created the story, part-titled |
- * | `#delete-reason` | deleted the story, part-reasoned |
+ * | `#delete-confirmation` | deleted the story, partly confirmed |
  * | `#token-input` | exchanged a part-pasted token |
  * | `[data-field="label-add"]` | POSTed a part-typed label |
  * | `.status-add-slug` | created a part-named status |
@@ -87,7 +87,9 @@ import {
  */
 
 const CREATE_STORY = matches("POST", /\/api\/repos\/[^/]+\/story$/);
-const DELETE_STORY = matches("DELETE", /\/api\/repos\/[^/]+\/story\/[^/]+$/);
+const DELETE_STORY = (request: Request) =>
+  matches("DELETE", /\/api\/repos\/[^/]+\/story\/[^/]+$/)(request) &&
+  request.postDataJSON()?.force === true;
 const PATCH_STORY = matches("PATCH", /\/api\/repos\/[^/]+\/story\/[^/]+$/);
 const EXCHANGE_TOKEN = matches("POST", /\/token$/);
 const ADD_LABEL = matches("POST", /\/api\/repos\/[^/]+\/story\/[^/]+\/labels$/);
@@ -164,13 +166,13 @@ test("a composing Enter in the delete modal deletes nothing", async ({ page }) =
   const deletes = count(page, DELETE_STORY);
 
   await openDeleteModal(page, card, "SH-368 composing");
-  await dispatch(page, "#delete-reason", "Enter", true);
+  await dispatch(page, "#delete-confirmation", "Enter", true);
 
   expect(deletes(), "a composing Enter must not DELETE").toBe(0);
   await expect(page.locator("#delete-modal")).toHaveClass(/open/);
   await expect(card).toBeVisible();
 
-  await dispatch(page, "#delete-reason", "Enter", false);
+  await dispatch(page, "#delete-confirmation", "Enter", false);
   await expect(page.locator("#delete-modal")).not.toHaveClass(/open/);
   await expect(card).not.toBeVisible();
   expect(deletes(), "the same Enter without the bit must still delete").toBe(1);
@@ -360,18 +362,19 @@ test("a composing Escape closes no modal from the page level", async ({ page }) 
   const title = `SH-368 — composing page escape ${Date.now()}`;
   await createStory(page, title);
   const card = page.locator('.column[data-state="todo"] .card', { hasText: title });
+  const id = (await card.getAttribute("data-id"))!;
 
   await openDeleteModal(page, card, "a reason worth not losing");
-  await page.locator("#delete-reason").focus();
-  await dispatch(page, "#delete-reason", "Escape", true);
+  await page.locator("#delete-confirmation").focus();
+  await dispatch(page, "#delete-confirmation", "Escape", true);
 
   await expect(page.locator("#delete-modal")).toHaveClass(/open/);
   expect(
-    await page.locator("#delete-reason").inputValue(),
-    "and the reason typed into it survives",
-  ).toBe("a reason worth not losing");
+    await page.locator("#delete-confirmation").inputValue(),
+    "and the typed confirmation survives",
+  ).toBe(id);
 
-  await dispatch(page, "#delete-reason", "Escape", false);
+  await dispatch(page, "#delete-confirmation", "Escape", false);
   await expect(page.locator("#delete-modal")).not.toHaveClass(/open/);
 });
 

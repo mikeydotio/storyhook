@@ -300,7 +300,7 @@ test.describe("with a credential", () => {
     await expect(page.locator("#delete-modal")).toHaveClass(/open/);
 
     await expectModalityFor(page, "delete-modal");
-    await expect(page.locator("#delete-reason")).toBeFocused();
+    await expect(page.locator("#delete-confirmation")).toBeFocused();
 
     await page.locator("#delete-modal-cancel").click();
     await expect(page.locator("#delete-modal")).not.toHaveClass(/open/);

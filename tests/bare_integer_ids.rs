@@ -78,21 +78,14 @@ fn every_id_verb_accepts_a_bare_integer() {
     }
 }
 
-/// **AC-1**, the three verbs that need a story in a particular state.
-///
-/// Run as one sequence because that is the only way to reach each state: a
-/// story must be deleted before it can be reopened or purged. Every id in the
-/// sequence is bare, so a verb that quietly failed would break the next one.
+/// **AC-1**, permanent deletion accepts a bare integer id too.
 #[test]
 fn the_destructive_verbs_accept_a_bare_integer_too() {
     let env = TestEnv::isolated();
     let project = env.project().seed_story("first").build();
     project.new_story("second");
 
-    project.run(&["delete", "2", "first pass"]).success();
-    project.run(&["reopen", "2", "--force"]).success();
-    project.run(&["delete", "2", "second pass"]).success();
-    project.run(&["purge", "2", "--force"]).success();
+    project.run(&["delete", "2", "--force"]).success();
 
     project
         .story()
@@ -299,7 +292,7 @@ fn a_foreign_id_never_switches_project() {
     let there = env.project().prefix("OTH").seed_story("theirs").build();
 
     here.story()
-        .args(["delete", "OTH-1", "should not happen"])
+        .args(["delete", "OTH-1", "--force"])
         .assert()
         .failure();
 
@@ -356,7 +349,7 @@ fn the_id_reported_back_is_canonical() {
 
     let out = project
         .story()
-        .args(["delete", "2", "tidying up"])
+        .args(["delete", "2", "--force"])
         .output()
         .expect("running story");
     let stdout = String::from_utf8_lossy(&out.stdout);

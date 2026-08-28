@@ -14,7 +14,7 @@
 //! not counts, not ids, not a spot check. `StorySnapshot` derives `PartialEq`
 //! over every field a user can see: title, state, superstate, assignee,
 //! awaiting, comments, relationships, priority, labels, type, description,
-//! `closed_at`, `deleted` and its reason. A field lost anywhere in the loop is
+//! `closed_at`, hidden/archive state, and draft status. A field lost anywhere in the loop is
 //! a failing assertion naming the story.
 //!
 //! # What the round trip does *not* carry, and why that is written here

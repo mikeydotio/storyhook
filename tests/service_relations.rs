@@ -735,7 +735,7 @@ fn closing_a_related_story_leaves_the_relation_intact() {
 }
 
 #[test]
-fn deleting_a_related_story_leaves_both_halves_recorded() {
+fn deleting_a_related_story_retracts_the_surviving_half() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let a = new_story(&ctx, "a");
@@ -743,10 +743,17 @@ fn deleting_a_related_story_leaves_both_halves_recorded() {
     RelationService::new(&ctx)
         .relate(&a, "blocks", &b, false)
         .unwrap();
-    StoryService::new(&ctx).delete(&b, "obsolete").unwrap();
+    StoryService::new(&ctx).delete(&b).unwrap();
 
-    assert_eq!(relations(&fixture, &a), [("blocks".to_string(), b.clone())]);
-    assert_eq!(relations(&fixture, &b), [("blocked-by".to_string(), a)]);
+    assert!(relations(&fixture, &a).is_empty());
+    let no = StoryNo::parse_id("SH", &b).unwrap();
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.story(fixture.project(), no))
+            .unwrap()
+            .is_none()
+    );
 }
 
 // --- block_on / unblock_from (SH-398) ---------------------------------------

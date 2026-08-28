@@ -630,8 +630,8 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
    background set inline per story by stateColor()) immediately before a
    clickable `.rel-id` -- see storyRef()/storyLight(). `.unknown` is the
    one case stateColor() never runs for: the id didn't resolve against
-   this project's loaded stories at all (another project, soft-deleted,
-   a draft), so there is no status to colour -- a hollow ring rather than
+   this project's loaded stories at all (another project, permanently
+   deleted, or a draft), so there is no status to colour -- a hollow ring rather than
    an omitted dot, so the gap reads as "unresolvable", not as a missing
    feature.
 
@@ -1579,7 +1579,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   <div class="modal-header">Delete story</div>
   <div class="modal-body">
     <div id="delete-modal-summary"></div>
-    <input type="text" id="delete-reason" placeholder="Reason for deletion (required)" autocomplete="off">
+    <input type="text" id="delete-confirmation" placeholder="Type the story id to confirm" autocomplete="off">
     <div class="modal-error" id="delete-modal-error"></div>
   </div>
   <div class="modal-footer">
@@ -4723,7 +4723,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       // in-flight or "cannot act yet" state to gate on -- the only thing
       // standing between a click and a deletion is the modal's own
       // required-reason confirmation, same as the drawer footer's Delete.
-      { label: "Delete", danger: true, onSelect: function() { openDeleteModal(st.id, st.title); } }
+      { label: "Delete", danger: true, onSelect: function() { openDeleteModal(st.id); } }
     ].filter(Boolean));
   }
 
@@ -6915,13 +6915,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * A blocker the client can't resolve does not appear here -- but,
    * corrected from an earlier version of this comment (SH-309): only
    * "another project" genuinely agrees between client and server. A
-   * `blocked-by` target that is a **draft** or **soft-deleted** still
+   * `blocked-by` target that is a **draft** still
    * blocks server-side (`is_ready` walks the daemon's whole `view_map`,
    * unfiltered) while being invisible here (`src/api/rest.rs` routes
-   * drafts to a separate `drafts` array and excludes deleted stories from
-   * `stories` entirely) -- so those two causes are real, silent gaps this
+   * drafts to a separate `drafts` array) -- so that cause is a real, silent gap this
    * function cannot see, not agreement. `blockedFlag()` names that gap
-   * explicitly rather than repeating this claim. */
+   * explicitly rather than repeating this claim. Permanent deletion cannot
+   * leave this gap because it retracts every surviving relationship claim. */
   function openBlockers(st) {
     return (st.relationships || []).filter(function(r) {
       if (r.relation !== "blocked-by") return false;
@@ -6970,7 +6970,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * card badge) and [`blockBanner`] (the drawer banner, SH-398) both derive
    * from, so the two surfaces cannot silently disagree about which edges
    * count. See `openBlockers()`'s own doc for the resolvability gap this
-   * inherits: an edge onto a draft or soft-deleted story blocks server-side
+   * inherits: an edge onto a draft blocks server-side
    * but is invisible here. */
   function blockCauses(st) {
     return {
@@ -7013,7 +7013,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * `null` otherwise: the doctor's own "(no reason)" (`state === "blocked"`
    * with no `awaiting`), or a bare "blocked" whose title says the cause is
    * invisible to this client -- reachable via a `blocked-by` edge onto an
-   * open draft or soft-deleted story (see `openBlockers()`'s own comment).
+   * open draft (see `openBlockers()`'s own comment).
    * Today those cards lied; now they say less, and say on hover that they
    * are saying less.
    *
@@ -7578,7 +7578,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    *
    * `id` resolves against state.data.stories (`findStory`) -- the same
    * project-scoped set the board itself renders from, so a story from
-   * another project, a soft-deleted story, or a draft (routed to a
+   * another project, a permanently deleted story, or a draft (routed to a
    * separate array, never `stories`) all resolve to nothing. That's
    * rendered as a hollow "unknown" ring (`.story-light.unknown`) rather
    * than silently omitted, so the gap reads as "this dashboard cannot
@@ -9293,17 +9293,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       footer.appendChild(dispatchButton(st));
     }
     footer.appendChild(el("button", { class: "btn btn-danger", style: "margin-left:auto", onClick: function() {
-      openDeleteModal(st.id, st.title);
+      openDeleteModal(st.id);
     } }, ["Delete"]));
   }
 
-  /** Reopen (drawer footer "Reopen" button). Tries the unforced reopen
-   * first — correct for the ordinary case, a story merely closed — and only
-   * a soft-deleted story's unforced attempt comes back 409 with an
-   * `UndeletePlan` (SH-154), which this turns into an inline yes/no confirm
-   * rather than the bare "Conflict" toast `toastError` alone would show
-   * (SH-210). Mirrors `deleteProject`/`showDeleteConfirm`'s reactive
-   * confirm-on-409 shape.
+  /** Reopen (drawer footer "Reopen" button).
    *
    * The fold clears `hidden_at` the moment a story reopens (SH-43) —
    * silently, from the read model's point of view. A story that was
@@ -9316,49 +9310,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         handleMutationSuccess(resp);
         if (wasHidden) toast(st.id + " reopened — no longer archived", "info");
       })
-      .catch(function(err) {
-        if (err.status === 409 && err.body && err.body.plan && err.body.plan.confirm === "undelete") {
-          renderReopenConfirm(st, err.body.plan, wasHidden);
-        } else {
-          toastError(err);
-        }
-      });
-  }
-
-  /** The confirm `attemptReopen` lands on when the story it tried to reopen
-   * turned out to be soft-deleted: names the story and, when one was
-   * recorded, why it was deleted — everything `UndeletePlan` carries. A
-   * single click is the right weight here, the same rule
-   * `renderArchiveConfirm` applies to `HideState` — undeleting puts the
-   * story right back where it started, which is exactly why
-   * `ConfirmationPlan::requires_typed_confirmation` answers `false` for
-   * `Undelete` too. */
-  function renderReopenConfirm(st, plan, wasHidden) {
-    var footer = $("drawer-footer");
-    clear(footer);
-    footer.appendChild(el("div", { class: "confirm-delete" }, [
-      el("div", {}, [
-        plan.title + " was deleted" +
-        (plan.deleted_reason ? " (" + plan.deleted_reason + ")" : "") +
-        ". Undelete it to reopen?"
-      ]),
-      el("div", { class: "confirm-delete-actions" }, [
-        el("button", { class: "btn btn-ghost", onClick: function() { renderDrawerFooter(st); } }, ["Cancel"]),
-        el("button", { class: "btn", onClick: function() {
-          api("POST", apiBase() + "/story/" + encodeURIComponent(st.id) + "/reopen", { force: true })
-            .then(function(resp) {
-              handleMutationSuccess(resp);
-              toast(st.id + " undeleted", "success");
-              if (wasHidden) toast(st.id + " reopened — no longer archived", "info");
-            })
-            .catch(toastError);
-        } }, ["Undelete"])
-      ])
-    ]));
+      .catch(toastError);
   }
 
   /** The confirmation the story text asks for on the detail page's "Archive"
-   * button. Lighter than the delete modal's typed-reason form since
+   * button. Lighter than the delete modal's typed-id form since
    * archiving is fully reversible via "Unarchive" — a single confirming
    * click is the right weight, the same rule `ConfirmationPlan::HideState`
    * applies server-side (`requires_typed_confirmation` is `false` for it). */
@@ -11486,7 +11442,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var targetProject = createTargetProject;
     var base = createApiBase();
     var id = editingDraft.story.id;
-    api("DELETE", base + "/story/" + encodeURIComponent(id), { reason: "Discarded draft" })
+    api("DELETE", base + "/story/" + encodeURIComponent(id), { force: true })
       .then(function() {
         setCreateModalInFlight(false);
         closeCreateModal();
@@ -11759,6 +11715,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * this modal is also reachable from the context menu with no drawer open
    * at all. */
   var deleteModalStoryId = null;
+  var deleteModalPlan = null;
 
   /** Whether a DELETE issued from this modal is still outstanding.
    *
@@ -11793,50 +11750,74 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   /** Opens the shared delete-confirmation modal for `id` -- used by both
    * the drawer footer's Delete button and the context menu's Delete item,
    * one confirmation surface for the one destructive action rather than the
-   * drawer's own inline typed-reason form this replaced, plus a second copy
-   * for the menu. `title` is shown for context only; the server remains the
-   * sole authority on whether `id` still exists and can be deleted. */
-  function openDeleteModal(id, title) {
+   * drawer and menu. The warning is populated only from the server's
+   * confirmation plan, so event and relationship counts cannot drift from
+   * what the forced request will actually remove. */
+  function openDeleteModal(id) {
     deleteModalStoryId = id;
+    deleteModalPlan = null;
     // Defensively, on every open: a claim stranded true by any path that failed
     // to release it would refuse the *next* legitimate deletion with no error
     // and nothing to click -- SH-312's defect in reverse. `openCreateModal()`
     // resets its own claim here for the same reason.
-    setDeleteModalInFlight(false);
-    $("delete-modal-summary").textContent =
-      "Delete " + id + (title ? " — " + title : "") + "? This cannot be undone.";
-    $("delete-reason").value = "";
+    setDeleteModalInFlight(true);
+    $("delete-modal-summary").textContent = "Preparing deletion plan for " + id + "…";
+    $("delete-confirmation").value = "";
     $("delete-modal-error").textContent = "";
     showBackdrop("delete-modal-backdrop");
-    activateOverlay("delete-modal", "delete-reason");
+    activateOverlay("delete-modal", "delete-confirmation");
     requestAnimationFrame(function() {
       $("delete-modal").classList.add("open");
       $("delete-modal").setAttribute("aria-hidden", "false");
     });
+    api("DELETE", apiBase() + "/story/" + encodeURIComponent(id), { force: false })
+      .then(function() {
+        setDeleteModalInFlight(false);
+        $("delete-modal-error").textContent = "The server deleted without confirmation.";
+      })
+      .catch(function(err) {
+        setDeleteModalInFlight(false);
+        var plan = err.status === 409 && err.body && err.body.plan;
+        if (!plan || plan.confirm !== "delete-story") {
+          $("delete-modal-error").textContent = describeMutationFailure(err);
+          return;
+        }
+        deleteModalPlan = plan;
+        var claims = (plan.retracted || []).map(function(claim) {
+          return claim[0] + " " + claim[1] + " " + plan.id;
+        });
+        $("delete-modal-summary").textContent =
+          "Delete " + plan.id + " — " + plan.title + " permanently? " +
+          plan.events + " event" + (plan.events === 1 ? "" : "s") + " will be destroyed." +
+          (claims.length ? " Relationships retracted: " + claims.join(", ") + "." : "") +
+          " This cannot be undone. Type " + plan.id + " to confirm.";
+      });
   }
 
   function closeDeleteModal() {
     deleteModalStoryId = null;
+    deleteModalPlan = null;
     hideBackdrop("delete-modal-backdrop");
     $("delete-modal").classList.remove("open");
     $("delete-modal").setAttribute("aria-hidden", "true");
     releaseOverlay("delete-modal");
   }
 
-  /** Submits the reason typed into the open delete modal. The reason is
-   * required here too, not just server-side (`require_str(&obj, "reason")`,
-   * `src/api/rest.rs`) -- an empty submission should never round-trip to
-   * find that out. */
+  /** Submits a forced delete after the typed id matches the server plan. */
   function submitDeleteStory() {
     if (deleteModalInFlight) return;
     var id = deleteModalStoryId;
     if (!id) return;
-    var reason = $("delete-reason").value.trim();
-    if (!reason) { $("delete-modal-error").textContent = "A deletion reason is required."; return; }
+    if (!deleteModalPlan) { $("delete-modal-error").textContent = "The deletion plan is not ready."; return; }
+    var confirmation = $("delete-confirmation").value.trim();
+    if (confirmation !== deleteModalPlan.id) {
+      $("delete-modal-error").textContent = "Type " + deleteModalPlan.id + " exactly to confirm.";
+      return;
+    }
     // Claimed synchronously, before `api()` is reached -- the claim is worth
     // nothing if a second call can arrive between the check and the send.
     setDeleteModalInFlight(true);
-    api("DELETE", apiBase() + "/story/" + encodeURIComponent(id), { reason: reason })
+    api("DELETE", apiBase() + "/story/" + encodeURIComponent(id), { force: true })
       .then(function() {
         setDeleteModalInFlight(false);
         closeDeleteModal();
@@ -11955,7 +11936,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("delete-modal-cancel").addEventListener("click", closeDeleteModal);
     $("delete-modal-backdrop").addEventListener("click", closeDeleteModal);
     $("delete-modal-submit").addEventListener("click", submitDeleteStory);
-    bindEnterSubmit($("delete-reason"), submitDeleteStory);
+    bindEnterSubmit($("delete-confirmation"), submitDeleteStory);
     $("drawer-close").addEventListener("click", closeDrawer);
     $("toast-dismiss-all").addEventListener("click", dismissAllToasts);
     $("dispatch-history-dismiss-all").addEventListener("click", dismissAllDispatchHistory);

@@ -410,21 +410,6 @@ pub struct StorySnapshot {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub closed_at: Option<String>,
-    /// `true` when the story was removed via `story delete` rather than
-    /// closed through the normal state machine. A deleted story is always
-    /// folded to `superstate: CLOSED` regardless of its `state` slug.
-    ///
-    /// Since SH-505 it also folds to the *abandoned* resting state and is
-    /// archived — see [`resting_state_for_closure`] and the `StoryDeleted` arm
-    /// of [`fold_story`]. The field itself goes when `story delete` becomes
-    /// permanent (SH-498), which is the change that leaves nothing for it to
-    /// describe.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub deleted: bool,
-    /// The reason passed to `story delete`, when [`deleted`](Self::deleted)
-    /// is `true`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deleted_reason: Option<String>,
     /// When the story was hidden from the primary UI via `story hide`, if it
     /// currently is. `Some` only while [`superstate`](Self::superstate) is
     /// [`SuperState::Closed`] — [`fold_story`] clears it the moment a story
@@ -725,8 +710,8 @@ pub enum StoryEvent {
     ///
     /// Deliberately not a symmetric pair the way `StoryHidden`/`StoryUnhidden`
     /// are: SH-175's own text requires publishing to be irreversible. It gets
-    /// its own verb rather than a flag on `story set`, following `Purge`'s
-    /// precedent (`cli.rs`) — a flag that turns a reversible act irreversible
+    /// its own verb rather than a flag on `story set`: a flag that turns a
+    /// reversible act irreversible
     /// sits one keystroke away from the reversible one.
     ///
     /// Not guarded by `validate_event_for_append`: that hook is a stateless,
@@ -1512,8 +1497,11 @@ pub fn fold_story(
     let mut referenced_by_commits = Vec::new();
     let mut relationships = BTreeSet::new();
     let mut closed_at = None;
-    let mut deleted = false;
-    let mut deleted_reason = None;
+    // Fold-only compatibility latch. No current writer emits `StoryDeleted`,
+    // but old logs still need its closure/archive effect until a later OPEN
+    // state change retracts it. This is deliberately not a snapshot field:
+    // current deletion removes the row and leaves nothing to describe.
+    let mut legacy_deletion_active = false;
     let mut hidden_at = None;
     let mut draft = false;
     let mut published = false;
@@ -1608,7 +1596,7 @@ pub fn fold_story(
                 updated_at = Some(at.clone());
                 // Moving into an OPEN state is what *reopening* is, so it
                 // retracts the closure markers. Without this the fold is not
-                // total: `closed_at` and `deleted` have events that set them
+                // total: `closed_at` and the legacy deletion latch have events that set them
                 // and none that clear them, so the only way to reopen a story
                 // is to delete history — which is precisely what
                 // `unarchive_story` does, and precisely what an append-only
@@ -1616,14 +1604,13 @@ pub fn fold_story(
                 //
                 // Scoped to states the project actually defines and actually
                 // calls open: an unrecognised slug leaves the flags alone, so
-                // a story that folds today because `deleted` forces its
+                // a story that folds today because legacy deletion forces its
                 // superstate cannot be made unfoldable by this rule.
                 if states
                     .get(story_state)
                     .is_some_and(|def| def.super_state == SuperState::Open)
                 {
                     closed_at = None;
-                    deleted_reason = None;
                     // Retract the DELETION's own archive stamp, and only that
                     // one (SH-505).
                     //
@@ -1636,7 +1623,7 @@ pub fn fold_story(
                     // that history ends CLOSED. So the story would fold
                     // archived where before SH-505 it folded visible.
                     //
-                    // Guarding on `deleted` is what keeps this narrow. An
+                    // Guarding on the legacy deletion latch keeps this narrow. An
                     // UNCONDITIONAL clear here also un-archives every story
                     // that was archived, reopened for an edit, and closed
                     // again — a far larger class, long-standing behaviour, and
@@ -1647,10 +1634,10 @@ pub fn fold_story(
                     //
                     // Read before the latch is cleared, or the condition is
                     // always false.
-                    if deleted {
+                    if legacy_deletion_active {
                         hidden_at = None;
                     }
-                    deleted = false;
+                    legacy_deletion_active = false;
                 }
             }
             StoryEvent::StoryStateCleared { at } => {
@@ -1764,9 +1751,8 @@ pub fn fold_story(
             // `reason` is deliberately dropped rather than folded into a field:
             // the writer always paired this event with a `[deleted] <reason>`
             // comment, so the human record is already on the story.
-            StoryEvent::StoryDeleted { at, reason } => {
-                deleted = true;
-                deleted_reason = Some(reason.clone());
+            StoryEvent::StoryDeleted { at, reason: _ } => {
+                legacy_deletion_active = true;
                 updated_at = Some(at.clone());
                 if closed_at.is_none() {
                     closed_at = Some(at.clone());
@@ -1867,7 +1853,7 @@ pub fn fold_story(
     // delivered properly rather than asserted: `state_usage` counts only
     // undeleted stories, so `remove_state` never saw them and the slug really
     // was removable — whereas `done` is unremovable under the SH-125 floor.
-    let (state, superstate) = if deleted {
+    let (state, superstate) = if legacy_deletion_active {
         match resting_state_for_closure(states) {
             Some(resting) => (resting.slug.clone(), SuperState::Closed),
             // No CLOSED state exists to come to rest in. Keep the slug and stay
@@ -1886,7 +1872,7 @@ pub fn fold_story(
         (state, superstate)
     };
 
-    // Symmetric with the `deleted`/`closed_at` retraction above, and for the
+    // Symmetric with the legacy-deletion/`closed_at` retraction above, and for the
     // same reason (SH-130's illegal-tuple class, generalized): `states` is
     // one fixed, *current* catalog snapshot applied uniformly across the
     // whole replay, so if the story's resting state has been reclassified
@@ -1943,8 +1929,6 @@ pub fn fold_story(
         referenced_by_commits,
         relationships: relationships.into_iter().collect(),
         closed_at,
-        deleted,
-        deleted_reason,
         hidden_at,
         draft,
         attachments,
@@ -2218,22 +2202,9 @@ pub fn compute_progress(
 /// lookup); this makes progress agree rather than leaving the two surfaces to
 /// disagree about what a child is.
 ///
-/// What this deliberately does NOT decide is whether the story is an epic at
-/// all. That stays [`has_children`], which tests the *edge*, so an epic whose
-/// children are all deleted keeps its computed state and keeps refusing a
-/// direct move — it must be deleted or given children (user determination,
-/// 2026-08-27, on SH-497). Identity and measurement are different questions and
-/// this answers only the second.
-///
-/// # What SH-505 changed, and what it deliberately did not
-///
-/// A soft-deleted child now folds to the *abandoned* resting state rather than
-/// to `done`, and is archived. Neither is visible here: this filter tests the
-/// `deleted` flag, which both spellings still set. The flag — and this rung
-/// with it — goes when `story delete` becomes permanent (SH-498), at which
-/// point a deleted child leaves no row and no edge and there is nothing left
-/// to filter. See `docs/spec/deletion-and-closure.md` for why an epic whose
-/// children were all *abandoned* is then allowed to compute `closed`.
+/// A hard-deleted child has no row and no `parent-of` edge, so there is no
+/// separate deletion filter here. A legacy abandoned child remains an
+/// ordinary closed child and participates in progress as such.
 fn live_children<'a>(
     story: &StorySnapshot,
     all_stories: &'a BTreeMap<String, StorySnapshot>,
@@ -2243,7 +2214,6 @@ fn live_children<'a>(
         .iter()
         .filter(|relation| relation.relation == "parent-of")
         .filter_map(|relation| all_stories.get(&relation.other_id))
-        .filter(|child| !child.deleted)
         .collect()
 }
 
@@ -2416,18 +2386,12 @@ fn computed_epic_state(
         return Some(answer);
     }
 
-    // A deleted child is not a child (SH-497). Dropped BEFORE the recursion,
-    // so a deleted subtree contributes nothing at all rather than contributing
-    // a CLOSED superstate that the "every child is closed" branch below would
-    // read as completion. `live_children` drops the same ones by the same rule,
-    // so state and progress cannot disagree about what a child is.
+    // A hard-deleted child has already lost its row and edge. Legacy abandoned
+    // children remain and contribute their truthful CLOSED state.
     let children: Vec<(StorySnapshot, String, SuperState)> = child_ids
         .iter()
         .filter_map(|child_id| {
             let child = stories.get(child_id)?.clone();
-            if child.deleted {
-                return None;
-            }
             let (state, superstate) =
                 computed_epic_state(child_id, stories, states, memo, visiting)?;
             Some((child, state, superstate))
@@ -4522,8 +4486,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(story.superstate, SuperState::Closed);
-        assert!(story.deleted);
-        assert_eq!(story.deleted_reason.as_deref(), Some("created in error"));
+        assert!(story.hidden_at.is_some());
         // The slug and the superstate agree, which is the whole invariant.
         assert_eq!(story.state, "done");
         assert_eq!(story.closed_at.as_deref(), Some("2026-03-13T00:01:00Z"));
@@ -4692,7 +4655,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(story.superstate, SuperState::Closed);
-        assert!(story.deleted);
         // `closed_at` reflects the original close, not the later deletion —
         // `fold_story` only backfills `closed_at` when it was never set.
         assert_eq!(story.closed_at.as_deref(), Some("2026-03-13T00:01:00Z"));
@@ -4757,8 +4719,6 @@ mod tests {
         )
         .unwrap();
 
-        assert!(!story.deleted);
-        assert_eq!(story.deleted_reason, None);
         assert_eq!(story.closed_at, None);
         assert_eq!(story.superstate, SuperState::Open);
         // The audit trail survives the undelete, exactly as it does when
@@ -5155,7 +5115,6 @@ mod tests {
         )
         .unwrap();
 
-        assert!(story.deleted);
         assert_eq!(story.superstate, SuperState::Closed);
     }
 
@@ -5211,8 +5170,6 @@ mod tests {
             referenced_by_commits: Vec::new(),
             relationships: Vec::new(),
             closed_at: None,
-            deleted: false,
-            deleted_reason: None,
             hidden_at: None,
             draft: false,
             attachments: Vec::new(),
@@ -5250,8 +5207,6 @@ mod tests {
             referenced_by_commits: Vec::new(),
             relationships: Vec::new(),
             closed_at: None,
-            deleted: false,
-            deleted_reason: None,
             hidden_at: None,
             draft: false,
             attachments: Vec::new(),
@@ -5354,8 +5309,6 @@ mod tests {
             referenced_by_commits: Vec::new(),
             relationships: Vec::new(),
             closed_at: None,
-            deleted: false,
-            deleted_reason: None,
             hidden_at: None,
             draft: false,
             attachments: Vec::new(),
@@ -5748,8 +5701,6 @@ mod tests {
                     other_id: "SH-2".to_string(),
                 }],
                 closed_at: None,
-                deleted: false,
-                deleted_reason: None,
                 hidden_at: None,
                 draft: false,
                 attachments: Vec::new(),
@@ -5783,8 +5734,6 @@ mod tests {
                     },
                 ],
                 closed_at: None,
-                deleted: false,
-                deleted_reason: None,
                 hidden_at: None,
                 draft: false,
                 attachments: Vec::new(),
@@ -5812,8 +5761,6 @@ mod tests {
                     other_id: "SH-2".to_string(),
                 }],
                 closed_at: None,
-                deleted: false,
-                deleted_reason: None,
                 hidden_at: None,
                 draft: false,
                 attachments: Vec::new(),
@@ -5838,8 +5785,6 @@ mod tests {
                 referenced_by_commits: Vec::new(),
                 relationships: Vec::new(),
                 closed_at: None,
-                deleted: false,
-                deleted_reason: None,
                 hidden_at: None,
                 draft: false,
                 attachments: Vec::new(),
@@ -6645,8 +6590,6 @@ mod tests {
             story_type: None,
             description: None,
             closed_at: None,
-            deleted: false,
-            deleted_reason: None,
             hidden_at: None,
             draft: false,
             attachments: Vec::new(),
@@ -7179,8 +7122,6 @@ mod ready_order_properties {
             story_type: None,
             description: None,
             closed_at: None,
-            deleted: false,
-            deleted_reason: None,
             hidden_at: None,
             draft: false,
             attachments: Vec::new(),

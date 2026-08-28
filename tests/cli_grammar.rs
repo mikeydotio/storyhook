@@ -221,40 +221,21 @@ fn reopen_reopens() {
 }
 
 #[test]
-fn delete_soft_deletes() {
+fn delete_permanently_removes_the_story() {
     let dir = tempdir().unwrap();
     init_and_create(dir.path());
 
     story(dir.path())
-        .args(["delete", "SH-1", "created in error"])
+        .args(["delete", "SH-1", "--force"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("deleted SH-1: created in error"));
+        .stdout(predicate::str::contains("deleted SH-1 — Test story"));
 
-    // Soft delete: archived (JSONL removed from open/stories/), not erased —
-    // still readable, but as a CLOSED, marked-deleted story. See
-    // tests/story_delete.rs for full coverage of #18 (deletion must flip
-    // superstate to CLOSED so it stops counting as open/ready/a blocker) and of
-    // SH-130 (it must come to rest in a state that *is* CLOSED, rather than
-    // keeping an OPEN slug and contradicting itself).
-    assert!(
-        !dir.path()
-            .join(".storyhook/open/stories/SH-1.jsonl")
-            .exists()
-    );
-    // Where it comes to rest is `closed`, not `done` (SH-505). A soft delete is
-    // read as abandonment now, and abandonment is not completion — `done` said
-    // the work had been finished. It also arrives ARCHIVED, which is what keeps
-    // it as invisible as it was before `closed` became an ordinary state a
-    // board renders a column for.
     story(dir.path())
         .args(["show", "SH-1"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("Test story"))
-        .stdout(predicate::str::contains("state: closed (CLOSED, deleted)"))
-        .stdout(predicate::str::contains("archived: "))
-        .stdout(predicate::str::contains("deleted_reason: created in error"));
+        .failure()
+        .stderr(predicate::str::contains("story `SH-1` not found"));
 }
 
 #[test]

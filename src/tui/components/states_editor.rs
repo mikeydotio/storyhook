@@ -83,7 +83,7 @@ impl StatesEditor {
             .data
             .stories
             .iter()
-            .filter(|story| !story.deleted && story.state == slug)
+            .filter(|story| story.state == slug)
             .count()
     }
 
@@ -583,8 +583,6 @@ mod tests {
             story_type: None,
             description: None,
             closed_at: None,
-            deleted: false,
-            deleted_reason: None,
             hidden_at: None,
             draft: false,
             attachments: Vec::new(),
