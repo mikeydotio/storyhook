@@ -454,7 +454,7 @@ export async function showEpics(page: Page): Promise<void> {
  * footer Delete button and the shared delete-confirmation modal (SH-197),
  * and waits for the card to disappear. Was six near-identical copies (one
  * local `deleteStory` per spec file, plus two more inlined directly)
- * driving the drawer's now-removed inline typed-reason form, before being
+ * driving the drawer's now-removed inline confirmation form, before being
  * pulled out into this one call site ahead of that form's replacement.
  */
 export async function deleteStory(page: Page, title: string): Promise<void> {
@@ -465,7 +465,9 @@ export async function deleteStory(page: Page, title: string): Promise<void> {
   await expect(page.locator("#drawer")).toHaveClass(/open/);
   await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
   await expect(page.locator("#delete-modal")).toHaveClass(/open/);
-  await page.locator("#delete-reason").fill("e2e cleanup");
+  const id = (await card.getAttribute("data-id"))!;
+  await expect(page.locator("#delete-modal-summary")).toContainText(id);
+  await page.locator("#delete-confirmation").fill(id);
   await page.locator("#delete-modal-submit").click();
   await expect(page.locator("#delete-modal")).not.toHaveClass(/open/);
   await expect(card).not.toBeVisible();
@@ -491,7 +493,9 @@ export async function deleteBlockedStory(
   await expect(page.locator("#drawer")).toHaveClass(/open/);
   await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
   await expect(page.locator("#delete-modal")).toHaveClass(/open/);
-  await page.locator("#delete-reason").fill("e2e cleanup");
+  const id = (await card.getAttribute("data-id"))!;
+  await expect(page.locator("#delete-modal-summary")).toContainText(id);
+  await page.locator("#delete-confirmation").fill(id);
   await page.locator("#delete-modal-submit").click();
   await expect(page.locator("#delete-modal")).not.toHaveClass(/open/);
   await expect(card).not.toBeVisible();
@@ -1088,17 +1092,10 @@ const fixtureBaselines = new Map<string, Set<string>>();
  * whether the test passed or failed, so a stray cannot outlive the test
  * that created it, and a red spec stays one red spec.
  *
- * A CLOSED stray is reopened first, then deleted (SH-222). Both halves of
- * the rule this sweep originally skipped them under were wrong: closing a
- * story sets the store row's `archived` flag (`StoryClosedAndArchived`), and
- * `StoryService::delete` answers *404, not a refusal*, for such a row — so
- * a bare `DELETE` here would have failed loudly for a story that is very
- * much still there. And it is not "counted by nothing": `/data` excludes
- * only deleted and draft stories, so a closed stray sits in
- * `state.data.stories` and inflates `#filter-count`'s denominator for the
- * rest of the run. That is the difference between SH-245's symptom and
- * SH-223's: an open stray was swept by the next test, a closed one never
- * was, so every later count assertion in the run read one too many.
+ * Permanent deletion accepts OPEN and CLOSED stories alike. That matters for
+ * cleanup because a closed stray still sits in `state.data.stories` and
+ * inflates `#filter-count`'s denominator for the rest of the run. The forced
+ * API request below removes either shape without reopening it first.
  */
 export function cleanUpCreatedStories(projectName: string): void {
   test.beforeEach(async ({ request }) => {
@@ -1121,12 +1118,10 @@ export function cleanUpCreatedStories(projectName: string): void {
     const storyUrl = (id: string) =>
       `/api/repos/${encodeURIComponent(slug)}/story/${encodeURIComponent(id)}`;
 
-    // CHILDREN BEFORE PARENTS, discovered by fixpoint rather than by sorting
-    // (SH-495). Since SH-446 an epic's state is COMPUTED from its children, so
-    // the store refuses to move one directly -- and a closed story has to be
-    // reopened before it can be deleted (the reason this helper reopens at
-    // all, above). A closed epic therefore cannot be removed until its
-    // children are gone and it has stopped being an epic.
+    // Repeated passes preserve SH-495's loud, fixpoint cleanup. Permanent
+    // deletion retracts child edges itself, so parent/child order no longer
+    // matters, but the fixpoint still reports every refusal and proves that a
+    // pass made progress instead of quietly leaving a stray behind.
     //
     // Passes rather than a topological sort because `/data` gives this helper
     // `{id, superstate}` and no relationship at all: each pass removes
@@ -1147,21 +1142,9 @@ export function cleanUpCreatedStories(projectName: string): void {
       const before = remaining.length;
       refusals = [];
       for (const story of remaining) {
-        if (story.superstate !== "OPEN") {
-          const reopened = await request.post(`${storyUrl(story.id)}/reopen`, {
-            headers,
-            data: {},
-          });
-          if (!reopened.ok()) {
-            refusals.push(
-              `POST ${story.id}/reopen answered ${reopened.status()}: ${await reopened.text()}`,
-            );
-            continue;
-          }
-        }
         const deleted = await request.delete(storyUrl(story.id), {
           headers,
-          data: { reason: "e2e afterEach cleanup (SH-245)" },
+          data: { force: true },
         });
         if (!deleted.ok()) {
           refusals.push(
@@ -1207,17 +1190,22 @@ function apiHeaders(): Record<string, string> {
 }
 
 /** Opens the shared delete modal on `card` through the drawer footer, and types
- * `reason` (pass `""` to leave the field for the caller to drive itself). */
+ * its id when `confirmation` is non-empty (pass `""` to leave the field for
+ * the caller to drive itself). */
 export async function openDeleteModal(
   page: Page,
   card: Locator,
-  reason: string,
+  confirmation: string,
 ): Promise<void> {
   await card.click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
   await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
   await expect(page.locator("#delete-modal")).toHaveClass(/open/);
-  if (reason) await page.locator("#delete-reason").fill(reason);
+  if (confirmation) {
+    const id = (await card.getAttribute("data-id"))!;
+    await expect(page.locator("#delete-modal-summary")).toContainText(id);
+    await page.locator("#delete-confirmation").fill(id);
+  }
 }
 
 /** Opens Settings and drills into `project`'s statuses screen. */

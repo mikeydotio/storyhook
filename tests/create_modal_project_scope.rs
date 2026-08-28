@@ -214,3 +214,17 @@ fn every_api_call_in_the_create_modal_section_names_the_captured_base() {
          ever writing that literal."
     );
 }
+
+#[test]
+fn discard_draft_uses_the_permanent_delete_contract() {
+    let source = dashboard();
+    let section = create_modal_section(&source)
+        .expect("the CREATE MODAL section markers must be present -- see the positive control");
+    assert!(
+        section.contains(
+            r#"api("DELETE", base + "/story/" + encodeURIComponent(id), { force: true })"#,
+        ),
+        "Discard Draft must use the forced second half of the story-delete API; an old \
+         reason-shaped request now returns the preview plan and leaves the draft intact"
+    );
+}

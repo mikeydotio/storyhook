@@ -212,7 +212,7 @@ test("a card removed by another client moves the roving stop to a surviving neig
       "X-Storyhook-Token": DASHBOARD_TOKEN,
       "Content-Type": "application/json",
     },
-    data: { reason: "e2e: external delete while focused" },
+    data: { force: true },
   });
   expect(resp.ok()).toBe(true);
 

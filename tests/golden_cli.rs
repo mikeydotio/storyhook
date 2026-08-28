@@ -64,7 +64,7 @@ static CORPUS: LazyLock<Project<'static>> = LazyLock::new(build_corpus);
 /// Coverage: four states including a custom one, all five priorities plus
 /// unset, all five built-in types plus a custom one, labels, `parent-of` and
 /// `blocks` relations, comments, assignees, two members, two archived (closed)
-/// stories, one soft-deleted story, an `awaiting` block, and two phases.
+/// stories, one explicitly closed story, an `awaiting` block, and two phases.
 fn build_corpus() -> Project<'static> {
     let project = TestEnv::shared().project().build();
     let run = |args: &[&str]| {
@@ -216,7 +216,7 @@ fn build_corpus() -> Project<'static> {
     run(&["move", "SH-4", "review"]);
     run(&["move", "SH-8", "done"]);
     run(&["move", "SH-14", "done"]);
-    run(&["delete", "SH-13", "superseded by the global store"]);
+    run(&["close", "SH-13", "superseded by the global store"]);
 
     project
 }
@@ -490,7 +490,7 @@ const SHOW: &[&[&str]] = &[
     &["show", "SH-3"],
     // Archived: closed, with a closed_at.
     &["show", "SH-8"],
-    // Soft-deleted: CLOSED-but-todo, with a deleted_reason.
+    // Explicitly closed, with a closure reason.
     &["show", "SH-13"],
 ];
 

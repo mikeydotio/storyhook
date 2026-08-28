@@ -175,12 +175,6 @@ const CASES: &[Case] = &[
         sql: "UPDATE stories SET awaiting = 'tampered'",
     },
     Case {
-        name: "a row marked deleted",
-        fields: &["deleted"],
-        coupled_because: None,
-        sql: "UPDATE stories SET deleted = 1",
-    },
-    Case {
         name: "a rewritten creation timestamp",
         fields: &["created_at"],
         coupled_because: None,

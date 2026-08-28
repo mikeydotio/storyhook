@@ -148,20 +148,17 @@ pub struct DeletePlan {
     pub checkouts: Vec<String>,
 }
 
-/// What `story purge` would destroy, read before anything is.
+/// What `story delete` would destroy, read before anything is.
 ///
 /// The sibling of [`DeletePlan`], and typed for the same reason: the numbers
 /// are the warning, and a pre-rendered English sentence would leave a second
 /// front-end parsing prose.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PurgePlan {
+pub struct StoryDeletePlan {
     /// The story's id — what the user must type to confirm.
     pub id: String,
     /// Its title, so the person confirming can tell it is the right story.
     pub title: String,
-    /// Why it was soft-deleted. A purge refuses a story that was not, so this
-    /// is the record of the decision the purge is now making permanent.
-    pub deleted_reason: Option<String>,
     /// How many events go. The irreversible number.
     pub events: usize,
     /// The edges surviving stories still claim into this one, as `(story id,
@@ -170,25 +167,6 @@ pub struct PurgePlan {
     /// divergence that `doctor --fix` can never repair, because the story the
     /// claim names is not there to re-link.
     pub retracted: Vec<(String, String)>,
-}
-
-/// What `story reopen` would undelete, read before anything is.
-///
-/// The lightest of [`ConfirmationPlan`]'s three destructive-ish siblings —
-/// deliberately not called a plan to destroy anything, because it isn't one.
-/// Nothing here is irreversible: `story delete` puts the story right back
-/// where it started. That is also why [`ConfirmationPlan::requires_typed_confirmation`]
-/// answers `false` for this variant — the gate's weight matches the act's.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct UndeletePlan {
-    /// The story's id — named so the person confirming can tell it is the
-    /// right story, not typed back: see
-    /// [`ConfirmationPlan::requires_typed_confirmation`].
-    pub id: String,
-    /// Its title.
-    pub title: String,
-    /// Why it was soft-deleted, if a reason was recorded.
-    pub deleted_reason: Option<String>,
 }
 
 /// What `story unclaim` did, or would do (SH-483).
@@ -293,7 +271,7 @@ pub struct HideStatePlan {
 
 /// What `story project set-prefix` would rewrite, read before anything is.
 ///
-/// Unlike [`DeletePlan`] and [`PurgePlan`] this is not a plan to destroy
+/// Unlike [`DeletePlan`] and [`StoryDeletePlan`] this is not a plan to destroy
 /// anything — every story, event and relationship survives. What is
 /// irreversible is the *prefix itself*: every id a person or a script has
 /// already written down under `old_prefix` stops resolving the moment this
@@ -342,12 +320,10 @@ pub struct SetPrefixPlan {
 pub enum ConfirmationPlan {
     /// `story project delete` — a project and everything recorded against it.
     Delete(DeletePlan),
-    /// `story purge` — one story and everything recorded against it.
-    Purge(PurgePlan),
+    /// `story delete` — one story and everything recorded against it.
+    DeleteStory(StoryDeletePlan),
     /// `story project set-prefix` — every id this project has ever minted.
     SetPrefix(SetPrefixPlan),
-    /// `story reopen` of a soft-deleted story — the undelete (SH-154).
-    Undelete(UndeletePlan),
     /// A bulk "Archive" of every story in a CLOSED-superstate column
     /// (SH-43).
     HideState(HideStatePlan),
@@ -357,16 +333,13 @@ impl ConfirmationPlan {
     /// What the user must type, exactly, to go through with this.
     ///
     /// Also what the refusal names, so a caller reading a warning about `X`
-    /// is reading the same `X` they would have had to type. [`Self::Undelete`]
-    /// names its id here too, even though nobody types it back — see
-    /// [`Self::requires_typed_confirmation`].
+    /// is reading the same `X` they would have had to type.
     #[must_use]
     pub fn token(&self) -> &str {
         match self {
             Self::Delete(plan) => &plan.slug,
-            Self::Purge(plan) => &plan.id,
+            Self::DeleteStory(plan) => &plan.id,
             Self::SetPrefix(plan) => &plan.new_prefix,
-            Self::Undelete(plan) => &plan.id,
             Self::HideState(plan) => &plan.state,
         }
     }
@@ -374,23 +347,21 @@ impl ConfirmationPlan {
     /// The one-sentence fragment naming *what* this would do, for the
     /// terminal prompt that precedes the full plan.
     ///
-    /// Factored out because [`Self::Delete`] and [`Self::Purge`] are both
+    /// Factored out because [`Self::Delete`] and [`Self::DeleteStory`] are both
     /// permanent deletions, [`Self::SetPrefix`] destroys nothing — it makes
     /// every id already written down under the old prefix stop resolving —
-    /// and [`Self::Undelete`] does the opposite of either: it restores. A
-    /// prompt that called any of the three by another's headline would be
-    /// describing an act that never happens.
+    /// while bulk archive is reversible. A prompt that called one by another's
+    /// headline would describe an act that never happens.
     #[must_use]
     pub fn headline(&self) -> String {
         match self {
-            Self::Delete(_) | Self::Purge(_) => {
+            Self::Delete(_) | Self::DeleteStory(_) => {
                 format!("this would permanently delete `{}`", self.token())
             }
             Self::SetPrefix(plan) => format!(
                 "this would rename every `{}` id in `{}` to `{}`",
                 plan.old_prefix, plan.slug, plan.new_prefix
             ),
-            Self::Undelete(plan) => format!("this would restore deleted story `{}`", plan.id),
             Self::HideState(plan) => format!(
                 "this would archive {} stor{} currently in `{}`",
                 plan.ids.len(),
@@ -403,16 +374,25 @@ impl ConfirmationPlan {
     /// Whether confirming this plan means typing [`Self::token`] back
     /// verbatim, or a plain `y`/`yes` is enough.
     ///
-    /// [`Self::Delete`], [`Self::Purge`] and [`Self::SetPrefix`] are each a
+    /// [`Self::Delete`], [`Self::DeleteStory`] and [`Self::SetPrefix`] are each a
     /// one-way door, so the gate matches: prove the token was read by typing
-    /// it. [`Self::Undelete`] is not — `story delete` undoes it again — so
-    /// one keystroke is the right weight and a typed token would be the
-    /// wrong one. The weight of the gate matches the weight of the act.
-    /// [`Self::HideState`] is the same weight as [`Self::Undelete`] for the
-    /// same reason: `story unhide` undoes it, story by story.
+    /// it. [`Self::HideState`] is reversible with `story unhide`, story by
+    /// story, so one keystroke is the right weight.
     #[must_use]
     pub fn requires_typed_confirmation(&self) -> bool {
-        !matches!(self, Self::Undelete(_) | Self::HideState(_))
+        !matches!(self, Self::HideState(_))
+    }
+
+    /// The yes/no prompt for a reversible plan. Kept with the plan so a new
+    /// non-typed variant cannot inherit words describing a different action.
+    #[must_use]
+    pub fn confirmation_question(&self) -> &str {
+        match self {
+            Self::HideState(_) => "Archive these stories? [y/N] ",
+            Self::Delete(_) | Self::DeleteStory(_) | Self::SetPrefix(_) => {
+                "Confirm this operation? [y/N] "
+            }
+        }
     }
 }
 
@@ -1292,11 +1272,6 @@ fn render_human(response: &Response) -> String {
                 } else {
                     String::new()
                 };
-                let deleted = if story.story.deleted {
-                    " [deleted]"
-                } else {
-                    ""
-                };
                 // SH-409: `list` excludes archived (hidden) stories by
                 // default now, so a story that reaches this render arm
                 // carrying `hidden_at` only got here via `--include-archived`
@@ -1315,7 +1290,7 @@ fn render_human(response: &Response) -> String {
                 // the web board here.
                 let draft = if story.story.draft { " [draft]" } else { "" };
                 body.push_str(&format!(
-                    "{} [{}]{}{} {}{}{}{}{}{}{}{}\n",
+                    "{} [{}]{}{} {}{}{}{}{}{}{}\n",
                     story.story.id,
                     story.story.state,
                     priority,
@@ -1323,7 +1298,6 @@ fn render_human(response: &Response) -> String {
                     story.story.title,
                     progress_summary,
                     labels,
-                    deleted,
                     archived,
                     draft,
                     flagged,
@@ -1454,23 +1428,10 @@ pub const NO_CHECKOUT: &str = "no checkout on this machine";
 pub fn render_confirmation_plan(plan: &ConfirmationPlan) -> String {
     match plan {
         ConfirmationPlan::Delete(plan) => render_delete_plan(plan),
-        ConfirmationPlan::Purge(plan) => render_purge_plan(plan),
+        ConfirmationPlan::DeleteStory(plan) => render_story_delete_plan(plan),
         ConfirmationPlan::SetPrefix(plan) => render_set_prefix_plan(plan),
-        ConfirmationPlan::Undelete(plan) => render_undelete_plan(plan),
         ConfirmationPlan::HideState(plan) => render_hide_state_plan(plan),
     }
-}
-
-/// The warning `story reopen` prints before it undeletes.
-///
-/// Ordered like [`render_purge_plan`]: which story this is — the title is
-/// what lets the person confirming tell it is the right one — and why it was
-/// deleted. The lightest of the four otherwise: nothing here is a body count,
-/// so there is nothing left to enumerate.
-#[must_use]
-pub fn render_undelete_plan(plan: &UndeletePlan) -> String {
-    let reason = plan.deleted_reason.as_deref().unwrap_or("no reason given");
-    format!("{} — {}\n  deleted: {reason}\n", plan.id, plan.title)
 }
 
 /// The warning the bulk column "Archive" action prints before it hides.
@@ -1495,7 +1456,7 @@ pub fn render_hide_state_plan(plan: &HideStatePlan) -> String {
 
 /// The warning `story project set-prefix` prints before it asks.
 ///
-/// Ordered like [`render_delete_plan`] and [`render_purge_plan`]: what this
+/// Ordered like [`render_delete_plan`] and [`render_story_delete_plan`]: what this
 /// is, what changes and by how much, and only then the question. Unlike
 /// either of those this is not a body count — nothing is destroyed — so the
 /// closing line says what actually cannot be undone: every id already
@@ -1534,20 +1495,17 @@ pub fn render_set_prefix_plan(plan: &SetPrefixPlan) -> String {
     body
 }
 
-/// The warning a purge prints before it asks.
+/// The warning a story deletion prints before it asks.
 ///
 /// Ordered the way [`render_delete_plan`] is, by what a person needs in order
 /// to answer: which story this is, what is irreversible about it, what else
 /// changes, and only then the question. The retracted claims are here rather
 /// than left as a surprise because they are edits to *other* stories' histories
-/// — the one part of a purge that reaches beyond the story being purged.
+/// — the one part of a deletion that reaches beyond the story being deleted.
 #[must_use]
-pub fn render_purge_plan(plan: &PurgePlan) -> String {
+pub fn render_story_delete_plan(plan: &StoryDeletePlan) -> String {
     let mut body = String::new();
     body.push_str(&format!("{} — {}\n", plan.id, plan.title));
-    if let Some(reason) = &plan.deleted_reason {
-        body.push_str(&format!("  deleted: {reason}\n"));
-    }
     body.push_str(&format!(
         "  {} event{} will be permanently deleted.\n",
         plan.events,
@@ -1706,9 +1664,8 @@ fn render_story(view: &StoryView) -> String {
     let assignee = story.assignee.as_deref().unwrap_or("-");
     let mut body = String::new();
     body.push_str(&format!("{} {}\n", story.id, story.title));
-    let deleted_marker = if story.deleted { ", deleted" } else { "" };
     body.push_str(&format!(
-        "state: {} ({}{deleted_marker})\n",
+        "state: {} ({})\n",
         story.state,
         story.superstate.as_str()
     ));
@@ -1756,10 +1713,6 @@ fn render_story(view: &StoryView) -> String {
     // "Archive" everywhere — see `StoryEvent::StoryHidden`'s doc comment.
     if let Some(hidden_at) = &story.hidden_at {
         body.push_str(&format!("archived: {hidden_at}\n"));
-    }
-
-    if let Some(reason) = &story.deleted_reason {
-        body.push_str(&format!("deleted_reason: {reason}\n"));
     }
 
     if view.flagged_reasons.is_empty() {

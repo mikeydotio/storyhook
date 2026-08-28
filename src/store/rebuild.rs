@@ -599,7 +599,6 @@ fn column_comparisons(
         story_type,
         assignee,
         awaiting,
-        deleted,
         archived,
         created_at,
         updated_at,
@@ -660,12 +659,6 @@ fn column_comparisons(
             "awaiting",
             optional(awaiting.as_deref()),
             optional(expected.awaiting.as_deref()),
-            Basis::Fold,
-        ),
-        (
-            "deleted",
-            deleted.to_string(),
-            expected.deleted.to_string(),
             Basis::Fold,
         ),
         // `archived` has no counterpart in the snapshot: it is *defined* as

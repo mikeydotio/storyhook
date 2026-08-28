@@ -383,13 +383,10 @@ fn reading_the_history_of_a_story_that_does_not_exist_is_empty_not_an_error() {
 }
 
 #[test]
-fn restoring_a_history_goes_through_dispatch_and_answers_with_the_story() {
-    // The action the port owed a design rather than a translation. It has one
-    // now — a compensating write — so the arm dispatches like any other and
-    // answers with the story as it stands afterwards.
+fn restoring_to_an_empty_history_refuses_to_bypass_permanent_delete() {
     let fixture = ServiceFixture::new();
     let id = create(&fixture, "Cannot be rewound", None);
-    let response = dispatch(
+    let error = dispatch(
         &fixture.ctx(),
         Invocation::History {
             action: HistoryAction::Restore {
@@ -398,17 +395,13 @@ fn restoring_a_history_goes_through_dispatch_and_answers_with_the_story() {
             },
         },
     )
-    .expect("restoring is a supported action");
-    match response {
-        Response::Story(view) => {
-            assert_eq!(view.story.id, id);
-            assert!(
-                view.story.deleted,
-                "restoring to an empty history deletes the story"
-            );
-        }
-        other => panic!("expected the story back, got {other:?}"),
-    }
+    .expect_err("empty history cannot delete without confirmation");
+    assert!(
+        error
+            .to_string()
+            .contains(&format!("use `story delete {id}`")),
+        "{error}"
+    );
 }
 
 #[test]
@@ -669,17 +662,19 @@ mod undo {
     }
 
     #[test]
-    fn undoing_a_creation_deletes_the_story_rather_than_erasing_it() {
+    fn undoing_a_creation_is_refused_because_delete_is_permanent() {
         let fixture = ServiceFixture::new();
         let (id, _) = snapshot(&fixture, "Created in error");
 
-        let compensation = undo(&fixture, &id, &[]);
+        let error = history::restore(&fixture.ctx(), &id, &[]).unwrap_err();
         assert!(
-            matches!(compensation.as_slice(), [StoryEvent::StoryDeleted { .. }]),
-            "{compensation:?}"
+            error
+                .to_string()
+                .contains(&format!("use `story delete {id}`")),
+            "{error}"
         );
         let after = show(&fixture, &id);
-        assert!(after.deleted);
+        assert_eq!(after.superstate, storyhook::domain::SuperState::Open);
         assert!(
             !session::history(&fixture.ctx(), &id).unwrap().is_empty(),
             "the id stays spent and the history survives — an id that can vanish is \

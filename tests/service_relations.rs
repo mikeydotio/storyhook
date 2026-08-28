@@ -735,7 +735,7 @@ fn closing_a_related_story_leaves_the_relation_intact() {
 }
 
 #[test]
-fn deleting_a_related_story_leaves_both_halves_recorded() {
+fn deleting_a_related_story_retracts_the_surviving_half() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let a = new_story(&ctx, "a");
@@ -743,10 +743,17 @@ fn deleting_a_related_story_leaves_both_halves_recorded() {
     RelationService::new(&ctx)
         .relate(&a, "blocks", &b, false)
         .unwrap();
-    StoryService::new(&ctx).delete(&b, "obsolete").unwrap();
+    StoryService::new(&ctx).delete(&b).unwrap();
 
-    assert_eq!(relations(&fixture, &a), [("blocks".to_string(), b.clone())]);
-    assert_eq!(relations(&fixture, &b), [("blocked-by".to_string(), a)]);
+    assert!(relations(&fixture, &a).is_empty());
+    let no = StoryNo::parse_id("SH", &b).unwrap();
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.story(fixture.project(), no))
+            .unwrap()
+            .is_none()
+    );
 }
 
 // --- block_on / unblock_from (SH-398) ---------------------------------------
@@ -1067,7 +1074,7 @@ fn closing_one_of_several_blockers_retracts_only_that_dependency() {
 }
 
 #[test]
-fn soft_deleting_a_blocker_retracts_the_dependency() {
+fn hard_deleting_a_blocker_retracts_the_dependency() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let blocker = new_story(&ctx, "blocker");
@@ -1077,10 +1084,17 @@ fn soft_deleting_a_blocker_retracts_the_dependency() {
         .expect("recording dependency");
 
     StoryService::new(&ctx)
-        .delete(&blocker, "no longer needed")
+        .delete(&blocker)
         .expect("deleting blocker");
 
-    assert_eq!(relations(&fixture, &blocker), []);
+    let blocker_no = StoryNo::parse_id("SH", &blocker).expect("a well-formed id");
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.story(fixture.project(), blocker_no))
+            .expect("reading the deleted blocker")
+            .is_none()
+    );
     assert_eq!(relations(&fixture, &dependent), []);
     assert_eq!(stored_edges(&fixture, &blocker), []);
     assert_eq!(stored_edges(&fixture, &dependent), []);

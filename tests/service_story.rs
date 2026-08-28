@@ -7,9 +7,10 @@
 
 use std::collections::BTreeMap;
 
-use storyhook::domain::{Priority, StateDef, StorySnapshot, SuperState};
+use storyhook::domain::{Priority, StateDef, StoryEvent, StorySnapshot, SuperState};
 use storyhook::error::AppError;
 use storyhook::service::{Clock, Ctx, FieldEdits, NewStoryInput, StoryService};
+use storyhook::store::test_support::inject_events;
 use storyhook::store::{ReadOps, SqliteStore, Store, StoryNo, StoryQuery, WriteOps};
 use storyhook_test_support::{FIXTURE_NOW, ServiceFixture};
 
@@ -50,6 +51,20 @@ fn validation_message(error: AppError) -> String {
         AppError::Validation(message) => message,
         other => panic!("expected a validation error, got {other:?}"),
     }
+}
+
+fn legacy_abandon(fixture: &ServiceFixture, id: &str) {
+    let no = StoryNo::parse_id("SH", id).expect("a well-formed id");
+    inject_events(
+        fixture.store(),
+        fixture.project(),
+        no,
+        &[StoryEvent::StoryDeleted {
+            at: FIXTURE_NOW.to_string(),
+            reason: "legacy deletion".to_string(),
+        }],
+    )
+    .expect("injecting a legacy deletion event");
 }
 
 // --- create ----------------------------------------------------------------
@@ -393,7 +408,6 @@ fn a_comment_on_a_closed_story_moves_only_updated_at_and_the_comment_list() {
     assert_eq!(after.superstate, before.superstate);
     assert_eq!(after.closed_at, before.closed_at);
     assert_eq!(after.hidden_at, before.hidden_at);
-    assert_eq!(after.deleted, before.deleted);
     assert_eq!(after.draft, before.draft);
     assert_eq!(after.labels, before.labels);
     assert_eq!(after.assignee, before.assignee);
@@ -438,46 +452,42 @@ fn a_hidden_closed_story_accepts_a_comment_and_stays_hidden() {
     );
 }
 
-/// A tombstone takes no new observations: `purge` erases every event on it, so
-/// a comment written here is evidence with an expiry date nothing warns about.
+/// Legacy soft-deleted stories are ordinary closed records after the v2.2
+/// migration. They remain commentable for the same reason any closed story is.
 #[test]
-fn a_soft_deleted_story_refuses_a_comment_and_names_the_way_back() {
+fn a_legacy_abandoned_story_accepts_a_comment() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "gone but not forgotten");
-    service
-        .delete(&story.id, "created in error")
-        .expect("deleting");
-    let before = event_kinds(&fixture, &story.id);
+    legacy_abandon(&fixture, &story.id);
 
-    let error = service.comment(&story.id, "one more thing").unwrap_err();
+    let after = service
+        .comment(&story.id, "one more thing")
+        .expect("commenting on a legacy abandoned story");
 
+    assert_eq!(after.superstate, SuperState::Closed);
+    assert!(after.hidden_at.is_some());
     assert_eq!(
-        validation_message(error),
-        "story `SH-1` is deleted and cannot be commented on; restore it first with `story reopen SH-1 --force`"
-    );
-    assert_eq!(
-        event_kinds(&fixture, &story.id),
-        before,
-        "a refused comment writes nothing"
+        after.comments.last().expect("a comment").text,
+        "one more thing"
     );
 }
 
 #[test]
-fn a_restored_story_accepts_a_comment_again() {
+fn a_reopened_legacy_abandoned_story_accepts_a_comment_again() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "back from the dead");
-    service.delete(&story.id, "an error").expect("deleting");
+    legacy_abandon(&fixture, &story.id);
     service.reopen(&story.id).expect("restoring");
 
     let after = service
         .comment(&story.id, "restored deliberately")
         .expect("commenting after a restore");
 
-    assert!(!after.deleted);
+    assert_eq!(after.superstate, SuperState::Open);
     assert_eq!(
         after.comments.last().expect("a comment").text,
         "restored deliberately"
@@ -955,25 +965,17 @@ fn error_exit_code(expected: &str, actual: &str) -> i32 {
 }
 
 #[test]
-fn an_if_state_claim_against_a_deleted_story_reports_deleted() {
-    // `story delete` leaves the state slug alone, so a stale claim naming the
-    // pre-deletion slug would pass a naive comparison.
+fn an_if_state_claim_against_a_deleted_story_reports_not_found() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "deleted mid-claim");
-    service.delete(&story.id, "duplicate").expect("deleting");
+    service.delete(&story.id).expect("deleting");
 
     let error = service
         .set_state(&story.id, "in-progress", None, Some("todo"), None)
         .unwrap_err();
-    match error {
-        AppError::StateConflict(expected, actual) => {
-            assert_eq!(expected, "todo");
-            assert_eq!(actual, "deleted");
-        }
-        other => panic!("expected StateConflict, got {other:?}"),
-    }
+    assert!(matches!(error, AppError::NotFound(_)), "{error:?}");
 }
 
 #[test]
@@ -1698,37 +1700,22 @@ fn an_empty_bulk_update_produces_an_empty_message() {
     );
 }
 
-// --- delete / reopen -------------------------------------------------------
+// --- hard delete / reopen --------------------------------------------------
 
 #[test]
-fn deleting_a_story_closes_it_and_records_the_reason() {
+fn deleting_a_story_removes_its_row_and_events() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let story = new_story(&ctx, "mistake");
-    let message = StoryService::new(&ctx)
-        .delete(&story.id, "created in error")
-        .expect("deleting");
-    assert_eq!(message, "deleted SH-1: created in error");
-
-    let after = snapshot(&fixture, &story.id);
-    assert!(after.deleted);
-    assert_eq!(after.deleted_reason.as_deref(), Some("created in error"));
-    assert_eq!(after.superstate, SuperState::Closed);
-    assert_eq!(after.comments[0].text, "[deleted] created in error");
-    // SH-130: the story comes to rest somewhere genuinely CLOSED, rather than
-    // keeping an OPEN slug while claiming CLOSED. The truthful record of what
-    // it was lives in the event log, which is append-only and cannot lie; the
-    // read model says where the story is now.
-    //
-    // SH-505 moved that resting place from `done` to `closed`, and archived it.
-    // A deletion is an abandonment; `done` said the work had been finished, and
-    // the archive stamp is what keeps the story as invisible as it was before
-    // `closed` became a state a board renders a column for.
-    assert_eq!(after.state, "closed");
-    assert!(
-        after.hidden_at.is_some(),
-        "a soft-deleted story folds archived"
-    );
+    let message = StoryService::new(&ctx).delete(&story.id).expect("deleting");
+    assert!(message.contains("deleted SH-1 — mistake"), "{message}");
+    let no = StoryNo::parse_id("SH", &story.id).unwrap();
+    let row = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), no))
+        .unwrap();
+    assert!(row.is_none());
+    assert!(event_kinds(&fixture, &story.id).is_empty());
 }
 
 #[test]
@@ -1737,8 +1724,8 @@ fn deleting_a_story_twice_reports_it_as_missing() {
     let ctx = fixture.ctx();
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "gone");
-    service.delete(&story.id, "first").unwrap();
-    let error = service.delete(&story.id, "second").unwrap_err();
+    service.delete(&story.id).unwrap();
+    let error = service.delete(&story.id).unwrap_err();
     match error {
         AppError::NotFound(message) => assert_eq!(message, "story `SH-1` not found"),
         other => panic!("expected NotFound, got {other:?}"),
@@ -1749,7 +1736,7 @@ fn deleting_a_story_twice_reports_it_as_missing() {
 fn deleting_a_story_that_never_existed_is_not_found() {
     let fixture = ServiceFixture::new();
     let error = StoryService::new(&fixture.ctx())
-        .delete("SH-1", "why")
+        .delete("SH-1")
         .unwrap_err();
     assert!(matches!(error, AppError::NotFound(_)), "{error:?}");
 }
@@ -1814,15 +1801,6 @@ fn reopening_an_open_story_is_refused() {
 }
 
 #[test]
-fn reopen_plan_of_an_open_story_is_refused() {
-    let fixture = ServiceFixture::new();
-    let ctx = fixture.ctx();
-    let story = new_story(&ctx, "already open");
-    let error = StoryService::new(&ctx).reopen_plan(&story.id).unwrap_err();
-    assert_eq!(validation_message(error), "story `SH-1` is already open");
-}
-
-#[test]
 fn reopening_a_story_that_does_not_exist_is_not_found() {
     let fixture = ServiceFixture::new();
     let error = StoryService::new(&fixture.ctx())
@@ -1831,59 +1809,18 @@ fn reopening_a_story_that_does_not_exist_is_not_found() {
     assert!(matches!(error, AppError::NotFound(_)), "{error:?}");
 }
 
-/// SH-154: `confirm_undelete` used to answer this from inside `reopen`
-/// itself, by reading stdin — which runs inside the daemon and never has a
-/// terminal, so it always errored naming `--force` regardless of who was
-/// asking or from where. `reopen_plan` is the fix: a plain read that hands
-/// back what an undelete would restore, so the question can travel to
-/// whichever process — `main.rs` — actually has a terminal to ask it at.
 #[test]
-fn reopen_plan_of_a_deleted_story_returns_what_it_would_undelete() {
+fn reopening_a_legacy_abandoned_story_restores_it() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "deleted");
-    service.delete(&story.id, "an error").unwrap();
-
-    let plan = service
-        .reopen_plan(&story.id)
-        .expect("reading the plan")
-        .expect("a deleted story has a plan");
-    assert_eq!(plan.id, "SH-1");
-    assert_eq!(plan.title, "deleted");
-    assert_eq!(plan.deleted_reason.as_deref(), Some("an error"));
-}
-
-/// The sibling of the plan test above: an ordinary closed story (never
-/// deleted) needs no confirmation at all, so `reopen_plan` answers `None`
-/// rather than a plan nobody should be asked to confirm.
-#[test]
-fn reopen_plan_of_an_ordinarily_closed_story_is_none() {
-    let fixture = ServiceFixture::new();
-    let ctx = fixture.ctx();
-    let service = StoryService::new(&ctx);
-    let story = new_story(&ctx, "just closed");
-    service
-        .set_state(&story.id, "done", None, None, None)
-        .unwrap();
-
-    let plan = service.reopen_plan(&story.id).expect("reading the plan");
-    assert!(plan.is_none(), "{plan:?}");
-}
-
-#[test]
-fn reopening_a_deleted_story_restores_it_and_keeps_the_audit_comment() {
-    let fixture = ServiceFixture::new();
-    let ctx = fixture.ctx();
-    let service = StoryService::new(&ctx);
-    let story = new_story(&ctx, "undeleted");
-    service.delete(&story.id, "an error").unwrap();
+    legacy_abandon(&fixture, &story.id);
 
     let reopened = service.reopen(&story.id).expect("reopening");
-    assert!(!reopened.deleted);
-    assert_eq!(reopened.deleted_reason, None);
     assert_eq!(reopened.superstate, SuperState::Open);
-    assert_eq!(reopened.comments[0].text, "[deleted] an error");
+    assert_eq!(reopened.state, "todo");
+    assert_eq!(reopened.closed_at, None);
 }
 
 #[test]

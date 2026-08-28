@@ -686,7 +686,6 @@ const REBUILD_STORIES: &str = "
         story_type    TEXT,
         assignee      TEXT,
         awaiting      TEXT,
-        deleted       INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)),
         archived      INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1)),
         created_at    TEXT NOT NULL,
         updated_at    TEXT NOT NULL,
@@ -697,7 +696,7 @@ const REBUILD_STORIES: &str = "
     );
     INSERT INTO stories_new SELECT
         project_id, story_no, head_seq, title, state, superstate, priority,
-        priority_rank, story_type, assignee, awaiting, deleted, archived,
+        priority_rank, story_type, assignee, awaiting, archived,
         created_at, updated_at, closed_at, description, snapshot
     FROM stories;
     DROP TABLE stories;
@@ -849,7 +848,6 @@ fn a_rebuild_that_leaves_a_dangling_reference_is_refused() {
             priority   TEXT NOT NULL,
             priority_rank INTEGER NOT NULL,
             story_type TEXT, assignee TEXT, awaiting TEXT,
-            deleted    INTEGER NOT NULL DEFAULT 0,
             archived   INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL, closed_at TEXT,
             description TEXT, snapshot TEXT NOT NULL,
@@ -895,10 +893,10 @@ fn a_rebuild_that_leaves_a_dangling_reference_is_refused() {
 #[test]
 fn a_stories_rebuild_that_leaves_the_append_guard_up_fails() {
     // Measured, not assumed, and kept as a test because the cost it records is
-    // the price SH-130's purge pays for its guard.
+    // the price SH-130's permanent delete pays for its guard.
     //
     // `events_reject_delete` names `stories` in its `WHEN` clause, which is
-    // what lets a purge delete a story's events and nothing else's. The
+    // what lets a permanent delete remove a story's events and nothing else's. The
     // consequence is that `stories` can no longer be rebuilt the way migration
     // 4 rebuilt it: `ALTER TABLE … RENAME TO` re-parses every trigger in the
     // schema to rewrite references to the renamed table, and between the
@@ -920,7 +918,6 @@ fn a_stories_rebuild_that_leaves_the_append_guard_up_fails() {
             priority   TEXT NOT NULL,
             priority_rank INTEGER NOT NULL,
             story_type TEXT, assignee TEXT, awaiting TEXT,
-            deleted    INTEGER NOT NULL DEFAULT 0,
             archived   INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL, closed_at TEXT,
             description TEXT, snapshot TEXT NOT NULL,
@@ -928,7 +925,7 @@ fn a_stories_rebuild_that_leaves_the_append_guard_up_fails() {
         );
         INSERT INTO stories_new SELECT
             project_id, story_no, head_seq, title, state, superstate, priority,
-            priority_rank, story_type, assignee, awaiting, deleted, archived,
+            priority_rank, story_type, assignee, awaiting, archived,
             created_at, updated_at, closed_at, description, snapshot
         FROM stories;
         DROP TABLE stories;
@@ -2637,8 +2634,9 @@ fn migration_nineteen_repairs_every_legacy_shape_with_ordered_real_events() {
         }
     }
     assert_eq!(rows[6].snapshot.superstate.as_str(), "CLOSED");
-    assert!(rows[6].archived && !rows[6].snapshot.deleted);
-    assert!(rows[7].archived && rows[7].snapshot.deleted);
+    assert!(rows[6].archived);
+    assert!(rows[7].archived);
+    assert_eq!(rows[7].snapshot.state, "closed");
 
     let control_after = rows
         .iter()
@@ -3415,4 +3413,49 @@ fn migration_twenty_two_retracts_closed_blocker_edges_with_real_events() {
         diff_read_model(&store, project).unwrap().is_clean(),
         "migration output must agree with a fresh event replay"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Migration 23: deletion is hard and no tombstone fields remain (SH-498)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn migration_twenty_three_drops_the_deleted_column_and_snapshot_keys() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..20]).unwrap();
+    seed_a_v20_soft_deleted_story(store.path(), "");
+    store.migrate_with(&migrate::MIGRATIONS[..21]).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..22]).unwrap();
+
+    store.migrate_with(&migrate::MIGRATIONS[..23]).unwrap();
+
+    let conn = Connection::open(store.path()).unwrap();
+    let mut columns = conn.prepare("PRAGMA table_info(stories)").unwrap();
+    let names: Vec<String> = columns
+        .query_map([], |row| row.get(1))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert!(!names.iter().any(|name| name == "deleted"), "{names:?}");
+
+    let snapshot: String = conn
+        .query_row(
+            "SELECT snapshot FROM stories WHERE project_id = 1 AND story_no = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
+    assert!(doc.get("deleted").is_none(), "{doc}");
+    assert!(doc.get("deleted_reason").is_none(), "{doc}");
+
+    let legacy_events: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE kind = 'StoryDeleted'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(legacy_events, 1, "migration preserves replayable history");
 }

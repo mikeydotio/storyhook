@@ -1,29 +1,10 @@
-//! SH-497 — a deleted child is not a child.
-//!
-//! Deletion in storyhook is SOFT: the row survives, its `state` slug is kept as
-//! a truthful record and its `superstate` is forced to CLOSED (issue #18). That
-//! is right for the story itself and wrong for everything that reads it as
-//! somebody's child, because `stories.get(child_id)` still succeeds — so
-//! `computed_epic_state` reached its "every child is closed" branch and
-//! reported the parent **done**. Deleting an epic's last child did not strand
-//! the epic; it silently COMPLETED it, with `state_computed: true` so the value
-//! read as authoritative rather than stale.
+//! SH-497/SH-498 — a permanently deleted child is not a child. Hard deletion
+//! retracts the `parent-of` edge before removing the row, so epic state and
+//! progress are derived only from survivors.
 //!
 //! User determination, 2026-08-27 (recorded on SH-497): when an epic has no
 //! children its state is `todo`, and it must either be deleted or given
 //! children before it can move anywhere else.
-//!
-//! That sentence carries a deliberate ASYMMETRY, and it is the whole design:
-//!
-//! * the epic's **state** ignores deleted children, so a childless epic
-//!   computes to `todo`/OPEN rather than inventing a completion;
-//! * the epic's **identity** does not. `has_children` still tests for the
-//!   `parent-of` edge, so the story is still an epic and `story move` still
-//!   refuses it. A story whose children were all deleted is not thereby
-//!   promoted back to an ordinary story that anyone may drag anywhere.
-//!
-//! Getting only the first half would close the reported failure and quietly
-//! hand every abandoned epic back to the board as a movable card.
 //!
 //! The fixtures type their parent `epic` on purpose (SH-499): today every gate
 //! infers epic-ness from the `parent-of` edge, which is itself a defect, so
@@ -90,7 +71,7 @@ fn an_epic_whose_only_child_is_deleted_reads_todo_rather_than_done() {
     assert_eq!(before["story"]["story"]["state"], "todo");
 
     story(p)
-        .args(["delete", "SH-2", "abandoned"])
+        .args(["delete", "SH-2", "--force"])
         .assert()
         .success();
 
@@ -114,7 +95,7 @@ fn a_deleted_child_is_not_counted_in_progress() {
     let p = dir.path();
 
     story(p)
-        .args(["delete", "SH-2", "abandoned"])
+        .args(["delete", "SH-2", "--force"])
         .assert()
         .success();
 
@@ -134,7 +115,7 @@ fn surviving_children_still_drive_the_state_after_a_sibling_is_deleted() {
     let p = dir.path();
 
     story(p)
-        .args(["delete", "SH-2", "abandoned"])
+        .args(["delete", "SH-2", "--force"])
         .assert()
         .success();
     story(p)
@@ -154,15 +135,13 @@ fn surviving_children_still_drive_the_state_after_a_sibling_is_deleted() {
 
 #[test]
 fn an_epic_with_no_live_children_still_refuses_a_direct_move() {
-    // The asymmetry, and the half a partial fix would drop. The epic reads
-    // `todo` now -- but it is STILL an epic, because it still holds the
-    // `parent-of` edge, so its state stays computed and un-driveable. The
-    // determination's own words: it must be deleted, or given children.
+    // The parent remains an epic by type even though deletion removed its last
+    // parent-of edge, so its state remains computed and cannot be moved.
     let dir = epic_with_children(1);
     let p = dir.path();
 
     story(p)
-        .args(["delete", "SH-2", "abandoned"])
+        .args(["delete", "SH-2", "--force"])
         .assert()
         .success();
 
@@ -188,11 +167,11 @@ fn an_epic_with_no_live_children_can_still_be_deleted() {
     let p = dir.path();
 
     story(p)
-        .args(["delete", "SH-2", "abandoned"])
+        .args(["delete", "SH-2", "--force"])
         .assert()
         .success();
     story(p)
-        .args(["delete", "SH-1", "abandoned too"])
+        .args(["delete", "SH-1", "--force"])
         .assert()
         .success();
 }
@@ -205,7 +184,7 @@ fn giving_a_childless_epic_a_new_child_makes_its_state_follow_again() {
     let p = dir.path();
 
     story(p)
-        .args(["delete", "SH-2", "abandoned"])
+        .args(["delete", "SH-2", "--force"])
         .assert()
         .success();
     story(p).args(["new", "replacement"]).assert().success();

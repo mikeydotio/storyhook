@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 
 use crate::domain::provenance::Provenance;
 use crate::domain::{
-    Priority, StateDef, StoryEvent, StorySnapshot, fold_story, inverse_relation,
+    Priority, StateDef, StoryEvent, StorySnapshot, SuperState, fold_story, inverse_relation,
     validate_state_defs_for_write, validate_type_slug,
 };
 use crate::error::AppError;
@@ -348,6 +348,9 @@ struct PlannedStory {
     events: Vec<RawEvent>,
     snapshot: StorySnapshot,
     archived: bool,
+    /// Whether the legacy source history ended under `StoryDeleted`. Kept for
+    /// the migration report only; current snapshots have no deleted state.
+    legacy_deleted: bool,
     is_epic: bool,
 }
 
@@ -471,6 +474,7 @@ impl MigrationPlan {
                 id: story.id.clone(),
                 story_no,
                 archived: story.archived,
+                legacy_deleted: legacy_deletion_active(story, &project.states),
                 is_epic: structural_epics.contains(&story.id),
                 snapshot,
             });
@@ -531,7 +535,7 @@ impl MigrationPlan {
                     .filter(|story| story.is_epic && !story.snapshot.state_computed)
                     .count(),
             archived: self.stories.iter().filter(|s| s.archived).count(),
-            deleted: self.stories.iter().filter(|s| s.snapshot.deleted).count(),
+            deleted: self.stories.iter().filter(|s| s.legacy_deleted).count(),
             states: self.project.states.len(),
             types: self.project.types.len(),
             members: self.project.members.len(),
@@ -596,7 +600,8 @@ impl MigrationPlan {
             // Repairing, not refusing: a legacy tree predates the required
             // floor, and refusing to migrate one because of a state it never
             // had would make old data unmovable rather than conforming.
-            write_states_repairing(tx, project, &self.project.states)?;
+            let repaired_states = write_states_repairing(tx, project, &self.project.states)?;
+            let repaired_state_map = state_map(&repaired_states);
             if !self.project.types.is_empty() {
                 tx.put_types(project, &self.project.types)?;
             } else {
@@ -677,7 +682,7 @@ impl MigrationPlan {
             for (story, head) in self.stories.iter().zip(heads) {
                 let stored = tx.events_for(project, story.story_no)?;
                 let (known, _unknown) = partition_known(story.story_no, &stored);
-                let snapshot = fold_story(&story.id, &known, &state_map(&self.project.states))?;
+                let snapshot = fold_story(&story.id, &known, &repaired_state_map)?;
                 tx.put_story(project, &snapshot, head)?;
             }
             tx.reserve_story_no(project, self.highest)?;
@@ -873,6 +878,28 @@ fn fold_stories(
         }
     }
     folded
+}
+
+/// The legacy soft-delete fact used only by the one-time migration report.
+/// It mirrors the compatibility latch in `fold_story`: a deletion starts it
+/// and a later move into a configured OPEN state retracts it.
+fn legacy_deletion_active(story: &LegacyStory, states: &[StateDef]) -> bool {
+    let state_map = state_map(states);
+    let mut active = false;
+    for event in &story.events {
+        match event.decoded.as_ref() {
+            Some(StoryEvent::StoryDeleted { .. }) => active = true,
+            Some(StoryEvent::StoryStateChanged { state, .. })
+                if state_map
+                    .get(state)
+                    .is_some_and(|definition| definition.super_state == SuperState::Open) =>
+            {
+                active = false;
+            }
+            _ => {}
+        }
+    }
+    active
 }
 
 /// The refusal for a story that will not fold.

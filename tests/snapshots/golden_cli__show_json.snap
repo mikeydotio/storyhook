@@ -196,20 +196,17 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
-        "head_global_seq": 74,
+        "head_global_seq": 75,
         "story": {
           "awaiting": null,
           "closed_at": "[timestamp]",
           "comments": [
             {
               "at": "[timestamp]",
-              "text": "[deleted] superseded by the global store"
+              "text": "superseded by the global store"
             }
           ],
           "created_at": "[timestamp]",
-          "deleted": true,
-          "deleted_reason": "superseded by the global store",
-          "hidden_at": "[timestamp]",
           "id": "SH-13",
           "priority": "low",
           "priority_assessed": true,

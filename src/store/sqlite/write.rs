@@ -898,20 +898,20 @@ pub(super) fn put_story(
         conn.execute(
             "INSERT INTO stories (project_id, story_no, head_seq, head_global_seq, title, \
                  state, superstate, priority, priority_rank, story_type, assignee, awaiting, \
-                 deleted, archived, created_at, updated_at, closed_at, description, hidden_at, \
+                 archived, created_at, updated_at, closed_at, description, hidden_at, \
                  draft, snapshot) \
              VALUES (?1, ?2, ?3, \
                  COALESCE((SELECT e.global_seq FROM events e \
                             WHERE e.project_id = ?1 AND e.story_no = ?2 AND e.seq = ?3), 0), \
                  ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, \
-                 ?18, ?19, ?20) \
+                 ?18, ?19) \
              ON CONFLICT (project_id, story_no) DO UPDATE SET \
                  head_seq = excluded.head_seq, head_global_seq = excluded.head_global_seq, \
                  title = excluded.title, state = excluded.state, \
                  superstate = excluded.superstate, priority = excluded.priority, \
                  priority_rank = excluded.priority_rank, story_type = excluded.story_type, \
                  assignee = excluded.assignee, awaiting = excluded.awaiting, \
-                 deleted = excluded.deleted, archived = excluded.archived, \
+                 archived = excluded.archived, \
                  created_at = excluded.created_at, updated_at = excluded.updated_at, \
                  closed_at = excluded.closed_at, description = excluded.description, \
                  hidden_at = excluded.hidden_at, draft = excluded.draft, \
@@ -928,7 +928,6 @@ pub(super) fn put_story(
                 snapshot.story_type,
                 snapshot.assignee,
                 snapshot.awaiting,
-                snapshot.deleted,
                 archived,
                 snapshot.created_at,
                 snapshot.updated_at,
