@@ -1060,6 +1060,66 @@ Standing rules for every wave:
   (SH-396). `scripts/run-changed.sh` stamps the tier honestly rather than aspirationally: any
   escape hatch that ran everything earns `gate`, never `changed`. Design of record:
   `docs/spec/selective-testing.md`.
+- **A guard derived over one language is a guard the next language walks past, and a
+  process is identified by what it serves, not by where its binary sits** (SH-493). Two
+  halves of one incident: **672 leaked daemons alive on this machine across three days**,
+  every one asking for port 3456 with no parent to die with, while both ends of
+  `scripts/check-no-orphan-servers.sh` reported a clean tree. The **leak** was
+  `tests/plugin_install.rs`, which `env_clear()`s — correctly, so a provider CLI is found
+  on the fixture's own `PATH` and nowhere else — and reinstated `HOME`, `PATH`, `TMPDIR`,
+  the `XDG_*` homes and `STORYHOOK_DATA_DIR` but never `daemon_containment()`, throwing
+  away one process later the containment `scripts/run-tests.sh` exports for the whole run.
+  SH-136's fence for exactly this (`every_harness_that_isolates_the_data_dir_also_contains_
+  its_daemon`) scans `git ls-files -- *.sh`, because when it was written every harness that
+  isolated a run *was* a shell script; it structurally could not see a Rust one. The twin,
+  `every_rust_harness_that_clears_the_environment_reinstates_daemon_containment`, keys on
+  `env_clear` rather than on the shell rule's "exports `STORYHOOK_DATA_DIR`" — `run_launcher`
+  names no store at all and needed the containment just as much — and strips comments before
+  reading, since `daemon_containment`'s own doc comment spells `env_clear()` while explaining
+  who needs it (the `tests/dashboard_focus_coverage.rs` lesson, one language over). It
+  requires the **call**, never the `use` line, so neither half stands alone: delete the call
+  and keep the import and the compiler fails it as `unused_imports` under `-D warnings`;
+  delete both and the scan does (SH-365's two-mechanism shape). The **blindness** was that
+  16 of the 20 daemons that file leaks per run come from a *packaged copy* of the binary at
+  `<fixture>/package/story`, which a pattern anchored at `${repo_root}/target/debug`
+  structurally cannot match — so the 4 that ran the checkout binary were collected every run
+  and made the accumulation look like a handled trickle. A looser regex is not available:
+  `pgrep -f` is global, this machine runs three or four concurrent worktree suites, and they
+  share one fixture root, so a checkout-agnostic *pattern* would refuse this run over a
+  stranger's **live** suite and murder one at the postlude. The key is therefore what the
+  process **is**: a daemon whose `--store-path` names a file that no longer exists is serving
+  nobody, whoever started it — runtime state is keyed off the canonical store path (SH-113),
+  so its portfile went with the fixture directory, and it cannot be a developer's, because
+  theirs exists. Measured before it was written, not argued: it separated **718 abandoned
+  daemons from exactly two live ones**, and collected 728 for real while leaving the real
+  daemon alone. That class is collected in **every** phase and refused over in none — a
+  provably-abandoned daemon makes no run's verification a lie, so refusing would only block
+  this run over another worktree's mess, hundreds at a time (SH-306's pressure). Its age
+  floor is derived from `SPAWN_DEADLINE` rather than picked (SH-394), because between
+  `spawn_child` and the store being created a healthy daemon genuinely has no store file, and
+  reaping there would make the script the cause of the failure it reports. **Soundness was
+  chosen over completeness** and the gap is named rather than glossed: a daemon leaked while
+  its fixture directory still exists is outside the class until that directory goes, which
+  the containment fence above is what actually closes. Design of record:
+  `docs/spec/test-tiers.md`'s "The second class: a daemon whose store is gone".
+  **A path is read to its known delimiter, never to the first space**: the
+  abandoned-class reader took `--store-path`'s argument as the next whitespace
+  field, and macOS hands out home directories like `/Users/Ada Lovelace` without
+  comment — so on such a machine the extracted path was `/Users/Ada`, which does not
+  exist, which condemns the developer's own running daemon. Delimit on the verb that
+  follows (` daemon --serve`), the one thing after the path whose spelling the reader
+  already knows, and **construct** the straddle in a test rather than waiting for a
+  machine that has one (SH-420's posture, one subsystem over) — it is invisible on
+  every machine whose own paths have no spaces.
+  Two things the tests learned the hard way, both found by mutation rather than review:
+  a shim killed by the script is a direct child of the test process and therefore a
+  **zombie**, on which `kill -0` succeeds — so an "it was killed" assertion written against
+  `pid_alive` passes either way, and only reading the process state tells the two apart. And
+  a fixture whose workers self-expire faster than a loaded machine can respawn them lets its
+  own population reach zero, which the postlude reads as a clean tree and exits 0 on, with an
+  empty stderr, having proved nothing — one run in three once that file went from 7 tests to
+  12. A test's own population is a deadline like any other: derive how long it must hold from
+  the window it has to cover.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes

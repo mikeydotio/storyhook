@@ -17,7 +17,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use storyhook_test_support::{scratch_dir, story_binary};
+use storyhook_test_support::{daemon_containment, scratch_dir, story_binary};
 use tempfile::TempDir;
 
 /// A private world for one test: a `HOME`, one state home shared by every
@@ -88,11 +88,14 @@ impl Probe {
             .env("HOME", self.home())
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("XDG_STATE_HOME", self.state_home())
-            // Never the production port: a suite that could bind 3456 would
-            // fight the developer's own dashboard for it.
-            .env("STORYHOOK_DAEMON_ADDR", "127.0.0.1:0")
-            // A daemon this test starts must not outlive it.
-            .env("STORYHOOK_PARENT_PID", std::process::id().to_string());
+            // `env_clear` above threw away the containment `run-tests.sh`
+            // exports for the whole run, so it has to be put back: never the
+            // production port 3456, which is where a developer's own dashboard
+            // lives, and never without a parent to die with. Asked for rather
+            // than spelled out, because a copy of the pair is what SH-136 is
+            // about — and `every_rust_harness_that_clears_the_environment_
+            // reinstates_daemon_containment` below now requires the call.
+            .envs(daemon_containment());
         cmd
     }
 
@@ -1064,6 +1067,203 @@ fn every_harness_that_isolates_the_data_dir_also_contains_its_daemon() {
          with the run that started it and can outlive it, poisoning every later \
          run on the machine. Add `export STORYHOOK_PARENT_PID=\"$$\"` beside the \
          data-directory export."
+    );
+}
+
+/// `text` with Rust comments removed, so a rule is read from code rather than
+/// from prose *about* code.
+///
+/// Load-bearing rather than tidy: [`daemon_containment`]'s own doc comment
+/// spells `env_clear()` while explaining who needs it, and
+/// `src/env/git_env.rs` discusses that call at length in four separate doc
+/// comments. A scan over raw text reads every one of those as a call site and
+/// so reports a file that has none. This is the lesson
+/// `tests/dashboard_focus_coverage.rs` already paid for one language over,
+/// where two real selectors were swallowed into the prose of the comment
+/// sitting above them.
+fn without_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    let mut in_line_comment = false;
+    let mut block_depth = 0usize;
+    while let Some(c) = chars.next() {
+        if in_line_comment {
+            if c == '\n' {
+                in_line_comment = false;
+                out.push(c);
+            }
+            continue;
+        }
+        if block_depth > 0 {
+            if c == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                block_depth -= 1;
+            } else if c == '/' && chars.peek() == Some(&'*') {
+                chars.next();
+                block_depth += 1;
+            } else if c == '\n' {
+                out.push(c);
+            }
+            continue;
+        }
+        if c == '/' {
+            match chars.peek() {
+                Some('/') => {
+                    in_line_comment = true;
+                    continue;
+                }
+                Some('*') => {
+                    chars.next();
+                    block_depth = 1;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Whether `text` takes over a child's whole environment.
+fn clears_the_environment(text: &str) -> bool {
+    without_comments(text).contains("env_clear(")
+}
+
+/// Whether `text` puts the daemon containment back afterwards.
+///
+/// The **call**, never the `use` line — `daemon_containment` imported and
+/// never invoked leaves no `(` behind it and does not satisfy this. That is
+/// what makes the pair complete without either half being able to stand alone,
+/// the shape SH-365 settled on: delete the call and leave the import, and the
+/// compiler fails it as `unused_imports` under this repo's `-D warnings`;
+/// delete both, and this scan fails it.
+fn reinstates_daemon_containment(text: &str) -> bool {
+    without_comments(text).contains("daemon_containment(")
+}
+
+/// The comment stripper, provoked — a scan that reads prose as code reports a
+/// clean tree for the wrong reason (SH-364).
+#[test]
+fn the_environment_scan_reads_code_and_not_the_prose_about_it() {
+    assert!(clears_the_environment("cmd.env_clear();"));
+    assert!(clears_the_environment("    x.env_clear()\n"));
+    // The exact shape of `daemon_containment`'s own doc comment, which is
+    // where this scan would otherwise find its busiest false positive.
+    assert!(!clears_the_environment(
+        "/// three test files call `env_clear()` on purpose, so that the\n\
+         /// variable *they* are about cannot arrive from the ambient shell.\n"
+    ));
+    assert!(!clears_the_environment("// cmd.env_clear();"));
+    assert!(!clears_the_environment("/* cmd.env_clear(); */"));
+    // A block comment must not swallow the code that follows it, which is the
+    // failure mode that would turn this fence quiet rather than loud.
+    assert!(clears_the_environment("/* prose */ cmd.env_clear();"));
+    assert!(reinstates_daemon_containment(
+        ".envs(daemon_containment());"
+    ));
+    assert!(!reinstates_daemon_containment(
+        "//! carries `daemon_containment()` — enforced by `Pty::spawn`"
+    ));
+    // An import alone is not the containment, and must not read as it: the
+    // compiler is what catches this shape (`unused_imports`, `-D warnings`).
+    assert!(!reinstates_daemon_containment(
+        "use storyhook_test_support::{daemon_containment, scratch_dir};"
+    ));
+}
+
+/// Every tracked Rust harness that clears a child's environment must put the
+/// daemon containment back into it.
+///
+/// **The Rust twin of
+/// [`every_harness_that_isolates_the_data_dir_also_contains_its_daemon`], and
+/// the reason that one could not see SH-493.** Its scan is
+/// `git ls-files -- *.sh`, because when SH-136 wrote it every harness that
+/// isolated a run was a shell script. `tests/plugin_install.rs` is not. It
+/// calls `env_clear()` — correctly, since a provider CLI must be found on the
+/// fixture's own `PATH` and nowhere else — and then reinstates `HOME`, `PATH`,
+/// `TMPDIR`, the three `XDG_*` homes and `STORYHOOK_DATA_DIR`, but never the
+/// containment. `scripts/run-tests.sh` exports that containment for the whole
+/// run; `env_clear` throws it away again one process later, and nothing said
+/// so.
+///
+/// What that cost, measured rather than argued: one run of that one file left
+/// **20** daemons behind — one per `Harness`, every one asking for port 3456,
+/// the port a developer's own dashboard uses, and every one reparented to init
+/// with no parent to die with. 16 of the 20 ran from a copy of the binary at
+/// `<fixture>/package/story`, which `scripts/check-no-orphan-servers.sh`'s
+/// checkout-anchored pattern structurally could not match, so only the other 4
+/// were ever collected. 672 were alive on the machine SH-493 was filed from,
+/// spanning three days.
+///
+/// **Why `env_clear` is the key, and not "sets `STORYHOOK_DATA_DIR`"** — the
+/// spelling its shell twin uses. `Harness::run_launcher` names no store at all
+/// and needed the containment just as much, because the launcher's whole job
+/// is to exec the `story` the fixture put on its `PATH`. The direction of the
+/// asymmetry settles the rest: a file caught here that never spawns a daemon
+/// pays one line it did not need, while a file missed here leaks until
+/// somebody counts processes by hand.
+///
+/// Scoped to `tests/` and `crates/` on purpose. Production's only `env_clear`
+/// is `src/env/git_env.rs`'s allowlist, which is built for `git` and never
+/// runs `story`.
+#[test]
+fn every_rust_harness_that_clears_the_environment_reinstates_daemon_containment() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let listed = std::process::Command::new("git")
+        .current_dir(root)
+        .args(["ls-files", "-z", "--", "tests/*.rs", "crates/*.rs"])
+        .output()
+        .expect("listing this repository's tracked harness sources");
+    assert!(
+        listed.status.success(),
+        "`git ls-files` failed, so this scan proved nothing: {}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+
+    let mut clearing = Vec::new();
+    let mut uncontained = Vec::new();
+    for entry in listed.stdout.split(|byte| *byte == 0) {
+        if entry.is_empty() {
+            continue;
+        }
+        let relative = std::str::from_utf8(entry)
+            .expect("a UTF-8 path")
+            .to_string();
+        let text = std::fs::read_to_string(root.join(&relative))
+            .unwrap_or_else(|e| panic!("reading {relative}: {e}"));
+        if !clears_the_environment(&text) {
+            continue;
+        }
+        clearing.push(relative.clone());
+        if !reinstates_daemon_containment(&text) {
+            uncontained.push(relative);
+        }
+    }
+
+    // A scan that matches nothing passes every assertion built on top of it,
+    // which would make a broken comment stripper indistinguishable from a
+    // clean tree — the control `data_dir_harnesses` carries for the same
+    // reason.
+    assert!(
+        clearing.len() >= 5,
+        "this scan is supposed to find every Rust harness that clears a \
+         child's environment, and it found {}: {clearing:?}. The pattern is \
+         broken, not the harnesses.",
+        clearing.len()
+    );
+
+    assert!(
+        uncontained.is_empty(),
+        "{uncontained:?} call `env_clear()` on a child that can reach the \
+         `story` binary, without calling \
+         `storyhook_test_support::daemon_containment()` afterwards. \
+         `scripts/run-tests.sh` exports STORYHOOK_DAEMON_ADDR and \
+         STORYHOOK_PARENT_PID for the whole run and `env_clear` throws both \
+         away, so a daemon this child spawns asks for port 3456 — a \
+         developer's own dashboard — and has no parent to die with. Add \
+         `.envs(daemon_containment())` to the command, never a copy of the \
+         pair (SH-136)."
     );
 }
 

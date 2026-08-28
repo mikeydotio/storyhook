@@ -121,7 +121,28 @@ impl Fixture {
     /// `spawn_child` (`src/daemon/lifecycle.rs`) builds for a real daemon.
     fn spawn_matching_shim(&self) -> ChildGuard {
         let path = self.path().join("target/debug/story");
-        ChildGuard::new(spawn_matching(&path))
+        ChildGuard::new(spawn_matching(&path, &self.live_store()))
+    }
+
+    /// A store file that exists, so a shim holding it reads as a live daemon
+    /// of this worktree rather than as the abandoned class (SH-493). Inside
+    /// the fixture, so it goes when the fixture does.
+    fn live_store(&self) -> PathBuf {
+        let path = self.path().join("store.db");
+        if !path.exists() {
+            std::fs::write(
+                &path,
+                b"never opened: the shim naming this is a shell script",
+            )
+            .expect("fixture: creating a store file for a live shim");
+        }
+        path
+    }
+
+    /// A store path that does not exist and will not be created — the
+    /// abandoned class's whole definition.
+    fn missing_store(&self) -> PathBuf {
+        self.path().join("gone.db")
     }
 
     /// Runs the fixture's script for one phase.
@@ -182,6 +203,10 @@ impl Drop for Fixture {
 }
 
 fn write_executable(path: &Path, body: &str) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .unwrap_or_else(|e| panic!("fixture: creating {}: {e}", parent.display()));
+    }
     let mut file = std::fs::File::create(path)
         .unwrap_or_else(|e| panic!("fixture: creating {}: {e}", path.display()));
     write!(file, "#!/usr/bin/env bash\n{body}\n")
@@ -197,11 +222,18 @@ fn write_executable(path: &Path, body: &str) {
 
 /// The argv shape `spawn_child` (`src/daemon/lifecycle.rs`) actually builds:
 /// `<exe> --store-path <store> daemon --serve --port <port>`.
-fn spawn_matching(exe: &Path) -> std::process::Child {
+///
+/// `store` decides which of the script's two classes the process falls into,
+/// and every caller here has to mean one of them (SH-493). A store that
+/// **exists** is a live daemon of some worktree — the only thing the
+/// checkout-anchored pattern is entitled to reason about, and what every case
+/// about that pattern wants. A store that is **gone** is the abandoned class,
+/// which is collected in every phase by whoever finds it.
+fn spawn_matching(exe: &Path, store: &Path) -> std::process::Child {
     Command::new(exe)
         .args([
             "--store-path",
-            "/private/tmp/orphan-check-fixture-store",
+            &store.display().to_string(),
             "daemon",
             "--serve",
             "--port",
@@ -242,6 +274,26 @@ fn pid_alive(pid: u32) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+/// Whether `pid` is a process that is still *running*, as opposed to one that
+/// has died and is waiting to be collected.
+///
+/// [`pid_alive`] cannot answer this and must not be asked to: every shim here
+/// is a direct child of the test process, so a shim that exits becomes a
+/// **zombie** until this process waits on it — and `kill -0` succeeds on a
+/// zombie, because the pid is still there to be signalled. An assertion that a
+/// shim was killed, written against `pid_alive`, therefore fails whether or
+/// not the kill worked. Asserting a shim is *alive* is safe either way, which
+/// is why the cases that predate this one never had to know.
+fn pid_running(pid: u32) -> bool {
+    let out = Command::new("ps")
+        .args(["-o", "state=", "-p", &pid.to_string()])
+        .output()
+        .expect("running ps");
+    let state = String::from_utf8_lossy(&out.stdout);
+    let state = state.trim();
+    !state.is_empty() && !state.starts_with('Z')
 }
 
 // ---------------------------------------------------------------------------
@@ -413,7 +465,7 @@ fn an_unrecognized_phase_is_refused_with_a_usage_message() {
 ///
 /// Modeled with a small supervisor (`helper`, never itself matching the
 /// script's pattern) that keeps a fresh matching worker alive on a fixed
-/// schedule regardless of what gets killed — the worker's own 3s lifespan
+/// schedule regardless of what gets killed — the worker's own self-expiry
 /// keeps this self-cleaning even if the fixture's own sweep did not run.
 #[test]
 fn postlude_fails_when_a_survivor_outlives_sigkill() {
@@ -426,23 +478,76 @@ fn postlude_fails_when_a_survivor_outlives_sigkill() {
     // (but still self-expiring via `sleep`) keeps each worker alive on its
     // own staggered schedule instead, so a captured batch cannot die as one
     // synchronized event until SIGKILL actually reaches it.
-    let worker = fixture.shim("trap '' TERM\nsleep 0.6");
+    //
+    // The lifespan is a knob rather than a constant because this fixture has
+    // to satisfy two requirements that pull in opposite directions, and it
+    // used to try to satisfy both with one number (SH-493).
+    let worker = fixture.shim("trap '' TERM\nsleep \"${SHIM_LIFETIME:-0.6}\"");
+
+    // Requirement one: **something matching is alive at every instant** until
+    // SIGKILL. The postlude's grace loop exits 0 on the first empty poll it
+    // sees, so a momentary gap is this case passing the run over a clean tree
+    // — reported as a failure with an *empty stderr*, having proved nothing.
+    // That is what it did, roughly one run in three, once this file grew from
+    // 7 tests to 13: on a loaded machine the supervisor's spawn loop can stall
+    // for longer than a short-lived worker lives, and the population it is
+    // supposed to be maintaining reaches zero underneath it.
+    //
+    // Tuning the cadence and the lifespan against each other only moves that
+    // threshold, and the next test added to this file moves it back. So the
+    // requirement is met by construction instead: ONE worker, spawned once,
+    // that outlives the whole scenario. It cannot gap, because nothing about
+    // it depends on a loop keeping up.
+    let guarantor = Command::new(&worker)
+        .args([
+            "--store-path",
+            &fixture.live_store().display().to_string(),
+            "daemon",
+            "--serve",
+            "--port",
+            "0",
+        ])
+        .env(
+            "SHIM_LIFETIME",
+            (orphan_grace_secs() + 3 * orphan_kill_grace_secs()).to_string(),
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("fixture: spawning the continuous worker");
+    let _guarantor = ChildGuard::new(guarantor);
+
+    // Requirement two: **something matching is alive again within the 0.5s
+    // the script settles for after SIGKILL** — the one true race here, and
+    // the only thing the supervisor below is still needed for. Its workers
+    // keep their short lifespan, so the population stays around a dozen
+    // rather than a hundred.
     // A wall-clock deadline rather than a fixed iteration count: what matters
-    // is covering the postlude's own worst case (10s grace + 5s SIGTERM wait
-    // + settle), not a specific spawn count, and this must keep respawning
-    // regardless of which individual workers the postlude manages to kill.
+    // is covering the postlude's own worst case, not a specific spawn count,
+    // and this must keep respawning regardless of which individual workers the
+    // postlude manages to kill.
+    //
+    // Derived from the script's own two constants rather than written as a
+    // number (SH-394), because the worst case moved once already and a literal
+    // did not notice: SH-493 put an abandoned-class collection ahead of every
+    // phase's own question, which can itself spend a full SIGTERM wait before
+    // the grace loop below has even started. Three kill-graces is one for that
+    // collection, one for this phase's own SIGTERM wait, and one of margin so
+    // the supervisor is provably still respawning at the moment SIGKILL lands
+    // — which is the entire condition this case exists to construct.
     // Runs as its OWN process, never under `target/debug/`, so it never
     // matches the pattern itself — only the workers it spawns do. The 0.05s
-    // cadence against a 0.5s post-SIGKILL settle window is deliberately
-    // lopsided (~10 fresh spawns expected in that window, deterministically
-    // scheduled rather than left to chance) so the one true race in this
-    // fixture — is something new alive the instant the postlude looks again
-    // after SIGKILL — resolves the same way every run.
+    // cadence against that 0.5s settle window is deliberately lopsided (~10
+    // fresh spawns expected in it, deterministically scheduled rather than
+    // left to chance).
     let supervisor = fixture.helper(
         "supervisor.sh",
         &format!(
-            "deadline=$((SECONDS + 18))\nwhile [ \"$SECONDS\" -lt \"$deadline\" ]; do\n  \"{}\" --store-path /private/tmp/orphan-check-fixture-store daemon --serve --port 0 &\n  sleep 0.05\ndone",
-            worker.display()
+            "deadline=$((SECONDS + {}))\nwhile [ \"$SECONDS\" -lt \"$deadline\" ]; do\n  \"{}\" --store-path \"{}\" daemon --serve --port 0 &\n  sleep 0.05\ndone",
+            orphan_grace_secs() + 3 * orphan_kill_grace_secs(),
+            worker.display(),
+            fixture.live_store().display()
         ),
     );
     let mut supervisor_child = Command::new(&supervisor)
@@ -491,6 +596,21 @@ fn orphan_grace_secs() -> u64 {
         .unwrap_or_else(|e| panic!("ORPHAN_GRACE_SECS's value {digits:?} must parse: {e}"))
 }
 
+/// `readonly ORPHAN_KILL_GRACE_SECS=<n>` in the tracked script — how long a
+/// SIGTERM gets before the script escalates.
+fn orphan_kill_grace_secs() -> u64 {
+    let src = read_checkout_file("scripts/check-no-orphan-servers.sh");
+    let marker = "readonly ORPHAN_KILL_GRACE_SECS=";
+    let after = src
+        .split(marker)
+        .nth(1)
+        .unwrap_or_else(|| panic!("scripts/check-no-orphan-servers.sh must declare `{marker}<n>`"));
+    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits
+        .parse()
+        .unwrap_or_else(|e| panic!("ORPHAN_KILL_GRACE_SECS's value {digits:?} must parse: {e}"))
+}
+
 /// `pub(crate) const SHUTDOWN_CHECK: Duration = Duration::from_millis(<n>);`
 /// in `src/daemon/serve.rs` — the parent-watch poll tick, and the only bound
 /// on how long a correctly-contained daemon outlives its parent by the time
@@ -535,4 +655,275 @@ fn the_grace_period_is_derived_from_the_parent_watch_tick_it_disproves() {
          that is not comfortably larger than it stops being able to tell 'still winding down' \
          apart from 'leaked', which is the SH-412 defect this test exists to catch."
     );
+}
+
+// ---------------------------------------------------------------------------
+// SH-493: the class the checkout-anchored pattern structurally cannot see
+// ---------------------------------------------------------------------------
+//
+// `tests/plugin_install.rs` copies the binary into its own fixture and runs
+// `<fixture>/package/story`, on purpose, to prove path resolution from an
+// installed layout. Every daemon it left behind ran from that copy, so no
+// pattern anchored at `${repo_root}/target/debug` could ever match one — 672
+// were alive on one machine across three days, while the four siblings that
+// happened to run the checkout binary were reaped every run and hid the fact
+// that anything was accumulating at all.
+//
+// The scoping key is what the process IS, not where its binary sits: a daemon
+// whose `--store-path` names a file that no longer exists is serving nobody.
+// That is checkout-agnostic on purpose, which is the only way to reach a copy,
+// and safe precisely because it is unambiguous — unlike a merely looser
+// regex, which would refuse this run over a concurrent sibling worktree's LIVE
+// suite at the preflight and murder one at the postlude.
+//
+// # These cases are global, and say so
+//
+// Everything below spawns a process the running machine's OTHER worktree
+// suites can also see — that is the property under test, so it cannot be
+// fixtured away the way the rest of this file scopes itself under its own
+// checkout path. Two consequences are designed around rather than hoped
+// against:
+//
+// * A sibling's own orphan check may reap this test's abandoned shim first.
+//   So the assertions are on **the script's own report naming the pid**, never
+//   on the process merely being gone afterwards, which a sibling could satisfy
+//   for us and turn the case vacuous.
+// * The two negative cases hold shims a sibling must not touch either. The
+//   live-store one is safe by construction — its store exists, which is the
+//   whole rule. The too-young one is safe for as long as it is too young,
+//   which is `ABANDONED_STORE_MIN_AGE_SECS`, and it asserts immediately.
+
+/// A daemon running from a copy of the binary somewhere else entirely, on a
+/// store that is gone, is collected — the exact population SH-493 counted.
+#[test]
+fn a_daemon_on_a_vanished_store_is_collected_wherever_its_binary_lives() {
+    let fixture = Fixture::new();
+    // Deliberately NOT under `target/debug`: the point of this case is the one
+    // place the checkout-anchored pattern cannot reach. `package/story` is the
+    // literal layout `tests/plugin_install.rs::Harness::new(true)` builds.
+    let packaged = fixture.helper("package/story", SLEEPS_UNTIL_KILLED);
+    let child = spawn_matching(&packaged, &fixture.missing_store());
+    let pid = child.id();
+    let _guard = ChildGuard::new(child);
+    wait_until_old_enough();
+
+    let out = fixture.run(&["preflight"]);
+    let err = stderr(&out);
+
+    assert!(
+        err.contains("no longer exists"),
+        "the abandoned class must be named when it is collected — a detector \
+         whose subject is a population that accumulated unnoticed for three \
+         days does not get to be the next quiet thing (SH-306)\nstderr: {err}"
+    );
+    assert!(
+        !pid_running(pid),
+        "a daemon serving a store that is gone is serving nobody and must be \
+         collected, even though its binary is at {} — which is exactly where \
+         the checkout-anchored pattern cannot look\nstderr: {err}",
+        packaged.display()
+    );
+
+    fixture.sweep();
+}
+
+/// …and collecting it is never a refusal, in any phase.
+///
+/// The preflight refuses on its own class because a live stranger's daemon
+/// makes this run's verification a lie. This class is provably nobody's, and
+/// there can be hundreds of them at once from other worktrees — failing a run
+/// over a mess it did not make is the SH-306 pressure exactly.
+#[test]
+fn collecting_an_abandoned_daemon_never_fails_the_phase() {
+    let fixture = Fixture::new();
+    let packaged = fixture.helper("package/story", SLEEPS_UNTIL_KILLED);
+    let child = spawn_matching(&packaged, &fixture.missing_store());
+    let _guard = ChildGuard::new(child);
+    wait_until_old_enough();
+
+    for phase in ["preflight", "postlude", "check"] {
+        let out = fixture.run(&[phase]);
+        assert!(
+            out.status.success(),
+            "`{phase}` must collect an abandoned daemon rather than refuse over \
+             one\nstderr: {}",
+            stderr(&out)
+        );
+    }
+
+    fixture.sweep();
+}
+
+/// A daemon whose store still exists is never touched — the property that
+/// keeps this checkout-agnostic rule from reaching a concurrent sibling
+/// worktree's live suite.
+#[test]
+fn a_daemon_whose_store_still_exists_is_left_alone() {
+    let fixture = Fixture::new();
+    let packaged = fixture.helper("package/story", SLEEPS_UNTIL_KILLED);
+    let child = spawn_matching(&packaged, &fixture.live_store());
+    let pid = child.id();
+    let _guard = ChildGuard::new(child);
+    wait_until_old_enough();
+
+    let out = fixture.run(&["preflight"]);
+    let err = stderr(&out);
+
+    assert!(
+        out.status.success(),
+        "a daemon outside this checkout holding a live store is somebody \
+         else's business and not a refusal\nstderr: {err}"
+    );
+    assert!(
+        pid_running(pid),
+        "a daemon whose store EXISTS may be a concurrent worktree suite's live \
+         daemon — this machine runs three or four at once — and killing one \
+         would false-red a suite that was doing nothing wrong\nstderr: {err}"
+    );
+
+    fixture.sweep();
+}
+
+/// A daemon too young to have opened its store yet is never touched.
+///
+/// The one shape a bare existence check gets wrong: between `spawn_child` and
+/// the store being created there is a real window in which a perfectly healthy
+/// daemon has no store file, and reaping there would be this script causing
+/// the failure it exists to report.
+#[test]
+fn a_daemon_too_young_to_have_opened_its_store_is_left_alone() {
+    let fixture = Fixture::new();
+    let packaged = fixture.helper("package/story", SLEEPS_UNTIL_KILLED);
+    let child = spawn_matching(&packaged, &fixture.missing_store());
+    let pid = child.id();
+    let _guard = ChildGuard::new(child);
+    // No wait: the assertion has to happen inside the age floor, which is also
+    // what keeps a concurrent sibling's orphan check off this shim.
+
+    let out = fixture.run(&["preflight"]);
+    let err = stderr(&out);
+
+    assert!(
+        pid_running(pid),
+        "a daemon younger than ABANDONED_STORE_MIN_AGE_SECS has not been given \
+         up on by anybody yet — its client is still inside SPAWN_DEADLINE — so \
+         a missing store means it is starting, not abandoned\nstderr: {err}"
+    );
+
+    fixture.sweep();
+}
+
+/// A store path containing a space is read whole — the case that decides
+/// whether this rule can kill the developer's own daemon.
+///
+/// macOS hands out home directories like `/Users/Ada Lovelace` without
+/// comment, and the real store lives under one. Reading `--store-path`'s
+/// argument as the next whitespace-delimited field yields `/Users/Ada`, which
+/// does not exist, which classifies a perfectly healthy production daemon as
+/// abandoned and kills it — the single worst thing this rule could do, and
+/// invisible on any machine whose own paths happen to have no spaces.
+/// Delimiting on the verb that follows instead is what makes the read exact;
+/// this is the case that fails if anyone ever goes back to field-splitting.
+#[test]
+fn a_store_path_containing_a_space_is_read_whole_and_its_daemon_left_alone() {
+    let fixture = Fixture::new();
+    let spaced = fixture.path().join("Ada Lovelace/store.db");
+    std::fs::create_dir_all(spaced.parent().unwrap()).expect("fixture: creating a spaced dir");
+    std::fs::write(&spaced, b"exists, and is therefore nobody's to collect")
+        .expect("fixture: creating the spaced store");
+
+    let packaged = fixture.helper("package/story", SLEEPS_UNTIL_KILLED);
+    let child = spawn_matching(&packaged, &spaced);
+    let pid = child.id();
+    let _guard = ChildGuard::new(child);
+    wait_until_old_enough();
+
+    let out = fixture.run(&["preflight"]);
+    let err = stderr(&out);
+
+    assert!(
+        pid_running(pid),
+        "the store at {} EXISTS, so this daemon is not abandoned — a reader \
+         that stops at the first space sees a path that does not, and the \
+         daemon it kills on that reading is the developer's own\nstderr: {err}",
+        spaced.display()
+    );
+
+    fixture.sweep();
+}
+
+/// The age floor is derived from the deadline it disproves, not picked.
+///
+/// `SPAWN_DEADLINE` is how long a client waits for a daemon it just spawned to
+/// answer; past it, the only process that was waiting has already given up, so
+/// a still-storeless daemon is not starting up. Read out of both sources as
+/// text rather than imported, the way `the_grace_period_is_derived_from_the_
+/// parent_watch_tick_it_disproves` above reads `SHUTDOWN_CHECK` — a shell
+/// script cannot import a Rust constant, and widening the constant's
+/// visibility to let a test do it would be a production change in service of
+/// a test.
+#[test]
+fn the_abandoned_age_floor_is_derived_from_the_spawn_deadline_it_disproves() {
+    let floor = abandoned_store_min_age_secs();
+    let spawn_deadline = spawn_deadline_secs();
+
+    assert!(
+        floor >= spawn_deadline * MIN_AGE_MULTIPLE_OF_SPAWN_DEADLINE,
+        "scripts/check-no-orphan-servers.sh's ABANDONED_STORE_MIN_AGE_SECS \
+         ({floor}s) has drifted too close to src/daemon/lifecycle.rs's \
+         SPAWN_DEADLINE ({spawn_deadline}s). A daemon still inside \
+         SPAWN_DEADLINE has a client actively waiting for it, so a missing \
+         store means it is starting rather than abandoned — reaping there \
+         would make this script the cause of the failure it exists to report."
+    );
+}
+
+/// `readonly ABANDONED_STORE_MIN_AGE_SECS=<n>` in the tracked script.
+fn abandoned_store_min_age_secs() -> u64 {
+    let src = read_checkout_file("scripts/check-no-orphan-servers.sh");
+    let marker = "readonly ABANDONED_STORE_MIN_AGE_SECS=";
+    let after = src
+        .split(marker)
+        .nth(1)
+        .unwrap_or_else(|| panic!("scripts/check-no-orphan-servers.sh must declare `{marker}<n>`"));
+    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().unwrap_or_else(|e| {
+        panic!("ABANDONED_STORE_MIN_AGE_SECS's value {digits:?} must parse: {e}")
+    })
+}
+
+/// `pub const SPAWN_DEADLINE: Duration = Duration::from_secs(<n>);` in
+/// `src/daemon/lifecycle.rs`.
+fn spawn_deadline_secs() -> u64 {
+    let src = read_checkout_file("src/daemon/lifecycle.rs");
+    let marker = "pub const SPAWN_DEADLINE: Duration = Duration::from_secs(";
+    let after = src
+        .split(marker)
+        .nth(1)
+        .unwrap_or_else(|| panic!("src/daemon/lifecycle.rs must declare `{marker}<n>);`"));
+    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits
+        .parse()
+        .unwrap_or_else(|e| panic!("SPAWN_DEADLINE's value {digits:?} must parse: {e}"))
+}
+
+/// The multiple of `SPAWN_DEADLINE` the age floor must clear. Today's actual
+/// ratio is 2x (10s / 5s); this floor is the ratio itself rather than half of
+/// it, because unlike the grace period there is no margin to give away — one
+/// `SPAWN_DEADLINE` is exactly the span in which a storeless daemon is still
+/// somebody's live start-up.
+const MIN_AGE_MULTIPLE_OF_SPAWN_DEADLINE: u64 = 2;
+
+/// A shim that does nothing but stay alive, so a case can decide what it is
+/// purely by the argv `spawn_matching` gives it.
+const SLEEPS_UNTIL_KILLED: &str = "while :; do sleep 0.2; done";
+
+/// Sleeps past the age floor, so a storeless shim reads as abandoned rather
+/// than as starting up. Derived from the script's own constant, never a bare
+/// literal (SH-394), plus one second so the comparison is not decided by
+/// where `ps`'s whole-second `etime` happens to round.
+fn wait_until_old_enough() {
+    std::thread::sleep(std::time::Duration::from_secs(
+        abandoned_store_min_age_secs() + 1,
+    ));
 }
