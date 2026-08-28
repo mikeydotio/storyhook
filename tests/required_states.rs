@@ -536,3 +536,64 @@ fn doctor_fix_does_not_guess_a_blocked_reason() {
         "--fix must not have written a reason: {awaiting:?}"
     );
 }
+
+// --- the floor and its hand-written twins ----------------------------------
+
+/// `default_states` claims, in its own doc comment, to be "exactly
+/// [`REQUIRED_STATES`], in that order". Nothing checked it.
+///
+/// The claim is load-bearing in a way that is easy to miss: a project's catalog
+/// order is what `service::project::closed_state` and `service::pr_check` read
+/// when they take "the first CLOSED state", so a twin that drifted into listing
+/// `closed` before `done` would scaffold an AGENTS.md telling every agent to
+/// finish its work by abandoning the story, and would land every merged PR in
+/// the abandoned state — with the floor itself still correct and every test of
+/// the floor still green.
+///
+/// Two hand-written lists that must agree, with nothing checking they do, is
+/// the shape this project has already paid for in SH-136, SH-198, SH-258,
+/// SH-260/276 and SH-360. This is the check.
+#[test]
+fn the_default_catalog_is_the_floor_in_the_floors_own_order() {
+    let defaults: Vec<(&str, &SuperState)> = storyhook::service::project::default_states()
+        .iter()
+        .map(|state| {
+            (
+                Box::leak(state.slug.clone().into_boxed_str()) as &str,
+                Box::leak(Box::new(state.super_state.clone())) as &SuperState,
+            )
+        })
+        .collect();
+    let floor: Vec<(&str, &SuperState)> = REQUIRED_STATES
+        .iter()
+        .map(|required| (required.slug, &required.super_state))
+        .collect();
+
+    assert_eq!(
+        defaults, floor,
+        "`default_states` is a hand-written twin of the floor; when they \
+         disagree, a new project is either below the floor or orders its board \
+         differently from every repaired one"
+    );
+}
+
+/// The same claim for the two test-support twins, which decide what almost
+/// every fixture in this suite starts life with.
+///
+/// A fixture catalog that drifted below the floor would not fail loudly: it
+/// would make `story doctor` report a `RequiredStates` finding in tests that
+/// are about something else entirely, and every catalog edit those fixtures
+/// make would start being refused.
+#[test]
+fn the_test_support_catalogs_are_the_floor_too() {
+    let support: Vec<(String, SuperState)> = storyhook_test_support::default_states()
+        .into_iter()
+        .map(|state| (state.slug, state.super_state))
+        .collect();
+    let floor: Vec<(String, SuperState)> = REQUIRED_STATES
+        .iter()
+        .map(|required| (required.slug.to_string(), required.super_state.clone()))
+        .collect();
+
+    assert_eq!(support, floor, "storyhook_test_support::default_states");
+}
