@@ -206,9 +206,10 @@ test("a card blocked by another story names the blocker in its badge, hyperlinke
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
-  // SH-407: an open blocked-by edge display-promotes the worker out of
-  // "todo" and into "blocked".
-  const workerCard = page.locator('.column[data-state="blocked"] .card', {
+  // SH-487: the blocker is ordinary open work, so the edge alone does not
+  // display-promote the worker -- it stays in "todo", carrying the badge
+  // this test is actually about.
+  const workerCard = page.locator('.column[data-state="todo"] .card', {
     hasText: workerTitle,
   });
   const badge = workerCard.locator(".flag-blocked");
@@ -227,7 +228,7 @@ test("a card blocked by another story names the blocker in its badge, hyperlinke
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
-  await deleteBlockedStory(page, workerTitle);
+  await deleteStory(page, workerTitle);
   await deleteStory(page, blockerTitle);
 });
 
@@ -268,9 +269,10 @@ test("a story blocked only by an open relation shows the drawer banner too, not 
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
-  // SH-407: the blocked-by edge display-promoted the worker into "blocked",
-  // out of "todo".
-  await deleteBlockedStory(page, workerTitle);
+  // SH-487: the blocker is ordinary open work, so the worker stays in
+  // "todo" throughout -- this test's subject (the banner) is unaffected by
+  // board placement either way.
+  await deleteStory(page, workerTitle);
   await deleteStory(page, blockerTitle);
 });
 
@@ -296,8 +298,9 @@ test("a card blocked by two open stories lists both in its badge, comma-joined",
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
-  // SH-407: display-promoted out of "todo" and into "blocked".
-  const workerCard = page.locator('.column[data-state="blocked"] .card', {
+  // SH-487: both blockers are ordinary open work, so the worker stays in
+  // "todo" -- only the badge, which this test is about, is affected.
+  const workerCard = page.locator('.column[data-state="todo"] .card', {
     hasText: workerTitle,
   });
   // Exact-string, not "contains both ids": ordering comes from the store's
@@ -308,7 +311,7 @@ test("a card blocked by two open stories lists both in its badge, comma-joined",
     "● blocked (" + blockerAId + ", " + blockerBId + ")",
   );
 
-  await deleteBlockedStory(page, workerTitle);
+  await deleteStory(page, workerTitle);
   await deleteStory(page, blockerATitle);
   await deleteStory(page, blockerBTitle);
 });

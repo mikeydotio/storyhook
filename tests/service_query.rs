@@ -995,16 +995,17 @@ fn an_epic_refuses_a_direct_state_change() {
     assert!(error.to_string().contains("computed"), "{error}");
 }
 
-/// SH-407: a story sitting in `todo` with an open `blocked-by` edge onto a
-/// still-open story display-promotes to "blocked" — the same field, and the
-/// same eligibility guard, `an_epic_in_todo_with_an_active_child_shows_a_
-/// promoted_display_state` above exercises for the SH-165 arm.
+/// SH-487: a story sitting in `todo` with an open `blocked-by` edge onto an
+/// ORDINARY open story — one that itself needs no intervention — does NOT
+/// display-promote. This inverts the SH-407-era test of the same shape: an
+/// unmet dependency that will clear itself as the backlog is worked is not
+/// what the Blocked column means.
 #[test]
-fn a_todo_story_blocked_by_an_open_story_shows_a_promoted_display_state() {
+fn a_todo_story_blocked_by_an_ordinary_open_story_is_not_display_promoted() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let blocked = new_story(&ctx, "blocked story");
-    let blocker = new_story(&ctx, "its blocker");
+    let blocker = new_story(&ctx, "its ordinary blocker");
     RelationService::new(&ctx)
         .relate(&blocked, "blocked-by", &blocker, false)
         .expect("relating");
@@ -1014,7 +1015,38 @@ fn a_todo_story_blocked_by_an_open_story_shows_a_promoted_display_state() {
         shown.story.state, "todo",
         "the story's own recorded state is untouched"
     );
+    assert_eq!(
+        shown.display_state, None,
+        "the blocker is ordinary open work; nobody needs to intervene"
+    );
+}
+
+/// The positive case SH-487 keeps: a blocker that itself needs a person
+/// (here, an `awaiting` reason) still promotes its dependent, transitively.
+#[test]
+fn a_todo_story_blocked_by_a_story_that_itself_needs_a_person_is_promoted() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let blocked = new_story(&ctx, "blocked story");
+    let blocker = new_story(&ctx, "its stuck blocker");
+    RelationService::new(&ctx)
+        .relate(&blocked, "blocked-by", &blocker, false)
+        .expect("relating");
+    StoryService::new(&ctx)
+        .set_awaiting(&blocker, "vendor API access")
+        .expect("blocking the blocker");
+
+    let shown = query(&fixture, |service| service.show(&blocked));
     assert_eq!(shown.display_state.as_deref(), Some("blocked"));
+
+    StoryService::new(&ctx)
+        .clear_awaiting(&blocker)
+        .expect("clearing the blocker's reason");
+    let shown = query(&fixture, |service| service.show(&blocked));
+    assert_eq!(
+        shown.display_state, None,
+        "clearing the one stuck link clears the dependent too, with no edge removed"
+    );
 }
 
 /// An epic's own legacy blocker metadata is not actionable work and therefore
@@ -1039,6 +1071,187 @@ fn an_epics_own_blocker_does_not_override_child_state() {
     let shown = query(&fixture, |service| service.show(&epic));
     assert_eq!(shown.story.state, "in-progress");
     assert_eq!(shown.display_state, None);
+}
+
+/// SH-487: an epic whose only incomplete child is blocked-by an ORDINARY
+/// open story stays at the project's default open state — the child is
+/// merely waiting its turn, not stuck. This is the epic rollup's own
+/// regression test for the defect, and it is the TUI's only path to it: the
+/// TUI groups a board column on `story.state` directly and never reads
+/// `display_state`, so narrowing the display promotion alone would leave
+/// the TUI showing this epic as blocked forever.
+#[test]
+fn an_epic_whose_child_merely_waits_its_turn_stays_todo() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let epic = new_epic(&ctx, "epic");
+    let child = new_story(&ctx, "child");
+    let blocker = new_story(&ctx, "ordinary open blocker");
+    let relations = RelationService::new(&ctx);
+    relations
+        .relate(&epic, "parent-of", &child, false)
+        .expect("relating");
+    relations
+        .relate(&child, "blocked-by", &blocker, false)
+        .expect("relating");
+
+    let shown = query(&fixture, |service| service.show(&epic));
+    assert_eq!(shown.story.state, "todo");
+    assert!(shown.story.state_computed);
+}
+
+/// The same shape, but the child's blocker itself needs a person — the
+/// epic rolls up to "blocked", and falls back the instant the reason clears.
+#[test]
+fn an_epic_whose_child_is_blocked_by_a_stuck_story_rolls_up_to_blocked() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let epic = new_epic(&ctx, "epic");
+    let child = new_story(&ctx, "child");
+    let blocker = new_story(&ctx, "stuck blocker");
+    let relations = RelationService::new(&ctx);
+    relations
+        .relate(&epic, "parent-of", &child, false)
+        .expect("relating");
+    relations
+        .relate(&child, "blocked-by", &blocker, false)
+        .expect("relating");
+    StoryService::new(&ctx)
+        .set_awaiting(&blocker, "vendor API access")
+        .expect("blocking the blocker");
+
+    assert_eq!(
+        query(&fixture, |service| service.show(&epic)).story.state,
+        "blocked"
+    );
+
+    StoryService::new(&ctx)
+        .clear_awaiting(&blocker)
+        .expect("clearing");
+    assert_eq!(
+        query(&fixture, |service| service.show(&epic)).story.state,
+        "todo"
+    );
+}
+
+/// Epic-of-epics: a transitive block travels up through a nested epic the
+/// same way it travels through a plain `blocked-by` chain.
+#[test]
+fn an_epic_of_epics_propagates_a_transitive_block() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let outer = new_epic(&ctx, "outer epic");
+    let inner = new_epic(&ctx, "inner epic");
+    let leaf = new_story(&ctx, "leaf");
+    let blocker = new_story(&ctx, "stuck blocker");
+    let relations = RelationService::new(&ctx);
+    relations
+        .relate(&outer, "parent-of", &inner, false)
+        .expect("nesting");
+    relations
+        .relate(&inner, "parent-of", &leaf, false)
+        .expect("adding a leaf");
+    relations
+        .relate(&leaf, "blocked-by", &blocker, false)
+        .expect("relating");
+    StoryService::new(&ctx)
+        .set_awaiting(&blocker, "vendor API access")
+        .expect("blocking the blocker");
+
+    for id in [&inner, &outer] {
+        assert_eq!(
+            query(&fixture, |service| service.show(id)).story.state,
+            "blocked"
+        );
+    }
+
+    StoryService::new(&ctx)
+        .clear_awaiting(&blocker)
+        .expect("clearing");
+    for id in [&inner, &outer] {
+        assert_eq!(
+            query(&fixture, |service| service.show(id)).story.state,
+            "todo"
+        );
+    }
+}
+
+/// A `blocked-by` cycle beneath an epic still rolls up to "blocked" and
+/// still returns — the totality guard applies to the intervention walk, not
+/// only to the state-rollup walk it rides alongside.
+#[test]
+fn a_blocked_by_cycle_under_an_epic_rolls_up_to_blocked_without_hanging() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let epic = new_epic(&ctx, "epic");
+    let a = new_story(&ctx, "a");
+    let b = new_story(&ctx, "b");
+    let relations = RelationService::new(&ctx);
+    relations
+        .relate(&epic, "parent-of", &a, false)
+        .expect("relating");
+    relations
+        .relate(&a, "blocked-by", &b, false)
+        .expect("relating");
+    relations
+        .relate(&b, "blocked-by", &a, false)
+        .expect("relating");
+
+    assert_eq!(
+        query(&fixture, |service| service.show(&epic)).story.state,
+        "blocked"
+    );
+}
+
+/// The wiring fence between the display promotion and the epic rollup: for
+/// a subject sitting in the project's default open state, wrapping it as the
+/// sole child of an epic must agree with `compute_display_state`'s own
+/// verdict about whether it needs intervention. Scoped to default-open
+/// subjects deliberately — an `in-progress` child with its own `awaiting`
+/// reason legitimately blocks its epic while carrying no `display_state` at
+/// all, since `compute_display_state` only ever overrides a story sitting in
+/// the default open state.
+#[test]
+fn the_epic_rollup_and_the_display_promotion_agree_about_who_needs_intervention() {
+    type BlockFn = fn(&Ctx<'_, SqliteStore>, &str, &str);
+    let cases: [(&str, BlockFn); 3] = [
+        ("an awaiting blocker", |ctx, _subject, blocker| {
+            StoryService::new(ctx)
+                .set_awaiting(blocker, "x")
+                .expect("blocking");
+        }),
+        ("a blocked-state blocker", |ctx, _subject, blocker| {
+            StoryService::new(ctx)
+                .set_state(blocker, "blocked", None, None, None)
+                .expect("blocking");
+        }),
+        ("an ordinary open blocker", |_ctx, _subject, _blocker| {}),
+    ];
+    for (name, block) in cases {
+        let fixture = ServiceFixture::new();
+        let ctx = fixture.ctx();
+        let epic = new_epic(&ctx, "epic");
+        let subject = new_story(&ctx, "subject");
+        let blocker = new_story(&ctx, "blocker");
+        let relations = RelationService::new(&ctx);
+        relations
+            .relate(&epic, "parent-of", &subject, false)
+            .expect("relating");
+        relations
+            .relate(&subject, "blocked-by", &blocker, false)
+            .expect("relating");
+        block(&ctx, &subject, &blocker);
+
+        let epic_blocked =
+            query(&fixture, |service| service.show(&epic)).story.state == "blocked";
+        let subject_promoted =
+            query(&fixture, |service| service.show(&subject)).display_state.as_deref()
+                == Some("blocked");
+        assert_eq!(
+            epic_blocked, subject_promoted,
+            "{name}: the epic rollup and the display promotion disagreed"
+        );
+    }
 }
 
 #[test]
@@ -1108,6 +1321,84 @@ fn report_data_treats_the_blocked_state_as_not_ready() {
     let report = query(&fixture, |service| service.report_data());
     assert_eq!(report.blocked_ids, [id.as_str()]);
     assert!(!report.ready_ids.contains(&id));
+}
+
+/// SH-487 narrows board PLACEMENT only: a story blocked by an ordinary open
+/// story loses its `display_state` promotion, but stays exactly where it
+/// was in `blocked_ids`/`summary.blocked_count` — the badge, the list-row
+/// border, and the header count all still mean "not ready", on purpose. If
+/// a later story ever widens the narrowing to `blocked_ids` too, this is the
+/// test that must be consciously inverted.
+#[test]
+fn report_data_still_reports_a_naturally_unblocking_story_as_blocked() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let blocked = new_story(&ctx, "blocked story");
+    let blocker = new_story(&ctx, "its ordinary blocker");
+    RelationService::new(&ctx)
+        .relate(&blocked, "blocked-by", &blocker, false)
+        .expect("relating");
+
+    let shown = query(&fixture, |service| service.show(&blocked));
+    assert_eq!(
+        shown.display_state, None,
+        "precondition: this is the story that stopped display-promoting"
+    );
+
+    let report = query(&fixture, |service| service.report_data());
+    assert!(report.blocked_ids.contains(&blocked));
+    assert_eq!(report.summary.blocked_count, 1);
+}
+
+/// SH-487's own description of the target: a story that "will eventually be
+/// pulled from the backlog … without manual intervention" should not show in
+/// the Blocked column. `next_ids` is `story next`'s own dependency-aware
+/// unfold of the backlog, so a display-promoted story must never appear in
+/// it — ties the new predicate to the words on the story rather than only to
+/// its own internal logic.
+#[test]
+fn a_display_promoted_story_is_never_in_next_ids() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let ordinary_chain = new_story(&ctx, "will naturally unblock");
+    let ordinary_blocker = new_story(&ctx, "ordinary open blocker");
+    RelationService::new(&ctx)
+        .relate(&ordinary_chain, "blocked-by", &ordinary_blocker, false)
+        .expect("relating");
+
+    let stuck = new_story(&ctx, "needs a person");
+    let stuck_blocker = new_story(&ctx, "stuck blocker");
+    RelationService::new(&ctx)
+        .relate(&stuck, "blocked-by", &stuck_blocker, false)
+        .expect("relating");
+    StoryService::new(&ctx)
+        .set_awaiting(&stuck_blocker, "vendor API access")
+        .expect("blocking the blocker");
+
+    let report = query(&fixture, |service| service.report_data());
+    let promoted: Vec<&String> = report
+        .stories
+        .iter()
+        .filter(|view| view.display_state.as_deref() == Some("blocked"))
+        .map(|view| &view.story.id)
+        .collect();
+    // Both `stuck` (transitively) and `stuck_blocker` (its own `awaiting`
+    // reason) display-promote; neither is claimable, so the story's own
+    // wording — "will eventually be pulled from the backlog … without
+    // manual intervention" — must be false of both.
+    assert_eq!(promoted.len(), 2);
+    assert!(promoted.contains(&&stuck));
+    assert!(promoted.contains(&&stuck_blocker));
+    for id in &promoted {
+        assert!(
+            !report.next_ids.contains(id),
+            "{id} is shown as blocked and must never appear in the executable queue"
+        );
+    }
+    assert!(
+        report.next_ids.contains(&ordinary_chain),
+        "an unpromoted story waiting only on ordinary work stays in the queue"
+    );
 }
 
 /// SH-407: `report_data().next_ids` is the same queue `story next` hands
