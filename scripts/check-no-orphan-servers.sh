@@ -246,8 +246,17 @@ readonly ABANDONED_STORE_MIN_AGE_SECS=10
 #
 # `etime` rather than `etimes`: macOS `ps` has no `etimes` keyword at all, so
 # the `[[dd-]hh:]mm:ss` form has to be parsed rather than read.
+#
+# `-U $(id -u)` rather than `-e`, because this scan ends in a `kill`: a
+# process this user cannot signal has no business being in the candidate set.
+# Another user's daemon would fail `-e` (their store is unreadable from here,
+# so it reads as vanished), fail the `kill` with EPERM, and then be reported
+# as having "survived SIGKILL" -- at every phase of every run, forever, over
+# one unchanged fact nobody here can act on. That is the self-noise shape this
+# project has already paid for three times (SH-306, SH-345, SH-263). No test
+# covers it, and honestly cannot: provoking it needs a second uid.
 abandoned_candidates() {
-    ps -eo pid=,etime=,command= 2>/dev/null | awk -v min_age="$ABANDONED_STORE_MIN_AGE_SECS" '
+    ps -U "$(id -u)" -o pid=,etime=,command= 2>/dev/null | awk -v min_age="$ABANDONED_STORE_MIN_AGE_SECS" '
         $0 ~ /(daemon|web) --serve/ {
             n = split($2, t, /[-:]/)
             if (n == 4)      age = t[1]*86400 + t[2]*3600 + t[3]*60 + t[4]
