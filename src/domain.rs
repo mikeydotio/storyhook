@@ -2621,6 +2621,47 @@ pub fn is_ready(story: &StorySnapshot, all_stories: &impl StoryIndex) -> bool {
     true
 }
 
+/// The reserved label naming work the Full Auto engine must never dispatch
+/// (SH-452, decision D12). A `no-auto` story is still offered by
+/// [`ready_order`]'s queue and still claimable by hand — it marks
+/// human-in-the-loop work, where the agent may ask questions and seek plan
+/// approval. Nothing in this crate filters on it yet: the engine's skip is
+/// `--exclude-label`'s job, and the reservation exists so the two halves
+/// cannot disagree about the spelling.
+pub const LABEL_NO_AUTO: &str = "no-auto";
+
+/// The reserved label naming work only a human may perform (SH-452, decision
+/// D12) — see [`is_human_only`] for where it takes effect and, more
+/// importantly, where it deliberately does not.
+pub const LABEL_HUMAN_ONLY: &str = "human-only";
+
+/// Both reserved labels, in the order the documentation surfaces name them.
+///
+/// The surfaces that must document the reservation — `story help label`, the
+/// scaffolded `AGENTS.md` and `.cursorrules` — are checked against *this*
+/// array rather than against hand-typed spellings, so a rename reaches every
+/// document or fails the build (SH-136's rule: never write one fact twice).
+pub const RESERVED_LABELS: [&str; 2] = [LABEL_NO_AUTO, LABEL_HUMAN_ONLY];
+
+/// Whether `story` carries [`LABEL_HUMAN_ONLY`], and so must never be offered
+/// as the next piece of work.
+///
+/// This is a filter on the **ready queue** — the `story next` path, which
+/// `story claim --next` reaches through the same implementation — and
+/// nothing else. It is deliberately NOT folded into [`is_ready`] or
+/// [`is_claimable`], which is assumption A1 of
+/// `docs/spec/full-auto-engine.md`: a human can still progress a
+/// `human-only` story, so it must keep reading as ready everywhere a person
+/// looks. Folding it into readiness would report the story as blocked on the
+/// board, drop it out of every ready count, and — because
+/// [`compute_display_state`] promotes a `!is_ready` story to `"blocked"` —
+/// make an epic whose only incomplete child is `human-only` look stuck when
+/// nothing is stopping anyone from picking it up.
+#[must_use]
+pub fn is_human_only(story: &StorySnapshot) -> bool {
+    story.labels.iter().any(|label| label == LABEL_HUMAN_ONLY)
+}
+
 /// Whether `story` is an actionable leaf that is [`is_ready`] *and* nobody
 /// has claimed it yet. Structural epics are planning containers and therefore
 /// never claimable even when their recursively computed state is open.
