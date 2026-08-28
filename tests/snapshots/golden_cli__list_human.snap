@@ -29,7 +29,7 @@ $ story list --state review
 SH-4 [review] (medium) [normal] Write the migration runner [backend]
 
 $ story list --state done
-including closed stories: `done` is a closed state; 1 deleted story is not listed (story search finds it)
+including closed stories: `done` is a closed state
 SH-8 [done] (low) [chore] Retire the JSONL reader
 SH-14 [done] (medium) [spike] Prototype the archive format
 

@@ -37,6 +37,10 @@ source: tests/golden_cli.rs
       "super": "CLOSED"
     },
     {
+      "slug": "closed",
+      "super": "CLOSED"
+    },
+    {
       "description": "Awaiting code review",
       "slug": "review",
       "super": "OPEN"

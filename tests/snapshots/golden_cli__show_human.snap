@@ -78,13 +78,14 @@ flagged: no
 
 $ story show SH-13
 SH-13 Old approach: file-per-story
-state: done (CLOSED, deleted)
+state: closed (CLOSED, deleted)
 draft: no
 assignee: -
 priority: low
 type: chore
 labels: -
 closed_at: [timestamp]
+archived: [timestamp]
 deleted_reason: superseded by the global store
 flagged: no
 comments:
