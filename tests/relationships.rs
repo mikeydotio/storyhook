@@ -6,6 +6,23 @@ use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use tempfile::tempdir;
 
+fn story_json(dir: &std::path::Path, args: &[&str]) -> serde_json::Value {
+    let output = Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir)
+        .args(args)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "story {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("story --json emits one document")
+}
+
 #[test]
 fn adding_directional_relationship_creates_inverse_edge() {
     let dir = tempdir().unwrap();
@@ -45,6 +62,62 @@ fn adding_directional_relationship_creates_inverse_edge() {
         .assert()
         .success()
         .stdout(contains("blocked-by SH-1"));
+}
+
+#[test]
+fn closing_a_blocker_removes_both_cli_relationships_permanently() {
+    let dir = tempdir().unwrap();
+    let path = dir.path();
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(path)
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+    for title in ["Blocker", "Dependent"] {
+        Command::cargo_bin("story")
+            .unwrap()
+            .current_dir(path)
+            .args(["new", title])
+            .assert()
+            .success();
+    }
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(path)
+        .args(["relate", "SH-1", "blocks", "SH-2"])
+        .assert()
+        .success();
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(path)
+        .args(["move", "SH-1", "done"])
+        .assert()
+        .success();
+
+    for id in ["SH-1", "SH-2"] {
+        let shown = story_json(path, &["show", id]);
+        assert_eq!(
+            shown["story"]["story"]["relationships"],
+            serde_json::json!([]),
+            "closing the blocker must retract the relationship from {id}"
+        );
+    }
+
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(path)
+        .args(["reopen", "SH-1"])
+        .assert()
+        .success();
+    let ready = story_json(path, &["next", "--count", "2"]);
+    let ready_ids = ready["stories"]
+        .as_array()
+        .expect("next --count emits stories")
+        .iter()
+        .map(|view| view["story"]["id"].as_str().expect("ready story id"))
+        .collect::<Vec<_>>();
+    assert_eq!(ready_ids, ["SH-1", "SH-2"]);
 }
 
 #[test]

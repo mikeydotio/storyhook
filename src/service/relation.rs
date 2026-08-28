@@ -23,12 +23,14 @@
 //! Removal never grows a closed story's scope, so it has no such exception:
 //! `unrelate` relaxes `b` uniformly, for every kind and every role.
 
+use crate::domain::provenance::Provenance;
 use crate::domain::{
-    StoryEvent, StorySnapshot, has_children, is_epic, relation_edges, would_create_parent_cycle,
+    StateDef, StoryEvent, StorySnapshot, has_children, is_epic, relation_edges,
+    would_create_parent_cycle,
 };
 use crate::error::AppError;
 use crate::event_hooks::HookEventType;
-use crate::store::{ExpectedSeq, ReadOps, Store};
+use crate::store::{ExpectedSeq, ProjectId, ReadOps, Store, StoryNo, WriteOps};
 
 use super::story::state_transition_events;
 use super::{Ctx, append_and_fold, project_prefix, query, resolve_open_story, resolve_story};
@@ -328,6 +330,8 @@ impl<'ctx, S: Store> RelationService<'ctx, S> {
 
             let mut a_events = Vec::new();
             let mut b_events = Vec::new();
+            let mut a_closes = false;
+            let mut b_closes = false;
             for (a_relation, b_relation) in edges {
                 let a_has = has_relation(&a_row.snapshot, a_relation, b);
                 let b_has = has_relation(&b_row.snapshot, b_relation, a);
@@ -387,6 +391,7 @@ impl<'ctx, S: Store> RelationService<'ctx, S> {
                         &now,
                         Vec::new(),
                     ));
+                    a_closes = target.super_state == crate::domain::SuperState::Closed;
                 }
                 if loses_last_child(&b_row.snapshot, &b_events)
                     && let Some(state) = effective.get(b)
@@ -403,6 +408,7 @@ impl<'ctx, S: Store> RelationService<'ctx, S> {
                         &now,
                         Vec::new(),
                     ));
+                    b_closes = target.super_state == crate::domain::SuperState::Closed;
                 }
             }
 
@@ -433,6 +439,29 @@ impl<'ctx, S: Store> RelationService<'ctx, S> {
                 )?;
             }
 
+            if a_closes {
+                retract_closed_blocker_edges(
+                    tx,
+                    project,
+                    a_no,
+                    &prefix,
+                    &states,
+                    &now,
+                    self.ctx.provenance(),
+                )?;
+            }
+            if b_closes {
+                retract_closed_blocker_edges(
+                    tx,
+                    project,
+                    b_no,
+                    &prefix,
+                    &states,
+                    &now,
+                    self.ctx.provenance(),
+                )?;
+            }
+
             // Read `a` back rather than reusing the pre-write snapshot: when
             // only `b` needed an event, `a` already asserted its half and was
             // never appended to, so its row is the answer either way.
@@ -458,6 +487,85 @@ impl<'ctx, S: Store> RelationService<'ctx, S> {
         }
         Ok(outcome)
     }
+}
+
+/// Retracts every task dependency for which `blocker` is the blocker.
+///
+/// Called only after the blocker has entered a persisted CLOSED lifecycle
+/// state, and inside the transaction that closed it. The relation table is the
+/// candidate index rather than either snapshot alone: a pre-SH-60 half-edge
+/// still materializes both table directions, so whichever history owns the
+/// surviving claim is found and receives its compensating removal event.
+///
+/// Dependents are appended first, then the blocker, matching [`RelationService::relate`].
+/// Each side is re-read immediately before its append because one dependent
+/// may also be another closing story in a batched transaction.
+pub(crate) fn retract_closed_blocker_edges(
+    tx: &mut impl WriteOps,
+    project: ProjectId,
+    blocker: StoryNo,
+    prefix: &str,
+    states: &std::collections::BTreeMap<String, StateDef>,
+    at: &str,
+    provenance: &Provenance,
+) -> Result<Vec<StoryEvent>, AppError> {
+    let blocker_id = blocker.to_id(prefix);
+    let dependent_nos: std::collections::BTreeSet<StoryNo> = tx
+        .relations_from(project, blocker)?
+        .into_iter()
+        .filter(|edge| edge.relation == "blocks")
+        .map(|edge| edge.other_no)
+        .collect();
+
+    for dependent_no in &dependent_nos {
+        let Some(dependent) = tx.story(project, *dependent_no)? else {
+            continue;
+        };
+        if !has_relation(&dependent.snapshot, "blocked-by", &blocker_id) {
+            continue;
+        }
+        append_and_fold(
+            tx,
+            project,
+            *dependent_no,
+            prefix,
+            states,
+            ExpectedSeq::Exact(dependent.head_seq),
+            &[StoryEvent::StoryRelationshipRemoved {
+                at: at.to_string(),
+                other_id: blocker_id.clone(),
+                relation: "blocked-by".to_string(),
+            }],
+            provenance,
+        )?;
+    }
+
+    let blocker_row = tx
+        .story(project, blocker)?
+        .ok_or_else(|| AppError::NotFound(format!("story `{blocker_id}` not found")))?;
+    let events: Vec<StoryEvent> = dependent_nos
+        .into_iter()
+        .map(|dependent| dependent.to_id(prefix))
+        .filter(|dependent| has_relation(&blocker_row.snapshot, "blocks", dependent))
+        .map(|dependent| StoryEvent::StoryRelationshipRemoved {
+            at: at.to_string(),
+            other_id: dependent,
+            relation: "blocks".to_string(),
+        })
+        .collect();
+    if !events.is_empty() {
+        append_and_fold(
+            tx,
+            project,
+            blocker,
+            prefix,
+            states,
+            ExpectedSeq::Exact(blocker_row.head_seq),
+            &events,
+            provenance,
+        )?;
+    }
+    Ok(events)
 }
 
 /// Whether a story's snapshot already asserts this edge.
