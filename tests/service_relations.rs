@@ -86,6 +86,17 @@ fn stored_edges(fixture: &ServiceFixture, id: &str) -> Vec<(String, i64)> {
     edges
 }
 
+fn event_kinds(fixture: &ServiceFixture, id: &str) -> Vec<String> {
+    let no = StoryNo::parse_id("SH", id).expect("a well-formed id");
+    fixture
+        .store()
+        .read(|tx| tx.events_for(fixture.project(), no))
+        .expect("reading events")
+        .into_iter()
+        .map(|event| event.kind)
+        .collect()
+}
+
 fn validation_message(error: AppError) -> String {
     match error {
         AppError::Validation(message) => message,
@@ -943,6 +954,176 @@ fn unblock_from_an_edge_that_is_not_there_is_a_no_op() {
 
     assert_eq!(relations(&fixture, &worker), []);
     assert_eq!(relations(&fixture, &never_a_blocker), []);
+}
+
+// --- closed blockers (SH-500) ---------------------------------------------
+
+#[test]
+fn closing_a_blocker_retracts_both_relationship_histories_and_indexes() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let blocker = new_story(&ctx, "blocker");
+    let dependent_a = new_story(&ctx, "dependent a");
+    let dependent_b = new_story(&ctx, "dependent b");
+    let related = new_story(&ctx, "related");
+    let relations_service = RelationService::new(&ctx);
+    for dependent in [&dependent_a, &dependent_b] {
+        relations_service
+            .relate(&blocker, "blocks", dependent, false)
+            .expect("recording dependency");
+    }
+    relations_service
+        .relate(&blocker, "relates-to", &related, false)
+        .expect("recording unrelated edge");
+
+    StoryService::new(&ctx)
+        .set_state(&blocker, "done", None, None, None)
+        .expect("closing blocker");
+
+    assert_eq!(
+        relations(&fixture, &blocker),
+        [("relates-to".to_string(), related.clone())]
+    );
+    assert_eq!(relations(&fixture, &dependent_a), []);
+    assert_eq!(relations(&fixture, &dependent_b), []);
+    assert_eq!(
+        relations(&fixture, &related),
+        [("relates-to".to_string(), blocker.clone())]
+    );
+    assert_eq!(
+        stored_edges(&fixture, &blocker),
+        [("relates-to".to_string(), 4)]
+    );
+    assert_eq!(stored_edges(&fixture, &dependent_a), []);
+    assert_eq!(stored_edges(&fixture, &dependent_b), []);
+    assert_eq!(
+        event_kinds(&fixture, &blocker)
+            .into_iter()
+            .filter(|kind| kind == "StoryRelationshipRemoved")
+            .count(),
+        2
+    );
+    for dependent in [&dependent_a, &dependent_b] {
+        assert_eq!(
+            event_kinds(&fixture, dependent)
+                .into_iter()
+                .filter(|kind| kind == "StoryRelationshipRemoved")
+                .count(),
+            1
+        );
+    }
+    fixture.assert_no_drift();
+}
+
+#[test]
+fn reopening_a_former_blocker_does_not_restore_the_dependency() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let blocker = new_story(&ctx, "blocker");
+    let dependent = new_story(&ctx, "dependent");
+    RelationService::new(&ctx)
+        .relate(&blocker, "blocks", &dependent, false)
+        .expect("recording dependency");
+
+    let stories = StoryService::new(&ctx);
+    stories
+        .set_state(&blocker, "done", None, None, None)
+        .expect("closing blocker");
+    stories.reopen(&blocker).expect("reopening blocker");
+
+    assert_eq!(relations(&fixture, &blocker), []);
+    assert_eq!(relations(&fixture, &dependent), []);
+    fixture.assert_no_drift();
+}
+
+#[test]
+fn closing_one_of_several_blockers_retracts_only_that_dependency() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let closing = new_story(&ctx, "closing blocker");
+    let remaining = new_story(&ctx, "remaining blocker");
+    let dependent = new_story(&ctx, "dependent");
+    let relations_service = RelationService::new(&ctx);
+    relations_service
+        .relate(&closing, "blocks", &dependent, false)
+        .expect("recording closing dependency");
+    relations_service
+        .relate(&remaining, "blocks", &dependent, false)
+        .expect("recording remaining dependency");
+
+    StoryService::new(&ctx)
+        .set_state(&closing, "done", None, None, None)
+        .expect("closing one blocker");
+
+    assert_eq!(relations(&fixture, &closing), []);
+    assert_eq!(
+        relations(&fixture, &remaining),
+        [("blocks".to_string(), dependent.clone())]
+    );
+    assert_eq!(
+        relations(&fixture, &dependent),
+        [("blocked-by".to_string(), remaining.clone())]
+    );
+}
+
+#[test]
+fn soft_deleting_a_blocker_retracts_the_dependency() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let blocker = new_story(&ctx, "blocker");
+    let dependent = new_story(&ctx, "dependent");
+    RelationService::new(&ctx)
+        .relate(&blocker, "blocks", &dependent, false)
+        .expect("recording dependency");
+
+    StoryService::new(&ctx)
+        .delete(&blocker, "no longer needed")
+        .expect("deleting blocker");
+
+    assert_eq!(relations(&fixture, &blocker), []);
+    assert_eq!(relations(&fixture, &dependent), []);
+    assert_eq!(stored_edges(&fixture, &blocker), []);
+    assert_eq!(stored_edges(&fixture, &dependent), []);
+    fixture.assert_no_drift();
+}
+
+#[cfg(feature = "fault-injection")]
+#[test]
+fn a_failed_close_rolls_back_the_state_and_both_relationship_retractions() {
+    use storyhook::store::fault::{FaultAction, FaultPoint, arm};
+
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let blocker = new_story(&ctx, "blocker");
+    let dependent = new_story(&ctx, "dependent");
+    RelationService::new(&ctx)
+        .relate(&blocker, "blocks", &dependent, false)
+        .expect("recording dependency");
+    let blocker_before = snapshot(&fixture, &blocker);
+    let dependent_before = snapshot(&fixture, &dependent);
+
+    let error = {
+        let _fault = arm(
+            FaultPoint::BeforeCommit,
+            FaultAction::Fail("interrupted close".to_string()),
+        );
+        StoryService::new(&ctx)
+            .set_state(&blocker, "done", None, None, None)
+            .expect_err("the injected fault must abort the transaction")
+    };
+    assert!(error.to_string().contains("interrupted close"), "{error}");
+
+    assert_eq!(snapshot(&fixture, &blocker), blocker_before);
+    assert_eq!(snapshot(&fixture, &dependent), dependent_before);
+    assert_eq!(
+        stored_edges(&fixture, &blocker),
+        [("blocks".to_string(), 2)]
+    );
+    assert_eq!(
+        stored_edges(&fixture, &dependent),
+        [("blocked-by".to_string(), 1)]
+    );
+    fixture.assert_no_drift();
 }
 
 // --- the drift guard itself ------------------------------------------------
