@@ -11762,6 +11762,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * the same subject-vs-request reason the delete modal documents below. */
   var closeModalStoryId = null;
   var closeModalInFlight = false;
+  var closeModalOpenFrame = null;
 
   function setCloseModalInFlight(value) {
     closeModalInFlight = value;
@@ -11781,7 +11782,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("close-modal-error").textContent = "";
     showBackdrop("close-modal-backdrop");
     activateOverlay("close-modal", "close-reason");
-    requestAnimationFrame(function() {
+    closeModalOpenFrame = requestAnimationFrame(function() {
+      closeModalOpenFrame = null;
+      // `activateOverlay` is synchronous while this presentation frame is
+      // deferred. A rapid Escape/Cancel can legitimately close the modal in
+      // between; never let the stale frame visually reopen a surface that is
+      // no longer the active overlay.
+      if (overlayStack[overlayStack.length - 1] !== "close-modal") return;
       $("close-modal").classList.add("open");
       $("close-modal").setAttribute("aria-hidden", "false");
     });
@@ -11789,6 +11796,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   function closeCloseModal() {
     if (closeModalInFlight) return;
+    if (closeModalOpenFrame !== null) {
+      cancelAnimationFrame(closeModalOpenFrame);
+      closeModalOpenFrame = null;
+    }
     closeModalStoryId = null;
     hideBackdrop("close-modal-backdrop");
     $("close-modal").classList.remove("open");
@@ -12096,7 +12107,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         // Close can be outstanding over the story drawer. It is the topmost
         // surface, so Escape belongs to it alone; while its uncancelable request
         // is in flight `closeCloseModal()` deliberately keeps it open.
-        if ($("close-modal").classList.contains("open")) {
+        if (overlayStack[overlayStack.length - 1] === "close-modal") {
           closeCloseModal();
           return;
         }
