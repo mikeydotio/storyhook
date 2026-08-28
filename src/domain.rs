@@ -3816,13 +3816,12 @@ mod tests {
 
     use super::{
         CLOSED_STATE_SLUG, FieldEdit, Priority, REQUIRED_STATES, STATE_ROLE_ACTIVE, StateChanges,
-        StateDef,
-        StateUsage, StoryEvent, StoryRelation, StorySnapshot, SuperState, TypeDef, active_state,
-        compute_display_state, compute_progress, default_type, derive_family_relationships,
-        fold_story, has_children, is_claimable, is_ready, last_activity_type, normalize_labels,
-        ready_order, story_number, validate_event_for_append, validate_required_states,
-        validate_state_defs, validate_state_defs_for_write, validate_state_slug,
-        validate_type_slug, with_required_states, would_create_parent_cycle,
+        StateDef, StateUsage, StoryEvent, StoryRelation, StorySnapshot, SuperState, TypeDef,
+        active_state, compute_display_state, compute_progress, default_type,
+        derive_family_relationships, fold_story, has_children, is_claimable, is_ready,
+        last_activity_type, normalize_labels, ready_order, story_number, validate_event_for_append,
+        validate_required_states, validate_state_defs, validate_state_defs_for_write,
+        validate_state_slug, validate_type_slug, with_required_states, would_create_parent_cycle,
     };
 
     #[test]
