@@ -249,8 +249,10 @@ test("choosing a relation kind survives a board refresh that rebuilds the drawer
     blockerId,
   );
 
-  // SH-407: the blocked-by edge display-promoted the worker into "blocked",
-  // out of "todo" -- `workerCard` above is deliberately unscoped by column
-  // for that reason, but cleanup still needs to find it where it now sits.
-  await deleteBlockedStory(page, workerTitle);
+  // SH-487: the blocker is ordinary open work, so the edge alone does not
+  // display-promote the worker -- it stays in "todo", still carrying the
+  // badge asserted above. `workerCard` is deliberately unscoped by column
+  // regardless, since this test's subject is the recorded relation kind,
+  // not board placement.
+  await deleteStory(page, workerTitle);
 });
