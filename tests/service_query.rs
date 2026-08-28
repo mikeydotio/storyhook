@@ -1242,11 +1242,11 @@ fn the_epic_rollup_and_the_display_promotion_agree_about_who_needs_intervention(
             .expect("relating");
         block(&ctx, &subject, &blocker);
 
-        let epic_blocked =
-            query(&fixture, |service| service.show(&epic)).story.state == "blocked";
-        let subject_promoted =
-            query(&fixture, |service| service.show(&subject)).display_state.as_deref()
-                == Some("blocked");
+        let epic_blocked = query(&fixture, |service| service.show(&epic)).story.state == "blocked";
+        let subject_promoted = query(&fixture, |service| service.show(&subject))
+            .display_state
+            .as_deref()
+            == Some("blocked");
         assert_eq!(
             epic_blocked, subject_promoted,
             "{name}: the epic rollup and the display promotion disagreed"

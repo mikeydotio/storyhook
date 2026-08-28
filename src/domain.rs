@@ -2579,7 +2579,8 @@ fn walk_needs_intervention(
         return true;
     }
     let result = facts.blockers.iter().any(|id| {
-        resolve(id).is_some_and(|blocker| walk_needs_intervention(&blocker, resolve, visiting, memo))
+        resolve(id)
+            .is_some_and(|blocker| walk_needs_intervention(&blocker, resolve, visiting, memo))
     });
     visiting.remove(&facts.id);
     memo.insert(facts.id.clone(), result);
@@ -3968,9 +3969,9 @@ mod tests {
         active_state, compute_display_state, compute_progress, default_type,
         derive_family_relationships, fold_story, has_children, is_claimable, is_ready,
         last_activity_type, needs_intervention, normalize_labels, ready_order, story_number,
-        validate_event_for_append,
-        validate_required_states, validate_state_defs, validate_state_defs_for_write,
-        validate_state_slug, validate_type_slug, with_required_states, would_create_parent_cycle,
+        validate_event_for_append, validate_required_states, validate_state_defs,
+        validate_state_defs_for_write, validate_state_slug, validate_type_slug,
+        with_required_states, would_create_parent_cycle,
     };
 
     #[test]
