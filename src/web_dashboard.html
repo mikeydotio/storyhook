@@ -8466,11 +8466,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * `display_state || state`, same as the board's column placement
    * (`renderBoard`), the drag-drop no-op guard, `storyLight()`, and (SH-407)
    * `filteredStories`'s state filter: a story display-promoted by
-   * `compute_display_state` (SH-165's active-child arm, or SH-407's blocked
-   * arm) must show the same word here as the column its own card sits in,
-   * or the list contradicts the board. When the two disagree the pill
-   * carries a `title` naming both, so the table never silently says
-   * something `story show` doesn't. */
+   * `compute_display_state` must show the same word here as the column its
+   * own card sits in, or the list contradicts the board. When the two
+   * disagree the pill carries a `title` naming both, so the table never
+   * silently says something `story show` doesn't -- and the title names
+   * only what the wire actually told us (the promoted slug and the recorded
+   * one), never a specific CAUSE: `compute_display_state` has promoted a
+   * card for more than one reason across this field's history (SH-165's
+   * active-child arm, since removed by SH-446; SH-407's blocked arm), and a
+   * hardcoded cause here is exactly what went stale silently last time. */
   function buildStatePill(v) {
     var st = v.story;
     var slug = v.display_state || st.state;
@@ -8478,7 +8482,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var pill = el("span", {
       class: "state-pill",
       title: promoted
-        ? slug + " (shown for an active child -- recorded state is " + st.state + ")"
+        ? slug + " (shown here; recorded state is " + st.state + ")"
         : null
     }, [el("span", { class: "dot" }, []), slug]);
     // One write drives the pill's tint, its ring, and the dot's fill --
