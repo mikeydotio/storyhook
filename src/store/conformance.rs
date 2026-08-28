@@ -1853,7 +1853,9 @@ macro_rules! store_conformance_suite {
                 .unwrap();
                 assert_eq!(snapshot(f.store(), project, one).state, "done");
                 let abandoned = snapshot(f.store(), project, two);
-                assert_eq!(abandoned.state, "closed");
+                // This deliberately below-floor store fixture has no `closed`
+                // state, so the legacy compatibility fold rests in `done`.
+                assert_eq!(abandoned.state, "done");
                 assert_eq!(abandoned.superstate, SuperState::Closed);
                 assert!(abandoned.hidden_at.is_some());
             }
