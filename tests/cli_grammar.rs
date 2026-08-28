@@ -242,12 +242,18 @@ fn delete_soft_deletes() {
             .join(".storyhook/open/stories/SH-1.jsonl")
             .exists()
     );
+    // Where it comes to rest is `closed`, not `done` (SH-505). A soft delete is
+    // read as abandonment now, and abandonment is not completion — `done` said
+    // the work had been finished. It also arrives ARCHIVED, which is what keeps
+    // it as invisible as it was before `closed` became an ordinary state a
+    // board renders a column for.
     story(dir.path())
         .args(["show", "SH-1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Test story"))
-        .stdout(predicate::str::contains("state: done (CLOSED, deleted)"))
+        .stdout(predicate::str::contains("state: closed (CLOSED, deleted)"))
+        .stdout(predicate::str::contains("archived: "))
         .stdout(predicate::str::contains("deleted_reason: created in error"));
 }
 
