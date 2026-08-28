@@ -1183,6 +1183,9 @@ fn invocation_corpus() -> Vec<Invocation> {
         Invocation::Show {
             id: "SH-1".to_string(),
         },
+        Invocation::Log {
+            id: "SH-1".to_string(),
+        },
         Invocation::Comment {
             id: "SH-1".to_string(),
             text: "a comment".to_string(),
