@@ -86,7 +86,7 @@ functions answer "the CLOSED state" with a bare `.find()` that today can only re
 - `service::project::closed_state` — names the state in every generated `AGENTS.md`;
 - `service::pr_check` — a merged PR closes its story, where `done` is the right answer
   and abandonment would be a lie;
-- `domain::resting_state_for_deleted`.
+- `domain::resting_state_for_deleted`, renamed `resting_state_for_closure` here.
 
 Ordering keeps the first two correct. The third is the one that *should* now answer
 `closed`, and it is made explicit rather than left to ordering: a `CLOSED_STATE_SLUG`
@@ -106,10 +106,11 @@ nothing to rewrite; it is simply **read differently**. A story whose log carries
 to state `closed`, `closed_at`, and `hidden_at` — closed, and archived, so it stays as
 invisible as it is today.
 
-`StorySnapshot.deleted` and `.deleted_reason` are removed, along with the
-`stories.deleted` column and `StoryQuery::deleted`. The human record survives untouched
-without them: today's `delete` already writes a `[deleted] <reason>` **comment** beside
-the event.
+`StorySnapshot.deleted` and `.deleted_reason` go, along with the `stories.deleted` column
+and `StoryQuery::deleted` — but **with SH-498, not with the fold**. Removing the flag
+forces the delete verb's own change with it, and the "As built" section below records why.
+The human record survives their removal untouched: today's `delete` already writes a
+`[deleted] <reason>` **comment** beside the event.
 
 Three things about this fold are load-bearing.
 
