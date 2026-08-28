@@ -8,7 +8,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use storyhook_test_support::scratch_dir;
+use storyhook_test_support::{daemon_containment, scratch_dir};
 use tempfile::TempDir;
 
 const FAKE_CODEX: &str = r#"#!/bin/sh
@@ -131,6 +131,18 @@ impl Harness {
         fs::write(self.home.join("codex-mode"), mode).expect("writing Codex fake mode");
     }
 
+    /// One `story` invocation against this fixture's isolated home.
+    ///
+    /// `env_clear` is the point of this harness — a provider CLI must be found
+    /// on the fixture's own `PATH` and nowhere else — but it also clears the
+    /// containment `scripts/run-tests.sh` exports for the whole run, and since
+    /// SH-114 every `story` starts a daemon. Without
+    /// [`daemon_containment`] reinstated the child asked for port 3456, the
+    /// port a developer's own dashboard uses, and had no parent to die with:
+    /// this one file leaked 20 daemons per run (one per `Harness`), and the
+    /// 16 built from a packaged copy were invisible to
+    /// `scripts/check-no-orphan-servers.sh` as well, so they accumulated —
+    /// 672 alive across three days when SH-493 was measured.
     fn run(&self, args: &[&str]) -> Output {
         let path = format!("{}:/usr/bin:/bin", self.fake_bin.display());
         let data = self.home.join("data");
@@ -139,7 +151,8 @@ impl Harness {
         fs::create_dir_all(&data).unwrap();
         fs::create_dir_all(&config).unwrap();
         fs::create_dir_all(&state).unwrap();
-        Command::new(&self.story)
+        let mut command = Command::new(&self.story);
+        command
             .args(args)
             .current_dir(&self.root)
             .env_clear()
@@ -150,8 +163,8 @@ impl Harness {
             .env("XDG_CONFIG_HOME", &config)
             .env("XDG_STATE_HOME", &state)
             .env("STORYHOOK_DATA_DIR", data.join("storyhook"))
-            .output()
-            .expect("running story plugin command")
+            .envs(daemon_containment());
+        command.output().expect("running story plugin command")
     }
 
     fn codex_log(&self) -> String {
@@ -191,9 +204,15 @@ impl Harness {
         fs::set_permissions(path, permissions).unwrap();
     }
 
+    /// The installed launcher, run the way Codex runs it.
+    ///
+    /// Carries [`daemon_containment`] for the same reason [`Harness::run`]
+    /// does, and needs it just as much: the launcher's whole job is to exec
+    /// the `story` this fixture put on its `PATH`.
     fn run_launcher(&self, args: &[&str]) -> Output {
         let path = format!("{}:/usr/bin:/bin", self.fake_bin.display());
-        Command::new("bash")
+        let mut command = Command::new("bash");
+        command
             .arg(self.codex_launcher())
             .args(args)
             .current_dir(&self.root)
@@ -201,8 +220,8 @@ impl Harness {
             .env("HOME", &self.home)
             .env("PATH", path)
             .env("TMPDIR", self._temp.path())
-            .output()
-            .expect("running the stable Codex launcher")
+            .envs(daemon_containment());
+        command.output().expect("running the stable Codex launcher")
     }
 }
 
