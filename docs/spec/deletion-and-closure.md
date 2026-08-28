@@ -269,5 +269,69 @@ The CLI renders prose verbatim and has no id grammar at all. Deliberately untouc
 
 ## As built
 
-*(Deviations from the above are recorded here as they are discovered, per this project's
-convention.)*
+### SH-505 narrowed: the `deleted` field stays until SH-498
+
+The plan had SH-505 remove `StorySnapshot.deleted`, `deleted_reason`, the
+`stories.deleted` column and `StoryQuery::deleted` alongside the fold change. It cannot:
+removing the flag forces the delete verb's own change with it. `resolve_purgeable_story`
+gates `story purge` on "has been soft-deleted", `reopen_plan` gates the undelete on the
+same flag, and `service::history` writes a `StoryDeleted` to redo one — so a SH-505 that
+removed the field would either ship a broken `story purge` or drag the whole of SH-498
+into it.
+
+Discovered by doing it: the removal was implemented, produced 21 compiler errors across
+12 files, and every one of them was about a verb SH-498 owns. So SH-505 is exactly the
+additive half — the state, the verb, the fold, the migration — and migration 21 keeps the
+`deleted` column, which still describes something real until deletion becomes permanent.
+That also keeps each wave's history bisectable, which a combined one would not have been.
+
+### The migration skips a colliding project rather than aborting
+
+The plan had migration 21 **abort** when a project already defines a state named `closed`,
+on the grounds that silently reclassifying it would move every story in that state into
+the CLOSED superstate. Aborting turned out to be unnecessary, and worse than the
+alternative: it would leave the store at the old schema for a condition that harms
+nothing.
+
+What ships instead: the INSERT skips a project that already owns the slug, and the UPDATE
+is guarded on the slug being CLOSED, so those stories stay in `done` — and
+`resting_state_for_closure`'s second rung answers `done` for exactly those catalogs, so a
+fresh fold and the stored row still agree. `story doctor` then reports the real problem,
+a catalog below the required-states floor, as the `RequiredStates` finding it is. The
+fallback rung was already required for other reasons; this is a second thing it buys.
+
+### `hidden_at` is cleared by a move into an OPEN state
+
+Not in the plan, and forced by the fold change. With `hidden_at` stamped in the
+`StoryDeleted` arm, the history `[StoryDeleted, StateChanged(open), ClosedAndArchived]` —
+delete, undelete, later close for real — ends CLOSED, so the post-loop
+`superstate == OPEN` retraction never fires and the story silently re-archives itself.
+The `→ OPEN` arm now clears `hidden_at` alongside `closed_at`, which it has always
+cleared. A behaviour change beyond the determination's own scope, taken deliberately;
+nothing pinned the older behaviour.
+
+### Two guards the plan did not know were missing
+
+`service::project::default_states` claims in its own doc comment to be "exactly
+`REQUIRED_STATES`, in that order", and nothing checked it — nor the two test-support
+twins. The claim is load-bearing: catalog order is what `closed_state` and `pr_check`
+read when they take "the first CLOSED state", so a twin that drifted into listing
+`closed` first would scaffold an AGENTS.md telling every agent to finish its work by
+abandoning the story, with the floor itself still correct and every test of the floor
+still green. `tests/required_states.rs` now pins both twins, and
+`tests/service_system.rs` pins the consequence at the surface an agent would feel.
+
+### One unrelated defect adopted
+
+`store_properties`' relation property asserted `parents <= 1`, pinning a unique index
+SH-446 removed on purpose. Unreachable until this change perturbed the generator's RNG
+stream. Fixed in its own commit rather than filed, per `story help scope-rubric` — and
+the first replacement for it was wrong in an instructive way: "a story may not be its own
+ancestor" is a `RelationService` rule, and that harness bypasses the service on purpose to
+exercise the store. Symmetry is the whole of what the store itself promises.
+
+### Not yet built
+
+SH-498 (hard delete) and SH-506 (`<DELETED>` references) are unstarted. The dashboard has
+no Close action yet — the CLI verb, the state and the migration land first, since the
+dashboard has nothing to offer until `closed` exists.
