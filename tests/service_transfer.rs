@@ -90,7 +90,11 @@ fn an_export_carries_the_catalog_and_every_story() {
         "the default prefix is emitted as an absent field, as the legacy \
          document did"
     );
-    assert_eq!(export.states.len(), 4);
+    assert_eq!(
+        export.states.len(),
+        storyhook::domain::REQUIRED_STATES.len(),
+        "the fixture is a default project, so its catalog is the floor"
+    );
     assert_eq!(export.types.len(), 2);
     assert_eq!(export.members.len(), 1);
     assert_eq!(export.stories.len(), 1);
