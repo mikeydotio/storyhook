@@ -1986,8 +1986,9 @@ A dependency is a scheduling fact, not a severity claim.
     story rather than triaging the same defect twice.
   - A mitigation living in another story never lowers this one. A
     documented workaround is not a fix.
-  - A blocked-by edge pointing at a CLOSED story is historically
-    accurate; leave it. story next already ignores it.
+  - Closing a blocker durably retracts every blocks / blocked-by edge it
+    owns. The compensating removal events preserve the history; the live
+    relationship does not survive to reactivate if the blocker reopens.
 
 Related:
   story new --priority <level>   — Choose a level at creation
