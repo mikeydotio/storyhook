@@ -68,6 +68,12 @@ pub fn default_states() -> Vec<StateDef> {
             role: None,
             description: None,
         },
+        StateDef {
+            slug: "closed".into(),
+            super_state: SuperState::Closed,
+            role: None,
+            description: None,
+        },
     ]
 }
 
