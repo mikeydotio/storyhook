@@ -479,6 +479,52 @@ exactly what SH-418 said would happen. A poller will report a growing distance
 until those stories land. That reading is correct, and it is the first time the
 number has ever been visible.
 
+### As built, second reading: "load-sensitivity" was the wrong name (SH-496, SH-501)
+
+The reading above attributed all seven of its failures to the already-open
+load-sensitivity stories. A release attempt on 2026-08-27 cutting v2.3.0 refused
+with **13** failures (SH-496), and working that ledger measured the class instead
+of inferring it. Those are two different runs, so nothing below re-diagnoses
+SH-418's own seven — what it retires is the *framing* they were filed under, which
+outlived them and which the measurement does not support. The correction belongs
+here rather than only in a story, because this section is what a later reader
+opens.
+
+**Most of it was not load, and most of it was not even flaky.** Six of the
+thirteen were deterministic assertions that had simply never been run, because
+since SH-394 nothing on a merge path executes this tier and, per the reading
+above, no tree had ever carried a `full` receipt. Four specs were asserting
+behaviour three deliberate changes had superseded — SH-446, SH-449 and SH-481 —
+which is `5cb6c94`'s four-file diff, and two of those specs failed on both
+engines, which is how four spec files account for six of the thirteen rows.
+Their own teardown then found a seventh thing, store-side: SH-497, an epic whose
+children are all deleted stays permanently unmovable, because deletion is soft
+and `has_children` only tests for the edge. All of it is fixed. On tip
+`fa81744`, **`chromium` is 366/366, `mobile-chromium` 38/38 and `mobile-webkit`
+38/38** — three of the four projects fully green, twice over. The one
+`mobile-chromium` row now passes too — in the one full four-project run since,
+which is the only run that exercised that project — with no change attributable
+to it: recorded as unexplained rather than as fixed.
+
+**What is left is one webkit class, and the daemon is not in it.** Four failures
+per full webkit run, roaming from run to run, all one shape: a fresh context's
+first `page.goto("/")` never completing. While it stalled, an external prober
+polled the same URL on the same daemon every two seconds — **445 samples, HTTP
+200, slowest 28 ms** — and a second prober counted **at most 10 established
+sockets** against the 128 of `MAX_CONNECTIONS`. The stalled page's own Playwright
+trace holds **no network record at all**, not even for the navigation, and its
+screenshot is a blank `about:blank`: the request never left the browser. One
+stall ran a full 60 s at a measured `contention=0.80` — an idle machine by the
+harness's own definition, where load grace's multiplier is exactly 1.
+
+So the honest statement is narrower and more useful than the one above: a `full`
+receipt is unobtainable on this machine **because of one webkit navigation
+defect** (SH-501), not because the suite in general is too load-sensitive to
+pass. Load grace is working as designed and cannot reach this; the stories the
+first reading pointed at name individual sightings, where SH-501 names the class.
+The distance `browser-status.sh` reports will keep growing until SH-501 lands,
+and that reading is still correct.
+
 ## The timing-ceiling rule
 
 A wall-clock ceiling states that some deadline *D* was not spent. It is only

@@ -37,13 +37,24 @@ test.beforeEach(async ({ page }) => {
   await openProject(page, "Alpha Project");
 });
 
+/** Creates a story in the todo column and returns its card.
+ *
+ * `storyType` names the story's TYPE, which since SH-499 is the only thing
+ * that makes a story an epic -- a `parent-of` edge no longer does. This test's
+ * subject is an epic's pill, so its epic has to actually be one; before SH-499
+ * it became one by acquiring a child, and this helper had no reason to offer
+ * the choice. */
 async function createStory(
   page: import("@playwright/test").Page,
   title: string,
+  storyType?: string,
 ) {
   await page.locator("#new-story-btn").click();
   await expect(page.locator("#create-modal")).toHaveClass(/open/);
   await page.locator("#create-title").fill(title);
+  if (storyType) {
+    await page.locator("#create-type").selectOption(storyType);
+  }
   await page.locator("#create-submit").click();
   await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
   const card = page.locator('.column[data-state="todo"] .card', {
@@ -103,7 +114,17 @@ test("an epic's list pill shows the state its card actually sits in, not its own
 }) => {
   const epicTitle = "SH-277 list pill -- epic";
   const childTitle = "SH-277 list pill -- child";
-  const epicCard = await createStory(page, epicTitle);
+
+  // Before the epic exists, not after it acquires a child (SH-499). SH-446
+  // hides epics by default and since SH-499 that filter reads the TYPE, so a
+  // story created `epic` is filtered off the board the instant it is created --
+  // `createStory`'s own "the card is in the todo column" wait would be the
+  // thing that failed, inside a helper, rather than any assertion this test
+  // makes. This test is about what an epic's pill SAYS, so its epic has to be
+  // visible for the whole of its life here.
+  await showEpics(page);
+
+  const epicCard = await createStory(page, epicTitle, "epic");
   const childCard = await createStory(page, childTitle);
   const epicId = (await epicCard.getAttribute("data-id"))!;
   const childId = (await childCard.getAttribute("data-id"))!;
@@ -113,12 +134,6 @@ test("an epic's list pill shows the state its card actually sits in, not its own
   await addChild(page, childId);
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
-
-  // SH-495: adding the child made this story an epic, and SH-446 hides epics
-  // by default -- so its list row disappears here and every assertion below
-  // reports "element(s) not found" rather than a wrong pill. This test is
-  // about what an epic's pill SAYS, so the epic has to be visible to say it.
-  await showEpics(page);
 
   // Not yet promoted -- the epic's own literal state is still `todo`, and
   // its list pill/dot must read exactly like any other unpromoted todo
