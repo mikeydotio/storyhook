@@ -1079,7 +1079,10 @@ fn reordering_statuses_reorders_the_board_columns() {
         .iter()
         .map(|s| s.slug.clone())
         .collect();
-    assert_eq!(before, vec!["todo", "in-progress", "blocked", "done"]);
+    assert_eq!(
+        before,
+        vec!["todo", "in-progress", "blocked", "done", "closed"]
+    );
 
     run(
         &fixture,
@@ -1090,6 +1093,7 @@ fn reordering_statuses_reorders_the_board_columns() {
                     "todo".to_string(),
                     "blocked".to_string(),
                     "done".to_string(),
+                    "closed".to_string(),
                 ],
             },
         },
