@@ -1623,17 +1623,34 @@ pub fn fold_story(
                     .is_some_and(|def| def.super_state == SuperState::Open)
                 {
                     closed_at = None;
-                    deleted = false;
                     deleted_reason = None;
-                    // `hidden_at` too, symmetric with `closed_at` (SH-505).
-                    // The post-loop retraction below cannot cover this: it
-                    // fires on the FINAL superstate, so a story that was
-                    // deleted, reopened, and later closed for real ends CLOSED
-                    // and would keep the `hidden_at` its `StoryDeleted` arm
-                    // stamped — silently re-archiving itself. Nothing pinned
-                    // the older behaviour; `fold_story_reopening_clears_
-                    // hidden_at` ends OPEN and is covered either way.
-                    hidden_at = None;
+                    // Retract the DELETION's own archive stamp, and only that
+                    // one (SH-505).
+                    //
+                    // The `StoryDeleted` arm stamps `hidden_at` so a
+                    // soft-deleted story stays as invisible as it was before
+                    // `closed` became an ordinary state. The post-loop
+                    // `superstate == OPEN` retraction below cannot undo that
+                    // stamp for a story that was deleted, reopened, and later
+                    // closed for real: it fires on the FINAL superstate, and
+                    // that history ends CLOSED. So the story would fold
+                    // archived where before SH-505 it folded visible.
+                    //
+                    // Guarding on `deleted` is what keeps this narrow. An
+                    // UNCONDITIONAL clear here also un-archives every story
+                    // that was archived, reopened for an edit, and closed
+                    // again — a far larger class, long-standing behaviour, and
+                    // nothing to do with deletion. Six such stories exist in
+                    // this repository's own tracker alone; the unconditional
+                    // version was written first and they are how it was
+                    // caught.
+                    //
+                    // Read before the latch is cleared, or the condition is
+                    // always false.
+                    if deleted {
+                        hidden_at = None;
+                    }
+                    deleted = false;
                 }
             }
             StoryEvent::StoryStateCleared { at } => {
@@ -5604,6 +5621,56 @@ mod tests {
         assert_eq!(
             story.hidden_at, None,
             "closing a story for real is not archiving it"
+        );
+    }
+
+    /// The class an unconditional retraction would have broken, and did.
+    ///
+    /// A story archived, reopened for an edit, and closed again must stay
+    /// archived. That is long-standing behaviour with nothing to do with
+    /// deletion, and the first version of SH-505's retraction cleared
+    /// `hidden_at` on every move into an OPEN state — un-archiving six stories
+    /// in this repository's own tracker, found by running the migration against
+    /// a copy of it and reading `story doctor`.
+    #[test]
+    fn fold_story_archived_then_reopened_then_closed_stays_archived() {
+        let story = fold_story(
+            "SH-1",
+            &created_then(&[
+                StoryEvent::StoryStateChanged {
+                    at: "2026-08-27T00:01:00Z".to_string(),
+                    state: "done".to_string(),
+                },
+                StoryEvent::StoryClosedAndArchived {
+                    at: "2026-08-27T00:01:00Z".to_string(),
+                    state: "done".to_string(),
+                },
+                StoryEvent::StoryHidden {
+                    at: "2026-08-27T00:02:00Z".to_string(),
+                },
+                StoryEvent::StoryStateChanged {
+                    at: "2026-08-27T00:03:00Z".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryStateChanged {
+                    at: "2026-08-27T00:04:00Z".to_string(),
+                    state: "done".to_string(),
+                },
+                StoryEvent::StoryClosedAndArchived {
+                    at: "2026-08-27T00:04:00Z".to_string(),
+                    state: "done".to_string(),
+                },
+            ]),
+            &state_map_with_closed(),
+        )
+        .unwrap();
+
+        assert_eq!(story.superstate, SuperState::Closed);
+        assert_eq!(
+            story.hidden_at.as_deref(),
+            Some("2026-08-27T00:02:00Z"),
+            "reopening retracts the DELETION's archive stamp, never a hide the \
+             user asked for"
         );
     }
 
