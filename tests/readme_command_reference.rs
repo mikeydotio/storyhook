@@ -626,6 +626,11 @@ const EXCLUDED_VERBS: &[(&str, &str)] = &[
         "a tombstone: `dispatch` returns \"`story relink` is now `story project link \
          checkout`\" and never reaches a real invocation",
     ),
+    (
+        "purge",
+        "a tombstone: `dispatch` returns \"`story purge` is retired; use `story delete`\" and \
+         never reaches a real invocation",
+    ),
 ];
 
 /// Slices `source` from `start_marker` to the next line that is exactly `}`

@@ -824,7 +824,7 @@ since SH-323. SH-361 carries that, split as the council required into the dispat
 server-side copy exists in `src/api/dispatch.rs` with no route and no reader) and the
 ordinary-durable-error half (which exists nowhere but the tab). The sibling sweep this
 defect class requires found a hit outside the dock and it is SH-362: three modal inputs
-(`#token-input`, `#drop-blocked-reason-input`, `#delete-reason`) submit on Enter with
+(`#token-input`, `#drop-blocked-reason-input`, `#delete-confirmation`) submit on Enter with
 neither a repeat guard nor an in-flight guard, and the delete path's extra `DELETE`s report
 their failures into a modal the first success already closed — the SH-312 shape.
 

@@ -71,6 +71,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **`story delete <id> [--force]` now permanently removes a story.** The
+  unforced form returns a server-authored plan and requires the story id typed
+  back at a terminal; `--force` is the non-interactive bypass. Every surviving
+  relationship claim is retracted with a real event before the story row and
+  event log are destroyed, and the id is never reused. The former soft-delete
+  reason moves to `story close`; `story purge` is retired, `story reopen` no
+  longer has `--force`, and story JSON/store schema no longer carries
+  `deleted` or `deleted_reason`. The dashboard uses the same plan and typed-id
+  gate as the CLI (SH-498)
 - **A soft-deleted story now comes to rest in `closed` rather than `done`, and
   folds archived.** Deletion is read as abandonment, and `done` claimed the work
   had been finished; the archive stamp keeps such a story exactly as invisible

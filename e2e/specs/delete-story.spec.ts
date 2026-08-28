@@ -8,7 +8,7 @@ import {
 
 /**
  * Exercises SH-197's shared delete-confirmation modal, which replaced the
- * drawer footer's own inline typed-reason form. Both the drawer footer's
+ * drawer footer's own inline confirmation form. Both the drawer footer's
  * Delete button and the context menu's Delete item (added by a later
  * commit) open the same `#delete-modal` -- this file only drives the
  * drawer-footer entry point, which is enough to prove the modal itself
@@ -47,6 +47,7 @@ test("Delete opens the modal over the still-open drawer", async ({ page }) => {
   await page
     .locator('.column[data-state="todo"] .card', { hasText: title })
     .click();
+  const id = await page.locator("#drawer-body").getAttribute("data-story-id");
   await expect(page.locator("#drawer")).toHaveClass(/open/);
 
   await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
@@ -60,29 +61,28 @@ test("Delete opens the modal over the still-open drawer", async ({ page }) => {
   // the shared deleteStory() helper, which assumes a clean starting state
   // (no drawer, no modal) and would otherwise try to click a card that its
   // own still-open backdrop is covering.
-  await page.locator("#delete-reason").fill("e2e cleanup");
+  await page.locator("#delete-confirmation").fill(id!);
   await page.locator("#delete-modal-submit").click();
   await expect(page.locator("#delete-modal")).not.toHaveClass(/open/);
 });
 
-test("submitting with an empty reason shows an in-modal error and deletes nothing", async ({
+test("submitting with an empty confirmation shows an in-modal error and deletes nothing", async ({
   page,
 }) => {
-  const title = "SH-197 delete modal — empty reason";
+  const title = "SH-197 delete modal — empty confirmation";
   await createStory(page, title);
   const card = page.locator('.column[data-state="todo"] .card', {
     hasText: title,
   });
 
   await card.click();
+  const id = (await card.getAttribute("data-id"))!;
   await expect(page.locator("#drawer")).toHaveClass(/open/);
   await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
   await expect(page.locator("#delete-modal")).toHaveClass(/open/);
 
   await page.locator("#delete-modal-submit").click();
-  await expect(page.locator("#delete-modal-error")).toContainText(
-    "A deletion reason is required.",
-  );
+  await expect(page.locator("#delete-modal-error")).toContainText(`Type ${id} exactly`);
   // Still open, still there -- an empty submission is refused, not a no-op
   // that silently closes.
   await expect(page.locator("#delete-modal")).toHaveClass(/open/);
@@ -90,7 +90,7 @@ test("submitting with an empty reason shows an in-modal error and deletes nothin
 
   // Cleanup completes the ALREADY-OPEN modal directly -- see the identical
   // comment on the previous test for why deleteStory() can't be used here.
-  await page.locator("#delete-reason").fill("e2e cleanup");
+  await page.locator("#delete-confirmation").fill(id);
   await page.locator("#delete-modal-submit").click();
   await expect(page.locator("#delete-modal")).not.toHaveClass(/open/);
 });
@@ -100,6 +100,7 @@ async function openDeleteModal(
   card: import("@playwright/test").Locator,
 ) {
   await card.click();
+  const id = (await card.getAttribute("data-id"))!;
   await expect(page.locator("#drawer")).toHaveClass(/open/);
   await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
   await expect(page.locator("#delete-modal")).toHaveClass(/open/);
@@ -186,7 +187,7 @@ test("a real deletion toasts, closes the drawer, and removes the card", async ({
   await card.click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
   await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
-  await page.locator("#delete-reason").fill("e2e: real deletion test");
+  await page.locator("#delete-confirmation").fill(id);
   await page.locator("#delete-modal-submit").click();
 
   await expect(page.locator("#toast-stack .toast.success")).toContainText(

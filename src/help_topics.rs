@@ -296,7 +296,7 @@ Related:
             r#"story list [filters]
 
 List open stories with optional filters. Returns all open stories by
-default: closed, archived and soft-deleted stories are excluded, with
+default: closed and archived stories are excluded, with
 a message naming what was hidden and which flag would show it. Combine
 multiple filters to narrow results.
 
@@ -327,14 +327,10 @@ Filters:
                            implies --include-closed
   --all                   --include-closed --include-archived together
 
-A soft-deleted story (see 'story help delete') is never shown by 'list',
-under any combination of the flags above — 'story search' and 'story
-show' still find one.
-
 Examples:
   story list                          # Open stories, closed/archived hidden
   story list --include-closed         # Also show closed, unarchived ones
-  story list --all                    # Everything except deleted
+  story list --all                    # Every story that exists
   story list --ready                  # Unblocked, ready to work on
   story list --phase 1                # Stories in phase 1
   story list --priority critical,high # Only critical and high priority
@@ -1091,7 +1087,7 @@ Tools:
 What is not here:
   This is a curated slice of the CLI's full surface, not a 1:1 mirror of it
   — verbs like 'story decompose', 'story pr-check', and anything
-  destructive enough to ask a human to confirm (like 'story purge') are not
+  destructive enough to ask a human to confirm (like 'story delete') are not
   exposed as tools. Use the CLI directly for those.
 
 A claim over MCP posts no comment unless you pass one. The 'story claim'
@@ -1327,10 +1323,6 @@ Commands returning a single story ("story" field):
   "prs" and "comment_mentions" are cross-story work, so they arrive on
   `story show` and are absent from `story list`, `story next` and `story
   search` — the same gate "derived_relationships" and "progress" are behind.
-
-  A story removed via `story delete` also carries "deleted": true and
-  "deleted_reason": "<reason>" (omitted entirely for non-deleted stories).
-  Its "superstate" is always "CLOSED", regardless of "state".
 
 Commands returning a story list ("stories" field):
   story list [filters]        -> "stories": [StoryView, ...]
@@ -2086,9 +2078,13 @@ search:
   story search "<key terms>"
   story list --ready
 
-A true duplicate:
+A true duplicate whose breadcrumb is worth retaining:
   story relate <dup> duplicate-of <keep>
-  story delete <dup> "duplicate of <keep>"
+  story close <dup> "duplicate of <keep>"
+
+A mistaken duplicate with no useful record:
+  story comment <keep> "removed mistaken duplicate <dup>"
+  story delete <dup>
 
 One story makes another unnecessary:
   story relate <keeper> obviates <obsolete>
@@ -2096,8 +2092,8 @@ One story makes another unnecessary:
 Related but distinct — say so without merging:
   story relate <a> relates-to <b>
 
-duplicate-of and delete are soft and reversible: the reason travels
-with the deletion, and story reopen undoes it.
+duplicate-of and close retain a reversible record. Delete is permanent:
+the duplicate's row and event log are destroyed, and reopen cannot recover it.
 
 == Why a filed story is a cost, not a neutral record ==
 
@@ -2120,7 +2116,8 @@ Related:
   story new                  — File when nothing above applies
   story comment <id>         — Record an adopted finding
   story relate <a> <r> <b>   — duplicate-of, obviates, relates-to
-  story delete <id>          — Retire a collapsed duplicate
+  story close <id> "<why>"  — Retain a collapsed duplicate as history
+  story delete <id>          — Permanently remove a mistaken duplicate
   story decompose            — Planning-time decomposition, not this
   story help priority-rubric — The sibling doctrine, for priority
 "#,
@@ -2291,23 +2288,16 @@ Related:
 
         m.insert(
             "reopen",
-            r#"story reopen <id> [--force]
+            r#"story reopen <id>
 
 Reopen a closed/archived story, returning it to an open state.
 
-Reopening a story that was soft-deleted (`story delete`) undeletes it: at
-an interactive terminal you'll be prompted to confirm; in scripts/CI (no
-TTY) or to skip the prompt, pass --force. Reopening an ordinarily-closed
-story needs no confirmation.
-
 When to use:
-  When a completed story needs more work, was closed by mistake, or was
-  deleted in error.
+  When a completed or deliberately closed story needs more work.
 
 Examples:
   story reopen SH-5
   story reopen SH-12
-  story reopen SH-7 --force
 
 Related:
   story move <id> <state>  — Transition to a specific state
@@ -2343,7 +2333,7 @@ Examples:
 Related:
   story unarchive <id>                     — Reverse an archive
   story archive-state <state> [--force]    — Archive an entire column at once
-  story reopen <id> [--force]              — Reopen (also un-archives)
+  story reopen <id>                        — Reopen (also un-archives)
 "#,
         );
 
@@ -2397,7 +2387,7 @@ Archives every not-yet-archived story currently in a closed-superstate
 column, in one call — the bulk equivalent of running `story archive` on
 each. Refuses a state that is open, or one that is not defined.
 
-Two-step like `story reopen`/`story purge`: without --force, this
+Two-step like `story delete`: without --force, this
 answers with exactly which stories would be archived and writes
 nothing; at an interactive terminal you'll be prompted to confirm, and
 --force skips the prompt (for scripts/CI, or once you've reviewed the
@@ -2461,29 +2451,28 @@ Related:
 
         m.insert(
             "delete",
-            r#"story delete <id> "<reason>"
+            r#"story delete <id> [--force]
 
-Soft-delete a story with a required reason. The story is archived with
-a deletion flag — never truly lost — and its superstate becomes CLOSED,
-so it no longer counts as open, ready, or a blocker for other stories.
-Unlike an ordinarily closed story, no combination of `story list`'s
-visibility flags shows a deleted one — `story search` and `story show`
-are the way to find it; both expose "deleted": true and
-"deleted_reason": "<reason>" under `--json`.
+Permanently remove a story: its events, comments, labels, git links,
+row, and id are gone. There is no undo. At an interactive terminal you
+must type the story id to confirm. In scripts/CI (no TTY) and under
+--json, pass --force after reviewing the refusal's deletion plan.
+
+Any surviving story that claims a relationship with the target has
+that claim retracted first as a real event. The preview names those
+claims. The story number is never reused.
 
 When to use:
-  For duplicate, erroneous, or abandoned stories.
+  For a duplicate whose record adds no value, a story filed in the wrong
+  project, a typo, or another creation mistake.
 
 Examples:
-  story delete SH-3 "duplicate of SH-1"
-  story delete SH-7 "created in error"
+  story delete SH-3
+  story delete SH-7 --force
 
 Related:
   story close <id> "<reason>"  — Retire a story deliberately, keeping
                                  it and everything it records
-  story reopen <id> [--force]  — Undelete (reopen a deleted story)
-  story purge <id> [--force]   — Remove a deleted story permanently
-  story search                 — Find deleted stories
   story help scope-rubric      — Collapsing a duplicate onto the
                                   story it duplicates
 "#,
@@ -2491,45 +2480,9 @@ Related:
 
         m.insert(
             "purge",
-            r#"story purge <id> [--force]
+            r#"`story purge` is retired.
 
-Remove a soft-deleted story permanently: its events, its comments, its
-labels, its git links, and every trace of it in the store. There is no
-undo. This is the only irreversible thing that can be done to a single
-story.
-
-It refuses a story that has not been soft-deleted first. `story delete`
-is the reversible tombstone and the required step before this one, so
-everything a purge destroys was already marked unwanted, by someone,
-with a reason on the record.
-
-At an interactive terminal you'll be asked to type the story's id to
-confirm. In scripts/CI (no TTY) and under --json there is nobody to ask,
-so the command refuses and names --force.
-
-Two consequences worth knowing before you run it:
-
-  * Any surviving story that still claims a relationship with this one
-    has that claim retracted first, as a real event on that story. The
-    confirmation lists them.
-  * The story id is never reused. `story new` carries on from the next
-    number, so a purged id stays a gap forever rather than pointing at
-    something unrelated later.
-
-When to use:
-  For a story created in error that should never have existed — a
-  mis-parsed import, a duplicate minted twice, a test story in a real
-  project. Not for finished work, and not for work that was abandoned:
-  both of those are what `story delete` is for.
-
-Examples:
-  story delete SH-7 "created in error"
-  story purge SH-7
-
-Related:
-  story delete <id> "<reason>"  — Soft-delete (reversible)
-  story reopen <id> [--force]   — Undelete a soft-deleted story
-  story project delete          — Delete a whole project
+Use `story delete <id> [--force]` for permanent story removal.
 "#,
         );
 
@@ -2984,8 +2937,7 @@ LIFECYCLE
   story move <id> <state>         Transition state (e.g., todo → in-progress → done)
   story reopen <id>               Reopen a closed story
   story close <id> "<reason>"     Retire, keeping the record
-  story delete <id> "<reason>"    Soft-delete with required reason
-  story purge <id> --force        Permanently remove a deleted story (no undo)
+  story delete <id> [--force]     Permanently remove a story (no undo)
 
 QUERY & NAVIGATION
   story list [filters]            List open stories (--ready, --blocked, --state, --priority, etc.)

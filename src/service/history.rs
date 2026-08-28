@@ -14,15 +14,10 @@
 //!
 //! # What this changes for a user
 //!
-//! Two things, and both are honest rather than incidental.
-//!
-//! * **Undoing a story's creation deletes it** rather than making it never have
-//!   existed. The id stays spent, and `story show` still answers — with a
-//!   deleted story. A tracker that could make an id vanish would be a tracker
-//!   whose ids cannot be quoted anywhere.
-//! * **Undoing is itself in the history.** A retracted comment leaves a
+//! Undoing is itself in the history. A retracted comment leaves a
 //!   [`StoryCommentRetracted`](crate::domain::StoryEvent::StoryCommentRetracted)
-//!   beside it, naming what was withdrawn.
+//! beside it, naming what was withdrawn. Creation is not undoable: removing a
+//! story is permanent and goes through the explicit confirmation gate.
 //!
 //! # Scope
 //!
@@ -44,8 +39,8 @@ use super::{Ctx, append_and_fold, project_prefix, resolve_story};
 /// events that get it there.
 ///
 /// `target` is the log the caller wants the story to *look like*, not a log to
-/// install. An empty `target` means the story did not exist before the change
-/// being undone, which is expressed as a deletion.
+/// install. An empty target is refused because it would delete a story without
+/// the permanent-deletion confirmation gate.
 ///
 /// Returns the events it appended, so a caller can report what undoing cost.
 pub fn restore<S: Store>(
@@ -53,6 +48,11 @@ pub fn restore<S: Store>(
     id: &str,
     target: &[StoryEvent],
 ) -> Result<Vec<StoryEvent>, AppError> {
+    if target.is_empty() {
+        return Err(AppError::Validation(format!(
+            "cannot undo creation of `{id}`: story deletion is permanent; use `story delete {id}`"
+        )));
+    }
     let now = ctx.now();
     let project = ctx.project();
 
@@ -72,19 +72,8 @@ pub fn restore<S: Store>(
         before.superstate = effective.superstate;
         before.state_computed = effective.state_computed;
     }
-    let after = if target.is_empty() {
-        None
-    } else {
-        Some(fold_story(&public, target, &states)?)
-    };
-
-    let compensation = match &after {
-        None => vec![StoryEvent::StoryDeleted {
-            at: now.clone(),
-            reason: "undone".to_string(),
-        }],
-        Some(after) => compensate(&before, after, &now)?,
-    };
+    let after = fold_story(&public, target, &states)?;
+    let compensation = compensate(&before, &after, &now)?;
 
     if compensation.is_empty() {
         return Ok(Vec::new());
@@ -349,20 +338,6 @@ fn compensate(
                 relation: relation.relation.clone(),
             });
         }
-    }
-
-    // A deletion that the target does not have is undone by the state change
-    // above, because `fold_story` retracts the closure markers on a move into
-    // an OPEN state. The reverse — the target *is* deleted and the story is not
-    // — needs saying explicitly.
-    if after.deleted && !before.deleted {
-        events.push(StoryEvent::StoryDeleted {
-            at: at.clone(),
-            reason: after
-                .deleted_reason
-                .clone()
-                .unwrap_or_else(|| "undone".to_string()),
-        });
     }
 
     Ok(events)

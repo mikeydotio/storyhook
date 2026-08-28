@@ -1017,7 +1017,6 @@ pub fn tool_for_variant(invocation: &Invocation) -> Option<&'static str> {
         | Invocation::Unhide { .. }
         | Invocation::HideState { .. }
         | Invocation::Delete { .. }
-        | Invocation::Purge { .. }
         | Invocation::BulkUpdate { .. }
         | Invocation::Import { .. }
         | Invocation::Decompose { .. }

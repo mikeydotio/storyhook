@@ -34,7 +34,7 @@ const PROJECT_COLUMNS: &str =
 // their indices — inserting it earlier would renumber every one of them for
 // no reason beyond cosmetics.
 const STORY_COLUMNS: &str = "story_no, head_seq, title, state, superstate, priority, story_type, \
-     assignee, awaiting, deleted, archived, created_at, updated_at, closed_at, description, \
+     assignee, awaiting, archived, created_at, updated_at, closed_at, description, \
      hidden_at, draft, snapshot, head_global_seq";
 
 fn sql<T>(result: Result<T, rusqlite::Error>, context: &str) -> Result<T, StoreError> {
@@ -525,7 +525,6 @@ struct RawStoryRow {
     story_type: Option<String>,
     assignee: Option<String>,
     awaiting: Option<String>,
-    deleted: bool,
     archived: bool,
     created_at: String,
     updated_at: String,
@@ -548,16 +547,15 @@ fn raw_story_from_row(row: &Row<'_>) -> Result<RawStoryRow, rusqlite::Error> {
         story_type: row.get(6)?,
         assignee: row.get(7)?,
         awaiting: row.get(8)?,
-        deleted: row.get(9)?,
-        archived: row.get(10)?,
-        created_at: row.get(11)?,
-        updated_at: row.get(12)?,
-        closed_at: row.get(13)?,
-        description: row.get(14)?,
-        hidden_at: row.get(15)?,
-        draft: row.get(16)?,
-        snapshot: row.get(17)?,
-        head_global_seq: row.get(18)?,
+        archived: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
+        closed_at: row.get(12)?,
+        description: row.get(13)?,
+        hidden_at: row.get(14)?,
+        draft: row.get(15)?,
+        snapshot: row.get(16)?,
+        head_global_seq: row.get(17)?,
     })
 }
 
@@ -573,7 +571,6 @@ fn hydrate(raw: RawStoryRow, labels: Vec<String>) -> Result<StoryRow, StoreError
         story_type: raw.story_type,
         assignee: raw.assignee,
         awaiting: raw.awaiting,
-        deleted: raw.deleted,
         archived: raw.archived,
         created_at: raw.created_at,
         updated_at: raw.updated_at,
@@ -845,9 +842,6 @@ pub(super) fn stories(
     }
     if let Some(archived) = query.archived {
         filter!(archived, " AND archived = ?{}");
-    }
-    if let Some(deleted) = query.deleted {
-        filter!(deleted, " AND deleted = ?{}");
     }
     if let Some(hidden) = query.hidden {
         text.push_str(if hidden {

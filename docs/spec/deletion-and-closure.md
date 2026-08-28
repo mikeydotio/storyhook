@@ -139,7 +139,7 @@ symmetric with `closed_at`, which the same arm has always cleared. Nothing pinne
 behaviour (`fold_story_reopening_clears_hidden_at` ends OPEN and is covered by the
 post-loop rule either way).
 
-## Migration 21
+## Migrations 21 and 22
 
 **A soft-deleted story is already in `done`/CLOSED, not `todo`.** Migration 4 made
 `stories.superstate` a pure function of the slug and the catalog, and the composite
@@ -150,15 +150,21 @@ not repairing an illegal pair. It moves a legal row from `done` to `closed` and 
 stays put. That is the single biggest reason this migration is cheap, and it belongs in
 the migration's own header.
 
-Order is required, not merely tidy. The foreign key is `DEFERRABLE INITIALLY DEFERRED`,
-so the wrong order survives to COMMIT and *then* fails with `FOREIGN KEY constraint
-failed (19)`, naming neither table nor row and rolling the whole migration back.
+Migration 21's order is required, not merely tidy. The foreign key is `DEFERRABLE
+INITIALLY DEFERRED`, so the wrong order survives to COMMIT and *then* fails with
+`FOREIGN KEY constraint failed (19)`, naming neither table nor row and rolling the
+whole migration back.
 
 1. Insert `closed`/`CLOSED` into every project's `project_states` at `MAX(position)+1`,
    with `role` and `description` NULL — matching `with_required_states` exactly, so a
    migrated project and a `doctor --fix`ed project cannot disagree.
 2. Repoint every soft-deleted story: `state`, `hidden_at`, and the `snapshot` blob.
-3. `ALTER TABLE stories DROP COLUMN deleted`.
+
+Migration 23 follows only once SH-498 removes the behavior represented by the flag: it
+strips `$.deleted` and `$.deleted_reason` from every snapshot, then runs `ALTER TABLE
+stories DROP COLUMN deleted`. Keeping this as a separate migration made SH-505's
+additive state/fold wave independently bisectable while the old delete, purge and
+undelete paths still required the column.
 
 **No table rebuild.** `DROP COLUMN` succeeds against the bundled SQLite (3.51.0,
 measured): the column-level `CHECK (deleted IN (0,1))` drops with the column, and no
@@ -177,8 +183,8 @@ stories.head_seq` (migration 15's rule), not from `closed_at`. The two differ wh
 story was closed before being deleted — a case
 `fold_story_deleted_while_closed_keeps_original_closed_at` already pins.
 
-**In the snapshot patch, `$.state` and `$.hidden_at` are correctness; stripping
-`$.deleted`/`$.deleted_reason` is hygiene.** `diff_rebuilt` compares the *deserialized*
+**In migration 21's snapshot patch, `$.state` and `$.hidden_at` are correctness;
+stripping `$.deleted`/`$.deleted_reason` in migration 23 is hygiene.** `diff_rebuilt` compares the *deserialized*
 struct and `StorySnapshot` has no `deny_unknown_fields`, so leftover keys are invisible
 to the oracle and key order is irrelevant. They are stripped anyway, per migration 4's
 rule that a repair leaving the document behind fixes the query surface and leaves the
@@ -251,8 +257,9 @@ under *this* project's prefix, is at or below the project's highest minted story
 and resolves in none of the client's arrays. Story numbers are never reused, so the
 answer is permanent. `/data` therefore carries one new integer, the watermark from
 `projects.next_story_no`; the client's arrays already cover the whole project, since
-`report_data` is built from `story_views` and `project_data_json` filters out only
-deleted stories and drafts, routing drafts into `drafts_json`.
+`report_data` is built from `story_views`; hard-deleted stories have no row to return,
+and `project_data_json` filters only drafts from the board array, routing them into
+`drafts_json`.
 
 The CLI renders prose verbatim and has no id grammar at all. Deliberately untouched.
 
@@ -262,13 +269,35 @@ The CLI renders prose verbatim and has no id grammar at all. Deliberately untouc
   stories with no flag able to reach them; a hidden `closed` story *is* reachable through
   `--include-archived` and `--all`. `build_visibility_message`'s "N deleted stories are
   not listed" disclosure disappears with the concept it described.
-- **`story reopen` lands a formerly-deleted story in the default open state**, not
-  wherever it was. Already true, but with `--force`/`UndeletePlan` gone this is the only
-  route back to OPEN; the original state survives only in the story's own event log.
+- **`story reopen` lands any closed story in the default open state**, including a
+  retained legacy history containing `StoryDeleted`, not wherever it was before
+  closure. With `--force`/`UndeletePlan` gone there is one reopen path; the earlier
+  state survives only in the story's own event log.
 - **`story close` loses the `[deleted] ` comment prefix.** The reason is an ordinary
   comment now, so nothing marks it as the closing one to a reader scanning `story log`.
 
 ## As built
+
+### SH-498 landed the permanent-delete half
+
+`story delete <id> [--force]` now owns the proven purge transaction directly. The
+unforced invocation returns `ConfirmationPlan::DeleteStory` with the id, title, event
+count and relationship claims that will be retracted; an interactive CLI and the
+dashboard both require the id typed back, while `--force` is the explicit automation
+bypass. The forced transaction retracts every surviving claim with real events and then
+removes the target's row and complete event log. No reason is accepted because no record
+survives to carry one.
+
+`story purge` is a retired spelling that points at `story delete`; `story reopen` is an
+ordinary reopen with no force/undelete branch. Current snapshot, row and query models no
+longer expose `deleted` or `deleted_reason`, and migration 23 removes the persisted
+column and JSON keys. A private fold-time latch remains solely to interpret historical
+`StoryDeleted` event streams deterministically; it is neither serialized nor queryable.
+
+The dashboard previews the same server-authored plan with `force:false`, renders its
+event and relationship-loss warning, and sends `force:true` only after the typed-id
+gate. Creation is no longer offered as an undoable TUI action because undoing a
+permanent deletion is impossible.
 
 ### SH-505 narrowed: the `deleted` field stays until SH-498
 
@@ -333,6 +362,6 @@ exercise the store. Symmetry is the whole of what the store itself promises.
 
 ### Not yet built
 
-SH-498 (hard delete) and SH-506 (`<DELETED>` references) are unstarted. The dashboard has
-no Close action yet — the CLI verb, the state and the migration land first, since the
-dashboard has nothing to offer until `closed` exists.
+SH-506 (`<DELETED>` references) remains separate. The dashboard has no Close action yet;
+the retained-closure state and CLI verb landed in SH-505, and permanent dashboard
+deletion landed with SH-498.

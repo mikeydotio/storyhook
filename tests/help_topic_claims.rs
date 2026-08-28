@@ -293,7 +293,7 @@ fn the_import_topic_points_an_export_document_at_the_verb_that_can_read_it() {
 
 /// A fresh project with one story of each visibility category. Returns the
 /// project handle; ids are assigned in creation order: SH-1 open, SH-2
-/// closed, SH-3 archived, SH-4 deleted.
+/// closed, SH-3 archived, SH-4 permanently removed.
 fn project_with_one_of_each_visibility_category() -> storyhook_test_support::Project<'static> {
     let project = TestEnv::shared().project().build();
     project.run(&["new", "Open"]).success();
@@ -303,9 +303,7 @@ fn project_with_one_of_each_visibility_category() -> storyhook_test_support::Pro
     project.run(&["move", "SH-2", "done"]).success();
     project.run(&["move", "SH-3", "done"]).success();
     project.run(&["archive", "SH-3"]).success();
-    project
-        .run(&["delete", "SH-4", "no longer needed"])
-        .success();
+    project.run(&["delete", "SH-4", "--force"]).success();
     project
 }
 
@@ -320,7 +318,7 @@ fn list_ids(project: &storyhook_test_support::Project<'_>, args: &[&str]) -> Vec
         .collect()
 }
 
-/// The `list` topic's lede claims closed, archived and soft-deleted stories
+/// The `list` topic's lede claims closed and archived stories
 /// are excluded by default — this drives the real CLI rather than trusting
 /// the prose, which is exactly the gap SH-409 found (the topic used to claim
 /// this and `list` did not do it).
@@ -328,8 +326,8 @@ fn list_ids(project: &storyhook_test_support::Project<'_>, args: &[&str]) -> Vec
 fn the_list_topic_matches_lists_actual_default_visibility() {
     let topic = get_help_topic("list").expect("the list topic exists");
     assert!(
-        topic.contains("closed") && topic.contains("archived") && topic.contains("soft-deleted"),
-        "the list topic must name all three categories its default excludes: {topic}"
+        topic.contains("closed") && topic.contains("archived"),
+        "the list topic must name both categories its default excludes: {topic}"
     );
 
     let project = project_with_one_of_each_visibility_category();
@@ -384,22 +382,28 @@ fn the_list_topic_is_right_about_what_state_lifts() {
     );
 }
 
-/// The `delete` topic's own claim, driven against the real CLI: no
-/// visibility flag reaches a deleted story.
+/// The `delete` topic's own claim, driven against the real CLI: the story no
+/// longer exists, so neither visibility flags nor direct lookup recover it.
 #[test]
-fn the_delete_topic_is_right_that_no_list_flag_reveals_it() {
+fn the_delete_topic_is_right_that_removal_is_permanent() {
     let topic = get_help_topic("delete").expect("the delete topic exists");
     assert!(
-        topic.to_lowercase().contains("no combination") || topic.to_lowercase().contains("never"),
-        "the delete topic must say list cannot be made to show a deleted story: {topic}"
+        topic.contains("Permanently remove") && topic.contains("There is no undo"),
+        "the delete topic must state the permanent contract: {topic}"
     );
 
     let project = project_with_one_of_each_visibility_category();
     let ids = list_ids(&project, &["--all"]);
     assert!(
         !ids.contains(&"SH-4".to_string()),
-        "SH-4 (deleted) must not appear even under --all: {ids:?}"
+        "SH-4 (removed) must not appear even under --all: {ids:?}"
     );
+    project
+        .story()
+        .args(["show", "SH-4"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("not found"));
 }
 
 /// The `archive` topic's claim that `story list` excludes an archived story

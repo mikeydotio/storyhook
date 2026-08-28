@@ -92,8 +92,7 @@
 //!
 //! SH-261 had already drawn the line this needed: a closed story's *state,
 //! scope and rollups* cannot change, but an append that touches none of them
-//! is permitted, through [`super::Intent::Append`] and
-//! [`super::resolve_appendable_story`]. A commit link is such an append —
+//! is permitted through [`super::Intent::Append`]. A commit link is such an append —
 //! `StoryCommitLinked` folds into `referenced_by_commits` and `updated_at`
 //! alone (`domain::fold_story`) — so `record_commit` now resolves under that
 //! intent instead. It still never *moves* a closed story: moving is exactly
@@ -101,9 +100,8 @@
 //! the reason locally rather than leaving it to fall out of `default_open`
 //! never matching an archived story's resting state by accident.
 //!
-//! The intent's other refusal — a soft-deleted story — and an id naming no
-//! story at all are both still declined, and both are named in the run
-//! report rather than swallowed; see [`DeclinedReason`]. "Naming what was
+//! An id naming no story at all is declined and named in the run report rather
+//! than swallowed; see [`DeclinedReason`]. "Naming what was
 //! declined is what keeps this fix from having the same shape as the defect
 //! it removes" (SH-178, above) applies just as much to a decline as to a
 //! non-move.
@@ -247,34 +245,20 @@ enum LinkOutcome {
 /// indistinguishable from a defect, which is what this story was filed about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum DeclinedReason {
-    /// No story with this id exists in this project — a typo, a purged
+    /// No story with this id exists in this project — a typo, a deleted
     /// story, or an id belonging to a different repository entirely.
     NoSuchStory,
-    /// The story exists but has been soft-deleted. [`resolve_appendable_story`]
-    /// refuses it for the same reason `story comment` does: `story purge`
-    /// destroys every event on a soft-deleted story, so a link recorded here
-    /// is evidence with an expiry date nothing would warn its author about.
-    ///
-    /// [`resolve_appendable_story`]: super::resolve_appendable_story
-    Deleted,
 }
 
 impl DeclinedReason {
     /// The report line naming why `story_ids` were named but never linked.
     ///
-    /// `story reopen <id> --force` is a placeholder, not one id repeated for
-    /// every entry in `story_ids` — this line can name several deleted
-    /// stories at once, and only one of them is the one a reader is about to
-    /// restore.
     fn report_line(self, story_ids: &[String]) -> String {
         let ids = story_ids.join(", ");
         match self {
             DeclinedReason::NoSuchStory => {
                 format!("named but not linked: {ids} (no such story)")
             }
-            DeclinedReason::Deleted => format!(
-                "named but not linked: {ids} (deleted; restore first with `story reopen <id> --force`)"
-            ),
         }
     }
 }
@@ -377,7 +361,7 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
         let mut transitions: Vec<Transition> = Vec::new();
         let mut linked_only: BTreeMap<String, NotMovedReason> = BTreeMap::new();
         // Every id `scan_story_refs` found that never became a link at all —
-        // no such story, or one that is soft-deleted (SH-279). Distinct from
+        // no such story (SH-279). Distinct from
         // `linked_only`: those stories link every time and only fail to move.
         let mut declined: BTreeMap<String, DeclinedReason> = BTreeMap::new();
 
@@ -489,7 +473,7 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
     /// [`RecordOutcome::AlreadyLinked`] means there was nothing to do: this
     /// commit is already linked to this story. [`RecordOutcome::Declined`]
     /// means the id could not be resolved as an append target at all — not a
-    /// story of this project, or soft-deleted — and names which.
+    /// story of this project — and names which.
     /// [`RecordOutcome::Linked`] means a link was added: `NotMoved(_)` names
     /// why the story did not move — a closed story links every time and
     /// never moves, same as any other reason — and `Moved { .. }` means it
@@ -509,17 +493,13 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
             // reaches only `referenced_by_commits` and `updated_at`, which is
             // the SH-261 argument for permitting an append against a closed
             // story. `NotFound` (no such story in this project) and
-            // `Validation` (soft-deleted — `resolve_appendable_story`'s own
-            // refusal) are both declines, not failures; anything else is a
+            // `Validation` is a real failure; anything other than NotFound is a
             // real store error and must propagate rather than read as a
             // silent skip.
             let (story_no, row) = match Intent::Append.resolve(&*tx, project, prefix, story_id) {
                 Ok(resolved) => resolved,
                 Err(AppError::NotFound(_)) => {
                     return Ok(RecordOutcome::Declined(DeclinedReason::NoSuchStory));
-                }
-                Err(AppError::Validation(_)) => {
-                    return Ok(RecordOutcome::Declined(DeclinedReason::Deleted));
                 }
                 Err(err) => return Err(err.into()),
             };
@@ -1010,16 +990,10 @@ mod tests {
     #[test]
     fn every_declined_reason_report_line_names_its_own_cause() {
         let ids = vec!["SH-1".to_string(), "SH-2".to_string()];
-        let cases = [
-            (
-                DeclinedReason::NoSuchStory,
-                "named but not linked: SH-1, SH-2 (no such story)",
-            ),
-            (
-                DeclinedReason::Deleted,
-                "named but not linked: SH-1, SH-2 (deleted; restore first with `story reopen <id> --force`)",
-            ),
-        ];
+        let cases = [(
+            DeclinedReason::NoSuchStory,
+            "named but not linked: SH-1, SH-2 (no such story)",
+        )];
         for (reason, expected) in cases {
             assert_eq!(reason.report_line(&ids), expected);
         }

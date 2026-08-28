@@ -1,6 +1,6 @@
-//! `story list`'s default visibility filter (SH-409): closed, archived and
-//! soft-deleted stories are excluded unless a flag names them back — except
-//! deleted ones, which no flag reaches, ever.
+//! `story list`'s default visibility filter (SH-409): closed and archived
+//! stories are excluded unless a flag names them back. Permanently deleted
+//! stories are absent from every surface.
 //!
 //! This is a deliberate reversal of the SH-175 council's "nothing-hidden-by-
 //! default" contract, which `tests/story_list_drafts.rs` still pins for
@@ -52,7 +52,7 @@ fn list_message(dir: &std::path::Path, args: &[&str]) -> Option<String> {
     json["message"].as_str().map(str::to_string)
 }
 
-/// One of each: open, closed (not archived), archived, soft-deleted, draft.
+/// One of each: open, closed (not archived), archived, deleted, draft.
 /// Ids are assigned in creation order, so this is also the id map:
 /// SH-1 open, SH-2 closed, SH-3 archived, SH-4 deleted, SH-5 draft.
 fn seed_one_of_each(dir: &std::path::Path) {
@@ -66,7 +66,7 @@ fn seed_one_of_each(dir: &std::path::Path) {
     run(dir, &["move", "SH-2", "done"]);
     run(dir, &["move", "SH-3", "done"]);
     run(dir, &["archive", "SH-3"]);
-    run(dir, &["delete", "SH-4", "no longer needed"]);
+    run(dir, &["delete", "SH-4", "--force"]);
 }
 
 #[test]

@@ -712,7 +712,7 @@ fn story_deleted_externally_closes_modal_with_notification() {
         &fixture,
         Invocation::Delete {
             id: id.clone(),
-            reason: "raced".to_string(),
+            force: true,
         },
     )
     .unwrap();

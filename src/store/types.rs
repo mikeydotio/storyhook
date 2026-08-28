@@ -330,8 +330,6 @@ pub struct StoryRow {
     pub assignee: Option<String>,
     /// Column: what the story is awaiting.
     pub awaiting: Option<String>,
-    /// Column: whether the story was deleted rather than closed.
-    pub deleted: bool,
     /// Column: whether the story is archived.
     ///
     /// Replaces the legacy split between `open/stories/` and `archive.db`. Tied
@@ -485,8 +483,6 @@ pub struct StoryQuery {
     /// and `archive/archive.db` — two storage media whose disagreement was
     /// SH-20.
     pub archived: Option<bool>,
-    /// Restrict to deleted (`true`) or undeleted (`false`) stories.
-    pub deleted: Option<bool>,
     /// Restrict to hidden (`true`) or unhidden (`false`) stories — the SH-43
     /// "Archive" fact. Orthogonal to [`archived`](Self::archived): a story
     /// can be closed and not (yet) hidden, but never hidden while OPEN.
@@ -552,13 +548,6 @@ impl StoryQuery {
     #[must_use]
     pub fn archived(mut self, archived: bool) -> Self {
         self.archived = Some(archived);
-        self
-    }
-
-    /// Restricts to deleted or undeleted stories.
-    #[must_use]
-    pub fn deleted(mut self, deleted: bool) -> Self {
-        self.deleted = Some(deleted);
         self
     }
 

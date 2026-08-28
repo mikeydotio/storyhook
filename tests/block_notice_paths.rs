@@ -61,7 +61,6 @@ fn sets_awaiting(invocation: &Invocation) -> bool {
         | Invocation::Unhide { .. }
         | Invocation::HideState { .. }
         | Invocation::Delete { .. }
-        | Invocation::Purge { .. }
         | Invocation::BulkUpdate { .. }
         | Invocation::Import { .. }
         | Invocation::Decompose { .. }

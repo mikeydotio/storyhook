@@ -6,7 +6,7 @@ todo (OPEN) — 8 open
 in-progress (OPEN, active) — 2 open
 blocked (OPEN)
 done (CLOSED) — 2 archived
-closed (CLOSED)
+closed (CLOSED) — 1 archived
 review (OPEN) — 1 open — Awaiting code review
 
 $ story type list

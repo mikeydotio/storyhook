@@ -7,7 +7,7 @@
 //! no.
 //!
 //! The confirmation is deliberately a **typed slug** rather than `[y/N]`. A
-//! single keystroke is the right weight for "reopen this deleted story" and the
+//! single keystroke is the right weight for a reversible operation and the
 //! wrong weight for "erase four thousand events".
 //!
 //! # What changed when `deinit` became `delete`

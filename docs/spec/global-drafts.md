@@ -8,7 +8,7 @@ not a property of whichever project board happens to be open.
 `GET /api/repos` already reads `report_data()` for every registered project on
 each catalog refresh. Each readable entry now includes a `drafts` array filtered
 through the same server helper as `GET /api/repos/{id}/data.drafts`: unpublished
-and not soft-deleted. This is additive to the catalog wire shape and avoids a
+stories that still exist. This is additive to the catalog wire shape and avoids a
 fan-out of one browser request per project merely to draw the global list.
 
 The client derives the count and rows directly from `state.repos`, preserving
