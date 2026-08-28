@@ -9,13 +9,18 @@ import {
 } from "./support";
 
 /**
- * Exercises SH-407's third ask: a story that is itself blocked -- an open
- * `blocked-by` edge, or an `awaiting` reason -- shows in the Blocked column,
- * not wherever its literal `state` happens to be. Server-side mechanism:
- * `domain::compute_display_state` (generalized from `compute_epic_display_state`,
- * SH-165), reached by the board through the same `display_state || state`
- * idiom `story-status-light.spec.ts`/`list-state-pill.spec.ts` already
- * exercise for the epic case -- this file is that idiom's SH-407 case.
+ * Exercises SH-407's third ask, narrowed by SH-487: a story shows in the
+ * Blocked column only when clearing its blocks needs a PERSON, not merely
+ * when it has an unmet dependency. An `awaiting` reason or an open
+ * `obviated-by` edge always needs a person; a plain `blocked-by` edge onto
+ * an ORDINARY open story does not -- that is the natural procession of the
+ * backlog, and SH-487 was filed because this project's own live backlog had
+ * 16 cards sitting in Blocked for exactly that reason, none of which needed
+ * a person. Server-side mechanism: `domain::needs_intervention`, reached by
+ * `compute_display_state` (generalized from `compute_epic_display_state`,
+ * SH-165) through the same `display_state || state` idiom
+ * `story-status-light.spec.ts`/`list-state-pill.spec.ts` already exercise
+ * for the epic case -- this file is that idiom's SH-407/SH-487 case.
  *
  * This spec creates and deletes its own stories rather than touching the
  * "Alpha Project" fixture, whose exact two-story shape other specs
@@ -68,12 +73,12 @@ async function deleteStory(
   await expect(card).not.toBeVisible();
 }
 
-test("a story blocked by an open story shows in the Blocked column, is found by the blocked state filter, and returns to todo once the blocker clears", async ({
+test("a story blocked by an ordinary open story stays in Todo with its badge intact; only a blocker that itself needs a person moves it to the Blocked column", async ({
   page,
   request,
 }) => {
-  const blockerTitle = "SH-407 blocked column — the blocker";
-  const workerTitle = "SH-407 blocked column — the blocked story";
+  const blockerTitle = "SH-487 blocked column — the blocker";
+  const workerTitle = "SH-487 blocked column — the blocked story";
   const blockerCard = await createStory(page, blockerTitle);
   const blockerId = (await blockerCard.getAttribute("data-id"))!;
   await createStory(page, workerTitle);
@@ -91,25 +96,33 @@ test("a story blocked by an open story shows in the Blocked column, is found by 
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
-  const workerCard = page.locator(".card", { hasText: workerTitle });
+  // SH-487: the blocker is ordinary open work -- it will clear itself as
+  // the backlog is worked, so the worker stays in Todo. `blocked_ids`
+  // stays broad regardless (only board PLACEMENT narrows), so the card
+  // still carries its badge naming the real dependency.
+  const workerInTodo = page.locator('.column[data-state="todo"] .card', {
+    hasText: workerTitle,
+  });
+  await expect(workerInTodo).toBeVisible();
+  await expect(workerInTodo.locator(".flag-blocked .rel-id")).toHaveText(
+    blockerId,
+  );
   await expect(
     page.locator('.column[data-state="blocked"] .card', { hasText: workerTitle }),
-  ).toBeVisible();
-  await expect(
-    page.locator('.column[data-state="todo"] .card', { hasText: workerTitle }),
   ).toHaveCount(0);
 
   // The state filter (`filteredStories`) reads `display_state || st.state`
-  // too (SH-407) -- filtering by "blocked" must find a card the promotion
-  // just relocated there, even though its own recorded state is still
-  // "todo".
+  // (SH-407) -- filtering by "blocked" must NOT find a card that is not
+  // shown there.
   await openFilters(page);
   await page.locator("#fdd-states .fdd-btn").click();
   await page
     .locator("#fdd-states .fdd-option", { hasText: "blocked" })
     .locator("input[type=checkbox]")
     .check();
-  await expect(workerCard).toBeVisible();
+  await expect(
+    page.locator(".card", { hasText: workerTitle }),
+  ).toHaveCount(0);
   // Checking a checkbox doesn't close the dropdown panel -- no second
   // `.fdd-btn` click needed before reaching the checkbox again to uncheck.
   await page
@@ -117,35 +130,64 @@ test("a story blocked by an open story shows in the Blocked column, is found by 
     .locator("input[type=checkbox]")
     .uncheck();
 
-  // Closes the blocker from outside this tab, forcing a genuine SSE-pushed
-  // re-render -- moveStory()'s own request shape, same as
-  // card-blockers.spec.ts.
+  // Now the blocker itself needs a person -- both it and the worker
+  // display-promote, the worker transitively through the unchanged edge.
   const slug = await projectSlug(request, "Alpha Project");
-  const resp = await request.post(
-    `/api/repos/${slug}/story/${blockerId}/move`,
+  const block = await request.post(
+    `/api/repos/${slug}/story/${blockerId}/block`,
     {
       headers: {
         "X-Storyhook": "1",
         "X-Storyhook-Token": DASHBOARD_TOKEN,
         "Content-Type": "application/json",
       },
-      data: { state: "done" },
+      data: { reason: "waiting on a vendor API key" },
     },
   );
-  expect(resp.ok()).toBe(true);
+  expect(block.ok()).toBe(true);
 
-  // The worker's last blocker is gone, so is_ready is true again and the
-  // promotion lifts -- the card returns to its own literal "todo" column.
+  await expect(
+    page.locator('.column[data-state="blocked"] .card', { hasText: workerTitle }),
+  ).toBeVisible({ timeout: 8000 });
+  await expect(
+    page.locator('.column[data-state="blocked"] .card', { hasText: blockerTitle }),
+  ).toBeVisible();
+
+  await page.locator("#fdd-states .fdd-btn").click();
+  await page
+    .locator("#fdd-states .fdd-option", { hasText: "blocked" })
+    .locator("input[type=checkbox]")
+    .check();
+  await expect(page.locator(".card", { hasText: workerTitle })).toBeVisible();
+  await page
+    .locator("#fdd-states .fdd-option", { hasText: "blocked" })
+    .locator("input[type=checkbox]")
+    .uncheck();
+
+  // Clearing the blocker's own reason clears the whole chain in one write,
+  // with no edge ever removed.
+  const clear = await request.post(
+    `/api/repos/${slug}/story/${blockerId}/unblock`,
+    {
+      headers: {
+        "X-Storyhook": "1",
+        "X-Storyhook-Token": DASHBOARD_TOKEN,
+        "Content-Type": "application/json",
+      },
+      data: {},
+    },
+  );
+  expect(clear.ok()).toBe(true);
+
   await expect(
     page.locator('.column[data-state="todo"] .card', { hasText: workerTitle }),
   ).toBeVisible({ timeout: 8000 });
   await expect(
-    page.locator('.column[data-state="blocked"] .card', { hasText: workerTitle }),
-  ).toHaveCount(0);
+    page.locator('.column[data-state="todo"] .card', { hasText: blockerTitle }),
+  ).toBeVisible();
 
   await deleteStory(page, workerTitle);
-  // The blocker is left CLOSED -- cleanUpCreatedStories's afterEach reopens
-  // then deletes it, per card-blockers.spec.ts's own deleteStory comment.
+  await deleteStory(page, blockerTitle);
 });
 
 test("an awaiting reason alone, with no blocked-by edge, also promotes a story to the Blocked column", async ({
@@ -160,8 +202,8 @@ test("an awaiting reason alone, with no blocked-by edge, also promotes a story t
   // moving the literal state to "blocked" (the drop-into-Blocked-column
   // reason prompt does both at once, per SH-205) -- reached directly, the
   // same way `story block <id> <reason>` reaches it from the CLI
-  // (`StoryAction::Block`, `src/api/rest.rs`), to isolate this specific
-  // promotion arm from the blocked-by one the test above already covers.
+  // (`StoryAction::Block`, `src/api/rest.rs`), to isolate this promotion
+  // arm on its own subject from the transitive blocked-by case above.
   const slug = await projectSlug(request, "Alpha Project");
   const resp = await request.post(`/api/repos/${slug}/story/${id}/block`, {
     headers: {

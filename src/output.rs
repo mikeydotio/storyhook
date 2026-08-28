@@ -83,12 +83,16 @@ pub struct StoryView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<ProgressRollup>,
     /// Where the Web board should place this story's card, when that differs
-    /// from `story.state`. Two independent promotions
-    /// ([`crate::domain::compute_display_state`]): SH-165, an epic with an
-    /// active child promotes here; SH-407, a story that is itself
-    /// [`!crate::domain::is_ready`](crate::domain::is_ready) promotes to
-    /// `"blocked"`, and wins if both apply at once. `None` means "use
-    /// `story.state`" — the CLI and TUI do exactly that today, so this
+    /// from `story.state`. One promotion
+    /// ([`crate::domain::compute_display_state`]): a story sitting in the
+    /// project's default open state that
+    /// [`needs intervention`](crate::domain::needs_intervention) — a person
+    /// has to clear it, not the backlog simply proceeding (SH-487, narrowing
+    /// SH-407's original `!is_ready`) — promotes to `"blocked"`. An epic's
+    /// own state is instead projected directly onto `story.state` by
+    /// [`crate::domain::apply_computed_epic_states`] (SH-165/SH-446), which
+    /// is why this field never carries an epic's promotion. `None` means
+    /// "use `story.state`" — the CLI and TUI do exactly that today, so this
     /// field is additive and changes nothing for them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_state: Option<String>,

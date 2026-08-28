@@ -2,7 +2,6 @@ import { test, expect } from "./support";
 import type { Locator, Page } from "@playwright/test";
 import {
   cleanUpCreatedStories,
-  deleteBlockedStory,
   deleteStory,
   openFilters,
   openProject,
@@ -110,7 +109,9 @@ test("a pressured blocked badge keeps every story id on one line", async ({
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
-  const workerCard = page.locator('.column[data-state="blocked"] .card', {
+  // SH-487: all three blockers are ordinary open work, so the worker stays
+  // in "todo" -- only the badge, which this test is about, is affected.
+  const workerCard = page.locator('.column[data-state="todo"] .card', {
     hasText: workerTitle,
   });
   const badge = workerCard.locator(".flag-blocked");
@@ -146,7 +147,7 @@ test("a pressured blocked badge keeps every story id on one line", async ({
     "keeping ids atomic must not make the blocked badge overflow its card",
   ).toBeLessThanOrEqual(overflow.clientWidth);
 
-  await deleteBlockedStory(page, workerTitle);
+  await deleteStory(page, workerTitle);
   for (const title of blockerTitles) {
     await deleteStory(page, title);
   }

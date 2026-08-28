@@ -147,14 +147,71 @@ the default a user would actually recognise.
 `domain::compute_epic_display_state` (SH-165) computed the Web board's column
 override for exactly one case: an epic sitting in the project's neutral default
 open state, with at least one child in the active state, promotes to that active
-state. SH-407 generalizes it to `compute_display_state`, adding a second,
+state. SH-407 generalized it to `compute_display_state`, adding a second,
 independent promotion under the same eligibility guard (open, non-draft, sitting
 in the default open state): a story that is itself `!is_ready` — an `awaiting`
 reason, an open `obviated-by` edge, or a `blocked-by` edge onto a story that is
-still open — promotes to `"blocked"`. It reuses `is_ready` itself rather than a
-second implementation of its clauses; the function's own eligibility guard already
-rules out the cases (`state == "blocked"` literally, draft, closed) that would
-otherwise need separate handling.
+still open — promoted to `"blocked"`.
+
+**SH-487 narrowed that third clause.** Measured on this project's own live
+backlog the day SH-487 was filed: **16 of 16 cards sitting in the Blocked
+column were plain dependency chains that clear themselves as the backlog is
+worked** — e.g. a five-link chain of ordinary `todo` stories, and a story
+blocked by another that was already `in-progress`. Not one needed a person.
+The column's promise ("this needs special intervention, not the natural
+procession of the backlog") was false for every card in it, which is the same
+failure mode as a gate that never fires: coverage that exists but that nobody
+can trust says anything.
+
+`domain::needs_intervention` replaces `!is_ready` as the third clause's test.
+It agrees with `is_ready` on every signal except the last: a `blocked-by` edge
+onto a story that is itself open no longer blocks *placement* on its own —
+it recurses, and only counts if the blocker (transitively, through as many
+hops as the chain has) is closed, literally `blocked`, carrying an `awaiting`
+reason, carrying an open `obviated-by` edge, is a draft, or sits in an
+unresolvable `blocked-by` cycle. `needs_intervention` is strictly narrower
+than `!is_ready` by construction (every case it calls `true` is also a case
+`is_ready` calls `false`), so the promotion can only ever remove cards from
+the Blocked column relative to the SH-407 rule, never add one. `is_ready`
+itself is unchanged and remains the work-allocation predicate: `story next`
+and claiming still correctly refuse a story whose dependency is open,
+regardless of whether that dependency needs a person. This story changes
+**where a card is drawn**, never what work is handed out.
+
+**Narrow by design, not by oversight**: `blocked_ids` (`report_data`, driving
+the card's `● blocked (…)` badge and the list row's red left border),
+`summary.blocked_count`, `story list --blocked`, the TUI's `blocked` filter
+chip, and `story context`'s `## Blocked` section all keep reading `is_ready`
+unchanged. A card whose only blocker is ordinary open work now sits in its
+own column (Todo, most often) while still carrying the badge naming the real
+dependency — the badge answers "is this unblocked," the column answers "does
+this need a person," and SH-487 is only about the second question.
+`docs/spec/blocked-causes.md`'s own title — "an edge that clears itself
+versus prose that doesn't" — is the same dividing line this narrowing puts
+into board placement: an edge that resolves itself is not what the Blocked
+column is for.
+
+The epic case gets the identical narrowing, through a different mechanism:
+since SH-446, an epic's own state is *computed and projected onto
+`story.state` itself* by `apply_computed_epic_states`, not overlaid by
+`display_state` — `blocked_for_epic`'s `blocked-by` clause changes from "the
+blocker's computed superstate is Open" to "the blocker needs intervention,"
+recursively. This is the *only* way SH-487 reaches the TUI: the TUI groups a
+board column on `story.state` directly (`src/tui/data.rs`) and never reads
+`display_state` at all, so narrowing `compute_display_state` alone would have
+left every epic-of-blocked-children on the TUI showing blocked forever for a
+dependency that was really just next up in the queue.
+
+Both halves share one recursive walk (`walk_needs_intervention`, over an
+owned `BlockFacts` value) rather than two independent implementations of the
+same signals — this project has paid for that duplication shape before
+(SH-136, SH-198, SH-258, SH-260/276, SH-360, SH-364) — with the display side
+and the epic rollup differing only in how a blocker's *effective* state is
+resolved (already-projected map vs. a `computed_epic_state` call). It reuses
+`is_ready`'s clauses rather than a second implementation of them wherever the
+two predicates genuinely agree; the function's own eligibility guard already
+rules out the cases (`state == "blocked"` literally, draft, closed) that
+would otherwise need separate handling.
 
 **Why server-side rather than a board-local JS rule** (council verdict,
 `story show SH-407`, unanimous in round 1): `display_state` is already the single
@@ -226,15 +283,38 @@ OPEN→CLOSED, so there is nothing for that check to reconcile.
 | The dashboard reads the literal wire key (not a hand-typed guess on both sides) | `tests/web_test.rs::web_dashboard_js_reads_the_wire_key_next_ids_actually_serializes_to` |
 | List renders one-based ranks and sorts both directions with unranked rows last | `tests/web_test.rs::web_serve_root_html_has_board_list_drawer_markers`; `e2e/specs/list-order.spec.ts` |
 | The sort menu offers the right options on the right columns | `tests/web_test.rs`'s SH-305/SH-407 block; `e2e/specs/board-sort.spec.ts` |
-| A story blocked by an open story promotes to "blocked" | `src/domain.rs::a_todo_story_blocked_by_an_open_story_is_promoted_to_blocked`, and end-to-end via `tests/service_query.rs::a_todo_story_blocked_by_an_open_story_shows_a_promoted_display_state` |
+| A story blocked by an ORDINARY open story does NOT promote (SH-487's own regression test) | `src/domain.rs::a_todo_story_blocked_by_an_ordinary_open_story_is_not_promoted`, and end-to-end via `tests/service_query.rs::a_todo_story_blocked_by_an_ordinary_open_story_is_not_display_promoted` |
+| A blocker that itself needs a person promotes its dependent, transitively through a whole chain, a diamond, and a cycle | `src/domain.rs::a_blocker_that_itself_needs_a_person_promotes_its_dependent`, `::intervention_travels_the_whole_blocked_by_chain`, `::a_diamond_reports_intervention_once_and_only_through_the_stuck_arm`, `::a_blocked_by_cycle_needs_a_person_because_it_never_resolves` |
+| `needs_intervention` is strictly narrower than `!is_ready` — no story newly enters the Blocked column | `src/domain.rs::needs_intervention_implies_not_ready` |
 | A closed blocker does not promote | `src/domain.rs::a_blocker_that_is_closed_does_not_promote` |
-| An `awaiting` reason and an `obviated-by` edge each promote on their own | `src/domain.rs::a_todo_story_with_an_awaiting_reason_is_promoted_to_blocked`, `::a_todo_story_with_an_obviated_by_edge_is_promoted_to_blocked` |
-| A draft is never promoted, blocked or otherwise | `src/domain.rs::a_draft_story_is_never_promoted_even_when_blocked` |
-| Blocked wins over an active-child promotion | `src/domain.rs::blocked_wins_over_an_active_child_promotion`, and end-to-end via `tests/service_query.rs::blocked_wins_over_an_active_child_promotion_end_to_end` |
+| An `awaiting` reason and an `obviated-by` edge each promote on their own; a draft is never promoted as a subject but always needs intervention as a blocker | `src/domain.rs::a_todo_story_with_an_awaiting_reason_is_promoted_to_blocked`, `::a_todo_story_with_an_obviated_by_edge_is_promoted_to_blocked`, `::a_draft_story_is_never_promoted_even_when_blocked`, `::a_draft_blocker_needs_a_person_to_publish_it` |
+| The epic rollup and the display promotion agree about who needs intervention (the wiring fence between the two halves of one predicate) | `tests/service_query.rs::the_epic_rollup_and_the_display_promotion_agree_about_who_needs_intervention` |
+| An epic whose child merely waits its turn stays at the default open state — the TUI's own regression test, since it never reads `display_state` | `tests/service_query.rs::an_epic_whose_child_merely_waits_its_turn_stays_todo`, `::an_epic_whose_child_is_blocked_by_a_stuck_story_rolls_up_to_blocked`, `::an_epic_of_epics_propagates_a_transitive_block`, `::a_blocked_by_cycle_under_an_epic_rolls_up_to_blocked_without_hanging` |
+| A display-promoted story never appears in `next_ids`, tying the predicate to the story's own words ("will eventually be pulled from the backlog … without manual intervention") | `tests/service_query.rs::a_display_promoted_story_is_never_in_next_ids` |
+| `blocked_ids`/`summary.blocked_count` stay broad — SH-487 narrows placement only | `tests/service_query.rs::report_data_still_reports_a_naturally_unblocking_story_as_blocked` |
 | `filteredStories` filters by the displayed state, not the literal one | `tests/web_test.rs`'s SH-407 assertion on `filteredStories`'s body |
+| The promoted-card tooltip names no cause it did not test (the SH-487 adopted fix) | `tests/web_test.rs::the_promoted_state_pill_title_names_no_cause_it_did_not_test` |
 
 ## As built
 
 No deviations from either council's verdict. Both trails are on `story show
 SH-407` (SH-363: a council's own directory slug resolves on no fresh clone, so it
 is never the citation — the verdict is).
+
+**SH-487's own deviation from its first design pass**: the epic-side adapter
+(`blocked_for_epic`) gives its intervention walk a fresh, per-call memo and
+`visiting` set rather than threading one shared memo through the whole
+`apply_computed_epic_states` pass. The shared-memo shape was considered first
+and abandoned on a concrete borrow-check failure, not a style preference: the
+resolver closure a shared memo would need to capture also has to call
+`computed_epic_state` (a second, independent recursion over `parent-of`
+edges), and that closure's captured borrow of the shared map is live for as
+long as the walk holds it — which collides with also passing the same map
+into the walk as a plain argument at the same call site (Rust's ordinary
+"cannot borrow more than once" rule, not a special case of anything). The
+per-call memo sidesteps the conflict entirely, at the cost of memoizing the
+intervention walk only within one child's own call rather than across the
+whole project pass. Accepted rather than engineered around further: real
+blocking chains in this tool are a handful of hops, and the display side's
+own `needs_intervention` already pays the identical per-call cost with no
+measured problem.

@@ -4,7 +4,6 @@ import {
   cleanUpCreatedStories,
   createStory,
   deleteBlockedStory,
-  deleteStory,
   heldReadDeadlineMs,
   holdFetch,
   openProject,
@@ -69,9 +68,14 @@ async function addRelation(
   await expect(page.locator(".rel-row", { hasText: otherId })).toBeVisible();
 }
 
-/** Seeds a blocker `B` and a worker `W` blocked-by `B`, returning both ids.
- * SH-407 display-promotes `W`'s card out of "todo" and into "blocked" the
- * instant the edge is recorded -- callers must locate it there. */
+/** Seeds a blocker `B` that itself needs a person (an `awaiting` reason) and
+ * a worker `W` blocked-by `B`, returning both ids. SH-407/SH-487
+ * display-promotes `W`'s card out of "todo" and into "blocked" the instant
+ * both are recorded -- callers must locate it there. `B`'s own reason is
+ * what keeps this seed valid under SH-487: a plain `blocked-by` edge onto
+ * an ordinary open story no longer promotes at all, and this fixture's
+ * whole point is a worker whose card genuinely relocates, so `B` needing a
+ * person too is load-bearing, not incidental. */
 async function seedBlockedPair(
   page: import("@playwright/test").Page,
   blockerTitle: string,
@@ -85,6 +89,29 @@ async function seedBlockedPair(
     .click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
   await addRelation(page, "blocked-by", blockerId);
+  await page.locator("#drawer-close").click();
+  await expect(page.locator("#drawer")).not.toHaveClass(/open/);
+
+  // Same "Reason for blocking…" + Block button flow status-flags.spec.ts's
+  // own `blockStory` helper uses, reached here on the BLOCKER rather than
+  // the worker -- see the doc comment above for why.
+  const detailLoaded = page.waitForResponse(
+    (resp) =>
+      /\/story\/[^/]+$/.test(new URL(resp.url()).pathname) &&
+      resp.request().method() === "GET",
+  );
+  await page
+    .locator('.column[data-state="todo"] .card', { hasText: blockerTitle })
+    .click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await detailLoaded;
+  await page
+    .locator('input[placeholder="Reason for blocking…"]')
+    .fill("e2e: this blocker itself needs a person");
+  await page.locator("#drawer-body button", { hasText: "Block" }).click();
+  await expect(page.locator(".banner-blocked .banner-body")).toHaveText(
+    "e2e: this blocker itself needs a person",
+  );
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
@@ -181,7 +208,9 @@ test("a /data reply that changes nothing this card renders does not swallow a cl
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
   await deleteBlockedStory(page, workerTitle);
-  await deleteStory(page, blockerTitle);
+  // The blocker itself needs a person now (its own awaiting reason), so
+  // it display-promotes into Blocked too -- not the plain deleteStory().
+  await deleteBlockedStory(page, blockerTitle);
 });
 
 /**
@@ -218,7 +247,9 @@ test("the same down/up choreography opens the blocker's drawer when nothing re-r
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
 
   await deleteBlockedStory(page, workerTitle);
-  await deleteStory(page, blockerTitle);
+  // The blocker itself needs a person now (its own awaiting reason), so
+  // it display-promotes into Blocked too -- not the plain deleteStory().
+  await deleteBlockedStory(page, blockerTitle);
 });
 
 /**
@@ -274,5 +305,7 @@ test("focus on a card's blocked-by ref survives a /data reply that changes nothi
   await expect(ref).toBeFocused();
 
   await deleteBlockedStory(page, workerTitle);
-  await deleteStory(page, blockerTitle);
+  // The blocker itself needs a person now (its own awaiting reason), so
+  // it display-promotes into Blocked too -- not the plain deleteStory().
+  await deleteBlockedStory(page, blockerTitle);
 });
