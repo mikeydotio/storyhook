@@ -965,11 +965,13 @@ fn the_custom_config_tree_brings_its_whole_configuration_surface() {
         })
         .expect("reading");
 
-    // `blocked` is not in the legacy tree. It is added by the migration, which
-    // repairs a catalog below the required floor rather than refusing it
-    // (SH-125) — a tree written before the floor existed must still be
-    // movable. It lands at the end of the OPEN run, so `todo` keeps position 0
-    // and the state new stories open in does not change.
+    // `blocked` and `closed` are not in the legacy tree. Both are added by the
+    // migration, which repairs a catalog below the required floor rather than
+    // refusing it (SH-125) — a tree written before the floor existed must still
+    // be movable, and the floor has grown since (SH-505). `blocked` lands at
+    // the end of the OPEN run, so `todo` keeps position 0 and the state new
+    // stories open in does not change; `closed` lands at the very end, after
+    // the tree's own CLOSED states.
     assert_eq!(
         states.iter().map(|s| s.slug.as_str()).collect::<Vec<_>>(),
         [
@@ -978,7 +980,8 @@ fn the_custom_config_tree_brings_its_whole_configuration_surface() {
             "review",
             "blocked",
             "done",
-            "wont-fix"
+            "wont-fix",
+            "closed"
         ],
         "configured order is user-visible — it drives the board columns"
     );
