@@ -496,7 +496,7 @@ fn the_story_routes_answer_as_they_did() {
             Method::Delete,
             "/api/repos/{repo}/story/SH-1",
             "{}",
-            400,
+            409,
             Feed::Project,
         ),
         refused(
