@@ -517,7 +517,15 @@ fn state_reorder_accepts_csv_and_separate_arguments() {
         .stdout(predicate::str::contains("done, todo, blocked, in-progress"));
 
     story(dir.path())
-        .args(["state", "reorder", "todo", "in-progress", "blocked", "done", "closed"])
+        .args([
+            "state",
+            "reorder",
+            "todo",
+            "in-progress",
+            "blocked",
+            "done",
+            "closed",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("todo, in-progress, blocked, done"));
@@ -562,7 +570,11 @@ fn state_reorder_rejects_unknown_slugs() {
     init(dir.path());
 
     story(dir.path())
-        .args(["state", "reorder", "todo,in-progress,blocked,done,closed,nope"])
+        .args([
+            "state",
+            "reorder",
+            "todo,in-progress,blocked,done,closed,nope",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("`nope` not found"));
