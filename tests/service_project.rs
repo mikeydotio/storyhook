@@ -85,11 +85,12 @@ fn init_creates_a_project_with_its_catalog_and_counters() {
     let slugs: Vec<&str> = states.iter().map(|state| state.slug.as_str()).collect();
     // The floor and the default are the same set (SH-125), so a project is
     // conforming the instant it exists.
-    assert_eq!(slugs, ["todo", "in-progress", "blocked", "done"]);
+    assert_eq!(slugs, ["todo", "in-progress", "blocked", "done", "closed"]);
     assert_eq!(states[0].super_state, SuperState::Open);
     assert_eq!(states[1].role.as_deref(), Some("active"));
     assert_eq!(states[2].super_state, SuperState::Open);
     assert_eq!(states[3].super_state, SuperState::Closed);
+    assert_eq!(states[4].super_state, SuperState::Closed);
 
     let types = fixture
         .store
@@ -196,7 +197,11 @@ fn an_init_that_fails_can_simply_be_retried() {
         .store
         .read(|tx| tx.states(outcome.project))
         .expect("reading states");
-    assert_eq!(states.len(), 4, "the retry produced a complete catalog");
+    assert_eq!(
+        states.len(),
+        storyhook::domain::REQUIRED_STATES.len(),
+        "the retry produced a complete catalog"
+    );
 }
 
 // --- idempotence -----------------------------------------------------------
