@@ -11,17 +11,31 @@
 # are stopped by a guard, so this should never fire; it exists to name the
 # cause immediately if the class ever comes back.
 #
-# Only ever reports processes built from THIS working tree (target/debug/...).
-# The developer's real dashboard daemon -- an installed `story` binary, port
-# 3456 -- is deliberately out of scope: it is production, and nothing here
-# touches it. This is the fourth layer of the orphan defence, behind the test
-# guards' Drop, the daemon's own process group, and the STORYHOOK_PARENT_PID
-# suicide contract; it exists to name the cause immediately if all three fail.
+# Two classes of process, on two different scoping keys (SH-493).
 #
-# PREFLIGHT refuses, immediately, on any match. A process already here before
-# this run started makes THIS run lie about what it verified, and it may be a
-# daemon the developer started on purpose -- not this script's business to
-# stop.
+# THIS WORKING TREE's, matched on the binary's path (target/debug/...) and
+# handled per phase below. Safe to reason about because the path proves whose
+# they are.
+#
+# ABANDONED ones, matched on what the process IS rather than where its binary
+# sits: a daemon whose --store-path names a file that no longer exists is
+# serving nobody, whoever started it. Collected in every phase, never refused
+# over. That class is checkout-agnostic on purpose -- it is the only way to
+# see a daemon running from a copy of the binary somewhere else, which is what
+# `tests/plugin_install.rs` makes on purpose and what accumulated to 672
+# unnoticed.
+#
+# The developer's real dashboard daemon -- an installed `story` binary, port
+# 3456 -- is out of scope of both: it is production, its store exists, and
+# nothing here touches it. This is the fourth layer of the orphan defence,
+# behind the test guards' Drop, the daemon's own process group, and the
+# STORYHOOK_PARENT_PID suicide contract; it exists to name the cause
+# immediately if all three fail.
+#
+# PREFLIGHT refuses, immediately, on any match of this worktree's class. A
+# process already here before this run started makes THIS run lie about what
+# it verified, and it may be a daemon the developer started on purpose -- not
+# this script's business to stop.
 #
 # POSTLUDE waits, then REAPS rather than refusing (SH-412). `make test` is
 # nine minutes nominal; the postlude is its last-but-one line, so a false
@@ -177,6 +191,126 @@ reap() {
 
     printf '%s' "$remaining"
 }
+
+# --- the second class: a daemon serving a store that is gone (SH-493) --------
+#
+# `pattern` above is anchored at THIS checkout, which is what makes a match
+# safe to act on -- and is also why it structurally cannot see the population
+# SH-493 counted. `tests/plugin_install.rs` copies the binary into its own
+# fixture and runs `<fixture>/package/story`, on purpose, to prove path
+# resolution from an installed layout; 672 of those were alive on one machine
+# across three days, invisible to both ends of this bracket while the four
+# siblings that happened to run `target/debug/story` were reaped every run.
+#
+# Widening the pattern to "any `story` daemon" is not available: `pgrep -f` is
+# global, this machine runs three or four concurrent worktree suites, and
+# every one of them builds its fixtures under the same shared root. A pattern
+# that matched them would refuse this run for a stranger's live suite at the
+# preflight, and murder one at the postlude.
+#
+# So the scoping key is not WHERE the binary sits but WHAT the process is --
+# the SH-239 lesson, one layer over. A daemon whose `--store-path` names a
+# file that no longer exists is serving nobody, whoever started it: daemon
+# runtime state is keyed off the canonical store path (SH-113), so its
+# portfile went with the fixture directory, and a client resolving that path
+# would find no database and start its own. It cannot be a daemon a developer
+# is using, because theirs exists. That makes it collectable by whoever finds
+# it, in either phase, with no reference to which worktree spawned it --
+# measured on the machine SH-493 was filed from, where it separated 718
+# abandoned daemons from exactly two live ones (the developer's own, and a
+# concurrent gate run's).
+#
+# The one shape this must not catch is a daemon that has not opened its store
+# YET, which is why the age floor below exists rather than a bare existence
+# check.
+
+# How old an abandoned-looking daemon must be before its missing store is
+# read as abandonment rather than as a start-up it interrupted. Derived from
+# the deadline it disproves (SH-394), never picked: `SPAWN_DEADLINE`
+# (src/daemon/lifecycle.rs) is how long a client waits for a daemon it just
+# spawned to answer, so a daemon still storeless past it has already been
+# given up on by the only process that was waiting. Twice it, for margin on a
+# machine running three or four suites at once. `tests/orphan_check.rs` pins
+# the relationship against `SPAWN_DEADLINE`'s own source so the two cannot
+# silently drift apart.
+readonly ABANDONED_STORE_MIN_AGE_SECS=10
+
+# The pids of every `story` daemon, from any binary anywhere, that is old
+# enough to have opened its store and has not got one.
+#
+# One `ps` pass rather than a `ps` per pid: on the machine this was written
+# for that is the difference between one process and seven hundred. `awk`
+# does the age arithmetic and pulls `--store-path`'s argument out of the
+# argv; the existence test stays in the shell, where `-e` means what this
+# comment says it means.
+#
+# `etime` rather than `etimes`: macOS `ps` has no `etimes` keyword at all, so
+# the `[[dd-]hh:]mm:ss` form has to be parsed rather than read.
+abandoned_candidates() {
+    ps -eo pid=,etime=,command= 2>/dev/null | awk -v min_age="$ABANDONED_STORE_MIN_AGE_SECS" '
+        $0 ~ /(daemon|web) --serve/ {
+            n = split($2, t, /[-:]/)
+            if (n == 4)      age = t[1]*86400 + t[2]*3600 + t[3]*60 + t[4]
+            else if (n == 3) age = t[1]*3600 + t[2]*60 + t[3]
+            else if (n == 2) age = t[1]*60 + t[2]
+            else             next
+            if (age < min_age) next
+            for (i = 3; i < NF; i++) {
+                if ($i == "--store-path") { print $1 "\t" $(i+1); next }
+            }
+        }'
+}
+
+abandoned() {
+    local pid store
+    while IFS="$(printf '\t')" read -r pid store; do
+        [ -n "$pid" ] || continue
+        [ -n "$store" ] || continue
+        [ -e "$store" ] || printf '%s\n' "$pid"
+    done < <(abandoned_candidates)
+}
+
+# Collects them, in EVERY phase, and never refuses over them.
+#
+# Reaping rather than refusing is not the postlude's argument borrowed early
+# (SH-412's "the preflight already proved this worktree clean"). It is a
+# different and simpler one that holds in both phases at once: this class is
+# provably nobody's, so there is no run whose verification it can be making a
+# lie, and nothing for a developer to have started on purpose. Refusing would
+# block this run over a mess another worktree made -- and over 672 of them at
+# a time, which is precisely the pressure SH-306 was filed for.
+#
+# Reported every time, never silently: a detector whose whole subject is a
+# population that accumulated unnoticed for three days does not get to be the
+# next quiet thing (SH-306).
+collect_abandoned() {
+    local found survivors count
+    found="$(abandoned)"
+    [ -n "$found" ] || return 0
+
+    count="$(printf '%s\n' "$found" | wc -l | tr -d ' ')"
+    note "${count} daemon(s) are serving a store that no longer exists (${context}); collecting"
+    durable_report "${context} abandoned-store reap: SIGTERM" "$found"
+
+    survivors="$(reap abandoned)"
+    if [ -n "$survivors" ]; then
+        # Deliberately not fatal, unlike the postlude's own SIGKILL survivor:
+        # that one is provably this run's, and this one is provably not
+        # anyone's in particular. A process that will not die to SIGKILL is
+        # worth naming loudly; it is not worth failing a stranger's suite over.
+        report "abandoned-store daemon(s) survived SIGKILL" "$survivors"
+        durable_report "${context} abandoned-store reap FAILED -- survived SIGKILL" "$survivors"
+        note "left ${survivors} alive; nothing here depends on them being gone"
+    else
+        durable_report "${context} abandoned-store reap: cleared" "$found"
+    fi
+    return 0
+}
+
+# Ahead of both phases' own questions, so that a daemon this collects is never
+# also reported by them: a `target/debug/story` on a store that is gone is
+# this class, not a live process this run has to reason about.
+collect_abandoned
 
 if [ "$phase" = "postlude" ]; then
     deadline=$((SECONDS + ORPHAN_GRACE_SECS))
