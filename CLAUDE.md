@@ -1102,6 +1102,15 @@ Standing rules for every wave:
   its fixture directory still exists is outside the class until that directory goes, which
   the containment fence above is what actually closes. Design of record:
   `docs/spec/test-tiers.md`'s "The second class: a daemon whose store is gone".
+  **A path is read to its known delimiter, never to the first space**: the
+  abandoned-class reader took `--store-path`'s argument as the next whitespace
+  field, and macOS hands out home directories like `/Users/Ada Lovelace` without
+  comment — so on such a machine the extracted path was `/Users/Ada`, which does not
+  exist, which condemns the developer's own running daemon. Delimit on the verb that
+  follows (` daemon --serve`), the one thing after the path whose spelling the reader
+  already knows, and **construct** the straddle in a test rather than waiting for a
+  machine that has one (SH-420's posture, one subsystem over) — it is invisible on
+  every machine whose own paths have no spaces.
   Two things the tests learned the hard way, both found by mutation rather than review:
   a shim killed by the script is a direct child of the test process and therefore a
   **zombie**, on which `kill -0` succeeds — so an "it was killed" assertion written against

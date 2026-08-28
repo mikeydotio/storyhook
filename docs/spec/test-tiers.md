@@ -926,6 +926,17 @@ pinned by
 `ps` has no `etimes` keyword on macOS, so the `[[dd-]hh:]mm:ss` form is parsed
 rather than read.
 
+**The store path is delimited by the verb that follows it, never taken as the
+next whitespace field.** macOS hands out home directories like `/Users/Ada
+Lovelace` without comment, and the real store lives under one — so a
+field-split read yields `/Users/Ada`, which does not exist, which classifies
+the developer's own running daemon as abandoned and kills it. That is the worst
+thing this rule could do, and it is invisible on any machine whose own paths
+happen to have no spaces, which is why
+`a_store_path_containing_a_space_is_read_whole_and_its_daemon_left_alone`
+**constructs** the input rather than waiting for a machine that has one — the
+same posture SH-420's tap-target straddle takes, one subsystem over.
+
 **The tests for this class are global, and say so.** They cannot be fixtured
 under a checkout the way every case above is — being visible from outside one
 checkout is the entire property. So they assert on **the script's own report
