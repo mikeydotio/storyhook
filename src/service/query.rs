@@ -1257,7 +1257,24 @@ fn sort_ready(views: &mut [StoryView], stories: &BTreeMap<String, StorySnapshot>
 ///
 /// A story can enter the graph only if it would be claimable with dependency
 /// lookups removed: this retains `is_claimable`'s closed/draft/blocked/
-/// awaiting/obviated/active gates without duplicating them. Every open
+/// awaiting/obviated/active gates without duplicating them, and additionally
+/// excludes [`domain::is_human_only`] — the one place the reserved
+/// `human-only` label takes effect (SH-453, assumption A1 of
+/// `docs/spec/full-auto-engine.md`). It filters *here*, in the queue, rather
+/// than in `is_claimable` or `is_ready`, so a `human-only` story goes on
+/// reading as ready to every surface a person consults while never being
+/// offered as anyone's next assignment. Two consequences are deliberate:
+/// `story claim --next` inherits the filter for free, because
+/// `StoryService::claim_next` selects through [`QueryService::next`] — the
+/// spec asks for exactly that, since filtering what an agent *looks at*
+/// without filtering what it *takes* leaves the half that matters unguarded;
+/// and `report_data`'s `next_ids` loses the story too, so the dashboard's
+/// "Next" sort ranks its card last (`nextRank`'s `Infinity`) instead of
+/// disagreeing with `story next` about the order — the card still renders,
+/// and is still in `ready_ids`. A story `blocked-by` a `human-only` one
+/// stays unranked for the reason the next paragraph gives, which is the
+/// right answer here: that work genuinely cannot start until a person does
+/// the human-only half. Every open
 /// `blocked-by` target still contributes a predecessor, including one outside
 /// that candidate set. Such a predecessor is never popped, deliberately, so a
 /// claimed/manual-blocked/epic/out-of-phase blocker, or a dependency cycle,
@@ -1284,6 +1301,7 @@ fn execution_queue(
         .filter(|view| {
             is_claimable(&view.story, &no_open_blockers, active)
                 && !has_children(&view.story)
+                && !domain::is_human_only(&view.story)
                 && phase.is_none_or(|phase| view.story.labels.contains(&format!("phase:{phase}")))
         })
         .map(|view| (view.story.id.as_str(), view))
