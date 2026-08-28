@@ -202,6 +202,21 @@ pub fn run_check<S: Store>(
                     &events,
                     ctx.provenance(),
                 )?;
+                if row.superstate == SuperState::Open
+                    && events
+                        .iter()
+                        .any(|event| matches!(event, StoryEvent::StoryClosedAndArchived { .. }))
+                {
+                    super::relation::retract_closed_blocker_edges(
+                        tx,
+                        project,
+                        story_no,
+                        &prefix,
+                        &states,
+                        &now,
+                        ctx.provenance(),
+                    )?;
+                }
                 Ok(())
             })?;
         } else if status.state == "closed" {

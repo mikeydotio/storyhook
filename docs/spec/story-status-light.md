@@ -122,10 +122,10 @@ in the DOM. It's a module-level ledger instead:
 - `clearedBlockers["<storyId>|<blockerId>"] = timestamp`, `BLOCKER_CLEARED_DWELL_MS`
   (4000ms).
 - `recordClearedBlockers(oldData, newData, now)` scans every `blocked-by` relationship
-  project-wide (not just the changed story's own — the story *naming* the blocker may
-  not itself have changed) for one that crossed OPEN → CLOSED between the previous and
-  fresh `/data` snapshot, called from `fetchData()` alongside the existing
-  `diffSnapshots()` call, before the previous snapshot is discarded.
+  in the previous snapshot project-wide (not just the changed story's own — and SH-500
+  durably removes that edge from the fresh snapshot) for a target that crossed OPEN →
+  CLOSED, called from `fetchData()` alongside the existing `diffSnapshots()` call,
+  before the previous snapshot is discarded.
 - `dwellingBlockerIds(storyId, now)` is what `populateCard()` reads to fill
   `.card-blockers` (SH-309: this is now the row's *only* content — the live blockers
   `openBlockers()` finds render in the badge instead, never here). An expired entry is

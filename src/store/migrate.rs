@@ -261,6 +261,15 @@ pub const MIGRATIONS: &[Migration] = &[
         // it is required rather than merely tidy.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 22,
+        name: "closed_blocker_edges",
+        sql: include_str!("schema/0022_closed_blocker_edges.sql"),
+        // Appends compensating events, patches their materialized snapshots,
+        // and deletes relation-index rows through the existing mirror trigger.
+        // No table is rebuilt and historical events remain append-only.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

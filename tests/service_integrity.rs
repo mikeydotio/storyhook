@@ -591,7 +591,9 @@ fn fix_names_the_closed_end_an_inverse_repair_needs_reopened() {
 /// message problem: `--fix` visited *open* stories only, so a repair a closed
 /// story's relation implied — one whose append target is the open end, and
 /// therefore perfectly legal — was never even attempted, leaving a finding
-/// the command could never clear.
+/// the command could never clear. `relates-to` is intentional here: SH-500
+/// durably retracts a closed story's `blocks` edges, so that relation can no
+/// longer be a stable closed-source fixture for this generic repair contract.
 #[test]
 fn fix_writes_an_inverse_an_open_story_lacks_of_a_closed_ones_relation() {
     let fixture = ServiceFixture::new();
@@ -606,7 +608,7 @@ fn fix_writes_an_inverse_an_open_story_lacks_of_a_closed_ones_relation() {
         &[StoryEvent::StoryRelationshipAdded {
             at: FIXTURE_NOW.to_string(),
             other_id: b.clone(),
-            relation: "blocks".to_string(),
+            relation: "relates-to".to_string(),
         }],
     );
     let ctx = fixture.ctx();

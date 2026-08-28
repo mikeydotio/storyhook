@@ -3191,3 +3191,228 @@ fn migration_twenty_one_leaves_an_undeleted_story_open() {
     assert_eq!(doc["state"], "todo");
     assert!(doc.get("hidden_at").is_none(), "{doc}");
 }
+
+// ---------------------------------------------------------------------------
+// Migration 22: CLOSED blockers own no live task dependencies (SH-500)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn migration_twenty_two_retracts_closed_blocker_edges_with_real_events() {
+    use storyhook::domain::provenance::Provenance;
+    use storyhook::domain::{Priority, TypeDef, fold_story};
+    use storyhook::service::project::default_states;
+    use storyhook::store::rebuild::diff_read_model;
+    use storyhook::store::{EventSeq, ExpectedSeq, NewProject, ReadOps, WriteOps};
+
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..21]).unwrap();
+
+    let project = store
+        .write(|tx| {
+            let project = tx.create_project(&NewProject {
+                uuid: "closed-blocker-edges".into(),
+                slug: "closed-blocker-edges".into(),
+                name: "Closed blocker edges".into(),
+                prefix: "SH".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+            })?;
+            tx.put_states(project, &default_states())?;
+            tx.put_types(
+                project,
+                &[TypeDef {
+                    slug: "normal".into(),
+                    description: None,
+                    emoji: None,
+                }],
+            )?;
+            let states = tx.state_map(project)?;
+            let provenance = Provenance::unrecorded();
+
+            // All endpoints must exist before relation rows can satisfy their
+            // immediate foreign keys. Seed their scalar histories first.
+            let mut logs = std::collections::BTreeMap::new();
+            for title in [
+                "closed blocker",
+                "dependent",
+                "related",
+                "open blocker",
+                "legacy half-dependent",
+            ] {
+                let story_no = tx.allocate_story_no(project)?;
+                let events = vec![
+                    StoryEvent::StoryCreated {
+                        at: "2026-01-01T00:00:00Z".into(),
+                        title: title.into(),
+                        state: "todo".into(),
+                    },
+                    StoryEvent::StoryPrioritySet {
+                        at: "2026-01-01T00:01:00Z".into(),
+                        priority: Priority::Low,
+                    },
+                    StoryEvent::StoryTypeSet {
+                        at: "2026-01-01T00:02:00Z".into(),
+                        story_type: "normal".into(),
+                    },
+                ];
+                let head = tx.append_events(
+                    project,
+                    story_no,
+                    ExpectedSeq::Exact(EventSeq::ZERO),
+                    &events,
+                    &provenance,
+                )?;
+                let snapshot = fold_story(&story_no.to_id("SH"), &events, &states)?;
+                tx.put_story(project, &snapshot, head)?;
+                logs.insert(story_no, events);
+            }
+
+            let additions: [(StoryNo, Vec<StoryEvent>); 4] = [
+                (
+                    StoryNo::new(1),
+                    vec![
+                        StoryEvent::StoryRelationshipAdded {
+                            at: "2026-01-02T00:00:00Z".into(),
+                            other_id: "SH-2".into(),
+                            relation: "blocks".into(),
+                        },
+                        StoryEvent::StoryRelationshipAdded {
+                            at: "2026-01-02T00:00:00Z".into(),
+                            other_id: "SH-3".into(),
+                            relation: "relates-to".into(),
+                        },
+                        // No matching blocked-by event is written to SH-5:
+                        // the relation-index mirror still knows the pair,
+                        // exercising migration 22's legacy half-edge path.
+                        StoryEvent::StoryRelationshipAdded {
+                            at: "2026-01-02T00:00:00Z".into(),
+                            other_id: "SH-5".into(),
+                            relation: "blocks".into(),
+                        },
+                        StoryEvent::StoryStateChanged {
+                            at: "2026-01-03T00:00:00Z".into(),
+                            state: "done".into(),
+                        },
+                        StoryEvent::StoryClosedAndArchived {
+                            at: "2026-01-03T00:00:00Z".into(),
+                            state: "done".into(),
+                        },
+                    ],
+                ),
+                (
+                    StoryNo::new(2),
+                    vec![
+                        StoryEvent::StoryRelationshipAdded {
+                            at: "2026-01-02T00:00:00Z".into(),
+                            other_id: "SH-1".into(),
+                            relation: "blocked-by".into(),
+                        },
+                        StoryEvent::StoryRelationshipAdded {
+                            at: "2026-01-02T00:00:00Z".into(),
+                            other_id: "SH-4".into(),
+                            relation: "blocked-by".into(),
+                        },
+                    ],
+                ),
+                (
+                    StoryNo::new(3),
+                    vec![StoryEvent::StoryRelationshipAdded {
+                        at: "2026-01-02T00:00:00Z".into(),
+                        other_id: "SH-1".into(),
+                        relation: "relates-to".into(),
+                    }],
+                ),
+                (
+                    StoryNo::new(4),
+                    vec![StoryEvent::StoryRelationshipAdded {
+                        at: "2026-01-02T00:00:00Z".into(),
+                        other_id: "SH-2".into(),
+                        relation: "blocks".into(),
+                    }],
+                ),
+            ];
+            for (story_no, added) in additions {
+                let events = logs.get_mut(&story_no).unwrap();
+                let expected = EventSeq::new(events.len() as i64);
+                events.extend(added);
+                let new_events = &events[expected.get() as usize..];
+                let head = tx.append_events(
+                    project,
+                    story_no,
+                    ExpectedSeq::Exact(expected),
+                    new_events,
+                    &provenance,
+                )?;
+                let snapshot = fold_story(&story_no.to_id("SH"), events, &states)?;
+                tx.put_story(project, &snapshot, head)?;
+            }
+            Ok(project)
+        })
+        .unwrap();
+
+    let before_counter = project_counter(store.path(), project);
+    store.migrate().unwrap();
+
+    let (blocker, dependent) = store
+        .read(|tx| {
+            Ok((
+                tx.story(project, StoryNo::new(1))?.unwrap(),
+                tx.story(project, StoryNo::new(2))?.unwrap(),
+            ))
+        })
+        .unwrap();
+    assert_eq!(
+        blocker.snapshot.relationships,
+        [storyhook::domain::StoryRelation {
+            relation: "relates-to".into(),
+            other_id: "SH-3".into(),
+        }]
+    );
+    assert_eq!(
+        dependent.snapshot.relationships,
+        [storyhook::domain::StoryRelation {
+            relation: "blocked-by".into(),
+            other_id: "SH-4".into(),
+        }]
+    );
+    for story_no in [StoryNo::new(1), StoryNo::new(2)] {
+        let last = store
+            .read(|tx| tx.events_for(project, story_no))
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert!(matches!(
+            last.known(),
+            Some(StoryEvent::StoryRelationshipRemoved { .. })
+        ));
+    }
+    assert_eq!(
+        project_counter(store.path(), project),
+        before_counter + 3,
+        "the symmetric edge gets two compensations and the half-edge gets one"
+    );
+    let half_dependent_events = store
+        .read(|tx| tx.events_for(project, StoryNo::new(5)))
+        .unwrap();
+    assert!(
+        half_dependent_events.iter().all(|event| !matches!(
+            event.known(),
+            Some(StoryEvent::StoryRelationshipRemoved { .. })
+        )),
+        "a history that never asserted the inverse must not invent a removal"
+    );
+    let edges = store
+        .read(|tx| tx.relations_from(project, StoryNo::new(1)))
+        .unwrap();
+    assert_eq!(
+        edges
+            .into_iter()
+            .map(|edge| (edge.relation, edge.other_no))
+            .collect::<Vec<_>>(),
+        [("relates-to".to_string(), StoryNo::new(3))]
+    );
+    assert!(
+        diff_read_model(&store, project).unwrap().is_clean(),
+        "migration output must agree with a fresh event replay"
+    );
+}
