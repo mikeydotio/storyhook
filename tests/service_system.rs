@@ -94,6 +94,14 @@ fn the_agents_template_follows_the_projects_own_closed_state() {
             "blocked".to_string(),
             "shipped".to_string(),
             "done".to_string(),
+            // The abandoned state stays last. A reorder must name every state,
+            // and putting `closed` ahead of `done` here would prove a different
+            // thing: the template must follow the project's own FIRST closed
+            // state, and `closed` is the one the floor deliberately keeps
+            // behind `done` so that nothing reading "the closed state" starts
+            // telling agents to abandon their work instead of finishing it
+            // (SH-505).
+            "closed".to_string(),
         ])
         .expect("putting `shipped` ahead of `done`");
 
@@ -102,6 +110,27 @@ fn the_agents_template_follows_the_projects_own_closed_state() {
         .expect("scaffolding");
     assert!(rendered.contains("story move SH-<n> shipped"), "{rendered}");
     assert!(!rendered.contains("story move SH-<n> done"), "{rendered}");
+}
+
+/// The consequence of where `closed` sits in the floor, asserted where an agent
+/// would actually feel it.
+///
+/// `service::project::closed_state` takes the project's FIRST closed state, so
+/// a floor that listed `closed` before `done` would scaffold an AGENTS.md
+/// telling every agent to finish its work by abandoning the story. Nothing else
+/// pins that at the template level — the sibling test above proves the template
+/// follows a *reordered* catalog, which is the opposite direction.
+#[test]
+fn a_default_project_tells_agents_to_finish_their_work_not_abandon_it() {
+    let fixture = ServiceFixture::new();
+    let rendered = SystemService::new(&fixture.ctx())
+        .scaffold("agents-md")
+        .expect("scaffolding");
+    assert!(rendered.contains("story move SH-<n> done"), "{rendered}");
+    assert!(
+        !rendered.contains("story move SH-<n> closed"),
+        "the abandoned state must never be the one the template names: {rendered}"
+    );
 }
 
 #[test]

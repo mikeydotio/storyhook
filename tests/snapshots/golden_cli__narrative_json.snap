@@ -5,7 +5,7 @@ source: tests/golden_cli.rs
   {
     "argv": "story context --json",
     "stdout": {
-      "message": "# Project Status\n\nStories: 14 (11 open, 3 closed)\n\n## State Distribution\n\n- done: 3\n- in-progress: 2\n- review: 1\n- todo: 8\n\n## Type Distribution\n\n- bug: 1\n- chore: 3\n- epic: 1\n- normal: 7\n- spike: 2\n\n## Ready to Work (7 total)\n\n- SH-5 Fix the id collision across worktrees (critical)\n- SH-2 Define the Store trait (high)\n- SH-12 Harden concurrent writes (high)\n- SH-4 Write the migration runner (medium)\n- SH-10 Ship the CLI shim (medium)\n\n## Blocked (3)\n\n- SH-3 Implement the SQLite engine\n- SH-6 Benchmark the rebuild path — awaiting: waiting on the benchmark harness\n- SH-9 Add the daemon transport\n\n## Phase Progress\n\n- Phase 1 -- 0/2 done, 1 in-progress, 1 blocked\n- Phase 2 -- 0/1 done, 1 blocked\n",
+      "message": "# Project Status\n\nStories: 14 (11 open, 3 closed)\n\n## State Distribution\n\n- closed: 1\n- done: 2\n- in-progress: 2\n- review: 1\n- todo: 8\n\n## Type Distribution\n\n- bug: 1\n- chore: 3\n- epic: 1\n- normal: 7\n- spike: 2\n\n## Ready to Work (7 total)\n\n- SH-5 Fix the id collision across worktrees (critical)\n- SH-2 Define the Store trait (high)\n- SH-12 Harden concurrent writes (high)\n- SH-4 Write the migration runner (medium)\n- SH-10 Ship the CLI shim (medium)\n\n## Blocked (3)\n\n- SH-3 Implement the SQLite engine\n- SH-6 Benchmark the rebuild path — awaiting: waiting on the benchmark harness\n- SH-9 Add the daemon transport\n\n## Phase Progress\n\n- Phase 1 -- 0/2 done, 1 in-progress, 1 blocked\n- Phase 2 -- 0/1 done, 1 blocked\n",
       "result": "ok"
     }
   },
@@ -14,7 +14,8 @@ source: tests/golden_cli.rs
     "stdout": {
       "blocked_count": 3,
       "by_state": {
-        "done": 3,
+        "closed": 1,
+        "done": 2,
         "in-progress": 2,
         "review": 1,
         "todo": 8
@@ -67,28 +68,28 @@ source: tests/golden_cli.rs
   {
     "argv": "story load-context --json",
     "stdout": {
-      "message": "# Project Status\n\nStories: 14 (11 open, 3 closed)\n\n## State Distribution\n\n- done: 3\n- in-progress: 2\n- review: 1\n- todo: 8\n\n## Type Distribution\n\n- bug: 1\n- chore: 3\n- epic: 1\n- normal: 7\n- spike: 2\n\n## Ready to Work (7 total)\n\n- SH-5 Fix the id collision across worktrees (critical)\n- SH-2 Define the Store trait (high)\n- SH-12 Harden concurrent writes (high)\n- SH-4 Write the migration runner (medium)\n- SH-10 Ship the CLI shim (medium)\n\n## Blocked (3)\n\n- SH-3 Implement the SQLite engine\n- SH-6 Benchmark the rebuild path — awaiting: waiting on the benchmark harness\n- SH-9 Add the daemon transport\n\n## Phase Progress\n\n- Phase 1 -- 0/2 done, 1 in-progress, 1 blocked\n- Phase 2 -- 0/1 done, 1 blocked\n",
+      "message": "# Project Status\n\nStories: 14 (11 open, 3 closed)\n\n## State Distribution\n\n- closed: 1\n- done: 2\n- in-progress: 2\n- review: 1\n- todo: 8\n\n## Type Distribution\n\n- bug: 1\n- chore: 3\n- epic: 1\n- normal: 7\n- spike: 2\n\n## Ready to Work (7 total)\n\n- SH-5 Fix the id collision across worktrees (critical)\n- SH-2 Define the Store trait (high)\n- SH-12 Harden concurrent writes (high)\n- SH-4 Write the migration runner (medium)\n- SH-10 Ship the CLI shim (medium)\n\n## Blocked (3)\n\n- SH-3 Implement the SQLite engine\n- SH-6 Benchmark the rebuild path — awaiting: waiting on the benchmark harness\n- SH-9 Add the daemon transport\n\n## Phase Progress\n\n- Phase 1 -- 0/2 done, 1 in-progress, 1 blocked\n- Phase 2 -- 0/1 done, 1 blocked\n",
       "result": "ok"
     }
   },
   {
     "argv": "story handoff --json",
     "stdout": {
-      "message": "# Session Handoff\n\n## Created (11)\n\n- SH-1 Design the storage engine [in-progress]\n- SH-2 Define the Store trait [todo]\n- SH-3 Implement the SQLite engine [in-progress]\n- SH-4 Write the migration runner [review]\n- SH-5 Fix the id collision across worktrees [todo]\n- SH-6 Benchmark the rebuild path [todo]\n- SH-7 Document the data layer [todo]\n- SH-9 Add the daemon transport [todo]\n- SH-10 Ship the CLI shim [todo]\n- SH-11 Audit error codes [todo]\n- SH-12 Harden concurrent writes [todo]\n\n## Closed (3)\n\n- SH-8 Retire the JSONL reader [done]\n- SH-13 Old approach: file-per-story [done]\n- SH-14 Prototype the archive format [done]\n\n",
+      "message": "# Session Handoff\n\n## Created (11)\n\n- SH-1 Design the storage engine [in-progress]\n- SH-2 Define the Store trait [todo]\n- SH-3 Implement the SQLite engine [in-progress]\n- SH-4 Write the migration runner [review]\n- SH-5 Fix the id collision across worktrees [todo]\n- SH-6 Benchmark the rebuild path [todo]\n- SH-7 Document the data layer [todo]\n- SH-9 Add the daemon transport [todo]\n- SH-10 Ship the CLI shim [todo]\n- SH-11 Audit error codes [todo]\n- SH-12 Harden concurrent writes [todo]\n\n## Closed (3)\n\n- SH-8 Retire the JSONL reader [done]\n- SH-13 Old approach: file-per-story [closed]\n- SH-14 Prototype the archive format [done]\n\n",
       "result": "ok"
     }
   },
   {
     "argv": "story handoff --since 7d --json",
     "stdout": {
-      "message": "# Session Handoff\n\n## Created (11)\n\n- SH-1 Design the storage engine [in-progress]\n- SH-2 Define the Store trait [todo]\n- SH-3 Implement the SQLite engine [in-progress]\n- SH-4 Write the migration runner [review]\n- SH-5 Fix the id collision across worktrees [todo]\n- SH-6 Benchmark the rebuild path [todo]\n- SH-7 Document the data layer [todo]\n- SH-9 Add the daemon transport [todo]\n- SH-10 Ship the CLI shim [todo]\n- SH-11 Audit error codes [todo]\n- SH-12 Harden concurrent writes [todo]\n\n## Closed (3)\n\n- SH-8 Retire the JSONL reader [done]\n- SH-13 Old approach: file-per-story [done]\n- SH-14 Prototype the archive format [done]\n\n",
+      "message": "# Session Handoff\n\n## Created (11)\n\n- SH-1 Design the storage engine [in-progress]\n- SH-2 Define the Store trait [todo]\n- SH-3 Implement the SQLite engine [in-progress]\n- SH-4 Write the migration runner [review]\n- SH-5 Fix the id collision across worktrees [todo]\n- SH-6 Benchmark the rebuild path [todo]\n- SH-7 Document the data layer [todo]\n- SH-9 Add the daemon transport [todo]\n- SH-10 Ship the CLI shim [todo]\n- SH-11 Audit error codes [todo]\n- SH-12 Harden concurrent writes [todo]\n\n## Closed (3)\n\n- SH-8 Retire the JSONL reader [done]\n- SH-13 Old approach: file-per-story [closed]\n- SH-14 Prototype the archive format [done]\n\n",
       "result": "ok"
     }
   },
   {
     "argv": "story handoff --since 2h --json",
     "stdout": {
-      "message": "# Session Handoff\n\n## Created (11)\n\n- SH-1 Design the storage engine [in-progress]\n- SH-2 Define the Store trait [todo]\n- SH-3 Implement the SQLite engine [in-progress]\n- SH-4 Write the migration runner [review]\n- SH-5 Fix the id collision across worktrees [todo]\n- SH-6 Benchmark the rebuild path [todo]\n- SH-7 Document the data layer [todo]\n- SH-9 Add the daemon transport [todo]\n- SH-10 Ship the CLI shim [todo]\n- SH-11 Audit error codes [todo]\n- SH-12 Harden concurrent writes [todo]\n\n## Closed (3)\n\n- SH-8 Retire the JSONL reader [done]\n- SH-13 Old approach: file-per-story [done]\n- SH-14 Prototype the archive format [done]\n\n",
+      "message": "# Session Handoff\n\n## Created (11)\n\n- SH-1 Design the storage engine [in-progress]\n- SH-2 Define the Store trait [todo]\n- SH-3 Implement the SQLite engine [in-progress]\n- SH-4 Write the migration runner [review]\n- SH-5 Fix the id collision across worktrees [todo]\n- SH-6 Benchmark the rebuild path [todo]\n- SH-7 Document the data layer [todo]\n- SH-9 Add the daemon transport [todo]\n- SH-10 Ship the CLI shim [todo]\n- SH-11 Audit error codes [todo]\n- SH-12 Harden concurrent writes [todo]\n\n## Closed (3)\n\n- SH-8 Retire the JSONL reader [done]\n- SH-13 Old approach: file-per-story [closed]\n- SH-14 Prototype the archive format [done]\n\n",
       "result": "ok"
     }
   }

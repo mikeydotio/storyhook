@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+
+- `story close <id> "<reason>"` — retire a story that will not be done, keeping
+  it and everything it records. `closed` is a new **required state** in the
+  CLOSED superstate, behaving exactly like `done` in every respect except what
+  it claims: `done` says the work was finished, `closed` says it was
+  deliberately abandoned. A closed story keeps its description, comments,
+  labels and every relationship. The verb is sugar over `story move <id> closed
+  "<reason>"`, differing only in requiring the reason — the whole point of the
+  verb is that an abandonment says why. First child of SH-503, the epic that
+  splits today's overloaded `story delete` into two verbs; design of record is
+  `docs/spec/deletion-and-closure.md` (SH-505)
 - `story_claim` and `story_unclaim` as MCP tools, taking the curated surface to
   eighteen. Before this an agent reaching storyhook over MCP had **no atomic
   claim at all**: `story_next` never exposed the old `--claim` flag, so its only
@@ -59,6 +70,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   symbolically (SH-483)
 
 ### Changed
+
+- **A soft-deleted story now comes to rest in `closed` rather than `done`, and
+  folds archived.** Deletion is read as abandonment, and `done` claimed the work
+  had been finished; the archive stamp keeps such a story exactly as invisible
+  as it was before `closed` became a state boards render a column for. Migration
+  21 brings existing stores into agreement — it adds the state to every project
+  and repoints the soft-deleted rows, touching no superstate, no timestamps
+  other than `hidden_at`, and appending no events. A project that already
+  defines a state named `closed` is left alone rather than reclassified, and the
+  fold agrees with those rows by answering `done` for them too, so `story
+  doctor` reports the real problem (a catalog below the floor) instead of an
+  invented divergence (SH-505)
 - `story.sh dispatch <id>` claims through `story claim <id> --no-comment`
   instead of hand-rolling the same compare-and-swap out of `story show` plus
   `story move --if-state`. Both dispatch modes now reach the store through one
@@ -79,6 +102,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   (SH-482)
 
 ### Fixed
+
+- `store_properties`' relation property asserted `parents <= 1`, pinning a
+  unique index SH-446 had deliberately removed — "multiple parents are now
+  intentional", per migration 20's own header. It was unreachable until a
+  generator change happened to produce two `parent-of` links onto one story, and
+  would have failed for whoever perturbed the RNG stream next, pointing at their
+  diff. The store promises symmetry; acyclicity is a `RelationService` rule this
+  store-level harness bypasses on purpose
 - An epic whose children are all deleted no longer reports itself **done**.
   Deletion is soft: the row survives with its `state` slug kept as a truthful
   record and its `superstate` forced to `CLOSED`, so a deleted child resolved

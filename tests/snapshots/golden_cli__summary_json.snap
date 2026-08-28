@@ -28,8 +28,12 @@ source: tests/golden_cli.rs
         ],
         "by_state": [
           [
+            "closed",
+            1
+          ],
+          [
             "done",
-            3
+            2
           ],
           [
             "in-progress",
@@ -232,8 +236,12 @@ source: tests/golden_cli.rs
         ],
         "by_state": [
           [
+            "closed",
+            1
+          ],
+          [
             "done",
-            3
+            2
           ],
           [
             "in-progress",

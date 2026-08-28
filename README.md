@@ -340,6 +340,7 @@ story unblock <id>
 story prioritize <id> <level>
 story label <id> <labels-csv>
 story unlabel <id> <labels-csv>
+story close <id> "<reason>"
 story reopen <id> [--force]
 story archive <id>
 story unarchive <id>

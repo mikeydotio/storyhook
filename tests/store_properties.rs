@@ -485,13 +485,22 @@ proptest! {
                     story, edge.relation, edge.other_no, inverse
                 );
             }
-            let parents = store
-                .read(|tx| tx.relations_from(project, *story))
-                .unwrap()
-                .into_iter()
-                .filter(|edge| edge.relation == "child-of")
-                .count();
-            prop_assert!(parents <= 1, "story {} has {} parents", story, parents);
+            // There used to be a `parents <= 1` assertion here, pinning the
+            // one-child-of-row unique index. SH-446 REMOVED that index on
+            // purpose -- migration 20's own header says "multiple parents are
+            // now intentional" -- and this assertion outlived it, unreachable
+            // until a generator change happened to produce two `parent-of`
+            // links onto one story. It was asserting a rule the product had
+            // already stopped having.
+            //
+            // Nothing replaces it, and that is deliberate. The obvious
+            // candidate -- a story may not be its own ancestor -- is a rule
+            // `domain::would_create_parent_cycle` enforces in `RelationService`,
+            // which this harness bypasses on purpose: `run_script` appends
+            // events straight through `append_and_fold` to exercise the STORE.
+            // Asserting it here would fail on a legal store state and would be
+            // testing the wrong layer. Symmetry, checked above, is the whole of
+            // what the store itself promises about relations.
         }
     }
 }

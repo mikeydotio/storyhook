@@ -513,7 +513,7 @@ source: tests/golden_cli.rs
   {
     "argv": "story list --state done --json",
     "stdout": {
-      "message": "including closed stories: `done` is a closed state; 1 deleted story is not listed (story search finds it)",
+      "message": "including closed stories: `done` is a closed state",
       "result": "ok",
       "stories": [
         {

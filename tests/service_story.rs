@@ -1719,7 +1719,16 @@ fn deleting_a_story_closes_it_and_records_the_reason() {
     // keeping an OPEN slug while claiming CLOSED. The truthful record of what
     // it was lives in the event log, which is append-only and cannot lie; the
     // read model says where the story is now.
-    assert_eq!(after.state, "done");
+    //
+    // SH-505 moved that resting place from `done` to `closed`, and archived it.
+    // A deletion is an abandonment; `done` said the work had been finished, and
+    // the archive stamp is what keeps the story as invisible as it was before
+    // `closed` became a state a board renders a column for.
+    assert_eq!(after.state, "closed");
+    assert!(
+        after.hidden_at.is_some(),
+        "a soft-deleted story folds archived"
+    );
 }
 
 #[test]

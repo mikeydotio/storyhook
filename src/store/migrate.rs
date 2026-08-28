@@ -249,6 +249,18 @@ pub const MIGRATIONS: &[Migration] = &[
         // and drops one index. No referenced table is rebuilt.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 21,
+        name: "closed_state",
+        sql: include_str!("schema/0021_closed_state.sql"),
+        // Adds one catalog row per project and repoints the soft-deleted
+        // stories at it. No table is rebuilt and no event is appended, so
+        // migration 5's `events_reject_delete` warning does not apply and the
+        // deferred composite foreign key is satisfied inside the transaction —
+        // the file's own header explains why the statement order that satisfies
+        // it is required rather than merely tidy.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

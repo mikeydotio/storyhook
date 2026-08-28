@@ -140,7 +140,7 @@ fn states_are_listed_in_board_order_not_alphabetical_order() {
         .into_iter()
         .map(|listing| listing.state.slug)
         .collect();
-    assert_eq!(listed, ["todo", "in-progress", "blocked", "done"]);
+    assert_eq!(listed, ["todo", "in-progress", "blocked", "done", "closed"]);
 }
 
 #[test]
@@ -181,7 +181,7 @@ fn every_configured_state_appears_in_the_usage_map_even_when_empty() {
         .expect("reading usage");
     let mut slugs: Vec<&str> = usage.keys().map(String::as_str).collect();
     slugs.sort_unstable();
-    assert_eq!(slugs, ["blocked", "done", "in-progress", "todo"]);
+    assert_eq!(slugs, ["blocked", "closed", "done", "in-progress", "todo"]);
 }
 
 // --- adding states ---------------------------------------------------------
@@ -200,7 +200,14 @@ fn a_new_state_is_appended_to_the_board_order() {
     assert_eq!(added.slug, "in-review");
     assert_eq!(
         slugs(&fixture),
-        ["todo", "in-progress", "blocked", "done", "in-review"]
+        [
+            "todo",
+            "in-progress",
+            "blocked",
+            "done",
+            "closed",
+            "in-review"
+        ]
     );
     assert_eq!(
         state(&fixture, "in-review").description.as_deref(),
@@ -235,7 +242,7 @@ fn a_duplicate_state_slug_is_rejected() {
         .add_state("todo", SuperState::Open, None, None)
         .unwrap_err();
     assert!(message(error).contains("state `todo` already exists"));
-    assert_eq!(slugs(&fixture).len(), 4);
+    assert_eq!(slugs(&fixture).len(), 5);
 }
 
 #[test]
@@ -250,7 +257,7 @@ fn an_unaddressable_state_slug_is_rejected() {
             "`{bad}` was accepted"
         );
     }
-    assert_eq!(slugs(&fixture).len(), 4);
+    assert_eq!(slugs(&fixture).len(), 5);
 }
 
 #[test]
@@ -369,7 +376,7 @@ fn editing_one_field_never_drops_another() {
     assert_eq!(edited.super_state, SuperState::Open);
     assert_eq!(
         slugs(&fixture),
-        ["todo", "in-progress", "blocked", "done"],
+        ["todo", "in-progress", "blocked", "done", "closed"],
         "an edit must not disturb the board order"
     );
 }
@@ -549,7 +556,7 @@ fn an_unknown_destination_is_rejected_before_anything_moves() {
         .unwrap_err();
     assert!(matches!(error, AppError::NotFound(_)), "{error:?}");
     assert_eq!(snapshot(&fixture, &id).state, SPARE);
-    assert_eq!(slugs(&fixture).len(), 5);
+    assert_eq!(slugs(&fixture).len(), 6);
 }
 
 #[test]
@@ -608,7 +615,10 @@ fn an_empty_state_is_removed_without_ceremony() {
         .remove_state(SPARE, None)
         .expect("removing an empty state");
     assert_eq!(moved, 0);
-    assert_eq!(slugs(&fixture), ["todo", "in-progress", "blocked", "done"]);
+    assert_eq!(
+        slugs(&fixture),
+        ["todo", "in-progress", "blocked", "done", "closed"]
+    );
 }
 
 #[test]
@@ -669,7 +679,7 @@ fn removing_an_unknown_state_is_not_found() {
 #[test]
 fn a_required_state_cannot_be_removed() {
     let fixture = ServiceFixture::new();
-    for slug in ["todo", "in-progress", "blocked", "done"] {
+    for slug in ["todo", "in-progress", "blocked", "done", "closed"] {
         let error = ConfigService::new(&fixture.ctx())
             .remove_state(slug, None)
             .unwrap_err();
@@ -680,7 +690,7 @@ fn a_required_state_cannot_be_removed() {
             "the refusal must name the repair: {message}"
         );
     }
-    assert_eq!(slugs(&fixture).len(), 4, "nothing was removed");
+    assert_eq!(slugs(&fixture).len(), 5, "nothing was removed");
 }
 
 #[test]
@@ -698,7 +708,7 @@ fn a_state_with_archived_history_cannot_be_removed() {
         message.contains("fold against a state that no longer exists"),
         "{message}"
     );
-    assert_eq!(slugs(&fixture).len(), 5);
+    assert_eq!(slugs(&fixture).len(), 6);
 }
 
 #[test]
@@ -713,12 +723,17 @@ fn a_deleted_story_does_not_hold_a_state_open() {
     ConfigService::new(&ctx)
         .remove_state(SPARE, None)
         .expect("a deleted occupant neither blocks nor migrates");
-    assert_eq!(slugs(&fixture), ["todo", "in-progress", "blocked", "done"]);
+    assert_eq!(
+        slugs(&fixture),
+        ["todo", "in-progress", "blocked", "done", "closed"]
+    );
     // SH-130 makes this stronger than it was. It used to assert the deleted
     // story kept `SPARE` — "the slug its history records" — which meant the
     // removal above left a story naming a state the catalog no longer defined.
-    // Deletion now lands the story in `done`, so removing `SPARE` is safe for a
-    // better reason than "nobody was looking": nothing is in it.
+    // Deletion now lands the story in a required CLOSED state, so removing
+    // `SPARE` is safe for a better reason than "nobody was looking": nothing is
+    // in it. Which state that is became `closed` rather than `done` in SH-505 —
+    // a deletion is an abandonment, and `done` claimed the work was finished.
     //
     // Worth stating plainly, because the old fold comment claimed the
     // superstate override protected against exactly this. It did not: it kept
@@ -727,8 +742,8 @@ fn a_deleted_story_does_not_hold_a_state_open() {
     // at all.
     assert_eq!(
         snapshot(&fixture, &id).state,
-        "done",
-        "a deleted story rests in the required CLOSED state, not in a slug that \
+        "closed",
+        "a deleted story rests in a required CLOSED state, not in a slug that \
          can be removed out from under it"
     );
 }
@@ -762,7 +777,7 @@ fn a_migration_that_fails_part_way_moves_nothing_at_all() {
 
     assert_eq!(
         slugs(&fixture),
-        ["todo", "in-progress", "blocked", "done", SPARE],
+        ["todo", "in-progress", "blocked", "done", "closed", SPARE],
         "the configuration change survived a rollback"
     );
     for (id, was) in ids.iter().zip(&before) {
@@ -812,6 +827,7 @@ fn reordering_rewrites_the_board_order() {
         "todo".to_string(),
         "blocked".to_string(),
         "in-progress".to_string(),
+        "closed".to_string(),
     ];
     let reordered = ConfigService::new(&fixture.ctx())
         .reorder_states(&order)
@@ -821,9 +837,12 @@ fn reordering_rewrites_the_board_order() {
             .iter()
             .map(|s| s.slug.as_str())
             .collect::<Vec<_>>(),
-        ["done", "todo", "blocked", "in-progress"]
+        ["done", "todo", "blocked", "in-progress", "closed"]
     );
-    assert_eq!(slugs(&fixture), ["done", "todo", "blocked", "in-progress"]);
+    assert_eq!(
+        slugs(&fixture),
+        ["done", "todo", "blocked", "in-progress", "closed"]
+    );
 }
 
 #[test]
@@ -834,6 +853,7 @@ fn reordering_carries_every_states_fields_across() {
         "todo".to_string(),
         "blocked".to_string(),
         "done".to_string(),
+        "closed".to_string(),
     ];
     ConfigService::new(&fixture.ctx())
         .reorder_states(&order)
@@ -858,7 +878,10 @@ fn a_partial_order_is_rejected() {
     let message = message(error);
     assert!(message.contains("must list every state"), "{message}");
     assert!(message.contains("in-progress"), "{message}");
-    assert_eq!(slugs(&fixture), ["todo", "in-progress", "blocked", "done"]);
+    assert_eq!(
+        slugs(&fixture),
+        ["todo", "in-progress", "blocked", "done", "closed"]
+    );
 }
 
 #[test]
@@ -883,7 +906,10 @@ fn a_repeated_or_unknown_slug_is_rejected() {
         ])
         .unwrap_err();
     assert!(matches!(error, AppError::NotFound(_)), "{error:?}");
-    assert_eq!(slugs(&fixture), ["todo", "in-progress", "blocked", "done"]);
+    assert_eq!(
+        slugs(&fixture),
+        ["todo", "in-progress", "blocked", "done", "closed"]
+    );
 }
 
 #[test]
@@ -896,6 +922,7 @@ fn reordering_changes_which_state_a_new_story_opens_in() {
             "todo".to_string(),
             "blocked".to_string(),
             "done".to_string(),
+            "closed".to_string(),
         ])
         .expect("reordering");
     let story = StoryService::new(&ctx)
@@ -921,12 +948,14 @@ fn concurrent_reorders_leave_one_state_per_position() {
             "todo".to_string(),
             "blocked".to_string(),
             "in-progress".to_string(),
+            "closed".to_string(),
         ],
         vec![
             "in-progress".to_string(),
             "done".to_string(),
             "blocked".to_string(),
             "todo".to_string(),
+            "closed".to_string(),
         ],
     ];
     std::thread::scope(|scope| {
@@ -941,10 +970,19 @@ fn concurrent_reorders_leave_one_state_per_position() {
         }
     });
 
+    // Derived from the orders the writers actually raced with, rather than
+    // written out: the assertion is that the outcome is a PERMUTATION of the
+    // configured set, and a literal beside it is a second place the floor's
+    // size has to be kept true (SH-505 grew it once already).
+    let expected = orders[0].len();
     let final_slugs = slugs(&fixture);
-    assert_eq!(final_slugs.len(), 4, "a state was lost or duplicated");
+    assert_eq!(
+        final_slugs.len(),
+        expected,
+        "a state was lost or duplicated"
+    );
     let unique: std::collections::BTreeSet<&String> = final_slugs.iter().collect();
-    assert_eq!(unique.len(), 4);
+    assert_eq!(unique.len(), expected);
     assert!(orders.contains(&final_slugs), "{final_slugs:?}");
 }
 

@@ -188,9 +188,33 @@ fn a_deleted_story_comes_to_rest_in_a_closed_state() {
         .success();
 
     let shown = project.json(&["show", "SH-1"]);
-    assert_eq!(shown["story"]["story"]["state"], "done");
+    // SH-130's subject is the AGREEMENT: whatever slug a deleted story comes to
+    // rest in, that slug's superstate must be the one the row reports, because
+    // the two are stored independently and a contradiction between them is the
+    // defect. Which slug it is belongs to SH-505, which moved it from `done` to
+    // `closed` — a deletion is an abandonment, and `done` claimed the work had
+    // been finished.
+    assert_eq!(shown["story"]["story"]["state"], "closed");
     assert_eq!(shown["story"]["story"]["superstate"], "CLOSED");
     assert_eq!(shown["story"]["story"]["deleted"], true);
+
+    // The agreement, asserted against the catalog rather than against a literal
+    // — this is the pair SH-130 exists to keep true. Read from `story export`
+    // rather than `story state list`, whose `--json` answers with a rendered
+    // message: a test that had to parse that prose back would be asserting
+    // against the renderer instead of against the catalog.
+    let exported = project.json(&["export"]);
+    let resting = exported["states"]
+        .as_array()
+        .expect("a state array")
+        .iter()
+        .find(|def| def["slug"] == shown["story"]["story"]["state"])
+        .expect("the resting state must be one the project actually defines");
+    assert_eq!(
+        resting["super"], "CLOSED",
+        "a deleted story resting in a state the catalog calls OPEN is exactly \
+         the illegal pair this file is about"
+    );
 }
 
 #[test]
