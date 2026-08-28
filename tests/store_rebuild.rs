@@ -339,8 +339,8 @@ fn a_row_with_no_events_behind_it_is_reported_as_extra() {
     raw(&store)
         .execute(
             "INSERT INTO stories (project_id, story_no, head_seq, title, state, superstate, \
-                 priority, priority_rank, story_type, deleted, archived, created_at, updated_at, snapshot) \
-             SELECT project_id, 2, 1, title, state, superstate, priority, priority_rank, story_type, deleted, \
+                 priority, priority_rank, story_type, archived, created_at, updated_at, snapshot) \
+             SELECT project_id, 2, 1, title, state, superstate, priority, priority_rank, story_type, \
                  archived, created_at, updated_at, snapshot FROM stories",
             [],
         )
