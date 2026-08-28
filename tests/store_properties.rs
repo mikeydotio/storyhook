@@ -493,31 +493,14 @@ proptest! {
             // links onto one story. It was asserting a rule the product had
             // already stopped having.
             //
-            // What genuinely survives is the cycle guard: a story may have any
-            // number of parents, but may not be its own ancestor. That is the
-            // invariant `domain::would_create_parent_cycle` enforces on the way
-            // in, and the one worth checking against whatever sequence the
-            // generator produced.
-            let mut seen = std::collections::BTreeSet::new();
-            let mut frontier = vec![*story];
-            while let Some(current) = frontier.pop() {
-                for edge in store
-                    .read(|tx| tx.relations_from(project, current))
-                    .unwrap()
-                    .into_iter()
-                    .filter(|edge| edge.relation == "child-of")
-                {
-                    prop_assert!(
-                        edge.other_no != *story,
-                        "story {} is its own ancestor, via {}",
-                        story,
-                        current
-                    );
-                    if seen.insert(edge.other_no) {
-                        frontier.push(edge.other_no);
-                    }
-                }
-            }
+            // Nothing replaces it, and that is deliberate. The obvious
+            // candidate -- a story may not be its own ancestor -- is a rule
+            // `domain::would_create_parent_cycle` enforces in `RelationService`,
+            // which this harness bypasses on purpose: `run_script` appends
+            // events straight through `append_and_fold` to exercise the STORE.
+            // Asserting it here would fail on a legal store state and would be
+            // testing the wrong layer. Symmetry, checked above, is the whole of
+            // what the store itself promises about relations.
         }
     }
 }
