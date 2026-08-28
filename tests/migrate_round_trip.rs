@@ -627,7 +627,36 @@ fn the_real_trees_export_equals_the_golden_document_modulo_the_repairs() {
             .expect("parsing the golden document");
 
     assert_eq!(ours.schema, golden.schema);
-    assert_eq!(ours.states, golden.states);
+    // The golden document is FROZEN — captured by a pre-rearchitecture binary
+    // and not regenerable — so it names the floor as it stood when it was
+    // taken. A state the floor has gained since is a *repair*, exactly what
+    // this test's name licenses, so the golden states must be a **prefix** of
+    // ours and every extra one must be a required state the repair added.
+    // Equality here would mean the floor could never grow again (SH-505).
+    assert_eq!(
+        &ours.states[..golden.states.len()],
+        &golden.states[..],
+        "the migration may append required states; it may not reorder, drop or \
+         rewrite the ones the golden document froze"
+    );
+    for extra in &ours.states[golden.states.len()..] {
+        let required = storyhook::domain::REQUIRED_STATES
+            .iter()
+            .find(|r| r.slug == extra.slug)
+            .unwrap_or_else(|| {
+                panic!("the migration invented the state `{}`, which is not on the floor", extra.slug)
+            });
+        assert_eq!(
+            extra.super_state, required.super_state,
+            "`{}` was added under the wrong superstate",
+            extra.slug
+        );
+        assert!(
+            extra.role.is_none() && extra.description.is_none(),
+            "a repaired state carries no role and no description, so a migrated \
+             project and a `doctor --fix`ed one cannot disagree: {extra:?}"
+        );
+    }
     assert_eq!(ours.types, golden.types);
     assert_eq!(ours.members, golden.members);
     assert_eq!(
