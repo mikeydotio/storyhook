@@ -77,6 +77,22 @@ story relate SH-5 relates-to SH-2
 story relate SH-6 obviates SH-7
 ```
 
+### Reserved labels
+
+Two label names mean something to the tooling. Both are ordinary labels
+otherwise — add and remove them with `story label` / `story unlabel`.
+
+| Label | Effect |
+|---|---|
+| `no-auto` | Needs a person in the loop — questions may be asked and a plan approved. `story next` still offers it and it is still claimable by hand; automation skips it. |
+| `human-only` | Only a person may do it. `story next` and `story claim --next` never return it. |
+
+`human-only` is **not** a block. The story stays ready everywhere a person
+looks: `story list --ready` carries it, every ready count counts it, and an
+epic whose only incomplete child is `human-only` does not become blocked.
+Anyone can pick it up at any time — it is simply never handed out as an
+agent's next assignment.
+
 ### Dependency graph
 
 Visualize relationships and find bottlenecks:
@@ -129,6 +145,7 @@ what still gets filed.
 | Adopt or file a mid-work find | `story help scope-rubric` |
 | Assign a story | `story assign SH-<n> <member>` |
 | Add a label | `story label SH-<n> <label>` |
+| Reserved label names | `story help label` |
 | Block on another story | `story block SH-<n> --on SH-<blocker> "reason"` |
 | Unblock a story | `story unblock SH-<n>` |
 | Add a relationship | `story relate SH-1 blocks SH-2` |

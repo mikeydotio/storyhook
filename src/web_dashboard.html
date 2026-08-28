@@ -6505,7 +6505,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   /** `id`'s zero-based position in `state.data.next_ids` -- the dependency-
    * aware execution order `story next --count N` would return (SH-407,
    * SH-450). `Infinity` when `id` is absent (not in the reachable queue at
-   * all: claimed, an epic, intrinsically blocked, cyclic, or the field is
+   * all: claimed, an epic, intrinsically blocked, cyclic, labelled
+   * `human-only` -- SH-453, never offered as anyone's next assignment,
+   * though still ready and still placed by its own state -- or the field is
    * missing from an older daemon), so an unranked card/row always sorts
    * after every ranked one regardless of `dir` -- see the `"next"` and
    * List `"order"` comparator branches for why that has to be direction-

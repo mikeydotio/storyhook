@@ -228,11 +228,22 @@ fn write_sentinel(cwd: &std::path::Path, sentinel: &DispatchSentinel) -> Result<
 /// The most urgent ready story — [`domain::ready_order`](crate::domain::ready_order)'s
 /// first element, so the story this names is always the one `story next`
 /// would offer first (SH-63).
+///
+/// Which is why the reserved `human-only` label is dropped here too (SH-453):
+/// `story next` never offers one, so naming one on this line would make the
+/// sentence above false at the very surface an agent reads before it runs any
+/// command at all. The exclusion is deliberately *inside* this function
+/// rather than at its call site, so it cannot reach the caller's ready
+/// **count** — a `human-only` story is ready, and assumption A1 requires
+/// every count to go on saying so. It is just nobody's next assignment.
 fn highest_priority<'a>(
     ready: Vec<&'a StorySnapshot>,
     stories: &BTreeMap<String, StorySnapshot>,
 ) -> Option<&'a StorySnapshot> {
-    let mut sorted = ready;
+    let mut sorted: Vec<&StorySnapshot> = ready
+        .into_iter()
+        .filter(|story| !crate::domain::is_human_only(story))
+        .collect();
     sorted.sort_by(|a, b| ready_order(a, b, stories));
     sorted.into_iter().next()
 }

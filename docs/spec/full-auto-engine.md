@@ -708,5 +708,41 @@ what it does.
 
 ## As built
 
-Nothing yet. Deviations from this document get recorded here rather than in a
-second file.
+Deviations from this document get recorded here rather than in a second file.
+
+### SH-453 — the reserved labels
+
+**The `ready_queue` this document names is `service::query::execution_queue`.**
+The filter is one line in that function's candidate gate, and that is the whole
+of it, because `story next` and `story claim --next` are already one
+implementation: `StoryService::claim_next` selects through
+`QueryService::next` inside its own write transaction. The spec asks for both
+doors to be filtered; no second edit was needed to get it.
+
+Three consequences of that siting, none of them a deviation but all of them
+worth having written down before somebody rediscovers one:
+
+- **`report_data`'s `next_ids` loses the story too**, since it is the same
+  function. That is the intended reading: `next_ids` is documented as the
+  order `story next` would return, so leaving a `human-only` story in it would
+  have made the dashboard disagree with the command. The card still renders
+  and is still in `ready_ids` — it just ranks last under the board's "Next"
+  sort (`nextRank`'s `Infinity`), the same place a claimed or cyclic story
+  already sits.
+- **A story `blocked-by` a `human-only` story stays unranked.** A predecessor
+  outside the candidate set is never popped, which is `execution_queue`'s
+  existing, deliberate behaviour for a claimed, epic or manually-blocked
+  blocker. It is the right answer here rather than an accident: that work
+  genuinely cannot start until a person does the human-only half.
+- **`session::highest_priority` was filtered as well**, and its ready *count*
+  was not. That function's own docstring promises it names "the story `story
+  next` would offer first", so leaving it alone would have made the promise
+  false at the one surface an agent reads before it runs any command. The
+  exclusion sits inside the function so it cannot reach the caller's count,
+  which A1 requires to keep counting the story.
+
+`no-auto` ships as `domain::LABEL_NO_AUTO` plus documentation and no
+behaviour, as the story specified. The constant exists now so `--exclude-label`
+(SH-455) and the reconciler (SH-465) cannot disagree with this wave about the
+spelling; `tests/engine_labels.rs` asserts it is still offered by `story next`,
+which is what fails if the `human-only` filter is ever widened to cover both.
