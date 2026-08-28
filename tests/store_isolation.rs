@@ -17,7 +17,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use storyhook_test_support::{scratch_dir, story_binary};
+use storyhook_test_support::{daemon_containment, scratch_dir, story_binary};
 use tempfile::TempDir;
 
 /// A private world for one test: a `HOME`, one state home shared by every
@@ -88,11 +88,14 @@ impl Probe {
             .env("HOME", self.home())
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("XDG_STATE_HOME", self.state_home())
-            // Never the production port: a suite that could bind 3456 would
-            // fight the developer's own dashboard for it.
-            .env("STORYHOOK_DAEMON_ADDR", "127.0.0.1:0")
-            // A daemon this test starts must not outlive it.
-            .env("STORYHOOK_PARENT_PID", std::process::id().to_string());
+            // `env_clear` above threw away the containment `run-tests.sh`
+            // exports for the whole run, so it has to be put back: never the
+            // production port 3456, which is where a developer's own dashboard
+            // lives, and never without a parent to die with. Asked for rather
+            // than spelled out, because a copy of the pair is what SH-136 is
+            // about — and `every_rust_harness_that_clears_the_environment_
+            // reinstates_daemon_containment` below now requires the call.
+            .envs(daemon_containment());
         cmd
     }
 
