@@ -850,6 +850,123 @@ pattern that stops matching production's actual shape would mean the
 expected refusal or reap never fires, and the test asserting it would fail
 loudly rather than the suite passing vacuously.
 
+### The second class: a daemon whose store is gone (SH-493)
+
+Everything above scopes on the binary's path — `${repo_root}/target/debug/…` —
+which is what makes a match safe to act on, and is also why for as long as this
+bracket has existed it could not see the population SH-493 counted. **672
+leaked daemons were alive on this machine across three days, spanning three
+calendar dates, and both ends of the bracket reported a clean tree the whole
+time.** That is SH-306's shape again, one layer down from where SH-412 found
+it: a gate whose silence reads as an all-clear while the exact thing it exists
+to catch accumulates into the hundreds.
+
+**The leak was one Rust test file, not the bash harness the story was filed
+against.** `tests/plugin_install.rs::Harness::run` calls `env_clear()` —
+correctly, so a provider CLI is found on the fixture's own `PATH` and nowhere
+else — and reinstates `HOME`, `PATH`, `TMPDIR`, the three `XDG_*` homes and
+`STORYHOOK_DATA_DIR`, but never the containment `scripts/run-tests.sh` exports
+for the whole run. Since SH-114 every `story` starts a daemon, so every one
+that file ran asked for port 3456 and had no parent to die with. Confirmed from
+a survivor's own environment with `ps eww`, which showed exactly that variable
+list and no `STORYHOOK_PARENT_PID`. The fix is one `.envs(daemon_containment())`
+per command; the fence is
+`tests/store_isolation.rs::every_rust_harness_that_clears_the_environment_reinstates_daemon_containment`,
+the Rust twin of SH-136's shell-only scan, which is why nothing caught this.
+
+**Why only part of the population accumulated, and why that hid it.** The file
+builds 16 harnesses from a *packaged copy* of the binary at
+`<fixture>/package/story` (`Harness::new(true)`, proving path resolution from
+an installed layout) and 4 from `target/debug/story`. One run leaks 20 daemons,
+one per harness. The bracket collected the 4 every run and could not see the 16
+— so the visible half looked like an ordinary, handled trickle while the
+invisible half grew without bound. The four survivors a real `make test`
+postlude reaped on 2026-08-26 were exactly those 4.
+
+**A looser regex is not available.** `pgrep -f` is global, this machine
+routinely runs three or four concurrent worktree suites, and every one of them
+builds fixtures under one shared root (`storyhook_test_support::scratch_root`,
+`/private/tmp/storyhook-tests`). A checkout-agnostic *pattern* would refuse
+this run over a stranger's **live** suite at the preflight and murder one at
+the postlude — the same false-red this bracket's own SH-412 fix exists to
+prevent.
+
+**So the key is what the process IS, not where its binary sits** — SH-239 one
+layer over. A daemon whose `--store-path` names a file that no longer exists is
+serving nobody, whoever started it: daemon runtime state is keyed off the
+canonical store path (SH-113), so its portfile went with the fixture directory,
+and a client resolving that path would find no database and start its own. It
+cannot be a daemon a developer is using, because theirs exists. Measured before
+the rule was written rather than argued: on this machine it separated **718
+abandoned daemons from exactly two live ones** — the developer's own dashboard,
+and a concurrent gate run's. Run for real afterwards it collected 728 and left
+the real daemon untouched.
+
+**Collected in every phase, and never refused over.** This is not the
+postlude's argument borrowed early. It is a different and simpler one that
+holds in both phases at once: a provably-abandoned daemon is making no run's
+verification a lie, and is nobody's to have started on purpose, so there is
+nothing for the preflight's "that decision belongs to whoever started it" to
+protect. Refusing would block this run over another worktree's mess — hundreds
+of them at a time — which is the SH-306 pressure exactly. It is reported every
+time it fires, to stderr and to the same durable per-day log, because a
+detector whose whole subject is a population that accumulated unnoticed does
+not get to be the next quiet thing.
+
+**The age floor is the one thing a bare existence check gets wrong.** Between
+`spawn_child` and the store being created there is a real window in which a
+perfectly healthy daemon has no store file; reaping there would make this
+script the cause of the failure it exists to report.
+`ABANDONED_STORE_MIN_AGE_SECS` is derived from `SPAWN_DEADLINE`
+(`src/daemon/lifecycle.rs`) rather than picked (SH-394) — how long a client
+waits for a daemon it just spawned to answer, so past it the only process that
+was waiting has already given up — at twice it for margin on a loaded machine,
+pinned by
+`tests/orphan_check.rs::the_abandoned_age_floor_is_derived_from_the_spawn_deadline_it_disproves`.
+`ps` has no `etimes` keyword on macOS, so the `[[dd-]hh:]mm:ss` form is parsed
+rather than read.
+
+**The tests for this class are global, and say so.** They cannot be fixtured
+under a checkout the way every case above is — being visible from outside one
+checkout is the entire property. So they assert on **the script's own report
+naming the pid**, never on the process merely being gone afterwards, which a
+concurrent sibling's own orphan check could satisfy for us and turn the case
+vacuous. The two negative cases are safe by construction rather than by luck:
+the live-store one holds a store that exists, which is the whole rule, and the
+too-young one is protected for exactly as long as it is too young, and asserts
+immediately.
+
+**Two limits, stated rather than claimed away.** A daemon leaked while its
+fixture directory still exists is outside this class until that directory goes
+— soundness was chosen over completeness, because the incomplete half is
+collected by the containment contract the fence above now enforces, while an
+unsound reap false-reds a suite that did nothing wrong. And a test that
+deliberately deleted a store and kept a daemon serving it would be
+misclassified; this project's own standing rule already forbids that shape (a
+test that asks about bytes on disk stands the daemon down first), and
+`tests/corruption_recovery.rs` — the one place that removes a store file — runs
+`story daemon stop` before it does.
+
+**A defect in the tests themselves, found by mutation rather than by review.**
+Every shim in `tests/orphan_check.rs` is a direct child of the test process, so
+a shim that is killed becomes a **zombie** until the test process waits on it —
+and `kill -0` succeeds on a zombie. An "it was killed" assertion written against
+`pid_alive` therefore passes whether or not the kill worked, which zeroing the
+age floor is what exposed. `pid_running` reads the process state instead.
+Asserting a shim is *alive* is safe either way, which is why the cases that
+predate this one never had to know.
+
+**And one fixture fragility this made load-bearing.** The SIGKILL-survivor
+supervisor spawned a worker every 0.05s that self-expired after 0.6s. Once this
+file went from 7 tests to 12 that failed about one run in three, with an empty
+stderr: under load the supervisor's spawn loop can stall longer than a worker
+lives, the population reaches zero, and the postlude's grace loop exits 0 on the
+first empty poll it sees, having proved nothing. A worker now lives one whole
+`ORPHAN_KILL_GRACE_SECS` and the cadence is 0.2s, so the population cannot gap
+and the churn drops from twenty process spawns a second to five. The
+supervisor's own deadline is derived from the script's two constants rather
+than the literal `18` that did not notice when the worst case moved.
+
 ## Out of scope, named rather than silently dropped
 
 - **Sharing `CARGO_TARGET_DIR` across worktrees.** ~185GB duplicated across
