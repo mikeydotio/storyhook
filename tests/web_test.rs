@@ -1046,6 +1046,10 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"id="delete-confirmation""#));
     assert!(body.contains(r#"id="delete-modal-submit""#));
     assert!(body.contains(r#"id="delete-modal-error""#));
+    assert!(body.contains(r#"id="close-modal""#));
+    assert!(body.contains(r#"id="close-reason""#));
+    assert!(body.contains(r#"id="close-modal-submit""#));
+    assert!(body.contains(r#"id="delete-modal-close-instead""#));
     assert!(
         !body.contains("renderDeleteConfirm"),
         "the inline confirmation footer form was replaced by the shared delete modal"
@@ -4406,6 +4410,32 @@ fn web_move_story_to_closed_state_archives() {
     let stories = data_json["stories"].as_array().unwrap();
     assert_eq!(stories.len(), 1);
     assert_eq!(stories[0]["story"]["state"], "done");
+}
+
+#[test]
+fn web_move_story_to_closed_with_comment_records_the_closing_reason() {
+    let fixture = served();
+    fixture.seed(&["new", "Deliberately abandoned"]);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    let resp = post_json(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"),
+        r#"{"state":"closed","comment":"Superseded by SH-2"}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "state"), "closed");
+    let comments = json["story"]["story"]["comments"].as_array().unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|comment| comment["text"] == "Superseded by SH-2"),
+        "the dashboard close reason must be retained as an ordinary comment: {json}"
+    );
 }
 
 #[test]
