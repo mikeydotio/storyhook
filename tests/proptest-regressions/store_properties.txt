@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc d2a9c8cd38327ee7f8803a7852bdd284026d9af0686cd71b52273fa425366623 # shrinks to ops = [(0, Create), (0, Move("done"))]
 cc aea0a740a9144f8a31095c67e9a8b49610798b92ec287f3b2ab96f96b80458b5 # shrinks to ops = [(0, Create), (0, Move("done"))]
+cc cc2357c75dc2d021b11b8d10ae5a6e5175e09b8ee2f1ccb36c52c360f51bedfd # shrinks to ops = [(0, Create), (0, Create), (0, Link(1, 2, "parent-of")), (0, Create), (0, Create), (0, Link(2, 0, "parent-of"))]

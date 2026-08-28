@@ -485,13 +485,39 @@ proptest! {
                     story, edge.relation, edge.other_no, inverse
                 );
             }
-            let parents = store
-                .read(|tx| tx.relations_from(project, *story))
-                .unwrap()
-                .into_iter()
-                .filter(|edge| edge.relation == "child-of")
-                .count();
-            prop_assert!(parents <= 1, "story {} has {} parents", story, parents);
+            // There used to be a `parents <= 1` assertion here, pinning the
+            // one-child-of-row unique index. SH-446 REMOVED that index on
+            // purpose -- migration 20's own header says "multiple parents are
+            // now intentional" -- and this assertion outlived it, unreachable
+            // until a generator change happened to produce two `parent-of`
+            // links onto one story. It was asserting a rule the product had
+            // already stopped having.
+            //
+            // What genuinely survives is the cycle guard: a story may have any
+            // number of parents, but may not be its own ancestor. That is the
+            // invariant `domain::would_create_parent_cycle` enforces on the way
+            // in, and the one worth checking against whatever sequence the
+            // generator produced.
+            let mut seen = std::collections::BTreeSet::new();
+            let mut frontier = vec![*story];
+            while let Some(current) = frontier.pop() {
+                for edge in store
+                    .read(|tx| tx.relations_from(project, current))
+                    .unwrap()
+                    .into_iter()
+                    .filter(|edge| edge.relation == "child-of")
+                {
+                    prop_assert!(
+                        edge.other_no != *story,
+                        "story {} is its own ancestor, via {}",
+                        story,
+                        current
+                    );
+                    if seen.insert(edge.other_no) {
+                        frontier.push(edge.other_no);
+                    }
+                }
+            }
         }
     }
 }
