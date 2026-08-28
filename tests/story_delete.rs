@@ -227,13 +227,17 @@ fn delete_show_json_exposes_superstate_and_deleted_fields() {
         // state, which `story list --state todo` then returned. What the story
         // was when it was deleted is recorded in its event log, which is the
         // thing that cannot lie; the read model reports where it is *now*.
-        .stdout(predicate::str::contains("\"state\": \"done\""));
+        //
+        // Where that is became `closed` rather than `done` in SH-505: a
+        // deletion is an abandonment, and `done` claimed the work had been
+        // finished.
+        .stdout(predicate::str::contains("\"state\": \"closed\""));
 
     story(dir.path())
         .args(["show", "SH-1"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("state: done (CLOSED, deleted)"))
+        .stdout(predicate::str::contains("state: closed (CLOSED, deleted)"))
         .stdout(predicate::str::contains("deleted_reason: created in error"));
 }
 
@@ -273,7 +277,7 @@ fn delete_closes_the_story_and_leaves_it_readable() {
         .args(["--json", "show", "SH-1"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("\"state\": \"done\""))
+        .stdout(predicate::str::contains("\"state\": \"closed\""))
         .stdout(predicate::str::contains("\"superstate\": \"CLOSED\""))
         .stdout(predicate::str::contains("\"deleted\": true"));
 }
