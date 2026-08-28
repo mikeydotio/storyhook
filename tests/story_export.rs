@@ -345,8 +345,7 @@ fn export_and_import_roundtrip_with_types() {
 /// The fixture carries the things a round-trip most easily drops: a custom id
 /// prefix, a custom state and type (which live in separate config files, not in
 /// the story records), a member, relations in both directions, a comment, an
-/// assignee, an archived story (which lives in SQLite rather than in a JSONL
-/// file) and a soft-deleted one.
+/// assignee and archived stories.
 ///
 /// Byte equality is asserted directly, with no redaction. That is not an
 /// accident of the fixture: every timestamp in the document comes from the
@@ -437,7 +436,7 @@ fn export_import_export_is_byte_identical() {
         .assert()
         .success();
     story(source.path())
-        .args(["delete", "API-4", "superseded by the global store"])
+        .args(["move", "API-4", "closed"])
         .assert()
         .success();
 

@@ -206,8 +206,7 @@ impl InvokeRequest {
                 | ProjectAction::Unlink(_)
                 | ProjectAction::Settings(_) => {}
             },
-            Invocation::Purge { force, .. } => *force = true,
-            Invocation::Reopen { force, .. } => *force = true,
+            Invocation::Delete { force, .. } => *force = true,
             _ => {}
         }
         self
@@ -522,42 +521,22 @@ pub fn dispatch<S: Store>(
         Invocation::BulkUpdate { updates } => StoryService::new(ctx)
             .bulk_update(&updates)
             .map(Response::Message),
-        Invocation::Delete { id, reason } => StoryService::new(ctx)
-            .delete(&id, &reason)
-            .map(Response::Message),
-        // Two-step, exactly as `project delete` is: an unforced purge answers
+        // Two-step, exactly as `project delete` is: an unforced deletion answers
         // with what it would destroy and writes nothing. The client decides
         // whether to ask, because the client is the process with a terminal.
-        Invocation::Purge { id, force } => {
+        Invocation::Delete { id, force } => {
             let service = StoryService::new(ctx);
             if force {
-                service.purge(&id).map(Response::Message)
+                service.delete(&id).map(Response::Message)
             } else {
                 Ok(Response::ConfirmationRequired(Box::new(
-                    ConfirmationPlan::Purge(service.purge_plan(&id)?),
+                    ConfirmationPlan::DeleteStory(service.delete_plan(&id)?),
                 )))
             }
         }
-        // The same two-step `Purge` above is: an unforced reopen of a
-        // soft-deleted story answers with what it would undelete and writes
-        // nothing. An ordinarily-closed story (`reopen_plan` answers `None`)
-        // needs no confirmation at all, so it goes straight through.
-        Invocation::Reopen { id, force } => {
-            let service = StoryService::new(ctx);
-            let plan = if force {
-                None
-            } else {
-                service.reopen_plan(&id)?
-            };
-            match plan {
-                Some(plan) => Ok(Response::ConfirmationRequired(Box::new(
-                    ConfirmationPlan::Undelete(plan),
-                ))),
-                None => {
-                    service.reopen(&id)?;
-                    ctx.story_view(&id)
-                }
-            }
+        Invocation::Reopen { id } => {
+            StoryService::new(ctx).reopen(&id)?;
+            ctx.story_view(&id)
         }
         Invocation::Hide { id } => {
             StoryService::new(ctx).hide(&id)?;
@@ -567,7 +546,7 @@ pub fn dispatch<S: Store>(
             StoryService::new(ctx).unhide(&id)?;
             ctx.story_view(&id)
         }
-        // The same two-step `Purge`/`Reopen` shape above: an unforced call
+        // The same two-step delete shape above: an unforced call
         // answers with what it would archive and writes nothing.
         Invocation::HideState { state, force } => {
             let service = StoryService::new(ctx);
@@ -2477,7 +2456,6 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::Unhide { .. }
         | Invocation::HideState { .. }
         | Invocation::Delete { .. }
-        | Invocation::Purge { .. }
         | Invocation::BulkUpdate { .. }
         | Invocation::Import { .. }
         | Invocation::Decompose { .. }
@@ -2680,7 +2658,6 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Unhide { .. } => "unhide",
         Invocation::HideState { .. } => "hide-state",
         Invocation::Delete { .. } => "delete",
-        Invocation::Purge { .. } => "purge",
         Invocation::BulkUpdate { .. } => "bulk-update",
         Invocation::Import { .. } => "import",
         Invocation::Decompose { .. } => "decompose",
@@ -3607,7 +3584,6 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Unhide { .. }
         | Invocation::HideState { .. }
         | Invocation::Delete { .. }
-        | Invocation::Purge { .. }
         | Invocation::BulkUpdate { .. }
         | Invocation::Import { .. }
         | Invocation::Decompose { .. }

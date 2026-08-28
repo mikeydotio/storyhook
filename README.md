@@ -341,13 +341,12 @@ story prioritize <id> <level>
 story label <id> <labels-csv>
 story unlabel <id> <labels-csv>
 story close <id> "<reason>"
-story reopen <id> [--force]
+story reopen <id>
 story archive <id>
 story unarchive <id>
 story archive-state <slug> [--force]
 story publish <id>
-story delete <id> "<reason>"
-story purge <id> [--force]
+story delete <id> [--force]
 story set <id> (--title "<title>" | --state <slug> | --priority <level> | --assignee <member> | --labels "<csv>" | --blocked "<reason>" | --unblocked | --json "<json>" | --type <slug> | --description "<text>")  # at least one; combine as many as you like
 story relate <a> <relationship-type> <b>
 story unrelate <a> <relationship-type> <b>

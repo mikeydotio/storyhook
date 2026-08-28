@@ -219,13 +219,12 @@ Usage:
   story label <id> <labels-csv>
   story unlabel <id> <labels-csv>
   story close <id> "<reason>"                       (retire a story that will not be done)
-  story reopen <id> [--force]
+  story reopen <id>
   story archive <id>                               (hide a closed story from the primary UI)
   story unarchive <id>
   story archive-state <state-slug> [--force]        (archive every story in a closed column)
   story publish <id>                               (make a draft live; one-way)
-  story delete <id> "<reason>"
-  story purge <id> [--force]                       (permanently remove a deleted story)
+  story delete <id> [--force]                      (permanently remove a story)
   story set <id> [--title "<title>"] [--state <slug>] [--priority <level>]
                   [--assignee <member>] [--labels "<csv>"] [--blocked "<reason>"]
                   [--unblocked] [--json "<json>"] [--type <slug>]
@@ -582,7 +581,6 @@ pub enum Invocation {
     },
     Reopen {
         id: String,
-        force: bool,
     },
     /// Hides a closed story from the primary UI — the "Archive" action
     /// (SH-43). Refuses an open story; reversed by [`Unhide`](Self::Unhide).
@@ -594,8 +592,7 @@ pub enum Invocation {
         id: String,
     },
     /// Archives every story in a CLOSED-superstate column — the dashboard's
-    /// bulk "Archive" button, and its CLI equivalent (SH-43). Two-step like
-    /// [`Purge`](Self::Purge)/[`Reopen`](Self::Reopen): an unforced call
+    /// bulk "Archive" button, and its CLI equivalent (SH-43). An unforced call
     /// answers with what it would hide and writes nothing.
     HideState {
         state: String,
@@ -603,16 +600,7 @@ pub enum Invocation {
     },
     Delete {
         id: String,
-        reason: String,
-    },
-    /// Remove a soft-deleted story permanently.
-    ///
-    /// The irreversible half of `delete`, and a verb of its own rather than a
-    /// flag on it: a flag that turns a reversible act irreversible sits one
-    /// keystroke away from the reversible one.
-    Purge {
-        id: String,
-        /// Whether the confirmation has already been given. An unforced purge
+        /// Whether the confirmation has already been given. An unforced delete
         /// answers with `Response::ConfirmationRequired` and writes nothing.
         force: bool,
     },
@@ -1623,8 +1611,16 @@ static VERB_FLAGS: &[VerbFlags] = &[
     VerbFlags {
         verb: "reopen",
         subcommand: None,
+        flags: &[],
+    },
+    VerbFlags {
+        verb: "delete",
+        subcommand: None,
         flags: &[bare("force")],
     },
+    // `purge` is a retired redirect rather than an unknown command. Keep its
+    // former flag declared so SH-62's pre-parser gate lets every old spelling
+    // reach the refusal that names `story delete`.
     VerbFlags {
         verb: "purge",
         subcommand: None,
@@ -4440,39 +4436,20 @@ fn parse_unlabel(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_reopen_verb(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story reopen <id> [--force]";
-    if args.len() < 2 {
-        return Err(AppError::Usage(usage.to_string()));
-    }
-    let id = args[1].clone();
-    let mut force = false;
-    for arg in &args[2..] {
-        match arg.as_str() {
-            "--force" => force = true,
-            _ => return Err(AppError::Usage(usage.to_string())),
-        }
-    }
-    Ok(Invocation::Reopen { id, force })
+    let id = args
+        .get(1)
+        .ok_or_else(|| AppError::Usage("usage: story reopen <id>".to_string()))?;
+    expect_no_more(&args[2..], "usage: story reopen <id>")?;
+    Ok(Invocation::Reopen { id: id.clone() })
 }
 
-/// `story purge <id> [--force]`.
-///
-/// Shaped like `reopen`'s parser rather than `delete`'s: the trailing words are
-/// not free text, so an unexpected one is a mistake rather than a reason.
-fn parse_purge_verb(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story purge <id> [--force]";
-    if args.len() < 2 {
-        return Err(AppError::Usage(usage.to_string()));
-    }
-    let id = args[1].clone();
-    let mut force = false;
-    for arg in &args[2..] {
-        match arg.as_str() {
-            "--force" => force = true,
-            _ => return Err(AppError::Usage(usage.to_string())),
-        }
-    }
-    Ok(Invocation::Purge { id, force })
+/// The retired `story purge` spelling. A redirect rather than an alias: the
+/// old verb is named so scripts get a repair, but no second deletion surface
+/// survives beside `story delete`.
+fn parse_purge_verb(_args: &[String]) -> Result<Invocation, AppError> {
+    Err(AppError::Usage(
+        "`story purge` is retired; use `story delete <id> [--force]`.".to_string(),
+    ))
 }
 
 /// `story archive <id>` — the "Archive" action (SH-43).
@@ -4496,8 +4473,8 @@ fn parse_unhide(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 /// `story archive-state <state> [--force]` — the CLOSED-superstate column's
-/// bulk "Archive" (SH-43). Shaped like [`parse_reopen_verb`]/
-/// [`parse_purge_verb`]: unforced answers with what it would hide and writes
+/// bulk "Archive" (SH-43). Shaped like [`parse_delete_verb`]: unforced
+/// answers with what it would hide and writes
 /// nothing.
 fn parse_hide_state(args: &[String]) -> Result<Invocation, AppError> {
     let usage = "usage: story archive-state <state> [--force]";
@@ -4516,21 +4493,19 @@ fn parse_hide_state(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_delete_verb(args: &[String]) -> Result<Invocation, AppError> {
-    if args.len() < 3 {
-        return Err(AppError::Usage(
-            "usage: story delete <id> \"<reason>\"".to_string(),
-        ));
+    let usage = "usage: story delete <id> [--force]";
+    if args.len() < 2 {
+        return Err(AppError::Usage(usage.to_string()));
     }
-    let reason = join_tokens(&args[2..]);
-    if reason.is_empty() {
-        return Err(AppError::Usage(
-            "usage: story delete <id> \"<reason>\"".to_string(),
-        ));
+    let id = args[1].clone();
+    let mut force = false;
+    for arg in &args[2..] {
+        match arg.as_str() {
+            "--force" => force = true,
+            _ => return Err(AppError::Usage(usage.to_string())),
+        }
     }
-    Ok(Invocation::Delete {
-        id: args[1].clone(),
-        reason,
-    })
+    Ok(Invocation::Delete { id, force })
 }
 
 fn parse_relate(args: &[String]) -> Result<Invocation, AppError> {
@@ -5645,7 +5620,6 @@ mod tests {
             for invocation in [
                 vec!["comment", "SH-1", "--typo"],
                 vec!["block", "SH-1", "--typo"],
-                vec!["delete", "SH-1", "--typo"],
                 vec!["label", "SH-1", "--typo"],
                 vec!["epic", "create", "--typo"],
                 vec!["search", "--typo"],

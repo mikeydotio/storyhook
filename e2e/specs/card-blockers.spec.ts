@@ -68,12 +68,8 @@ async function createStory(
  * every other spec's local `deleteStory` uses -- support.ts's own shared
  * helper. Not used for the blocker: a CLOSED story is already `archived`
  * at the store row level (`StoryClosedAndArchived` -- distinct from the
- * dashboard's own `hidden_at`/"Archive" action), so `DELETE` answers 404
- * for one until it's reopened first. `cleanUpCreatedStories`'s own
- * afterEach already does exactly that reopen-then-delete dance for any
- * stray it finds (its own doc comment names the same 404), so the blocker
- * -- left CLOSED on purpose, to prove the dwell -- is swept there rather
- * than duplicating that dance here. */
+ * dashboard's own `hidden_at`/"Archive" action). Permanent deletion accepts
+ * closed stories too, so the shared cleanup can sweep the blocker directly. */
 async function deleteStory(
   page: import("@playwright/test").Page,
   title: string,
@@ -85,7 +81,7 @@ async function deleteStory(
   await expect(page.locator("#drawer")).toHaveClass(/open/);
   await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
   await expect(page.locator("#delete-modal")).toHaveClass(/open/);
-  await page.locator("#delete-reason").fill("e2e cleanup");
+  await page.locator("#delete-confirmation").fill((await card.getAttribute("data-id"))!);
   await page.locator("#delete-modal-submit").click();
   await expect(card).not.toBeVisible();
 }

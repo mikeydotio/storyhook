@@ -660,39 +660,6 @@ pub fn archive_story(root: &Path, id: &str) -> Result<StorySnapshot, AppError> {
     Ok(snapshot)
 }
 
-pub fn delete_story(root: &Path, id: &str, reason: &str) -> Result<(), AppError> {
-    let paths = ProjectPaths::new(root);
-    if !paths.open_story_file(id).exists() {
-        return Err(AppError::NotFound(format!("story `{id}` not found")));
-    }
-
-    // Append deletion events, then archive exactly like an ordinary close —
-    // `fold_story` forces `superstate: CLOSED` whenever `StoryDeleted` is
-    // present, so `archive_story`'s normal fold-and-insert already produces
-    // a correctly CLOSED, `deleted: true` snapshot. No bespoke archival
-    // logic (or a separate `deleted_reason` SQLite column — the reason now
-    // round-trips through `snapshot_json` via `StorySnapshot::deleted_reason`
-    // instead) is needed here.
-    let ts = now();
-    write_story_events(
-        root,
-        id,
-        &[
-            StoryEvent::StoryCommentAdded {
-                at: ts.clone(),
-                text: format!("[deleted] {reason}"),
-            },
-            StoryEvent::StoryDeleted {
-                at: ts,
-                reason: reason.to_string(),
-            },
-        ],
-    )?;
-
-    archive_story(root, id)?;
-    Ok(())
-}
-
 pub fn load_all_open_snapshots(root: &Path) -> Result<Vec<StorySnapshot>, AppError> {
     ensure_project(root)?;
     let paths = ProjectPaths::new(root);
@@ -1040,8 +1007,6 @@ mod tests {
             story_type: None,
             description: None,
             closed_at: None,
-            deleted: false,
-            deleted_reason: None,
             hidden_at: None,
             draft: false,
             attachments: Vec::new(),

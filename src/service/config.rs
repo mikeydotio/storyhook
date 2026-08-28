@@ -502,10 +502,7 @@ pub fn state_usage(
         .into_iter()
         .map(|state| (state.slug, StateUsage::default()))
         .collect();
-    for story in super::query::story_map(tx, project)?
-        .into_values()
-        .filter(|story| !story.deleted)
-    {
+    for story in super::query::story_map(tx, project)?.into_values() {
         let entry = usage.entry(story.state.clone()).or_default();
         if story.superstate == SuperState::Closed {
             entry.archived += 1;
@@ -534,7 +531,7 @@ fn resolve_migration(
         .get(slug)
         .map_or(0, |usage| usage.open);
     let dormant = tx
-        .stories(project, &StoryQuery::all().state(slug).deleted(false))?
+        .stories(project, &StoryQuery::all().state(slug))?
         .into_iter()
         .filter(|row| {
             is_epic(&row.snapshot)
@@ -593,7 +590,7 @@ fn resolve_migration(
         .ok_or_else(|| AppError::NotFound(format!("state `{target}` not found")))
 }
 
-/// Moves every open, undeleted story in `from` into `to`, leaving a comment on
+/// Moves every open story in `from` into `to`, leaving a comment on
 /// each so the move is traceable to the configuration change that caused it.
 ///
 /// Runs inside the caller's transaction, alongside the configuration change
@@ -610,7 +607,7 @@ fn migrate_occupants(
     let prefix = project_prefix(&*tx, project)?;
     let states = tx.state_map(project)?;
     let occupants: Vec<_> = tx
-        .stories(project, &StoryQuery::all().state(from).deleted(false))?
+        .stories(project, &StoryQuery::all().state(from))?
         .into_iter()
         .filter(|row| !row.archived || is_epic(&row.snapshot))
         .collect();

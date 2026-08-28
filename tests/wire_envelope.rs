@@ -31,9 +31,9 @@ use storyhook::domain::{
 use storyhook::error::{AppError, IntegrityDetail, WireError};
 use storyhook::output::{
     BlockedChainView, ConfirmationPlan, DeletePlan, GraphOverview, GraphView, PhaseView,
-    ProjectSnapshotView, PurgePlan, ReferencedBy, Response, SetPrefixPlan, SettingKind,
-    SettingSource, SettingView, StaleInfo, StoryView, SummaryView, UnclaimFallback, UnclaimOutcome,
-    UndeletePlan, render_error, render_response,
+    ProjectSnapshotView, ReferencedBy, Response, SetPrefixPlan, SettingKind, SettingSource,
+    SettingView, StaleInfo, StoryDeletePlan, StoryView, SummaryView, UnclaimFallback,
+    UnclaimOutcome, render_error, render_response,
 };
 use storyhook::store::{GlobalSeq, PrLink};
 
@@ -87,8 +87,6 @@ fn snapshot(id: &str, title: &str) -> StorySnapshot {
         story_type: None,
         description: None,
         closed_at: None,
-        deleted: false,
-        deleted_reason: None,
         hidden_at: None,
         draft: false,
         attachments: Vec::new(),
@@ -150,8 +148,6 @@ fn maximal_view() -> StoryView {
             story_type: Some("spike".to_string()),
             description: Some("Multi\nline\tdescription with ünïcödé".to_string()),
             closed_at: Some("2026-07-28T12:00:00Z".to_string()),
-            deleted: true,
-            deleted_reason: Some("superseded".to_string()),
             hidden_at: Some("2026-07-28T13:00:00Z".to_string()),
             superstate: SuperState::Closed,
             state: "done".to_string(),
@@ -603,27 +599,29 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
             }))),
         ),
         (
-            "confirmation_required_purge",
-            Response::ConfirmationRequired(Box::new(ConfirmationPlan::Purge(PurgePlan {
-                id: "SH-20".to_string(),
-                title: "A story created in error".to_string(),
-                deleted_reason: Some("created in error".to_string()),
-                events: 14,
-                retracted: vec![
-                    ("SH-5".to_string(), "blocks".to_string()),
-                    ("SH-9".to_string(), "child-of".to_string()),
-                ],
-            }))),
+            "confirmation_required_story_delete",
+            Response::ConfirmationRequired(Box::new(ConfirmationPlan::DeleteStory(
+                StoryDeletePlan {
+                    id: "SH-20".to_string(),
+                    title: "A story created in error".to_string(),
+                    events: 14,
+                    retracted: vec![
+                        ("SH-5".to_string(), "blocks".to_string()),
+                        ("SH-9".to_string(), "child-of".to_string()),
+                    ],
+                },
+            ))),
         ),
         (
-            "confirmation_required_purge_unclaimed",
-            Response::ConfirmationRequired(Box::new(ConfirmationPlan::Purge(PurgePlan {
-                id: "SH-20".to_string(),
-                title: "A story created in error".to_string(),
-                deleted_reason: None,
-                events: 1,
-                retracted: Vec::new(),
-            }))),
+            "confirmation_required_story_delete_unclaimed",
+            Response::ConfirmationRequired(Box::new(ConfirmationPlan::DeleteStory(
+                StoryDeletePlan {
+                    id: "SH-20".to_string(),
+                    title: "A story created in error".to_string(),
+                    events: 1,
+                    retracted: Vec::new(),
+                },
+            ))),
         ),
         (
             "confirmation_required_set_prefix",
@@ -634,22 +632,6 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                 new_prefix: "AGE".to_string(),
                 stories: 47,
                 relationships: 12,
-            }))),
-        ),
-        (
-            "confirmation_required_undelete",
-            Response::ConfirmationRequired(Box::new(ConfirmationPlan::Undelete(UndeletePlan {
-                id: "SH-20".to_string(),
-                title: "A story created in error".to_string(),
-                deleted_reason: Some("created in error".to_string()),
-            }))),
-        ),
-        (
-            "confirmation_required_undelete_no_reason",
-            Response::ConfirmationRequired(Box::new(ConfirmationPlan::Undelete(UndeletePlan {
-                id: "SH-20".to_string(),
-                title: "A story created in error".to_string(),
-                deleted_reason: None,
             }))),
         ),
     ]
@@ -717,6 +699,26 @@ fn a_delete_confirmation_keeps_the_flat_shape_the_dashboard_reads() {
     assert_eq!(plan["stories"], 47);
     assert_eq!(plan["events"], 312);
     assert_eq!(plan["checkouts"][0], "/repo");
+}
+
+#[test]
+fn a_story_delete_confirmation_is_flat_and_requires_the_story_id() {
+    let plan = ConfirmationPlan::DeleteStory(StoryDeletePlan {
+        id: "SH-20".to_string(),
+        title: "Created in error".to_string(),
+        events: 4,
+        retracted: vec![("SH-5".to_string(), "blocks".to_string())],
+    });
+    assert!(plan.requires_typed_confirmation());
+    assert_eq!(plan.token(), "SH-20");
+
+    let rendered = render_response(&Response::ConfirmationRequired(Box::new(plan)), true, false);
+    let document: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+    let plan = &document["plan"];
+    assert_eq!(plan["confirm"], "delete-story");
+    assert_eq!(plan["id"], "SH-20");
+    assert_eq!(plan["events"], 4);
+    assert_eq!(plan["retracted"][0][0], "SH-5");
 }
 
 /// Every `Response` variant has a corpus row.
@@ -1225,7 +1227,6 @@ fn invocation_corpus() -> Vec<Invocation> {
         },
         Invocation::Reopen {
             id: "SH-1".to_string(),
-            force: true,
         },
         Invocation::Hide {
             id: "SH-1".to_string(),
@@ -1241,10 +1242,6 @@ fn invocation_corpus() -> Vec<Invocation> {
             force: true,
         },
         Invocation::Delete {
-            id: "SH-1".to_string(),
-            reason: "superseded".to_string(),
-        },
-        Invocation::Purge {
             id: "SH-1".to_string(),
             force: true,
         },
@@ -1661,7 +1658,6 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Publish { .. } => "Publish",
         Invocation::HideState { .. } => "HideState",
         Invocation::Delete { .. } => "Delete",
-        Invocation::Purge { .. } => "Purge",
         Invocation::BulkUpdate { .. } => "BulkUpdate",
         Invocation::Import { .. } => "Import",
         Invocation::Decompose { .. } => "Decompose",

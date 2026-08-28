@@ -723,7 +723,7 @@ fn stale_never_reports_a_closed_story_however_long_ago_it_closed() {
 // --- what the surfaces include ---------------------------------------------
 
 #[test]
-fn show_finds_archived_and_deleted_stories_as_well_as_open_ones() {
+fn show_finds_archived_stories_but_not_deleted_stories() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let open = new_story(&ctx, "open");
@@ -732,14 +732,20 @@ fn show_finds_archived_and_deleted_stories_as_well_as_open_ones() {
     StoryService::new(&ctx)
         .set_state(&closed, "done", None, None, None)
         .expect("closing");
-    StoryService::new(&ctx)
-        .delete(&deleted, "obsolete")
-        .expect("deleting");
+    StoryService::new(&ctx).delete(&deleted).expect("deleting");
 
-    for id in [&open, &closed, &deleted] {
+    for id in [&open, &closed] {
         let view = query(&fixture, |service| service.show(id));
         assert_eq!(&view.story.id, id);
     }
+    let error = query_at(&fixture, FIXTURE_NOW, |service| {
+        Ok(service.show(&deleted).unwrap_err())
+    });
+    assert!(
+        error
+            .to_string()
+            .contains(&format!("story `{deleted}` not found"))
+    );
     let error = query_at(&fixture, FIXTURE_NOW, |service| {
         Ok(service.show("SH-99").unwrap_err())
     });

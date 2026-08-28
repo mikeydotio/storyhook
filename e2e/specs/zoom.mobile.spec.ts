@@ -284,7 +284,7 @@ test("the story drawer's controls are at least 16px", async ({ page }) => {
   await deleteStory(page, title);
 });
 
-test("the delete-confirmation modal's reason field is at least 16px", async ({
+test("the delete-confirmation modal's id field is at least 16px", async ({
   page,
 }) => {
   const title = "SH-256 zoom sweep — delete modal";

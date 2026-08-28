@@ -43,6 +43,7 @@ test("Delete from the menu opens the shared modal with no drawer open, and compl
 }) => {
   const title = "SH-197 context menu — delete";
   const card = await createStory(page, title);
+  const id = (await card.getAttribute("data-id"))!;
 
   await card.click({ button: "right" });
   const menu = page.locator(".ctxmenu");
@@ -59,7 +60,7 @@ test("Delete from the menu opens the shared modal with no drawer open, and compl
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
   await expect(page.locator("#delete-modal-summary")).toContainText(title);
 
-  await page.locator("#delete-reason").fill("e2e: context menu delete");
+  await page.locator("#delete-confirmation").fill(id);
   await page.locator("#delete-modal-submit").click();
 
   await expect(page.locator("#toast-stack .toast.success")).toContainText(

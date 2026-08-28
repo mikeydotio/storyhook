@@ -761,8 +761,8 @@ fn only_comment_and_commit_link_append_to_a_closed_story() {
             if code.contains("Intent::Append") {
                 appenders.push(site.clone());
             }
-            // Reaching the resolver directly would route around the intent
-            // entirely, which is the same widening by a quieter road.
+            // The old deleted-story-specific resolver must not survive after
+            // hard deletion removes the state it guarded.
             if code.contains("resolve_appendable_story") {
                 resolvers.push(site);
             }
@@ -794,8 +794,7 @@ fn only_comment_and_commit_link_append_to_a_closed_story() {
     );
     assert!(
         resolvers.is_empty(),
-        "`resolve_appendable_story` is reached through `Intent::Append`, never directly, so the \
-         guard cannot be picked up without the intent that names it:\n  {}",
+        "the retired deleted-story append resolver must have no call sites:\n  {}",
         resolvers.join("\n  ")
     );
 
@@ -804,17 +803,10 @@ fn only_comment_and_commit_link_append_to_a_closed_story() {
     let definition =
         std::fs::read_to_string(root.join("service/mod.rs")).expect("reading src/service/mod.rs");
     assert!(
-        definition.contains("fn resolve_appendable_story("),
-        "`resolve_appendable_story` holds the closed-story relaxation; if it moved, move this \
-         assertion with it"
+        definition.contains("Self::Append => resolve_story(tx, project, prefix, id)"),
+        "`Intent::Append` must continue to encode the closed-story relaxation"
     );
-    assert_eq!(
-        definition
-            .matches("resolve_appendable_story(tx, project, prefix, id)")
-            .count(),
-        1,
-        "`Intent::resolve` holds the single call to it"
-    );
+    assert!(!definition.contains("fn resolve_appendable_story("));
 }
 
 /// `.storyhook` is a path literal, and after the flip a production module that

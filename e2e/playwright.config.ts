@@ -63,8 +63,6 @@ export default defineConfig({
   // to the range the reported failures were seen in:
   //
   //   load avg      suite    slowest test on this budget
-  //   idle (~3)     2.9m     7.7s   reopen-soft-deleted-confirm.spec.ts:210
-  //   ~44           4.4m     8.6s   reopen-soft-deleted-confirm.spec.ts:167
   //   ~100          6.4m    10.0s   board-sort.spec.ts:54
   //
   // 111/111 green in all three, so the worst case observed leaves a third of

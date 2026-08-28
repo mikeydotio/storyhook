@@ -522,14 +522,14 @@ fn repos_json<S: Store>(store: &S, env: &Environment) -> Result<String, AppError
     to_json(&repos)
 }
 
-/// The dashboard's one definition of a visible draft: unpublished and not
-/// soft-deleted. Both the global catalog and a project's board data call this
+/// The dashboard's one definition of a visible draft: unpublished. Both the
+/// global catalog and a project's board data call this
 /// helper, so a draft cannot appear in one Drafts surface but disappear from
 /// the other because two filters drifted apart (SH-442).
 fn dashboard_drafts_json(data: &ReportData) -> Vec<serde_json::Value> {
     data.stories
         .iter()
-        .filter(|view| !view.story.deleted && view.story.draft)
+        .filter(|view| view.story.draft)
         .map(|view| serde_json::to_value(view).unwrap_or(serde_json::Value::Null))
         .collect()
 }
@@ -692,25 +692,18 @@ fn project_data_json<S: Store>(ctx: &Ctx<'_, S>) -> Result<String, AppError> {
             let query = QueryService::new(tx, project, &now);
             let data = query.report_data()?;
 
-            // Soft-deleted stories are excluded here rather than in `report_data` —
-            // `story report` intentionally still surfaces them (marked deleted), and
-            // even `story list` (SH-409) reaches them under a different door
-            // (`story search`) — but the dashboard has no such treatment and would
-            // otherwise show them as live cards in whichever column matches their
-            // last state.
-            //
-            // Drafts (SH-175) are excluded from `stories` the same way, and for a
-            // parallel reason: the board is a curated "what's actionable" view,
+            // Drafts (SH-175) are excluded from `stories`: the board is a curated
+            // "what's actionable" view,
             // deliberately its own filter chain rather than `story list`'s — SH-175's
             // council verdict kept the two separate before `list` had a default
             // exclusion of its own to converge with, and SH-409 didn't revisit that.
-            // They are not dropped, only routed — every non-deleted draft lands in
+            // They are not dropped, only routed — every draft lands in
             // `drafts_json` below instead, which is what powers the Drafts popover and
             // its count badge.
             let stories_json: Vec<serde_json::Value> = data
                 .stories
                 .iter()
-                .filter(|view| !view.story.deleted && !view.story.draft)
+                .filter(|view| !view.story.draft)
                 .map(|view| {
                     let mut val = serde_json::to_value(view).unwrap_or(serde_json::Value::Null);
                     if let serde_json::Value::Object(ref mut map) = val {
@@ -794,12 +787,11 @@ fn meta_json<R: ReadOps>(
 
     let priorities: Vec<&str> = PRIORITIES.iter().map(Priority::as_str).collect();
     // Derived from the stories already read rather than from a second query:
-    // the legacy `storage::distinct_labels` folded every non-deleted snapshot's
+    // the legacy `storage::distinct_labels` folded every surviving snapshot's
     // labels into a sorted set, and this is that set, over the same stories.
     let labels: std::collections::BTreeSet<&str> = data
         .stories
         .iter()
-        .filter(|view| !view.story.deleted)
         .flat_map(|view| view.story.labels.iter().map(String::as_str))
         .collect();
 
@@ -1068,24 +1060,21 @@ fn route_unblock_story<S: Store>(ctx: &Ctx<'_, S>, id: &str) -> Reply {
     )
 }
 
-/// `POST /api/repos/{id}/story/{story}/reopen` — reopens a closed story. An
-/// optional `"force": true` in the JSON body undeletes a soft-deleted story,
-/// mirroring the CLI's `story reopen <id> --force`; absent or `false` performs
-/// the guarded (non-force) reopen. An empty body is treated as `{}`.
-///
-/// Unforced, on a soft-deleted story, this answers `409` carrying the same
-/// [`UndeletePlan`](crate::output::UndeletePlan) the terminal prompt is drawn
-/// from — [`route_delete_repo`]'s pattern, not [`reply_with`]'s, because
-/// `reply_with` always answers with the status its caller hands it and this
-/// route cannot know in advance whether the story it is about to reopen was
-/// deleted (SH-154).
-fn route_reopen_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply {
+/// `POST /api/repos/{id}/story/{story}/reopen` — reopens a closed story.
+fn route_reopen_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, _body: &str) -> Reply {
+    reply_with(ctx, 200, Invocation::Reopen { id: id.to_string() })
+}
+
+/// `DELETE /api/repos/{id}/story/{story}` — permanently deletes one story.
+/// Without `{"force":true}` this answers 409 with the server-authored plan
+/// and writes nothing; the browser renders that plan before retrying forced.
+fn route_delete_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply {
     (|| -> Result<Reply, AppError> {
         let obj = parse_json_object(body)?;
         let force = get_bool(&obj, "force");
         let response = dispatch(
             ctx,
-            Invocation::Reopen {
+            Invocation::Delete {
                 id: id.to_string(),
                 force,
             },
@@ -1095,24 +1084,6 @@ fn route_reopen_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply
             _ => 200,
         };
         Ok(json_reply(status, render_response(&response, true, false)))
-    })()
-    .unwrap_or_else(|e| error_reply(&e))
-}
-
-/// `DELETE /api/repos/{id}/story/{story}` — a required, non-empty `reason` is
-/// enforced the same way the CLI's `story delete` requires one.
-fn route_delete_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply {
-    (|| -> Result<Reply, AppError> {
-        let obj = parse_json_object(body)?;
-        let reason = require_str(&obj, "reason")?.to_string();
-        Ok(reply_with(
-            ctx,
-            200,
-            Invocation::Delete {
-                id: id.to_string(),
-                reason,
-            },
-        ))
     })()
     .unwrap_or_else(|e| error_reply(&e))
 }

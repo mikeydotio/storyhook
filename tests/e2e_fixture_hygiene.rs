@@ -48,7 +48,7 @@ fn all_specs(root: &Path) -> Vec<(String, String)> {
 
 /// Whether a spec creates stories: every creation path in the suite goes
 /// through the New Story modal's submit button, and the one spec that also
-/// wants the create response's own body (`reopen-soft-deleted-confirm`)
+/// wants the create response's own body
 /// still clicks it. A future spec that POSTs the story collection directly
 /// is caught by the second arm rather than slipping past.
 fn creates_stories(text: &str) -> bool {

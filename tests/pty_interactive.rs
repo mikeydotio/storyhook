@@ -254,11 +254,10 @@ fn a_wrong_token_cancels_and_destroys_nothing() {
 }
 
 // ---------------------------------------------------------------------------
-// the undelete confirmation (SH-154)
+// the permanent story-delete confirmation (SH-498)
 // ---------------------------------------------------------------------------
 
-/// Deletes `SH-1` in a fresh project at `dir` and returns the project's env.
-fn project_with_a_deleted_story(env: &TestEnv, dir: &Path) {
+fn project_with_a_story(env: &TestEnv, dir: &Path) {
     env.story(dir)
         .args(["project", "new", "--prefix", "SH", "--no-agents-md"])
         .assert()
@@ -267,62 +266,38 @@ fn project_with_a_deleted_story(env: &TestEnv, dir: &Path) {
         .args(["new", "Deleted by mistake"])
         .assert()
         .success();
-    env.story(dir)
-        .args(["delete", "SH-1", "created in error"])
-        .assert()
-        .success();
 }
 
-/// `--json show SH-1`'s stdout, without a terminal.
-fn show(env: &TestEnv, dir: &Path) -> String {
-    let out = env
-        .story(dir)
-        .args(["--json", "show", "SH-1"])
-        .output()
-        .expect("running `story show`");
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-
-/// **The gap `confirm_undelete` left unreachable.** It prompted from inside
-/// the service layer, which runs in the daemon and never has a terminal — so
-/// `story reopen <deleted-id>` hard-refused unconditionally, even run
-/// interactively at a real pty. No test could ever answer "yes" to it,
-/// because the question never actually reached one. This is the first.
 #[test]
-fn the_undelete_confirmation_restores_the_story_on_yes() {
+fn the_story_delete_confirmation_destroys_on_the_correct_token() {
     let _watchdog = armed();
     let env = TestEnv::isolated();
-    let dir = bare_dir(&env, "undelete-yes");
-    project_with_a_deleted_story(&env, &dir);
+    let dir = bare_dir(&env, "story-delete-yes");
+    project_with_a_story(&env, &dir);
 
-    let mut pty = pty("undelete-yes", &env, &dir, &["reopen", "SH-1"]);
+    let mut pty = pty("story-delete-yes", &env, &dir, &["delete", "SH-1"]);
     pty.expect("SH-1 — Deleted by mistake");
-    pty.expect("deleted: created in error");
-    pty.expect("Reopen (undelete) this deleted story?");
-    pty.send_line("y");
+    pty.expect("This cannot be undone");
+    pty.expect("Type `SH-1` to confirm");
+    pty.send_line("SH-1");
     assert!(pty.wait().success(), "{}", pty.transcript());
 
-    let after = show(&env, &dir);
-    assert!(after.contains("\"superstate\": \"OPEN\""), "{after}");
-    assert!(!after.contains("\"deleted\": true"), "{after}");
+    env.story(&dir).args(["show", "SH-1"]).assert().failure();
 }
 
-/// The other half: declining leaves the story exactly as deleted as it was.
 #[test]
-fn declining_the_undelete_confirmation_leaves_the_story_deleted() {
+fn a_wrong_story_delete_token_leaves_the_story_intact() {
     let _watchdog = armed();
     let env = TestEnv::isolated();
-    let dir = bare_dir(&env, "undelete-no");
-    project_with_a_deleted_story(&env, &dir);
+    let dir = bare_dir(&env, "story-delete-no");
+    project_with_a_story(&env, &dir);
 
-    let mut pty = pty("undelete-no", &env, &dir, &["reopen", "SH-1"]);
-    pty.expect("Reopen (undelete) this deleted story?");
-    pty.send_line("n");
+    let mut pty = pty("story-delete-no", &env, &dir, &["delete", "SH-1"]);
+    pty.expect("Type `SH-1` to confirm");
+    pty.send_line("not-SH-1");
     pty.expect("cancelled");
     let status = pty.wait();
 
     assert_eq!(status.code(), Some(0), "{}", pty.transcript());
-    let after = show(&env, &dir);
-    assert!(after.contains("\"deleted\": true"), "{after}");
-    assert!(after.contains("\"superstate\": \"CLOSED\""), "{after}");
+    env.story(&dir).args(["show", "SH-1"]).assert().success();
 }

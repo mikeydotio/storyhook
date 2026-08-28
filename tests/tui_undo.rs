@@ -248,46 +248,6 @@ fn redo_after_undo() {
     assert_eq!(store.find_story("RD-1").unwrap().state, "in-progress");
 }
 
-// ─── Test 3: Undo create story deletes it ───────────────────────────
-//
-// The name was always right; since the flip it is right about the mechanism
-// too. See `service::history` for why undo is a compensating write.
-
-#[test]
-fn undo_create_story_deletes_it() {
-    let (fixture, _root) = init_project("UC");
-
-    let id = create_story(&fixture, "Temporary story");
-    assert_eq!(id, "UC-1");
-
-    // Verify story exists
-    let store = load(&fixture);
-    assert_eq!(store.story_count(), 1);
-
-    // Undo creation: events_before is empty (story didn't exist)
-    let entry = UndoEntry {
-        description: "Created story: Temporary story".to_string(),
-        story_id: id.clone(),
-        events_before: Vec::new(),
-    };
-    perform_undo(&fixture, &entry);
-
-    // The story is gone from the board, which is what the user asked for. What
-    // changed with the storage model is *how*: undoing a creation deletes the
-    // story rather than erasing it. The id stays spent and the history records
-    // both the creation and its undoing, because a tracker whose ids can vanish
-    // is a tracker whose ids cannot be quoted anywhere.
-    let history = load_events(&fixture, &id);
-    assert!(
-        matches!(history.last(), Some(StoryEvent::StoryDeleted { .. })),
-        "undoing a creation must delete the story, not erase its history: {history:?}"
-    );
-
-    // Verify DataStore no longer has the story
-    let store = load(&fixture);
-    assert_eq!(store.story_count(), 0);
-}
-
 // ─── Test 4: New action clears redo ─────────────────────────────────
 
 #[test]

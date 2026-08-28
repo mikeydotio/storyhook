@@ -270,6 +270,14 @@ pub const MIGRATIONS: &[Migration] = &[
         // No table is rebuilt and historical events remain append-only.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 23,
+        name: "hard_delete",
+        sql: include_str!("schema/0023_hard_delete.sql"),
+        // Removes one unreferenced column in place and patches snapshot JSON.
+        // No table is rebuilt and no event is appended.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

@@ -1852,10 +1852,10 @@ macro_rules! store_conformance_suite {
                 )
                 .unwrap();
                 assert_eq!(snapshot(f.store(), project, one).state, "done");
-                assert_eq!(
-                    snapshot(f.store(), project, two).deleted_reason.as_deref(),
-                    Some("duplicate")
-                );
+                let abandoned = snapshot(f.store(), project, two);
+                assert_eq!(abandoned.state, "closed");
+                assert_eq!(abandoned.superstate, SuperState::Closed);
+                assert!(abandoned.hidden_at.is_some());
             }
 
             // ===============================================================
@@ -2446,7 +2446,7 @@ macro_rules! store_conformance_suite {
             }
 
             #[test]
-            fn a_deleted_story_is_marked_deleted_and_archived() {
+            fn a_legacy_deleted_story_is_archived() {
                 let f = <$fixture>::create();
                 let project = seed(f.store(), "alpha", "SH");
                 let story = new_story(f.store(), project, "First");
@@ -2466,7 +2466,6 @@ macro_rules! store_conformance_suite {
                     .read(|tx| tx.story(project, story))
                     .unwrap()
                     .unwrap();
-                assert_eq!(row.deleted, true);
                 assert_eq!(row.archived, true);
                 assert_eq!(row.superstate, SuperState::Closed);
             }
@@ -2820,31 +2819,6 @@ macro_rules! store_conformance_suite {
                 assert_eq!(
                     story_numbers(f.store(), project, &StoryQuery::all().hidden(false)),
                     [1, 2, 3, 4, 6]
-                );
-            }
-
-            #[test]
-            fn stories_can_be_filtered_by_deleted() {
-                let f = <$fixture>::create();
-                let project = query_fixture(f.store());
-                apply(
-                    f.store(),
-                    project,
-                    StoryNo::new(3),
-                    ExpectedSeq::Any,
-                    &[StoryEvent::StoryDeleted {
-                        at: "2026-01-01T01:00:00Z".into(),
-                        reason: "gone".into(),
-                    }],
-                )
-                .unwrap();
-                assert_eq!(
-                    story_numbers(f.store(), project, &StoryQuery::all().deleted(true)),
-                    [3]
-                );
-                assert_eq!(
-                    story_numbers(f.store(), project, &StoryQuery::all().deleted(false)),
-                    [1, 2, 4, 5, 6]
                 );
             }
 

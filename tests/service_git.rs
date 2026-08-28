@@ -526,7 +526,6 @@ fn a_commit_link_on_a_closed_story_moves_only_updated_at_and_the_commit_list() {
     assert_eq!(after.superstate, before.superstate);
     assert_eq!(after.closed_at, before.closed_at);
     assert_eq!(after.hidden_at, before.hidden_at);
-    assert_eq!(after.deleted, before.deleted);
     assert_eq!(after.draft, before.draft);
     assert_eq!(after.labels, before.labels);
     assert_eq!(after.assignee, before.assignee);
@@ -619,7 +618,7 @@ fn a_commit_naming_a_deleted_story_is_declined_and_named() {
     git_init(&fixture);
     let id = create(&fixture, "will be deleted");
     StoryService::new(&fixture.ctx())
-        .delete(&id, "duplicate")
+        .delete(&id)
         .expect("deleting it");
     commit(&fixture, &format!("chore: mentions {id}"));
 
@@ -629,14 +628,8 @@ fn a_commit_naming_a_deleted_story_is_declined_and_named() {
         "{message}"
     );
     assert!(
-        message.contains(&format!(
-            "named but not linked: {id} (deleted; restore first with `story reopen <id> --force`)"
-        )),
+        message.contains(&format!("named but not linked: {id} (no such story)")),
         "{message}"
-    );
-    assert!(
-        referenced_by_commits_of(&fixture, StoryNo::new(1)).is_empty(),
-        "a deleted story must not receive a link"
     );
 }
 
@@ -645,21 +638,21 @@ fn a_commit_naming_a_deleted_story_is_declined_and_named() {
 /// hint stays a placeholder rather than naming one of the two ids as if it
 /// were the only one.
 #[test]
-fn two_deleted_stories_share_one_report_line() {
+fn two_deleted_stories_share_one_missing_report_line() {
     let fixture = ServiceFixture::new();
     git_init(&fixture);
     let ctx = fixture.ctx();
     let service = StoryService::new(&ctx);
     let first = create(&fixture, "first to go");
     let second = create(&fixture, "second to go");
-    service.delete(&first, "duplicate").expect("deleting");
-    service.delete(&second, "duplicate").expect("deleting");
+    service.delete(&first).expect("deleting");
+    service.delete(&second).expect("deleting");
     commit(&fixture, &format!("chore: mentions {first} and {second}"));
 
     let message = sync(&fixture).expect("syncing");
     assert!(
         message.contains(&format!(
-            "named but not linked: {first}, {second} (deleted; restore first with `story reopen <id> --force`)"
+            "named but not linked: {first}, {second} (no such story)"
         )),
         "{message}"
     );

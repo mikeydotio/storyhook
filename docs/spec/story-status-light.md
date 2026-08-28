@@ -51,7 +51,7 @@ resolved before implementation:
 ```
 storyLight(id)   -> a coloured .dot resolving id against the loaded project's
                      stories (findStory), coloured via stateColor(); an
-                     unresolvable id (another project, soft-deleted, a draft)
+                     unresolvable id (another project, permanently deleted, a draft)
                      gets a hollow ".unknown" ring rather than being dropped
 storyRef(id)     -> storyLight(id) + a clickable .rel-id button (opens id's
                      drawer), wrapped in .story-ref
@@ -65,11 +65,11 @@ linkifyStoryIds(text, selfId)
                      plain text.
 ```
 
-No server change was needed. `GET .../data` already ships every non-deleted,
+No server change was needed. `GET .../data` already ships every persisted,
 non-draft story in the project with its `state`/`superstate`/`relationships`, and
 relations are always intra-project (`RelationService::relate` writes both ends in one
 transaction) — so any `other_id` resolves client-side through `findStory()` with zero
-extra requests. The gaps that follow from that (a draft, a soft-deleted story, or a
+extra requests. The gaps that follow from that (a draft, a permanently deleted story, or a
 different project's id all resolve to nothing) are exactly what `storyLight()`'s
 "unknown" ring exists for.
 
@@ -166,14 +166,12 @@ a latent inconsistency this generalization incidentally closes.
 ### A CLOSED story is already `archived` at the store row level
 
 Found writing `card-blockers.spec.ts`'s cleanup step, not by reasoning about the
-server: deleting the spec's blocker story directly while it sat in `done` 404'd
-("story `AA-3` not found"). `StoryService::delete` refuses only when `row.archived` is
-true — and closing a story sets that flag (`StoryClosedAndArchived`), independent of
-the dashboard's own `hidden_at`/"Archive" UI action, which is a further, separate flag
-on top. `e2e/specs/support.ts`'s `cleanUpCreatedStories` already documents and handles
-this (reopen a CLOSED stray, then delete); the spec now leaves its blocker CLOSED on
-purpose — that's the thing being tested — and lets that shared sweep clean it up
-rather than duplicating the reopen dance.
+server: under the former soft-delete contract, deleting the spec's blocker while it
+sat in `done` 404'd because closing set the store row's `archived` flag. SH-498 later
+replaced that contract: permanent deletion accepts OPEN and CLOSED stories alike and
+retracts their edges. `e2e/specs/support.ts`'s shared cleanup now force-deletes either
+shape directly, so the spec can still leave its blocker CLOSED on purpose and let the
+sweep remove it without a reopen dance.
 
 ### The blocked badge had to test every cause `is_ready` tests, not just `awaiting` (SH-309)
 
@@ -189,9 +187,9 @@ comma-joined cause list (open `blocked-by` refs, then `obviated-by` refs — del
 unfiltered by resolvability, see the council decision above — then a quoted `awaiting`
 reason), falling back to the doctor's own "(no reason)" only when the list is empty and
 `state === "blocked"`, and to a bare "blocked" with an explanatory title when even that
-doesn't apply (a `blocked-by` edge onto an open draft or soft-deleted story — both block
-server-side and are invisible to this client, `src/api/rest.rs` routing drafts to a
-separate array and excluding deleted stories from `stories` entirely).
+doesn't apply (a `blocked-by` edge onto an open draft blocks server-side but is invisible
+to this client because `src/api/rest.rs` routes drafts to a separate array). Permanent
+deletion retracts the relationship, so it cannot leave this gap.
 
 The live half of `.card-blockers` moved into the badge to stop the double-print; the
 row is now the cleared-blocker dwell's home alone (see above). `.card-flags` gained

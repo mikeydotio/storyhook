@@ -225,9 +225,14 @@ pub fn custom_config_tree() -> (TempDir, PathBuf) {
     seed(
         &root,
         "ADA-4",
-        &[created("2026-01-06T00:00:00Z", "Mistake", "todo")],
+        &[
+            created("2026-01-06T00:00:00Z", "Mistake", "todo"),
+            StoryEvent::StoryDeleted {
+                at: "2026-01-06T00:01:00Z".to_string(),
+                reason: "filed twice".to_string(),
+            },
+        ],
     );
-    storage::delete_story(&root, "ADA-4", "filed twice").expect("delete ADA-4");
 
     std::fs::write(root.join(".storyhook/next-id"), "5\n").expect("next-id");
     (dir, root)
