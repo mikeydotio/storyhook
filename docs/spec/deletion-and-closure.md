@@ -160,7 +160,7 @@ whole migration back.
    migrated project and a `doctor --fix`ed project cannot disagree.
 2. Repoint every soft-deleted story: `state`, `hidden_at`, and the `snapshot` blob.
 
-Migration 22 follows only once SH-498 removes the behavior represented by the flag: it
+Migration 23 follows only once SH-498 removes the behavior represented by the flag: it
 strips `$.deleted` and `$.deleted_reason` from every snapshot, then runs `ALTER TABLE
 stories DROP COLUMN deleted`. Keeping this as a separate migration made SH-505's
 additive state/fold wave independently bisectable while the old delete, purge and
@@ -184,7 +184,7 @@ story was closed before being deleted — a case
 `fold_story_deleted_while_closed_keeps_original_closed_at` already pins.
 
 **In migration 21's snapshot patch, `$.state` and `$.hidden_at` are correctness;
-stripping `$.deleted`/`$.deleted_reason` in migration 22 is hygiene.** `diff_rebuilt` compares the *deserialized*
+stripping `$.deleted`/`$.deleted_reason` in migration 23 is hygiene.** `diff_rebuilt` compares the *deserialized*
 struct and `StorySnapshot` has no `deny_unknown_fields`, so leftover keys are invisible
 to the oracle and key order is irrelevant. They are stripped anyway, per migration 4's
 rule that a repair leaving the document behind fixes the query surface and leaves the
@@ -290,7 +290,7 @@ survives to carry one.
 
 `story purge` is a retired spelling that points at `story delete`; `story reopen` is an
 ordinary reopen with no force/undelete branch. Current snapshot, row and query models no
-longer expose `deleted` or `deleted_reason`, and migration 22 removes the persisted
+longer expose `deleted` or `deleted_reason`, and migration 23 removes the persisted
 column and JSON keys. A private fold-time latch remains solely to interpret historical
 `StoryDeleted` event streams deterministically; it is neither serialized nor queryable.
 
