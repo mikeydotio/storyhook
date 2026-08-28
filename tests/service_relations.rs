@@ -1074,7 +1074,7 @@ fn closing_one_of_several_blockers_retracts_only_that_dependency() {
 }
 
 #[test]
-fn soft_deleting_a_blocker_retracts_the_dependency() {
+fn hard_deleting_a_blocker_retracts_the_dependency() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let blocker = new_story(&ctx, "blocker");
@@ -1084,10 +1084,17 @@ fn soft_deleting_a_blocker_retracts_the_dependency() {
         .expect("recording dependency");
 
     StoryService::new(&ctx)
-        .delete(&blocker, "no longer needed")
+        .delete(&blocker)
         .expect("deleting blocker");
 
-    assert_eq!(relations(&fixture, &blocker), []);
+    let blocker_no = StoryNo::parse_id("SH", &blocker).expect("a well-formed id");
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.story(fixture.project(), blocker_no))
+            .expect("reading the deleted blocker")
+            .is_none()
+    );
     assert_eq!(relations(&fixture, &dependent), []);
     assert_eq!(stored_edges(&fixture, &blocker), []);
     assert_eq!(stored_edges(&fixture, &dependent), []);
