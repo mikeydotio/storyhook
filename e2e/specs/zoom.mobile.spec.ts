@@ -319,6 +319,25 @@ test("the delete-confirmation modal's id field is at least 16px", async ({
   await deleteStory(page, title);
 });
 
+test("the close modal's reason field is at least 16px", async ({ page }) => {
+  const title = "SH-507 zoom sweep — close modal";
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await createStory(page, title);
+
+  await page
+    .locator('.column[data-state="todo"] .card', { hasText: title })
+    .click();
+  await page.locator("#drawer-footer").getByRole("button", { name: "Close", exact: true }).click();
+  await expect(page.locator("#close-modal")).toHaveClass(/open/);
+
+  await expectNoZoomingControls(page.locator("#close-modal"), "the close modal", 1);
+
+  await page.locator("#close-modal-cancel").click();
+  await page.locator("#drawer-close").click();
+  await deleteStory(page, title);
+});
+
 test("the settings project form's controls are at least 16px", async ({
   page,
 }) => {
