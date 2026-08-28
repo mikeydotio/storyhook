@@ -2931,3 +2931,263 @@ fn migration_twenty_clears_existing_epic_state_and_drops_the_single_parent_index
         .unwrap();
     assert_eq!(index_count, 0);
 }
+
+// ---------------------------------------------------------------------------
+// Migration 21: the `closed` state, and soft deletes coming to rest in it
+// (SH-505)
+// ---------------------------------------------------------------------------
+
+/// Seeds one v20 project holding a soft-deleted story, straight to the tables.
+///
+/// Straight to the tables for the reason every seeder in this file is: the
+/// fixture must stay buildable on the schema that precedes the migration under
+/// test. A soft-deleted story on v20 is already `done`/CLOSED/archived —
+/// migration 4 made `superstate` a pure function of the slug and the composite
+/// foreign key enforces it — so this seeds the shape a real store actually
+/// holds, not the pre-migration-4 one.
+///
+/// The story is CLOSED BEFORE it is deleted, deliberately: that is the one
+/// shape where `closed_at` and the `StoryDeleted` event's own `at` differ, and
+/// it is the case `fold_story_deleted_while_closed_keeps_original_closed_at`
+/// already pins on the fold side. A fixture whose two timestamps coincided
+/// would pass against a migration that read `hidden_at` off the wrong one.
+///
+/// `extra_events` is appended after the `StoryDeleted`, which is how the
+/// hidden/unhidden cases are built.
+///
+/// The event kinds are the production spellings (`domain::event_kind`'s
+/// PascalCase), never a fixture dialect: a seeder and a migration that agree on
+/// a spelling nothing else emits pass together and match zero rows in every
+/// real store (SH-364).
+fn seed_a_v20_soft_deleted_story(path: &Path, extra_events: &str) {
+    let conn = Connection::open(path).unwrap();
+    conn.execute_batch(&format!(
+        "INSERT INTO projects (id, uuid, slug, name, prefix, created_at, next_story_no, next_global_seq)
+             VALUES (1, 'u-1', 'proj', 'Proj', 'SH', '2026-01-01T00:00:00Z', 2, 4);
+         INSERT INTO project_states (project_id, position, slug, superstate)
+             VALUES (1, 0, 'todo', 'OPEN'), (1, 1, 'done', 'CLOSED');
+         INSERT INTO events (project_id, story_no, seq, global_seq, kind, at, payload)
+             VALUES (1, 1, 1, 1, 'StoryCreated', '2026-01-01T00:00:00Z',
+                     json_object('kind', 'StoryCreated', 'at', '2026-01-01T00:00:00Z',
+                                 'title', 'Filed by mistake', 'state', 'todo')),
+                    (1, 1, 2, 2, 'StoryClosedAndArchived', '2026-01-01T12:00:00Z',
+                     json_object('kind', 'StoryClosedAndArchived', 'at', '2026-01-01T12:00:00Z',
+                                 'state', 'done')),
+                    (1, 1, 3, 3, 'StoryDeleted', '2026-01-02T00:00:00Z',
+                     json_object('kind', 'StoryDeleted', 'at', '2026-01-02T00:00:00Z',
+                                 'reason', 'created in error')){extra_events};
+         INSERT INTO stories (project_id, story_no, head_seq, head_global_seq, title, state,
+                              superstate, priority, priority_rank, story_type, deleted, archived,
+                              created_at, updated_at, closed_at, snapshot)
+             VALUES (1, 1, {head_seq}, {head_seq}, 'Filed by mistake', 'done', 'CLOSED',
+                     'low', 3, 'normal', 1, 1,
+                     '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', '2026-01-01T12:00:00Z',
+                     json_object('id', 'SH-1', 'title', 'Filed by mistake', 'state', 'done',
+                                 'superstate', 'CLOSED', 'deleted', json('true'),
+                                 'deleted_reason', 'created in error',
+                                 'created_at', '2026-01-01T00:00:00Z',
+                                 'updated_at', '2026-01-02T00:00:00Z',
+                                 'closed_at', '2026-01-01T12:00:00Z'));",
+        extra_events = extra_events,
+        head_seq = 3 + extra_events.matches("(1, 1,").count(),
+    ))
+    .unwrap();
+}
+
+fn one_story_row(path: &Path) -> (String, Option<String>, String) {
+    Connection::open(path)
+        .unwrap()
+        .query_row(
+            "SELECT state, hidden_at, snapshot FROM stories WHERE project_id = 1 AND story_no = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap()
+}
+
+fn state_slugs(path: &Path) -> Vec<String> {
+    let conn = Connection::open(path).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT slug FROM project_states WHERE project_id = 1 ORDER BY position")
+        .unwrap();
+    let rows = stmt.query_map([], |row| row.get(0)).unwrap();
+    rows.map(Result::unwrap).collect()
+}
+
+#[test]
+fn migration_twenty_one_gives_every_project_a_closed_state_at_the_end() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..20]).unwrap();
+    seed_a_v20_soft_deleted_story(store.path(), "");
+
+    assert_eq!(state_slugs(store.path()), ["todo", "done"]);
+
+    store.migrate_with(&migrate::MIGRATIONS[..21]).unwrap();
+
+    assert_eq!(
+        state_slugs(store.path()),
+        ["todo", "done", "closed"],
+        "the repair appends; it never reorders what the project already had"
+    );
+    let (role, description): (Option<String>, Option<String>) = Connection::open(store.path())
+        .unwrap()
+        .query_row(
+            "SELECT role, description FROM project_states WHERE project_id = 1 AND slug = 'closed'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (role, description),
+        (None, None),
+        "`with_required_states` writes neither, so a migrated project and a \
+         `doctor --fix`ed one must not disagree"
+    );
+}
+
+#[test]
+fn migration_twenty_one_rests_a_soft_deleted_story_in_closed_and_archives_it() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..20]).unwrap();
+    seed_a_v20_soft_deleted_story(store.path(), "");
+
+    store.migrate_with(&migrate::MIGRATIONS[..21]).unwrap();
+
+    let (state, hidden_at, snapshot) = one_story_row(store.path());
+    assert_eq!(state, "closed");
+    assert_eq!(
+        hidden_at.as_deref(),
+        Some("2026-01-02T00:00:00Z"),
+        "the stamp is the StoryDeleted event's own `at` — never `closed_at`, \
+         which is the earlier of the two whenever a story was closed before \
+         being deleted"
+    );
+
+    // The blob is what `read::hydrate` deserializes; it never re-folds, so a
+    // document left behind would show the wrong state in `story show` and make
+    // `story doctor` report every such story as divergent.
+    let doc: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
+    assert_eq!(doc["state"], "closed");
+    assert_eq!(doc["hidden_at"], "2026-01-02T00:00:00Z");
+    assert!(
+        doc.get("deleted").is_none() || doc["deleted"] == serde_json::Value::Bool(true),
+        "the `deleted` key is left alone by this migration — it still describes \
+         something real until `story delete` becomes permanent"
+    );
+}
+
+#[test]
+fn migration_twenty_one_leaves_an_unhidden_soft_delete_unhidden() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..20]).unwrap();
+    seed_a_v20_soft_deleted_story(
+        store.path(),
+        ",\n                    (1, 1, 4, 4, 'StoryUnhidden', '2026-01-03T00:00:00Z',
+                     json_object('kind', 'StoryUnhidden', 'at', '2026-01-03T00:00:00Z'))",
+    );
+
+    store.migrate_with(&migrate::MIGRATIONS[..21]).unwrap();
+
+    let (state, hidden_at, snapshot) = one_story_row(store.path());
+    assert_eq!(state, "closed");
+    assert_eq!(
+        hidden_at, None,
+        "the last of the three hidden-affecting kinds wins, exactly as the fold \
+         replays them — otherwise `story unarchive` would be undone by an upgrade"
+    );
+    let doc: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
+    assert!(
+        doc.get("hidden_at").is_none(),
+        "`hidden_at` is skip_serializing_if = is_none, so the NULL case removes \
+         the key rather than writing JSON null: {doc}"
+    );
+}
+
+#[test]
+fn migration_twenty_one_leaves_alone_a_project_whose_closed_state_is_open() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..20]).unwrap();
+    seed_a_v20_soft_deleted_story(store.path(), "");
+    Connection::open(store.path())
+        .unwrap()
+        .execute(
+            "INSERT INTO project_states (project_id, position, slug, superstate)
+                 VALUES (1, 2, 'closed', 'OPEN')",
+            [],
+        )
+        .unwrap();
+
+    store.migrate_with(&migrate::MIGRATIONS[..21]).unwrap();
+
+    let (state, hidden_at, _snapshot) = one_story_row(store.path());
+    assert_eq!(
+        state, "done",
+        "nothing may reclassify a state the project already defines, so these \
+         stories stay where they are — and `resting_state_for_closure` answers \
+         `done` for them too, which is what keeps a fresh fold agreeing with \
+         the stored row"
+    );
+    assert_eq!(hidden_at, None);
+    assert_eq!(
+        state_slugs(store.path()),
+        ["todo", "done", "closed"],
+        "the existing slug is left exactly as the project wrote it"
+    );
+}
+
+/// The case that makes keying on the `deleted` COLUMN load-bearing rather than
+/// stylistic, and migration 16's lesson on a different fact.
+///
+/// `[StoryDeleted, StoryStateChanged(todo)]` is a live, reachable history —
+/// `story delete` then `story reopen --force` — whose story is *not* deleted:
+/// the fold retracts the closure markers on a move into an OPEN state. A
+/// migration keyed on `EXISTS (… kind = 'StoryDeleted')` would archive it,
+/// silently taking an open story off the board on upgrade.
+#[test]
+fn migration_twenty_one_leaves_an_undeleted_story_open() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..20]).unwrap();
+    let conn = Connection::open(store.path()).unwrap();
+    conn.execute_batch(
+        "INSERT INTO projects (id, uuid, slug, name, prefix, created_at, next_story_no, next_global_seq)
+             VALUES (1, 'u-1', 'proj', 'Proj', 'SH', '2026-01-01T00:00:00Z', 2, 4);
+         INSERT INTO project_states (project_id, position, slug, superstate)
+             VALUES (1, 0, 'todo', 'OPEN'), (1, 1, 'done', 'CLOSED');
+         INSERT INTO events (project_id, story_no, seq, global_seq, kind, at, payload)
+             VALUES (1, 1, 1, 1, 'StoryCreated', '2026-01-01T00:00:00Z',
+                     json_object('kind', 'StoryCreated', 'at', '2026-01-01T00:00:00Z',
+                                 'title', 'Deleted then reopened', 'state', 'todo')),
+                    (1, 1, 2, 2, 'StoryDeleted', '2026-01-02T00:00:00Z',
+                     json_object('kind', 'StoryDeleted', 'at', '2026-01-02T00:00:00Z',
+                                 'reason', 'created in error')),
+                    (1, 1, 3, 3, 'StoryStateChanged', '2026-01-03T00:00:00Z',
+                     json_object('kind', 'StoryStateChanged', 'at', '2026-01-03T00:00:00Z',
+                                 'state', 'todo'));
+         INSERT INTO stories (project_id, story_no, head_seq, head_global_seq, title, state,
+                              superstate, priority, priority_rank, story_type, deleted, archived,
+                              created_at, updated_at, snapshot)
+             VALUES (1, 1, 3, 3, 'Deleted then reopened', 'todo', 'OPEN',
+                     'low', 3, 'normal', 0, 0,
+                     '2026-01-01T00:00:00Z', '2026-01-03T00:00:00Z',
+                     json_object('id', 'SH-1', 'title', 'Deleted then reopened', 'state', 'todo',
+                                 'superstate', 'OPEN',
+                                 'created_at', '2026-01-01T00:00:00Z',
+                                 'updated_at', '2026-01-03T00:00:00Z'));",
+    )
+    .unwrap();
+    drop(conn);
+
+    store.migrate_with(&migrate::MIGRATIONS[..21]).unwrap();
+
+    let (state, hidden_at, snapshot) = one_story_row(store.path());
+    assert_eq!(state, "todo", "the undelete stands");
+    assert_eq!(hidden_at, None);
+    let doc: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
+    assert_eq!(doc["state"], "todo");
+    assert!(doc.get("hidden_at").is_none(), "{doc}");
+}
