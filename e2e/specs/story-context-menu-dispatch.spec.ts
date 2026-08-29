@@ -149,11 +149,13 @@ test("Dispatch issues POST .../dispatch", async ({ page }) => {
   await deleteStory(page, title);
 });
 
-test("Dispatch can select Codex and auto mode", async ({ page }) => {
+test("Dispatch remembers submitted Codex and auto mode", async ({ page }) => {
   await openProject(page, "Alpha Project");
   const title = "SH-197 context menu — dispatch auto stubbed";
   const card = await createStory(page, title);
   const id = await card.getAttribute("data-id");
+  const nextTitle = "SH-510 context menu — remembered dispatch defaults";
+  await createStory(page, nextTitle);
 
   const requests: { url: string; method: string }[] = [];
   await page.route("**/story/*/dispatch**", async (route) => {
@@ -184,7 +186,22 @@ test("Dispatch can select Codex and auto mode", async ({ page }) => {
   expect(postReq).toBeTruthy();
   expect(new URL(postReq!.url).search).toBe("?agent=codex&auto=1");
 
+  // The submitted pair is a durable browser preference, not state owned by
+  // this modal instance or story. Reload before opening a different story so
+  // this witnesses both boundaries: a new document and a new dispatch target.
+  await page.reload();
+  const nextCard = page.locator('.column[data-state="todo"] .card', {
+    hasText: nextTitle,
+  });
+  await expect(nextCard).toBeVisible();
+  await nextCard.click({ button: "right" });
+  await page.locator(".ctxmenu-item", { hasText: /^Dispatch$/ }).click();
+  await expect(page.locator("#dispatch-agent")).toHaveValue("codex");
+  await expect(page.locator("#dispatch-auto")).toBeChecked();
+  await page.locator("#dispatch-modal-cancel").click();
+
   await deleteStory(page, title);
+  await deleteStory(page, nextTitle);
 });
 
 test("the item is aria-disabled while a dispatch for this story is in flight", async ({

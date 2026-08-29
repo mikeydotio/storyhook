@@ -4390,6 +4390,40 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   var DISPATCH_POLL_MS = 5000;
   var DISPATCH_MAX_POLLS = 40; // ~200s -- comfortably past the daemon's own 180s dispatch timeout
+  var DISPATCH_DEFAULTS_STORAGE_KEY = "storyhook.dispatch.defaults";
+
+  /** The last configuration the user actually submitted, or the historical
+   * defaults when this browser has never dispatched (or its stored record is
+   * missing/malformed). Fields are validated independently so one obsolete
+   * value cannot discard the other still-valid preference. */
+  function loadDispatchDefaults() {
+    var defaults = { agent: "claude", auto: false };
+    try {
+      var raw = localStorage.getItem(DISPATCH_DEFAULTS_STORAGE_KEY);
+      if (!raw) return defaults;
+      var stored = JSON.parse(raw);
+      if (stored && (stored.agent === "claude" || stored.agent === "codex")) {
+        defaults.agent = stored.agent;
+      }
+      if (stored && typeof stored.auto === "boolean") defaults.auto = stored.auto;
+    } catch (e) { /* storage unavailable or malformed -- use the safe defaults */ }
+    return defaults;
+  }
+
+  /** Commits one submitted configuration to memory first, then best-effort
+   * localStorage. The in-page preference therefore survives even when the
+   * browser refuses durable storage; a later page load simply returns to the
+   * historical defaults in that case. */
+  var dispatchDefaults = loadDispatchDefaults();
+  function saveDispatchDefaults(agent, auto) {
+    dispatchDefaults = {
+      agent: agent === "codex" ? "codex" : "claude",
+      auto: auto === true
+    };
+    try {
+      localStorage.setItem(DISPATCH_DEFAULTS_STORAGE_KEY, JSON.stringify(dispatchDefaults));
+    } catch (e) { /* the in-memory preference above remains authoritative */ }
+  }
 
   /** Whether the project currently open has a checkout on this machine --
    * the same `path` field the home cards and settings table already use to
@@ -4416,14 +4450,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   var dispatchModalStoryId = null;
 
-  /** Opens a fresh configuration every time: localhost is the only client,
-   * Claude preserves the historical default, and auto remains opt-in. */
+  /** Opens with the last submitted configuration. Localhost remains the only
+   * client; Model and Auto are durable user preferences, committed only by
+   * Submit so dismissing a draft cannot silently replace them. */
   function openDispatchModal(storyId, returnFocus) {
     if (state.dispatches[storyId]) return;
     dispatchModalStoryId = storyId;
     $("dispatch-client").value = "localhost";
-    $("dispatch-agent").value = "claude";
-    $("dispatch-auto").checked = false;
+    $("dispatch-agent").value = dispatchDefaults.agent;
+    $("dispatch-auto").checked = dispatchDefaults.auto;
     showBackdrop("dispatch-modal-backdrop");
     activateOverlay("dispatch-modal", "dispatch-agent");
     // Preserve the invoker explicitly so Cancel/Escape does not return focus
@@ -4450,6 +4485,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (!storyId || state.dispatches[storyId]) return;
     var agent = $("dispatch-agent").value;
     var auto = $("dispatch-auto").checked;
+    saveDispatchDefaults(agent, auto);
     closeDispatchModal();
     startDispatch(storyId, agent, auto);
   }

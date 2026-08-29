@@ -117,7 +117,7 @@ test("Dispatch sits at the leading edge, before Delete", async ({ page }) => {
   await expect(footerButtons.nth(1)).toHaveText("Delete");
 });
 
-test("Dispatch opens a reset configuration modal with client, model, and auto controls", async ({ page }) => {
+test("Dispatch opens with defaults and does not remember cancelled edits", async ({ page }) => {
   await seedToken(page);
   await page.goto("/");
   await openProject(page, "Alpha Project");
