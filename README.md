@@ -203,6 +203,10 @@ can probe for `/council-vote`; Codex has no stable machine-readable skill invent
 so its default is the safe solo charter unless `STORY_COUNCIL=on` opts in explicitly.
 Both paths research and decide clear questions, run tests, merge their PRs, close the
 story when its acceptance criteria pass, and stop safely on a hard failure.
+Because Codex changes modes through the UI rather than an `ExitPlanMode` tool call, the
+built-in Codex prompt makes posting the exact approved plan to the story the first
+implementation step. Wholesale custom prompt overrides must supply that instruction when
+they need the same persistence guarantee.
 
 `complete` is conservative by design. It never deletes an unmerged branch, never
 removes a dirty, locked, or current worktree, and never touches `main` or the

@@ -38,6 +38,9 @@ id=$(new_story "$repo" "Charter inertness")
 attended=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$id" 2>&1 | jq -r '.prompt')
 auto=$(cd "$repo" && STORY_DRY_RUN=1 STORY_COUNCIL=on bash "$SCRIPT" dispatch "$id" --auto 2>&1 | jq -r '.prompt')
 solo=$(cd "$repo" && STORY_DRY_RUN=1 STORY_COUNCIL=off bash "$SCRIPT" dispatch "$id" --auto 2>&1 | jq -r '.prompt')
+codex_attended=$(cd "$repo" && STORY_DRY_RUN=1 STORY_AGENT=codex bash "$SCRIPT" dispatch "$id" 2>&1 | jq -r '.prompt')
+codex_auto=$(cd "$repo" && STORY_DRY_RUN=1 STORY_AGENT=codex STORY_COUNCIL=on bash "$SCRIPT" dispatch "$id" --auto 2>&1 | jq -r '.prompt')
+codex_solo=$(cd "$repo" && STORY_DRY_RUN=1 STORY_AGENT=codex STORY_COUNCIL=off bash "$SCRIPT" dispatch "$id" --auto 2>&1 | jq -r '.prompt')
 
 [ -n "$attended" ] && [ "$attended" != null ] \
   || fail_test "charter-inert: could not render the attended prompt"
@@ -45,6 +48,11 @@ solo=$(cd "$repo" && STORY_DRY_RUN=1 STORY_COUNCIL=off bash "$SCRIPT" dispatch "
   || fail_test "charter-inert: could not render the auto (council) prompt"
 [ -n "$solo" ] && [ "$solo" != null ] \
   || fail_test "charter-inert: could not render the auto (solo) prompt"
+for pair in "attended:$codex_attended" "auto:$codex_auto" "solo:$codex_solo"; do
+  label="${pair%%:*}"; text="${pair#*:}"
+  [ -n "$text" ] && [ "$text" != null ] \
+    || fail_test "charter-inert: could not render the Codex $label prompt"
+done
 
 # Every character not on the allowlist. Kept as an explicit banned set so a
 # failure names the offending character rather than just failing a regex.
@@ -63,10 +71,15 @@ print("".join(sorted({c for c in text if c in BANNED})))')
 check_inert "the attended prompt" "$attended"
 check_inert "the autonomous (council) charter" "$auto"
 check_inert "the autonomous (solo) charter" "$solo"
+check_inert "the Codex attended prompt" "$codex_attended"
+check_inert "the Codex autonomous (council) charter" "$codex_auto"
+check_inert "the Codex autonomous (solo) charter" "$codex_solo"
 
 # An even quote count: an unbalanced double quote wedges a shell at a
 # continuation prompt rather than executing anything, but it is still a wedge.
-for pair in "attended:$attended" "auto:$auto" "solo:$solo"; do
+for pair in "attended:$attended" "auto:$auto" "solo:$solo" \
+            "Codex attended:$codex_attended" "Codex auto:$codex_auto" \
+            "Codex solo:$codex_solo"; do
   label="${pair%%:*}"; text="${pair#*:}"
   n=$(printf '%s' "$text" | tr -cd '"' | wc -c | tr -d ' ')
   if [ $((n % 2)) -ne 0 ]; then
@@ -115,5 +128,21 @@ case "$attended" in
   *"story show $id --json"*) ;;
   *) fail_test "charter-inert: the attended prompt no longer instructs 'story show'" ;;
 esac
+
+# Codex's provider-only addition is itself load-bearing: it carries the
+# persistence obligation across the UI mode switch that has no ExitPlanMode
+# tool boundary. All three built-in variants must name the resolved story,
+# exact-plan semantics, and the first implementation step.
+for variant in "attended:$codex_attended" "auto:$codex_auto" "solo:$codex_solo"; do
+  label="${variant%%:*}"; text="${variant#*:}"
+  for needle in "story comment $id your-exact-approved-plan" \
+                "the first implementation step" \
+                "post the plan verbatim rather than summarizing it"; do
+    case "$text" in
+      *"$needle"*) ;;
+      *) fail_test "charter-inert: the Codex $label prompt no longer instructs '$needle'" ;;
+    esac
+  done
+done
 
 finish
