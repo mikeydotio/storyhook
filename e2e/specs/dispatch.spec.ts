@@ -99,7 +99,7 @@ test("Dispatch is absent for a story in a project with no checkout (AC1)", async
   ).toBeVisible();
 });
 
-test("Dispatch sits at the leading edge, before Delete", async ({ page }) => {
+test("Dispatch sits at the leading edge, before Close and Delete", async ({ page }) => {
   await seedToken(page);
   await page.goto("/");
   await openProject(page, "Alpha Project");
@@ -108,16 +108,17 @@ test("Dispatch sits at the leading edge, before Delete", async ({ page }) => {
     .click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
 
-  // Dispatch, then Delete pushed to the trailing edge by its own
-  // margin-left:auto -- DOM order is append order, so this is the real,
-  // load-bearing assertion for "leading edge".
+  // Dispatch, then Close and Delete at the trailing edge -- DOM order is
+  // append order, so this is the real, load-bearing assertion for "leading
+  // edge". Close became the first trailing action in SH-507.
   const footerButtons = page.locator("#drawer-footer button");
-  await expect(footerButtons).toHaveCount(2);
+  await expect(footerButtons).toHaveCount(3);
   await expect(footerButtons.nth(0)).toHaveId("dispatch-btn");
-  await expect(footerButtons.nth(1)).toHaveText("Delete");
+  await expect(footerButtons.nth(1)).toHaveText("Close");
+  await expect(footerButtons.nth(2)).toHaveText("Delete");
 });
 
-test("Dispatch opens a reset configuration modal with client, model, and auto controls", async ({ page }) => {
+test("Dispatch opens with defaults and does not remember cancelled edits", async ({ page }) => {
   await seedToken(page);
   await page.goto("/");
   await openProject(page, "Alpha Project");
