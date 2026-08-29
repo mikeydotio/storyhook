@@ -89,10 +89,11 @@ pub use rebuild::{
 };
 pub use sqlite::{SqliteReadTx, SqliteStore, SqliteWriteTx, StoreConfig};
 pub use types::{
-    AttachmentBlobRow, DeletedProject, FeedEvent, LinkSource, MigrationReport, NewProject, PrLink,
-    ProjectRecord, ProjectRemoteRecord, ProjectSettings, PurgedStory, RawEvent, RelationEdge,
-    StoredEvent, StoredPayload, StoryQuery, StoryRow, StorySort, UnknownEventDiagnostic,
-    partition_known,
+    AttachmentBlobRow, DeletedProject, EngineAgent, EngineLaneRecord, EngineLaneState,
+    EngineRunRecord, EngineRunState, EngineScope, FeedEvent, LinkSource, MigrationReport,
+    NewProject, PrLink, ProjectRecord, ProjectRemoteRecord, ProjectSettings, PurgedStory, RawEvent,
+    RelationEdge, StoredEvent, StoredPayload, StoryQuery, StoryRow, StorySort,
+    UnknownEventDiagnostic, partition_known,
 };
 
 /// A transactional store of projects, events, and the read model folded from
@@ -228,11 +229,14 @@ pub struct WriteWithSnapshot<T> {
 
 /// Everything that can be read inside a transaction.
 ///
-/// Every method takes a [`ProjectId`]. That is a deliberate ergonomic cost: in
-/// a single global database where every repository defaults to the prefix
-/// `SH`, an unscoped query does not fail — it quietly returns a different
-/// project's story with the same number. Making the scope a required argument
-/// turns that whole class of bug into a compile error.
+/// Every story or project-catalog method takes a [`ProjectId`]. That is a
+/// deliberate ergonomic cost: in a single global database where every
+/// repository defaults to the prefix `SH`, an unscoped story query does not
+/// fail — it quietly returns a different project's story with the same number.
+/// Making the scope a required argument turns that whole class of bug into a
+/// compile error. Engine operations use their globally unique run id or the
+/// project slug stored on the run; [`Self::live_engine_runs`] is deliberately
+/// machine-wide for restart reconciliation and lane-budget accounting.
 pub trait ReadOps {
     /// The project with this id.
     fn project(&self, project: ProjectId) -> Result<Option<ProjectRecord>, StoreError>;
@@ -254,6 +258,23 @@ pub trait ReadOps {
 
     /// Every project, ordered by slug.
     fn projects(&self) -> Result<Vec<ProjectRecord>, StoreError>;
+
+    /// One Full Auto engine run by its stable id.
+    fn engine_run(&self, run_id: &str) -> Result<Option<EngineRunRecord>, StoreError>;
+
+    /// Every engine run for one project, oldest first with id as a total-order
+    /// tiebreaker.
+    fn engine_runs(&self, project_slug: &str) -> Result<Vec<EngineRunRecord>, StoreError>;
+
+    /// Every live engine run across the store, ordered by project then age.
+    ///
+    /// This is intentionally the one machine-wide operational read in the
+    /// trait: restart reconciliation and the machine lane budget must see all
+    /// projects before either can make a safe decision.
+    fn live_engine_runs(&self) -> Result<Vec<EngineRunRecord>, StoreError>;
+
+    /// Every lane belonging to a run, ordered by lane index.
+    fn engine_lanes(&self, run_id: &str) -> Result<Vec<EngineLaneRecord>, StoreError>;
 
     /// The project that registered this git origin, if any.
     ///
@@ -462,6 +483,22 @@ pub trait ReadOps {
 pub trait WriteOps: ReadOps {
     /// Creates a project and returns its id.
     fn create_project(&mut self, project: &NewProject) -> Result<ProjectId, StoreError>;
+
+    /// Creates a Full Auto engine run.
+    ///
+    /// Insert-only by design. In particular, callers must not read for a live
+    /// run first: `engine_runs_one_live_per_project` is the authority that
+    /// settles two starts racing across processes.
+    fn create_engine_run(&mut self, run: &EngineRunRecord) -> Result<(), StoreError>;
+
+    /// Replaces the mutable state of an existing engine run.
+    ///
+    /// A missing id is an error rather than an implicit insert, keeping run
+    /// creation on the constraint-arbitrated path above.
+    fn update_engine_run(&mut self, run: &EngineRunRecord) -> Result<(), StoreError>;
+
+    /// Inserts or replaces one lane under its `(run_id, lane_index)` identity.
+    fn put_engine_lane(&mut self, lane: &EngineLaneRecord) -> Result<(), StoreError>;
 
     /// Registers a git origin as belonging to this project.
     ///
