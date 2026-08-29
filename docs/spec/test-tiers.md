@@ -764,6 +764,83 @@ over a mechanism that is not actually reliable.
 | `duplicate-create.spec.ts:58`, `story-context-menu-priority.spec.ts:291` | held to the *test's* own release | `MUTATION_TIMEOUT_MS` (75s ≫ any test budget) | clear |
 | `modal-enter-autorepeat.spec.ts:158` | held to the test's own release | same | clear |
 
+## One suite at a time on this machine (SH-457)
+
+`scripts/run-tests.sh` runs under the machine-wide `gate` lock
+(`scripts/machine-lock.sh`, SH-456). Every caller therefore queues: both Rust
+batteries, `scripts/run-changed.sh`, and a bare `bash scripts/run-tests.sh`
+typed by hand.
+
+**Why.** This suite is 36.375s median warm and idle
+(`docs/rearch/baseline/timings.md`) and has been measured at **873s** under the
+three-to-four concurrent worktree suites this machine routinely runs — the
+contention documented as the cause of an open class of load-sensitive failures
+(SH-347, SH-349, SH-375, SH-378, SH-401, SH-419), and the reason `make test`'s
+own e2e leg carries `load-grace.ts` at all. Full Auto (SH-452) runs N agent
+lanes at once and multiplies exactly that, which is decision D4 of
+`docs/spec/full-auto-engine.md`.
+
+**Interactive runs are not exempt, and that is deliberate.** A human's suite
+contends identically with a lane's. Exempting it would leave the hole open in
+precisely the case where somebody is present to be confused by the result.
+
+**Why inside the script rather than around the `make test` recipe.** A rule in
+the Makefile covers the one door and none of the others. Sited here, the queue
+is a property of running the suite, not of the way it was invoked — the same
+reason `gate-receipt.sh preflight` enrols the clone from inside `make test`
+rather than asking anyone to remember a step.
+
+### The escape hatch is reported, always
+
+`STORYHOOK_GATE_LOCK=0` skips the lock and prints a line on **stderr** naming
+the variable that caused it. A bypass nobody can see is the SH-306 shape, and
+this project has already paid for it once with `SKIP_PREPUSH_TESTS`: six pushes
+in three days shipped with no gate and no message saying so. The message is
+asserted by name in `tests/gate_lock.rs`, not merely the behaviour — a working
+bypass that says nothing passes every behavioural assertion there is.
+
+### What this does not cover, named rather than glossed
+
+* **`make test` reaches `run-tests.sh` twice**, once per disjoint Rust battery,
+  so two concurrent runs *interleave at the battery boundary*. Only one
+  `cargo test` ever exists on this machine, but the runs are not whole-run
+  exclusive and their fmt/clippy/build/plugin legs still overlap. Whole-run
+  exclusivity needs nothing new — `scripts/machine-lock.sh gate -- make test`,
+  which is the case that wrapper's reentrancy branch was built for and which
+  the engine's lanes use.
+* **`scripts/run-e2e.sh` does not take this lock.** The browser leg is outside
+  D4's wording; `browser-watch.sh` has its own lock for its own reason.
+* **The orphan bracket is entirely outside the lock** and its verdict is
+  unchanged. `check-no-orphan-servers.sh` runs as a prerequisite of the `make`
+  target, before any leg reaches `run-tests.sh`, so a second run in the *same*
+  checkout still refuses at preflight rather than queueing — which is correct:
+  a pre-existing daemon makes this run's verification a lie whether or not it
+  ever gets the lock.
+* **Receipt semantics are untouched.** `gate-receipt.sh preflight` is still the
+  first recipe line and `postlude` still the last;
+  `tests/push_gate.rs::the_makefile_enrolls_first_and_certifies_last` and
+  `tests/selective_gate.rs::test_changed_enrolls_first_and_certifies_last` are
+  what hold that, and neither needed a change.
+
+### The handshake, and the fork bomb behind it
+
+The take is a re-exec: `run-tests.sh` execs
+`machine-lock.sh gate -- bash <self> "$@"` and marks the child so it does not
+wrap again. Reentrancy in general is left to `machine-lock.sh`, which already
+has that branch and reports taking it; reading `STORYHOOK_MACHINE_LOCKS` in
+this script too would put that format in a second place (SH-136), and was
+measured to change no observable when it was there.
+
+What the marker prevents is not a hang. `machine-lock.sh` runs its command in a
+**background** child — it has to, or a signal could not reach a fifteen-minute
+suite — so a re-exec that keeps coming back leaves a live process waiting on
+the next one, measured at roughly two hundred processes a second. The `else`
+branch therefore carries a depth guard that refuses by name rather than
+looping. The two halves sit at two sites so that breaking either is caught by
+the other, which is SH-365's two-mechanism shape; `tests/gate_lock.rs`'s own
+header records that before the guard existed this exact mutation was not red at
+all.
+
 ## The orphan bracket: refuse before the run, reap after it (SH-412)
 
 `scripts/check-no-orphan-servers.sh` brackets `make test` the way
