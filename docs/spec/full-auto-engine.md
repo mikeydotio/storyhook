@@ -963,3 +963,38 @@ inspecting it — real contention, real signals, the script reached by symlink
 from a disposable fixture root with `tracked-tree.sh` stubbed so no ledger
 reaches the developer's `.git`. Mutation-checked six ways; that file's header
 carries the table, including the one mutation that has no test and why.
+### SH-458 — `scripts/land-pr.sh`
+
+**The tested seam is certification followed by a command, not a fake
+GitHub.** The public `land-pr.sh <pr>` path takes `machine-lock.sh merge` and
+re-enters a private locked phase. That phase refreshes the PR refs, then calls
+the private `--certified-run <base> <head> -- <command>` seam. The seam refuses
+to run unless `STORYHOOK_MACHINE_LOCKS` proves the `merge` lock belongs to this
+process tree; it runs the production `merge-preflight.sh`, exports the exact
+certified tree, and only then executes the command. `tests/land_pr.rs` can
+therefore use real repositories, real locks, and receipts from the production
+writer while using a filesystem witness for "the merge command ran". It never
+pretends a local `gh` double says anything about GitHub.
+
+**The live path guards the head and verifies the result.** Metadata and refs
+are refreshed inside the lock and must agree byte-for-byte before
+certification. `gh pr merge --merge --match-head-commit` refuses a head that
+changed after that point. A zero exit from `gh` is not accepted as proof: the
+script asks for the PR again, requires state `MERGED`, fetches the reported
+merge commit from the base, and compares its tree with the tree preflight
+certified. Only that exact match permits deletion of the remote source branch;
+the local branch remains for Storyhook's final worktree reap, because a linked
+worktree cannot delete the branch it has checked out.
+
+**The known base race remains SH-474.** GitHub's merge interface exposes an
+expected-head guard but no expected-base guard. The machine lock serializes
+Full Auto lanes on this machine; it cannot serialize a web merge or a merger
+on another machine. If one advances the base after certification, the landed
+tree comparison reports a hard failure instead of claiming success, but the
+remote mutation has already happened. Preventing that platform-wide race is
+the separately filed SH-474 rather than a hidden overclaim in this wrapper.
+
+Mutation-checked in the two load-bearing directions: moving the command before
+preflight makes the uncertified/conflict witnesses run, and deleting the lock
+proof makes the direct private-mode refusal test fail. The module document in
+`tests/land_pr.rs` carries the measured table.

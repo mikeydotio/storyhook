@@ -77,7 +77,7 @@ done
 # The invariant must never be satisfiable by deleting the instructions. These
 # are the load-bearing spans -- the things the agent is actually told to run.
 # Shared between both --auto charters (the head/tail SH-219 split in two):
-for needle in "story show $id --json" "story move $id done" "gh pr merge --merge" \
+for needle in "story show $id --json" "story move $id done" "bash scripts/land-pr.sh PR-NUMBER" \
               "make test" "story block $id" "prefer adopting it into" \
               "context window is still unused" "before you resume the work"; do
   for variant in "auto:$auto" "solo:$solo"; do
@@ -87,6 +87,15 @@ for needle in "story show $id --json" "story move $id done" "gh pr merge --merge
       *) fail_test "charter-inert: the $label charter no longer instructs '$needle' -- inertness must not be bought by removing the instructions" ;;
     esac
   done
+done
+# The wrapper must replace the bypassable bare command, not merely sit beside
+# it. Either autonomous charter retaining this span lets a lane skip the tool
+# that owns the lock.
+for variant in "auto:$auto" "solo:$solo"; do
+  label="${variant%%:*}"; text="${variant#*:}"
+  case "$text" in
+    *"gh pr merge"*) fail_test "charter-inert: the $label charter still instructs the bare gh merge path" ;;
+  esac
 done
 # COUNCIL-only obligation:
 case "$auto" in
