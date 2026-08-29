@@ -968,10 +968,13 @@ Standing rules for every wave:
   algorithm, a `mousedown` target disconnected before `mouseup` fires **no `click`
   anywhere** — not even at an ancestor — and Playwright reports the gesture
   *successful*, because its hit-target check ran once, before the gesture, against
-  the node that existed then. SH-397 closed this for the board by pointing the
-  pointer at a node that survives (`.card` is reused by `reconcileColumnCards`, so
-  `pointer-events: none` on its descendants sufficed); the drawer has no surviving
-  node — `renderDrawer` does `clear(body)` unconditionally — so that shape
+  the node that existed then. SH-397 closed the first board occurrence by pointing
+  the pointer at `.card`, which survives an unchanged-position reconcile, and
+  making its descendants `pointer-events: none`; SH-422 found that a real order
+  change still disconnects the whole card. The press gate covers that broader case
+  through `renderView`, witnessed by `card-reposition-click-race.spec.ts`. The
+  drawer has no surviving node — `renderDrawer` does `clear(body)` unconditionally
+  — so that shape
   **structurally cannot** be extended: the button *is* the destroyed node, and
   delegating to a surviving ancestor changes nothing when no click is dispatched.
   `src/web_dashboard.html`'s press gate defers the **paint** of `renderAll`,

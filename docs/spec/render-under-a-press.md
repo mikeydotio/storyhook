@@ -21,11 +21,14 @@ It surfaced from the browser suite rather than a bug report for a reason worth
 keeping: **Playwright reports the gesture as successful.** Its hit-target check
 runs once, before the gesture, against the node that existed then.
 
-SH-397 closed this for the board by pointing the pointer at a node that survives —
-`.card` itself is reused by `reconcileColumnCards`, so making its presentational
-descendants `pointer-events: none` sufficed. **That shape cannot be extended to the
-drawer**: the button *is* the destroyed node, and delegating to a surviving ancestor
-changes nothing, because no `click` is dispatched at all.
+SH-397 closed the first board occurrence by pointing the pointer at a node that
+survives an unchanged-position reconcile — `.card` itself — and making its
+presentational descendants `pointer-events: none`. SH-422 identified the boundary:
+a real order change makes `reconcileColumnCards` disconnect and reinsert the whole
+card. The press gate closes that case because `renderView` is gated, and
+`card-reposition-click-race.spec.ts` is the exact witness. **SH-397's shape cannot
+be extended to the drawer**: the button *is* the destroyed node, and delegating to
+a surviving ancestor changes nothing, because no `click` is dispatched at all.
 
 ## The gate
 
@@ -127,6 +130,11 @@ button (`renderDrawerFooter`'s own `clear(footer)`), a list row (`populateListRo
 `clear(row)` — a surface nothing had filed, and one with no `pointer-events` rule
 anywhere in the sheet, so every cell is a live press target), the paired
 no-interposition control, and the ordering contract above.
+
+`e2e/specs/card-reposition-click-race.spec.ts` adds SH-422's exact whole-card
+witness: old order `[A, B]`, held `/data` reply producing desired order `[B]`, and
+a real press on B spanning delivery. It proves the old paint remains during the
+press, B's drawer opens, and only then does the deferred render move A away.
 
 Not covered, stated rather than implied: `.card-actions-btn` and `.rel-id` — SH-397's
 own two declared residues — are covered *by construction* (they sit under
