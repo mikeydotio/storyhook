@@ -1456,10 +1456,10 @@ fn every_presentational_descendant_of_a_card_is_transparent_to_pointer_events() 
 
 /// The text of `function <name>(...) { ... }` in `source`, from just after
 /// the function's own opening brace to its matching closing one, found by
-/// brace-depth counting over the raw bytes -- safe for `populateCard`
-/// (verified below): its body contains no string or comment with a literal
-/// `{` or `}` character, only object-literal and block braces the counter
-/// is meant to see.
+/// brace-depth counting over the raw bytes -- safe for `populateCard` and
+/// `populateListRow` (verified below): their bodies contain no string or
+/// comment with a literal `{` or `}` character, only object-literal and
+/// block braces the counter is meant to see.
 fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
     let marker = format!("function {name}(");
     let call_start = source
@@ -1551,6 +1551,53 @@ fn populate_card_skips_its_own_rebuild_when_nothing_it_renders_changed() {
          rebuild is now conditional (per the assertion above) can silently act on stale data \
          once the story it names moves column or changes description, since the card face \
          renders neither field. Body: {body}"
+    );
+}
+
+/// `populateListRow()` follows the output-derived reconciliation rule SH-399
+/// established for cards (SH-425): a `/data` reply that changes nothing the
+/// row renders must not discard its cells or a focused `.row-actions-btn`.
+/// The comparison is the detached candidate row's actual serialization, not
+/// a hand-maintained list of inputs, because the row renderer reaches through
+/// helpers into metadata, ranking, and related state its `v` argument does not
+/// wholly carry. Children move into the live row with their listeners intact;
+/// the stored serialization is never parsed back as markup.
+///
+/// The action handler independently reads the current story at activation.
+/// That is required even when a changed row will shortly rebuild: SH-401
+/// deliberately lands `state.data` while a primary press is live and defers
+/// only paint, so the old button can receive its click after newer state has
+/// arrived. The mobile browser witness proves both dynamic claims; this test
+/// pins the source wiring cheaply in the ordinary Rust gate.
+#[test]
+fn populate_list_row_skips_noop_rebuilds_and_actions_read_current_story() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading src/web_dashboard.html");
+    let body = function_body(script(&html), "populateListRow");
+
+    assert!(
+        body.contains("var next = el(\"tr\", {}, []);")
+            && body.contains("var rendered = next.innerHTML;")
+            && body.contains("if (row.dataset.rendered !== rendered)"),
+        "expected populateListRow() to build a detached candidate row and compare its actual \
+         rendered output with the live row's last-committed serialization (SH-425), rather \
+         than clearing unchanged cells on every render. Body: {body}"
+    );
+    assert!(
+        body.contains("while (next.firstChild) row.appendChild(next.firstChild);")
+            && !body.contains("row.innerHTML"),
+        "expected populateListRow() to move detached children into the live row with \
+         appendChild, preserving their listeners and never parsing the stored serialization \
+         back through row.innerHTML. Body: {body}"
+    );
+    assert!(
+        body.contains("var current = findStory(st.id);")
+            && body.contains("if (current) openStoryMenu(e, current, rowActionsBtn);"),
+        "expected row-actions-btn to resolve the CURRENT story at activation time (SH-425), \
+         because SH-401 can land newer state while its old rendered button remains under a \
+         press. Body: {body}"
     );
 }
 
@@ -3023,15 +3070,15 @@ fn web_serve_root_html_has_coarse_pointer_actions_buttons() {
 
     // Both buttons reuse openStoryMenu (the same menu right-click opens),
     // not a second implementation that could drift out of step with it.
-    // The card's own button resolves the CURRENT story at click time
-    // (SH-399) rather than closing over this render's `v`, matching
-    // `buildCard`'s own contextmenu handler; the list row's does not need
-    // the same rider, since `populateListRow` still rebuilds unconditionally
-    // (SH-425 tracks bringing the row itself onto the same guard).
+    // Both buttons resolve the CURRENT story at click time rather than
+    // closing over a render's `v`: SH-399 made card children retainable,
+    // and SH-425 did the same for list rows. More importantly, SH-401 lands
+    // state before it releases deferred paint, so even a button scheduled to
+    // be rebuilt can activate against newer state than its rendered closure.
     assert!(body.contains("class: \"card-actions-btn\""));
     assert!(body.contains("openStoryMenu(e, current, cardActionsBtn)"));
     assert!(body.contains("class: \"row-actions-btn\""));
-    assert!(body.contains("openStoryMenu(e, v, rowActionsBtn)"));
+    assert!(body.contains("openStoryMenu(e, current, rowActionsBtn)"));
 
     // The card's button is deliberately not a Tab stop (role="button" on
     // .card makes any nested interactive element ARIA-presentational

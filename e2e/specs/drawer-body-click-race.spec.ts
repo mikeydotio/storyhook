@@ -240,13 +240,15 @@ test("a /data reply landing mid-press does not swallow a drawer footer button's 
 });
 
 /**
- * SH-401's third witness: the LIST view, which nothing had filed. `populateListRow`
- * clears and rebuilds every cell of a reused `<tr>` on each render, and the click
- * that opens the drawer is bound once on the `<tr>` itself — the same shape as the
- * board before SH-397, except that no `pointer-events` rule exists for list rows
- * anywhere in the sheet, so every cell is a live press target. Reached through the
- * gate on `renderView`, which is why gating that function rather than only the
- * drawer is what makes this pass.
+ * SH-401's third witness: the LIST view, later tracked directly as SH-425.
+ * `populateListRow` originally rebuilt every cell of a reused `<tr>` on each
+ * render, and the click that opens the drawer is bound once on the `<tr>` itself
+ * — the same shape as the board before SH-397, except that no `pointer-events`
+ * rule exists for list rows anywhere in the sheet, so every cell is a live press
+ * target. Reached through the gate on `renderView`, which is why a reply whose
+ * changed output really must rebuild the row remains safe. SH-425 complements
+ * that gate by retaining the cells when this row's output did not change and by
+ * making its retained actions button resolve current state at activation.
  */
 test("a /data reply landing mid-press does not swallow a list row's click (SH-401)", async ({
   page,
