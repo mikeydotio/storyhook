@@ -56,6 +56,7 @@ impl LandRepo {
             "machine-lock.sh",
             "merge-preflight.sh",
             "gate-receipt.sh",
+            "tracked-tree.sh",
         ] {
             std::os::unix::fs::symlink(
                 checkout().join("scripts").join(name),
