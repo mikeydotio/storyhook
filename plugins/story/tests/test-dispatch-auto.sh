@@ -86,6 +86,11 @@ assert_contains "$prompt" "the moment the council concludes" \
   "auto+council-on: the verdict is recorded when the council concludes"
 assert_contains "$prompt" "before you resume the work" \
   "auto+council-on: recording the verdict precedes resuming the work"
+assert_contains "$prompt" "Another CLOSED-superstate state may mean abandoned work" \
+  "auto+council-on: the charter distinguishes completion from abandonment"
+case "$prompt" in
+  *"<done-state>"*) fail_test "auto+council-on: the completion-state placeholder was not rendered" ;;
+esac
 
 # --- SH-219: with no council reachable, the SOLO charter renders instead —
 #     every shared obligation still present, council-vote named nowhere. ---
@@ -120,9 +125,31 @@ assert_contains "$solo_prompt" "the moment you decide" \
   "auto+council-off: the solo decision is recorded when it is made"
 assert_contains "$solo_prompt" "before you resume the work" \
   "auto+council-off: recording the decision precedes resuming the work"
+assert_contains "$solo_prompt" "Another CLOSED-superstate state may mean abandoned work" \
+  "auto+council-off: the charter distinguishes completion from abandonment"
 case "$solo_prompt" in
   *"council-vote"*) fail_test "auto+council-off: solo prompt still names council-vote" ;;
 esac
+
+# The environment override is the helper's existing custom-project seam. It
+# must drive the rendered instruction too; hard-coding `done` here would make
+# the charter and reap disagree on the very projects the seam exists for.
+custom_done_out=$(STORY_COUNCIL=off STORY_DONE_STATE=shipped dry --auto)
+custom_done_prompt=$(jqf "$custom_done_out" .prompt)
+assert_contains "$custom_done_prompt" "story move $id shipped" \
+  "auto+custom-state: the charter names the resolved completion state"
+
+# A project's catalog order is the source of truth when no override is set.
+# Put a custom CLOSED state ahead of `done` and ask the real render path again;
+# this catches an implementation that substitutes the default after correctly
+# delegating STORY_DONE_STATE above.
+(cd "$repo" \
+  && story state add shipped --super CLOSED >/dev/null \
+  && story state reorder todo,in-progress,blocked,shipped,done,closed >/dev/null)
+reordered_out=$(STORY_COUNCIL=off dry --auto)
+reordered_prompt=$(jqf "$reordered_out" .prompt)
+assert_contains "$reordered_prompt" "story move $id shipped" \
+  "auto+reordered-state: the charter follows the project's first CLOSED state"
 
 # SH-208: the charter's own last act is a fully-resolved `reap` command, not
 # instructions the child must reconstruct -- this project's own slug, this
