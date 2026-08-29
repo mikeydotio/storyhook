@@ -44,7 +44,7 @@ being picked.
 | D4 | **`make test` serializes behind a machine-wide lock**, taken inside `scripts/run-tests.sh`, applying to every caller including interactive ones. `STORYHOOK_GATE_LOCK=0` bypasses it and says so on stderr. | `make test` is 36.4s median warm and idle (`docs/rearch/baseline/timings.md`) but has been measured at 873s under 3–4 concurrent worktree suites, and that contention is the documented cause of an open class of load-sensitive failures (SH-347, SH-349, SH-375, SH-378, SH-401, SH-419). Lanes multiply exactly that. An interactive suite contends identically, so exempting it would leave the hole open in the case where a human is present to be confused by it. The bypass is explicit and reported, never silent — SH-306. |
 | D5 | **Lane agents merge their own PRs, through `scripts/land-pr.sh`, under a machine-wide merge lock.** The script certifies the merge tree with `merge-preflight.sh` inside the lock, then merges. | Merge authority stays where the charter already puts it, but a bare `gh pr merge --merge` is replaced by a deterministic script, so the lock is taken by the tool rather than remembered by the agent. Certifying inside the same lock is what makes lane PRs land promptly instead of waiting on `merge-watch.sh`'s 1–3 minute poll, which becomes the throughput ceiling at N lanes (SH-396). |
 | D6 | **Unattendedness is enforced by a `PreToolUse` hook** in the plugin's existing `hooks.json`, inert unless the lane's marker environment variable is set. It auto-approves plan exit and denies question-asking tools with an instruction to decide or convene `/council-vote`. | Deterministic, per-tool-call, and host-native. Watching the pane and typing the approval is screen-scraping a TUI, which is what SH-226 cost this project. |
-| D7 | **Both agents, Codex verified first.** An early spike establishes whether Codex can deny a tool call with feedback. If it cannot, `--agent=codex` under the engine refuses loudly and names the story. | A Codex lane that silently stalls on a question nobody will answer is the exact failure Full Auto exists to remove; shipping it unenforced would be shipping the defect. |
+| D7 | **Both agents. Codex was verified first.** SH-459 measured Codex CLI 0.149.0 denying `request_user_input` through `PreToolUse`, returning the denial reason to the model, and failing open at the configured timeout. | A Codex lane that silently stalls on a question nobody will answer is the exact failure Full Auto exists to remove. The native denial surface exists, so both provider arms ship; the measured timeout hole remains covered by the stall ceiling and quarantine. |
 | D8 | **Epic semantics from SH-446 are absorbed into this program**, not merely depended on: epic state becomes computed from children, epic priority stays stored, and `story next` breaks priority ties on epic priority. | The epic entry point is meaningless without it, and "an epic with all finished children is finished" is the run's own termination condition. |
 | D9 | **The queue is live and unbounded.** `story next` is re-asked every time a lane frees; a run ends when nothing is claimable. | An epic's children unblock each other as the run's own merges land; a snapshot taken at start would miss most of them. |
 | D10 | **Quarantine and continue; halt on three consecutive hard stops**, reset by any completion. | One hard story never halts a run; a broken tree halts within three attempts. |
@@ -398,7 +398,7 @@ When active:
 | Tool | Decision | Feedback to the agent |
 |---|---|---|
 | Plan exit (`ExitPlanMode`) | allow | — |
-| Question-asking (`AskUserQuestion`; Codex's `request_user_input` if it can be hooked) | **deny** | "This is an unattended Full Auto lane; nobody can answer. If the question has one clear best answer, research and decide it. If two or more are defensible, convene `/council-vote`. Record the decision as a comment on `<story>` the moment you make it." |
+| Question-asking (Claude's `AskUserQuestion`; Codex's `request_user_input`) | **deny** | "This is an unattended Full Auto lane; nobody can answer. If the question has one clear best answer, research and decide it. If two or more are defensible, convene `/council-vote`. Record the decision as a comment on `<story>` the moment you make it." |
 | Everything else | no decision | — |
 
 The permission *posture* is not the hook's job: the engine launches the lane
@@ -407,11 +407,75 @@ accept-edits posture after approval), so the hook decides two things and
 annotates nothing else. A hook that annotates must never decide, and one that
 decides must decide only what it was built to (SH-355).
 
-**The known hole, stated rather than papered over.** A `PreToolUse` hook fails
-*open* at its timeout — the harness lets the call proceed (SH-306). If the
-question-deny hook times out, the agent asks a question, nobody answers, and
-the lane stalls. That is caught by the stall ceiling and quarantined with a
-reason naming it. Detected and reported, not silent — which is the bar.
+### Codex `PreToolUse` contract (SH-459)
+
+Measured against the installed Codex CLI 0.149.0, then checked against OpenAI's
+matching `rust-v0.149.0` source tag. A `PreToolUse` matcher named
+`request_user_input` runs before the question UI opens. Its JSON stdin carries:
+
+- `hook_event_name: "PreToolUse"`, `tool_name: "request_user_input"`, the
+  complete `tool_input`, and `tool_use_id`;
+- `session_id`, `turn_id`, `transcript_path`, `cwd`, `model`, and
+  `permission_mode` (plus agent identity fields for a subagent).
+
+The supported denial and feedback fields are nested under
+`hookSpecificOutput`:
+
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "deny",
+    "permissionDecisionReason": "This is an unattended lane; decide instead of asking."
+  }
+}
+```
+
+`permissionDecisionReason` is both the blocking reason and model feedback. In
+the live probe Codex showed `PreToolUse hook (blocked)`, did not open the
+question UI, and returned `Tool call blocked by PreToolUse hook: ... Tool:
+request_user_input` to the model. This is a minimal standalone fixture:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "request_user_input",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \".codex/deny-question.sh\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+```bash
+#!/usr/bin/env bash
+printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"This is an unattended lane; decide instead of asking."}}'
+exit 0
+```
+
+The source-of-truth schemas are
+`codex-rs/hooks/schema/generated/pre-tool-use.command.input.schema.json` and
+`pre-tool-use.command.output.schema.json`; execution is in
+`hooks/src/events/pre_tool_use.rs`, `core/src/hook_runtime.rs`, and
+`core/src/tools/registry.rs` at OpenAI Codex tag `rust-v0.149.0` (commit
+`758ef40`).
+
+**The known hole, stated rather than papered over.** `PreToolUse` fails *open*
+at its timeout on both hosts. Claude's harness behavior was already measured in
+SH-306. SH-459 configured the Codex matcher above with `timeout: 1` and made the
+hook sleep for three seconds: Codex reported `hook timed out after 1s` and then
+opened the question UI. If the question-deny hook times out, the agent asks a
+question, nobody answers, and the lane stalls. That is caught by the stall
+ceiling and quarantined with a reason naming it. Detected and reported, not
+silent — which is the bar.
 
 ## The machine locks
 
