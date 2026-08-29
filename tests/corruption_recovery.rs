@@ -223,8 +223,13 @@ fn a_database_from_a_newer_storyhook_names_both_versions_and_the_remedy() {
         "what it means: {message}"
     );
     assert!(
-        message.contains("story update"),
-        "and what to do about it: {message}"
+        message.contains("`story update` if a newer release is available"),
+        "the released-build remedy: {message}"
+    );
+    assert!(
+        message.contains("otherwise check out the source revision")
+            && message.contains("`make install`"),
+        "the unreleased-build remedy: {message}"
     );
     assert_eq!(
         out.status.code(),
