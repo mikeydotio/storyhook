@@ -49,9 +49,9 @@ use crate::store::fault::{FaultPoint, fire};
 use crate::store::ids::{EventSeq, ExpectedSeq, GlobalSeq, ProjectId, StoryNo};
 use crate::store::migrate::{self, MIGRATIONS, Migration, current_schema_version};
 use crate::store::types::{
-    AttachmentBlobRow, DeletedProject, FeedEvent, LinkSource, MigrationReport, NewProject, PrLink,
-    ProjectRecord, ProjectRemoteRecord, ProjectSettings, PurgedStory, RawEvent, RelationEdge,
-    StoredEvent, StoryQuery, StoryRow,
+    AttachmentBlobRow, DeletedProject, EngineLaneRecord, EngineRunRecord, FeedEvent, LinkSource,
+    MigrationReport, NewProject, PrLink, ProjectRecord, ProjectRemoteRecord, ProjectSettings,
+    PurgedStory, RawEvent, RelationEdge, StoredEvent, StoryQuery, StoryRow,
 };
 use crate::store::{ReadOps, Store, WriteOps, WriteWithSnapshot};
 
@@ -647,6 +647,22 @@ macro_rules! impl_read_ops {
                 read::projects(&self.conn)
             }
 
+            fn engine_run(&self, run_id: &str) -> Result<Option<EngineRunRecord>, StoreError> {
+                read::engine_run(&self.conn, run_id)
+            }
+
+            fn engine_runs(&self, project_slug: &str) -> Result<Vec<EngineRunRecord>, StoreError> {
+                read::engine_runs(&self.conn, project_slug)
+            }
+
+            fn live_engine_runs(&self) -> Result<Vec<EngineRunRecord>, StoreError> {
+                read::live_engine_runs(&self.conn)
+            }
+
+            fn engine_lanes(&self, run_id: &str) -> Result<Vec<EngineLaneRecord>, StoreError> {
+                read::engine_lanes(&self.conn, run_id)
+            }
+
             fn event_count(&self, project: ProjectId) -> Result<usize, StoreError> {
                 read::event_count(&self.conn, project)
             }
@@ -813,6 +829,18 @@ impl_read_ops!(SqliteWriteTx);
 impl WriteOps for SqliteWriteTx<'_> {
     fn create_project(&mut self, project: &NewProject) -> Result<ProjectId, StoreError> {
         write::create_project(&self.conn, project)
+    }
+
+    fn create_engine_run(&mut self, run: &EngineRunRecord) -> Result<(), StoreError> {
+        write::create_engine_run(&self.conn, run)
+    }
+
+    fn update_engine_run(&mut self, run: &EngineRunRecord) -> Result<(), StoreError> {
+        write::update_engine_run(&self.conn, run)
+    }
+
+    fn put_engine_lane(&mut self, lane: &EngineLaneRecord) -> Result<(), StoreError> {
+        write::put_engine_lane(&self.conn, lane)
     }
 
     fn allocate_story_no(&mut self, project: ProjectId) -> Result<StoryNo, StoreError> {
