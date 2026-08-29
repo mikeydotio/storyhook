@@ -5,10 +5,13 @@
 //! is the *same* read — a writer that could observe a different world than a
 //! reader is how a read model and its events drift apart.
 //!
-//! Every function takes a [`ProjectId`]. There is no unscoped read in this
-//! file and there must never be one: in a single global database where every
-//! repository defaults to the prefix `SH`, an unscoped query does not fail, it
-//! silently returns another project's story.
+//! Every story and project-catalog function takes a [`ProjectId`]. There is no
+//! unscoped story read in this file and there must never be one: in a single
+//! global database where every repository defaults to the prefix `SH`, an
+//! unscoped story read does not fail, it silently returns another project's
+//! story. Full Auto operational reads instead use globally unique run ids or
+//! the project slug stored on a run; the one machine-wide live-run query is the
+//! input to restart reconciliation and lane-budget accounting.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -21,9 +24,10 @@ use crate::domain::{Member, StateDef, StoryEvent, TypeDef};
 use crate::store::error::StoreError;
 use crate::store::ids::{EventSeq, GlobalSeq, ProjectId, StoryNo};
 use crate::store::types::{
-    AttachmentBlobRow, FeedEvent, PrLink, ProjectRecord, ProjectRemoteRecord, ProjectSettings,
-    RelationEdge, StoredEvent, StoredPayload, StoryQuery, StoryRow, StorySort, parse_priority,
-    parse_superstate,
+    AttachmentBlobRow, EngineAgent, EngineLaneRecord, EngineLaneState, EngineRunRecord,
+    EngineRunState, EngineScope, FeedEvent, PrLink, ProjectRecord, ProjectRemoteRecord,
+    ProjectSettings, RelationEdge, StoredEvent, StoredPayload, StoryQuery, StoryRow, StorySort,
+    parse_priority, parse_superstate,
 };
 
 const PROJECT_COLUMNS: &str =
@@ -213,6 +217,212 @@ pub(super) fn projects(conn: &Connection) -> Result<Vec<ProjectRecord>, StoreErr
     )?;
     let rows = sql(stmt.query_map([], project_from_row), "reading projects")?;
     collect(rows, "reading projects")
+}
+
+// ---------------------------------------------------------------------------
+// Full Auto engine operational state
+// ---------------------------------------------------------------------------
+
+const ENGINE_RUN_COLUMNS: &str = "id, project_slug, scope_kind, scope_story_id, lanes, agent, \
+    state, consecutive_hard_stops, stop_reason, acknowledged_at, created_at, updated_at";
+
+#[derive(Debug)]
+struct RawEngineRun {
+    id: String,
+    project_slug: String,
+    scope_kind: String,
+    scope_story_id: Option<String>,
+    lanes: i64,
+    agent: String,
+    state: String,
+    consecutive_hard_stops: i64,
+    stop_reason: Option<String>,
+    acknowledged_at: Option<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+fn raw_engine_run(row: &Row<'_>) -> Result<RawEngineRun, rusqlite::Error> {
+    Ok(RawEngineRun {
+        id: row.get(0)?,
+        project_slug: row.get(1)?,
+        scope_kind: row.get(2)?,
+        scope_story_id: row.get(3)?,
+        lanes: row.get(4)?,
+        agent: row.get(5)?,
+        state: row.get(6)?,
+        consecutive_hard_stops: row.get(7)?,
+        stop_reason: row.get(8)?,
+        acknowledged_at: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
+    })
+}
+
+fn stored_u32(value: i64, column: &str) -> Result<u32, StoreError> {
+    u32::try_from(value)
+        .map_err(|_| StoreError::Corrupt(format!("{column} holds out-of-range value `{value}`")))
+}
+
+fn hydrate_engine_run(raw: RawEngineRun) -> Result<EngineRunRecord, StoreError> {
+    let scope = match (raw.scope_kind.as_str(), raw.scope_story_id) {
+        ("project", None) => EngineScope::Project,
+        ("epic", Some(story_id)) => EngineScope::Epic(story_id),
+        (kind, story_id) => {
+            return Err(StoreError::Corrupt(format!(
+                "engine_runs scope is inconsistent: kind `{kind}`, story id {story_id:?}"
+            )));
+        }
+    };
+    let agent = EngineAgent::parse(&raw.agent).ok_or_else(|| {
+        StoreError::Corrupt(format!(
+            "engine_runs.agent holds unknown value `{}`",
+            raw.agent
+        ))
+    })?;
+    let state = EngineRunState::parse(&raw.state).ok_or_else(|| {
+        StoreError::Corrupt(format!(
+            "engine_runs.state holds unknown value `{}`",
+            raw.state
+        ))
+    })?;
+    Ok(EngineRunRecord {
+        id: raw.id,
+        project_slug: raw.project_slug,
+        scope,
+        lanes: stored_u32(raw.lanes, "engine_runs.lanes")?,
+        agent,
+        state,
+        consecutive_hard_stops: stored_u32(
+            raw.consecutive_hard_stops,
+            "engine_runs.consecutive_hard_stops",
+        )?,
+        stop_reason: raw.stop_reason,
+        acknowledged_at: raw.acknowledged_at,
+        created_at: raw.created_at,
+        updated_at: raw.updated_at,
+    })
+}
+
+pub(super) fn engine_run(
+    conn: &Connection,
+    run_id: &str,
+) -> Result<Option<EngineRunRecord>, StoreError> {
+    one(
+        conn,
+        &format!("SELECT {ENGINE_RUN_COLUMNS} FROM engine_runs WHERE id = ?1"),
+        &[&run_id],
+        raw_engine_run,
+        "reading an engine run",
+    )?
+    .map(hydrate_engine_run)
+    .transpose()
+}
+
+fn engine_run_list(
+    conn: &Connection,
+    text: &str,
+    binds: &[&dyn rusqlite::ToSql],
+    context: &str,
+) -> Result<Vec<EngineRunRecord>, StoreError> {
+    let mut stmt = sql(conn.prepare_cached(text), context)?;
+    let rows = sql(stmt.query_map(binds, raw_engine_run), context)?;
+    collect(rows, context)?
+        .into_iter()
+        .map(hydrate_engine_run)
+        .collect()
+}
+
+pub(super) fn engine_runs(
+    conn: &Connection,
+    project_slug: &str,
+) -> Result<Vec<EngineRunRecord>, StoreError> {
+    engine_run_list(
+        conn,
+        &format!(
+            "SELECT {ENGINE_RUN_COLUMNS} FROM engine_runs \
+             WHERE project_slug = ?1 ORDER BY created_at, id"
+        ),
+        &[&project_slug],
+        "reading a project's engine runs",
+    )
+}
+
+pub(super) fn live_engine_runs(conn: &Connection) -> Result<Vec<EngineRunRecord>, StoreError> {
+    engine_run_list(
+        conn,
+        &format!(
+            "SELECT {ENGINE_RUN_COLUMNS} FROM engine_runs \
+             WHERE state IN ('running','paused','draining') \
+             ORDER BY project_slug, created_at, id"
+        ),
+        &[],
+        "reading live engine runs",
+    )
+}
+
+pub(super) fn engine_lanes(
+    conn: &Connection,
+    run_id: &str,
+) -> Result<Vec<EngineLaneRecord>, StoreError> {
+    let mut stmt = sql(
+        conn.prepare_cached(
+            "SELECT run_id, lane_index, state, story_id, window_name, worktree_path, \
+                    dispatched_at, last_observed_at, outcome, outcome_detail \
+             FROM engine_lanes WHERE run_id = ?1 ORDER BY lane_index",
+        ),
+        "preparing engine lanes",
+    )?;
+    let rows = sql(
+        stmt.query_map(params![run_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+            ))
+        }),
+        "reading engine lanes",
+    )?;
+    let raw = collect(rows, "reading engine lanes")?;
+    raw.into_iter()
+        .map(
+            |(
+                run_id,
+                lane_index,
+                state,
+                story_id,
+                window_name,
+                worktree_path,
+                dispatched_at,
+                last_observed_at,
+                outcome,
+                outcome_detail,
+            )| {
+                let state = EngineLaneState::parse(&state).ok_or_else(|| {
+                    StoreError::Corrupt(format!("engine_lanes.state holds unknown value `{state}`"))
+                })?;
+                Ok(EngineLaneRecord {
+                    run_id,
+                    lane_index: stored_u32(lane_index, "engine_lanes.lane_index")?,
+                    state,
+                    story_id,
+                    window_name,
+                    worktree_path,
+                    dispatched_at,
+                    last_observed_at,
+                    outcome,
+                    outcome_detail,
+                })
+            },
+        )
+        .collect()
 }
 
 pub(super) fn event_count(conn: &Connection, project: ProjectId) -> Result<usize, StoreError> {

@@ -29,7 +29,8 @@ use crate::store::fault::{FaultPoint, fire};
 use crate::store::ids::{EventSeq, ExpectedSeq, ProjectId, StoryNo};
 use crate::store::sqlite::read;
 use crate::store::types::{
-    DeletedProject, LinkSource, NewProject, ProjectSettings, PurgedStory, RawEvent, priority_rank,
+    DeletedProject, EngineLaneRecord, EngineRunRecord, LinkSource, NewProject, ProjectSettings,
+    PurgedStory, RawEvent, priority_rank,
 };
 
 fn sql<T>(result: Result<T, rusqlite::Error>, context: &str) -> Result<T, StoreError> {
@@ -83,6 +84,108 @@ pub(super) fn create_project(
     Ok(ProjectId::new(id))
 }
 
+// ---------------------------------------------------------------------------
+// Full Auto engine operational state
+// ---------------------------------------------------------------------------
+
+pub(super) fn create_engine_run(
+    conn: &Connection,
+    run: &EngineRunRecord,
+) -> Result<(), StoreError> {
+    if read::project_by_slug(conn, &run.project_slug)?.is_none() {
+        return Err(StoreError::NotFound(format!(
+            "project `{}` does not exist",
+            run.project_slug
+        )));
+    }
+    sql(
+        conn.execute(
+            "INSERT INTO engine_runs \
+                 (id, project_slug, scope_kind, scope_story_id, lanes, agent, state, \
+                  consecutive_hard_stops, stop_reason, acknowledged_at, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                run.id,
+                run.project_slug,
+                run.scope.kind(),
+                run.scope.story_id(),
+                run.lanes,
+                run.agent.as_str(),
+                run.state.as_str(),
+                run.consecutive_hard_stops,
+                run.stop_reason,
+                run.acknowledged_at,
+                run.created_at,
+                run.updated_at,
+            ],
+        ),
+        "creating an engine run",
+    )?;
+    Ok(())
+}
+
+pub(super) fn update_engine_run(
+    conn: &Connection,
+    run: &EngineRunRecord,
+) -> Result<(), StoreError> {
+    let updated = sql(
+        conn.execute(
+            "UPDATE engine_runs SET state = ?2, consecutive_hard_stops = ?3, \
+                 stop_reason = ?4, acknowledged_at = ?5, updated_at = ?6 WHERE id = ?1",
+            params![
+                run.id,
+                run.state.as_str(),
+                run.consecutive_hard_stops,
+                run.stop_reason,
+                run.acknowledged_at,
+                run.updated_at,
+            ],
+        ),
+        "updating an engine run",
+    )?;
+    if updated == 0 {
+        return Err(StoreError::NotFound(format!(
+            "engine run `{}` does not exist",
+            run.id
+        )));
+    }
+    Ok(())
+}
+
+pub(super) fn put_engine_lane(
+    conn: &Connection,
+    lane: &EngineLaneRecord,
+) -> Result<(), StoreError> {
+    sql(
+        conn.execute(
+            "INSERT INTO engine_lanes \
+                 (run_id, lane_index, state, story_id, window_name, worktree_path, \
+                  dispatched_at, last_observed_at, outcome, outcome_detail) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
+             ON CONFLICT (run_id, lane_index) DO UPDATE SET \
+                 state = excluded.state, story_id = excluded.story_id, \
+                 window_name = excluded.window_name, worktree_path = excluded.worktree_path, \
+                 dispatched_at = excluded.dispatched_at, \
+                 last_observed_at = excluded.last_observed_at, \
+                 outcome = excluded.outcome, outcome_detail = excluded.outcome_detail",
+            params![
+                lane.run_id,
+                lane.lane_index,
+                lane.state.as_str(),
+                lane.story_id,
+                lane.window_name,
+                lane.worktree_path,
+                lane.dispatched_at,
+                lane.last_observed_at,
+                lane.outcome,
+                lane.outcome_detail,
+            ],
+        ),
+        "writing an engine lane",
+    )?;
+    Ok(())
+}
+
 /// Renames a project, leaving every other column alone.
 pub(super) fn rename_project(
     conn: &Connection,
@@ -129,8 +232,8 @@ pub(super) fn set_prefix(
     Ok(())
 }
 
-/// Every table holding rows scoped to a single project, in the order they must
-/// be cleared, paired with the column naming the project.
+/// Every table holding rows scoped to a single project id, in the order they
+/// must be cleared, paired with the column naming the project.
 ///
 /// The order is a dependency order, and two positions in it are load-bearing:
 ///
@@ -141,6 +244,11 @@ pub(super) fn set_prefix(
 /// * `projects` comes **before** `events`, which is what makes migration 3's
 ///   rewritten `events_reject_delete` abstain. Reversing these two turns a
 ///   working teardown into an aborted transaction.
+///
+/// `engine_runs` is the one project-scoped table absent from this list: the
+/// design of record keys it by immutable project slug, so [`delete_project`]
+/// clears and verifies it explicitly before entering this id-keyed sweep.
+/// Its lanes cascade from it.
 ///
 /// Every other entry would be handled by `ON DELETE CASCADE`. They are listed
 /// anyway, and the cascade demoted to a backstop, so that
@@ -169,14 +277,21 @@ pub(super) fn delete_project(
     conn: &Connection,
     project: ProjectId,
 ) -> Result<DeletedProject, StoreError> {
-    if read::project(conn, project)?.is_none() {
-        return Err(StoreError::NotFound(format!(
+    let record = read::project(conn, project)?.ok_or_else(|| {
+        StoreError::NotFound(format!(
             "deleting a project that does not exist (id {})",
             project.get()
-        )));
-    }
+        ))
+    })?;
 
     let mut removed = DeletedProject::default();
+    sql(
+        conn.execute(
+            "DELETE FROM engine_runs WHERE project_slug = ?1",
+            params![record.slug],
+        ),
+        "deleting a project's engine runs",
+    )?;
     for (table, column) in PROJECT_SCOPED_TABLES {
         // The table name is a compile-time constant from the list above, never
         // caller input, so interpolating it cannot be an injection. The project
@@ -196,7 +311,7 @@ pub(super) fn delete_project(
         }
     }
 
-    verify_project_is_gone(conn, project)?;
+    verify_project_is_gone(conn, project, &record.slug)?;
     Ok(removed)
 }
 
@@ -207,7 +322,25 @@ pub(super) fn delete_project(
 /// [`PROJECT_SCOPED_TABLES`]: the alternative to failing here is a store that
 /// quietly accumulates rows belonging to projects that no longer exist, keyed
 /// by an id SQLite will hand to somebody else.
-fn verify_project_is_gone(conn: &Connection, project: ProjectId) -> Result<(), StoreError> {
+fn verify_project_is_gone(
+    conn: &Connection,
+    project: ProjectId,
+    project_slug: &str,
+) -> Result<(), StoreError> {
+    let runs_left: i64 = sql(
+        conn.query_row(
+            "SELECT count(*) FROM engine_runs WHERE project_slug = ?1",
+            params![project_slug],
+            |row| row.get(0),
+        ),
+        "verifying engine-run deletion",
+    )?;
+    if runs_left > 0 {
+        return Err(StoreError::Invariant(format!(
+            "deleting project {} left {runs_left} row(s) in `engine_runs`",
+            project.get()
+        )));
+    }
     for (table, column) in PROJECT_SCOPED_TABLES {
         let left: i64 = sql(
             conn.query_row(

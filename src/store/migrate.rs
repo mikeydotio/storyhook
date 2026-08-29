@@ -278,6 +278,14 @@ pub const MIGRATIONS: &[Migration] = &[
         // No table is rebuilt and no event is appended.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 24,
+        name: "engine_runs",
+        sql: include_str!("schema/0024_engine_runs.sql"),
+        // Two new tables and one index; no existing table is rebuilt and the
+        // append-only event log is untouched.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.
