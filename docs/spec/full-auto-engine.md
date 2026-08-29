@@ -486,6 +486,11 @@ carries no steps of its own.
 `!is_ready`, so the board's ready count is unchanged and an epic whose only
 incomplete child is `human-only` is **not** blocked — a human can progress it.
 
+The tint is `var(--warn)` on `var(--warn-soft)`, declared in all four of the
+dashboard's palette blocks and applied by the single `.chip-reserved` rule
+(SH-454). It is deliberately *not* red: red is already spoken for by the
+blocked and danger signals, and a reserved label is not a fault.
+
 The engine's claim is `story claim --next` narrowed by two new filters:
 `--epic <id>` (the descendant subtree) and `--exclude-label <csv>`. Both are
 ordinary query flags accepted on **both** doors onto the ready queue — `story
@@ -746,3 +751,36 @@ behaviour, as the story specified. The constant exists now so `--exclude-label`
 (SH-455) and the reconciler (SH-465) cannot disagree with this wave about the
 spelling; `tests/engine_labels.rs` asserts it is still offered by `story next`,
 which is what fails if the `human-only` filter is ever widened to cover both.
+
+### SH-454 — the orange tint
+
+**The tint reaches four render sites, not the three the story named.** The
+dashboard builds a label chip on the board card, in List view, in the detail
+drawer, and in the create/edit label combobox. The fourth is a chip a person
+looks at while choosing labels, so it is exactly where the reservation is most
+worth seeing; all four read one `labelChipClass()`.
+
+**Cards reorder rather than only recolour.** A card shows three labels and
+collapses the rest into `+N`, so a reserved label in that overflow would be
+tinted nowhere and the card would read as ordinary work. Reserved names sort
+to the front of the visible three (a stable sort, so ordinary labels keep
+their given order). The card is the only site that elides; the other three
+show every label and reorder nothing. Decided by the operator when the gap was
+found mid-implementation, over tinting the `+N` chip itself, which signals that
+something is hidden without saying what.
+
+**`--warn-soft` is a new token, defined in four blocks rather than the three
+the theme rule names.** The sheet restates the entire light palette under
+`:root[data-theme="light"]` so that it beats the `prefers-color-scheme` block
+on specificity, so bare `:root` plus the two dark blocks leaves the token
+undefined for a reader who has explicitly chosen light. An undefined custom
+property paints as nothing rather than erroring, so that gap is invisible
+except to a measurement — which is why the browser leg asserts the reserved
+chip paints *differently from an ordinary one*, not merely that it is
+readable: a fully transparent chip inherits the card behind it and would pass
+a contrast check on its own.
+
+Measured contrast of `--warn` on `--warn-soft` is 4.54:1 light and 5.12:1
+dark. The story asked for the bar the rest of the dashboard's chips meet;
+that bar is 4.16:1 (`--fg-muted` on `--bg-sunken`, light), so WCAG AA's 4.5:1
+is asserted instead as the stronger of the two claims.
