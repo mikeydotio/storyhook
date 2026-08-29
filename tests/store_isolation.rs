@@ -17,7 +17,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use storyhook_test_support::{daemon_containment, scratch_dir, story_binary};
+use storyhook_test_support::{
+    TestEnv, daemon_containment, path_without_tailscale, scratch_dir, story_binary,
+};
 use tempfile::TempDir;
 
 /// A private world for one test: a `HOME`, one state home shared by every
@@ -726,9 +728,17 @@ fn store_backup_is_reported_by_daemon_status_not_by_doctor() {
 /// A daemon started before this change published its portfile at the state
 /// home's root. After the upgrade a client looks under `daemons/<key>/`, finds
 /// nothing, and must stand the old one down rather than run beside it.
+///
+/// Runs with [`path_without_tailscale`] throughout (SH-417). This test renames
+/// a *live* daemon's keyed portfile and needs it to stay absent until the next
+/// command reads the legacy path. The daemon's background tailnet probe
+/// (`serve::tailnet_reprobe`) otherwise rewrites the keyed portfile the instant
+/// it binds, letting the next command join the incumbent instead of replacing
+/// it. Denying `tailscale` closes that race at the source.
 #[test]
 fn a_daemon_at_the_legacy_portfile_is_stood_down_rather_than_duplicated() {
     let probe = Probe::new();
+    let (_no_tailscale, no_tailscale_path) = path_without_tailscale(TestEnv::shared());
     let xdg_data = probe.dir("xdg-data");
     let ambient = xdg_data.join("storyhook");
     std::fs::create_dir_all(&ambient).expect("creating the ambient store directory");
@@ -737,7 +747,8 @@ fn a_daemon_at_the_legacy_portfile_is_stood_down_rather_than_duplicated() {
     let with_ambient = |cwd: &Path| {
         let mut cmd = probe.story(cwd);
         cmd.env("XDG_DATA_HOME", &xdg_data)
-            .env("STORYHOOK_DATA_DIR", &ambient);
+            .env("STORYHOOK_DATA_DIR", &ambient)
+            .env("PATH", &no_tailscale_path);
         cmd
     };
 
@@ -758,7 +769,7 @@ fn a_daemon_at_the_legacy_portfile_is_stood_down_rather_than_duplicated() {
         serde_json::from_str(&std::fs::read_to_string(&keyed).expect("reading the new portfile"))
             .expect("parsing the new portfile");
     assert_ne!(
-        before["pid"], after["pid"],
+        before["token"], after["token"],
         "the daemon holding the legacy portfile must have been replaced, not joined"
     );
     assert!(

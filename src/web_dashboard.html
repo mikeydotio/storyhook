@@ -23,6 +23,14 @@
   --success-soft: #eafbf1;
   --warn: #b6540a;
   --warn-fg: #ffffff;
+  /* The soft companion --warn needs to sit on, in the shape --danger /
+     --danger-soft already establishes. Read only by `.chip-reserved`
+     today (SH-454). Defined in all four palette blocks rather than
+     alongside the dark tokens alone: an undefined custom property paints
+     as nothing, so a chip missing its tint in one theme resolution reads
+     as an ordinary label with no error anywhere.
+     tests/dashboard_reserved_labels.rs fails on a block that omits it. */
+  --warn-soft: #fff4e8;
   --shadow-sm: 0 1px 2px rgba(20, 24, 33, 0.06);
   --shadow-md: 0 6px 20px -4px rgba(20, 24, 33, 0.16), 0 2px 6px rgba(20, 24, 33, 0.08);
   --shadow-lg: 0 24px 60px -12px rgba(20, 24, 33, 0.35);
@@ -86,6 +94,7 @@
     --success-soft: #163627;
     --warn: #d97a1f;
     --warn-fg: #ffffff;
+    --warn-soft: #2e1f10;
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
     --shadow-md: 0 8px 24px -6px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.35);
     --shadow-lg: 0 30px 70px -14px rgba(0, 0, 0, 0.7);
@@ -101,7 +110,7 @@
   --fg-muted: #9198a8; --fg-faint: #656d7c; --border: #262a35; --border-strong: #363c4a;
   --accent: #5b7cff; --accent-fg: #ffffff; --accent-soft: #1a2140;
   --danger: #f2686d; --danger-soft: #3a1c1f; --success: #3fc47a; --success-soft: #163627;
-  --warn: #d97a1f; --warn-fg: #ffffff;
+  --warn: #d97a1f; --warn-fg: #ffffff; --warn-soft: #2e1f10;
   --shadow-sm: 0 1px 2px rgba(0,0,0,.4); --shadow-md: 0 8px 24px -6px rgba(0,0,0,.55),0 2px 8px rgba(0,0,0,.35);
   --shadow-lg: 0 30px 70px -14px rgba(0,0,0,.7);
   --p-critical: #f2686d; --p-high: #ff9152; --p-medium: #f0bd3e; --p-low: #46d18a; --p-none: #656d7c;
@@ -111,7 +120,7 @@
   --fg-muted: #6b7280; --fg-faint: #9aa1ac; --border: #e3e6eb; --border-strong: #d3d7de;
   --accent: #3b5bfd; --accent-fg: #ffffff; --accent-soft: #eaeeff;
   --danger: #e5484d; --danger-soft: #fdedee; --success: #1f9d55; --success-soft: #eafbf1;
-  --warn: #b6540a; --warn-fg: #ffffff;
+  --warn: #b6540a; --warn-fg: #ffffff; --warn-soft: #fff4e8;
   --shadow-sm: 0 1px 2px rgba(20,24,33,.06); --shadow-md: 0 6px 20px -4px rgba(20,24,33,.16),0 2px 6px rgba(20,24,33,.08);
   --shadow-lg: 0 24px 60px -12px rgba(20,24,33,.35);
   --p-critical: #e5484d; --p-high: #f2762e; --p-medium: #d9a413; --p-low: #2f9e6e; --p-none: #9aa1ac;
@@ -620,6 +629,15 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
   font-size: 0.625rem; padding: 0.0625rem 0.375rem; border-radius: 9999px; background: var(--bg-sunken);
   border: 1px solid var(--border); color: var(--fg-muted); font-weight: 600; white-space: nowrap;
 }
+/* The two reserved label names (SH-454, decision D12 of the Full Auto epic --
+   docs/spec/full-auto-engine.md). They mean "a person is required here", so
+   they must never read as one more tag: orange, distinct from the neutral chip
+   above and from the red the blocked and danger signals already own. Handed
+   out by labelChipClass() alone -- the four label render sites do not decide
+   this for themselves, and tests/dashboard_reserved_labels.rs fails if one
+   starts to. Contrast measured in all four theme resolutions by
+   e2e/specs/reserved-labels.spec.ts. */
+.chip-reserved { background: var(--warn-soft); border-color: var(--warn); color: var(--warn); }
 .avatar {
   width: 1.25rem; height: 1.25rem; border-radius: 50%; background: var(--accent-soft); color: var(--accent);
   font-size: 0.625rem; font-weight: 700; display: flex; align-items: center; justify-content: center;
@@ -1796,6 +1814,29 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   var TOKEN_EXCHANGE_TIMEOUT_MS = 10000;
 
   var PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3, none: 4 };
+
+  // The reserved label names, mirroring `domain::RESERVED_LABELS` in
+  // src/domain.rs (SH-453). They carry behaviour on the server -- `human-only`
+  // is filtered out of the ready queue, and the Full Auto engine skips
+  // `no-auto` -- and the browser cannot call `domain::is_human_only`, so it
+  // keeps its own copy. tests/dashboard_reserved_labels.rs fails the build if
+  // the two lists ever drift apart.
+  var RESERVED_LABELS = ["no-auto", "human-only"];
+
+  /** Whether `name` is one of the reserved labels. */
+  function isReservedLabel(name) {
+    return RESERVED_LABELS.indexOf(name) !== -1;
+  }
+
+  /** The class string for a label chip built on `base`, tinted when the label
+   * is reserved. The ONE place any render site decides this: the dashboard
+   * draws labels in four places (board card, List view, drawer, the create /
+   * edit combobox), and a per-site copy of the test is the hand-kept-list
+   * shape this project has paid for repeatedly (SH-136, SH-198, SH-258,
+   * SH-260/276, SH-360). */
+  function labelChipClass(name, base) {
+    return isReservedLabel(name) ? base + " chip-reserved" : base;
+  }
 
   // ============================================================
   // HANDOFF (SH-251)
@@ -7363,8 +7404,18 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var metaRow = el("div", { class: "card-meta" }, []);
     if ((st.labels || []).length) {
       var labelWrap = el("div", { class: "card-labels" }, []);
-      st.labels.slice(0, 3).forEach(function(l) { labelWrap.appendChild(el("span", { class: "chip" }, [l])); });
-      if (st.labels.length > 3) labelWrap.appendChild(el("span", { class: "chip" }, ["+" + (st.labels.length - 3)]));
+      // A card shows three labels and collapses the rest into "+N", so a
+      // reserved label sitting in that overflow would be tinted nowhere and
+      // the card would read as ordinary work (SH-454). Reserved names sort to
+      // the front of the visible three; `sort` is stable (ES2019), so the
+      // ordinary labels keep the order the story gives them. The card is the
+      // only render site that elides -- List view, the drawer and the
+      // combobox all show every label and need no reordering.
+      var shown = st.labels.slice().sort(function(a, b) {
+        return (isReservedLabel(b) ? 1 : 0) - (isReservedLabel(a) ? 1 : 0);
+      });
+      shown.slice(0, 3).forEach(function(l) { labelWrap.appendChild(el("span", { class: labelChipClass(l, "chip") }, [l])); });
+      if (shown.length > 3) labelWrap.appendChild(el("span", { class: "chip" }, ["+" + (shown.length - 3)]));
       metaRow.appendChild(labelWrap);
     }
     if (st.assignee) {
@@ -8590,7 +8641,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   function labelChips(labels) {
     var wrap = el("span", {}, []);
-    (labels || []).forEach(function(l) { wrap.appendChild(el("span", { class: "chip", style: "margin-right:.25rem" }, [l])); });
+    (labels || []).forEach(function(l) { wrap.appendChild(el("span", { class: labelChipClass(l, "chip"), style: "margin-right:.25rem" }, [l])); });
     return wrap;
   }
 
@@ -9046,7 +9097,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if ((st.labels || []).length) {
       var chips = el("div", { class: "label-chips" }, []);
       st.labels.forEach(function(label) {
-        chips.appendChild(el("span", { class: "chip label-chip" }, [
+        chips.appendChild(el("span", { class: labelChipClass(label, "chip label-chip") }, [
           label,
           el("button", { type: "button", onClick: function() {
             api("POST", apiBase() + "/story/" + encodeURIComponent(st.id) + "/labels", { remove: [label] })
@@ -9077,7 +9128,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     function renderChips() {
       clear(chips);
       selected.forEach(function(label) {
-        chips.appendChild(el("span", { class: "chip label-chip" }, [
+        chips.appendChild(el("span", { class: labelChipClass(label, "chip label-chip") }, [
           label,
           el("button", { type: "button", onClick: function(e) {
             e.stopPropagation();
