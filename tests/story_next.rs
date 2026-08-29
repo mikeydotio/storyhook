@@ -304,3 +304,159 @@ fn next_all_blocked_returns_no_ready() {
         .success()
         .stdout(predicate::str::contains("no ready stories"));
 }
+
+#[test]
+fn next_epic_scope_includes_grandchildren_only_and_preserves_ready_order() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Root epic", "--type", "epic"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Nested epic", "--type", "epic"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Outside critical"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Scoped low"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Scoped critical"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["relate", "SH-1", "parent-of", "SH-2"])
+        .assert()
+        .success();
+    for child in ["SH-4", "SH-5"] {
+        story(dir.path())
+            .args(["relate", "SH-2", "parent-of", child])
+            .assert()
+            .success();
+    }
+    story(dir.path())
+        .args(["prioritize", "SH-3", "critical"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["prioritize", "SH-4", "low"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["prioritize", "SH-5", "critical"])
+        .assert()
+        .success();
+    for id in ["SH-3", "SH-4", "SH-5"] {
+        story(dir.path())
+            .args(["label", id, "phase:1"])
+            .assert()
+            .success();
+    }
+
+    let output = story(dir.path())
+        .args([
+            "next",
+            "--epic",
+            "SH-1",
+            "--exclude-label",
+            "unknown",
+            "--phase",
+            "1",
+            "--count",
+            "3",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        !stdout.contains("SH-3"),
+        "outside story leaked in: {stdout}"
+    );
+    let critical = stdout.find("SH-5").expect("scoped critical grandchild");
+    let low = stdout.find("SH-4").expect("scoped low grandchild");
+    assert!(
+        critical < low,
+        "ready ordering changed inside scope: {stdout}"
+    );
+}
+
+#[test]
+fn next_exclude_label_matches_list_label_case_and_csv_semantics() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Mixed case"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Excluded"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Unlabelled"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["label", "SH-1", "No-Auto"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["label", "SH-2", "no-auto"])
+        .assert()
+        .success();
+
+    let output = story(dir.path())
+        .args([
+            "next",
+            "--count",
+            "3",
+            "--exclude-label",
+            " unknown, no-auto ",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("SH-1"),
+        "matching stays case-sensitive: {stdout}"
+    );
+    assert!(
+        !stdout.contains("SH-2"),
+        "named label was not excluded: {stdout}"
+    );
+    assert!(
+        stdout.contains("SH-3"),
+        "unknown label excluded work: {stdout}"
+    );
+}
+
+#[test]
+fn next_epic_scope_refuses_a_non_epic_by_name() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Ordinary story"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["next", "--epic", "SH-1"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("story `SH-1` is not an epic"));
+}

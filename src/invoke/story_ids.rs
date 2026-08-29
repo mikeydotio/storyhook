@@ -28,6 +28,8 @@
 //! and two independent reviewers each found a different subset. A hand-kept
 //! list of id-bearing verbs is exactly the thing that was already wrong.
 
+#[cfg(test)]
+use crate::cli::ClaimComment;
 use crate::cli::{
     AttachmentAction, ClaimTarget, EpicAction, GraphMode, HistoryAction, Invocation, PhaseAction,
 };
@@ -218,12 +220,15 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         Invocation::SetAwaiting { id, on, .. } | Invocation::ClearAwaiting { id, on } => {
             std::iter::once(id).chain(on.iter_mut()).collect()
         }
-        // `story claim 9` expands the same way `story show 9` does; the
-        // `--next` form names no story at all (SH-476).
+        // `story claim 9` expands the same way `story show 9` does. The
+        // `--next` form can name an epic scope (SH-455).
         Invocation::Claim { target, .. } => match target {
             ClaimTarget::Story(id) => vec![id],
-            ClaimTarget::Next { .. } => Vec::new(),
+            ClaimTarget::Next { epic, .. } => epic.iter_mut().collect(),
         },
+        // `--epic 9` is a story-id position even though `next` otherwise
+        // names no story.
+        Invocation::Next { epic, .. } => epic.iter_mut().collect(),
         // `story unclaim 9` expands the same way (SH-483). It has only the
         // one form, so there is no arm that names no story.
         Invocation::Unclaim { id, .. } => vec![id],
@@ -263,7 +268,6 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         | Invocation::State { .. }
         | Invocation::List { .. }
         | Invocation::Search { .. }
-        | Invocation::Next { .. }
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
@@ -320,6 +324,38 @@ mod tests {
         // nothing, this test says so.
         let cases: Vec<(&str, Invocation, usize)> = vec![
             ("show", Invocation::Show { id: "1".into() }, 1),
+            (
+                "next --epic",
+                Invocation::Next {
+                    count: 1,
+                    phase: None,
+                    epic: Some("1".into()),
+                    exclude_label: None,
+                },
+                1,
+            ),
+            (
+                "claim <id>",
+                Invocation::Claim {
+                    target: ClaimTarget::Story("1".into()),
+                    comment: ClaimComment::Suppressed,
+                    dry_run: false,
+                },
+                1,
+            ),
+            (
+                "claim --next --epic",
+                Invocation::Claim {
+                    target: ClaimTarget::Next {
+                        phase: None,
+                        epic: Some("1".into()),
+                        exclude_label: None,
+                    },
+                    comment: ClaimComment::Suppressed,
+                    dry_run: false,
+                },
+                1,
+            ),
             (
                 "comment",
                 Invocation::Comment {
