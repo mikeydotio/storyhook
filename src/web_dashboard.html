@@ -5642,11 +5642,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
      presentational descendants became `pointer-events: none`. SH-422 found that
      a real order change still disconnects and reinserts that whole card; the
      gate below covers it because `renderView` is one of the deferred surfaces,
-     with `card-reposition-click-race.spec.ts` as the exact witness. The drawer
-     has no surviving node at all — `renderDrawer` does `clear(body)`
-     unconditionally — so SH-397's shape structurally cannot help there: the
-     button IS the destroyed node, and delegating to a surviving ancestor changes
-     nothing, because no `click` is dispatched at all.
+     with `card-reposition-click-race.spec.ts` as the exact witness. At the time
+     this gate landed the drawer had no surviving node at all: `renderDrawer`
+     cleared its body unconditionally. SH-423 subsequently gave its top-level
+     sections stable, output-derived identity, but a section whose own output
+     genuinely changes can still be replaced; the gate remains the broader rule
+     that makes that replacement wait until the press is complete.
 
      So the paint waits instead. While a press is in flight the renderers below
      defer, and flush once the press can no longer produce a `click`. Only the
@@ -8691,22 +8692,23 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // DRAWER
   // ============================================================
 
-  // True only for the synchronous instant renderDrawer() spends tearing down
-  // the old drawer-body DOM (SH-218). A field the user is mid-edit in gets
-  // detached by that teardown, and browsers fire a real `blur` event on an
+  // True only for the synchronous instant renderDrawer() spends replacing
+  // changed drawer sections (SH-218/SH-423). A field the user is mid-edit in
+  // can be detached by that replacement, and browsers fire a real `blur` on an
   // element removed from the document -- without this guard, a title/
   // description edit not yet committed would autosave whatever partial text
   // had been typed so far, every time an unrelated re-render (the detail
-  // fetch resolving, a field mutation elsewhere, a dispatch poll) happened
-  // to land mid-edit. captureDrawerFocus/restoreDrawerFocus below handle the
+  // fetch resolving or a mutation touching its section) happened to land
+  // mid-edit. captureDrawerFocus/restoreDrawerFocus below handle the
   // sibling half of the same bug: putting the in-progress value back once
   // the new field exists.
   var drawerRerendering = false;
 
   /** Snapshots the drawer-body field the user is actively typing in, if any,
-   * keyed by its `data-field` attribute rather than DOM identity -- every
-   * field is rebuilt from scratch on each render, so nothing here can
-   * survive by reference. Returns null when nothing in `body` has focus, or
+   * keyed by its `data-field` attribute rather than DOM identity -- SH-423
+   * retains output-identical sections, but a changed section is still replaced,
+   * so no field may rely on surviving by reference. Returns null when nothing
+   * in `body` has focus, or
    * the focused element opted out (no `data-field`, e.g. the derived-value
    * selects in buildFieldGrid, which have nothing unsaved to lose).
    *
@@ -8751,6 +8753,132 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (captured.selectionStart !== null && typeof match.setSelectionRange === "function") {
       match.setSelectionRange(captured.selectionStart, captured.selectionEnd);
     }
+  }
+
+  /** Marks one top-level drawer-body section with the stable identity used by
+   * `reconcileDrawerSections`. The key describes the section's role, never its
+   * current position: archived/blocked/referenced-by are optional, so an index
+   * would make every section below one of them look different when it appears. */
+  function drawerSection(key, node) {
+    node.dataset.drawerSection = key;
+    return node;
+  }
+
+  /** Serializes what a detached drawer section would actually render.
+   *
+   * The root tag/attributes plus `innerHTML` are the complete output-derived
+   * fingerprint for ordinary DOM, matching `populateCard`'s SH-399 precedent.
+   * Form values are the exception: `el()` assigns `value`/`checked`/`selected`
+   * as live properties, which HTML serialization is not required to reflect
+   * back into attributes. Appending those properties keeps the fingerprint
+   * output-derived without a second, hand-maintained list of story fields that
+   * would drift as a section grows. The result is compared only; it is never
+   * assigned back as markup (SH-217's XSS boundary). */
+  function drawerRenderFingerprint(node) {
+    var controlNodes = [];
+    if (node.matches("input, textarea, select")) controlNodes.push(node);
+    controlNodes = controlNodes.concat(Array.prototype.slice.call(
+      node.querySelectorAll("input, textarea, select")
+    ));
+    var controls = controlNodes.map(function(control) {
+      return {
+        tag: control.tagName,
+        type: control.type || "",
+        value: typeof control.value === "string" ? control.value : null,
+        checked: typeof control.checked === "boolean" ? control.checked : null,
+        selectedIndex: typeof control.selectedIndex === "number" ? control.selectedIndex : null
+      };
+    });
+    var attributes = Array.prototype.map.call(node.attributes, function(attribute) {
+      return [attribute.name, attribute.value];
+    });
+    return JSON.stringify({
+      tag: node.tagName,
+      attributes: attributes,
+      children: node.innerHTML,
+      controls: controls
+    });
+  }
+
+  /** Reconciles the drawer body's keyed top-level sections.
+   *
+   * A section whose candidate output is byte-identical keeps its live node and
+   * listeners. Only a changed section is replaced; optional sections are
+   * inserted/removed by key. This is deliberately one level of reconciliation,
+   * not a virtual DOM: SH-423's defect is an unrelated Description update
+   * destroying the Comments control, and the section boundary is exactly the
+   * ownership boundary the builders below already express.
+   *
+   * `reuse` is false on a story/repository switch even when two stories happen
+   * to render identical text. Retained listeners close over the stable story id,
+   * so reusing across identities would send a click to the story that used to
+   * own the drawer. */
+  function reconcileDrawerSections(parent, candidateParent, reuse) {
+    var candidates = Array.prototype.slice.call(candidateParent.children);
+    var desired = {};
+    candidates.forEach(function(candidate) {
+      var key = candidate.dataset.drawerSection;
+      if (!key || desired[key]) throw new Error("drawer sections require unique stable keys");
+      desired[key] = true;
+    });
+
+    if (!reuse) {
+      clear(parent);
+      candidates.forEach(function(candidate) {
+        candidate.dataset.drawerRendered = drawerRenderFingerprint(candidate);
+        parent.appendChild(candidate);
+      });
+      return;
+    }
+
+    var existing = {};
+    Array.prototype.slice.call(parent.children).forEach(function(node) {
+      var key = node.dataset.drawerSection;
+      if (key) existing[key] = node;
+    });
+
+    // Remove vanished optional sections first. That preserves the relative DOM
+    // position of every retained node, instead of moving it merely because a
+    // banner above it disappeared.
+    Object.keys(existing).forEach(function(key) {
+      if (desired[key]) return;
+      existing[key].remove();
+      delete existing[key];
+    });
+
+    var cursor = parent.firstElementChild;
+    candidates.forEach(function(candidate) {
+      var key = candidate.dataset.drawerSection;
+      var rendered = drawerRenderFingerprint(candidate);
+      var previous = existing[key];
+      var chosen;
+      var inPosition = previous === cursor;
+      if (previous && previous.dataset.drawerRendered === rendered) {
+        chosen = previous;
+      } else {
+        candidate.dataset.drawerRendered = rendered;
+        chosen = candidate;
+        if (previous) parent.replaceChild(chosen, previous);
+        else {
+          parent.insertBefore(chosen, cursor);
+          inPosition = true;
+        }
+      }
+      // Existing keys are already ordered by this same candidate list. This is
+      // the corruption-safe fallback, not the ordinary path.
+      if (!inPosition) parent.insertBefore(chosen, cursor);
+      cursor = chosen.nextElementSibling;
+    });
+  }
+
+  /** The freshest story record for the open drawer id. Detail wins because it
+   * carries fields the board summary omits; the summary is the synchronous
+   * fallback before that request arrives. Retained handlers use this whenever
+   * their behavior depends on data that their visible output does not contain. */
+  function currentDrawerStory(id) {
+    var detail = state.drawerId === id && state.drawerDetail;
+    var summary = findStory(id);
+    return (detail && detail.story) || (summary && summary.story) || null;
   }
 
   /** Opens the drawer for `id`. Assumes `state.screen === "repo"` -- every
@@ -8821,28 +8949,27 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // get its stale value written into a different story's own field.
     var sameDrawer = body.dataset.storyId === st.id && body.dataset.repoId === state.repoId;
     var focused = sameDrawer ? captureDrawerFocus(body) : null;
-    drawerRerendering = true;
-    clear(body);
-    drawerRerendering = false;
-    body.dataset.storyId = st.id;
-    body.dataset.repoId = state.repoId;
+    var nextBody = el("div", {}, []);
 
-    body.appendChild(buildTitleField(st));
-    body.appendChild(buildFieldGrid(st));
+    nextBody.appendChild(drawerSection("title", buildTitleField(st)));
+    nextBody.appendChild(drawerSection("fields", buildFieldGrid(st)));
     // SH-217: edit mode is derived from the focus snapshot taken above
     // (before teardown) -- if the description textarea held focus, the
     // section rebuilds already in edit mode, so restoreDrawerFocus below
     // finds the textarea it expects. See buildDescriptionSection's own
     // doc comment for why this alone isn't the whole mechanism.
-    body.appendChild(buildDescriptionSection(st, !!(focused && focused.field === "description")));
+    nextBody.appendChild(drawerSection(
+      "description",
+      buildDescriptionSection(st, !!(focused && focused.field === "description"))
+    ));
 
     if (st.hidden_at) {
-      body.appendChild(el("div", { class: "banner banner-archived" }, [
+      nextBody.appendChild(drawerSection("archived", el("div", { class: "banner banner-archived" }, [
         el("div", { class: "banner-head" }, [
           "🗄️ Archived — hidden from the board until unarchived.",
           el("button", { class: "btn btn-ghost", onClick: function() { runFieldMutation(st.id, "POST", "unarchive", {}); } }, ["Unarchive"])
         ])
-      ]));
+      ])));
     }
 
     // SH-398: derived from the same blockCauses() the card badge reads, so
@@ -8859,20 +8986,32 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       if (banner.reason) {
         bannerChildren.push(el("div", { class: "banner-body md" }, [renderMarkdown(banner.reason, st.id)]));
       }
-      body.appendChild(el("div", { class: "banner banner-blocked", title: banner.title }, bannerChildren));
+      nextBody.appendChild(drawerSection(
+        "blocked-banner",
+        el("div", { class: "banner banner-blocked", title: banner.title }, bannerChildren)
+      ));
     }
     // A relation-only block still needs somewhere to add a note -- shown
     // whenever there is no reason yet, alongside the banner rather than
     // instead of it.
     if (!st.awaiting) {
-      body.appendChild(buildBlockForm(st));
+      nextBody.appendChild(drawerSection("block-form", buildBlockForm(st)));
     }
 
-    body.appendChild(buildLabelsSection(st));
-    body.appendChild(buildRelationshipsSection(st, full));
+    nextBody.appendChild(drawerSection("labels", buildLabelsSection(st)));
+    nextBody.appendChild(drawerSection("relationships", buildRelationshipsSection(st, full)));
     var referencedBy = buildReferencedBySection(st, full);
-    if (referencedBy) body.appendChild(referencedBy);
-    body.appendChild(buildCommentsSection(st));
+    if (referencedBy) nextBody.appendChild(drawerSection("referenced-by", referencedBy));
+    nextBody.appendChild(drawerSection("comments", buildCommentsSection(st)));
+
+    drawerRerendering = true;
+    try {
+      reconcileDrawerSections(body, nextBody, sameDrawer);
+    } finally {
+      drawerRerendering = false;
+    }
+    body.dataset.storyId = st.id;
+    body.dataset.repoId = state.repoId;
 
     restoreDrawerFocus(body, focused);
     renderDrawerFooter(st);
@@ -8975,8 +9114,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * present is what lets restoreDrawerFocus() keep working unchanged --
    * it looks up `[data-field="description"]` and expects to find it.
    *
-   * `editing` (the caller's second argument) only reproduces edit mode
-   * across a renderDrawer() rebuild -- see the call site's own comment.
+   * `editing` (the caller's second argument) only reproduces edit mode when
+   * renderDrawer() replaces this changed section -- see the call site's comment.
    * It is NOT the whole mechanism: entering/leaving edit mode day-to-day
    * is driven directly by the interaction handlers below (toggling the
    * wrapper's class, refreshing the view's content, moving focus),
@@ -9238,9 +9377,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   /** The add-a-relation form's unsubmitted contents, held outside the DOM.
    *
-   * `renderDrawer()` clears and rebuilds the whole drawer body, and it runs
-   * on every board fetch that reports a change while a drawer is open — a
-   * story created in another tab is enough. Rebuilding a `<select>` resets
+   * Before SH-423, `renderDrawer()` cleared and rebuilt the whole drawer body
+   * on every board fetch that reported a change while a drawer was open — a
+   * story created in another tab was enough. Rebuilding a `<select>` resets
    * it to its first option, and the first option is whatever heads
    * `meta().relations`: `relates-to`. So a refresh landing between choosing
    * "blocked-by" and pressing Add recorded a **relates-to** edge instead —
@@ -9377,18 +9516,18 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   function renderDrawerFooter(st) {
     var footer = $("drawer-footer");
-    clear(footer);
+    var next = el("div", {}, []);
     var isClosed = stateSuperstate(st.state) === "CLOSED";
     if (isClosed) {
       var wasHidden = !!st.hidden_at;
-      footer.appendChild(el("button", { class: "btn", onClick: function() { attemptReopen(st, wasHidden); } }, ["Reopen"]));
+      next.appendChild(el("button", { class: "btn", onClick: function() { attemptReopen(st, wasHidden); } }, ["Reopen"]));
     }
     // "Archive" only applies to a closed, not-yet-hidden story (SH-43); once
     // hidden, the "Unarchive" action lives on the banner above instead of
     // duplicating it here — the same split `awaiting`'s banner-vs-form below
     // already draws.
     if (isClosed && !st.hidden_at) {
-      footer.appendChild(el("button", { class: "btn", onClick: function() { renderArchiveConfirm(st); } }, ["Archive"]));
+      next.appendChild(el("button", { class: "btn", onClick: function() { renderArchiveConfirm(st); } }, ["Archive"]));
     }
     // Dispatch sits at the LEADING edge of the
     // footer -- appended before Delete, which is what its own
@@ -9398,20 +9537,33 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // write that has nowhere to go without one. Reopen and Dispatch never
     // compete for the leading edge -- a closed story never renders Dispatch.
     if (!isClosed && currentRepoHasCheckout()) {
-      footer.appendChild(dispatchButton(st));
+      next.appendChild(dispatchButton(st));
     }
     var closeAvailable = canCloseStory(st);
     if (closeAvailable) {
-      footer.appendChild(el("button", {
+      next.appendChild(el("button", {
         class: "btn",
         style: "margin-left:auto",
         disabled: !!state.pending[st.id],
-        onClick: function() { openCloseModal(st.id, st.title); }
+        onClick: function() {
+          var current = currentDrawerStory(st.id);
+          openCloseModal(st.id, current ? current.title : st.title);
+        }
       }, ["Close"]));
     }
-    footer.appendChild(el("button", { class: "btn btn-danger", style: closeAvailable ? null : "margin-left:auto", onClick: function() {
+    next.appendChild(el("button", { class: "btn btn-danger", style: closeAvailable ? null : "margin-left:auto", onClick: function() {
       openDeleteModal(st.id);
     } }, ["Delete"]));
+
+    var rendered = drawerRenderFingerprint(next);
+    var sameDrawer = footer.dataset.storyId === st.id && footer.dataset.repoId === state.repoId;
+    if (!sameDrawer || footer.dataset.drawerRendered !== rendered) {
+      clear(footer);
+      while (next.firstChild) footer.appendChild(next.firstChild);
+      footer.dataset.drawerRendered = rendered;
+    }
+    footer.dataset.storyId = st.id;
+    footer.dataset.repoId = state.repoId;
   }
 
   /** Reopen (drawer footer "Reopen" button).
@@ -9437,11 +9589,19 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * applies server-side (`requires_typed_confirmation` is `false` for it). */
   function renderArchiveConfirm(st) {
     var footer = $("drawer-footer");
+    // This surface is not the normal footer output cached by
+    // renderDrawerFooter(). Invalidate that cache before replacing it, or
+    // Cancel could see the previous fingerprint and leave this confirmation
+    // mounted indefinitely (SH-423).
+    delete footer.dataset.drawerRendered;
     clear(footer);
     footer.appendChild(el("div", { class: "confirm-delete" }, [
       el("div", {}, ["Archive " + st.id + "? It will be hidden from the board until unarchived."]),
       el("div", { class: "confirm-delete-actions" }, [
-        el("button", { class: "btn btn-ghost", onClick: function() { renderDrawerFooter(st); } }, ["Cancel"]),
+        el("button", { class: "btn btn-ghost", onClick: function() {
+          var current = currentDrawerStory(st.id);
+          if (current) renderDrawerFooter(current);
+        } }, ["Cancel"]),
         el("button", { class: "btn", onClick: function() { runFieldMutation(st.id, "POST", "archive", {}); } }, ["Confirm archive"])
       ])
     ]));

@@ -78,11 +78,11 @@ Both `.description-view` (rendered markdown, `tabindex="0"`) and the raw
 present is what lets `restoreDrawerFocus()` keep working unchanged — it looks up
 `[data-field="description"]` and expects to find it.
 
-**Edit mode is derived from focus, not stored**, for the case that must survive a
-`renderDrawer()` rebuild: `captureDrawerFocus(body)` already runs before teardown: if the
-description textarea held focus, `buildDescriptionSection(st, true)` rebuilds already in
-edit mode. There is no mode flag to reset on drawer close, story switch, or a failed
-PATCH — the class of bug where a flag outlives the thing it describes cannot occur.
+**Edit mode is derived from focus, not stored**, for the case that must survive a changed
+description section being replaced: `captureDrawerFocus(body)` runs before reconciliation;
+if the textarea held focus, `buildDescriptionSection(st, true)` builds its replacement
+already in edit mode. There is no mode flag to reset on drawer close, story switch, or a
+failed PATCH — the class of bug where a flag outlives the thing it describes cannot occur.
 
 That alone is not sufficient — the day-to-day toggle. Blur only produces a re-render when
 the value actually changed (`runFieldMutation` → `handleMutationSuccess` →

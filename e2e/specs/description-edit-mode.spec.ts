@@ -270,7 +270,54 @@ test("clicking the Comments toggle straight from edit mode both saves and toggle
   expect(patches).toEqual([{ description: "after edit" }]);
   await expect(page.locator(".description-view")).toContainText("after edit");
   await expect(commentsToggle).toHaveAttribute("aria-expanded", "false");
-
   await page.locator("#drawer-close").click();
   await deleteStory(page, title);
+});
+
+test("a drawer mutation retains unchanged sections and their handlers read current story data", async ({
+  page,
+}) => {
+  const title = "SH-423 drawer sections — before title";
+  const nextTitle = "SH-423 drawer sections — after title";
+  const card = await createStory(page, title, "description stays put");
+  await openStory(page, card);
+
+  await page.evaluate(() => {
+    const comments = Array.from(document.querySelectorAll(".section-toggle")).find((node) =>
+      node.textContent?.includes("Comments"),
+    );
+    (window as typeof window & { __sh423Comments?: Element; __sh423Close?: Element })
+      .__sh423Comments = comments;
+    (window as typeof window & { __sh423Comments?: Element; __sh423Close?: Element })
+      .__sh423Close = document.querySelector("#drawer-footer button:not(.btn-danger)");
+  });
+
+  const titleInput = page.locator(".drawer-title");
+  await titleInput.fill(nextTitle);
+  const patched = page.waitForResponse(
+    (resp) => /\/story\/[^/]+$/.test(new URL(resp.url()).pathname) && resp.request().method() === "PATCH",
+  );
+  // Programmatic focus blurs the title without turning the description view
+  // back into an editor, leaving the ensuing mutation as the only render.
+  await page.locator(".description-view").focus();
+  await patched;
+  await expect(page.locator(".drawer-title")).toHaveValue(nextTitle);
+
+  const retained = await page.evaluate(() => {
+    const saved = window as typeof window & { __sh423Comments?: Element; __sh423Close?: Element };
+    const currentComments = Array.from(document.querySelectorAll(".section-toggle")).find((node) =>
+      node.textContent?.includes("Comments"),
+    );
+    return {
+      comments: saved.__sh423Comments === currentComments,
+      footer: saved.__sh423Close === document.querySelector("#drawer-footer button:not(.btn-danger)"),
+    };
+  });
+  expect(retained).toEqual({ comments: true, footer: true });
+
+  await page.locator("#drawer-footer button", { hasText: "Close" }).click();
+  await expect(page.locator("#close-modal-summary")).toContainText(nextTitle);
+  await page.locator("#close-modal-cancel").click();
+  await page.locator("#drawer-close").click();
+  await deleteStory(page, nextTitle);
 });
