@@ -10,12 +10,13 @@ not survive worktree teardown, SH-363.)
 Per the UI Events click-dispatch algorithm, if the element under `mousedown` is
 disconnected from the document before `mouseup`, **no `click` is dispatched
 anywhere** — not even at an ancestor — because the two targets no longer share a
-common inclusive ancestor. `src/web_dashboard.html` rebuilds subtrees wholesale
-(`renderDrawer` does `clear(body)`; `populateCard` and `populateListRow` clear and
-rebuild every child) from asynchronous sources: a `/data` reply whose diff reports
-a change, `handleMutationSuccess`, the drawer's own detail fetch, the dispatch
-poll. One landing mid-press destroys the pressed node, and the user's action is
-silently swallowed — no error, nothing to retry against.
+common inclusive ancestor. `src/web_dashboard.html` can replace rendered subtrees
+from asynchronous sources: a `/data` reply whose diff reports a change,
+`handleMutationSuccess`, the drawer's own detail fetch, or the dispatch poll. The
+drawer now retains output-identical top-level sections (SH-423), but a genuinely
+changed section can still be replaced. One such paint landing mid-press destroys
+the pressed node, and the user's action is silently swallowed — no error, nothing
+to retry against.
 
 It surfaced from the browser suite rather than a bug report for a reason worth
 keeping: **Playwright reports the gesture as successful.** Its hit-target check
@@ -124,12 +125,14 @@ unanimous motion.
 
 ## Coverage
 
-`e2e/specs/drawer-body-click-race.spec.ts`, all verified red on the pre-fix tree and
-green after: a drawer `.section-toggle` (the reported occurrence), a drawer-footer
-button (`renderDrawerFooter`'s own `clear(footer)`), a list row (`populateListRow`'s
-`clear(row)` — a surface nothing had filed, and one with no `pointer-events` rule
-anywhere in the sheet, so every cell is a live press target), the paired
-no-interposition control, and the ordering contract above.
+`e2e/specs/drawer-body-click-race.spec.ts`, all verified red on the pre-SH-401 tree
+and green after: a drawer `.section-toggle`, a drawer-footer button, a list row
+(`populateListRow`'s `clear(row)` — a surface nothing had filed, and one with no
+`pointer-events` rule anywhere in the sheet, so every cell is a live press target),
+the paired no-interposition control, and the ordering contract above. SH-423's
+later section/footer reconciliation means an output-identical drawer target now
+survives that particular reply even without the gate; genuinely changed sections
+remain protected by the gate.
 
 `e2e/specs/card-reposition-click-race.spec.ts` adds SH-422's exact whole-card
 witness: old order `[A, B]`, held `/data` reply producing desired order `[B]`, and
