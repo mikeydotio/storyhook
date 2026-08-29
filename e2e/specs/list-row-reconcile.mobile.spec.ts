@@ -11,7 +11,6 @@ import {
   projectSlug,
   requiredEnv,
   seedToken,
-  settledBoundingBox,
 } from "./support";
 
 /**
@@ -138,17 +137,23 @@ test("a row action pressed across a data reply opens its menu from current state
 }) => {
   const title = "SH-425 list-row actions use current state";
   const id = await createStory(page, title); // support fixture starts at medium
-  const { actions } = await openListRow(page, id);
+  const { row, actions } = await openListRow(page, id);
 
   const held = await holdStoryPatch(page, request, id, { priority: "high" });
-  const box = await settledBoundingBox(page.locator("#list-view"), actions);
-
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.down();
+  await actions.dispatchEvent("pointerdown", {
+    pointerId: 1,
+    pointerType: "touch",
+    isPrimary: true,
+    button: 0,
+    buttons: 1,
+    clientX: 1,
+    clientY: 1,
+  });
   // SH-401 lands state.data now but defers populateListRow until the press can
   // no longer click. The old button therefore activates against newer state.
   await held.deliver();
-  await page.mouse.up();
+  await expect(row.locator("td").nth(4)).toContainText("medium");
+  await actions.evaluate((node) => (node as HTMLElement).click());
 
   const menu = page.locator('.ctxmenu[aria-label="Story actions"]');
   await expect(menu).toBeVisible();
@@ -159,6 +164,23 @@ test("a row action pressed across a data reply opens its menu from current state
   await expect(priorityMenu).toBeVisible();
   await expect(priorityMenu.locator('[aria-checked="true"]')).toHaveCount(1);
   await expect(priorityMenu.locator('[aria-checked="true"]')).toContainText("high");
+
+  await actions.dispatchEvent("pointerup", {
+    pointerId: 1,
+    pointerType: "touch",
+    isPrimary: true,
+    button: 0,
+    buttons: 0,
+    clientX: 1,
+    clientY: 1,
+  });
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+  await expect(row.locator("td").nth(4)).toContainText("high");
 
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
