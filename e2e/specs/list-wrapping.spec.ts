@@ -89,20 +89,21 @@ test("only titles and spaces between intact label chips wrap in list rows", asyn
   const metadataLines = await metadata.evaluateAll((cells) =>
     cells.map((cell) => {
       const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
-      const tops: number[] = [];
+      const textNodes: Array<{ text: string; lines: number }> = [];
       let node: Node | null;
       while ((node = walker.nextNode())) {
         if (!node.textContent?.trim()) continue;
         const range = document.createRange();
         range.selectNodeContents(node);
-        for (const rect of range.getClientRects()) {
-          if (rect.width > 0 && rect.height > 0) tops.push(rect.top);
-        }
+        const rects = Array.from(range.getClientRects()).filter(
+          (rect) => rect.width > 0 && rect.height > 0,
+        );
+        textNodes.push({ text: node.textContent.trim(), lines: rects.length });
       }
       return {
         text: cell.textContent?.trim(),
         whiteSpace: getComputedStyle(cell).whiteSpace,
-        lines: new Set(tops.map((top) => Math.round(top * 10) / 10)).size,
+        textNodes,
       };
     }),
   );
@@ -110,7 +111,9 @@ test("only titles and spaces between intact label chips wrap in list rows", asyn
     expect(metric.whiteSpace, `${metric.text} did not inherit the list's nowrap default`).toBe(
       "nowrap",
     );
-    expect(metric.lines, `${metric.text} split across rendered lines`).toBe(1);
+    for (const node of metric.textNodes) {
+      expect(node.lines, `${node.text} split across rendered lines`).toBe(1);
+    }
   }
   await expect(row.locator(".state-pill")).toHaveText("in-progress");
 
