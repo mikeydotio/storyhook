@@ -576,8 +576,9 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
 .card.pending { opacity: 0.55; pointer-events: none; }
 .card.not-draggable { cursor: default; }
 .card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-/* SH-397: `.card`'s own node survives an ordinary board re-render
-   (`reconcileColumnCards` reuses it, keyed by `data-id`), but
+/* SH-397: `.card`'s own node survives an ordinary board re-render when its
+   position is unchanged (`reconcileColumnCards` reuses it, keyed by
+   `data-id`), but
    `populateCard()` clears and rebuilds every *child* on every render,
    unconditionally -- so a pointer that landed on a child (`.card-title`, for
    a short card's centre point) between a real mousedown and the matching
@@ -585,12 +586,17 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
    reply landing in that window. Per the UI Events click-dispatch algorithm,
    a `mousedown` target disconnected before `mouseup` means no `click` fires
    anywhere at all -- not even at an ancestor -- so the listener bound once
-   on `.card` itself (which a render never destroys or rebinds) never runs,
+   on `.card` itself (which that unchanged-position render never destroys or
+   rebinds) never runs,
    and nothing recovers. Made structurally impossible rather than timing-
    dependent: every presentational descendant is transparent to pointer
    events, so a pointer anywhere in the card body always resolves to `.card`
-   itself. The two descendants that need real per-element interactivity are
-   punched back through explicitly, immediately below. */
+   itself. SH-422 later found the boundary of that claim: an order change can
+   make the cursor walk disconnect and reinsert the whole card. SH-401's press
+   gate closes that broader case by deferring every `renderView()` paint until
+   after the click; `card-reposition-click-race.spec.ts` is its exact witness.
+   The two descendants that need real per-element interactivity are punched
+   back through explicitly, immediately below. */
 .card * { pointer-events: none; }
 /* The two card-body descendants a click must land on for what THEY do, not
    what the card does: `.card-actions-btn` (opens this card's own menu),
@@ -5631,13 +5637,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
      hit-target check ran once, before the gesture, against the node that existed
      then.
 
-     SH-397 closed this for the board by pointing the pointer at a node that
-     survives: `.card` itself is reused by `reconcileColumnCards`, so making its
-     presentational descendants `pointer-events: none` was enough. The drawer has
-     no surviving node — `renderDrawer` does `clear(body)` unconditionally — so
-     that shape structurally cannot help here: the button IS the destroyed node,
-     and delegating to a surviving ancestor changes nothing, because no `click`
-     is dispatched at all.
+     SH-397 closed the first board occurrence by pointing the pointer at a node
+     that survives an unchanged-position reconcile: `.card` itself, whose
+     presentational descendants became `pointer-events: none`. SH-422 found that
+     a real order change still disconnects and reinserts that whole card; the
+     gate below covers it because `renderView` is one of the deferred surfaces,
+     with `card-reposition-click-race.spec.ts` as the exact witness. The drawer
+     has no surviving node at all — `renderDrawer` does `clear(body)`
+     unconditionally — so SH-397's shape structurally cannot help there: the
+     button IS the destroyed node, and delegating to a surviving ancestor changes
+     nothing, because no `click` is dispatched at all.
 
      So the paint waits instead. While a press is in flight the renderers below
      defer, and flush once the press can no longer produce a `click`. Only the
@@ -6692,9 +6701,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   /** Renders the board via a *keyed reconcile* rather than tearing down and
    * rebuilding every column/card: existing card nodes are found by
    * `data-id` and reused (`populateCard`), possibly moved to a different
-   * column (`appendChild` on an already-attached node relocates it — no
-   * clone, no destroy/recreate), so a CSS transition/animation running on
-   * a card survives an update instead of being wiped out by it. `anims`
+   * column (`appendChild` on an already-attached node relocates the same
+   * object — no clone or replacement), so a CSS transition/animation
+   * running on a card survives an update instead of being wiped out by it. `anims`
    * (from `diffSnapshots`, or `null` for a render not driven by fresh data)
    * says which cards actually changed and how, so only those get an
    * entrance/exit/flash; everything else just silently ends up in the
@@ -6853,7 +6862,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * a focused node per the HTML spec's unfocusing steps. This function used
    * to `appendChild` unconditionally, every render, for every card — which
    * silently stole keyboard focus off the roving stop the instant *any*
-   * story anywhere changed, defeating the point of `syncRoving` below. */
+   * story anywhere changed, defeating the point of `syncRoving` below.
+   *
+   * A move that is genuinely required still performs those remove/insert
+   * steps. SH-422 identified the click analogue: if an unrelated card above
+   * leaves, this cursor walk repositions every staying card below it, and a
+   * reposition between pointer down/up kills that card's pending click.
+   * SH-401 subsequently made the paint wait for every primary press by gating
+   * `renderView`, so this function cannot run in that interval on any browser;
+   * `card-reposition-click-race.spec.ts` drives this exact path. */
   function reconcileColumnCards(cardsEl, desiredCards, ready, blocked, isClosed, anims, reduceMotion, claimed, existingById) {
     if (!desiredCards.length) {
       if (!cardsEl.querySelector(".column-empty")) {
@@ -7321,16 +7338,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * silently rather than visibly. Mirrors `buildCard`'s own `contextmenu`
    * handler (SH-197), a few lines up.
    *
-   * What this does NOT close: `reconcileColumnCards`'s own `insertBefore`
-   * reposition kills a click the identical way when a card is moved to a
-   * new position in its column (filed separately, SH-422), and
-   * `ensureColumnShells`'s full-column-set rebuild was already out of
-   * scope for SH-397. Accepted residual, stated rather than left silent: a
-   * card whose OWN rendered content genuinely changes while a press is in
-   * flight over it can still lose that one click — this closes the hazard
-   * for any *unrelated* render landing mid-gesture, which is the common
-   * case, not for a render that changes this exact card at that exact
-   * moment. */
+   * At the time this landed it did NOT close `reconcileColumnCards`'s own
+   * `insertBefore` reposition (SH-422), `ensureColumnShells`'s full-column-set
+   * rebuild, or a rebuild caused by this exact card's own rendered content
+   * changing. SH-401 subsequently closed that whole asynchronous-render class
+   * with the press gate: `renderView` cannot paint any of those changes while
+   * a primary press is live. SH-422's exact reposition witness now lives in
+   * `card-reposition-click-race.spec.ts`. */
   function populateCard(card, v, ready, blocked, isClosed) {
     var st = v.story;
     var draggable = !isClosed && !state.pending[st.id];

@@ -7,6 +7,7 @@ import {
   heldReadDeadlineMs,
   holdFetch,
   openProject,
+  pressGateSwallows,
   projectSlug,
   requiredEnv,
   seedToken,
@@ -22,10 +23,12 @@ import {
  * because the two targets no longer share a common inclusive ancestor.
  * Playwright's hit-target check runs once, before the gesture, against the
  * node that existed then, so the click is *reported successful* while nothing
- * ran. Its fix closed that hole for the board only, and closed it by pointing
- * the pointer at a node an ordinary re-render never destroys: `.card` itself
- * survives (`reconcileColumnCards` reuses it), so making its presentational
- * descendants `pointer-events: none` was enough.
+ * ran. Its fix closed the first board occurrence by pointing the pointer at a
+ * node an unchanged-position reconcile does not destroy: `.card` itself, so
+ * making its presentational descendants `pointer-events: none` was enough.
+ * SH-422 later identified the remaining whole-card reposition case; this
+ * SH-401 gate closes it too, with `card-reposition-click-race.spec.ts` as the
+ * exact witness.
  *
  * The drawer has no such surviving node. `renderDrawer()` does `clear(body)`
  * and rebuilds **every** child from scratch, and it runs on any `/data` reply
@@ -198,17 +201,6 @@ test("the same down/up choreography toggles the section when nothing re-renders 
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
   await deleteStory(page, title);
 });
-
-/** What the page's own press gate recorded: a removal that disconnected the LIVE
- * press target. Empty is the assertion — a non-empty list is a swallowed click in
- * waiting, whatever function removed the node. */
-async function pressGateSwallows(page: Page): Promise<string[]> {
-  return page.evaluate(
-    () =>
-      (window as unknown as { __storyhookPressGate?: { swallows: string[] } })
-        .__storyhookPressGate?.swallows ?? ["the press gate is not installed on this page"],
-  );
-}
 
 /**
  * SH-401's second witness: the drawer FOOTER, which the story does not name.

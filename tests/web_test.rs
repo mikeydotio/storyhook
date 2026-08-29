@@ -1381,8 +1381,8 @@ fn every_backdrop_overlay_is_wired_into_the_focus_trap() {
 /// A card's presentational body is transparent to pointer events, so a click
 /// anywhere on it always lands on `.card` itself (SH-397).
 ///
-/// `.card`'s own node survives an ordinary board re-render
-/// (`reconcileColumnCards` reuses it, keyed by `data-id`), but
+/// `.card`'s own node survives an ordinary board re-render when its position
+/// is unchanged (`reconcileColumnCards` reuses it, keyed by `data-id`), but
 /// `populateCard()` clears and rebuilds every *child* on every render,
 /// unconditionally. The click listener is bound once on `.card`, so a
 /// re-render landing between a real mousedown and mouseup can destroy the
@@ -1390,13 +1390,13 @@ fn every_backdrop_overlay_is_wired_into_the_focus_trap() {
 /// click-dispatch algorithm, a `mousedown` target disconnected before
 /// `mouseup` means no `click` fires anywhere at all, not even at an
 /// ancestor. `.card * { pointer-events: none }` makes this structurally
-/// impossible rather than timing-dependent: whatever the pointer is over
-/// inside a card, the hit test resolves to `.card`, which nothing destroys
-/// on an ordinary render. `e2e/specs/drawer-open-race.spec.ts` proves the
-/// behaviour in a real browser, deterministically, by forcing the exact
-/// race through the daemon's own `/data` reply; this fences the CSS rule
-/// that closes it so a future edit to this block cannot narrow or drop it
-/// silently.
+/// impossible for a stable-position reconcile: whatever the pointer is over
+/// inside a card, the hit test resolves to `.card`. SH-422 identified the
+/// remaining boundary -- an actual order change disconnects and reinserts the
+/// whole card -- and SH-401's `renderView` press gate closes that broader
+/// interval. `e2e/specs/drawer-open-race.spec.ts` proves SH-397's original
+/// child-rebuild race; `card-reposition-click-race.spec.ts` proves SH-422's
+/// whole-card move through the daemon's real `/data` reply.
 ///
 /// The two descendants punched back through with `pointer-events: auto`
 /// need genuine per-element interactivity for what THEY do, not what the
