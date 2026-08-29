@@ -87,16 +87,6 @@ enum Kind {
 /// classification for "git, run from this module" has not changed. A new
 /// program, or a new file, does.
 const INVENTORY: &[(&str, &str, Kind)] = &[
-    // `api::dispatch::run_child` — the dashboard's dispatch endpoint (SH-50)
-    // spawning `story.sh dispatch`. `Waited`, on the `event_hooks.rs` model
-    // it was deliberately built to match: stdout/stderr are unlinked
-    // `tempfile()` files, not pipes, so there is no end-of-file for a
-    // surviving descendant to withhold. `wait_timeout` bounds the wait
-    // itself, and the child's own process group (killed whole on timeout)
-    // is what stands in for `tailnet.rs`'s reap-and-kill, since a dispatch
-    // that overruns must not leave a `git fetch`/`tmux`/`claude` probe
-    // running behind it.
-    ("src/api/dispatch.rs", "\"bash\"", Kind::Waited),
     ("src/daemon/commands.rs", "\"launchctl\"", Kind::Reads),
     ("src/daemon/lifecycle.rs", "exe", Kind::Detached),
     ("src/daemon/tailnet.rs", "\"tailscale\"", Kind::Reads),
@@ -112,6 +102,14 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // temporary files rather than pipes, so there is no pipe for a descendant to
     // hold and nothing for the caller to wait on.
     ("src/event_hooks.rs", "\"sh\"", Kind::Waited),
+    // `service::engine` owns both process doors behind the Dispatcher seam:
+    // the bash helper and bounded tmux probes/kills. Both are `Waited`:
+    // stdout/stderr are unlinked files rather than pipes, `wait_timeout`
+    // bounds the child, and a timeout kills the process group before reading.
+    // A descendant therefore has no EOF rendezvous with the caller and no
+    // unbounded process lifetime to inherit.
+    ("src/service/engine.rs", "\"bash\"", Kind::Waited),
+    ("src/service/engine.rs", "&self.tmux_program", Kind::Waited),
     // `plugin::run_provider` — the selected provider CLI (`claude` or `codex`).
     // Classified as `Reads` because install/uninstall captures both streams to
     // report the provider's exact failure. The availability probe sharing this

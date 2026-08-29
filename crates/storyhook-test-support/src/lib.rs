@@ -39,6 +39,7 @@
 //! ```
 
 mod crash;
+mod engine;
 mod env;
 mod github;
 mod hooks_manifest;
@@ -53,6 +54,7 @@ mod store;
 mod tailnet;
 
 pub use crash::{Crash, assert_no_daemon, crash_a_starting_daemon, crash_the_daemon, spawn_daemon};
+pub use engine::{DispatcherCall, DispatcherStep, FakeDispatcher};
 pub use env::{TestEnv, daemon_containment, story_binary};
 pub use github::{FakeGithubApiFactory, RecordedCall};
 pub use hooks_manifest::{
