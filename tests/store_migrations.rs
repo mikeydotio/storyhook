@@ -186,7 +186,15 @@ fn a_database_from_a_newer_storyhook_is_refused_with_one_clear_message() {
     }
     let message = SqliteStore::open(&path).unwrap_err().to_string();
     assert!(message.contains("newer storyhook"), "{message}");
-    assert!(message.contains("story update"), "{message}");
+    assert!(
+        message.contains("`story update` if a newer release is available"),
+        "release recovery: {message}"
+    );
+    assert!(
+        message.contains("otherwise check out the source revision")
+            && message.contains("`make install`"),
+        "unreleased-build recovery: {message}"
+    );
 }
 
 #[test]

@@ -159,7 +159,7 @@ what is wrong, where, and what to do next, and no raw `rusqlite`, `serde` or
 | truncated database | *"the storyhook store at … is damaged: database disk image is malformed. Nothing has been changed…"* |
 | not a database at all | the same words |
 | a directory in its place | the path that is in the way |
-| schema from a newer storyhook | both version numbers and `story update` |
+| schema from a newer storyhook | both version numbers, plus conditional release-update or source-build recovery guidance |
 | damaged write-ahead log | discarded, not obeyed; the last checkpointed state survives |
 | corrupt pointer file | the path of `.storyhook.toml`, the parser's account, and `git diff` |
 | pointer missing its `uuid` | the same |
