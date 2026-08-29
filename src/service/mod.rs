@@ -86,7 +86,7 @@ pub use project::{
     DeleteOutcome, InitOptions, InitOutcome, OriginOutcome, PointerUpdate, ProjectPointer,
     ProjectService, SetPrefixOutcome,
 };
-pub use query::{ListFilters, QueryService};
+pub use query::{ListFilters, QueryService, ReadyQueueFilters};
 pub use relation::{RelationOutcome, RelationService};
 pub use session::SessionService;
 pub use settings::{SettingSpec, SettingsService, registry as settings_registry};

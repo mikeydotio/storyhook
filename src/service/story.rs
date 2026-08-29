@@ -27,7 +27,10 @@ use crate::store::{
     EventSeq, ExpectedSeq, ProjectId, ReadOps, Store, StoryNo, StoryQuery, StoryRow, WriteOps,
 };
 
-use super::{Ctx, Intent, append_and_fold, project_prefix, resolve_open_story, resolve_story};
+use super::{
+    Ctx, Intent, ReadyQueueFilters, append_and_fold, project_prefix, resolve_open_story,
+    resolve_story,
+};
 
 /// The pseudo-state a lost claim reports as its `expected` half.
 ///
@@ -595,9 +598,10 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     /// with neither an explicit `active` role nor exactly two OPEN states.
     /// Checked before selection runs, so this never depends on whether a
     /// story happens to be ready.
-    pub fn claim_next(
+    /// Applies the CLI's ready-queue filters before claiming.
+    pub fn claim_next_filtered(
         &self,
-        phase: Option<&str>,
+        filters: ReadyQueueFilters<'_>,
         comment: Option<&str>,
     ) -> Result<Option<(StorySnapshot, StorySnapshot)>, AppError> {
         let now = self.ctx.now();
@@ -606,7 +610,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
             let active = active_state(&tx.states(project)?).ok_or_else(no_active_state_error)?;
             let states = tx.state_map(project)?;
             let query = super::QueryService::new(&*tx, project, &now);
-            let Some(candidate) = query.next(1, phase)?.into_iter().next() else {
+            let Some(candidate) = query.next_filtered(1, filters)?.into_iter().next() else {
                 return Ok(None);
             };
             let prefix = project_prefix(&*tx, project)?;
@@ -899,19 +903,23 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     /// What a `--dry-run` `story claim --next` would do, without writing.
     ///
     /// `Ok(None)` is "nothing is ready", the same real answer
-    /// [`Self::claim_next`] gives.
+    /// [`Self::claim_next_filtered`] gives.
     ///
     /// # Errors
     ///
     /// [`AppError::Validation`] when the project has no state a claim can
     /// resolve to.
-    pub fn plan_claim_next(&self, phase: Option<&str>) -> Result<Option<ClaimPlan>, AppError> {
+    /// Applies the CLI's ready-queue filters without writing.
+    pub fn plan_claim_next_filtered(
+        &self,
+        filters: ReadyQueueFilters<'_>,
+    ) -> Result<Option<ClaimPlan>, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
         Ok(self.ctx.store().read(|tx| {
             let active = active_state(&tx.states(project)?).ok_or_else(no_active_state_error)?;
             let query = super::QueryService::new(tx, project, &now);
-            let Some(candidate) = query.next(1, phase)?.into_iter().next() else {
+            let Some(candidate) = query.next_filtered(1, filters)?.into_iter().next() else {
                 return Ok(None);
             };
             Ok(Some(ClaimPlan {

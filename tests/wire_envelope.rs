@@ -1172,10 +1172,14 @@ fn invocation_corpus() -> Vec<Invocation> {
         Invocation::Next {
             count: 3,
             phase: Some("2".to_string()),
+            epic: Some("SH-9".to_string()),
+            exclude_label: Some("no-auto,paused".to_string()),
         },
         Invocation::Next {
             count: 1,
             phase: None,
+            epic: None,
+            exclude_label: None,
         },
         Invocation::Summary,
         Invocation::Report { html: true },
@@ -1579,12 +1583,18 @@ fn invocation_corpus() -> Vec<Invocation> {
         Invocation::Claim {
             target: ClaimTarget::Next {
                 phase: Some("1".to_string()),
+                epic: Some("SH-9".to_string()),
+                exclude_label: Some("no-auto".to_string()),
             },
             comment: ClaimComment::Suppressed,
             dry_run: true,
         },
         Invocation::Claim {
-            target: ClaimTarget::Next { phase: None },
+            target: ClaimTarget::Next {
+                phase: None,
+                epic: None,
+                exclude_label: None,
+            },
             comment: ClaimComment::Default,
             dry_run: false,
         },
@@ -1733,4 +1743,24 @@ fn every_invocation_survives_a_wire_hop() {
             invocation_name(&invocation)
         );
     }
+}
+
+#[test]
+fn older_next_wire_shapes_default_the_new_filters_to_absent() {
+    let decoded: Invocation = serde_json::from_value(serde_json::json!({
+        "Next": {
+            "count": 1,
+            "phase": null
+        }
+    }))
+    .expect("an older client can omit SH-455 fields");
+    assert_eq!(
+        decoded,
+        Invocation::Next {
+            count: 1,
+            phase: None,
+            epic: None,
+            exclude_label: None,
+        }
+    );
 }

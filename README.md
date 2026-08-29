@@ -379,9 +379,9 @@ story epic create "<title>"
 story epic add <epic-id> <story-id>
 
 story list [--state <slug>] [--assignee <member>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts] [--unassessed] [--include-closed] [--include-archived] [--all]
-story next [--count <n>] [--phase <N>]
+story next [--count <n>] [--phase <N>] [--epic <id>] [--exclude-label <csv>]
 story claim <id> [--comment <text> | --no-comment] [--dry-run]
-story claim --next [--phase <N>] [--comment <text> | --no-comment] [--dry-run]
+story claim --next [--phase <N>] [--epic <id>] [--exclude-label <csv>] [--comment <text> | --no-comment] [--dry-run]
 story unclaim <id> [--comment <text> | --no-comment] [--dry-run]
 story summary
 story report [--html]

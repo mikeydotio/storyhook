@@ -105,6 +105,21 @@ pub struct ListFilters {
     pub include_archived: bool,
 }
 
+/// Optional narrowing shared by both doors onto the ready queue.
+///
+/// `story next` reads through it and `story claim --next` selects through it
+/// inside the claim transaction. Keeping the three filters in one value makes
+/// it impossible for the read and write paths to disagree about their inputs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReadyQueueFilters<'a> {
+    /// Require the `phase:<N>` label.
+    pub phase: Option<&'a str>,
+    /// Require membership in this epic's transitive descendant subtree.
+    pub epic: Option<&'a str>,
+    /// Omit stories carrying any value in this label CSV.
+    pub exclude_label: Option<&'a str>,
+}
+
 /// What `story list` (SH-409) returns: the visible stories, plus a note when
 /// the default visibility filter (or an explicit `--state <closed slug>`)
 /// changed what showed up.
@@ -275,11 +290,7 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
             }
         }
         if let Some(label_csv) = &filters.label {
-            let wanted: Vec<String> = label_csv
-                .split(',')
-                .map(|raw| raw.trim().to_string())
-                .filter(|label| !label.is_empty())
-                .collect();
+            let wanted = label_csv_values(label_csv);
             if !wanted.is_empty() {
                 views.retain(|view| wanted.iter().any(|label| view.story.labels.contains(label)));
             }
@@ -404,10 +415,49 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
     /// asking twice with nothing changed in between always returns the same
     /// list (SH-63).
     pub fn next(&self, count: usize, phase: Option<&str>) -> Result<Vec<StoryView>, AppError> {
+        self.next_filtered(
+            count,
+            ReadyQueueFilters {
+                phase,
+                ..ReadyQueueFilters::default()
+            },
+        )
+    }
+
+    /// The filtered form of [`Self::next`] shared with `story claim --next`.
+    pub fn next_filtered(
+        &self,
+        count: usize,
+        filters: ReadyQueueFilters<'_>,
+    ) -> Result<Vec<StoryView>, AppError> {
         let views = self.story_views(false)?;
         let stories = view_map(&views);
         let active = self.active_state()?;
-        let mut execution = execution_queue(&views, &stories, active.as_ref(), phase);
+        let epic_descendants = match filters.epic {
+            Some(epic_id) => {
+                let epic = stories
+                    .get(epic_id)
+                    .ok_or_else(|| AppError::NotFound(format!("story `{epic_id}` not found")))?;
+                if !domain::is_epic(epic) {
+                    return Err(AppError::Validation(format!(
+                        "story `{epic_id}` is not an epic"
+                    )));
+                }
+                Some(domain::descendant_ids(&stories, epic_id))
+            }
+            None => None,
+        };
+        let excluded_labels = filters
+            .exclude_label
+            .map_or_else(Vec::new, label_csv_values);
+        let mut execution = execution_queue(
+            &views,
+            &stories,
+            active.as_ref(),
+            filters.phase,
+            epic_descendants.as_ref(),
+            &excluded_labels,
+        );
         execution.truncate(count);
         Ok(execution)
     }
@@ -459,7 +509,7 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
         // agree.)
         summary.ready_count = ready_ids.len();
 
-        let next_ids = execution_queue(&views, &stories, active.as_ref(), None)
+        let next_ids = execution_queue(&views, &stories, active.as_ref(), None, None, &[])
             .into_iter()
             .map(|view| view.story.id)
             .collect();
@@ -1275,6 +1325,8 @@ fn execution_queue(
     stories: &BTreeMap<String, StorySnapshot>,
     active: Option<&StateDef>,
     phase: Option<&str>,
+    epic_descendants: Option<&BTreeSet<String>>,
+    excluded_labels: &[String],
 ) -> Vec<StoryView> {
     let no_open_blockers = BTreeMap::<String, StorySnapshot>::new();
     let candidates: BTreeMap<&str, &StoryView> = views
@@ -1284,6 +1336,10 @@ fn execution_queue(
                 && !has_children(&view.story)
                 && !domain::is_human_only(&view.story)
                 && phase.is_none_or(|phase| view.story.labels.contains(&format!("phase:{phase}")))
+                && epic_descendants.is_none_or(|ids| ids.contains(&view.story.id))
+                && !excluded_labels
+                    .iter()
+                    .any(|label| view.story.labels.contains(label))
         })
         .map(|view| (view.story.id.as_str(), view))
         .collect();
@@ -1344,6 +1400,16 @@ fn execution_queue(
         }
     }
     execution
+}
+
+/// The label CSV grammar shared by `story list --label` and
+/// `story next --exclude-label`: split commas, trim whitespace, drop empty
+/// entries, preserve case, and treat unknown names as ordinary values.
+fn label_csv_values(csv: &str) -> Vec<String> {
+    csv.split(',')
+        .map(|raw| raw.trim().to_string())
+        .filter(|label| !label.is_empty())
+        .collect()
 }
 
 /// The counting half of `summary` and `report`, which agree on every field.

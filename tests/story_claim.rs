@@ -40,6 +40,22 @@ fn json(project: &Project<'_>, args: &[&str]) -> serde_json::Value {
         .unwrap_or_else(|e| panic!("non-JSON output ({e}): {output:?}"))
 }
 
+fn new_epic(project: &Project<'_>, title: &str) -> String {
+    let created = json(project, &["new", title, "--type", "epic"]);
+    created["story"]["story"]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("new epic response carries an id: {created}"))
+        .to_string()
+}
+
+fn relate(project: &Project<'_>, parent: &str, child: &str) {
+    project
+        .story()
+        .args(["relate", parent, "parent-of", child])
+        .assert()
+        .success();
+}
+
 /// The same, for a command expected to fail: returns `(exit code, envelope)`.
 fn json_failure(project: &Project<'_>, args: &[&str]) -> (Option<i32>, serde_json::Value) {
     let mut command = project.story();
@@ -108,6 +124,123 @@ fn claiming_next_takes_what_story_next_would_answer() {
     assert_eq!(claimed["story"]["story"]["id"], first);
     assert_eq!(claimed["story"]["story"]["state"], "in-progress");
     assert_eq!(claimed["claimed_from"], "todo");
+}
+
+#[test]
+fn filtered_dry_run_and_claim_next_choose_the_same_scoped_story() {
+    let project = project();
+    let root = new_epic(&project, "Root epic");
+    let nested = new_epic(&project, "Nested epic");
+    let eligible = project.new_story("Eligible grandchild");
+    let excluded = project.new_story("Needs a person");
+    let outside = project.new_story("Outside scope");
+    relate(&project, &root, &nested);
+    relate(&project, &nested, &eligible);
+    relate(&project, &nested, &excluded);
+    project
+        .story()
+        .args(["label", &eligible, "phase:1"])
+        .assert()
+        .success();
+    project
+        .story()
+        .args(["label", &excluded, "phase:1,no-auto"])
+        .assert()
+        .success();
+    project
+        .story()
+        .args(["label", &outside, "phase:1"])
+        .assert()
+        .success();
+
+    let bare_epic = root.rsplit('-').next().expect("number half");
+    let preview = json(
+        &project,
+        &[
+            "claim",
+            "--next",
+            "--epic",
+            bare_epic,
+            "--exclude-label",
+            "unknown,no-auto",
+            "--phase",
+            "1",
+            "--dry-run",
+            "--no-comment",
+        ],
+    );
+    assert!(
+        preview["message"]
+            .as_str()
+            .is_some_and(|message| message.contains(&eligible)),
+        "dry run picked the filtered candidate: {preview}"
+    );
+    for id in [&eligible, &excluded, &outside] {
+        assert_eq!(
+            json(&project, &["show", id])["story"]["story"]["state"],
+            "todo"
+        );
+    }
+
+    let claimed = json(
+        &project,
+        &[
+            "claim",
+            "--next",
+            "--epic",
+            bare_epic,
+            "--exclude-label",
+            "no-auto",
+            "--phase",
+            "1",
+            "--no-comment",
+        ],
+    );
+    assert_eq!(claimed["story"]["story"]["id"], eligible);
+    assert_eq!(claimed["story"]["story"]["state"], "in-progress");
+    assert_eq!(
+        json(&project, &["show", &excluded])["story"]["story"]["state"],
+        "todo"
+    );
+    assert_eq!(
+        json(&project, &["show", &outside])["story"]["story"]["state"],
+        "todo"
+    );
+}
+
+#[test]
+fn claim_next_epic_scope_refuses_a_non_epic_by_name() {
+    let project = project();
+    let ordinary = project.new_story("Ordinary story");
+
+    let (code, envelope) = json_failure(&project, &["claim", "--next", "--epic", &ordinary]);
+    assert_eq!(code, Some(2), "{envelope}");
+    assert!(
+        envelope["error"]
+            .as_str()
+            .is_some_and(|error| error.contains(&format!("story `{ordinary}` is not an epic"))),
+        "the refusal names the non-epic: {envelope}"
+    );
+}
+
+#[test]
+fn queue_filters_beside_an_explicit_claim_id_are_refused_without_writing() {
+    let project = project();
+    let id = project.new_story("Named claim");
+
+    for (flag, value) in [("--epic", "CLM-99"), ("--exclude-label", "no-auto")] {
+        project
+            .story()
+            .args(["claim", &id, flag, value])
+            .assert()
+            .failure()
+            .code(2)
+            .stderr(predicate::str::contains(flag));
+    }
+    assert_eq!(
+        json(&project, &["show", &id])["story"]["story"]["state"],
+        "todo"
+    );
 }
 
 /// The whole reason the verb refuses rather than defaulting: a mutating call

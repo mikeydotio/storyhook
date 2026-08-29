@@ -7,6 +7,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- `--epic <id>` and `--exclude-label <csv>` on both `story next` and
+  `story claim --next`. Epic scope includes the complete descendant subtree,
+  nested epics included, while label exclusion drops any candidate carrying
+  one of the exact comma-separated names. Both compose with phase filtering;
+  the read and atomic-claim doors share one queue implementation so they cannot
+  disagree about what is eligible (SH-455)
 - `story close <id> "<reason>"` — retire a story that will not be done, keeping
   it and everything it records. `closed` is a new **required state** in the
   CLOSED superstate, behaving exactly like `done` in every respect except what

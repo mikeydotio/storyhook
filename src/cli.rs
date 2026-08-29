@@ -165,10 +165,11 @@ Usage:
              [--include-closed]                        (also show closed, unarchived stories)
              [--include-archived]                      (also show archived stories; implies --include-closed)
              [--all]                                   (--include-closed --include-archived)
-  story next [--count <n>] [--phase <N>]
+  story next [--count <n>] [--phase <N>] [--epic <id>] [--exclude-label <csv>]
   story claim <id> [--comment <text> | --no-comment] [--dry-run]
-  story claim --next [--phase <N>] [--comment <text> | --no-comment]
-                     [--dry-run]                    (take a story, atomically)
+  story claim --next [--phase <N>] [--epic <id>] [--exclude-label <csv>]
+                     [--comment <text> | --no-comment] [--dry-run]
+                                                    (take a story, atomically)
   story unclaim <id> [--comment <text> | --no-comment]
                      [--dry-run]                    (hand it back where it came from)
   story summary
@@ -299,12 +300,17 @@ pub enum MemberInput {
 pub enum ClaimTarget {
     /// `story claim <id>` — that named story, claimed atomically.
     Story(String),
-    /// `story claim --next [--phase <N>]` — whatever `story next` would
-    /// answer, selected and claimed inside one write transaction.
+    /// `story claim --next [--phase <N>] [--epic <id>]
+    /// [--exclude-label <csv>]` — whatever `story next` would answer,
+    /// selected and claimed inside one write transaction.
     Next {
         /// `--phase <N>` — narrow the selection to one phase label,
         /// exactly as `story next --phase` narrows the same query.
         phase: Option<String>,
+        /// `--epic <id>` — narrow selection to the epic's descendant subtree.
+        epic: Option<String>,
+        /// `--exclude-label <csv>` — omit stories carrying any named label.
+        exclude_label: Option<String>,
     },
 }
 
@@ -444,7 +450,8 @@ pub enum Invocation {
     Search {
         query: String,
     },
-    /// `story next [--count <n>] [--phase <N>]` — a pure read (SH-477).
+    /// `story next [--count <n>] [--phase <N>] [--epic <id>]
+    /// [--exclude-label <csv>]` — a pure read (SH-477, SH-455).
     ///
     /// Answers a question and writes nothing. Taking the answer is
     /// [`Claim`](Self::Claim)'s job: SH-344's claiming mode lived here as a
@@ -454,6 +461,8 @@ pub enum Invocation {
     Next {
         count: usize,
         phase: Option<String>,
+        epic: Option<String>,
+        exclude_label: Option<String>,
     },
     /// `story claim (<id> | --next)` (SH-476) — the one atomic claim verb.
     ///
@@ -1559,13 +1568,20 @@ static VERB_FLAGS: &[VerbFlags] = &[
     VerbFlags {
         verb: "next",
         subcommand: None,
-        flags: &[value("count"), value("phase")],
+        flags: &[
+            value("count"),
+            value("phase"),
+            value("epic"),
+            value("exclude-label"),
+        ],
     },
     VerbFlags {
         verb: "claim",
         subcommand: None,
         flags: &[
             value("phase"),
+            value("epic"),
+            value("exclude-label"),
             value("comment"),
             bare("next"),
             bare("no-comment"),
@@ -2122,8 +2138,9 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 const CLAIM_USAGE: &str = "usage: story claim <id> [--comment <text> | --no-comment] \
-                           [--dry-run]\n       story claim --next [--phase <N>] [--comment \
-                           <text> | --no-comment] [--dry-run]";
+                           [--dry-run]\n       story claim --next [--phase <N>] [--epic <id>] \
+                           [--exclude-label <csv>] [--comment <text> | --no-comment] \
+                           [--dry-run]";
 
 const UNCLAIM_USAGE: &str = "usage: story unclaim <id> [--comment <text> | --no-comment] \
                              [--dry-run]";
@@ -2880,7 +2897,8 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
     })
 }
 
-/// `story next [--count <n>] [--phase <N>]` — a pure read.
+/// `story next [--count <n>] [--phase <N>] [--epic <id>]
+/// [--exclude-label <csv>]` — a pure read.
 ///
 /// SH-344's `--claim` was removed here by SH-477; claiming is
 /// [`parse_claim`]'s verb. Nothing replaces the flag and no deprecation arm
@@ -2889,8 +2907,11 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
 fn parse_next(args: &[String]) -> Result<Invocation, AppError> {
     let mut count = 1;
     let mut phase = None;
+    let mut epic = None;
+    let mut exclude_label = None;
     let mut index = 1;
-    let usage = "usage: story next [--count <n>] [--phase <N>]";
+    let usage = "usage: story next [--count <n>] [--phase <N>] [--epic <id>] \
+                 [--exclude-label <csv>]";
 
     while index < args.len() {
         match args[index].as_str() {
@@ -2915,17 +2936,36 @@ fn parse_next(args: &[String]) -> Result<Invocation, AppError> {
                 phase = Some(value.clone());
                 index += 2;
             }
-            _ => {
-                return Err(AppError::Usage(usage.to_string()));
+            "--epic" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                epic = Some(value.clone());
+                index += 2;
             }
+            "--exclude-label" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                exclude_label = Some(value.clone());
+                index += 2;
+            }
+            _ => break,
         }
     }
+    expect_no_more(&args[index..], usage)?;
 
-    Ok(Invocation::Next { count, phase })
+    Ok(Invocation::Next {
+        count,
+        phase,
+        epic,
+        exclude_label,
+    })
 }
 
-/// `story claim (<id> | --next) [--phase <N>] [--comment <text> | --no-comment]
-/// [--dry-run]` (SH-476).
+/// `story claim (<id> | --next) [--phase <N>] [--epic <id>]
+/// [--exclude-label <csv>] [--comment <text> | --no-comment] [--dry-run]`
+/// (SH-476, SH-455).
 ///
 /// The two forms are checked against each other *after* the flag loop rather
 /// than as the loop runs, so `story claim --next SH-1` and `story claim SH-1
@@ -2934,6 +2974,8 @@ fn parse_claim(args: &[String]) -> Result<Invocation, AppError> {
     let mut id: Option<String> = None;
     let mut next = false;
     let mut phase: Option<String> = None;
+    let mut epic: Option<String> = None;
+    let mut exclude_label: Option<String> = None;
     let mut comment: Option<String> = None;
     let mut no_comment = false;
     let mut dry_run = false;
@@ -2950,6 +2992,20 @@ fn parse_claim(args: &[String]) -> Result<Invocation, AppError> {
                     .get(index + 1)
                     .ok_or_else(|| AppError::Usage(CLAIM_USAGE.to_string()))?;
                 phase = Some(value.clone());
+                index += 2;
+            }
+            "--epic" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(CLAIM_USAGE.to_string()))?;
+                epic = Some(value.clone());
+                index += 2;
+            }
+            "--exclude-label" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(CLAIM_USAGE.to_string()))?;
+                exclude_label = Some(value.clone());
                 index += 2;
             }
             // The value is required, never optional: an optional-value
@@ -2975,9 +3031,10 @@ fn parse_claim(args: &[String]) -> Result<Invocation, AppError> {
                 id = Some(word.to_string());
                 index += 1;
             }
-            _ => return Err(AppError::Usage(CLAIM_USAGE.to_string())),
+            _ => break,
         }
     }
+    expect_no_more(&args[index..], CLAIM_USAGE)?;
 
     let target = match (id, next) {
         (Some(_), true) => {
@@ -3001,9 +3058,25 @@ fn parse_claim(args: &[String]) -> Result<Invocation, AppError> {
                      explicit id\n{CLAIM_USAGE}"
                 )));
             }
+            if epic.is_some() {
+                return Err(AppError::Usage(format!(
+                    "`--epic` narrows what `--next` picks and means nothing beside an \
+                     explicit id\n{CLAIM_USAGE}"
+                )));
+            }
+            if exclude_label.is_some() {
+                return Err(AppError::Usage(format!(
+                    "`--exclude-label` narrows what `--next` picks and means nothing beside an \
+                     explicit id\n{CLAIM_USAGE}"
+                )));
+            }
             ClaimTarget::Story(id)
         }
-        (None, true) => ClaimTarget::Next { phase },
+        (None, true) => ClaimTarget::Next {
+            phase,
+            epic,
+            exclude_label,
+        },
     };
 
     let comment = match (comment, no_comment) {
@@ -4747,12 +4820,24 @@ mod tests {
     }
 
     #[test]
-    fn claim_next_carries_its_phase() {
+    fn claim_next_carries_its_queue_filters() {
         assert_eq!(
-            claim(&["claim", "--next", "--phase", "2"]).unwrap(),
+            claim(&[
+                "claim",
+                "--next",
+                "--phase",
+                "2",
+                "--epic",
+                "SH-9",
+                "--exclude-label",
+                "no-auto,paused",
+            ])
+            .unwrap(),
             Invocation::Claim {
                 target: ClaimTarget::Next {
-                    phase: Some("2".to_string())
+                    phase: Some("2".to_string()),
+                    epic: Some("SH-9".to_string()),
+                    exclude_label: Some("no-auto,paused".to_string()),
                 },
                 comment: ClaimComment::Default,
                 dry_run: false,
@@ -4781,6 +4866,41 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(message.contains("--phase"), "{message}");
+    }
+
+    #[test]
+    fn queue_filters_beside_an_id_are_refused() {
+        for (flag, value) in [("--epic", "SH-9"), ("--exclude-label", "no-auto")] {
+            let message = claim(&["claim", "SH-1", flag, value])
+                .unwrap_err()
+                .to_string();
+            assert!(message.contains(flag), "{message}");
+        }
+    }
+
+    #[test]
+    fn next_carries_its_queue_filters() {
+        let args = [
+            "next",
+            "--count",
+            "3",
+            "--phase",
+            "2",
+            "--epic",
+            "SH-9",
+            "--exclude-label",
+            "no-auto",
+        ]
+        .map(str::to_string);
+        assert_eq!(
+            parse_invocation(&args).unwrap(),
+            Invocation::Next {
+                count: 3,
+                phase: Some("2".to_string()),
+                epic: Some("SH-9".to_string()),
+                exclude_label: Some("no-auto".to_string()),
+            }
+        );
     }
 
     #[test]
