@@ -40,7 +40,7 @@ assert_eq "$(jqf "$out" .ok)" "true" "attended: ok:true"
 assert_eq "$(jqf "$out" .auto)" "false" "attended: auto:false"
 assert_eq "$(jqf "$out" .council)" "false" "attended: council:false"
 assert_eq "$(jqf "$out" .prompt)" "$expected_attended_prompt" "attended: prompt is byte-identical to today's"
-for marker in "AUTONOMOUS" "council-vote" "gh pr merge" "story block" "story move $id" "reap" "genuinely defensible answers" "do not stall"; do
+for marker in "AUTONOMOUS" "council-vote" "land-pr.sh" "story block" "story move $id" "reap" "genuinely defensible answers" "do not stall"; do
   case "$(jqf "$out" .prompt)" in
     *"$marker"*) fail_test "attended: prompt leaked auto-charter marker [$marker]" ;;
   esac
@@ -61,7 +61,7 @@ for marker in \
   "AUTONOMOUS" \
   "council-vote" \
   "make test" \
-  "gh pr merge --merge" \
+  "bash scripts/land-pr.sh PR-NUMBER" \
   "story block $id" \
   "story move $id done" \
   "semver bump" \
@@ -72,6 +72,9 @@ for marker in \
     *) fail_test "auto+council-on: prompt missing charter obligation [$marker]" ;;
   esac
 done
+case "$prompt" in
+  *"gh pr merge"*) fail_test "auto+council-on: charter still permits the bare merge path" ;;
+esac
 
 # SH-371: the verdict is recorded when the council CONCLUDES, not at the end of
 # the work. The council writes its trail into a directory this worktree owns, so
@@ -94,7 +97,7 @@ solo_prompt=$(jqf "$solo_out" .prompt)
 for marker in \
   "AUTONOMOUS" \
   "make test" \
-  "gh pr merge --merge" \
+  "bash scripts/land-pr.sh PR-NUMBER" \
   "story block $id" \
   "story move $id done" \
   "semver bump" \
@@ -106,6 +109,9 @@ for marker in \
     *) fail_test "auto+council-off: solo prompt missing charter obligation [$marker]" ;;
   esac
 done
+case "$solo_prompt" in
+  *"gh pr merge"*) fail_test "auto+council-off: charter still permits the bare merge path" ;;
+esac
 
 # SH-371: the two charters must never drift on an obligation they share. A solo
 # decision leaves no trail on disk at all, so it is gone with the session unless
