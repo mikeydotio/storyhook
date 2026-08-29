@@ -19,6 +19,12 @@ The helper owns the compare-and-swap claim, fresh base, `.codex/worktrees/<id>` 
 tmux window, `codex --no-alt-screen` launch, screen readiness, Shift+Tab transition into Plan
 mode, bracketed paste, and Tab submission. Do not repeat those side effects.
 
+Codex has no `ExitPlanMode` tool boundary corresponding to Claude's. Storyhook's built-in
+Codex prompts therefore require the plan presented for approval to make posting that exact
+plan to the story its first implementation step. Custom `STORY_PROMPT`, `STORY_AUTO_PROMPT`,
+and `STORY_AUTO_PROMPT_SOLO` values are wholesale overrides and must carry any equivalent
+requirement themselves; `STORY_PROMPT_EXTRA` still appends after the built-in requirement.
+
 Codex has no stable machine-readable skill inventory. In `--auto`, council discovery
 therefore defaults to the safe solo charter; `STORY_COUNCIL=on` is the explicit opt-in.
 

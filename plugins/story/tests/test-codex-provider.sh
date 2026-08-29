@@ -52,6 +52,12 @@ grep -q '^\.codex/worktrees/$' "$repo/.gitignore" \
   || fail_test "dispatch: Codex worktree container was not ignored"
 assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" "story show $id" \
   "dispatch: charter reached Codex as one submitted block"
+assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" \
+  "story comment $id your-exact-approved-plan’ the first implementation step" \
+  "dispatch: attended Codex plan persists itself as step one"
+assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" \
+  "post the plan verbatim rather than summarizing it" \
+  "dispatch: attended Codex persists the exact approved plan"
 
 # Codex renders its prompt before the model is ready. A Shift+Tab sent during
 # that loading footer is silently ignored, so dispatch must wait for the footer
@@ -129,6 +135,39 @@ assert_contains "$(jqf "$out" '.commands|join(" ")')" \
   "dry auto: Codex launch suppresses the managed child's update chooser"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" "send-keys -t <pane> Tab" \
   "dry auto: Tab submission"
+assert_contains "$(jqf "$out" .prompt)" \
+  "story comment $id_auto your-exact-approved-plan’ the first implementation step" \
+  "dry auto: Codex plan persists itself as step one"
+assert_contains "$(jqf "$out" .prompt)" \
+  "before changing files or running tests" \
+  "dry auto: persistence precedes implementation"
+
+# The provider clause belongs only to Storyhook's built-in prompts. Every
+# custom prompt remains a wholesale override, while PROMPT_EXTRA still follows
+# the complete built-in prompt (including the provider clause).
+out=$(cd "$repo_plan" && PATH="$FAKE_BIN:$PATH" STORY_AGENT=codex STORY_DRY_RUN=1 \
+  STORY_PROMPT="custom attended <n>" bash "$SCRIPT" dispatch "$id_auto" 2>&1)
+assert_eq "$(jqf "$out" .prompt)" "custom attended $id_auto" \
+  "Codex attended custom prompt: remains wholesale"
+
+out=$(cd "$repo_plan" && PATH="$FAKE_BIN:$PATH" STORY_AGENT=codex STORY_DRY_RUN=1 \
+  STORY_COUNCIL=off STORY_AUTO_PROMPT_SOLO="custom solo <n>" \
+  bash "$SCRIPT" dispatch "$id_auto" --auto 2>&1)
+assert_eq "$(jqf "$out" .prompt)" "custom solo $id_auto" \
+  "Codex auto custom prompt: remains wholesale"
+
+out=$(cd "$repo_plan" && PATH="$FAKE_BIN:$PATH" STORY_AGENT=codex STORY_DRY_RUN=1 \
+  STORY_COUNCIL=off STORY_AUTO_PROMPT="custom auto <n>" \
+  bash "$SCRIPT" dispatch "$id_auto" --auto 2>&1)
+assert_eq "$(jqf "$out" .prompt)" "custom auto $id_auto" \
+  "Codex council-capable custom prompt: remains wholesale"
+
+out=$(cd "$repo_plan" && PATH="$FAKE_BIN:$PATH" STORY_AGENT=codex STORY_DRY_RUN=1 \
+  STORY_PROMPT_EXTRA="EXTRA-CLAUSE" bash "$SCRIPT" dispatch "$id_auto" --auto 2>&1)
+case "$(jqf "$out" .prompt)" in
+  *"post the plan verbatim rather than summarizing it. EXTRA-CLAUSE") : ;;
+  *) fail_test "Codex built-in prompt: STORY_PROMPT_EXTRA is not last" ;;
+esac
 
 # The public dispatch flag selects the same provider without relying on the
 # environment seam, may appear before the id, and outranks that seam when both
