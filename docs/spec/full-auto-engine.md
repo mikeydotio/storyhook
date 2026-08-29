@@ -784,3 +784,68 @@ Measured contrast of `--warn` on `--warn-soft` is 4.54:1 light and 5.12:1
 dark. The story asked for the bar the rest of the dashboard's chips meet;
 that bar is 4.16:1 (`--fg-muted` on `--bg-sunken`, light), so WCAG AA's 4.5:1
 is asserted instead as the stronger of the two claims.
+
+### SH-456 — `scripts/machine-lock.sh`
+
+**The lock root derives from `$HOME`, deliberately not from `$XDG_STATE_HOME`,
+and that is the one decision in this story with a way to be silently wrong.**
+`src/env/mod.rs` already resolves this project's state home as
+`$XDG_STATE_HOME/storyhook`, else `~/.local/state/storyhook`, so reading the
+variable is the obvious implementation and the path below matches the
+convention either way. But `scripts/run-tests.sh` **exports `XDG_STATE_HOME`**
+into a fresh per-run `mktemp -d` directory, and SH-457 takes the `gate` lock
+*inside that script* — so a root read from the variable would be unique to
+every run, every concurrent suite on the machine would take a different lock,
+nothing would serialize, and the gate would pass having proved nothing. That is
+the SH-364 shape: a harness that lies to the gate running under it.
+`tests/machine_lock.rs` constructs the straddle rather than waiting for it
+(SH-420's posture) — with no `STORYHOOK_LOCK_DIR` and a decoy `XDG_STATE_HOME`,
+`--plan` must still resolve under `$HOME`.
+
+**Holder identity is a pid *and* a start time**, where the story asked only for
+"a pid that is actually checked". A bare pid is the SH-239 trap one axis over:
+pids are reused, a `$HOME`-rooted lock survives a reboot, and a reused pid is
+exactly how a live holder's lock gets stolen. `ps -o lstart=` is whole-second
+granular, which is also where `LOCK_POLL_SECS = 1` comes from — the poll period
+is the resolution of the observation, not a guess about speed.
+
+**Three things the design of record did not name, added because the primitive
+is unusable without them:**
+
+- **`--max-wait <seconds>`, and no default ceiling.** Waiting is bounded by a
+  fact — whether the recorded holder is alive — the way `browser-watch.sh`'s
+  lock already decides staleness. A caller with a real budget passes the flag
+  and states its own derivation at its own call site. `--max-wait 0` is a
+  try-lock. Giving up is `75` (`EX_TEMPFAIL`) with a line saying the command did
+  not run, because a timeout is not a failure of the command (SH-312).
+- **Signal traps, which no other script in this repo carries.** `trap … EXIT`
+  alone is not enough and looks like it is: bash defers a trap until the current
+  *foreground* command returns, so a SIGTERM arriving during a fourteen-minute
+  `make test` would not release the lock until that suite finished — the exact
+  wedge this script exists to prevent. The command therefore runs in the
+  background under an explicit `wait`. The signal is **forwarded, never
+  escalated**: the command owns its own teardown, and `make test`'s legs each
+  carry their own EXIT traps.
+- **Reentrancy, via `STORYHOOK_MACHINE_LOCKS` in the command's environment.**
+  A caller who wraps a whole `make test` in `machine-lock.sh gate --` would
+  otherwise wait forever on a lock its own process tree holds — provably alive,
+  so no staleness check can ever free it.
+
+**The identity files are written `started`, `meta`, then `pid` — pid last.**
+`mkdir` is the atomic primitive (macOS ships no `flock(1)`), so a window exists
+between taking the directory and describing it; writing the pid last means a
+reader that sees a pid is guaranteed to see the start time beside it. A
+directory with no pid is tolerated for `IDENTITY_GRACE_POLLS` and then
+reclaimed, with the reclamation reported.
+
+**Limits stated rather than glossed:** waiters are unordered (a `mkdir` lock has
+no queue, and the reported wait duration is what would make starvation visible);
+a pid reused *within the same second* across a reboot still defeats the identity
+check; and forgery is not the threat model, the position `gate-receipt.sh`
+already takes.
+
+Mutation-checked in both directions, six mutations, **exactly one red each** —
+`tests/machine_lock.rs`'s module doc carries the table. One of them is a finding
+in its own right: with the start-time comparison deleted, an unbounded
+reclamation case hangs `cargo test` forever instead of turning a test red, which
+is why both reclamation cases pass a derived `--max-wait`.
