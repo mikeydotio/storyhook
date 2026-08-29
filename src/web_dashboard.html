@@ -8603,17 +8603,34 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var st = v.story;
     var updated = (st.updated_at || "").slice(0, 10);
     var order = nextRank(st.id);
-    clear(row);
     row.setAttribute("aria-label", st.id + ": " + st.title);
+    row.style.borderLeft = blocked[st.id] ? "3px solid var(--danger)" : "";
+
+    /* SH-425: build the candidate cells off-tree and destroy the live row's
+       children only when their rendered output actually changed. The list used
+       to clear every reused row on every render, even when a comment or another
+       story's mutation changed nothing this row displays. Besides needless DOM
+       churn, that discarded focus inside `.row-actions-btn`; SH-401's press gate
+       protects a primary pointer gesture, but it deliberately does not turn a
+       no-op render into a reason to replace an unchanged subtree.
+
+       Compare the output rather than a hand-built input fingerprint, matching
+       populateCard's SH-399 rule: this renderer reaches through helpers into
+       metadata and other state (`buildTypeBadge`, `buildStatePill`,
+       `priorityDot`, `labelChips`, `memberName`, `nextRank`), so its argument is
+       not its complete input. Move the detached children with appendChild so
+       their listeners survive; never parse the stored serialization back into
+       the live row. */
+    var next = el("tr", {}, []);
     var badge = buildTypeBadge(st.story_type);
-    row.appendChild(el("td", { class: "col-id" }, badge ? [badge, " ", st.id] : [st.id]));
-    row.appendChild(el("td", { class: "col-order" }, [order === Infinity ? "—" : String(order + 1)]));
-    row.appendChild(el("td", {}, [st.title]));
-    row.appendChild(el("td", {}, [buildStatePill(v)]));
-    row.appendChild(el("td", {}, [priorityDot(st.priority)]));
-    row.appendChild(el("td", {}, [labelChips(st.labels)]));
-    row.appendChild(el("td", {}, [st.assignee ? memberName(st.assignee) : el("span", { style: "color:var(--fg-faint)" }, ["–"])]));
-    row.appendChild(el("td", { class: "col-date" }, [updated]));
+    next.appendChild(el("td", { class: "col-id" }, badge ? [badge, " ", st.id] : [st.id]));
+    next.appendChild(el("td", { class: "col-order" }, [order === Infinity ? "—" : String(order + 1)]));
+    next.appendChild(el("td", {}, [st.title]));
+    next.appendChild(el("td", {}, [buildStatePill(v)]));
+    next.appendChild(el("td", {}, [priorityDot(st.priority)]));
+    next.appendChild(el("td", {}, [labelChips(st.labels)]));
+    next.appendChild(el("td", {}, [st.assignee ? memberName(st.assignee) : el("span", { style: "color:var(--fg-faint)" }, ["–"])]));
+    next.appendChild(el("td", { class: "col-date" }, [updated]));
     // SH-235: same reasoning as buildCard's own .card-actions-btn -- a
     // visible, coarse-pointer-only path to the exact menu right-click
     // already opens. Unlike a card, a <tr> is not `role="button"`
@@ -8621,14 +8638,27 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // normal part of the accessibility tree and needs no tabIndex override.
     var rowActionsBtn = el("button", {
       type: "button", class: "row-actions-btn", "aria-label": "Actions for " + st.id,
-      onClick: function(e) { e.stopPropagation(); openStoryMenu(e, v, rowActionsBtn); }
+      onClick: function(e) {
+        e.stopPropagation();
+        // SH-425: state lands before SH-401 releases deferred paint, and the
+        // output guard above can retain this button across no-op updates. Read
+        // the current story at activation rather than acting on render-time v.
+        var current = findStory(st.id);
+        if (current) openStoryMenu(e, current, rowActionsBtn);
+      }
     }, [svgIcon([
       ["circle", { cx: "5", cy: "12", r: "2" }],
       ["circle", { cx: "12", cy: "12", r: "2" }],
       ["circle", { cx: "19", cy: "12", r: "2" }]
     ], { fill: "currentColor", stroke: "none" })]);
-    row.appendChild(el("td", { class: "col-actions" }, [rowActionsBtn]));
-    row.style.borderLeft = blocked[st.id] ? "3px solid var(--danger)" : "";
+    next.appendChild(el("td", { class: "col-actions" }, [rowActionsBtn]));
+
+    var rendered = next.innerHTML;
+    if (row.dataset.rendered !== rendered) {
+      clear(row);
+      while (next.firstChild) row.appendChild(next.firstChild);
+      row.dataset.rendered = rendered;
+    }
   }
 
   /** Briefly highlights a row that either just appeared or has a field
