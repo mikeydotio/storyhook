@@ -998,3 +998,85 @@ Mutation-checked in the two load-bearing directions: moving the command before
 preflight makes the uncertified/conflict witnesses run, and deleting the lock
 proof makes the direct private-mode refusal test fail. The module document in
 `tests/land_pr.rs` carries the measured table.
+
+### SH-460 — the `PreToolUse` hook
+
+`plugins/story/hooks/full-auto.sh`, wired as three `PreToolUse` entries in the
+plugin's existing `hooks.json`. It allows `ExitPlanMode`, denies
+`AskUserQuestion` and `request_user_input` with the feedback D6 specifies, and
+answers nothing else. Five things the story left open were decided here, because
+SH-461 is unwritten and the hook is what owns the marker's contract.
+
+**`STORYHOOK_FULL_AUTO` carries the lane's story id, and any non-empty value
+activates.** One variable, not two: the marker and the id the feedback has to
+name are the same fact. Unset *and* set-but-empty are both inert — a launcher
+that computed the id and got nothing must not activate a lane that does not
+exist. A value that is not shaped like a story id still enforces; it just falls
+back to generic wording rather than echoing a bogus id at the model, which is
+`STORYHOOK_FULL_AUTO=1`'s case and is pinned as one.
+
+**Three exact matchers, not a regex alternation and not `*`.** SH-459 measured
+Codex against a plain tool name; its matcher's regex semantics are *unmeasured*,
+and this project does not ship on documentation where it can ship on a
+measurement (SH-226, SH-306). Exact names are demonstrated on both hosts —
+`hooks.json`'s existing `PostToolUse` → `Bash`. A wildcard would also pay a hook
+process on every tool call a lane makes. The hook re-reads `tool_name` from the
+payload anyway, so it stays correct under any matcher, and
+`test-full-auto-hook.sh` fires a `Bash` payload through the `ExitPlanMode` door
+to prove it decides on the payload rather than on having been invoked.
+
+**No `set -e`, deliberately.** For `PreToolUse` the exit status *is* a decision
+channel — the host acts on a nonzero exit, and `2` blocks the call outright — so
+a stray failing command must never get to decide one. Every path ends in an
+explicit `exit 0` and the decision travels in the JSON. This is SH-355's rule one
+host over: there it was git obeying `prepare-commit-msg`'s status, here it is the
+agent host obeying this one.
+
+**The `[plugin] enabled = false` kill switch is not consulted.** It turns off the
+session hooks, which inject context and write handoffs; both are conveniences.
+Unattendedness is not, and a second switch that could silently turn a lane back
+into an attended one would re-open the exact failure this hook exists to close,
+in the one configuration nobody would think to check. Pinned as a test, not left
+as a comment.
+
+**An unreadable payload decides nothing.** A hook that cannot tell which tool it
+is must not decide. The consequence is the already-documented fail-open hole: the
+lane asks, nobody answers, the stall ceiling quarantines it. Guessing `deny` at a
+plan exit would be worse, and guessing `allow` would be worse still.
+
+**The `--deadline` obligation was narrowed, not exempted.** Wiring a fourth hook
+turned all four tests in `tests/hook_budgets.rs` red, three of them because
+SH-182's rule is written as *every* declared hook must declare a `--deadline`
+inside its manifest timeout. That rule is really "a hook that waits on the daemon
+must bound that wait", and it was written when every hook did; `full-auto.sh`
+makes no `story` call and has no wait to bound. The exemption is **derived**
+(`invokes_story`, asking at a command position rather than searching for the
+word, because the denial text names a story in English on a functional line) and
+runs in both directions — a script that calls `story` must declare a deadline,
+one that does not must declare none. A hand-listed exemption was rejected
+outright: it is the shape SH-136/SH-198/SH-258/SH-260/276/SH-360/SH-364 have
+already cost this project, and SH-343 had to un-hand-list this very file once
+before. The predicate ships with a positive control over the three scripts that
+really do call `story`, a negative over `full-auto.sh` itself, and one test
+pinning its own known over-approximation (a `;` inside a quoted string starts a
+new segment) — stated rather than claimed away, because the direction of that
+error is safe: it demands a deadline nobody needs, loudly, where the opposite
+would silently exempt a hook that really does wait.
+
+**The Claude arm is measured only against the schema, not against the host — and
+that is a gap, named.** SH-459 measured Codex live. The equivalent probe for
+Claude could not be run from inside a Claude Code session: a nested
+`claude -p` exits with `401 OAuth access token has been revoked`, so the host
+never reached a tool call. The recipe is left runnable rather than assumed —
+a directory holding a `settings.json` whose `PreToolUse` matchers for
+`ExitPlanMode` and `AskUserQuestion` run a logging wrapper around
+`plugins/story/hooks/full-auto.sh` with `STORYHOOK_FULL_AUTO` set, then
+`claude --settings <that file> --permission-mode plan -p '<a prompt that plans,
+and one that asks>'`, reading the wrapper's log for what fired and what the host
+did with the answer. What is *not* in doubt is the wire shape: `greenlight`, a
+`PreToolUse` hook installed on this machine, emits the identical
+`hookSpecificOutput.permissionDecision` envelope. SH-461's own acceptance
+criterion — a lane reaching the charter with no human keystroke — is the
+end-to-end measurement, and SH-473 will not close without a real engine run
+having been observed. Until one has, this hook's Claude arm is tested against
+the contract and not against the host.
