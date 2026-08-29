@@ -44,7 +44,111 @@
 # contract.
 set -euo pipefail
 
+# `$0` is resolved to an absolute path BEFORE the `cd` below, because the lock
+# block re-execs this script by name and a relative `$0` stops resolving the
+# moment the working directory moves.
+self="$0"
+case "$self" in
+(/*) ;;
+(*) self="$PWD/$self" ;;
+esac
+
 cd "$(dirname "$0")/.."
+
+# THE MACHINE-WIDE `gate` LOCK -- SH-457, decision D4 of
+# `docs/spec/full-auto-engine.md`.
+#
+# WHY. This suite is 36.375s median warm and idle
+# (`docs/rearch/baseline/timings.md`) and has been measured at 873s under the
+# three-to-four concurrent worktree suites this machine routinely runs.  That
+# contention is the documented cause of an open class of load-sensitive
+# failures (SH-347, SH-349, SH-375, SH-378, SH-401, SH-419), and Full Auto
+# (SH-452) runs N agent lanes at once, multiplying exactly it.  So the suites
+# queue instead of piling up.
+#
+# WHY INTERACTIVE RUNS ARE NOT EXEMPT, recorded so it is not re-litigated: a
+# human's suite contends identically with a lane's.  Exempting it would leave
+# the hole open in exactly the case where somebody is present to be confused
+# by the result.
+#
+# WHY HERE, rather than around the `make test` recipe: every caller queues,
+# including `scripts/run-rust-battery.sh`, `scripts/run-changed.sh` and a bare
+# `bash scripts/run-tests.sh` typed by hand.  A rule that lived in the Makefile
+# would cover the one door and none of the others.
+#
+# AND WHY THIS IS THE FLOOR RATHER THAN THE WHOLE STORY.  `make test` reaches
+# this script TWICE -- once per disjoint Rust battery -- so two concurrent
+# `make test` runs interleave at the battery boundary: only one `cargo test`
+# ever exists on this machine, but the two runs are not whole-run exclusive and
+# their fmt/clippy/build/plugin legs still overlap.  Whole-run exclusivity is
+# one wrap away and needs nothing new:
+#
+#     scripts/machine-lock.sh gate -- make test
+#
+# which is the case `machine-lock.sh`'s reentrancy branch was built for, and
+# which the engine's lanes use.  `scripts/run-e2e.sh` does not take this lock
+# either; the browser leg is outside D4's wording.
+#
+# NO `--max-wait`.  `machine-lock.sh` has no default ceiling on purpose:
+# waiting is bounded by the FACT of whether the holder is still alive, not by a
+# clock.  A gate legitimately runs for a quarter of an hour, so any literal
+# here would be the bare-ceiling shape SH-394 forbids -- and giving up would
+# mean skipping the suite, which is the one outcome a gate must never produce
+# quietly.
+#
+# REENTRANCY IS `machine-lock.sh`'S TO DECIDE, NOT THIS SCRIPT'S.  A run whose
+# own process tree already holds `gate` -- an operator or an engine lane having
+# wrapped a whole `make test` -- must not wait on itself, and the wrapper
+# already has that branch, reports taking it, and is tested on it.  This script
+# re-execs unconditionally and lets the wrapper answer, rather than reading
+# `STORYHOOK_MACHINE_LOCKS` here too: the format of that variable would then be
+# known in two places, which is the SH-136 shape this project has already paid
+# for four times.  Measured rather than argued -- with a second guard written
+# here, mutating it away changed no observable at all, because the wrapper was
+# answering anyway.  The cost of not having it is one `bash` that immediately
+# execs.
+#
+# `STORYHOOK_GATE_LOCK_TAKEN` is the handshake across this script's own
+# re-exec, and it exists so the ORDINARY path -- by far the common one -- says
+# nothing at all.  The bypass, by contrast, is reported always: a bypass nobody
+# can see is the SH-306 shape this project has already paid for once, with
+# `SKIP_PREPUSH_TESTS`.
+#
+# The re-exec sits ABOVE everything this script would otherwise have to clean
+# up -- a queued run holds no temp data root and no EXIT trap it has not yet
+# installed.
+if [ -n "${STORYHOOK_GATE_LOCK_TAKEN:-}" ]; then
+    # This run took the lock a moment ago, in the `else` branch below. The
+    # handshake is between those two adjacent processes and nobody else, so it
+    # is consumed here rather than left in the environment of every test
+    # binary the suite is about to start -- one of which could otherwise
+    # invoke this script and silently skip the lock while believing it held
+    # one.
+    unset STORYHOOK_GATE_LOCK_TAKEN STORYHOOK_GATE_LOCK_DEPTH
+elif [ "${STORYHOOK_GATE_LOCK:-1}" = "0" ]; then
+    echo "run-tests.sh: STORYHOOK_GATE_LOCK=0 -- running WITHOUT the machine-wide 'gate' lock; a concurrent suite will contend with this one" >&2
+else
+    # THE DEPTH GUARD, AND WHY IT IS NOT THE SAME CHECK TWICE.  Arriving here
+    # a second time means the handshake above did not land -- and the failure
+    # mode of that is not a hang but a FORK BOMB, because `machine-lock.sh`
+    # runs its command in a background child (it has to, or a signal could not
+    # reach it during a fifteen-minute suite), so each cycle leaves a live
+    # process waiting on the next.  Measured: roughly two hundred processes a
+    # second, on a machine that routinely runs three or four other suites.
+    #
+    # So the two halves live at two sites and neither can cover for the other,
+    # SH-365's shape: break the consumption above and this refuses by name,
+    # break this and the mutation is caught by the tests that provoke the
+    # ordinary path.  Refusing rather than looping is SH-357's doctrine one
+    # axis over -- a state that cannot be honoured is refused, never absorbed.
+    depth=$(( ${STORYHOOK_GATE_LOCK_DEPTH:-0} + 1 ))
+    if [ "$depth" -gt 1 ]; then
+        echo "run-tests.sh: reached the 'gate' lock take $depth times over, which means the re-exec handshake is not landing -- refusing rather than forking a process per cycle" >&2
+        exit 2
+    fi
+    STORYHOOK_GATE_LOCK_TAKEN=1 STORYHOOK_GATE_LOCK_DEPTH="$depth" \
+        exec bash scripts/machine-lock.sh gate -- bash "$self" "$@"
+fi
 
 only_mode=0
 run_docs=1

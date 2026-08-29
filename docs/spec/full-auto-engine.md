@@ -913,3 +913,53 @@ Mutation-checked in both directions, six mutations, **exactly one red each** —
 in its own right: with the start-time comparison deleted, an unbounded
 reclamation case hangs `cargo test` forever instead of turning a test red, which
 is why both reclamation cases pass a derived `--max-wait`.
+
+### SH-457 — the `gate` lock is taken
+
+`scripts/run-tests.sh` re-execs itself under
+`machine-lock.sh gate --`, above its own isolated data root, so every caller
+queues: both Rust batteries, `run-changed.sh`, and a bare
+`bash scripts/run-tests.sh`. `STORYHOOK_GATE_LOCK=0` bypasses and says so on
+stderr. Full detail — including what the lock does *not* cover — is in
+`docs/spec/test-tiers.md`'s "One suite at a time on this machine (SH-457)"
+section, next to the tiers it constrains; only the deviations from D4 are
+recorded here.
+
+**D4 says "`make test` serializes"; what ships is one `cargo test` at a time,
+which is not the same claim.** `make test` reaches `run-tests.sh` **twice**,
+once per disjoint Rust battery, so two concurrent runs interleave at the
+battery boundary and their fmt/clippy/build/plugin legs still overlap. Wrapping
+the whole recipe instead was considered and declined at plan time by operator
+decision: it needs a recursive `$(MAKE)`, an `export E2E` so `test-full` keeps
+working, and it moves the "postlude is the last recipe line" structure that
+`tests/push_gate.rs` and `tests/selective_gate.rs` both pin into an inner
+target — a large blast radius on the gate's own plumbing for a window the
+existing primitive already closes on demand. Whole-run exclusivity is
+`machine-lock.sh gate -- make test`, which is precisely the case SH-456's
+reentrancy branch was built for and which the engine's lanes take.
+
+**`scripts/run-e2e.sh` does not take this lock**, and the browser leg is the
+single heaviest thing on this machine (1454s measured, SH-418). Outside D4's
+wording; named here rather than left to be discovered.
+
+**A second reentrancy guard was written in `run-tests.sh` and then deleted.**
+It read `STORYHOOK_MACHINE_LOCKS` itself, which would have put that variable's
+format in a second place (SH-136). Mutating it away changed **no observable at
+all** — `machine-lock.sh` was answering anyway — which is the tell, and is why
+it is gone rather than merely unused.
+
+**What replaced it is not the same check twice.** The re-exec carries a
+handshake variable, and the `else` branch carries a depth guard that refuses
+by name on arriving a second time. The failure mode it prevents is not a hang:
+`machine-lock.sh` runs its command in a background child, so a re-exec that
+keeps coming back leaves a live process waiting on the next — measured at
+roughly two hundred processes a second before the guard existed, on a machine
+that routinely runs three or four other suites. The two halves sit at two
+sites so breaking either is caught by the other (SH-365's shape), and
+`tests/gate_lock.rs` provokes both.
+
+`tests/gate_lock.rs` (9 tests) provokes the tracked script rather than
+inspecting it — real contention, real signals, the script reached by symlink
+from a disposable fixture root with `tracked-tree.sh` stubbed so no ledger
+reaches the developer's `.git`. Mutation-checked six ways; that file's header
+carries the table, including the one mutation that has no test and why.
