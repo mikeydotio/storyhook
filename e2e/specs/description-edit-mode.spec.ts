@@ -1,6 +1,15 @@
 import { test, expect } from "./support";
 import type { Page } from "@playwright/test";
-import { cleanUpCreatedStories, deleteStory, holdDetailFetch, openProject, seedToken } from "./support";
+import {
+  cleanUpCreatedStories,
+  deleteStory,
+  holdDetailFetch,
+  openProject,
+  pressGateSwallows,
+  requiredEnv,
+  seedToken,
+  settledBoundingBox,
+} from "./support";
 
 /**
  * Exercises SH-217's read/edit split for the drawer's description field:
@@ -92,9 +101,31 @@ test("blurring the description saves it and returns to the rendered view", async
   await openStory(page, card);
 
   const patches: unknown[] = [];
+  let releasePatch!: () => void;
+  let markPatchTaken!: () => void;
+  let markPatchDelivered!: () => void;
+  const patchHold = new Promise<void>((resolve) => { releasePatch = resolve; });
+  const patchTaken = new Promise<void>((resolve) => { markPatchTaken = resolve; });
+  const patchDelivered = new Promise<void>((resolve) => { markPatchDelivered = resolve; });
   await page.route(/\/story\/[^/]+$/, async (route) => {
-    if (route.request().method() === "PATCH") patches.push(route.request().postDataJSON());
-    await route.continue();
+    if (route.request().method() !== "PATCH") {
+      await route.continue();
+      return;
+    }
+    patches.push(route.request().postDataJSON());
+    const response = await route.fetch({
+      headers: {
+        ...route.request().headers(),
+        "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
+      },
+    });
+    markPatchTaken();
+    await patchHold;
+    try {
+      await route.fulfill({ response });
+    } finally {
+      markPatchDelivered();
+    }
   });
 
   await page.locator(".description-view").click();
@@ -261,7 +292,37 @@ test("clicking the Comments toggle straight from edit mode both saves and toggle
   await page.locator(".description-view").click();
   await page.locator(".description-field").fill("after edit");
   const commentsToggle = page.locator(".section-toggle", { hasText: "Comments" });
-  await commentsToggle.click();
+  await page.evaluate(() => {
+    (window as typeof window & { __sh423PressTarget?: Element }).__sh423PressTarget =
+      Array.from(document.querySelectorAll(".section-toggle")).find((node) =>
+        node.textContent?.includes("Comments"),
+      );
+  });
+  const box = await settledBoundingBox(page.locator("#drawer"), commentsToggle);
+
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  // The mousedown blurs the textarea and starts the real PATCH. Hold its real
+  // response until the write has landed, then deliver it while the pointer is
+  // still down: this deterministically exercises the organic WebKit failure
+  // recorded on SH-423 instead of hoping the server wins a sub-click race.
+  await patchTaken;
+  releasePatch();
+  await patchDelivered;
+  await expect.poll(() => page.evaluate(() =>
+    (window as typeof window & {
+      __storyhookPressGate?: { deferred: string[] };
+    }).__storyhookPressGate?.deferred ?? [],
+  )).toContain("drawer");
+  const targetSurvived = await page.evaluate(() => {
+    const saved = (window as typeof window & { __sh423PressTarget?: Element }).__sh423PressTarget;
+    const current = Array.from(document.querySelectorAll(".section-toggle")).find((node) =>
+      node.textContent?.includes("Comments"),
+    );
+    return !!saved?.isConnected && saved === current;
+  });
+  expect(targetSurvived).toBe(true);
+  await page.mouse.up();
 
   // The click reaches the toggle (proving the description's blur-driven
   // layout shift doesn't swallow it), the description commits, and the
@@ -270,6 +331,7 @@ test("clicking the Comments toggle straight from edit mode both saves and toggle
   expect(patches).toEqual([{ description: "after edit" }]);
   await expect(page.locator(".description-view")).toContainText("after edit");
   await expect(commentsToggle).toHaveAttribute("aria-expanded", "false");
+  expect(await pressGateSwallows(page)).toEqual([]);
   await page.locator("#drawer-close").click();
   await deleteStory(page, title);
 });

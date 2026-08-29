@@ -44,9 +44,14 @@ e.button === 0`. Capture so no `stopPropagation()` can hide a press. Primary-but
 only because `click` is a primary-button event: a secondary press has no click to
 protect, which is why the context menu needs no carve-out — it is never gated.
 
-**Gated.** `renderAll`, `renderView`, `renderDrawer`. Each defers a *thunk that
-re-reads live state*, keyed by surface, last writer wins — so a flush always paints
-the newest world and coalescing several deferred renders into one pass is sound.
+**Gated.** `renderAll`, `renderView`, `renderDrawer`, plus the description editor's
+layout-changing `exitEdit` paint. Each defers a *thunk*, keyed by surface, last
+writer wins. The render thunks re-read live state, so a flush always paints the
+newest world and coalescing several deferred renders into one pass is sound. The
+description thunk carries only the text already committed by its blur; the PATCH
+itself never waits. SH-423 added that fourth surface after a deterministic WebKit
+witness proved a still-connected Comments button could nevertheless move out from
+under mouseup when the editor collapsed during a held press.
 `renderAll` and `renderView` are deliberately **both** gated even though either
 alone covers the `fetchData` path (`renderAll`'s body is the sub-renderers): they
 are independently load-bearing on different paths — `renderView` for the direct
@@ -123,6 +128,12 @@ funnelling the file's bare removal sites through one `detach()` door so a scan c
 derived over idioms — is **SH-421**, severed from this story by the council's own
 unanimous motion.
 
+`window.__storyhookPressGate.deferred` lists each surface currently held by the gate
+and is cleared before release flushes them. It is both a narrow diagnostic and a
+deterministic browser-test synchronization point: the SH-423 witness waits for the
+real PATCH reconciliation to defer `drawer` before releasing the mouse, rather than
+guessing at browser timing with a sleep.
+
 ## Coverage
 
 `e2e/specs/drawer-body-click-race.spec.ts`, all verified red on the pre-SH-401 tree
@@ -133,6 +144,13 @@ the paired no-interposition control, and the ordering contract above. SH-423's
 later section/footer reconciliation means an output-identical drawer target now
 survives that particular reply even without the gate; genuinely changed sections
 remain protected by the gate.
+
+`e2e/specs/description-edit-mode.spec.ts` carries SH-423's exact two-part witness:
+the real description PATCH response is held until its write lands, delivered
+between mouse-down and mouse-up on Comments, and must both retain the target and
+complete the save-plus-toggle gesture in Chromium and WebKit. Its paired identity
+test proves a title-only mutation retains the output-identical Comments and footer
+nodes, while the retained Close handler reads the current title.
 
 `e2e/specs/card-reposition-click-race.spec.ts` adds SH-422's exact whole-card
 witness: old order `[A, B]`, held `/data` reply producing desired order `[B]`, and
