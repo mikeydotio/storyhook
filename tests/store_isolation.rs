@@ -758,7 +758,7 @@ fn a_daemon_at_the_legacy_portfile_is_stood_down_rather_than_duplicated() {
         serde_json::from_str(&std::fs::read_to_string(&keyed).expect("reading the new portfile"))
             .expect("parsing the new portfile");
     assert_ne!(
-        before["pid"], after["pid"],
+        before["token"], after["token"],
         "the daemon holding the legacy portfile must have been replaced, not joined"
     );
     assert!(
