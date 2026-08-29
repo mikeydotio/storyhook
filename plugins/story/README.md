@@ -225,8 +225,10 @@ Worth knowing before changing anything here:
   run — and would try to remove the very worktree the auto session is
   standing in. Once closed, it runs `story.sh reap <id>` as its own last act
   (SH-208): reclaims the worktree and branch, then kills the tmux window it
-  was running in. `reap` refuses outright unless the story is closed and the
-  worktree/branch are both safe to discard — nothing partial, matching
+  was running in. `reap` refuses outright unless the story is in the project's
+  completion state (the first CLOSED state, or `STORY_DONE_STATE`) and the
+  worktree/branch are both safe to discard. A different CLOSED state may mean
+  abandoned work and is not accepted as completion — nothing partial, matching
   `complete`'s own "never forces anything by default" rule above but all-or-nothing
   rather than best-effort, since nobody is watching to read a partial
   result. The attended path is unchanged: teardown there still stays a later
@@ -262,9 +264,9 @@ All knobs are `STORY_*`. The commonly useful ones:
 | `STORY_DRY_RUN=1` | preview any side-effecting verb; changes nothing |
 | `STORY_LAUNCH_CMD` | what `dispatch` launches (must **not** include `-w`) |
 | `STORY_PROMPT` / `STORY_PROMPT_EXTRA` | the handoff prompt, and a clause appended to it |
-| `STORY_AUTO_PROMPT` / `STORY_AUTO_PROMPT_SOLO` | the two `--auto` charters — council-available and no-council, respectively (same seam as `STORY_PROMPT`; either wins outright over the probe below) |
+| `STORY_AUTO_PROMPT` / `STORY_AUTO_PROMPT_SOLO` | the two `--auto` charters — council-available and no-council, respectively (same seam as `STORY_PROMPT`; either wins outright over the probe below); `<done-state>` renders as the project-specific completion state |
 | `STORY_COUNCIL` | `auto` (default, probes for real)/`on`/`off` — which `--auto` charter `council_vote_available` picks |
-| `STORY_DONE_STATE` | the state `complete` closes into |
+| `STORY_DONE_STATE` | the completion state used by `complete`, autonomous prompt rendering, and `reap` |
 | `STORY_TARGET_SESSION` | dispatch into a named session from outside tmux |
 | `STORY_PROTECTED_BRANCHES` | extra globs `complete` must never delete |
 | `STORY_REQUIRE_FRESH_BASE=1` | refuse to dispatch on a stale base instead of warning |
