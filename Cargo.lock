@@ -2307,6 +2307,7 @@ dependencies = [
  "rand",
  "ratatui 0.30.0",
  "ratatui-macros",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

@@ -32,6 +32,7 @@
 pub mod attachment;
 pub mod catalog;
 pub mod config;
+pub mod engine;
 pub mod git;
 pub mod git_links;
 #[cfg(feature = "github-pr")]
