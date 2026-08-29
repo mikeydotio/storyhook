@@ -472,13 +472,16 @@ side. The context menu HIDES the item rather than disabling it when the gate
 fails — nothing a menu click can do lifts "closed" or "no checkout" — the same choice
 the drawer footer already made by omitting the button outright.
 
-## As built — SH-436 (dispatch configuration and provider selection)
+## As built — SH-436/SH-510 (dispatch configuration and remembered defaults)
 
-The dispatch modal resets on every open. Client is a UI-only select with one value,
-`localhost`; Model selects the canonical `claude` (shown as Claude) or `codex` (shown as
-Codex) provider; Auto mode is an opt-in checkbox whose secondary copy explains that it
-uses Council for questions, auto-merges PRs, and cleans up its workspace without
-auto-approving the implementation plan. Submit sends
+The dispatch modal opens with the last configuration the browser submitted. Client is a
+UI-only select with one value, `localhost`; Model selects the canonical `claude` (shown as
+Claude) or `codex` (shown as Codex) provider; Auto mode is a checkbox whose secondary copy
+explains that it uses Council for questions, auto-merges PRs, and cleans up its workspace
+without auto-approving the implementation plan. Model and Auto are stored together as a
+validated, durable browser preference when Submit is pressed, so reloads and project changes
+retain them while Cancel, backdrop dismissal, and Escape discard draft edits. Missing or
+invalid stored fields fall back independently to Claude and Auto off. Submit sends
 `?agent=claude|codex[&auto=1]`. Omitting `agent` remains a backwards-compatible Claude
 request, while malformed, duplicated, and legacy `claude-code` query values are rejected.
 
