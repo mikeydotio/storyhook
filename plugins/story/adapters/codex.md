@@ -45,5 +45,15 @@ host rather than only in the shared router.
 ## Hooks and trust
 
 Codex discovers this installed plugin's `hooks/hooks.json`. The same SessionStart,
-PostToolUse(Bash), and Stop hook protocol is shared with Claude Code. A locally installed,
-non-managed plugin may require explicit trust/review in Codex before its hooks run.
+PreToolUse, PostToolUse(Bash), and Stop hook protocol is shared with Claude Code. A locally
+installed, non-managed plugin may require explicit trust/review in Codex before its hooks run.
+
+The PreToolUse entries are Full Auto's (`hooks/full-auto.sh`, SH-460), and they are inert in an
+ordinary session: with `STORYHOOK_FULL_AUTO` unset the hook emits no decision. Inside an engine
+lane it approves the plan exit and refuses the question-asking tool, handing the model an
+instruction to decide or convene a council instead of waiting for a person who is not there.
+Codex's arm was measured live rather than assumed (SH-459, CLI 0.149.0): a matcher named
+`request_user_input` runs before the question UI, and `permissionDecisionReason` is returned to
+the model as the blocking reason. On both hosts a PreToolUse hook fails OPEN at its timeout, so
+a lane whose denial times out asks anyway and stalls — caught by the engine's stall ceiling and
+quarantined, never silent.
