@@ -2916,6 +2916,64 @@ fn web_serve_root_html_colours_the_list_state_pill() {
     );
 }
 
+/// SH-448: a list row has exactly two legal ways to gain height: its title
+/// may wrap as text, and its labels may wrap as a set of intact chips. Every
+/// other cell is metadata whose value must remain one atomic line -- notably
+/// `in-progress`, whose hyphen is otherwise a soft wrap opportunity.
+///
+/// The Playwright regression measures the resulting line boxes in a real
+/// browser. This cheaper layer pins the rule and render seams that make that
+/// behavior structural rather than fixture-specific.
+#[test]
+fn web_serve_root_html_only_wraps_list_titles_and_between_label_chips() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let resp = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let css = stylesheet(&body);
+
+    assert!(
+        declarations(css, "tbody td").contains("white-space: nowrap"),
+        "list cells must default to one atomic line; new metadata columns must not silently opt into wrapping"
+    );
+
+    let title = declarations(css, ".col-title");
+    assert!(
+        title.contains("white-space: normal"),
+        ".col-title must be the explicit text-wrapping exception to the list-cell default"
+    );
+    assert!(
+        title.contains("overflow-wrap: anywhere"),
+        ".col-title must also wrap an unbroken title instead of widening the table"
+    );
+
+    let labels = declarations(css, ".list-labels");
+    for declaration in ["display: flex", "flex-wrap: wrap", "gap: 0.25rem"] {
+        assert!(
+            labels.contains(declaration),
+            ".list-labels must carry `{declaration}` so its intact chips wrap only between items"
+        );
+    }
+    assert!(
+        declarations(css, ".chip").contains("white-space: nowrap"),
+        "each label chip must remain atomic while its list-labels parent wraps"
+    );
+
+    assert!(
+        body.contains(r#"el("td", { class: "col-title" }, [st.title])"#),
+        "populateListRow must mark the title cell as the text-wrapping exception"
+    );
+    assert!(
+        body.contains(r#"var wrap = el("span", { class: "list-labels" }, []);"#),
+        "labelChips must render the dedicated wrapping flex container"
+    );
+}
+
 /// SH-217: three CSS rules ARE the description's read/edit mechanism --
 /// the field is `display: none` by default, shown only under `.editing`,
 /// while the read view flips the opposite way. A selector rename here
