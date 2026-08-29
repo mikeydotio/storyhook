@@ -13,11 +13,11 @@ import {
 
 /**
  * Exercises SH-218: openDrawer() renders once synchronously from cached
- * summary data, then fires an async `GET .../story/<id>` for full detail;
- * when that resolves, renderDrawer() clears and rebuilds the whole drawer
- * body from scratch. Any uncontrolled field the user is mid-edit in when
- * that second render lands used to be silently wiped -- a click on Block
- * right after would hit a fresh, empty input and no-op.
+ * summary data, then fires an async `GET .../story/<id>` for full detail.
+ * Before SH-423, that second render rebuilt the whole drawer body; it now
+ * replaces only sections whose detailed output differs. Any uncontrolled field
+ * in one of those sections still needs SH-218's preservation when the detail
+ * render lands, or a click on Block right after can hit a fresh, empty input.
  *
  * These specs hold the detail GET in flight with `page.route()` and release
  * it themselves, rather than relying on real network timing (sub-100ms
@@ -182,7 +182,7 @@ test("editing the title during the detail fetch survives the re-render without a
  * never once in `make e2e` — the difference being how much else was
  * happening to make a board reply land inside that window.
  */
-test("choosing a relation kind survives a board refresh that rebuilds the drawer", async ({
+test("choosing a relation kind survives a board refresh that reconciles the drawer", async ({
   page,
   request,
 }) => {
@@ -207,8 +207,8 @@ test("choosing a relation kind survives a board refresh that rebuilds the drawer
 
   // The rebuild, from outside this tab and outside this drawer: a story
   // created through the API raises SSE `repo-changed`, whose board fetch
-  // reports a change, whose `renderDrawer()` rebuilds the body under the
-  // form. Waiting for the new card is what makes it deterministic — the
+  // reports a change, whose `renderDrawer()` reconciles the form's section.
+  // Waiting for the new card is what makes it deterministic — the
   // card cannot appear until that reply has been applied and rendered.
   const nudgeTitle = "SH-281 relation kind — the nudge";
   const slug = await projectSlug(request, "Alpha Project");

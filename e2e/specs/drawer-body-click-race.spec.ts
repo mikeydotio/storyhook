@@ -30,14 +30,11 @@ import {
  * SH-401 gate closes it too, with `card-reposition-click-race.spec.ts` as the
  * exact witness.
  *
- * The drawer has no such surviving node. `renderDrawer()` does `clear(body)`
- * and rebuilds **every** child from scratch, and it runs on any `/data` reply
- * whose diff reports a change while a drawer is open — a story edited in
- * another tab is enough. So every control in the drawer body — each
- * `.section-toggle`, the block form, the label and relation forms, the
- * archived/blocked banners' own buttons — is destroyed and rebuilt under an
- * in-flight press, and a `pointer-events` rule cannot help: the button *is*
- * the destroyed node.
+ * When SH-401 landed, the drawer had no such surviving node: `renderDrawer()`
+ * rebuilt every child from scratch on any changed `/data` reply. SH-423 later
+ * made output-identical top-level sections survive, but a section whose own
+ * output changes can still be replaced, so the press gate remains the general
+ * protection and this test remains its exact drawer witness.
  *
  * SH-401's third reported occurrence is exactly this shape —
  * `description-edit-mode.spec.ts`'s Comments `.section-toggle` stuck at
@@ -154,8 +151,10 @@ test("a /data reply landing between mousedown and mouseup does not swallow a dra
   await page.mouse.down();
   // Releases the held reply -- `fetchData()`'s success handler runs
   // `renderAll()` and then `renderDrawer()` synchronously, and `renderDrawer()`
-  // clears the whole drawer body, before `deliver()` resolves. The mouse is
-  // still down; the pointer's original target is gone.
+  // reaches its reconciliation before `deliver()` resolves. SH-423 now retains
+  // this output-identical Comments node; before that fix the whole body was
+  // cleared here. Either way the mouse is still down, so this remains the
+  // production-path witness for the gate around a drawer paint.
   await held.deliver();
   await page.mouse.up();
 
@@ -203,11 +202,11 @@ test("the same down/up choreography toggles the section when nothing re-renders 
 });
 
 /**
- * SH-401's second witness: the drawer FOOTER, which the story does not name.
- * `renderDrawerFooter` does its own `clear(footer)` and rebuilds Reopen / Archive /
- * Dispatch / Delete from scratch, and `handleMutationSuccess` reaches it through
- * `renderDrawer` on every field edit — so a press on Delete is exposed to exactly
- * the same race as one on a section toggle, through a different teardown.
+ * SH-401's second original witness: the drawer FOOTER, which that story did not
+ * name. It rebuilt Reopen / Archive / Dispatch / Delete from scratch on every
+ * `renderDrawer` until SH-423 made output-identical footers survive. The priority
+ * reply below is now also a regression for that retention; the press gate remains
+ * responsible whenever footer output genuinely changes.
  */
 test("a /data reply landing mid-press does not swallow a drawer footer button's click (SH-401)", async ({
   page,

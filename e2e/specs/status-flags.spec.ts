@@ -65,10 +65,10 @@ async function openDrawer(
   title: string,
 ) {
   // openDrawer() in the dashboard renders once from already-cached summary
-  // data, then fires a `GET .../story/<id>` whose resolution re-renders the
-  // whole drawer body from scratch — including a fresh, empty block-reason
-  // input. Waiting for that response here closes the race: without it, a
-  // fill() landing before this second render is silently wiped, and the
+  // data, then fires a `GET .../story/<id>` whose resolution reconciles the
+  // drawer. Detailed output can replace the block-form section with a fresh,
+  // empty input. Waiting for that response closes the race: without it, a
+  // fill() landing before the replacement can be silently wiped, and the
   // subsequent click hits the new empty input's Block button, which no-ops.
   const detailLoaded = page.waitForResponse(
     (resp) =>
