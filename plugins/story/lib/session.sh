@@ -122,7 +122,7 @@ refuse_with() {
 }
 
 # ---- helpers ----------------------------------------------------------------
-render_template() {  # render_template <template> <id> [<name>] [<dir>] [<reap>]
+render_template() {  # render_template <template> <id> [<name>] [<dir>] [<reap>] [<done-state>]
   # <n>    -> the story id (kept as "n" for parity with the agentics original)
   # <name> -> the resolved window/worktree name; empty when not passed.
   # <dir>  -> the main checkout's absolute path; empty when not passed.
@@ -136,10 +136,15 @@ render_template() {  # render_template <template> <id> [<name>] [<dir>] [<reap>]
   #           rather than left for the child to reconstruct — an autonomous
   #           session knows neither this script's own path nor its project's
   #           slug reliably, and both are needed to self-reap correctly.
-  local tpl="$1" n="$2" name="${3:-}" dir="${4:-}" reap="${5:-}"
+  # <done-state> -> the project-specific CLOSED state that means completed
+  #           work, resolved by story_closed_state. Empty when not passed.
+  #           Autonomous overrides may use it too, so they do not have to
+  #           guess which CLOSED state represents completion.
+  local tpl="$1" n="$2" name="${3:-}" dir="${4:-}" reap="${5:-}" done_state="${6:-}"
   tpl="${tpl//<name>/$name}"
   tpl="${tpl//<dir>/$dir}"
   tpl="${tpl//<reap>/$reap}"
+  tpl="${tpl//<done-state>/$done_state}"
   printf '%s' "${tpl//<n>/$n}"
 }
 

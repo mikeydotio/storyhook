@@ -33,6 +33,29 @@ assert_eq "$(jqf "$out" .reason)" "not-closed" "open: reason is not-closed"
 (cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-$wop") \
   || fail_test "open: branch was removed anyway"
 
+# --- GUARD: an abandonment state is CLOSED, but it is not completion ------
+#
+# SH-508: two autonomous sessions ignored the charter's literal `done`
+# command, moved worked stories to the `closed` abandonment state, and then
+# successfully reaped the only workspace that could still have corrected the
+# semantic mistake. Superstate alone cannot decide that cleanup is warranted:
+# reap must agree with the same project-specific completion-state resolver the
+# charter and `complete execute` use.
+ab=$(new_story "$repo" "Abandoned, not completed")
+wab=$(mk_dispatched "$repo" "$ab")
+(cd "$repo" && story close "$ab" "the work was abandoned" >/dev/null 2>&1)
+out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" reap "$ab" 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "abandonment: ok:false"
+assert_eq "$(jqf "$out" .reason)" "not-completion-state" \
+  "abandonment: reason distinguishes closure from completion"
+assert_eq "$(jqf "$out" .state)" "closed" "abandonment: reports the state found"
+assert_eq "$(jqf "$out" .completion_state)" "done" \
+  "abandonment: reports the state required"
+[ -d "$repo/.claude/worktrees/$wab" ] \
+  || fail_test "abandonment: worktree was removed anyway"
+(cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-$wab") \
+  || fail_test "abandonment: branch was removed anyway"
+
 # --- GUARD: a dirty worktree refuses, uncommitted work survives ------------
 dy=$(new_story "$repo" "Dirty")
 wdy=$(mk_dispatched "$repo" "$dy")
@@ -110,6 +133,19 @@ out=$(cd "$repo" && bash "$SCRIPT" reap "$nt" 2>&1)
 assert_eq "$(jqf "$out" .ok)" "true" "nothing-to-reclaim: ok"
 assert_eq "$(jqf "$out" '.removed.worktree')" "false" "nothing-to-reclaim: no worktree to remove"
 assert_eq "$(jqf "$out" '.removed.branch')" "false" "nothing-to-reclaim: no branch to remove"
+
+# --- project-specific completion: first CLOSED state, never hard-coded done -
+custom=$(new_story "$repo" "Custom completion state")
+wcustom=$(mk_dispatched "$repo" "$custom")
+(cd "$repo" \
+  && story state add shipped --super CLOSED >/dev/null \
+  && story state reorder todo,in-progress,blocked,shipped,done,closed >/dev/null \
+  && story move "$custom" shipped >/dev/null)
+out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" reap "$custom" 2>&1)
+assert_eq "$(jqf "$out" .ok)" "true" "custom completion: ok:true"
+assert_eq "$(jqf "$out" .dry_run)" "true" "custom completion: reaches the dry-run cleanup"
+[ -d "$repo/.claude/worktrees/$wcustom" ] \
+  || fail_test "custom completion: dry run removed the worktree"
 
 # --- errors ---
 out=$(cd "$repo" && bash "$SCRIPT" reap 2>&1)
