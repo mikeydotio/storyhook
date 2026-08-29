@@ -19,8 +19,9 @@ import {
  *
  * Root cause (found by an adversarial review of the original static
  * diagnosis, verified here against the real render pipeline): `.card`'s own
- * node survives an ordinary board re-render (`reconcileColumnCards` reuses
- * it, keyed by `data-id`), but `populateCard()` unconditionally `clear()`s
+ * node survives an unchanged-position board reconcile
+ * (`reconcileColumnCards` reuses it, keyed by `data-id`), but
+ * `populateCard()` unconditionally `clear()`s
  * and rebuilds every *child* on every render (`web_dashboard.html`,
  * `populateCard`) -- including `.card-title`, which is what a pointer
  * actually lands on for a short card, even though the click *listener* is
@@ -33,16 +34,19 @@ import {
  * the SSE-driven one, the 25s safety poll) destroys the pointer's target out
  * from under it. Playwright's hit-target check runs once, before the
  * gesture, against the node that existed then, and passes -- so the click
- * is reported successful even though nothing was ever dispatched.
+ * is reported successful even though nothing was ever dispatched. SH-422
+ * later identified the whole-card boundary when reconciliation changes its
+ * position; SH-401's press gate closes that broader case and
+ * `card-reposition-click-race.spec.ts` witnesses it directly.
  *
  * This spec forces that exact race deterministically, through the real
  * production render path (`holdFetch` gates a genuine `/data` reply; no DOM
  * is touched by hand) rather than waiting out the rare organic occurrence,
  * and asserts the exact failure signature SH-397 reported. Before the fix
  * (`.card`'s presentational descendants made `pointer-events: none`, so a
- * click anywhere in the card body always hits `.card` itself, which a
- * re-render never destroys) this test fails exactly like the two reported
- * occurrences: the assertion below times out with `#drawer` still
+ * click anywhere in the card body always hits `.card` itself, which a stable-
+ * position reconcile never destroys) this test fails exactly like the two
+ * reported occurrences: the assertion below times out with `#drawer` still
  * `class="drawer"`. After the fix it passes.
  */
 

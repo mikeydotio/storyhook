@@ -1395,6 +1395,18 @@ export async function settledBoundingBox(
   return box;
 }
 
+/** What the dashboard's press gate recorded: a removal that disconnected the
+ * live press target. Empty is the assertion -- a non-empty list is a swallowed
+ * click in waiting, whatever function removed the node. Shared by the SH-401
+ * teardown witnesses and SH-422's whole-card reposition witness. */
+export async function pressGateSwallows(page: Page): Promise<string[]> {
+  return page.evaluate(
+    () =>
+      (window as unknown as { __storyhookPressGate?: { swallows: string[] } })
+        .__storyhookPressGate?.swallows ?? ["the press gate is not installed on this page"],
+  );
+}
+
 /** Creates a story with both a title and a description (so Copy Description has
  * something to copy) and returns its id.
  *
