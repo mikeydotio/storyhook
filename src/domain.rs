@@ -2870,6 +2870,22 @@ pub fn would_create_parent_cycle(
     graph.would_create_cycle(parent_id, child_id)
 }
 
+/// Every transitive child of `story_id`, at any hierarchy depth.
+///
+/// The root is not included. Damaged hierarchy cycles are handled with the
+/// same cycle exclusion as derived `ancestor-of`/`descendent-of` relationships,
+/// so queue scoping and rendered family relationships cannot disagree about
+/// which transitive edges are trustworthy.
+#[must_use]
+pub fn descendant_ids(
+    stories: &BTreeMap<String, StorySnapshot>,
+    story_id: &str,
+) -> BTreeSet<String> {
+    let graph = HierarchyGraph::from_stories(stories);
+    let cycle_nodes = graph.cycle_nodes();
+    graph.transitive_descendants(story_id, &cycle_nodes)
+}
+
 pub fn derive_family_relationships(
     stories: &BTreeMap<String, StorySnapshot>,
 ) -> BTreeMap<String, Vec<StoryRelation>> {
