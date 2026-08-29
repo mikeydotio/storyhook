@@ -598,21 +598,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     /// with neither an explicit `active` role nor exactly two OPEN states.
     /// Checked before selection runs, so this never depends on whether a
     /// story happens to be ready.
-    pub fn claim_next(
-        &self,
-        phase: Option<&str>,
-        comment: Option<&str>,
-    ) -> Result<Option<(StorySnapshot, StorySnapshot)>, AppError> {
-        self.claim_next_filtered(
-            ReadyQueueFilters {
-                phase,
-                ..ReadyQueueFilters::default()
-            },
-            comment,
-        )
-    }
-
-    /// The filtered form of [`Self::claim_next`] used by the CLI queue flags.
+    /// Applies the CLI's ready-queue filters before claiming.
     pub fn claim_next_filtered(
         &self,
         filters: ReadyQueueFilters<'_>,
@@ -917,20 +903,13 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     /// What a `--dry-run` `story claim --next` would do, without writing.
     ///
     /// `Ok(None)` is "nothing is ready", the same real answer
-    /// [`Self::claim_next`] gives.
+    /// [`Self::claim_next_filtered`] gives.
     ///
     /// # Errors
     ///
     /// [`AppError::Validation`] when the project has no state a claim can
     /// resolve to.
-    pub fn plan_claim_next(&self, phase: Option<&str>) -> Result<Option<ClaimPlan>, AppError> {
-        self.plan_claim_next_filtered(ReadyQueueFilters {
-            phase,
-            ..ReadyQueueFilters::default()
-        })
-    }
-
-    /// The filtered form of [`Self::plan_claim_next`] used by CLI dry runs.
+    /// Applies the CLI's ready-queue filters without writing.
     pub fn plan_claim_next_filtered(
         &self,
         filters: ReadyQueueFilters<'_>,
