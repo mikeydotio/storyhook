@@ -52,6 +52,203 @@ pub struct NewProject {
     pub created_at: String,
 }
 
+/// The scope of one Full Auto engine run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EngineScope {
+    /// The whole project's ready queue.
+    Project,
+    /// The descendant subtree of one epic story id.
+    Epic(String),
+}
+
+impl EngineScope {
+    /// The stored `engine_runs.scope_kind` vocabulary value.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Project => "project",
+            Self::Epic(_) => "epic",
+        }
+    }
+
+    /// The stored epic id, absent for project-wide scope.
+    #[must_use]
+    pub fn story_id(&self) -> Option<&str> {
+        match self {
+            Self::Project => None,
+            Self::Epic(story_id) => Some(story_id),
+        }
+    }
+}
+
+/// The agent host used by an engine run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EngineAgent {
+    /// Claude Code.
+    Claude,
+    /// Codex.
+    Codex,
+}
+
+impl EngineAgent {
+    /// The stored vocabulary value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+        }
+    }
+
+    /// Parses a constrained stored value.
+    #[must_use]
+    pub const fn parse(raw: &str) -> Option<Self> {
+        match raw.as_bytes() {
+            b"claude" => Some(Self::Claude),
+            b"codex" => Some(Self::Codex),
+            _ => None,
+        }
+    }
+}
+
+/// The durable lifecycle state of an engine run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EngineRunState {
+    /// Claims may fill idle lanes.
+    Running,
+    /// Paused by an operator and eligible to resume.
+    Paused,
+    /// Existing lanes may finish, but no new work is claimed.
+    Draining,
+    /// The hard-stop breaker requires acknowledgement.
+    Halted,
+    /// The run has ended.
+    Finished,
+}
+
+impl EngineRunState {
+    /// The stored vocabulary value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Paused => "paused",
+            Self::Draining => "draining",
+            Self::Halted => "halted",
+            Self::Finished => "finished",
+        }
+    }
+
+    /// Parses a constrained stored value.
+    #[must_use]
+    pub const fn parse(raw: &str) -> Option<Self> {
+        match raw.as_bytes() {
+            b"running" => Some(Self::Running),
+            b"paused" => Some(Self::Paused),
+            b"draining" => Some(Self::Draining),
+            b"halted" => Some(Self::Halted),
+            b"finished" => Some(Self::Finished),
+            _ => None,
+        }
+    }
+
+    /// Whether the one-live-run partial index covers this state.
+    #[must_use]
+    pub const fn is_live(self) -> bool {
+        matches!(self, Self::Running | Self::Paused | Self::Draining)
+    }
+}
+
+/// The durable lifecycle state of one engine lane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EngineLaneState {
+    /// Holds no story and may be filled.
+    Idle,
+    /// A story has been claimed and dispatch is in flight.
+    Dispatching,
+    /// The lane's agent is working.
+    Working,
+    /// A hard stop has preserved the lane's diagnostic state.
+    Quarantined,
+}
+
+impl EngineLaneState {
+    /// The stored vocabulary value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Dispatching => "dispatching",
+            Self::Working => "working",
+            Self::Quarantined => "quarantined",
+        }
+    }
+
+    /// Parses a constrained stored value.
+    #[must_use]
+    pub const fn parse(raw: &str) -> Option<Self> {
+        match raw.as_bytes() {
+            b"idle" => Some(Self::Idle),
+            b"dispatching" => Some(Self::Dispatching),
+            b"working" => Some(Self::Working),
+            b"quarantined" => Some(Self::Quarantined),
+            _ => None,
+        }
+    }
+}
+
+/// One row of durable Full Auto run state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EngineRunRecord {
+    /// Stable run identity.
+    pub id: String,
+    /// The project this run operates on.
+    pub project_slug: String,
+    /// Project-wide or epic-subtree scope.
+    pub scope: EngineScope,
+    /// Configured lane count.
+    pub lanes: u32,
+    /// Agent host launched for each lane.
+    pub agent: EngineAgent,
+    /// Current lifecycle state.
+    pub state: EngineRunState,
+    /// Consecutive hard stops seen by the breaker.
+    pub consecutive_hard_stops: u32,
+    /// Machine-readable or human-readable stop classification.
+    pub stop_reason: Option<String>,
+    /// When the current halt/drain notification was acknowledged.
+    pub acknowledged_at: Option<String>,
+    /// RFC3339 creation timestamp supplied by the caller.
+    pub created_at: String,
+    /// RFC3339 last-update timestamp supplied by the caller.
+    pub updated_at: String,
+}
+
+/// One row of durable Full Auto lane state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EngineLaneRecord {
+    /// The run that owns the lane.
+    pub run_id: String,
+    /// Zero-based lane position within the run.
+    pub lane_index: u32,
+    /// Current lifecycle state.
+    pub state: EngineLaneState,
+    /// Claimed story id, absent exactly while idle.
+    pub story_id: Option<String>,
+    /// The tmux window identity returned by dispatch.
+    pub window_name: Option<String>,
+    /// The lane's preserved worktree path.
+    pub worktree_path: Option<String>,
+    /// When dispatch began.
+    pub dispatched_at: Option<String>,
+    /// Most recent observation time.
+    pub last_observed_at: String,
+    /// Completion, skip, or hard-stop classification.
+    pub outcome: Option<String>,
+    /// Diagnostic detail accompanying the outcome.
+    pub outcome_detail: Option<String>,
+}
+
 /// A git origin registered against a project.
 ///
 /// `normalized` is the identity key project selection matches on, produced by
