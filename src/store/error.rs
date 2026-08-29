@@ -57,7 +57,10 @@ pub enum StoreError {
     /// somewhere deep in a read, which is how the dashboard went down.
     #[error(
         "this database is at schema version {found}, but this storyhook only understands up to \
-         version {supported} — it was written by a newer storyhook; upgrade with `story update`"
+         version {supported} — it was written by a newer storyhook; install a storyhook build \
+         that supports schema version {found}: run `story update` if a newer release is \
+         available, otherwise check out the source revision that upgraded this database and \
+         run `make install`"
     )]
     SchemaTooNew {
         /// The version recorded in the database.
@@ -279,5 +282,14 @@ mod tests {
         assert!(message.contains("schema version 7"), "{message}");
         assert!(message.contains("version 1"), "{message}");
         assert!(message.contains("newer storyhook"), "{message}");
+        assert!(
+            message.contains("`story update` if a newer release is available"),
+            "{message}"
+        );
+        assert!(
+            message.contains("otherwise check out the source revision")
+                && message.contains("`make install`"),
+            "{message}"
+        );
     }
 }
