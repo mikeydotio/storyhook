@@ -246,6 +246,15 @@ LAUNCH_TPL="${STORY_LAUNCH_CMD:-$DEFAULT_LAUNCH_TPL}"
 # quotes deliberately break the ASCII half; UTF-8 already rides this pipeline,
 # since READY_PROMPT_GLYPH is U+276F and appears in every capture.)
 PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this repo. Begin by reading it with ‘story show <n> --json’ -- its comments carry the discussion history. When your plan is finalized and approved, post it as a comment on <n> via ‘story comment <n> your-plan’ before you start implementing. Push your commits and open the pull request referencing story <n> in its body before you run the local test suite, so the work is preserved even if testing turns something up -- comment a link to the PR on <n> once it is open, then run the suite and merge only once it passes. Do not bump the version or deploy from this worktree: do not run semver bump, deployit deploy, or any release/version step, and do not plan for them -- versioning and deployment happen later from the main branch, not here.}"
+# Claude's ExitPlanMode tool gives the PreToolUse hook an approval boundary at
+# which it can remind the model to persist the plan. Codex changes modes in the
+# TUI and exposes no corresponding tool call, so its built-in charter has to
+# carry that boundary across the turn itself: make persistence step one of the
+# approved plan, then the approved plan is the instruction Codex resumes from.
+# Kept provider-specific so Claude's established prompt stays byte-identical,
+# and applied only to built-ins so STORY_PROMPT and the two autonomous overrides
+# remain wholesale overrides rather than unexpectedly acquiring policy text.
+CODEX_PLAN_COMMENT_CLAUSE="Codex Plan mode cannot write that comment before approval. In the plan you present, make ‘story comment <n> your-exact-approved-plan’ the first implementation step. After approval, execute that step before changing files or running tests, and post the plan verbatim rather than summarizing it."
 # The autonomous charter `--auto` swaps in for PROMPT_TPL — plan approval stays
 # the ONE human interaction; everything past it (ambiguity, testing, merge,
 # closure, hard stops) is the child's own call. Closure goes through a plain
@@ -1217,8 +1226,10 @@ cmd_dispatch() {
   # above cmd_dispatch). $council is also surfaced in the result JSON below so
   # a caller can tell which charter went out without re-deriving it from
   # prompt text.
-  local prompt_tpl="$PROMPT_TPL" council="false"
+  local prompt_tpl="$PROMPT_TPL" prompt_builtin="false" council="false"
+  [ -z "${STORY_PROMPT:-}" ] && prompt_builtin="true"
   if [ -n "$auto" ]; then
+    prompt_builtin="false"
     if council_vote_available "$dir"; then
       council="true"
     fi
@@ -1230,9 +1241,14 @@ cmd_dispatch() {
     # actually matches this machine.
     if [ -n "${STORY_AUTO_PROMPT:-}" ] || [ "$council" = "true" ]; then
       prompt_tpl="$AUTO_PROMPT_TPL"
+      [ -z "${STORY_AUTO_PROMPT:-}" ] && prompt_builtin="true"
     else
       prompt_tpl="$AUTO_PROMPT_SOLO_TPL"
+      [ -z "${STORY_AUTO_PROMPT_SOLO:-}" ] && prompt_builtin="true"
     fi
+  fi
+  if [ "$AGENT" = "codex" ] && [ "$prompt_builtin" = "true" ]; then
+    prompt_tpl="$prompt_tpl $CODEX_PLAN_COMMENT_CLAUSE"
   fi
   # The autonomous charter's own last act (SH-208): the exact `reap` command
   # for THIS story, in THIS project, via THIS script -- an unattended session
