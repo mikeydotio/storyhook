@@ -350,7 +350,7 @@ Related:
 
         m.insert(
             "next",
-            r#"story next [--count <n>] [--phase <N>]
+            r#"story next [--count <n>] [--phase <N>] [--epic <id>] [--exclude-label <csv>]
 
 Get the story execution order, highest priority first while respecting
 dependencies. The first result is ready now. With --count above 1, each later
@@ -360,6 +360,13 @@ instead of removing the dependent from the answer entirely.
 
 Stories with an awaiting/manual blocker, an obviated-by edge, a dependency
 cycle, or an open predecessor that this queue cannot execute remain absent.
+
+--epic <id> restricts the queue to that epic's complete descendant subtree,
+including nested epics. The id must name a story typed `epic`; an ordinary
+story is refused rather than treated as an empty scope. --exclude-label <csv>
+omits stories carrying any named label. Labels use the same exact,
+case-sensitive matching as `story list --label`; unknown labels are harmless.
+Both filters compose with --phase and --count without changing queue order.
 
 This is a pure read: it answers a question and writes nothing. Taking the
 answer is 'story claim --next', which selects and claims inside one write
@@ -376,6 +383,7 @@ Examples:
   story next                # Top-priority ready story
   story next --count 3      # First 3 stories in execution order
   story next --phase 1      # Top-priority ready story in phase 1
+  story next --epic SH-42 --exclude-label no-auto
   story next --json         # Structured JSON output
 
 Related:
@@ -390,7 +398,8 @@ Related:
         m.insert(
             "claim",
             r#"story claim <id> [--comment <text> | --no-comment] [--dry-run]
-story claim --next [--phase <N>] [--comment <text> | --no-comment] [--dry-run]
+story claim --next [--phase <N>] [--epic <id>] [--exclude-label <csv>]
+                   [--comment <text> | --no-comment] [--dry-run]
 
 Take a story to work on, atomically. One of <id> or --next is required and
 they are mutually exclusive: a bare 'story claim' is refused rather than
@@ -410,6 +419,12 @@ one winner and a corrupt second claim. Its --json answer carries
   --phase <N>
             Narrows what --next picks. Meaningless beside an explicit id, and
             refused there rather than ignored.
+  --epic <id>
+            Restricts --next to the complete descendant subtree of a story
+            typed `epic`. Meaningless beside an explicit claim id.
+  --exclude-label <csv>
+            Omits any --next candidate carrying one of the exact label names.
+            Unknown labels exclude nothing. Meaningless beside an explicit id.
 
 A claim comments by default:
 
@@ -431,6 +446,7 @@ Examples:
   story claim SH-42                 # Claim a specific story
   story claim --next                # Claim the top-priority ready story
   story claim --next --phase 1      # ...restricted to phase 1
+  story claim --next --epic SH-42 --exclude-label no-auto
   story claim SH-42 --no-comment    # Claim it quietly
   story claim --next --dry-run      # Say what would happen, write nothing
 
@@ -2941,7 +2957,7 @@ LIFECYCLE
 
 QUERY & NAVIGATION
   story list [filters]            List open stories (--ready, --blocked, --state, --priority, etc.)
-  story next [--count N]          Highest-priority ready story/stories
+  story next [queue filters]      Highest-priority ready story/stories
   story search "<query>"          Full-text search across all stories
   story summary                   Counts by state and priority
   story load-context              Session-start context document

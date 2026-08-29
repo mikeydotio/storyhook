@@ -42,8 +42,9 @@ use crate::service::{
     AttachmentService, CatalogService, Clock, ConfigService, Ctx, DeleteOutcome, FieldEdits,
     GitService, GroupingService, ImportBatch, InitOptions, InitOutcome, IntegrityService,
     ListFilters, NewStoryInput, PhaseCleared, PointerUpdate, ProjectService, QueryService,
-    RelationOutcome, RelationService, SessionService, SetPrefixOutcome, SettingsService,
-    StateListing, StoryService, SystemService, TransferService, migrate, session, system, transfer,
+    ReadyQueueFilters, RelationOutcome, RelationService, SessionService, SetPrefixOutcome,
+    SettingsService, StateListing, StoryService, SystemService, TransferService, migrate, session,
+    system, transfer,
 };
 use crate::store::{ProjectId, ReadOps, Store};
 
@@ -648,8 +649,14 @@ pub fn dispatch<S: Store>(
                 warnings: Vec::new(),
             })
         }
-        Invocation::Next { count, phase } => {
-            let mut ready = query(ctx, |service| service.next(count, phase.as_deref()))?;
+        Invocation::Next {
+            count,
+            phase,
+            epic,
+            exclude_label,
+        } => {
+            let filters = ready_queue_filters(&phase, &epic, &exclude_label);
+            let mut ready = query(ctx, |service| service.next_filtered(count, filters))?;
             // One story is answered as a story, not as a list of one:
             // `story next` is a question with a singular answer, and its
             // `--json` consumers read `.story`.
@@ -1332,7 +1339,13 @@ fn dispatch_claim<S: Store>(
     if dry_run {
         let plan = match &target {
             ClaimTarget::Story(id) => Some(service.plan_claim_story(id)?),
-            ClaimTarget::Next { phase } => service.plan_claim_next(phase.as_deref())?,
+            ClaimTarget::Next {
+                phase,
+                epic,
+                exclude_label,
+            } => {
+                service.plan_claim_next_filtered(ready_queue_filters(phase, epic, exclude_label))?
+            }
         };
         let Some(plan) = plan else {
             return Ok(Response::Message("no ready stories".to_string()));
@@ -1349,7 +1362,14 @@ fn dispatch_claim<S: Store>(
 
     let claimed = match &target {
         ClaimTarget::Story(id) => Some(service.claim_story(id, comment.as_deref())?),
-        ClaimTarget::Next { phase } => service.claim_next(phase.as_deref(), comment.as_deref())?,
+        ClaimTarget::Next {
+            phase,
+            epic,
+            exclude_label,
+        } => service.claim_next_filtered(
+            ready_queue_filters(phase, epic, exclude_label),
+            comment.as_deref(),
+        )?,
     };
     let Some((before, _snapshot)) = claimed else {
         return Ok(Response::Message("no ready stories".to_string()));
@@ -1359,6 +1379,18 @@ fn dispatch_claim<S: Store>(
         other => Err(AppError::Storage(format!(
             "internal: story view answered with {other:?}"
         ))),
+    }
+}
+
+fn ready_queue_filters<'a>(
+    phase: &'a Option<String>,
+    epic: &'a Option<String>,
+    exclude_label: &'a Option<String>,
+) -> ReadyQueueFilters<'a> {
+    ReadyQueueFilters {
+        phase: phase.as_deref(),
+        epic: epic.as_deref(),
+        exclude_label: exclude_label.as_deref(),
     }
 }
 

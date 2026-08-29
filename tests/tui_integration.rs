@@ -1280,6 +1280,8 @@ fn the_ready_panel_and_story_next_share_the_actionable_head() {
         Invocation::Next {
             count: 10,
             phase: None,
+            epic: None,
+            exclude_label: None,
         },
     )
     .unwrap()

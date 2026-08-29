@@ -27,7 +27,10 @@ use crate::store::{
     EventSeq, ExpectedSeq, ProjectId, ReadOps, Store, StoryNo, StoryQuery, StoryRow, WriteOps,
 };
 
-use super::{Ctx, Intent, append_and_fold, project_prefix, resolve_open_story, resolve_story};
+use super::{
+    Ctx, Intent, ReadyQueueFilters, append_and_fold, project_prefix, resolve_open_story,
+    resolve_story,
+};
 
 /// The pseudo-state a lost claim reports as its `expected` half.
 ///
@@ -600,13 +603,28 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         phase: Option<&str>,
         comment: Option<&str>,
     ) -> Result<Option<(StorySnapshot, StorySnapshot)>, AppError> {
+        self.claim_next_filtered(
+            ReadyQueueFilters {
+                phase,
+                ..ReadyQueueFilters::default()
+            },
+            comment,
+        )
+    }
+
+    /// The filtered form of [`Self::claim_next`] used by the CLI queue flags.
+    pub fn claim_next_filtered(
+        &self,
+        filters: ReadyQueueFilters<'_>,
+        comment: Option<&str>,
+    ) -> Result<Option<(StorySnapshot, StorySnapshot)>, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
         let claimed = self.ctx.store().write(|tx| {
             let active = active_state(&tx.states(project)?).ok_or_else(no_active_state_error)?;
             let states = tx.state_map(project)?;
             let query = super::QueryService::new(&*tx, project, &now);
-            let Some(candidate) = query.next(1, phase)?.into_iter().next() else {
+            let Some(candidate) = query.next_filtered(1, filters)?.into_iter().next() else {
                 return Ok(None);
             };
             let prefix = project_prefix(&*tx, project)?;
@@ -906,12 +924,23 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     /// [`AppError::Validation`] when the project has no state a claim can
     /// resolve to.
     pub fn plan_claim_next(&self, phase: Option<&str>) -> Result<Option<ClaimPlan>, AppError> {
+        self.plan_claim_next_filtered(ReadyQueueFilters {
+            phase,
+            ..ReadyQueueFilters::default()
+        })
+    }
+
+    /// The filtered form of [`Self::plan_claim_next`] used by CLI dry runs.
+    pub fn plan_claim_next_filtered(
+        &self,
+        filters: ReadyQueueFilters<'_>,
+    ) -> Result<Option<ClaimPlan>, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
         Ok(self.ctx.store().read(|tx| {
             let active = active_state(&tx.states(project)?).ok_or_else(no_active_state_error)?;
             let query = super::QueryService::new(tx, project, &now);
-            let Some(candidate) = query.next(1, phase)?.into_iter().next() else {
+            let Some(candidate) = query.next_filtered(1, filters)?.into_iter().next() else {
                 return Ok(None);
             };
             Ok(Some(ClaimPlan {

@@ -226,7 +226,11 @@ mod tests {
         assert_eq!(resolve(custom.clone()), custom);
 
         let suppressed = Invocation::Claim {
-            target: ClaimTarget::Next { phase: None },
+            target: ClaimTarget::Next {
+                phase: None,
+                epic: None,
+                exclude_label: None,
+            },
             comment: ClaimComment::Suppressed,
             dry_run: false,
         };
