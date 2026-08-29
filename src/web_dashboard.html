@@ -5677,7 +5677,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
      rather than glossed: this is complete over removal MECHANISMS and incomplete
      over SURFACES, since it only ever sees what a run actually exercises. The
      static half is SH-421. */
-  var pressGateAudit = { swallows: [], failsafes: 0, staleHolds: 0, lastRelease: null };
+  var pressGateAudit = {
+    swallows: [],
+    deferred: [],
+    failsafes: 0,
+    staleHolds: 0,
+    lastRelease: null
+  };
   window.__storyhookPressGate = pressGateAudit;
 
   /** Defers `run` while a press is in flight, answering whether it did.
@@ -5688,7 +5694,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * deferred renders of one surface into a single pass is sound. */
   function pressDefer(name, run) {
     if (!pressHeld) return false;
-    if (!Object.prototype.hasOwnProperty.call(pressDeferred, name)) pressDeferredOrder.push(name);
+    if (!Object.prototype.hasOwnProperty.call(pressDeferred, name)) {
+      pressDeferredOrder.push(name);
+      pressGateAudit.deferred.push(name);
+    }
     pressDeferred[name] = run;
     return true;
   }
@@ -5751,6 +5760,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var pending = pressDeferred;
     pressDeferredOrder = [];
     pressDeferred = {};
+    pressGateAudit.deferred = [];
     for (var i = 0; i < order.length; i++) pending[order[i]]();
   }
 
@@ -9196,7 +9206,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       // frame lets that click's mouseup/click resolve against the
       // pre-swap layout first; committing the value is NOT deferred,
       // since nothing about it depends on layout.
-      requestAnimationFrame(function() { exitEdit(v); });
+      requestAnimationFrame(function() {
+        // One frame is enough for an ordinary click, but not for a press held
+        // across a fast PATCH response: WebKit can paint this collapse before
+        // mouseup, moving the still-connected destination out from under the
+        // pointer (SH-423). Join SH-401's existing press gate rather than add a
+        // second timing guess. The PATCH below remains immediate; only this
+        // layout-changing paint waits.
+        if (pressDefer("drawer-description", function() { exitEdit(v); })) return;
+        exitEdit(v);
+      });
       if (v !== (st.description || "")) runFieldMutation(st.id, "PATCH", "", { description: v });
     });
     bindTypedKeys(textarea, function(e) {
