@@ -41,7 +41,7 @@ const PROMPT_OVERRIDE_ENV_VARS: [&str; 4] = [
     "STORY_PROMPT_EXTRA",
 ];
 
-const TEMPLATE_PLACEHOLDERS: [&str; 4] = ["<name>", "<dir>", "<reap>", "<n>"];
+const TEMPLATE_PLACEHOLDERS: [&str; 5] = ["<name>", "<dir>", "<reap>", "<n>", "<done-state>"];
 pub(crate) const CHARTER_INERT_BANNED: [char; 8] = ['`', '$', ';', '&', '|', '<', '>', '!'];
 
 /// Everything the shell actuator needs to dispatch one already-selected story.
@@ -574,6 +574,13 @@ mod tests {
         ));
         assert!(charter_inert_violation("story <n> > /tmp/exfil"));
         assert!(charter_inert_violation("line one\nline two"));
+    }
+
+    #[test]
+    fn charter_inert_check_accepts_the_rendered_completion_state_placeholder() {
+        assert!(!charter_inert_violation(
+            "move story <n> to <done-state>, then run <reap>"
+        ));
     }
 
     #[test]
