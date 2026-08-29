@@ -101,17 +101,18 @@ test("Dispatch is absent for a story with no checkout, and no stray separator is
 
   await expect(menu.locator(".ctxmenu-item", { hasText: /^Dispatch$/ })).toHaveCount(0);
   await expect(menu.locator(".ctxmenu-item", { hasText: "Dispatch Auto" })).toHaveCount(0);
-  // Copy ID/URL/Description, Set Status, Set Priority and Delete survive
-  // (6, not 8) -- and the TWO separators either side of the now-empty
+  // Copy ID/URL/Description, Set Status, Set Priority, Close and Delete survive
+  // (7, not 8) -- and the TWO separators either side of the now-empty
   // dispatch group collapse to exactly ONE (not zero: one still belongs
   // between the copy group and Set Status), never a stray double --
-  // compactSeparators()'s whole job. The separator before Delete is
-  // untouched either way, since nothing hid Delete itself. Set Priority's
+  // compactSeparators()'s whole job. The separator before Close/Delete is
+  // untouched either way, since nothing hid either action. Set Priority's
   // own hide gate is CLOSED, not "no checkout" (SH-310) -- Gamma's
   // "Archived idea" is open, just checkout-less, so it stays visible here.
-  await expect(menu.locator(".ctxmenu-item")).toHaveCount(6);
+  await expect(menu.locator(".ctxmenu-item")).toHaveCount(7);
   await expect(menu.locator(".ctxmenu-item", { hasText: "Set Status" })).toBeVisible();
   await expect(menu.locator(".ctxmenu-item", { hasText: "Set Priority" })).toBeVisible();
+  await expect(menu.locator(".ctxmenu-item", { hasText: "Close" })).toBeVisible();
   await expect(menu.locator(".ctxmenu-item", { hasText: "Delete" })).toBeVisible();
   await expect(menu.locator(".ctxmenu-sep")).toHaveCount(2);
 
