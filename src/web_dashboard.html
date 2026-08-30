@@ -217,7 +217,7 @@ button { cursor: pointer; }
    not fire on touch at all. Setting it on the two <label> wrappers covers
    the checkboxes inside them, since the effective value is the
    intersection over an element and its ancestors. */
-button, select, .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-option, .filter-toggle, .pref-toggle { touch-action: manipulation; }
+button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, .projsel-item, .fdd-option, .filter-toggle, .pref-toggle { touch-action: manipulation; }
 ::selection { background: var(--accent); color: var(--accent-fg); }
 
 /* `100vh` is the *largest* possible viewport on iOS Safari -- with the URL
@@ -480,7 +480,7 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
    N-of-M count and Clear filters are how a reader knows a filter is
    active without opening the panel; `.filter-panel` is what collapses. */
 .filter-bar { flex-shrink: 0; background: var(--bg); border-bottom: 1px solid var(--border); }
-.filter-summary { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1.25rem; }
+.filter-summary { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1.25rem; min-width: 0; }
 .filter-toggle-btn {
   display: inline-flex; align-items: center; gap: 0.375rem; padding: 0.3125rem 0.625rem;
   border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-raised);
@@ -525,6 +525,49 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
 .filter-count { font-size: 0.75rem; color: var(--fg-faint); margin-left: auto; }
 .filter-clear { font-size: 0.75rem; color: var(--accent); background: none; border: none; text-decoration: none; display: inline-flex; align-items: center; min-height: var(--tap-min); }
 .filter-clear:hover { text-decoration: underline; }
+.filter-clear-short { display: none; }
+
+/* ---- Full Auto project control (SH-470) ----
+   An operational instrument in the project header, not another card or
+   modal. It shares the always-visible filter-summary row so a phone pays no
+   extra vertical chrome for a control that is meaningful only on the repo
+   screen. The lane strip scrolls on its own axis: the engine permits up to
+   255 lanes, and wrapping that many records would consume the board. */
+.engine-control {
+  display: flex; align-items: center; justify-content: flex-end; gap: 0.5rem;
+  min-width: 0; max-width: min(44rem, 65vw); margin-left: 0;
+}
+.engine-launch, .engine-live { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.engine-wordmark {
+  font-size: 0.6875rem; font-weight: 800; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--fg-muted); white-space: nowrap;
+}
+.engine-lanes-label { display: inline-flex; align-items: center; gap: 0.375rem; font-size: 0.75rem; color: var(--fg-muted); }
+.engine-lanes-input {
+  width: 3.75rem; min-height: var(--tap-min); padding: 0.3125rem 0.375rem;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--bg-raised); font-size: var(--control-font-sm); text-align: center;
+}
+.engine-lanes-input:focus { outline: none; border-color: var(--accent); background: var(--bg-raised); }
+.engine-run-short { display: none; }
+.engine-state {
+  flex: none; border-radius: 999px; padding: 0.1875rem 0.5rem;
+  font-size: 0.6875rem; font-weight: 800; letter-spacing: 0.04em;
+  text-transform: uppercase; white-space: nowrap;
+}
+.engine-state-running { color: var(--success); background: var(--success-soft); }
+.engine-state-paused { color: var(--accent); background: var(--accent-soft); }
+.engine-state-draining { color: var(--warn); background: var(--warn-soft); }
+.engine-lane-count { flex: none; font-size: 0.75rem; color: var(--fg-muted); white-space: nowrap; }
+.engine-lane-strip { display: flex; gap: 0.375rem; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+.engine-lane {
+  flex: none; display: inline-flex; align-items: baseline; gap: 0.3rem;
+  max-width: 15rem; padding: 0.25rem 0.45rem; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--bg-raised); font-size: 0.6875rem;
+}
+.engine-lane-index { font-family: var(--mono); color: var(--fg-faint); }
+.engine-lane-story { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-weight: 700; }
+.engine-lane-elapsed { color: var(--fg-muted); white-space: nowrap; }
 
 /* ---- Board ---- */
 .board {
@@ -1370,6 +1413,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   /* WCAG 2.2 SC 2.5.8 needs both axes -- the icon alone, once its label
      stops taking up width, is narrower than --tap-min on its own. */
   .icon-compact-btn { gap: 0; justify-content: center; min-width: var(--tap-min); }
+  /* Keep Full Auto in the existing project-header row at phone widths. The
+     full accessible name stays on the button; only its visible copy shortens. */
+  .engine-wordmark, .engine-run-label { display: none; }
+  .engine-run-short { display: inline; }
+  .engine-control { max-width: none; flex: 1 1 auto; }
+  .engine-lanes-copy, .filter-clear-label { display: none; }
+  .filter-clear-short { display: inline; }
+  .engine-lanes-input { width: 3rem; }
+  .engine-lane-strip { max-width: min(13rem, 42vw); }
   /* The "STORYHOOK" wordmark (`.brand h1`) is what's redundant, not the
      project selector next to it -- the wordmark orients a reader arriving
      fresh; once a project is open, its name is what matters and the
@@ -1442,7 +1494,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         <svg class="icon disclosure-icon" id="filter-toggle-chevron" data-direction="right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg> Filters
       </button>
       <span class="filter-count" id="filter-count"></span>
-      <button type="button" class="filter-clear" id="filter-clear">Clear filters</button>
+      <button type="button" class="filter-clear" id="filter-clear" aria-label="Clear filters">
+        <span class="filter-clear-label">Clear filters</span><span class="filter-clear-short" aria-hidden="true">Clear</span>
+      </button>
+      <div class="engine-control" id="engine-control" hidden></div>
     </div>
     <div class="filter-panel" id="filter-panel" hidden>
       <div class="fdd" id="fdd-priorities"></div>
@@ -2293,6 +2348,19 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // ended in), written only by `markDataSettled()`, read only through
     // `readinessNote()`.
     fetchSettledFor: null,
+    // Full Auto is operational state outside `/data`, read from SH-468's
+    // dedicated engine endpoint. A request ticket plus the project id keeps
+    // a late reply from a board the user left from painting over the current
+    // one. The lane choice is deliberately page-session memory only: every
+    // reload returns to the product default of one.
+    engineProject: null,
+    engineReadiness: "unasked", // "unasked" | "loading" | "loaded" | "failed"
+    engineRun: null,
+    engineFetchTicket: 0,
+    // Project -> true while its start has no reply. A map keeps the claim
+    // held even if the reader switches away and back before that reply.
+    engineStarts: Object.create(null),
+    engineLanes: 1,
     // Story id -> {handle, timer, agent, auto} for a dispatch this tab is polling
     // (SH-50). Keyed per-story rather than one global slot, matching the
     // daemon's own support for several concurrent dispatches; a dispatch
@@ -3212,6 +3280,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         updateDraftsButton();
         if (state.screen === "home") renderHome();
         if (state.screen === "settings") renderSettings();
+        if (state.screen === "repo") {
+          renderEngineControl();
+          if (currentRepoHasCheckout() && state.engineProject !== state.repoId) scheduleEngineFetch();
+        }
         // Not called from here before SH-301: a project created or deleted
         // elsewhere while this tab sat on Home left "N projects" stale until
         // the next screen change, since nothing else on this path repaints
@@ -4431,6 +4503,269 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function currentRepoHasCheckout() {
     var repo = state.repos.filter(function(r) { return r.id === state.repoId; })[0];
     return !!(repo && repo.path);
+  }
+
+  // ============================================================
+  // FULL AUTO (SH-470): project header + epic drawer
+  // ============================================================
+
+  var engineFetchDebounceTimer = null;
+
+  function isLiveEngineRun(run) {
+    return !!run && (run.state === "running" || run.state === "paused" || run.state === "draining");
+  }
+
+  function currentEngineStartPending() {
+    return !!state.repoId && !!state.engineStarts[state.repoId];
+  }
+
+  function engineStartBlocked() {
+    return state.engineProject !== state.repoId || state.engineReadiness !== "loaded"
+      || !!state.engineRun || currentEngineStartPending();
+  }
+
+  function engineReadinessTitle() {
+    if (state.engineReadiness === "failed") {
+      return readinessNote("Full Auto status", true);
+    }
+    if (state.engineReadiness !== "loaded") {
+      return readinessNote("Full Auto status", false);
+    }
+    return "";
+  }
+
+  function setEngineRunButtonText(button, full, short) {
+    button.setAttribute("aria-label", full);
+    button.querySelector(".engine-run-label").textContent = full;
+    button.querySelector(".engine-run-short").textContent = short;
+  }
+
+  /** Updates the stable idle control without replacing its focused number
+   * input. A status poll is allowed to change disabled/readiness state; it is
+   * not allowed to eat a lane count somebody is typing. */
+  function syncEngineLaunchControl(control) {
+    var input = control.querySelector(".engine-lanes-input");
+    var button = control.querySelector(".engine-run-btn");
+    if (!input || !button) return;
+    if (document.activeElement !== input) input.value = String(state.engineLanes);
+    var entered = Number(input.value);
+    var valid = Number.isInteger(entered) && entered >= 1 && entered <= 255;
+    var blocked = engineStartBlocked();
+    input.disabled = blocked;
+    button.disabled = blocked || !valid;
+    var title = engineReadinessTitle();
+    input.title = title;
+    button.title = title;
+    if (currentEngineStartPending()) {
+      setEngineRunButtonText(button, "Starting Full Auto…", "Starting…");
+    } else if (state.engineReadiness === "failed") {
+      setEngineRunButtonText(button, "Full Auto status unavailable", "Unavailable");
+    } else if (state.engineReadiness !== "loaded") {
+      setEngineRunButtonText(button, "Checking Full Auto status…", "Checking…");
+    } else {
+      setEngineRunButtonText(button, "Run Full Auto", "Run");
+    }
+  }
+
+  function buildEngineLaunchControl() {
+    var input = el("input", {
+      id: "engine-lanes", class: "engine-lanes-input", type: "number",
+      min: "1", max: "255", step: "1", value: String(state.engineLanes),
+      "aria-label": "Full Auto lanes"
+    });
+    var button = el("button", {
+      type: "button", class: "btn btn-primary engine-run-btn",
+      onClick: function() { startEngineRun(null); }
+    }, [
+      el("span", { class: "engine-run-label" }, ["Run Full Auto"]),
+      el("span", { class: "engine-run-short", "aria-hidden": "true" }, ["Run"])
+    ]);
+    input.addEventListener("input", function() {
+      var value = Number(input.value);
+      if (Number.isInteger(value) && value >= 1 && value <= 255) state.engineLanes = value;
+      syncEngineLaunchControl(input.parentNode.parentNode);
+    });
+    input.addEventListener("change", function() {
+      var value = Number(input.value);
+      if (!Number.isInteger(value) || value < 1 || value > 255) input.value = String(state.engineLanes);
+      syncEngineLaunchControl(input.parentNode.parentNode);
+    });
+    var control = el("div", { class: "engine-launch" }, [
+      el("span", { class: "engine-wordmark" }, ["Full Auto"]),
+      el("label", { class: "engine-lanes-label" }, [
+        el("span", { class: "engine-lanes-copy" }, ["Lanes"]), input
+      ]),
+      button
+    ]);
+    syncEngineLaunchControl(control);
+    return control;
+  }
+
+  function engineRunFingerprint(run) {
+    return JSON.stringify({
+      id: run.id, state: run.state, lane_count: run.lane_count,
+      lanes: (run.lanes || []).map(function(lane) {
+        return [lane.index, lane.state, lane.story, lane.dispatched_at];
+      })
+    });
+  }
+
+  function formatEngineElapsed(startedAt) {
+    if (!startedAt) return "";
+    var started = Date.parse(startedAt);
+    if (!Number.isFinite(started)) return "";
+    var seconds = Math.max(0, Math.floor((Date.now() - started) / 1000));
+    if (seconds < 60) return seconds + "s";
+    if (seconds < 3600) return Math.floor(seconds / 60) + "m " + (seconds % 60) + "s";
+    return Math.floor(seconds / 3600) + "h " + (Math.floor(seconds / 60) % 60) + "m";
+  }
+
+  function buildEngineLiveControl(run) {
+    var lanes = el("div", { class: "engine-lane-strip", "aria-label": "Full Auto lanes" }, []);
+    (run.lanes || []).forEach(function(lane) {
+      var subject = lane.story || lane.state;
+      var elapsed = formatEngineElapsed(lane.dispatched_at);
+      lanes.appendChild(el("div", {
+        class: "engine-lane",
+        title: "Lane " + (lane.index + 1) + ": " + subject + (elapsed ? " · " + elapsed : "")
+      }, [
+        el("span", { class: "engine-lane-index" }, ["L" + (lane.index + 1)]),
+        el("span", { class: "engine-lane-story" }, [subject]),
+        elapsed ? el("span", {
+          class: "engine-lane-elapsed", dataset: { startedAt: lane.dispatched_at }
+        }, [elapsed]) : null
+      ]));
+    });
+    return el("div", { class: "engine-live" }, [
+      el("span", { class: "engine-wordmark" }, ["Full Auto"]),
+      el("span", { class: "engine-state engine-state-" + run.state }, [run.state]),
+      el("span", { class: "engine-lane-count" }, [run.lane_count + (run.lane_count === 1 ? " lane" : " lanes")]),
+      lanes
+    ]);
+  }
+
+  /** Paints the engine's project control through SH-401's press gate. The
+   * idle node is retained and updated in place; the live node is rebuilt
+   * only when its visible run/lane fingerprint changes. */
+  function renderEngineControl() {
+    if (pressDefer("engine", renderEngineControl)) return;
+    var mount = $("engine-control");
+    var visible = state.screen === "repo" && !!state.repoId && currentRepoHasCheckout();
+    mount.hidden = !visible;
+    if (!visible) {
+      if (mount.firstChild) clear(mount);
+      delete mount.dataset.mode;
+      delete mount.dataset.fingerprint;
+      return;
+    }
+
+    if (isLiveEngineRun(state.engineRun)) {
+      var fingerprint = engineRunFingerprint(state.engineRun);
+      if (mount.dataset.mode === "live" && mount.dataset.fingerprint === fingerprint) return;
+      clear(mount);
+      mount.appendChild(buildEngineLiveControl(state.engineRun));
+      mount.dataset.mode = "live";
+      mount.dataset.fingerprint = fingerprint;
+      return;
+    }
+
+    if (mount.dataset.mode !== "launch") {
+      clear(mount);
+      mount.appendChild(buildEngineLaunchControl());
+      mount.dataset.mode = "launch";
+      delete mount.dataset.fingerprint;
+    } else {
+      syncEngineLaunchControl(mount.firstChild);
+    }
+  }
+
+  function updateEngineElapsedLabels() {
+    document.querySelectorAll(".engine-lane-elapsed[data-started-at]").forEach(function(node) {
+      node.textContent = formatEngineElapsed(node.dataset.startedAt);
+      var lane = node.parentNode;
+      var story = lane.querySelector(".engine-lane-story");
+      lane.title = lane.querySelector(".engine-lane-index").textContent.replace("L", "Lane ")
+        + ": " + (story ? story.textContent : "") + " · " + node.textContent;
+    });
+  }
+
+  function fetchEngineRuns() {
+    if (state.screen !== "repo" || !state.repoId || !currentRepoHasCheckout()) return;
+    var project = state.repoId;
+    var ticket = ++state.engineFetchTicket;
+    state.engineProject = project;
+    // Only the first load owns the launch control. Later SSE/safety refreshes
+    // reconcile in the background so an idle project does not flicker back
+    // to a disabled "Checking…" state on every poll.
+    if (state.engineReadiness === "unasked") state.engineReadiness = "loading";
+    renderEngineControl();
+    api("GET", apiBase() + "/engine", null)
+      .then(function(response) {
+        if (ticket !== state.engineFetchTicket || state.screen !== "repo" || state.repoId !== project) return;
+        var runs = response.runs || [];
+        state.engineRun = runs.filter(isLiveEngineRun)[0] || null;
+        state.engineReadiness = "loaded";
+        renderEngineControl();
+        if (state.drawerId) renderDrawer();
+      })
+      .catch(function() {
+        if (ticket !== state.engineFetchTicket || state.screen !== "repo" || state.repoId !== project) return;
+        state.engineReadiness = "failed";
+        renderEngineControl();
+        if (state.drawerId) renderDrawer();
+      });
+  }
+
+  function scheduleEngineFetch() {
+    if (engineFetchDebounceTimer) return;
+    engineFetchDebounceTimer = setTimeout(function() {
+      engineFetchDebounceTimer = null;
+      fetchEngineRuns();
+    }, FETCH_DEBOUNCE_MS);
+  }
+
+  /** Starts either the selected project's queue or one epic subtree. The
+   * project id is the in-flight claim, acquired before `api()` and released
+   * on every response. A status GET follows success and refusal alike so an
+   * ambiguous transport outcome is reconciled instead of guessed. */
+  function startEngineRun(epicId) {
+    var project = state.repoId;
+    if (!project || state.engineStarts[project] || engineStartBlocked()) return;
+    var body;
+    if (epicId) {
+      body = { epic: epicId };
+    } else {
+      var input = $("engine-lanes");
+      var lanes = input ? Number(input.value) : state.engineLanes;
+      if (!Number.isInteger(lanes) || lanes < 1 || lanes > 255) return;
+      state.engineLanes = lanes;
+      body = { lanes: lanes };
+    }
+
+    state.engineStarts[project] = true;
+    renderEngineControl();
+    if (state.drawerId) renderDrawer();
+    var path = apiBase() + "/engine";
+    api("POST", path, body).then(function(response) {
+      if (state.repoId === project && response.run) {
+        state.engineProject = project;
+        state.engineReadiness = "loaded";
+        state.engineRun = response.run;
+      }
+      toast(epicId ? "Full Auto started for " + epicId : "Full Auto started", "success");
+      finishEngineStart(project);
+    }).catch(function(err) {
+      toastError(err);
+      finishEngineStart(project);
+    });
+  }
+
+  function finishEngineStart(project) {
+    delete state.engineStarts[project];
+    if (state.repoId !== project) return;
+    renderEngineControl();
+    if (state.drawerId) renderDrawer();
+    fetchEngineRuns();
   }
 
   /** The drawer footer's one dispatch action. Configuration now belongs to
@@ -5902,6 +6237,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (!state.data) return;
     renderFilterOptions();
     renderView();
+    renderEngineControl();
     updateSubtitle();
     updateDraftsButton();
     syncCreateAvailability();
@@ -6058,6 +6394,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("view-toggle").hidden = !isRepo;
     $("new-story-btn").hidden = !isRepo;
     $("drafts-btn").hidden = false;
+    renderEngineControl();
     // The chrome band just changed shape: `#filter-bar` is in it, and hiding it
     // is a `display: none` transition, which a `ResizeObserver` does not
     // reliably report (SH-323). The observer is the safety net for everything
@@ -9622,15 +9959,31 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (isClosed && !st.hidden_at) {
       next.appendChild(el("button", { class: "btn", onClick: function() { renderArchiveConfirm(st); } }, ["Archive"]));
     }
-    // Dispatch sits at the LEADING edge of the
-    // footer -- appended before Delete, which is what its own
-    // margin-left:auto is what pushes to the trailing edge. SH-50's own
-    // gate is unchanged: only for an open story in a project with a
-    // checkout on this machine, since a dispatch is exactly the kind of
-    // write that has nowhere to go without one. Reopen and Dispatch never
-    // compete for the leading edge -- a closed story never renders Dispatch.
+    // The one leading action follows the story's type. An epic is not
+    // dispatchable work itself (the server deliberately refuses ordinary
+    // epic dispatch); its subtree is the Full Auto scope. Ordinary stories
+    // retain SH-50's Dispatch action unchanged. Both require a checkout and
+    // neither competes with Reopen, since a closed story renders neither.
     if (!isClosed && currentRepoHasCheckout()) {
-      next.appendChild(dispatchButton(st));
+      if (st.story_type === "epic") {
+        var enginePending = currentEngineStartPending();
+        var engineLabel = enginePending
+          ? "Starting Full Auto…"
+          : state.engineRun
+            ? "Full Auto running"
+            : state.engineReadiness === "failed"
+              ? "Full Auto status unavailable"
+              : state.engineReadiness !== "loaded"
+                ? "Checking Full Auto status…"
+                : "Run Full Auto on this epic";
+        next.appendChild(el("button", {
+          id: "engine-epic-run-btn", class: "btn btn-primary",
+          disabled: engineStartBlocked(), title: engineReadinessTitle(),
+          onClick: function() { startEngineRun(st.id); }
+        }, [engineLabel]));
+      } else {
+        next.appendChild(dispatchButton(st));
+      }
     }
     var closeAvailable = canCloseStory(st);
     if (closeAvailable) {
@@ -9983,12 +10336,23 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // visit ended in a failed fetch would open into a named error rather than
     // into its loading window (SH-291).
     state.fetchSettledFor = null;
+    // Invalidate any slower status reply from the project being left before
+    // the new project's loading control is painted.
+    state.engineFetchTicket++;
+    // `fetchEngineRuns()` sets this only if the selected project actually has
+    // a checkout. Keeping it null for a read-only project means a later
+    // catalog refresh that discovers a checkout schedules the first status
+    // read instead of mistaking the project for one already queried.
+    state.engineProject = null;
+    state.engineReadiness = "loading";
+    state.engineRun = null;
     $("search-input").value = state.filter.text;
     $("toggle-closed").checked = state.filter.showClosed;
     $("toggle-epics").checked = !!state.filter.showEpics;
     localStorage.setItem("storyhook.repoId", id);
     renderScreen();
     fetchData();
+    fetchEngineRuns();
   }
 
   function goHome() {
@@ -12327,6 +12691,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   function updateFooter() {
+    updateEngineElapsedLabels();
     var at = activePollState().at;
     if (!at) return;
     var ago = Math.round((Date.now() - at) / 1000);
@@ -12457,7 +12822,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * plus the selected repo's full data while on the "repo" screen. */
   function pollTick() {
     fetchReposOnce();
-    if (state.screen === "repo" && state.repoId) fetchData();
+    if (state.screen === "repo" && state.repoId) {
+      fetchData();
+      fetchEngineRuns();
+    }
     if (state.screen === "settings" && state.settingsRepoId) refreshStatusesIfIdle();
   }
 
@@ -12497,7 +12865,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       sse.lastEventAt = Date.now();
       updateConnection();
       fetchReposOnce();
-      if (state.screen === "repo" && state.repoId) fetchData();
+      if (state.screen === "repo" && state.repoId) {
+        fetchData();
+        fetchEngineRuns();
+      }
     };
     // The daemon's heartbeat (`Change::Ping`, `daemon/bus.rs`) is a real
     // named event, not just an SSE comment, precisely so a connection with
@@ -12521,7 +12892,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       // The statuses editor is as live as the board: a status added in
       // another tab (or by the CLI) must show up here too.
       if (state.screen === "settings" && state.settingsRepoId === changed) refreshStatusesIfIdle();
-      if (state.screen === "repo" && state.repoId === changed) scheduleDataFetch();
+      if (state.screen === "repo" && state.repoId === changed) {
+        scheduleDataFetch();
+        scheduleEngineFetch();
+      }
     });
     es.onerror = function() {
       // `EventSource` retries on its own (using the server's `retry:`

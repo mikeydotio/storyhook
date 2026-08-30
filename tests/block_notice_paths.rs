@@ -44,6 +44,7 @@ fn sets_awaiting(invocation: &Invocation) -> bool {
         // release is an ordinary OPEN-to-OPEN transition, and
         // `state_transition_events` only clears `awaiting` on a close.
         | Invocation::Unclaim { .. }
+        | Invocation::Engine { .. }
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }

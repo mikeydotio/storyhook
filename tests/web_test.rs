@@ -2214,6 +2214,7 @@ fn web_serve_root_html_keeps_text_controls_above_the_ios_zoom_threshold() {
     // size, which is what makes the coarse-pointer override below total.
     for selector in [
         ".search-input",
+        ".engine-lanes-input",
         ".settings-form input",
         ".status-row select, .status-row input[type=text]",
         ".status-add input[type=text], .status-add select",
@@ -2264,7 +2265,7 @@ fn web_serve_root_html_keeps_text_controls_above_the_ios_zoom_threshold() {
     // Double-tap-to-zoom, on the tap targets only -- never on `body`, where
     // double-tapping to zoom the board's own text is a gesture the reader
     // is entitled to.
-    let touch_action_selector = "button, select, .card, .repo-card, tbody tr, .ctxmenu-item, \
+    let touch_action_selector = "button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, \
          .projsel-item, .fdd-option, .filter-toggle, .pref-toggle";
     assert!(
         declarations(css, touch_action_selector).contains("touch-action: manipulation"),
@@ -2476,6 +2477,7 @@ fn web_serve_root_html_meets_wcag_tap_target_size() {
         ".fdd-option",
         ".filter-toggle",
         ".filter-clear",
+        ".engine-lanes-input",
         ".column-archive-btn",
         ".section-toggle",
         ".field select, .field input[type=text], .field textarea",
@@ -3051,9 +3053,9 @@ fn web_serve_root_html_styles_the_description_read_edit_swap_and_rendered_markdo
 /// SH-235: the filter bar's dropdowns, checkboxes and sort buttons collapse
 /// behind a "Filters" disclosure, at every viewport size -- the filter bar
 /// alone measured 145px tall at a 390px width, on top of the topbar's own
-/// 108px. `#filter-summary` (the toggle, `#filter-count`, `#filter-clear`)
-/// stays outside `#filter-panel`'s `hidden` so a reader always sees whether
-/// a filter is active and can clear it without opening anything.
+/// 108px. `#filter-summary` (the toggle, count, clear action, and Full Auto
+/// control) stays outside `#filter-panel`'s `hidden` so a reader always sees
+/// whether a filter is active and can clear it without opening anything.
 ///
 /// The interaction itself (default collapsed, opens on click, ARIA/chevron
 /// sync, survives a reload, the active-class heuristic) is
@@ -3080,14 +3082,15 @@ fn web_serve_root_html_has_a_collapsible_filter_panel() {
     // JS-applied class, so a reader whose JS is still loading (or fails)
     // never sees the panel flash open before script runs.
     assert!(body.contains(r#"id="filter-panel" hidden>"#));
-    // #filter-count and #filter-clear moved into the always-visible summary
-    // row -- pinned by each still appearing before filter-panel's own
+    // The count, clear action, and Full Auto control live in the always-visible
+    // summary row -- pinned by each still appearing before filter-panel's own
     // opening tag, i.e. outside it, not merely present somewhere in the file.
     let panel_start = body
         .find(r#"id="filter-panel""#)
         .expect("the filter panel exists");
     assert!(body[..panel_start].contains(r#"id="filter-count""#));
     assert!(body[..panel_start].contains(r#"id="filter-clear""#));
+    assert!(body[..panel_start].contains(r#"id="engine-control""#));
 
     // The generic aria-expanded reset in closeAllPopovers() must exclude
     // this disclosure (and the drawer's own SH-169 section toggles) -- see
@@ -4213,6 +4216,202 @@ fn post_json_unguarded(
         .post(url)
         .content_type("application/json")
         .send(body)
+}
+
+fn response_json(response: ureq::http::Response<ureq::Body>) -> serde_json::Value {
+    serde_json::from_str(&response.into_body().read_to_string().unwrap()).unwrap()
+}
+
+// --- Full Auto engine HTTP control (SH-468) ---
+
+#[test]
+fn engine_http_serves_every_control_and_stable_run_views() {
+    let fixture = served();
+    let base = format!(
+        "http://127.0.0.1:{}/api/repos/{}/engine",
+        fixture.port, fixture.repo_id
+    );
+
+    let started = post_json(&fixture, &base, r#"{"lanes":2,"agent":"codex"}"#)
+        .expect("starting an engine run");
+    assert_eq!(started.status(), 201);
+    let started = response_json(started);
+    assert_eq!(started["result"], "ok");
+    assert_eq!(started["run"]["project"], fixture.repo_id);
+    assert_eq!(started["run"]["scope"]["kind"], "project");
+    assert_eq!(started["run"]["lane_count"], 2);
+    assert_eq!(started["run"]["agent"], "codex");
+    assert_eq!(started["run"]["state"], "running");
+    assert_eq!(started["run"]["lanes"].as_array().unwrap().len(), 2);
+    let run = started["run"]["id"].as_str().unwrap().to_string();
+
+    let duplicate = post_json(&fixture, &base, "{}").unwrap_err();
+    assert_eq!(status_of(duplicate), 409);
+
+    let all = response_json(fixture.agent().get(base.as_str()).call().unwrap());
+    assert_eq!(all["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(all["runs"][0]["id"], run);
+
+    let exact = response_json(
+        fixture
+            .agent()
+            .get(format!("{base}?run={run}"))
+            .call()
+            .unwrap(),
+    );
+    assert_eq!(exact["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(exact["runs"][0]["id"], run);
+
+    for (action, expected) in [("pause", "paused"), ("resume", "running")] {
+        let reply = post_json(
+            &fixture,
+            &format!("{base}/{action}"),
+            &serde_json::json!({ "run": run }).to_string(),
+        )
+        .unwrap();
+        assert_eq!(response_json(reply)["run"]["state"], expected, "{action}");
+    }
+
+    let stopped = post_json(
+        &fixture,
+        &format!("{base}/stop"),
+        &serde_json::json!({ "run": run }).to_string(),
+    )
+    .unwrap();
+    let stopped = response_json(stopped);
+    assert_eq!(stopped["run"]["state"], "finished");
+    assert_eq!(stopped["run"]["stop_reason"], "operator-stopped");
+
+    let acknowledged = post_json(
+        &fixture,
+        &format!("{base}/ack"),
+        &serde_json::json!({ "run": run }).to_string(),
+    )
+    .unwrap();
+    assert!(response_json(acknowledged)["run"]["acknowledged_at"].is_string());
+
+    let second = response_json(post_json(&fixture, &base, "{}").unwrap());
+    let second_run = second["run"]["id"].as_str().unwrap();
+    let stopped_now = post_json(
+        &fixture,
+        &format!("{base}/stop"),
+        &serde_json::json!({ "run": second_run, "now": true }).to_string(),
+    )
+    .unwrap();
+    let stopped_now = response_json(stopped_now);
+    assert_eq!(stopped_now["run"]["state"], "finished");
+    assert_eq!(stopped_now["run"]["stop_reason"], "operator-stopped-now");
+}
+
+#[test]
+fn engine_http_refuses_bad_input_unknown_resources_and_pathless_start() {
+    let fixture = served();
+    let base = format!(
+        "http://127.0.0.1:{}/api/repos/{}/engine",
+        fixture.port, fixture.repo_id
+    );
+
+    assert_eq!(status_of(post_json(&fixture, &base, "{").unwrap_err()), 400);
+    assert_eq!(
+        status_of(post_json(&fixture, &base, r#"{"lanes":0}"#).unwrap_err()),
+        422
+    );
+    assert_eq!(
+        status_of(
+            post_json(&fixture, &format!("{base}/pause"), r#"{"run":"missing"}"#).unwrap_err()
+        ),
+        404
+    );
+    assert_eq!(
+        status_of(
+            fixture
+                .agent()
+                .get(format!("{base}?run=missing"))
+                .call()
+                .unwrap_err()
+        ),
+        404
+    );
+    assert_eq!(
+        status_of(
+            fixture
+                .agent()
+                .get(format!(
+                    "http://127.0.0.1:{}/api/repos/missing/engine",
+                    fixture.port
+                ))
+                .call()
+                .unwrap_err()
+        ),
+        404
+    );
+    assert_eq!(
+        status_of(post_json(&fixture, &format!("{base}/unknown"), r#"{"run":"x"}"#).unwrap_err()),
+        404
+    );
+
+    let (_other_dir, other_slug) = fixture.add_project();
+    let other = response_json(
+        fixture
+            .agent()
+            .get(format!(
+                "http://127.0.0.1:{}/api/repos/{other_slug}/engine",
+                fixture.port
+            ))
+            .call()
+            .unwrap(),
+    );
+    assert!(other["runs"].as_array().unwrap().is_empty());
+
+    fixture.deregister();
+    let refusal = post_json(&fixture, &base, "{}").unwrap_err();
+    assert_eq!(status_of(refusal), 422);
+}
+
+#[test]
+fn engine_http_collection_and_actions_keep_the_existing_authorization_chain() {
+    let fixture = served();
+    let base = format!(
+        "http://127.0.0.1:{}/api/repos/{}/engine",
+        fixture.port, fixture.repo_id
+    );
+
+    assert_eq!(status_of(ureq::get(base.as_str()).call().unwrap_err()), 401);
+    assert_eq!(
+        status_of(
+            ureq::post(base.as_str())
+                .header("X-Storyhook", "1")
+                .content_type("application/json")
+                .send("{}")
+                .unwrap_err()
+        ),
+        401
+    );
+    assert_eq!(
+        status_of(
+            ureq::post(format!("{base}/pause"))
+                .header("X-Storyhook", "1")
+                .content_type("application/json")
+                .send(r#"{"run":"missing"}"#)
+                .unwrap_err()
+        ),
+        401
+    );
+
+    assert_eq!(
+        status_of(post_json_unguarded(&fixture, &base, "{}").unwrap_err()),
+        403
+    );
+    assert_eq!(
+        status_of(
+            post_json_unguarded(&fixture, &format!("{base}/pause"), r#"{"run":"missing"}"#)
+                .unwrap_err()
+        ),
+        403
+    );
+
+    let positive = post_json(&fixture, &base, "{}").unwrap();
+    assert_eq!(positive.status(), 201);
 }
 
 fn status_of(err: ureq::Error) -> u16 {

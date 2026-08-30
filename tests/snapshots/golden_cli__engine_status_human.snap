@@ -1,0 +1,14 @@
+---
+source: tests/golden_cli.rs
+---
+$ story engine status
+run: [run-id]
+scope: project
+state: running
+agent: claude
+lanes: 2
+consecutive hard stops: 0
+
+lane  state        story       elapsed
+1     idle         -           -
+2     idle         -           -

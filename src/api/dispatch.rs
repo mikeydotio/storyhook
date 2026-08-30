@@ -1213,13 +1213,23 @@ pub const REQUIRED_DISPATCH_PROTOCOL: u32 = 1;
 /// that predates the argv shape this daemon invokes it with is exactly as
 /// wrong to run as one that cannot be found at all, and belongs to the same
 /// "describes this daemon, not one dispatch attempt" category above.
-fn resolve_dispatch_script(agent: DispatchAgent) -> Result<PathBuf, String> {
+pub(crate) fn resolve_dispatch_script(agent: DispatchAgent) -> Result<PathBuf, String> {
     resolve_dispatch_script_from_for_agent(
         std::env::var("STORYHOOK_DISPATCH_SCRIPT").ok(),
         std::env::var("HOME").ok().map(PathBuf::from),
         crate::plugin::dev_repo_root(),
         agent,
     )
+}
+
+/// Resolves the same provider-specific helper for the store-backed engine
+/// controls. Kept as a narrow wrapper so SH-467 cannot grow a second opinion
+/// about configured, installed, and development plugin precedence.
+pub(crate) fn resolve_engine_dispatch_script(agent: EngineAgent) -> Result<PathBuf, String> {
+    resolve_dispatch_script(match agent {
+        EngineAgent::Claude => DispatchAgent::Claude,
+        EngineAgent::Codex => DispatchAgent::Codex,
+    })
 }
 
 /// [`resolve_dispatch_script`]'s logic, with every environment/filesystem

@@ -29,6 +29,10 @@
 #                    already claimed: it reuses that existing claim
 #                    without writing a redundant state transition. It bypasses
 #                    no worktree, branch, tmux, or other safety gate.
+#                    A typed epic is the deliberate exception: with `--auto`
+#                    it starts a daemon-owned engine run scoped to the epic;
+#                    without `--auto` it is refused. Neither epic path claims
+#                    the epic or creates a worktree/window for it.
 #
 #   dispatch --next  SH-344's NEXT MODE — the id-less sibling. Instead of a
 #                    caller-named id, claims whatever `story claim --next`
@@ -632,9 +636,10 @@ is_linked_worktree() {
 # directory, which in a monorepo whose sub-project owns its own identity is
 # entitled to name a different project (SH-151).
 #
-# resolve_checkout — ask, then PIN $PROJECT_SLUG to the answer. Returns 0 when a
-# checkout was recorded, 1 otherwise with $CHECKOUT_ERROR set to a refusal that
-# names the way out.
+# resolve_project — ask, then PIN $PROJECT_SLUG and $CHECKOUT_PATH to the
+# answer. A project may legitimately have no checkout; callers that only need
+# its daemon/API identity (epic Auto dispatch, SH-469) still have a complete
+# answer in that case.
 #
 # **The pin happens even when there is no checkout**, because the slug is
 # answered either way and a caller that tolerates a missing directory (capture)
@@ -643,7 +648,7 @@ is_linked_worktree() {
 # Sets globals rather than echoing, for the reason on _load_ready_stories: a
 # caller using $(...) would run `fail` in a subshell, so the script would carry
 # on with the refusal captured in a variable instead of printed.
-resolve_checkout() {
+resolve_project() {
   local show_json result
   CHECKOUT_PATH=""
   CHECKOUT_ERROR=""
@@ -662,11 +667,25 @@ resolve_checkout() {
   fi
   PROJECT_SLUG=$(printf '%s' "$show_json" | jq -r '.project.slug // ""')
   CHECKOUT_PATH=$(printf '%s' "$show_json" | jq -r '.project.checkout // ""')
+  return 0
+}
+
+# require_checkout — validate the checkout half of resolve_project's answer.
+# Split from the lookup so an API-only operation can preserve EngineService's
+# own no-checkout refusal instead of inventing a second shell-side policy.
+require_checkout() {
   if [ -z "$CHECKOUT_PATH" ]; then
     CHECKOUT_ERROR="project \`$PROJECT_SLUG\` has no checkout on this machine, so there is nowhere to run a git worktree — record one with \`story --project $PROJECT_SLUG project link checkout <path>\`. Its stories stay readable meanwhile; only the repo-side verbs need a directory."
     return 1
   fi
   return 0
+}
+
+# resolve_checkout — the historical combined contract for repo-side verbs.
+# It still asks exactly once, pins the project, and then requires its checkout.
+resolve_checkout() {
+  resolve_project || return 1
+  require_checkout
 }
 
 # enter_checkout — validate the resolved checkout and MOVE INTO the repository
@@ -999,6 +1018,83 @@ council_vote_available() {
   return 1
 }
 
+# cmd_dispatch_epic <id> <auto> <full-auto> <force> — the named-epic branch.
+#
+# An epic is a scope, not a lane. `--auto` therefore starts the daemon-owned
+# engine through SH-468's authenticated HTTP control surface and returns before
+# any claim, git, tmux or provider handoff. `--full-auto` remains the private
+# identity modifier the engine adds when it later dispatches one actionable
+# descendant; accepting it here would collapse those two boundaries again.
+cmd_dispatch_epic() {
+  local id="$1" auto="$2" full_auto="$3" force="$4"
+
+  [ -n "$auto" ] || refuse "epic-requires-auto" \
+    "story $id is an epic and carries no actionable steps of its own — use \`/story do $id --auto\` to start the Full Auto engine on its descendants."
+  [ -z "$force" ] || refuse "epic-force-unsupported" \
+    "story $id is an epic, so \`--force\` cannot reuse a story claim; omit it to start the Full Auto engine."
+  [ -z "$full_auto" ] || refuse "epic-full-auto-internal" \
+    "\`--full-auto\` identifies a descendant lane launched by the engine and cannot start epic $id; use only \`--auto\`."
+
+  local display="[story] Would start the Full Auto engine for epic $id with 1 $AGENT lane."
+  if [ -n "$DRY_RUN" ]; then
+    jq -n --arg epic "$id" --arg agent "$AGENT" --arg display "$display" \
+      '{ok:true, dry_run:true, kind:"engine-run", epic:$epic, agent:$agent, lanes:1, display:$display}'
+    return 0
+  fi
+
+  command -v curl >/dev/null 2>&1 \
+    || fail "starting the Full Auto engine requires \`curl\`, but it is not available on PATH."
+
+  local daemon_status daemon_url daemon_port token payload response http_status body detail run_id
+  daemon_status=$(story_cli daemon status 2>/dev/null) \
+    || fail "could not ask the storyhook daemon where it is listening."
+  daemon_url=$(printf '%s\n' "$daemon_status" | awk 'NR == 1 && $1 == "storyhook" && $2 == "daemon" && $4 == "running" && $5 == "at" { print $6 }')
+  daemon_url="${daemon_url%/}"
+  daemon_port="${daemon_url##*:}"
+  case "$daemon_port" in
+    ''|*[!0-9]*) fail "storyhook daemon status did not report a usable HTTP port: ${daemon_status%%$'\n'*}" ;;
+  esac
+
+  token=$(story_cli daemon token 2>/dev/null) \
+    || fail "could not read the storyhook daemon token needed to start the Full Auto engine."
+  [ -n "$token" ] \
+    || fail "the storyhook daemon returned an empty token; refusing to send an unauthenticated engine request."
+  payload=$(jq -cn --arg epic "$id" --arg agent "$AGENT" \
+    '{epic:$epic, lanes:1, agent:$agent}')
+
+  if ! response=$(curl --silent --show-error --max-time 30 \
+      --request POST \
+      --header 'Content-Type: application/json' \
+      --header 'X-Storyhook: 1' \
+      --header "X-Storyhook-Token: $token" \
+      --data "$payload" \
+      --write-out $'\n%{http_code}' \
+      "http://127.0.0.1:$daemon_port/api/repos/$PROJECT_SLUG/engine" 2>&1); then
+    fail "could not reach the Full Auto engine endpoint: $response"
+  fi
+  http_status="${response##*$'\n'}"
+  body="${response%$'\n'*}"
+
+  if [ "$http_status" != "201" ]; then
+    detail=$(printf '%s' "$body" \
+      | jq -r '.error // .display // .message // empty' 2>/dev/null \
+      || printf '')
+    [ -n "$detail" ] || detail="HTTP $http_status"
+    refuse "engine-start-refused" "Full Auto engine refused epic $id: $detail"
+  fi
+  printf '%s' "$body" \
+    | jq -e '.result == "ok" and (.run | type == "object") and (.run.id | type == "string")' \
+      >/dev/null 2>&1 \
+    || fail "Full Auto engine returned HTTP 201 without a valid run result."
+
+  run_id=$(printf '%s' "$body" | jq -r '.run.id')
+  display="[story] Started Full Auto engine run $run_id for epic $id with 1 $AGENT lane."
+  jq -n \
+    --arg epic "$id" --arg agent "$AGENT" --arg display "$display" \
+    --argjson run "$(printf '%s' "$body" | jq '.run')" \
+    '{ok:true, kind:"engine-run", epic:$epic, agent:$agent, run:$run, display:$display}'
+}
+
 # ---- subcommand: dispatch ---------------------------------------------------
 cmd_dispatch() {
   # <story-id> XOR --next may appear before or after --auto/--full-auto/--force/--agent; anything past
@@ -1070,7 +1166,34 @@ cmd_dispatch() {
     READY_LAUNCH_BIN="${LAUNCH_TPL%% *}"
   fi
 
-  # Step 1: tmux precondition (relaxed under dry-run and under
+  # A named target is identified before the tmux/worktree gates because an
+  # epic never crosses either boundary: it is an engine scope, not a story to
+  # claim and hand to one provider session. `--next` cannot return epics and
+  # retains its existing gate order below.
+  local show_json="" result="" title="" state=""
+  if [ -n "$id" ]; then
+    require_story
+    resolve_project || fail "$CHECKOUT_ERROR"
+    show_json=$(story_cli show "$id" --json 2>/dev/null) || true
+    result=$(printf '%s' "$show_json" | jq -r '.result // ""' 2>/dev/null || printf '')
+    if [ "$result" != "ok" ]; then
+      fail "$(printf '%s' "$show_json" | jq -r --arg id "$id" '.error // ("story `" + $id + "` not found")' 2>/dev/null)"
+    fi
+    # Every later resource name and the engine scope use the canonical id.
+    id=$(canonical_story_id "$show_json" "$id")
+    title=$(printf '%s' "$show_json" | jq -r '.story.story.title // ""')
+    state=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
+
+    # SH-499: epic identity is the explicit type, never the mere presence of
+    # a parent-of edge. Ordinary stories with subtasks still reach ID MODE.
+    if [ "$(printf '%s' "$show_json" | jq -r '.story.story.story_type // ""')" = "epic" ]; then
+      cmd_dispatch_epic "$id" "$auto" "$full_auto" "$force"
+      return 0
+    fi
+  fi
+
+  # Step 1: tmux precondition for story/lane dispatch (relaxed under dry-run
+  # and under
   # STORY_TARGET_SESSION — a non-interactive caller outside tmux dispatches
   # into a NAMED session, so its own tmux context is irrelevant).
   if [ -z "$DRY_RUN" ] && [ -z "$TARGET_SESSION" ]; then
@@ -1078,15 +1201,16 @@ cmd_dispatch() {
     [ -n "${TMUX_PANE:-}" ] || fail "story requires \$TMUX_PANE — run $AGENT_LABEL inside a tmux pane."
   fi
 
-  # Step 2: story CLI present. Asked before the checkout, because the checkout
-  # is a question only the CLI can answer.
-  require_story
-
-  # Step 3: the project's checkout — a LOOKUP, never an inference from the
+  # Steps 2-3: the project's checkout — a LOOKUP, never an inference from the
   # caller's working directory. Every refusal here lands BEFORE the
   # compare-and-swap claim in step 6, so a dispatch that cannot proceed never
   # strands a story in the claimed state with no worktree to show for it.
-  resolve_checkout || fail "$CHECKOUT_ERROR"
+  if [ -n "$want_next" ]; then
+    require_story
+    resolve_checkout || fail "$CHECKOUT_ERROR"
+  else
+    require_checkout || fail "$CHECKOUT_ERROR"
+  fi
   enter_checkout
   local dir="$PROJECT_ROOT"
 
@@ -1098,7 +1222,7 @@ cmd_dispatch() {
   # identically regardless of which one produced them. Since SH-482 both write
   # through `story claim`, so those four facts are read out of one response
   # shape on both paths as well.
-  local title state pre_claim_state claim_cmd_desc claim_state
+  local pre_claim_state claim_cmd_desc claim_state
   local claim_transitioned=false reused_claim=false
   if [ -n "$want_next" ]; then
     # NEXT MODE (SH-344): a single `story claim --next` call does steps 4-6 in
@@ -1154,27 +1278,6 @@ cmd_dispatch() {
     # this mode's alone — NEXT MODE's story arrives already claimed and already
     # ready by construction — and step 6 is the shared verb.
     #
-    # Step 4: story exists. Every read here is REAL, even under dry-run
-    # (issue.sh's own asymmetry: reads always run for real, only writes are
-    # symbolic under dry-run).
-    local show_json result
-    show_json=$(story_cli show "$id" --json 2>/dev/null) || true
-    result=$(printf '%s' "$show_json" | jq -r '.result // ""' 2>/dev/null || printf '')
-    if [ "$result" != "ok" ]; then
-      # `story show`'s own .error already reads "story `<id>` not found" on a
-      # missing id, so use it directly rather than re-wrapping (which would
-      # double the "not found" text); fall back to a generic message only if
-      # .error itself is absent (e.g. the CLI emitted no JSON at all).
-      fail "$(printf '%s' "$show_json" | jq -r --arg id "$id" '.error // ("story `" + $id + "` not found")' 2>/dev/null)"
-    fi
-    # Every name below — the tmux window, the worktree leaf, the branch — and
-    # the ready-gate's membership test are derived from $id, and the ready
-    # list holds canonical ids. A bare `5` would therefore pass this step and
-    # then be called unready. From here on, $id is what storyhook says it is.
-    id=$(canonical_story_id "$show_json" "$id")
-    title=$(printf '%s' "$show_json" | jq -r '.story.story.title // ""')
-    state=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
-
     # SH-481: the state meaning "claimed" is whichever one carries this
     # project's `active` role — the SAME resolver cmd_list already uses —
     # not the literal `in-progress`. SH-125 requires
@@ -1190,18 +1293,6 @@ cmd_dispatch() {
     # this line rather than being papered over by that fallback (cmd_list
     # documents the same ordering hazard from the other side).
     claim_state=$(story_active_state)
-
-    # Epics are planning containers, not executable work. Their state is
-    # recursively computed from children, so neither the ordinary claim nor
-    # --force may turn one into a directly-dispatched story.
-    #
-    # SH-499: an epic is a story TYPED `epic`, never one that merely holds a
-    # `parent-of` edge. This used to test the edge, so an ordinary story that
-    # gained one sub-task became permanently undispatchable and was told the
-    # reason was its children. Not every story with children is a folder.
-    if [ "$(printf '%s' "$show_json" | jq -r '.story.story.story_type // ""')" = "epic" ]; then
-      fail "story $id is an epic, so its state is computed from its children and it is not directly dispatchable; dispatch a ready child instead."
-    fi
 
     # Step 5 (deviation #1 — see header): ALREADY-CLAIMED GUARD. Checked
     # before the ready-gate for its more specific message — since SH-236 the
