@@ -54,7 +54,7 @@ case "$(jqf "$out" .display)" in
   *utonomous*) fail_test "attended: display mentions autonomy without --auto" ;;
 esac
 
-# --- --auto dry run: charter content plus a provider-native unattended launch.
+# --- --auto dry run: charter content plus a provider-supported unattended launch.
 #     STORY_COUNCIL=on pins the council charter regardless
 #     of what's actually installed wherever this suite runs. ---
 out=$(STORY_COUNCIL=on dry --auto)
@@ -208,7 +208,7 @@ case "$display" in
 esac
 
 # A wholesale launch override stays wholesale. Because Storyhook can no longer
-# guarantee the provider-native posture, both JSON and display say so.
+# guarantee the built-in unattended posture, both JSON and display say so.
 override_out=$(cd "$repo" && STORY_DRY_RUN=1 STORY_COUNCIL=off \
   STORY_LAUNCH_CMD="claude --permission-mode plan --custom" \
   bash "$SCRIPT" dispatch "$id" --auto 2>&1)
@@ -297,5 +297,7 @@ assert_contains "$(jqf "$out" .display)" "approves the plan automatically" \
   "real auto dispatch: display reports automatic approval"
 assert_contains "$(cat "$FAKE_TMUX_STATE/new_window_args.log")" \
   "-e STORYHOOK_AUTO=$id" "real auto dispatch: marker reaches tmux new-window"
+[ ! -e "$FAKE_TMUX_STATE/run_shell.log" ] \
+  || fail_test "real Claude auto dispatch: armed Codex's pane watcher"
 
 finish

@@ -152,6 +152,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../hooks/lib.sh"
 # charter's `<reap>` placeholder (SH-208) expands to: the exact script an
 # unattended session must call back into to reclaim its own worktree.
 SELF_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+AUTO_APPROVAL_HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/../hooks" && pwd)/full-auto.sh"
 
 # ---- config (all env-overridable) -------------------------------------------
 STORY="${STORY_BIN:-story}"
@@ -207,10 +208,11 @@ configure_agent() {
   # environment-selected provider; doing only AGENT would launch one provider
   # with the other's worktree and keyboard contract.
   LAUNCH_TPL="${STORY_LAUNCH_CMD:-$DEFAULT_LAUNCH_TPL}"
-  # AUTONOMOUS BLAST RADIUS (SH-511). These provider-native defaults keep Plan
-  # mode while allowing the approved plan to proceed without a person: Claude
-  # returns to acceptEdits, and Codex routes approvals through workspace-write
-  # automatic review while trusting the packaged hook for this invocation.
+  # AUTONOMOUS BLAST RADIUS (SH-511). These provider defaults keep Plan mode
+  # while allowing the approved plan to proceed without a person: Claude's
+  # PermissionRequest-scoped helper selects Auto and returns to acceptEdits;
+  # Codex's exact-pane watcher accepts its plan and workspace-write automatic
+  # review handles later tool approvals while trusting the packaged hook.
   # The child still lives in a disposable worktree and its charter still bans
   # version/release/deploy work. STORY_LAUNCH_CMD remains a wholesale expert
   # override, so an autonomous dispatch reports when it cannot guarantee this
@@ -275,8 +277,9 @@ PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this rep
 # remain wholesale overrides rather than unexpectedly acquiring policy text.
 CODEX_PLAN_COMMENT_CLAUSE="Codex Plan mode cannot write that comment before approval. In the plan you present, make ‘story comment <n> your-exact-approved-plan’ the first implementation step. After approval, execute that step before changing files or running tests, and post the plan verbatim rather than summarizing it."
 # The autonomous charter `--auto` swaps in for PROMPT_TPL. SH-511 removed its
-# last human interaction: plan approval and question refusal are provider-native,
-# while testing, merge, closure and hard stops remain the child's own call.
+# last human interaction: plan approval is scoped by provider events (with one
+# exact-gated tmux Return for Claude), and question refusal is provider-native;
+# testing, merge, closure and hard stops remain the child's own call.
 # Closure goes through a plain
 # `story move`, never `story complete`: that verb asks a question (fatal to an
 # unattended run) and would try to remove the very worktree the child occupies.
@@ -773,6 +776,23 @@ ensure_provider_plan_mode() {
     key_attempt=$((key_attempt + 1))
   done
   return 1
+}
+
+# Codex has no hook event at its plan-review dialog (measured on CLI 0.149.0).
+# Arm the exact-pane watcher after Plan mode is confirmed and before the prompt
+# is submitted. tmux owns the continuation, so it shares the pane's lifetime
+# instead of the short-lived dispatch process's. All shell-bound values are
+# quoted before tmux hands the command to its shell.
+schedule_codex_plan_approval() {
+  local pane="$1" story_id="$2" hook_q pane_q id_q
+  [ "$AGENT" = codex ] || return 0
+  [[ "$pane" =~ ^%[0-9]+$ ]] || return 1
+  printf -v hook_q '%q' "$AUTO_APPROVAL_HOOK"
+  printf -v pane_q '%q' "$pane"
+  printf -v id_q '%q' "$story_id"
+  tmux run-shell -b -t "$pane" \
+    "env STORYHOOK_AUTO=$id_q bash $hook_q --approve-codex-plan $pane_q" \
+    >/dev/null 2>&1
 }
 
 dispatch_ready_note() {
@@ -1290,8 +1310,8 @@ cmd_dispatch() {
   [ -n "$PROMPT_EXTRA" ] && prompt="$prompt $PROMPT_EXTRA"
 
   # Surfaced in both the dry-run and real result. SH-511 removed autonomous
-  # dispatch's last human interaction: the packaged hook approves Claude's
-  # plan exit, Codex's automatic reviewer approves its plan, and both providers
+  # dispatch's last human interaction: the packaged hook accepts Claude's
+  # plan review, Codex's exact-pane watcher accepts its plan, and both providers
   # deny question tools instead of waiting for a person who is not there.
   local auto_note=""
   if [ -n "$auto" ]; then
@@ -1324,6 +1344,7 @@ cmd_dispatch() {
       --arg id "$id" --arg title "$title" --arg dir "$dir" \
       --arg agent "$AGENT" --arg agent_label "$AGENT_LABEL" \
       --arg submit_key "$SUBMIT_KEY" --arg plan_key "$CODEX_PLAN_KEY" \
+      --arg approval_hook "$AUTO_APPROVAL_HOOK" \
       --arg wname "$wname" --arg launch "$launch_cmd" --arg prompt "$prompt" \
       --arg state "$state" --arg claim_cmd "$claim_cmd_desc" \
       --arg claim_note "$dry_claim_note" \
@@ -1352,6 +1373,9 @@ cmd_dispatch() {
              + " \\; set-window-option -t " + $wname + " automatic-rename off"
              + " \\; set-window-option -t " + $wname + " allow-rename off"),
           (if $agent == "codex" then ("tmux send-keys -t <pane> " + $plan_key + " # if Plan footer is absent") else empty end),
+          (if $agent == "codex" and $auto then
+             ("tmux run-shell -b -t <pane> env STORYHOOK_AUTO=" + $id + " bash " + $approval_hook + " --approve-codex-plan <pane>")
+           else empty end),
           ("printf %s " + $prompt + " | tmux load-buffer -b story-" + $id + " -"),
           ("tmux paste-buffer -p -d -b story-" + $id + " -t <pane>"),
           ("tmux send-keys -t <pane> " + $submit_key)
@@ -1573,6 +1597,26 @@ cmd_dispatch() {
             '{id:$id, window:$window, window_name:$wname, pane:$pane,
               readiness_confirmed:true, plan_mode_confirmed:false,
               plan_mode_reason:$reason, pane_tail:$tail, claimed:$claimed}')"
+  fi
+
+  # `--approve-for-me` reviews Codex tool calls, not the separate Plan-mode
+  # dialog. Refuse before handoff if the exact-pane Return watcher cannot even
+  # be armed; otherwise this command would claim unattendedness while knowingly
+  # launching a session that must stop for a person.
+  if [ -n "$auto" ] && [ "$AGENT" = codex ] \
+     && ! schedule_codex_plan_approval "$pane" "$id"; then
+    local approval_tail
+    approval_tail=$(pane_tail "$pane")
+    git worktree remove --force "$worktree_path" >/dev/null 2>&1 || true
+    git worktree prune >/dev/null 2>&1 || true
+    git branch -D "$worktree_branch" >/dev/null 2>&1 || true
+    refuse_with plan-approval-unarmed \
+      "[story] $id → Codex Plan mode is confirmed in window \`$wname\`, but its autonomous plan-approval watcher could not be armed. Nothing was typed into that pane. The window is left open; the worktree and branch were rolled back.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
+            --arg pane "$pane" --arg tail "$approval_tail" --argjson claimed "$reused_claim" \
+            '{id:$id, window:$window, window_name:$wname, pane:$pane,
+              readiness_confirmed:true, plan_mode_confirmed:true,
+              plan_approval_armed:false, pane_tail:$tail, claimed:$claimed}')"
   fi
 
   # Step 12: type + submit the prompt, confirmed. SEND_PROMPT_PHASE distinguishes

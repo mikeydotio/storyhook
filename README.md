@@ -196,10 +196,14 @@ compatibility alias. Claude keeps its existing
 Shift+Tab, and submits the bracketed-pasted charter with Tab. A failed readiness or
 Plan-mode check rolls back the claim and worktree before any charter is submitted.
 
-`--auto` is fully unattended while retaining Plan mode. Storyhook approves Claude's
-plan exit through its packaged hook and launches Claude with `acceptEdits` as the
-post-plan default. Codex uses workspace-write automatic review and trusts that same
-packaged hook for the invocation. The hook also refuses question tools instead of
+`--auto` is fully unattended while retaining Plan mode. Storyhook allows Claude's
+plan exit through its packaged hook, then uses Claude's exact `PermissionRequest`
+boundary to send Return to the selected Auto option in that session's tmux pane.
+Claude launches with `acceptEdits` as the post-plan default. Codex starts an
+exact-pane watcher after Plan mode is confirmed; it sends Return to the selected
+“Yes, implement this plan” option, then workspace-write automatic review handles
+later tool approvals. Codex also trusts the packaged hook for the invocation.
+The hook refuses question tools instead of
 waiting for a person who is not there. Claude can probe for `/council-vote`; Codex has
 no stable machine-readable skill inventory, so its default is the safe solo charter
 unless `STORY_COUNCIL=on` opts in explicitly. Both paths research and decide clear

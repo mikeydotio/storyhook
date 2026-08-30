@@ -2,9 +2,9 @@
 # SH-460 -- what the full-auto hook decides, and everything it must not.
 #
 # The hook is the whole of decision D6 in docs/spec/full-auto-engine.md: a lane
-# nobody is watching gets its plan approved and its questions refused, natively,
-# per tool call. The alternative -- watching the pane and typing the approval --
-# is screen-scraping a TUI, which is what SH-226 cost this project.
+# nobody is watching gets its plan approved and its questions refused at exact
+# provider events. Claude's PermissionRequest event triggers a bounded watcher
+# of only its own plan-review pane; there is no global/continuous pane monitor.
 #
 # Every case fires the command `hooks.json` actually ships, resolved through the
 # provider root variables an installed plugin resolves, the way
@@ -20,23 +20,35 @@
 source "$(dirname "$0")/lib.sh"
 
 MANIFEST="$PLUGIN_ROOT/hooks/hooks.json"
+HOOK="$PLUGIN_ROOT/hooks/full-auto.sh"
 LANE_STORY="SH-460"
 
 repo=$(mktemp -d /tmp/story-test-fullauto-hook.XXXXXX)
 _TMP_REPOS+=("$repo")
 
 hook_command() {
-  jq -r --arg m "$1" \
-    '.hooks.PreToolUse[] | select(.matcher == $m) | .hooks[0].command' "$MANIFEST"
+  jq -r --arg e "$1" --arg m "$2" \
+    '.hooks[$e][] | select(.matcher == $m) | .hooks[0].command' "$MANIFEST"
 }
 
 # fire <matcher> <payload> -- run the manifest's command for <matcher> with a
 # literal payload on stdin, inheriting the caller's STORYHOOK_FULL_AUTO.
 fire() {
   local matcher="$1" payload="$2" command
-  command=$(hook_command "$matcher")
+  command=$(hook_command PreToolUse "$matcher")
   if [ -z "$command" ] || [ "$command" = null ]; then
     fail_test "full-auto: hooks.json declares no PreToolUse matcher '$matcher'"
+    return 0
+  fi
+  (cd "$repo" && printf '%s' "$payload" | env -u CLAUDE_PLUGIN_ROOT \
+    PLUGIN_ROOT="$PLUGIN_ROOT" bash -c "$command")
+}
+
+fire_permission() {
+  local payload="$1" command
+  command=$(hook_command PermissionRequest ExitPlanMode)
+  if [ -z "$command" ] || [ "$command" = null ]; then
+    fail_test "full-auto: hooks.json declares no PermissionRequest matcher 'ExitPlanMode'"
     return 0
   fi
   (cd "$repo" && printf '%s' "$payload" | env -u CLAUDE_PLUGIN_ROOT \
@@ -58,6 +70,12 @@ codex_payload() {
   printf '"tool_use_id":"call_1","tool_input":{"questions":[{"question":"which?"}]}}'
 }
 
+permission_payload() {
+  printf '{"session_id":"lane-1","transcript_path":"/dev/null","cwd":"%s",' "$repo"
+  printf '"permission_mode":"plan","hook_event_name":"PermissionRequest",'
+  printf '"tool_name":"%s","tool_input":%s}' "$1" "$2"
+}
+
 decision_of() { printf '%s' "$1" | jq -r '.hookSpecificOutput.permissionDecision // "none"'; }
 reason_of() { printf '%s' "$1" | jq -r '.hookSpecificOutput.permissionDecisionReason // ""'; }
 event_of() { printf '%s' "$1" | jq -r '.hookSpecificOutput.hookEventName // ""'; }
@@ -73,6 +91,73 @@ case "$(reason_of "$out")" in
   *"$LANE_STORY"*) ;;
   *) fail_test "ExitPlanMode: the approval reason does not name the lane's story" ;;
 esac
+
+# Claude Code 2.1.251 has two approval boundaries: PreToolUse authorizes the
+# ExitPlanMode tool, then PermissionRequest presents the separate plan-review
+# pane. The latter returns no provider decision; it starts a bounded watcher
+# that presses Return only when the exact default-selected Auto option is on
+# the hook's own pane.
+TMUX_FIXTURE=$(mktemp -d /tmp/story-test-fullauto-tmux.XXXXXX)
+_TMP_REPOS+=("$TMUX_FIXTURE")
+cat >"$TMUX_FIXTURE/tmux" <<'MOCKTMUX'
+#!/usr/bin/env bash
+case "${1:-}" in
+  run-shell)
+    bash -c "${*: -1}"
+    ;;
+  capture-pane)
+    if [ "${FULL_AUTO_TMUX_SCREEN:-ready}" != ready ]; then
+      printf 'Provider changed this prompt\n1. Continue\n'
+    elif [ "${FULL_AUTO_TMUX_PROVIDER:-claude}" = codex ]; then
+      printf 'Implement this plan?\n› 1. Yes, implement this plan\n  2. Yes, clear context and implement\n  3. No, stay in Plan mode\n'
+    else
+      printf 'Ready to code?\n❯ 1. Yes, and use auto mode\n  2. Yes, manually approve edits\n'
+    fi
+    ;;
+  send-keys)
+    printf '%s\n' "$*" >>"$FULL_AUTO_TMUX_LOG"
+    ;;
+  *) exit 1 ;;
+esac
+MOCKTMUX
+chmod +x "$TMUX_FIXTURE/tmux"
+export FULL_AUTO_TMUX_LOG="$TMUX_FIXTURE/send-keys.log"
+: >"$FULL_AUTO_TMUX_LOG"
+
+out=$(PATH="$TMUX_FIXTURE:$PATH" TMUX_PANE=%4242 \
+  fire_permission "$(permission_payload ExitPlanMode '{"plan":"do the thing"}')")
+assert_eq "$out" "{}" "PermissionRequest: returns an empty provider directive"
+for _ in $(seq 1 40); do
+  [ -s "$FULL_AUTO_TMUX_LOG" ] && break
+  sleep 0.05
+done
+assert_eq "$(cat "$FULL_AUTO_TMUX_LOG")" "send-keys -t %4242 Enter" \
+  "PermissionRequest: accepts the exact Auto plan pane with Return"
+
+# A changed prompt must fail closed: one bounded probe, no input. Likewise an
+# invalid pane id cannot become a tmux target.
+: >"$FULL_AUTO_TMUX_LOG"
+PATH="$TMUX_FIXTURE:$PATH" FULL_AUTO_TMUX_SCREEN=changed \
+  bash "$HOOK" --approve-claude-plan %4242 1
+assert_eq "$(cat "$FULL_AUTO_TMUX_LOG")" "" \
+  "PermissionRequest: changed UI text receives no input"
+PATH="$TMUX_FIXTURE:$PATH" bash "$HOOK" --approve-claude-plan 'not-a-pane' 1
+assert_eq "$(cat "$FULL_AUTO_TMUX_LOG")" "" \
+  "PermissionRequest: an invalid pane id receives no input"
+
+# Codex has no pre-dialog hook event. Dispatch starts the sibling pane-lifetime
+# watcher after confirming Plan mode; the same exact-match rule permits one
+# Return and a changed UI receives none.
+: >"$FULL_AUTO_TMUX_LOG"
+PATH="$TMUX_FIXTURE:$PATH" FULL_AUTO_TMUX_PROVIDER=codex \
+  bash "$HOOK" --approve-codex-plan %4242 1
+assert_eq "$(cat "$FULL_AUTO_TMUX_LOG")" "send-keys -t %4242 Enter" \
+  "Codex watcher: accepts the exact selected plan pane with Return"
+: >"$FULL_AUTO_TMUX_LOG"
+PATH="$TMUX_FIXTURE:$PATH" FULL_AUTO_TMUX_PROVIDER=codex FULL_AUTO_TMUX_SCREEN=changed \
+  bash "$HOOK" --approve-codex-plan %4242 1
+assert_eq "$(cat "$FULL_AUTO_TMUX_LOG")" "" \
+  "Codex watcher: changed UI text receives no input"
 
 # SH-511: ordinary `dispatch --auto` activates the same native decision surface
 # through its own marker, without claiming to be an engine lane.
@@ -174,12 +259,15 @@ rm -f "$repo/.storyhook.toml"
 # number is how long a lane waits before the hole opens. It is asserted here as
 # well as in tests/hook_budgets.rs because this suite is the one a shell-only
 # change runs.
-for matcher in ExitPlanMode AskUserQuestion request_user_input; do
+for event_matcher in PreToolUse:ExitPlanMode PreToolUse:AskUserQuestion \
+                     PreToolUse:request_user_input PermissionRequest:ExitPlanMode; do
+  event="${event_matcher%%:*}"
+  matcher="${event_matcher#*:}"
   budget=$(jq -r --arg m "$matcher" \
-    '.hooks.PreToolUse[] | select(.matcher == $m) | .hooks[0].timeout' "$MANIFEST")
+    --arg e "$event" '.hooks[$e][] | select(.matcher == $m) | .hooks[0].timeout' "$MANIFEST")
   case "$budget" in
-    ''|null|0) fail_test "full-auto: PreToolUse '$matcher' declares no timeout" ;;
-    *) [ "$budget" -le 30 ] || fail_test "full-auto: PreToolUse '$matcher' timeout ${budget}s is longer than a lane should wait on a hook that makes no CLI call" ;;
+    ''|null|0) fail_test "full-auto: $event '$matcher' declares no timeout" ;;
+    *) [ "$budget" -le 30 ] || fail_test "full-auto: $event '$matcher' timeout ${budget}s is longer than a lane should wait" ;;
   esac
 done
 
