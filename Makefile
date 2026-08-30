@@ -67,13 +67,24 @@
 # would undo the split SH-394 measured — and it is deliberately absent from
 # the `test-full` branch, where the suite is about to actually run.
 
-.PHONY: test test-full test-changed build fmt lint clippy check release-build install check-no-orphan-servers e2e-install e2e merge-watch browser-watch browser-status coverage-map coverage-watch coverage-status
+.PHONY: test test-full test-changed _test-body _test-full-body _test-changed-body build fmt lint clippy check release-build install check-no-orphan-servers e2e-install e2e merge-watch browser-watch browser-status coverage-map coverage-watch coverage-status
 
 # Where `make install` puts the binary. Mirrors install.sh's default and its
 # STORYHOOK_INSTALL_DIR override so both entry points agree; a one-off can
 # still say `make install INSTALL_DIR=/somewhere/else`.
 STORYHOOK_INSTALL_DIR ?= $(HOME)/.local/bin
 INSTALL_DIR ?= $(STORYHOOK_INSTALL_DIR)
+
+# A recipe line containing `$(MAKE)` still runs under GNU Make's -n, -t and
+# -q modes so its recursive make can inherit the operation. That exception
+# must not make our surrounding wrapper run a REAL orphan postlude. GNU Make
+# documents the first word of `MAKEFLAGS` as the no-argument flag group and
+# recommends this `findstring` shape for testing it. The leading `-` keeps
+# `firstword` non-empty when there are no flags.
+STORYHOOK_MAKE_NO_EXEC := $(strip \
+	$(findstring n,$(firstword -$(MAKEFLAGS))) \
+	$(findstring t,$(firstword -$(MAKEFLAGS))) \
+	$(findstring q,$(firstword -$(MAKEFLAGS))))
 
 # Full local gate: formatting, clippy with warnings-as-errors, full test
 # suite, plus the shared agent plugin's own bash harness (bin/story.sh's
@@ -161,11 +172,25 @@ INSTALL_DIR ?= $(STORYHOOK_INSTALL_DIR)
 # "on", the same footgun as a shell `[ -n "$VAR" ]` check. There is exactly
 # one place this variable is ever set, immediately below, and it is set or
 # absent, never to a string meaning false.
+#
+# The private body targets exist for one reason: `with-orphan-postlude.sh`
+# must own the whole fallible body as one command so it can reach the orphan
+# postlude after either outcome. They are not alternate gates -- called by
+# hand they neither run the preflight nor write a receipt. The public targets
+# keep those two trust-boundary steps outside the wrapper, with the receipt
+# still last and therefore reachable only when both body and cleanup passed.
 test-full: E2E=1
 test-full: test
 
 test: check-no-orphan-servers
 	@bash scripts/gate-receipt.sh preflight
+	@bash scripts/with-orphan-postlude.sh $(if $(STORYHOOK_MAKE_NO_EXEC),--make-no-exec) -- $(MAKE) --no-print-directory $(if $(E2E),_test-full-body,_test-body)
+	@bash scripts/gate-receipt.sh postlude $(if $(E2E),full,gate)
+
+_test-full-body: E2E=1
+_test-full-body: _test-body
+
+_test-body:
 	bash scripts/leg.sh --reuse fmt -- cargo fmt --all -- --check
 	bash scripts/leg.sh --reuse clippy -- cargo clippy --workspace --all-targets -- -D warnings
 	@bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-rust-battery.sh core
@@ -173,8 +198,6 @@ test: check-no-orphan-servers
 	bash scripts/leg.sh --reuse build -- cargo build
 	PATH="$(CURDIR)/target/debug:$$PATH" bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh
 	$(if $(E2E),bash scripts/leg.sh --reuse e2e -- bash scripts/run-e2e.sh,@bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true)
-	@bash scripts/check-no-orphan-servers.sh postlude
-	@bash scripts/gate-receipt.sh postlude $(if $(E2E),full,gate)
 
 # The selective tier (SH-429). Identical to `test` except the rust-suite leg
 # runs `scripts/run-changed.sh` (which asks `scripts/select-tests.sh` what is
@@ -193,6 +216,14 @@ test: check-no-orphan-servers
 # single, wrong $2.
 test-changed: check-no-orphan-servers
 	@bash scripts/gate-receipt.sh preflight
+	@bash scripts/with-orphan-postlude.sh $(if $(STORYHOOK_MAKE_NO_EXEC),--make-no-exec) -- $(MAKE) --no-print-directory _test-changed-body
+	@state_file="$$(git rev-parse --git-dir)/storyhook-changed-tier-args"; \
+	 tier_args="$$(cat "$$state_file" 2>/dev/null)"; \
+	 [ -n "$$tier_args" ] || tier_args=gate; \
+	 rm -f "$$state_file"; \
+	 bash scripts/gate-receipt.sh postlude $$tier_args
+
+_test-changed-body:
 	bash scripts/leg.sh --reuse fmt -- cargo fmt --all -- --check
 	bash scripts/leg.sh --reuse clippy -- cargo clippy --workspace --all-targets -- -D warnings
 	@bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-changed.sh
@@ -200,12 +231,6 @@ test-changed: check-no-orphan-servers
 	bash scripts/leg.sh --reuse build -- cargo build
 	PATH="$(CURDIR)/target/debug:$$PATH" bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh
 	@bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true
-	@bash scripts/check-no-orphan-servers.sh postlude
-	@state_file="$$(git rev-parse --git-dir)/storyhook-changed-tier-args"; \
-	 tier_args="$$(cat "$$state_file" 2>/dev/null)"; \
-	 [ -n "$$tier_args" ] || tier_args=gate; \
-	 rm -f "$$state_file"; \
-	 bash scripts/gate-receipt.sh postlude $$tier_args
 
 # Installs the e2e/ Node toolchain and the browsers e2e/playwright.config.ts
 # names (chromium, webkit -- SH-335). Not part of either gate target itself --

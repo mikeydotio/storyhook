@@ -637,10 +637,11 @@ fn a_pushed_commit_with_no_receipt_is_named_but_not_refused() {
 // Derived fences — the wiring that makes the gate an invariant, not a habit
 // ---------------------------------------------------------------------------
 
-/// `make test` must enroll at the start and certify at the very end. The
-/// postlude being **last** is what makes "no receipt unless every leg passed"
-/// true by make's own fail-fast semantics rather than by exit-code plumbing —
-/// so a leg inserted after it would silently start certifying failed runs.
+/// `make test` must enroll at the start, wrap its whole fallible body, and
+/// certify at the very end. The receipt postlude being **last** is what makes
+/// "no receipt unless every leg and orphan cleanup passed" true by make's own
+/// fail-fast semantics — so a leg inserted after it would silently start
+/// certifying failed runs.
 #[test]
 fn the_makefile_enrolls_first_and_certifies_last() {
     let makefile = std::fs::read_to_string(checkout().join("Makefile")).expect("reading Makefile");
@@ -652,7 +653,7 @@ fn the_makefile_enrolls_first_and_certifies_last() {
         .take_while(|l| l.starts_with('\t'))
         .collect();
     assert!(
-        body.len() > 3,
+        body.len() == 3,
         "the test target's recipe was not found — this fence is broken, not the Makefile"
     );
 
@@ -660,6 +661,11 @@ fn the_makefile_enrolls_first_and_certifies_last() {
         body[0].contains("gate-receipt.sh preflight"),
         "the first line of `test` must enroll, got: {}",
         body[0]
+    );
+    assert!(
+        body[1].contains("with-orphan-postlude.sh") && body[1].contains("_test-body"),
+        "the middle line of `test` must wrap its fallible body, got: {}",
+        body[1]
     );
     assert!(
         body[body.len() - 1].contains("gate-receipt.sh postlude"),

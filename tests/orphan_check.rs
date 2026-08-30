@@ -88,6 +88,11 @@ impl Fixture {
             root.path().join("scripts/check-no-orphan-servers.sh"),
         )
         .expect("fixture: linking the tracked script");
+        std::os::unix::fs::symlink(
+            checkout().join("scripts/with-orphan-postlude.sh"),
+            root.path().join("scripts/with-orphan-postlude.sh"),
+        )
+        .expect("fixture: linking the tracked wrapper");
         Self { root }
     }
 
@@ -97,6 +102,10 @@ impl Fixture {
 
     fn script(&self) -> PathBuf {
         self.path().join("scripts/check-no-orphan-servers.sh")
+    }
+
+    fn wrapper(&self) -> PathBuf {
+        self.path().join("scripts/with-orphan-postlude.sh")
     }
 
     /// Writes an executable shell shim at `target/debug/story` — the exact
@@ -149,6 +158,14 @@ impl Fixture {
     fn run(&self, args: &[&str]) -> Output {
         let script = self.script().display().to_string();
         let mut full = vec![script.as_str()];
+        full.extend_from_slice(args);
+        run(self.path(), "bash", &full)
+    }
+
+    /// Runs a command through the tracked unconditional-postlude wrapper.
+    fn run_wrapped(&self, args: &[&str]) -> Output {
+        let wrapper = self.wrapper().display().to_string();
+        let mut full = vec![wrapper.as_str()];
         full.extend_from_slice(args);
         run(self.path(), "bash", &full)
     }
@@ -299,6 +316,92 @@ fn pid_running(pid: u32) -> bool {
 // ---------------------------------------------------------------------------
 // The provocation
 // ---------------------------------------------------------------------------
+
+/// SH-491 itself: a red test body used to make `make` stop before the orphan
+/// postlude, so the daemon it leaked poisoned the next run. The wrapper must
+/// preserve that red status, but only after the tracked postlude has collected
+/// the process and left the next preflight clean.
+#[test]
+fn a_red_wrapped_body_is_returned_only_after_its_daemon_is_reaped() {
+    let fixture = Fixture::new();
+    let shim = fixture.shim("sleep 60");
+    let store = fixture.live_store();
+    let body = fixture.helper(
+        "red-body.sh",
+        &format!(
+            "\"{}\" --store-path \"{}\" daemon --serve --port 0 </dev/null >/dev/null 2>&1 &\nsleep 0.3\nexit 23",
+            shim.display(),
+            store.display()
+        ),
+    );
+    let body = body.display().to_string();
+
+    let out = fixture.run_wrapped(&["--", "bash", &body]);
+    assert_eq!(
+        out.status.code(),
+        Some(23),
+        "the wrapper must preserve the red body's status after cleanup\nstderr: {}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("reaping"),
+        "the red body's daemon must reach the real postlude\nstderr: {}",
+        stderr(&out)
+    );
+    assert!(
+        !fixture.anything_still_matches(),
+        "the wrapper must not return while the red body's daemon is still alive"
+    );
+
+    let next = fixture.run(&["preflight"]);
+    assert!(
+        next.status.success(),
+        "the next preflight must be clean without a manual kill\nstderr: {}",
+        stderr(&next)
+    );
+}
+
+/// Exit-status precedence is the wrapper's receipt-safety contract. A cleanup
+/// failure must make a green body red, while an already-red body keeps its own
+/// status so the original failing leg remains the primary diagnosis. In both
+/// cases the cleanup diagnostic must remain visible.
+#[test]
+fn the_wrapper_preserves_a_body_failure_and_never_hides_a_cleanup_failure() {
+    for (body_status, expected) in [(0, 41), (23, 23)] {
+        let fixture = Fixture::new();
+        std::fs::remove_file(fixture.script()).expect("fixture: removing the orphan symlink");
+        write_executable(&fixture.script(), "echo cleanup-failed >&2\nexit 41");
+        let command = format!("exit {body_status}");
+
+        let out = fixture.run_wrapped(&["--", "bash", "-c", &command]);
+        assert_eq!(
+            out.status.code(),
+            Some(expected),
+            "body={body_status}, cleanup=41 must return {expected}\nstderr: {}",
+            stderr(&out)
+        );
+        assert!(
+            stderr(&out).contains("cleanup-failed"),
+            "cleanup diagnostics must remain visible when body={body_status}\nstderr: {}",
+            stderr(&out)
+        );
+    }
+
+    let fixture = Fixture::new();
+    std::fs::remove_file(fixture.script()).expect("fixture: removing the orphan symlink");
+    write_executable(&fixture.script(), "echo cleanup-must-not-run >&2\nexit 41");
+    let out = fixture.run_wrapped(&["--make-no-exec", "--", "bash", "-c", "exit 0"]);
+    assert!(
+        out.status.success(),
+        "a recursive make no-exec operation must return its own status without running cleanup\nstderr: {}",
+        stderr(&out)
+    );
+    assert!(
+        !stderr(&out).contains("cleanup-must-not-run"),
+        "--make-no-exec must not invoke the real orphan postlude\nstderr: {}",
+        stderr(&out)
+    );
+}
 
 /// The defect itself, and its fix, in one test: a shim alive past the grace
 /// period that ignores SIGTERM is escalated to SIGKILL and the postlude

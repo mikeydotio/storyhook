@@ -243,13 +243,15 @@ fn each_tier_writes_a_receipt_naming_itself() {
 /// deliberately varies (already pinned above) and the remainder — fmt,
 /// clippy, the Rust suite, the build, the plugin harness, the orphan-server
 /// brackets, the preflight — must be byte-for-byte the same list, in the
-/// same order, for both targets.
+/// same order, for both targets. The wrapper invocation is filtered because
+/// its private target name is how the recursive make receives the tier.
 #[test]
 fn the_two_tiers_agree_on_every_leg_but_the_browser_suite_and_the_receipt() {
     let differs = |line: &str| {
         line.contains("scripts/run-e2e.sh")
             || (line.contains("leg.sh") && line.contains("--skipped"))
             || line.contains("gate-receipt.sh postlude")
+            || line.contains("with-orphan-postlude.sh")
     };
 
     let gate: Vec<String> = dry_run("test")
@@ -302,12 +304,14 @@ fn test_changed_runs_run_changed_sh_instead_of_the_full_workspace_runner() {
     );
 }
 
-/// Only the rust-suite leg and the postlude may differ between `test` and
+/// Only the rust-suite leg and receipt postlude may differ between `test` and
 /// `test-changed` — fmt, clippy, the build, and the plugin harness stay
 /// unconditional (SH-429's own design: only test EXECUTION is selective,
 /// compilation never is). The e2e deferral line is deliberately excluded
 /// from `test-changed`'s recipe entirely (it is not a release gate), so it
-/// is filtered on both sides rather than compared.
+/// is filtered on both sides rather than compared. Both bodies must pass
+/// through the same unconditional orphan-postlude wrapper (SH-491), even
+/// though the private target named on that line differs.
 #[test]
 fn test_changed_shares_fmt_clippy_build_and_plugin_legs_with_test() {
     let shared_leg_markers = [
@@ -317,7 +321,7 @@ fn test_changed_shares_fmt_clippy_build_and_plugin_legs_with_test() {
         "leg.sh --reuse build -- cargo build",
         "plugins/story/tests/run-tests.sh",
         "check-no-orphan-servers.sh preflight",
-        "check-no-orphan-servers.sh postlude",
+        "with-orphan-postlude.sh",
         "gate-receipt.sh preflight",
     ];
 
@@ -332,6 +336,40 @@ fn test_changed_shares_fmt_clippy_build_and_plugin_legs_with_test() {
             "expected leg containing '{marker}' in BOTH make test and make \
              test-changed's dry runs -- test:{in_gate} test-changed:{in_changed}\n\
              test: {gate:#?}\ntest-changed: {changed:#?}"
+        );
+    }
+}
+
+/// Every public test tier must put its whole fallible body behind SH-491's
+/// wrapper. The private target name is load-bearing: it selects the ordinary,
+/// browser-inclusive, or changed body while keeping the receipt outside the
+/// wrapper and therefore success-only.
+#[test]
+fn every_test_tier_wraps_the_right_body_in_the_orphan_postlude() {
+    for (target, body) in [
+        ("test", "_test-body"),
+        ("test-full", "_test-full-body"),
+        ("test-changed", "_test-changed-body"),
+    ] {
+        let lines = dry_run(target);
+        let wrappers: Vec<&String> = lines
+            .iter()
+            .filter(|line| line.contains("scripts/with-orphan-postlude.sh"))
+            .collect();
+        assert_eq!(
+            wrappers.len(),
+            1,
+            "make {target} must invoke exactly one orphan-postlude wrapper, dry run was:\n{lines:#?}"
+        );
+        assert!(
+            wrappers[0].ends_with(body),
+            "make {target} must wrap {body}, got: {}",
+            wrappers[0]
+        );
+        assert!(
+            wrappers[0].contains("--make-no-exec --"),
+            "make -n {target} must bypass the real postlude while expanding its recursive body, got: {}",
+            wrappers[0]
         );
     }
 }

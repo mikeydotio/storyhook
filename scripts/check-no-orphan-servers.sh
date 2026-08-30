@@ -37,10 +37,9 @@
 # it verified, and it may be a daemon the developer started on purpose -- not
 # this script's business to stop.
 #
-# POSTLUDE waits, then REAPS rather than refusing (SH-412). `make test` is
-# nine minutes nominal; the postlude is its last-but-one line, so a false
-# refusal here throws away a suite that already went green and charges a full
-# re-run to prove it again -- precisely the pressure that caused SH-306. And a
+# POSTLUDE waits, then REAPS rather than refusing (SH-412). Since SH-491,
+# `with-orphan-postlude.sh` reaches it after a red body as well as a green one;
+# the receipt remains outside that wrapper and therefore success-only. A
 # postlude match is not ambiguous the way a preflight one is: the preflight is
 # a hard prerequisite of `test` (see the Makefile), so it already proved this
 # worktree was clean when the run began. Anything the pattern still matches at
