@@ -54,11 +54,16 @@ fn run(args: &[&str]) -> Output {
 /// The non-empty, trimmed lines `make -n` says this target would run.
 fn dry_run(target: &str) -> Vec<String> {
     let out = run(&["-n", "--no-print-directory", target]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         out.status.success(),
         "make -n {target} failed\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
+        stderr
+    );
+    assert!(
+        stderr.trim().is_empty(),
+        "make -n {target} must not run a real preflight or postlude\nstderr: {stderr}"
     );
     String::from_utf8_lossy(&out.stdout)
         .lines()

@@ -78,13 +78,19 @@ INSTALL_DIR ?= $(STORYHOOK_INSTALL_DIR)
 # A recipe line containing `$(MAKE)` still runs under GNU Make's -n, -t and
 # -q modes so its recursive make can inherit the operation. That exception
 # must not make our surrounding wrapper run a REAL orphan postlude. GNU Make
-# documents the first word of `MAKEFLAGS` as the no-argument flag group and
-# recommends this `findstring` shape for testing it. The leading `-` keeps
-# `firstword` non-empty when there are no flags.
+# documents the no-argument flag group and recommends `findstring` for testing
+# it. GNU Make 3.81 (the version Xcode supplies here) may put a long option
+# BEFORE that group, unlike current Make's first-word contract, so inspect
+# every word after excluding long options and variable assignments. That
+# accepts both 3.81's `-pn` and current Make's `pn` without mistaking
+# `--no-print-directory` for an `n` flag.
+STORYHOOK_MAKE_SHORT_FLAGS := $(strip $(foreach makeflag,$(MAKEFLAGS), \
+	$(if $(filter --%,$(makeflag)),, \
+		$(if $(findstring =,$(makeflag)),,$(makeflag)))))
 STORYHOOK_MAKE_NO_EXEC := $(strip \
-	$(findstring n,$(firstword -$(MAKEFLAGS))) \
-	$(findstring t,$(firstword -$(MAKEFLAGS))) \
-	$(findstring q,$(firstword -$(MAKEFLAGS))))
+	$(findstring n,$(STORYHOOK_MAKE_SHORT_FLAGS)) \
+	$(findstring t,$(STORYHOOK_MAKE_SHORT_FLAGS)) \
+	$(findstring q,$(STORYHOOK_MAKE_SHORT_FLAGS)))
 
 # Full local gate: formatting, clippy with warnings-as-errors, full test
 # suite, plus the shared agent plugin's own bash harness (bin/story.sh's
