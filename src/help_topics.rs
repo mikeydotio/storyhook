@@ -1660,7 +1660,8 @@ Related:
 
         m.insert(
             "block",
-            r#"story block <id> [--on <blocker>]... ["<reason>"]
+            r#"story block <id> --on <blocker> [--on <blocker>]... ["<reason>"]
+story block <id> "<reason>"
 
 Mark a story as blocked. Blocked stories are excluded from 'story
 next' results and highlighted in listings.
