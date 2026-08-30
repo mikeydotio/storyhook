@@ -332,12 +332,35 @@ export async function openStatusesEditor(page: Page, name: string): Promise<void
  * `dispatch.spec.ts` still exercises the modal's own contract directly. */
 export async function dispatchStory(
   page: Page,
-  options: { agent?: "claude" | "codex"; auto?: boolean } = {},
+  options: {
+    agent?: "claude" | "codex";
+    auto?: boolean;
+    model?: string;
+    effort?: string;
+    speed?: "fast";
+  } = {},
 ): Promise<void> {
   await page.locator("#dispatch-btn").click();
   await expect(page.locator("#dispatch-modal")).toHaveClass(/open/);
   if (options.agent) {
     await page.locator("#dispatch-agent").selectOption(options.agent);
+  }
+  // SH-517: Model/Effort/Speed are populated asynchronously from
+  // GET /api/dispatch-options once the modal opens (or Provider changes),
+  // so a caller selecting one of them must wait for its real option to
+  // exist first -- selectOption on a select still holding only "Default"
+  // would silently no-op rather than fail.
+  if (options.model) {
+    await expect(page.locator(`#dispatch-model option[value="${options.model}"]`)).toHaveCount(1);
+    await page.locator("#dispatch-model").selectOption(options.model);
+  }
+  if (options.effort) {
+    await expect(page.locator(`#dispatch-effort option[value="${options.effort}"]`)).toHaveCount(1);
+    await page.locator("#dispatch-effort").selectOption(options.effort);
+  }
+  if (options.speed) {
+    await expect(page.locator(`#dispatch-speed option[value="${options.speed}"]`)).toHaveCount(1);
+    await page.locator("#dispatch-speed").selectOption(options.speed);
   }
   if (options.auto) {
     await page.locator("#dispatch-auto").check();
