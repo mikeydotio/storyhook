@@ -31,7 +31,8 @@
 #[cfg(test)]
 use crate::cli::ClaimComment;
 use crate::cli::{
-    AttachmentAction, ClaimTarget, EpicAction, GraphMode, HistoryAction, Invocation, PhaseAction,
+    AttachmentAction, ClaimTarget, EngineAction, EpicAction, GraphMode, HistoryAction, Invocation,
+    PhaseAction,
 };
 use crate::error::AppError;
 use crate::service::Ctx;
@@ -256,6 +257,14 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
             | AttachmentAction::List { id }
             | AttachmentAction::Remove { id, .. }
             | AttachmentAction::Save { id, .. } => vec![id],
+        },
+        Invocation::Engine { action } => match action {
+            EngineAction::Start { epic, .. } => epic.iter_mut().collect(),
+            EngineAction::Status { .. }
+            | EngineAction::Pause { .. }
+            | EngineAction::Resume { .. }
+            | EngineAction::Stop { .. }
+            | EngineAction::Ack { .. } => Vec::new(),
         },
 
         Invocation::Help
