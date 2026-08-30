@@ -40,7 +40,7 @@
 #
 # Measured cost on this repo (2026-08-18, warm, this checkout's tree size):
 # ~130ms per invocation -- three git subprocess spawns plus a full
-# tracked-file walk via `git add -u -- :/`. `build.rs` pays this whenever
+# tracked-file walk via `git add -u`. `build.rs` pays this whenever
 # cargo's default no-`rerun-if-*` policy reruns the build script, which is
 # broader than "on a release build": any changed file in the crate can
 # trigger it, including under an editor's `cargo check` on save. Measured
@@ -123,7 +123,7 @@ git_private() {
 }
 
 git_private read-tree HEAD 2>/dev/null || exit 1
-git_private add -u -- :/ 2>/dev/null || exit 1
+git_private add -u 2>/dev/null || exit 1
 tree="$(git_private write-tree 2>/dev/null)" || exit 1
 
 [ -n "$tree" ] || exit 1
