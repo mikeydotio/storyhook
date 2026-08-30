@@ -1,7 +1,8 @@
 //! The state set every project must have, and what happens to one that lacks it
 //! (SH-125).
 //!
-//! `todo`, `in-progress` and `blocked` OPEN, `done` CLOSED. A project may hold
+//! `todo`, `in-progress`, `verifying` and `blocked` OPEN; `done` and `closed`
+//! CLOSED. A project may hold
 //! as many further states as it likes; it may not hold fewer than these.
 //!
 //! The fixtures below build catalogs the service API refuses to produce, by
@@ -85,6 +86,7 @@ fn below_the_floor() -> ServiceFixture {
     ServiceFixture::with_states(&[
         state("todo", SuperState::Open),
         state("in-progress", SuperState::Open),
+        state("verifying", SuperState::Open),
         state("done", SuperState::Closed),
         state("closed", SuperState::Closed),
     ])
@@ -114,7 +116,7 @@ fn state_of(fixture: &ServiceFixture, id: &str) -> String {
 // --- what the floor is -----------------------------------------------------
 
 #[test]
-fn the_floor_is_five_states_and_their_superstates() {
+fn the_floor_is_six_states_and_their_superstates() {
     let pairs: Vec<(&str, &SuperState)> = REQUIRED_STATES
         .iter()
         .map(|required| (required.slug, &required.super_state))
@@ -124,6 +126,7 @@ fn the_floor_is_five_states_and_their_superstates() {
         vec![
             ("todo", &SuperState::Open),
             ("in-progress", &SuperState::Open),
+            ("verifying", &SuperState::Open),
             ("blocked", &SuperState::Open),
             ("done", &SuperState::Closed),
             // After `done`, and the order is load-bearing: two functions take
@@ -162,7 +165,14 @@ fn doctor_fix_adds_the_missing_state_and_says_so() {
     );
     assert_eq!(
         slugs(&fixture),
-        ["todo", "in-progress", "blocked", "done", "closed"]
+        [
+            "todo",
+            "in-progress",
+            "verifying",
+            "blocked",
+            "done",
+            "closed"
+        ]
     );
     assert!(findings(&ctx).is_empty());
 }
@@ -177,7 +187,7 @@ fn doctor_fix_adds_nothing_to_a_conforming_project() {
 }
 
 /// The `agentics` shape from the live store: `todo|done` — two states short
-/// when this was written, three since `closed` joined the floor (SH-505).
+/// when this was written, four since `closed` and `verifying` joined the floor.
 #[test]
 fn doctor_fix_repairs_a_two_state_project_in_one_pass() {
     let fixture = ServiceFixture::with_states(&[
@@ -186,10 +196,17 @@ fn doctor_fix_repairs_a_two_state_project_in_one_pass() {
     ]);
     let ctx = fixture.ctx();
     let message = fix(&ctx).expect("fixing");
-    assert!(message.contains("added 3 required states"), "{message}");
+    assert!(message.contains("added 4 required states"), "{message}");
     assert_eq!(
         slugs(&fixture),
-        ["todo", "in-progress", "blocked", "done", "closed"]
+        [
+            "todo",
+            "in-progress",
+            "verifying",
+            "blocked",
+            "done",
+            "closed"
+        ]
     );
 }
 
@@ -201,6 +218,7 @@ fn doctor_will_not_reclassify_a_required_state_that_already_exists() {
     let fixture = ServiceFixture::with_states(&[
         state("todo", SuperState::Open),
         state("in-progress", SuperState::Open),
+        state("verifying", SuperState::Open),
         state("blocked", SuperState::Open),
         state("done", SuperState::Open),
         state("shipped", SuperState::Closed),
@@ -210,7 +228,14 @@ fn doctor_will_not_reclassify_a_required_state_that_already_exists() {
     assert!(error.contains("will not reclassify"), "{error}");
     assert_eq!(
         slugs(&fixture),
-        ["todo", "in-progress", "blocked", "done", "shipped"],
+        [
+            "todo",
+            "in-progress",
+            "verifying",
+            "blocked",
+            "done",
+            "shipped"
+        ],
         "the refused repair changed the catalog"
     );
 }
@@ -242,6 +267,7 @@ fn a_repair_leaves_the_state_new_stories_open_in_alone() {
             "backlog",
             "todo",
             "in-progress",
+            "verifying",
             "blocked",
             "done",
             "closed"
@@ -354,7 +380,14 @@ fn importing_a_document_below_the_floor_repairs_its_catalog() {
         .collect();
     assert_eq!(
         restored,
-        ["todo", "in-progress", "blocked", "done", "closed"],
+        [
+            "todo",
+            "in-progress",
+            "verifying",
+            "blocked",
+            "done",
+            "closed"
+        ],
         "an import repairs rather than refuses: the document may be older than the floor"
     );
 }
@@ -362,8 +395,8 @@ fn importing_a_document_below_the_floor_repairs_its_catalog() {
 // --- SH-242: a project with no resolvable active state is at the floor, not
 // below it, but `is_claimable` silently stops excluding a claimed story ------
 
-/// The floor (SH-125) requires `todo`, `in-progress` and `blocked` all OPEN —
-/// three, never two — so `active_state`'s own "exactly two open states"
+/// The floor requires `todo`, `in-progress`, `verifying` and `blocked` all
+/// OPEN, so `active_state`'s own "exactly two open states"
 /// fallback can never fire for a project that clears it. A project sitting
 /// exactly at the floor, with no state's role set explicitly, is healthy by
 /// `report()` but must still be told.
@@ -372,6 +405,7 @@ fn doctor_notices_a_project_at_the_floor_with_no_active_role_state() {
     let fixture = ServiceFixture::with_states(&[
         state("todo", SuperState::Open),
         state("in-progress", SuperState::Open),
+        state("verifying", SuperState::Open),
         state("blocked", SuperState::Open),
         state("done", SuperState::Closed),
         state("closed", SuperState::Closed),
@@ -420,6 +454,7 @@ fn doctor_fix_does_not_guess_which_state_should_be_active() {
     let fixture = ServiceFixture::with_states(&[
         state("todo", SuperState::Open),
         state("in-progress", SuperState::Open),
+        state("verifying", SuperState::Open),
         state("blocked", SuperState::Open),
         state("done", SuperState::Closed),
         state("closed", SuperState::Closed),

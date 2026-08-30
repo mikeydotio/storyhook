@@ -95,7 +95,11 @@ fn state_list_reflects_order() {
     let dir = tempdir().unwrap();
     init(dir.path());
     story(dir.path())
-        .args(["state", "reorder", "done,todo,blocked,in-progress,closed"])
+        .args([
+            "state",
+            "reorder",
+            "done,todo,blocked,verifying,in-progress,closed",
+        ])
         .assert()
         .success();
 
@@ -354,8 +358,8 @@ fn state_set_superstate_migrates_with_a_destination() {
 fn state_remove_drops_an_empty_state() {
     let dir = tempdir().unwrap();
     init(dir.path());
-    // A state beyond the required floor: the four a project must have cannot
-    // be removed at all (SH-125), so removal itself needs a fifth to remove.
+    // A state beyond the required floor: required states cannot be removed at
+    // all, so removal itself needs one custom state to remove.
     story(dir.path())
         .args(["state", "add", "in-review", "--super", "OPEN"])
         .assert()
@@ -478,7 +482,7 @@ fn state_remove_reports_the_structural_rule_before_story_counts() {
         .stderr(predicate::str::contains("`done`"));
 }
 
-/// Each of the four is refused, and each refusal names the way out. `done` is
+/// Each workflow anchor is refused, and each refusal names the way out. `done` is
 /// also the only CLOSED state a default project has, so this subsumes the
 /// older "at least one CLOSED state" refusal on this path (SH-125).
 #[test]
@@ -486,7 +490,7 @@ fn state_remove_refuses_every_required_state() {
     let dir = tempdir().unwrap();
     init(dir.path());
 
-    for slug in ["todo", "in-progress", "blocked", "done"] {
+    for slug in ["todo", "in-progress", "verifying", "blocked", "done"] {
         story(dir.path())
             .args(["state", "remove", slug])
             .assert()
@@ -496,7 +500,7 @@ fn state_remove_refuses_every_required_state() {
     }
 
     let listing = state_listing(dir.path());
-    for slug in ["todo", "in-progress", "blocked", "done"] {
+    for slug in ["todo", "in-progress", "verifying", "blocked", "done"] {
         assert!(listing.contains(slug), "`{slug}` was removed: {listing}");
     }
 }
@@ -511,10 +515,16 @@ fn state_reorder_accepts_csv_and_separate_arguments() {
     init(dir.path());
 
     story(dir.path())
-        .args(["state", "reorder", "done,todo,blocked,in-progress,closed"])
+        .args([
+            "state",
+            "reorder",
+            "done,todo,blocked,verifying,in-progress,closed",
+        ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("done, todo, blocked, in-progress"));
+        .stdout(predicate::str::contains(
+            "done, todo, blocked, verifying, in-progress",
+        ));
 
     story(dir.path())
         .args([
@@ -522,13 +532,16 @@ fn state_reorder_accepts_csv_and_separate_arguments() {
             "reorder",
             "todo",
             "in-progress",
+            "verifying",
             "blocked",
             "done",
             "closed",
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("todo, in-progress, blocked, done"));
+        .stdout(predicate::str::contains(
+            "todo, in-progress, verifying, blocked, done",
+        ));
 }
 
 /// The first OPEN state is where `story new` puts a story, so reordering is
@@ -538,7 +551,11 @@ fn state_reorder_changes_where_new_stories_land() {
     let dir = tempdir().unwrap();
     init(dir.path());
     story(dir.path())
-        .args(["state", "reorder", "in-progress,todo,blocked,done,closed"])
+        .args([
+            "state",
+            "reorder",
+            "in-progress,todo,verifying,blocked,done,closed",
+        ])
         .assert()
         .success();
 
@@ -573,7 +590,7 @@ fn state_reorder_rejects_unknown_slugs() {
         .args([
             "state",
             "reorder",
-            "todo,in-progress,blocked,done,closed,nope",
+            "todo,in-progress,verifying,blocked,done,closed,nope",
         ])
         .assert()
         .failure()

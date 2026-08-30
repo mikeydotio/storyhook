@@ -3467,3 +3467,88 @@ fn migration_twenty_three_drops_the_deleted_column_and_snapshot_keys() {
         .unwrap();
     assert_eq!(legacy_events, 1, "migration preserves replayable history");
 }
+
+// ---------------------------------------------------------------------------
+// Migration 25: verification is a required centralized handoff (SH-521)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn migration_twenty_five_inserts_verifying_before_required_blocked() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..24]).unwrap();
+    let conn = Connection::open(store.path()).unwrap();
+    conn.execute_batch(
+        "INSERT INTO projects
+             (id, uuid, slug, name, prefix, created_at, next_story_no, next_global_seq)
+         VALUES
+             (1, 'u-1', 'first', 'First', 'A', '2026-01-01T00:00:00Z', 1, 1),
+             (2, 'u-2', 'second', 'Second', 'B', '2026-01-01T00:00:00Z', 1, 1);
+         INSERT INTO project_states (project_id, position, slug, superstate, role, description)
+         VALUES
+             (1, 0, 'todo',        'OPEN',   NULL,     NULL),
+             (1, 1, 'in-progress', 'OPEN',   'active', NULL),
+             (1, 2, 'review',      'OPEN',   NULL,     NULL),
+             (1, 3, 'blocked',     'OPEN',   NULL,     NULL),
+             (1, 4, 'done',        'CLOSED', NULL,     NULL),
+             (1, 5, 'closed',      'CLOSED', NULL,     NULL),
+             (2, 0, 'todo',        'OPEN',   NULL,     NULL),
+             (2, 1, 'in-progress', 'OPEN',   'active', NULL),
+             (2, 2, 'verifying',   'OPEN',   NULL,     'custom description'),
+             (2, 3, 'blocked',     'OPEN',   NULL,     NULL),
+             (2, 4, 'done',        'CLOSED', NULL,     NULL),
+             (2, 5, 'closed',      'CLOSED', NULL,     NULL);",
+    )
+    .unwrap();
+    drop(conn);
+
+    store.migrate_with(&migrate::MIGRATIONS[..25]).unwrap();
+
+    let conn = Connection::open(store.path()).unwrap();
+    let slugs = |project: i64| {
+        let mut statement = conn
+            .prepare(
+                "SELECT slug FROM project_states
+                  WHERE project_id = ?1 ORDER BY position",
+            )
+            .unwrap();
+        statement
+            .query_map([project], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        slugs(1),
+        [
+            "todo",
+            "in-progress",
+            "review",
+            "verifying",
+            "blocked",
+            "done",
+            "closed"
+        ]
+    );
+    assert_eq!(
+        slugs(2),
+        [
+            "todo",
+            "in-progress",
+            "verifying",
+            "blocked",
+            "done",
+            "closed"
+        ],
+        "an existing verifying state is neither duplicated nor rewritten"
+    );
+    let description: Option<String> = conn
+        .query_row(
+            "SELECT description FROM project_states
+              WHERE project_id = 2 AND slug = 'verifying'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(description.as_deref(), Some("custom description"));
+}

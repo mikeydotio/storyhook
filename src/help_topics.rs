@@ -43,7 +43,7 @@ NOT TO BE CONFUSED WITH
 
 new
   Creates the project in storyhook's store with the states every
-  project must have (todo, in-progress, blocked, done) and default
+  project must have (todo, in-progress, verifying, blocked, done, closed) and default
   types, writes .storyhook.toml naming it, and generates an AGENTS.md
   if the repository has none.
 
@@ -549,7 +549,7 @@ Examples:
   story state add review --super OPEN --description "Waiting on a reviewer"
   story state set review --role active
   story state set review --no-description
-  story state reorder todo,in-progress,review,blocked,done
+  story state reorder todo,in-progress,review,verifying,blocked,done,closed
   story state remove review --move-stories-to todo
 
 Moving stories out of the way:
@@ -567,8 +567,8 @@ Moving stories out of the way:
 Rules:
   - Slugs are lowercase letters, digits, and single dashes ('in-review').
     They are typed as CLI arguments and appear in dashboard URLs.
-  - Every project keeps 'todo', 'in-progress' and 'blocked' as OPEN
-    states and 'done' as a CLOSED one. They cannot be removed, and
+  - Every project keeps 'todo', 'in-progress', 'verifying' and 'blocked'
+    as OPEN states, and 'done' and 'closed' as CLOSED states. They cannot be removed, and
     their superstates cannot be changed; anything else you add is
     yours to arrange. A project that predates this rule reports it in
     'story doctor', and 'story doctor --fix' adds what is missing.
@@ -792,8 +792,8 @@ When to use:
   still equals a fold of its own event history.
 
   --fix is also how a project created before the required states
-  existed gets them: it adds any of 'todo', 'in-progress', 'blocked'
-  and 'done' the project is missing, placing a new OPEN state at the
+  existed gets them: it adds any of 'todo', 'in-progress', 'verifying',
+  'blocked', 'done' and 'closed' the project is missing, placing a new OPEN state at the
   end of the OPEN run so the state new stories land in does not move.
   It only ever adds. A project that already defines one of those slugs
   under the wrong superstate is reported rather than rewritten, because

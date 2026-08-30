@@ -259,8 +259,8 @@ fn the_project_setting_can_turn_the_transition_off() {
 }
 
 /// SH-178, reason 4: since SH-125 a project with no `active`-role state is
-/// the *common* shape, not an edge one — three required OPEN states
-/// (`todo`/`in-progress`/`blocked`) mean the old two-open-state guess never
+/// the *common* shape, not an edge one — four required OPEN states
+/// (`todo`/`in-progress`/`verifying`/`blocked`) mean the old two-open-state guess never
 /// kicks in. A claim over such a project must say so, not blame the grammar.
 #[test]
 fn a_claim_with_no_active_state_configured_reports_why_not_the_grammar() {

@@ -336,7 +336,7 @@ fn an_unclaim_without_a_resolvable_active_state_is_refused() {
     let id = project.new_story("A task");
     json(&project, &["claim", &id]);
     // The default catalog's `in-progress` carries the role; cleared, three
-    // OPEN states remain (todo, in-progress, blocked), not the two the
+    // OPEN states remain (todo, in-progress, verifying, blocked), not the two the
     // fallback needs.
     json(&project, &["state", "set", "in-progress", "--role", "none"]);
 

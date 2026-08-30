@@ -758,7 +758,7 @@ mod tests {
         );
     }
 
-    /// `blocked` is one of the four required states (SH-125) and carries no
+    /// `blocked` is one of the required states and carries no
     /// `awaiting` when a card is simply dragged into that column, so the
     /// hand-rolled filter this panel used to run reported it ready —
     /// SH-126's defect, reached through the TUI instead of the CLI.

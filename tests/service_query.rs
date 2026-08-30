@@ -232,6 +232,33 @@ fn next_orders_same_second_ties_by_story_number_and_agrees_with_itself() {
     );
 }
 
+#[test]
+fn verifying_is_open_and_unblocked_but_absent_from_work_allocation() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let submitted = new_story(&ctx, "submitted");
+    let available = new_story(&ctx, "available");
+    StoryService::new(&ctx)
+        .set_state(&submitted, "verifying", None, None, None)
+        .expect("submitting to verification");
+
+    let next = query(&fixture, |service| service.next(usize::MAX, None));
+    assert_eq!(ids(&next), [available.as_str()]);
+    let report = query(&fixture, |service| service.report_data());
+    assert!(!report.ready_ids.contains(&submitted));
+    assert!(!report.blocked_ids.contains(&submitted));
+    assert_eq!(
+        report
+            .stories
+            .iter()
+            .find(|view| view.story.id == submitted)
+            .unwrap()
+            .story
+            .superstate,
+        SuperState::Open
+    );
+}
+
 /// SH-450: an open dependency is an ordering edge, not a declaration that
 /// its successor can never be done. The frontier is reconsidered after each
 /// virtual completion: SH-3 wins the initial frontier on medium priority,
@@ -867,9 +894,6 @@ fn an_epic_with_an_active_child_has_computed_active_state() {
 fn nested_epics_compute_recursively_and_never_enter_verifying() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
-    ConfigService::new(&ctx)
-        .add_state("verifying", SuperState::Open, None, None)
-        .expect("adding a verifying state");
     let outer = new_epic(&ctx, "outer epic");
     let inner = new_epic(&ctx, "inner epic");
     let child = new_story(&ctx, "child");

@@ -3,7 +3,7 @@
 //! # Doctor asks three questions, where the legacy one asked a third of them
 //!
 //! The third arrived last and is the shortest: **is the catalog whole?** Every
-//! project must define `todo`, `in-progress` and `blocked` as OPEN states and
+//! project must define `todo`, `in-progress`, `verifying` and `blocked` as OPEN states and
 //! `done` as a CLOSED one (SH-125), and a project written before that rule
 //! existed is reported here and repaired by `--fix`. It leads the report
 //! because it is a property of the project rather than of any story, and
@@ -1377,7 +1377,7 @@ fn unvouched_row_notices(drift: &crate::store::ReadModelDiff, prefix: &str) -> V
 /// floor (SH-125) gets this alongside that harder failure rather than after
 /// it, since nothing about this check depends on the floor being met first.
 /// In practice it matters most once the floor *is* met: a conforming project
-/// already has three OPEN states (`todo`, `in-progress`, `blocked`), so
+/// already has four OPEN states (`todo`, `in-progress`, `verifying`, `blocked`), so
 /// [`active_state`]'s "exactly two open states" fallback can never apply to
 /// one; only an explicit `role=active` resolves anything from there.
 /// `default_states()` sets that role on `in-progress` for every project

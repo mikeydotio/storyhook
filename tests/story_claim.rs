@@ -450,7 +450,7 @@ fn a_claim_without_a_resolvable_active_state_is_refused() {
     let project = project();
     let id = project.new_story("Claimable");
     // The default catalog's `in-progress` carries the role; cleared, three
-    // OPEN states remain (todo, in-progress, blocked), not the two the
+    // OPEN states remain (todo, in-progress, verifying, blocked), not the two the
     // fallback needs.
     project
         .run(&["state", "set", "in-progress", "--role", "none"])
