@@ -74,8 +74,11 @@
 
 use std::path::{Path, PathBuf};
 
-use storyhook::cli::{parse_invocation, split_global_flags};
 use storyhook::domain::is_relation_input;
+use storyhook_test_support::command_reference::{
+    DocumentedInvocation, PARSED_ELSEWHERE, expand_documented_invocation, parse_documented_argv,
+    strip_trailing_comment,
+};
 
 fn manifest_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
@@ -140,402 +143,6 @@ fn extract_entries(markdown: &str) -> Vec<Entry> {
     entries
 }
 
-/// Strips a trailing ` # comment`, outside quotes.
-///
-/// Only a `#` immediately preceded by a space is a comment marker, so a value
-/// that legitimately contains `#` (none do today, but the rule should not
-/// depend on that) is not mistaken for one just by following whitespace
-/// elsewhere on the line.
-fn strip_trailing_comment(line: &str) -> String {
-    let chars: Vec<char> = line.chars().collect();
-    let mut in_quotes = false;
-    for i in 0..chars.len() {
-        match chars[i] {
-            '"' => in_quotes = !in_quotes,
-            '#' if !in_quotes && i > 0 && chars[i - 1] == ' ' => {
-                return chars[..i].iter().collect::<String>().trim_end().to_string();
-            }
-            _ => {}
-        }
-    }
-    line.to_string()
-}
-
-// ---------------------------------------------------------------------------
-// Tokenizing one invocation into required/optional pieces
-// ---------------------------------------------------------------------------
-
-/// One sub-token inside a phrase — a bare word or a `"..."` quoted value.
-/// The distinction survives tokenization so pipe-expansion can treat them
-/// differently: a bare word's `|` is alternation (`local|remote`), but a
-/// quoted value is one literal however many `|` characters it might contain
-/// (none do today, but a quoted string is data, never grammar).
-#[derive(Debug, Clone)]
-enum SubTok {
-    Word(String),
-    Quoted(String),
-}
-
-#[derive(Debug, Clone)]
-enum Piece {
-    /// A single top-level word or quoted token.
-    Sub(SubTok),
-    /// A `[...]` optional group. Each inner `Vec<SubTok>` is one alternative
-    /// phrase's raw (unsubstituted) tokens; more than one alternative means
-    /// the group's contents were split on a top-level ` | `.
-    Optional(Vec<Vec<SubTok>>),
-    /// A `(...)` required alternation group, same inner shape as `Optional`.
-    Choice(Vec<Vec<SubTok>>),
-}
-
-/// Splits `inner` (the text between a group's delimiters) on a top-level
-/// ` | ` into its alternative phrases, sub-tokenizing each with
-/// [`simple_tokenize`]. A group with no ` | ` is one alternative.
-fn split_alternatives(inner: &str) -> Vec<Vec<SubTok>> {
-    inner.split(" | ").map(simple_tokenize).collect()
-}
-
-/// Whitespace-splits `s`, treating a `"..."` span as one [`SubTok::Quoted`]
-/// (quotes stripped). Used for the contents of a `[...]`/`(...)` group,
-/// which never nest further brackets in this grammar.
-fn simple_tokenize(s: &str) -> Vec<SubTok> {
-    let chars: Vec<char> = s.chars().collect();
-    let mut tokens = Vec::new();
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i].is_whitespace() {
-            i += 1;
-            continue;
-        }
-        if chars[i] == '"' {
-            let start = i + 1;
-            let mut j = start;
-            while j < chars.len() && chars[j] != '"' {
-                j += 1;
-            }
-            tokens.push(SubTok::Quoted(chars[start..j].iter().collect()));
-            i = j + 1;
-        } else {
-            let start = i;
-            while i < chars.len() && !chars[i].is_whitespace() {
-                i += 1;
-            }
-            tokens.push(SubTok::Word(chars[start..i].iter().collect()));
-        }
-    }
-    tokens
-}
-
-/// Tokenizes a whole invocation (minus the leading `story`) into top-level
-/// [`Piece`]s: words, quoted tokens, and bracketed/parenthesized groups.
-fn tokenize_top(s: &str) -> Vec<Piece> {
-    let chars: Vec<char> = s.chars().collect();
-    let mut pieces = Vec::new();
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i].is_whitespace() {
-            i += 1;
-            continue;
-        }
-        match chars[i] {
-            '"' => {
-                let start = i + 1;
-                let mut j = start;
-                while j < chars.len() && chars[j] != '"' {
-                    j += 1;
-                }
-                pieces.push(Piece::Sub(SubTok::Quoted(chars[start..j].iter().collect())));
-                i = j + 1;
-            }
-            '[' => {
-                let start = i + 1;
-                let mut j = start;
-                let mut depth = 1;
-                while j < chars.len() && depth > 0 {
-                    match chars[j] {
-                        '[' => depth += 1,
-                        ']' => depth -= 1,
-                        _ => {}
-                    }
-                    if depth > 0 {
-                        j += 1;
-                    }
-                }
-                let inner: String = chars[start..j].iter().collect();
-                pieces.push(Piece::Optional(split_alternatives(&inner)));
-                i = j + 1;
-            }
-            '(' => {
-                let start = i + 1;
-                let mut j = start;
-                let mut depth = 1;
-                while j < chars.len() && depth > 0 {
-                    match chars[j] {
-                        '(' => depth += 1,
-                        ')' => depth -= 1,
-                        _ => {}
-                    }
-                    if depth > 0 {
-                        j += 1;
-                    }
-                }
-                let inner: String = chars[start..j].iter().collect();
-                pieces.push(Piece::Choice(split_alternatives(&inner)));
-                i = j + 1;
-            }
-            _ => {
-                let start = i;
-                while i < chars.len()
-                    && !chars[i].is_whitespace()
-                    && chars[i] != '['
-                    && chars[i] != '('
-                    && chars[i] != '"'
-                {
-                    i += 1;
-                }
-                pieces.push(Piece::Sub(SubTok::Word(chars[start..i].iter().collect())));
-            }
-        }
-    }
-    pieces
-}
-
-// ---------------------------------------------------------------------------
-// Placeholder substitution
-// ---------------------------------------------------------------------------
-
-/// The value a `<placeholder>` token substitutes to. Exact match only — a
-/// token that looks like a placeholder (contains `<`) and is not listed here
-/// fails the test naming it, rather than silently passing through or
-/// defaulting to something that might not be legal for its flag.
-fn placeholder(token: &str) -> Option<&'static str> {
-    Some(match token {
-        "<id>" | "<a>" | "<b>" | "<story-id>" | "<epic-id>" | "<expected>" => "SH-1",
-        "<n>" | "<N>" => "1",
-        "<PORT>" => "3456",
-        "<PREFIX>" => "SH",
-        "<NEW-PREFIX>" => "ZZ",
-        "<json>" => "{\"title\":\"x\"}",
-        "<relationship-type>" => "relates-to",
-        "<name <email>>" => "Ada Lovelace <ada@example.com>",
-        "<github-handle>" => "adalovelace",
-        "<slug>" => "todo",
-        "<slug,slug,...>" => "todo,in-progress,done",
-        "<topic>" => "storage",
-        "<duration>" => "3d",
-        "<date>" => "2026-01-01",
-        "<key>" => "greeting",
-        "<value>" => "hello",
-        "<level>" => "high",
-        "<levels>" => "high,medium",
-        "<labels>" | "<name>" => "backend",
-        "<labels-csv>" | "<csv>" => "backend,api",
-        "<text>" => "example text",
-        "<title>" => "Example title",
-        "<reason>" => "example reason",
-        "<comment>" => "example comment",
-        "<member>" => "mikey",
-        "<query>" => "auth",
-        "<file>" => "export.json",
-        "<path>" | "<PATH>" => "/tmp/example",
-        "<url>" => "https://github.com/acme/widgets",
-        "<NAME>" => "Example Project",
-        "<glyph>" => "🐛",
-        "<event_type>" => "pre-commit",
-        "<request-id>" => "req-1",
-        "<crash-id>" => "crash-1",
-        "<target>" => "claude",
-        _ => return None,
-    })
-}
-
-fn substitute(token: &str) -> Result<String, String> {
-    // A leading `<` is what marks our own placeholder convention. `contains`
-    // would be too broad: a real, already-concrete example value can contain
-    // `<` without being one — `"Mikey Ward <mw@mikey.io>"` in Quick start is
-    // a real name-and-email argument, not `<name <email>>` needing a table
-    // entry.
-    if !token.starts_with('<') {
-        return Ok(token.to_string());
-    }
-    placeholder(token).map(str::to_string).ok_or_else(|| {
-        format!(
-            "unknown placeholder `{token}` — add it to `placeholder()` in \
-             tests/readme_command_reference.rs with a value that is actually legal for \
-             its flag (an unvalidated default would let this test pass while documenting \
-             a value the CLI rejects)"
-        )
-    })
-}
-
-// ---------------------------------------------------------------------------
-// Building argv variants
-// ---------------------------------------------------------------------------
-
-enum Verdict {
-    /// Not a real invocation to test — either a shape illustration whose verb
-    /// position is itself a placeholder (`story --project foo <command>`),
-    /// or a verb answered before the parser ever sees it (`tui`, dispatched
-    /// in `main.rs` ahead of `parse_invocation`).
-    Skip,
-    Argvs(Vec<Vec<String>>),
-}
-
-/// Verbs that never reach `parse_invocation` in a real run, so testing them
-/// through it directly would report a false failure. Written down with a
-/// reason, same idiom as `EXCLUDED_VERBS`.
-const PARSED_ELSEWHERE: &[(&str, &str)] = &[
-    (
-        "tui",
-        "src/main.rs dispatches it ahead of parse_invocation, so `story tui --help` explains \
-         rather than launches",
-    ),
-    (
-        "mcp",
-        "src/main.rs dispatches it ahead of parse_invocation, exactly like `tui` above, so \
-         `story mcp --help` explains rather than starting the stdio server",
-    ),
-];
-
-/// Global flags that precede the verb and consume a following value, used
-/// only to find the verb position for [`Verdict::Skip`] — this is a raw-token
-/// heuristic, run *before* substitution, and is independent of the real
-/// `split_global_flags` the actual parse below uses.
-fn skip_leading_globals(pieces: &[Piece]) -> usize {
-    let mut i = 0;
-    while let Some(Piece::Sub(SubTok::Word(w))) = pieces.get(i) {
-        match w.as_str() {
-            "--project" | "--store-path" | "--deadline" => i += 2,
-            "--quiet" | "--no-hooks" => i += 1,
-            _ => break,
-        }
-    }
-    i
-}
-
-/// Expands `|`-alternation within the bare words of one phrase (cross
-/// product across positions), then substitutes placeholders. A
-/// [`SubTok::Quoted`] is never pipe-split — it is one literal value whatever
-/// it contains.
-fn expand_phrase(phrase: &[SubTok]) -> Result<Vec<Vec<String>>, String> {
-    let mut variants: Vec<Vec<String>> = vec![Vec::new()];
-    for tok in phrase {
-        let alts: Vec<String> = match tok {
-            SubTok::Quoted(q) => vec![substitute(q)?],
-            SubTok::Word(w) => {
-                if w == "|" {
-                    return Err(
-                        "a top-level ` | ` alternation was found outside any [ ] or ( ) \
-                         group — split this into separate lines, one invocation per line"
-                            .to_string(),
-                    );
-                }
-                let mut out = Vec::new();
-                for alt in w.split('|') {
-                    out.push(substitute(alt)?);
-                }
-                out
-            }
-        };
-        let mut next = Vec::new();
-        for variant in &variants {
-            for alt in &alts {
-                let mut extended = variant.clone();
-                extended.push(alt.clone());
-                next.push(extended);
-            }
-        }
-        variants = next;
-    }
-    Ok(variants)
-}
-
-/// Turns one documented invocation (with `story` already stripped) into
-/// every argv this test will feed the real parser, or a reason to skip it.
-fn build_argvs(raw_without_story: &str) -> Result<Verdict, String> {
-    let pieces = tokenize_top(raw_without_story);
-
-    let verb_at = skip_leading_globals(&pieces);
-    if let Some(Piece::Sub(SubTok::Word(w))) = pieces.get(verb_at) {
-        if w.starts_with('<') && w.ends_with('>') {
-            return Ok(Verdict::Skip);
-        }
-        if PARSED_ELSEWHERE.iter().any(|(verb, _)| verb == w) {
-            return Ok(Verdict::Skip);
-        }
-    }
-
-    let mut required: Vec<Vec<Vec<String>>> = Vec::new();
-    let mut optional: Vec<Vec<Vec<String>>> = Vec::new();
-
-    for piece in &pieces {
-        match piece {
-            Piece::Sub(tok) => {
-                required.push(expand_phrase(std::slice::from_ref(tok))?);
-            }
-            Piece::Choice(alts) => {
-                let mut phrases = Vec::new();
-                for alt in alts {
-                    phrases.extend(expand_phrase(alt)?);
-                }
-                required.push(phrases);
-            }
-            Piece::Optional(alts) => {
-                let mut phrases = Vec::new();
-                for alt in alts {
-                    phrases.extend(expand_phrase(alt)?);
-                }
-                optional.push(phrases);
-            }
-        }
-    }
-
-    let combos: usize = required.iter().map(Vec::len).product();
-    if combos > 16 {
-        return Err(format!(
-            "{combos} required-alternative combinations is more than this line should ever \
-             need — split it rather than let the cross product grow unbounded"
-        ));
-    }
-
-    let mut base_forms: Vec<Vec<String>> = vec![Vec::new()];
-    for position in &required {
-        let mut next = Vec::new();
-        for base in &base_forms {
-            for phrase in position {
-                let mut combined = base.clone();
-                combined.extend(phrase.iter().cloned());
-                next.push(combined);
-            }
-        }
-        base_forms = next;
-    }
-
-    let mut argvs = Vec::new();
-    for base in &base_forms {
-        argvs.push(base.clone());
-        for group in &optional {
-            for phrase in group {
-                let mut with_one = base.clone();
-                with_one.extend(phrase.iter().cloned());
-                argvs.push(with_one);
-            }
-        }
-    }
-
-    Ok(Verdict::Argvs(argvs))
-}
-
-/// Confirms an entry actually parses, given the whole real pipeline:
-/// `split_global_flags` first (exactly as `main.rs` calls it), then
-/// `parse_invocation` on what's left.
-fn parses(argv: &[String]) -> Result<(), String> {
-    let (_flags, filtered) = split_global_flags(argv).map_err(|e| e.to_string())?;
-    parse_invocation(&filtered)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
-}
-
 // ---------------------------------------------------------------------------
 // Test 1 — every documented invocation parses
 // ---------------------------------------------------------------------------
@@ -560,7 +167,7 @@ fn every_story_command_in_the_readme_parses() {
             .map(str::trim_start)
             .unwrap_or(&entry.raw);
 
-        let verdict = match build_argvs(without_story) {
+        let verdict = match expand_documented_invocation(without_story) {
             Ok(v) => v,
             Err(reason) => {
                 failures.push(format!(
@@ -571,13 +178,13 @@ fn every_story_command_in_the_readme_parses() {
             }
         };
         let argvs = match verdict {
-            Verdict::Skip => continue,
-            Verdict::Argvs(argvs) => argvs,
+            DocumentedInvocation::ParsedElsewhere => continue,
+            DocumentedInvocation::Argvs(argvs) => argvs,
         };
 
         for argv in argvs {
             checked += 1;
-            if let Err(reason) = parses(&argv) {
+            if let Err(reason) = parse_documented_argv(&argv) {
                 failures.push(format!(
                     "README.md:{}: `{}` (as `story {}`) — {reason}",
                     entry.line,
@@ -921,8 +528,8 @@ fn the_readme_scan_would_notice_a_command_that_does_not_exist() {
         .strip_prefix("story")
         .map(str::trim_start)
         .unwrap();
-    let Verdict::Argvs(argvs) =
-        build_argvs(without_story).expect("a plain literal line always builds")
+    let DocumentedInvocation::Argvs(argvs) =
+        expand_documented_invocation(without_story).expect("a plain literal line always builds")
     else {
         panic!(
             "`story SH-1 assign mikey` is not a verb-position placeholder and must not be skipped"
@@ -934,7 +541,7 @@ fn the_readme_scan_would_notice_a_command_that_does_not_exist() {
         "no optional groups here, so there is exactly one argv"
     );
     assert!(
-        parses(&argvs[0]).is_err(),
+        parse_documented_argv(&argvs[0]).is_err(),
         "`story SH-1 assign mikey` is id-first grammar this CLI has never accepted — the scan \
          must report it as a failure, not pass it"
     );
