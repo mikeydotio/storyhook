@@ -716,10 +716,11 @@ fn coverage_maps_parent_watch_grace_is_derived_from_the_tick_it_disproves() {
     );
 }
 
-/// `test-changed` must enrol first and certify last, exactly like `test`
+/// `test-changed` must enrol first, wrap its fallible body, and certify last,
+/// exactly like `test`
 /// (`tests/push_gate.rs::the_makefile_enrolls_first_and_certifies_last`
 /// pins `test` itself) — the invariant that makes "no receipt unless every
-/// leg passed" true by make's own fail-fast semantics.
+/// leg and orphan cleanup passed" true by make's own fail-fast semantics.
 #[test]
 fn test_changed_enrolls_first_and_certifies_last() {
     let makefile = std::fs::read_to_string(checkout().join("Makefile")).expect("reading Makefile");
@@ -739,6 +740,11 @@ fn test_changed_enrolls_first_and_certifies_last() {
         body[0].contains("gate-receipt.sh preflight"),
         "the first line of test-changed must enroll, got: {}",
         body[0]
+    );
+    assert!(
+        body[1].contains("with-orphan-postlude.sh") && body[1].contains("_test-changed-body"),
+        "the second line of test-changed must wrap its fallible body, got: {}",
+        body[1]
     );
     let last_nonblank = body
         .iter()
