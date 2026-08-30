@@ -67,6 +67,10 @@ const ALLOWED: &[(&str, &str)] = &[
         "link and unlink read the previous value to report the path they displaced; link also \
          reads it to decide the pointer-file plan, but resolves nothing by it (SH-167)",
     ),
+    (
+        "src/service/engine.rs",
+        "engine start refuses repo-side work when the already-selected project has no checkout",
+    ),
 ];
 
 /// Walks `src/`, skipping the store layer, and returns every `.rs` file whose
