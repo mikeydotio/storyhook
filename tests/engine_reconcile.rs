@@ -351,10 +351,9 @@ fn the_stall_ceiling_still_derives_from_the_measured_suite_median() {
 #[test]
 fn the_reconcile_tick_derives_from_the_stall_ceiling() {
     assert_eq!(RECONCILE_TICK_SECS, STALL_CEILING_SECS / 4);
-    assert!(
-        RECONCILE_TICK_SECS > 0,
-        "a tick of zero would be a busy loop, which the design forbids"
-    );
+    // That the tick is non-zero is asserted at COMPILE time beside the
+    // constant itself (`const _: () = assert!(...)`), because a runtime
+    // assertion over a `const` folds away and proves nothing.
 }
 
 /// The margin is judgement and the median is measurement; keeping them as
@@ -363,10 +362,7 @@ fn the_reconcile_tick_derives_from_the_stall_ceiling() {
 /// case it is derived from, which would quarantine healthy lanes.
 #[test]
 fn the_stall_margin_never_tightens_the_ceiling_below_its_own_derivation() {
-    assert!(
-        STALL_MARGIN >= 1,
-        "a margin below 1 puts the ceiling under the worst legitimate silence it derives from"
-    );
+    // The margin's own floor is a compile-time assertion beside the constant.
     assert!(
         STALL_CEILING_SECS >= ENGINE_LANE_BUDGET as u64 * GATE_MEDIAN_SECS,
         "every lane must be able to wait out a full round of serialized suites without being called stalled"
