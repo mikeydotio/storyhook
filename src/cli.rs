@@ -214,7 +214,8 @@ Usage:
   story comment <id> "<text>"
   story assign <id> <member-id|handle>
   story move <id> <state-slug> [--if-state <expected>] ["<comment>"]
-  story block <id> [--on <blocker>]... ["<reason>"]
+  story block <id> --on <blocker> [--on <blocker>]... ["<reason>"]
+  story block <id> "<reason>"
   story unblock <id> [--on <blocker>]...
   story prioritize <id> <critical|high|medium|low>
   story label <id> <labels-csv>
@@ -4410,10 +4411,12 @@ fn parse_close(args: &[String]) -> Result<Invocation, AppError> {
     })
 }
 
-const BLOCK_USAGE: &str = "usage: story block <id> [--on <blocker>]... [\"<reason>\"]";
+const BLOCK_USAGE: &str = "usage: story block <id> --on <blocker> [--on <blocker>]... \
+                          [\"<reason>\"] | story block <id> \"<reason>\"";
 const UNBLOCK_USAGE: &str = "usage: story unblock <id> [--on <blocker>]...";
 
-/// `story block <id> [--on <blocker>]... ["<reason>"]` (SH-398).
+/// `story block <id> --on <blocker> [--on <blocker>]... ["<reason>"]`, or
+/// `story block <id> "<reason>"` (SH-398).
 ///
 /// `--on` names a story as the blocker of record — written as a `blocked-by`
 /// edge, which clears itself when that story closes, unlike prose. A reason
@@ -4740,7 +4743,7 @@ fn join_tokens(tokens: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ClaimComment, ClaimTarget, EpicAction, Invocation, PluginAction, TypeAction,
+        BLOCK_USAGE, ClaimComment, ClaimTarget, EpicAction, Invocation, PluginAction, TypeAction,
         UnclaimComment, parse_invocation,
     };
     use crate::error::AppError;
@@ -5103,7 +5106,10 @@ mod tests {
 
     #[test]
     fn block_with_neither_reason_nor_on_is_a_usage_error() {
-        assert!(parse_invocation(&words(&["block", "SH-1"])).is_err());
+        let error = parse_invocation(&words(&["block", "SH-1"])).unwrap_err();
+        assert_eq!(error.to_string(), BLOCK_USAGE);
+        assert!(error.to_string().contains("block <id> --on <blocker>"));
+        assert!(error.to_string().contains("block <id> \"<reason>\""));
     }
 
     #[test]
