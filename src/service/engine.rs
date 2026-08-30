@@ -40,6 +40,186 @@ pub const MAX_ENGINE_LANES: u32 = u8::MAX as u32;
 pub const OPERATOR_STOPPED: &str = "operator-stopped";
 pub const OPERATOR_STOPPED_NOW: &str = "operator-stopped-now";
 
+/// The run-level stop reason the breaker writes (D10).
+pub const BREAKER_TRIPPED: &str = "breaker-tripped";
+/// The run-level stop reason a drained queue writes.
+pub const QUEUE_DRAINED: &str = "queue-drained";
+
+/// The reserved label the engine never dispatches, though `story next` still
+/// returns it and a human may still claim it (D12).
+pub const NO_AUTO_LABEL: &str = "no-auto";
+
+/// Consecutive hard stops that halt a run (D10). A completion zeroes the count.
+pub const HARD_STOP_BREAKER: u32 = 3;
+
+/// The machine-wide ceiling on lanes filled across every live run (D14).
+///
+/// **Derived, not picked.** A filled lane is exactly one `story.sh dispatch`
+/// subprocess, and this machine already bounds those:
+/// [`crate::api::dispatch::MAX_RUNNING`]. Restating that budget as its own
+/// literal would be a second opinion about one machine, which this project has
+/// paid for repeatedly (SH-136). `engine_lane_budget_matches_dispatch_capacity`
+/// fails if the two ever drift.
+pub const ENGINE_LANE_BUDGET: usize = crate::api::dispatch::MAX_RUNNING;
+
+/// `make test`'s measured warm median, in seconds, from
+/// `docs/rearch/baseline/timings.md`.
+///
+/// Kept beside the ceiling it feeds so the derivation is legible at the point
+/// of use; `stall_ceiling_derives_from_the_measured_suite_median` reads the
+/// same figure back out of that document and fails if the measurement moves,
+/// in the shape `tests/machine_lock.rs` already uses for `GATE_MEDIAN_SECS`.
+pub const GATE_MEDIAN_SECS: u64 = 36;
+
+/// How much slack the ceiling carries over the derived worst case.
+///
+/// Stated as its own named factor rather than folded into the product, so a
+/// reader can see what is measurement and what is judgement (SH-394).
+pub const STALL_MARGIN: u64 = 2;
+
+/// How long a lane may show no observable progress before it is a hard stop.
+///
+/// **Derived from the deadline it disproves, never a bare literal** (SH-394).
+/// A lane's longest *legitimate* silence is waiting on the machine-wide `gate`
+/// lock while every other lane runs the suite: SH-457 takes that lock inside
+/// `scripts/run-tests.sh`, so at most [`ENGINE_LANE_BUDGET`] suites serialize
+/// ahead of this one, each costing [`GATE_MEDIAN_SECS`].
+///
+/// That serialization is exactly why the **median** is the right input rather
+/// than the 873s this project has measured under three-to-four concurrent
+/// worktree suites — the lock removed the contention that produced that figure.
+/// **If a lane's suite ever runs unserialized again, this ceiling is too tight**
+/// and must be re-derived rather than merely raised.
+pub const STALL_CEILING_SECS: u64 = ENGINE_LANE_BUDGET as u64 * GATE_MEDIAN_SECS * STALL_MARGIN;
+
+/// How often a live run should be reconciled in the absence of any other wake.
+///
+/// A quarter of the ceiling, so a stall surfaces well inside it rather than up
+/// to a full ceiling late. Derived from [`STALL_CEILING_SECS`]; the timer that
+/// *uses* this belongs to the daemon wiring (SH-468), not to this module.
+pub const RECONCILE_TICK_SECS: u64 = STALL_CEILING_SECS / 4;
+
+/// Why a lane stopped in a way that needs a human.
+///
+/// [`Self::Interrupted`] is declared here but produced only by daemon-start
+/// reconciliation (SH-466), so that story adds a *producer* rather than
+/// widening a shipped enum every reader already matches on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HardStopKind {
+    /// The agent blocked the story or set `awaiting` on it.
+    AgentBlocked,
+    /// The lane's window is gone while its story is still OPEN.
+    WindowGone,
+    /// Nothing observable changed for longer than [`STALL_CEILING_SECS`].
+    Stalled,
+    /// The daemon restarted while the lane was mid-story (SH-466).
+    Interrupted,
+}
+
+impl HardStopKind {
+    /// The stable machine-readable classification recorded on the lane.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AgentBlocked => "agent-blocked",
+            Self::WindowGone => "window-gone",
+            Self::Stalled => "stalled",
+            Self::Interrupted => "interrupted",
+        }
+    }
+}
+
+/// What one reconcile pass decided about one occupied lane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LaneClassification {
+    /// The story is still OPEN and something moved, or the ceiling has not
+    /// been reached. Nothing to do but record the observation.
+    Progressing,
+    /// The story left the OPEN superstate. Free the lane, zero the streak.
+    Completed,
+    /// A hard stop. Quarantine the lane and increment the streak.
+    HardStop(HardStopKind),
+}
+
+/// One lane's facts as of one pass, gathered before anything is decided.
+///
+/// Separating observation from classification is what lets the taxonomy be
+/// table-tested without a store, a dispatcher, or a clock.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaneObservation {
+    /// Whether the lane's story has left the OPEN superstate.
+    pub story_closed: bool,
+    /// Whether the agent blocked the story or set `awaiting` on it.
+    pub agent_blocked: bool,
+    /// Whether the lane's window still runs the agent it was launched with.
+    pub window_alive: bool,
+    /// The story's current change-feed position, or `None` if it could not be
+    /// resolved (a deleted story, say).
+    pub head_global_seq: Option<i64>,
+    /// The seq recorded the last time this lane was seen to move.
+    pub last_progress_seq: Option<i64>,
+    /// Seconds since [`Self::last_progress_seq`] last advanced, or `None` when
+    /// no progress has been observed yet.
+    pub seconds_since_progress: Option<u64>,
+}
+
+/// What one reconcile pass did, as data rather than rendered text.
+///
+/// SH-467's CLI and SH-468's HTTP both render this; neither should have to
+/// parse a sentence back apart.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReconcileReport {
+    /// The run this pass reconciled.
+    pub run_id: RunId,
+    /// Lane indices freed because their story completed.
+    pub completed: Vec<u32>,
+    /// Lane indices quarantined this pass, with why.
+    pub quarantined: Vec<(u32, HardStopKind)>,
+    /// Lane indices filled this pass, with the story each claimed.
+    pub filled: Vec<(u32, String)>,
+    /// The run's state after the pass.
+    pub run_state: EngineRunState,
+    /// The run's stop reason after the pass, when it has one.
+    pub stop_reason: Option<String>,
+}
+
+/// Decides one lane's fate from what was observed. Pure, so the whole failure
+/// taxonomy is table-testable.
+///
+/// **Order is the design, not an implementation detail.** `Completed` is
+/// tested first because completion is a *store* fact while a closed window is
+/// only evidence about a window (D3, SH-226): an agent that finished its story
+/// and let its pane exit must read as `Completed`, never `WindowGone`. Reading
+/// the window first would report success as failure and quarantine finished
+/// work.
+#[must_use]
+pub fn classify(observation: &LaneObservation, stall_ceiling_secs: u64) -> LaneClassification {
+    if observation.story_closed {
+        return LaneClassification::Completed;
+    }
+    if observation.agent_blocked {
+        return LaneClassification::HardStop(HardStopKind::AgentBlocked);
+    }
+    if !observation.window_alive {
+        return LaneClassification::HardStop(HardStopKind::WindowGone);
+    }
+    // A seq that moved is progress regardless of the clock; only a lane that
+    // has BOTH failed to move and outrun the ceiling has stalled. `None` on
+    // either side states nothing and is seeded rather than punished (SH-372).
+    let unmoved = match (observation.head_global_seq, observation.last_progress_seq) {
+        (Some(head), Some(recorded)) => head == recorded,
+        _ => false,
+    };
+    if unmoved
+        && observation
+            .seconds_since_progress
+            .is_some_and(|elapsed| elapsed > stall_ceiling_secs)
+    {
+        return LaneClassification::HardStop(HardStopKind::Stalled);
+    }
+    LaneClassification::Progressing
+}
+
 /// A tmux client normally answers in milliseconds. The shared machine-probe
 /// budget bounds a wedged server without inventing another patience value.
 const TMUX_TIMEOUT: Duration = crate::daemon::tailnet::TAILNET_PROBE_TIMEOUT;
@@ -521,6 +701,11 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     }
 }
 
+/// An empty lane at `lane_index`, ready to be filled.
+///
+/// The progress pair is cleared along with the story: an idle lane holds no
+/// story to have progressed, and carrying the previous occupant's seq forward
+/// would let the next story inherit a stall clock it never started (SH-465).
 fn idle_lane(run_id: &str, lane_index: u32, at: &str) -> EngineLaneRecord {
     EngineLaneRecord {
         run_id: run_id.to_string(),
@@ -531,6 +716,8 @@ fn idle_lane(run_id: &str, lane_index: u32, at: &str) -> EngineLaneRecord {
         worktree_path: None,
         dispatched_at: None,
         last_observed_at: at.to_string(),
+        last_progress_seq: None,
+        last_progress_at: None,
         outcome: None,
         outcome_detail: None,
     }

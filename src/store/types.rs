@@ -241,8 +241,25 @@ pub struct EngineLaneRecord {
     pub worktree_path: Option<String>,
     /// When dispatch began.
     pub dispatched_at: Option<String>,
-    /// Most recent observation time.
+    /// Most recent observation time — when the reconciler last *looked*.
+    ///
+    /// Advances on every pass, so it answers "did we look", never "did the
+    /// story move". Stall detection reads the two `last_progress_*` fields
+    /// below instead; see their docs for why (SH-465).
     pub last_observed_at: String,
+    /// The story's [`StoryRow::head_global_seq`] as of the last pass that saw
+    /// it *change*, or `None` before the first observation.
+    ///
+    /// This is the stall detector's "did it move" half. A global seq is
+    /// allocated inside the write transaction and is therefore total, where a
+    /// one-second RFC3339 timestamp is blind to a burst of agent writes inside
+    /// one second (SH-336: a timestamp is not an ordering key).
+    pub last_progress_seq: Option<GlobalSeq>,
+    /// When [`Self::last_progress_seq`] last advanced — the stall detector's
+    /// "how long since" half. `None` until the first observation, which the
+    /// reconciler seeds rather than reading as a stall (SH-372: absence states
+    /// nothing).
+    pub last_progress_at: Option<String>,
     /// Completion, skip, or hard-stop classification.
     pub outcome: Option<String>,
     /// Diagnostic detail accompanying the outcome.

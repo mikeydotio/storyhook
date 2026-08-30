@@ -52,6 +52,8 @@ fn lane(run_id: &str, lane_index: u32) -> EngineLaneRecord {
         worktree_path: None,
         dispatched_at: None,
         last_observed_at: "2026-08-29T20:00:00Z".into(),
+        last_progress_seq: None,
+        last_progress_at: None,
         outcome: None,
         outcome_detail: None,
     }
