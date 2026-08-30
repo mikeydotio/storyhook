@@ -82,7 +82,8 @@ impl EngineScope {
 }
 
 /// The agent host used by an engine run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EngineAgent {
     /// Claude Code.
     Claude,
@@ -112,7 +113,8 @@ impl EngineAgent {
 }
 
 /// The durable lifecycle state of an engine run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EngineRunState {
     /// Claims may fill idle lanes.
     Running,
@@ -160,7 +162,8 @@ impl EngineRunState {
 }
 
 /// The durable lifecycle state of one engine lane.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EngineLaneState {
     /// Holds no story and may be filled.
     Idle,

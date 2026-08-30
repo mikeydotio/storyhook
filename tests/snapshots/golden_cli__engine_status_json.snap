@@ -1,0 +1,40 @@
+---
+source: tests/golden_cli.rs
+---
+[
+  {
+    "argv": "story engine status --json",
+    "stdout": {
+      "result": "ok",
+      "run": {
+        "acknowledged_at": null,
+        "agent": "claude",
+        "consecutive_hard_stops": 0,
+        "created_at": "[timestamp]",
+        "id": "[run-id]",
+        "lane_count": 2,
+        "lanes": [
+          {
+            "elapsed_seconds": null,
+            "index": 0,
+            "state": "idle",
+            "story": null
+          },
+          {
+            "elapsed_seconds": null,
+            "index": 1,
+            "state": "idle",
+            "story": null
+          }
+        ],
+        "needs_human": [],
+        "scope": {
+          "kind": "project"
+        },
+        "state": "running",
+        "stop_reason": null,
+        "updated_at": "[timestamp]"
+      }
+    }
+  }
+]

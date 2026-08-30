@@ -1222,6 +1222,16 @@ pub(crate) fn resolve_dispatch_script(agent: DispatchAgent) -> Result<PathBuf, S
     )
 }
 
+/// Resolves the same provider-specific helper for the store-backed engine
+/// controls. Kept as a narrow wrapper so SH-467 cannot grow a second opinion
+/// about configured, installed, and development plugin precedence.
+pub(crate) fn resolve_engine_dispatch_script(agent: EngineAgent) -> Result<PathBuf, String> {
+    resolve_dispatch_script(match agent {
+        EngineAgent::Claude => DispatchAgent::Claude,
+        EngineAgent::Codex => DispatchAgent::Codex,
+    })
+}
+
 /// [`resolve_dispatch_script`]'s logic, with every environment/filesystem
 /// read injected rather than performed here — reading `std::env::var` or
 /// resolving `$HOME` directly would make this untestable without mutating

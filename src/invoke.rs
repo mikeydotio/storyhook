@@ -28,16 +28,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::cli::{
     AbandonedAction, Attach, AttachmentAction, ClaimComment, ClaimTarget, CrashesAction,
-    DaemonAction, EpicAction, HELP_TEXT, HistoryAction, HooksAction, Invocation, NewProjectRequest,
-    PhaseAction, PluginAction, ProjectAction, SettingsAction, StateAction, StoreAction,
-    TokenAction, TypeAction, UnclaimComment, WebAction,
+    DaemonAction, EngineAction, EpicAction, HELP_TEXT, HistoryAction, HooksAction, Invocation,
+    NewProjectRequest, PhaseAction, PluginAction, ProjectAction, SettingsAction, StateAction,
+    StoreAction, TokenAction, TypeAction, UnclaimComment, WebAction,
 };
 use crate::domain::provenance::{ActorLabel, Provenance};
 use crate::domain::{FieldEdit, StateChanges, SuperState, TypeChanges, TypeDef};
 use crate::env::Environment;
 use crate::error::AppError;
 use crate::help_topics;
-use crate::output::{ConfirmationPlan, Response, render_html_report};
+use crate::output::{ConfirmationPlan, EngineRunView, Response, render_html_report};
+use crate::service::engine::{EngineService, ShellDispatcher, StartRequest, StoreOnlyDispatcher};
 use crate::service::{
     AttachmentService, CatalogService, Clock, ConfigService, Ctx, DeleteOutcome, FieldEdits,
     GitService, GroupingService, ImportBatch, InitOptions, InitOutcome, IntegrityService,
@@ -46,7 +47,7 @@ use crate::service::{
     SettingsService, StateListing, StoryService, SystemService, TransferService, migrate, session,
     system, transfer,
 };
-use crate::store::{ProjectId, ReadOps, Store};
+use crate::store::{EngineLaneState, EngineScope, ProjectId, ReadOps, Store};
 
 pub(crate) mod story_ids;
 
@@ -682,6 +683,7 @@ pub fn dispatch<S: Store>(
             comment,
             dry_run,
         } => dispatch_unclaim(ctx, &id, &comment, dry_run),
+        Invocation::Engine { action } => dispatch_engine(ctx, action),
         Invocation::Summary => query(ctx, |service| service.summary())
             .map(|summary| Response::Summary(Box::new(summary))),
         Invocation::Report { html } => {
@@ -948,6 +950,76 @@ pub fn dispatch<S: Store>(
             ctx.stdin(),
         ),
     }
+}
+
+fn dispatch_engine<S: Store>(ctx: &Ctx<'_, S>, action: EngineAction) -> Result<Response, AppError> {
+    let store_only = StoreOnlyDispatcher;
+    let service = EngineService::new(ctx, &store_only);
+    let view = match action {
+        EngineAction::Start { epic, lanes, agent } => {
+            let run = service.start(StartRequest {
+                scope: epic.map_or(EngineScope::Project, EngineScope::Epic),
+                lanes,
+                agent,
+            })?;
+            one_engine_view(service.status(Some(&run.id))?, &run.id)?
+        }
+        EngineAction::Status { run } => {
+            let run_id = service.resolve_run_id(run.as_ref())?;
+            one_engine_view(service.status(Some(&run_id))?, &run_id)?
+        }
+        EngineAction::Pause { run } => {
+            let run_id = service.resolve_run_id(run.as_ref())?;
+            service.pause(&run_id)?
+        }
+        EngineAction::Resume { run } => {
+            let run_id = service.resolve_run_id(run.as_ref())?;
+            service.resume(&run_id)?
+        }
+        EngineAction::Stop { run, now: false } => {
+            let run_id = service.resolve_run_id(run.as_ref())?;
+            service.stop(&run_id, false)?
+        }
+        EngineAction::Stop { run, now: true } => {
+            let run_id = service.resolve_run_id(run.as_ref())?;
+            let selected = one_engine_view(service.status(Some(&run_id))?, &run_id)?;
+            if selected.lanes.iter().all(|lane| {
+                matches!(
+                    lane.state,
+                    EngineLaneState::Idle | EngineLaneState::Quarantined
+                )
+            }) {
+                service.stop(&run_id, true)?
+            } else {
+                let script =
+                    crate::api::dispatch::resolve_engine_dispatch_script(selected.run.agent)
+                        .map_err(AppError::Storage)?;
+                let dispatcher = ShellDispatcher::new(script, ctx.env().clone());
+                EngineService::new(ctx, &dispatcher).stop(&run_id, true)?
+            }
+        }
+        EngineAction::Ack { run } => {
+            let run_id = service.resolve_run_id(run.as_ref())?;
+            service.acknowledge(&run_id)?
+        }
+    };
+    Ok(Response::EngineRun(Box::new(EngineRunView::from_service(
+        view,
+        &ctx.now(),
+    ))))
+}
+
+fn one_engine_view(
+    mut views: Vec<crate::service::engine::RunView>,
+    run_id: &str,
+) -> Result<crate::service::engine::RunView, AppError> {
+    if views.len() == 1 {
+        return Ok(views.remove(0));
+    }
+    Err(AppError::Storage(format!(
+        "internal: engine status for `{run_id}` returned {} runs",
+        views.len()
+    )))
 }
 
 /// Runs one read-only question against the project, in its own read
@@ -2469,6 +2541,7 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::Next { .. }
         | Invocation::Claim { .. }
         | Invocation::Unclaim { .. }
+        | Invocation::Engine { .. }
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
@@ -2673,6 +2746,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Next { .. } => "next",
         Invocation::Claim { .. } => "claim",
         Invocation::Unclaim { .. } => "unclaim",
+        Invocation::Engine { .. } => "engine",
         Invocation::Summary => "summary",
         Invocation::Report { .. } => "report",
         Invocation::Doctor { .. } => "doctor",
@@ -3597,6 +3671,7 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Next { .. }
         | Invocation::Claim { .. }
         | Invocation::Unclaim { .. }
+        | Invocation::Engine { .. }
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
