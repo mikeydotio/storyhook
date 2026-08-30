@@ -95,6 +95,9 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::{env, fs};
+
+use std::os::unix::fs::PermissionsExt;
 
 use storyhook_test_support::scratch_dir;
 use tempfile::TempDir;
@@ -177,6 +180,47 @@ impl GateRepo {
                 phase,
             ],
         )
+    }
+
+    fn gate_with_path(&self, phase: &str, path: &std::ffi::OsStr) -> Output {
+        Command::new("bash")
+            .arg(checkout().join("scripts/gate-receipt.sh"))
+            .arg(phase)
+            .current_dir(self.path())
+            .env("PATH", path)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+            .expect("running gate-receipt.sh with a controlled PATH")
+    }
+
+    fn preflight_state(&self) -> PathBuf {
+        self.path().join(".git").join("storyhook-gate-preflight")
+    }
+
+    fn preflight_lease(&self) -> PathBuf {
+        let state =
+            fs::read_to_string(self.preflight_state()).expect("reading the gate preflight state");
+        state
+            .lines()
+            .find_map(|line| line.strip_prefix("objects "))
+            .map(PathBuf::from)
+            .expect("preflight state must name its object lease")
+    }
+
+    fn gate_artifacts(&self) -> Vec<PathBuf> {
+        let mut artifacts = fs::read_dir(self.path().join(".git"))
+            .expect("reading the fixture git directory")
+            .map(|entry| entry.expect("reading a git-directory entry").path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("storyhook-gate-"))
+            })
+            .collect::<Vec<_>>();
+        artifacts.sort();
+        artifacts
     }
 
     /// Enrolls the repo the way `make test` does, and writes a receipt for the
@@ -470,6 +514,7 @@ fn a_gate_tier_postlude_does_not_downgrade_an_existing_full_receipt() {
 #[test]
 fn content_that_changes_during_the_run_gets_no_receipt() {
     let repo = GateRepo::new();
+    repo.write("f", "already dirty when the suite began\n");
     assert_ok(&repo.gate("preflight"), "enrolling");
 
     repo.write("f", "edited while the suite was running\n");
@@ -484,6 +529,10 @@ fn content_that_changes_during_the_run_gets_no_receipt() {
         err.contains('f'),
         "the refusal must name what changed, got: {err}"
     );
+    assert!(
+        repo.gate_artifacts().is_empty(),
+        "a drift refusal must clean its preflight state and private objects"
+    );
 
     // And the refusal is not cosmetic: nothing may ship on the strength of it.
     repo.git(&["add", "f"]);
@@ -493,6 +542,143 @@ fn content_that_changes_during_the_run_gets_no_receipt() {
         "a run that refused to certify must leave the push refused"
     );
     assert_eq!(repo.remote_sha("main"), None);
+}
+
+#[test]
+fn unchanged_dirty_content_is_certified_and_cleans_its_private_objects() {
+    let repo = GateRepo::new();
+    repo.write("f", "dirty content held constant across the run\n");
+
+    assert_ok(&repo.gate("preflight"), "recording a dirty preflight tree");
+    assert!(
+        repo.preflight_lease().is_dir(),
+        "the dirty preflight must retain caller-owned objects for postlude"
+    );
+    assert_ok(&repo.gate("postlude"), "certifying unchanged dirty content");
+    assert!(
+        repo.gate_artifacts().is_empty(),
+        "successful postlude must remove state and private objects"
+    );
+
+    assert_ok(&repo.git(&["add", "f"]), "staging the certified content");
+    assert_ok(
+        &repo.git(&["commit", "-qm", "commit exactly what was certified"]),
+        "committing the certified content",
+    );
+    assert_ok(
+        &repo.push(&[]),
+        "the committed form of the certified dirty tree must push",
+    );
+}
+
+#[test]
+fn a_new_preflight_reaps_a_valid_abandoned_lease() {
+    let repo = GateRepo::new();
+    repo.write("f", "dirty content needing private objects\n");
+    assert_ok(&repo.gate("preflight"), "recording the first preflight");
+    let abandoned = repo.preflight_lease();
+    assert!(abandoned.is_dir(), "fixture: the abandoned lease exists");
+
+    let replacement = repo.gate("preflight");
+
+    assert_ok(&replacement, "replacing an abandoned preflight");
+    assert!(
+        stderr(&replacement).contains("abandoned preflight"),
+        "stale cleanup must be announced, got: {}",
+        stderr(&replacement)
+    );
+    assert!(
+        !abandoned.exists(),
+        "the validated abandoned lease must be reaped"
+    );
+    let current = repo.preflight_lease();
+    assert_ne!(current, abandoned, "the new run must own a fresh lease");
+    assert_ok(&repo.gate("postlude"), "finishing the replacement run");
+    assert!(repo.gate_artifacts().is_empty());
+}
+
+#[test]
+fn corrupt_preflight_state_never_deletes_an_unscoped_directory() {
+    let repo = GateRepo::new();
+    assert_ok(&repo.gate("preflight"), "recording a valid preflight");
+    let original_lease = repo.preflight_lease();
+    let tree = String::from_utf8_lossy(&repo.git(&["rev-parse", "HEAD^{tree}"]).stdout)
+        .trim()
+        .to_string();
+    let must_survive = repo.path().join("must-survive-corrupt-state");
+    fs::create_dir(&must_survive).expect("creating the unscoped directory");
+    fs::write(
+        repo.preflight_state(),
+        format!("tree {tree}\nobjects {}\n", must_survive.display()),
+    )
+    .expect("corrupting the preflight lease path");
+
+    let out = repo.gate("preflight");
+
+    assert!(!out.status.success(), "corrupt state must fail closed");
+    assert!(
+        stderr(&out).contains("invalid preflight state"),
+        "the corruption must be named, got: {}",
+        stderr(&out)
+    );
+    assert!(
+        must_survive.is_dir(),
+        "an unscoped path from corrupt state must never be deleted"
+    );
+    assert!(
+        !repo.preflight_state().exists(),
+        "invalid state must be removed so the next run can recover"
+    );
+    fs::remove_dir_all(original_lease).expect("cleaning the fixture's orphaned valid lease");
+}
+
+#[test]
+fn a_failed_drift_diff_fails_closed_and_cleans_gate_state() {
+    let repo = GateRepo::new();
+    repo.write("f", "dirty before preflight\n");
+    assert_ok(&repo.gate("preflight"), "recording the dirty preflight");
+    repo.write("f", "different dirty content after preflight\n");
+
+    let shim_dir = scratch_dir();
+    let real_git = env::split_paths(&env::var_os("PATH").expect("PATH is set"))
+        .map(|dir| dir.join("git"))
+        .find(|path| path.is_file())
+        .expect("finding the real git binary");
+    let shim = shim_dir.path().join("git");
+    let real_git = real_git
+        .to_str()
+        .expect("the real git path must be UTF-8")
+        .replace('\'', "'\"'\"'");
+    fs::write(
+        &shim,
+        format!(
+            "#!/usr/bin/env bash\nif [ \"${{1:-}}\" = diff ] && [ \"${{2:-}}\" = --name-only ]; then exit 42; fi\nexec '{real_git}' \"$@\"\n"
+        ),
+    )
+    .expect("writing the git diff failure shim");
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755))
+        .expect("making the git shim executable");
+    let controlled_path = env::join_paths(
+        std::iter::once(shim_dir.path().to_path_buf())
+            .chain(env::split_paths(&env::var_os("PATH").expect("PATH is set"))),
+    )
+    .expect("building the controlled PATH");
+
+    let out = repo.gate_with_path("postlude", &controlled_path);
+
+    assert!(
+        !out.status.success(),
+        "a failed diagnostic diff must fail closed"
+    );
+    assert!(
+        stderr(&out).contains("could not compare the preflight tree"),
+        "the diff failure must be distinguished from an empty diagnostic, got: {}",
+        stderr(&out)
+    );
+    assert!(
+        repo.gate_artifacts().is_empty(),
+        "the diff failure must clean preflight state and private objects"
+    );
 }
 
 /// Both documented bypasses keep working — and the one the hook can see says so

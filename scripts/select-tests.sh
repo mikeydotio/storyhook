@@ -62,11 +62,44 @@ cd "$root" || die "cannot enter $root"
 
 common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd)" \
     || die "cannot resolve the shared git directory"
+source_objects="$(cd "$common_dir/objects" && pwd -P)" \
+    || die "cannot resolve the shared object directory"
+
+# The current tracked tree may contain objects that do not exist in the
+# repository yet. Keep those objects private but alive until the later diff
+# against the selected baseline is complete.
+objects="$(mktemp -d -t storyhook-select-tests-objects.XXXXXX)" \
+    || die "could not create private object storage"
+
+cleanup() {
+    if [ -n "$objects" ]; then
+        rm -rf "$objects"
+        objects=""
+    fi
+}
+
+on_signal() {
+    status="$1"
+    trap - EXIT HUP INT TERM
+    cleanup
+    exit "$status"
+}
+
+trap cleanup EXIT
+trap 'on_signal 129' HUP
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
+
+git_with_objects() {
+    GIT_OBJECT_DIRECTORY="$objects" \
+        GIT_ALTERNATE_OBJECT_DIRECTORIES="$source_objects" \
+        git "$@"
+}
 
 receipts="$common_dir/storyhook/gate-receipts"
 maps_dir="$common_dir/storyhook/coverage-maps"
 
-current_tree="$("$(dirname "${BASH_SOURCE[0]}")/tracked-tree.sh")" \
+current_tree="$("$(dirname "${BASH_SOURCE[0]}")/tracked-tree.sh" "$objects")" \
     || die "could not resolve this worktree's tracked content"
 
 # ---------------------------------------------------------------------------
@@ -139,7 +172,7 @@ fi
 # What changed between the baseline and the current tree
 # ---------------------------------------------------------------------------
 
-changed="$(git diff --name-only "$baseline_tree" "$current_tree" 2>/dev/null)" \
+changed="$(git_with_objects diff --name-only "$baseline_tree" "$current_tree" 2>/dev/null)" \
     || die "could not diff baseline tree $baseline_tree against the current tree"
 
 if [ -z "$changed" ]; then

@@ -32,6 +32,49 @@ use std::process::{Command, Output};
 use storyhook_test_support::scratch_dir;
 use tempfile::TempDir;
 
+#[cfg(target_os = "macos")]
+struct ImmutableObjects {
+    path: PathBuf,
+    armed: bool,
+}
+
+#[cfg(target_os = "macos")]
+impl ImmutableObjects {
+    fn freeze(path: PathBuf) -> Self {
+        let out = Command::new("chflags")
+            .args(["-R", "uchg"])
+            .arg(&path)
+            .output()
+            .expect("running chflags to freeze source objects");
+        assert_ok(&out, "freezing source objects");
+        Self { path, armed: true }
+    }
+
+    fn restore(&mut self) {
+        let out = Command::new("chflags")
+            .args(["-R", "nouchg"])
+            .arg(&self.path)
+            .output()
+            .expect("running chflags to restore source objects");
+        if out.status.success() {
+            self.armed = false;
+        }
+        assert_ok(&out, "restoring source objects");
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for ImmutableObjects {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = Command::new("chflags")
+                .args(["-R", "nouchg"])
+                .arg(&self.path)
+                .output();
+        }
+    }
+}
+
 fn checkout() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
@@ -148,6 +191,15 @@ impl SelectRepo {
 
     fn select_tests(&self) -> Output {
         run(self.path(), "bash", &[&script("select-tests.sh")])
+    }
+
+    fn select_tests_with_tmpdir(&self, tmpdir: &Path) -> Output {
+        Command::new("bash")
+            .arg(script("select-tests.sh"))
+            .current_dir(self.path())
+            .env("TMPDIR", tmpdir)
+            .output()
+            .expect("running select-tests.sh with an isolated temporary root")
     }
 }
 
@@ -300,6 +352,51 @@ fn a_covered_src_file_change_selects_its_mapped_binary() {
         selected,
         vec!["scanner_test".to_string(), "story_priority".to_string()],
         "must select exactly the mapped binary plus the tree-scanning set, got: {selected:?}"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_dirty_tree_is_diffed_selectively_with_immutable_source_objects_and_no_leftovers() {
+    let repo = SelectRepo::new();
+    let base = repo.tree();
+    assert_ok(
+        &repo.certify("gate", None),
+        "fixture: certifying the baseline",
+    );
+    repo.write_map(&base, &[("story_priority", "src/a.rs")]);
+    repo.write("src/a.rs", "fn dirty_without_a_commit() {}\n");
+
+    let private_tmp = scratch_dir();
+    let mut immutable = ImmutableObjects::freeze(repo.common_dir().join("objects"));
+    let out = repo.select_tests_with_tmpdir(private_tmp.path());
+    immutable.restore();
+
+    assert_ok(
+        &out,
+        "select-tests.sh over a dirty tree with immutable source objects",
+    );
+    assert_eq!(baseline_line(&out), format!("BASELINE {base}"));
+    let mut selected = selection_lines(&out);
+    selected.sort();
+    assert_eq!(
+        selected,
+        vec!["scanner_test".to_string(), "story_priority".to_string()],
+        "the private dirty-tree diff must drive the ordinary selective result"
+    );
+    let leftovers = std::fs::read_dir(private_tmp.path())
+        .expect("reading the selector's isolated temporary root")
+        .map(|entry| entry.expect("reading a temporary entry").path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("storyhook-select-tests-objects."))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        leftovers.is_empty(),
+        "select-tests.sh must remove its private object store; left: {:?}",
+        leftovers.iter().collect::<Vec<_>>()
     );
 }
 

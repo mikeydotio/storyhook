@@ -206,6 +206,7 @@ classDiagram
     class Dispatcher {
         <<interface>>
         +dispatch(DispatchRequest) Result~DispatchOutcome~
+        +unclaim(UnclaimRequest) Result~DispatchOutcome~
         +window_alive(String) bool
         +kill_window(String) Result
     }
@@ -366,9 +367,10 @@ One pass, per live run:
 6. **Terminate.** Nothing claimable and every lane idle → `finished`,
    `stop_reason = QueueDrained`, hook + banner.
 
-`draining` is what `pause` and graceful `stop` produce: no new claims, existing
-lanes run to their natural end. `pause` returns to `running` on `resume`;
-graceful `stop` becomes `finished` when the last lane frees. `stop --now`
+`paused` is what `pause` produces: no new claims, existing lanes run to their
+natural end, and `resume` returns the run to `running`. `draining` is the
+irreversible state graceful and immediate stop produce; graceful stop becomes
+`finished` when the last lane frees. `stop --now`
 additionally kills lane windows and returns each claimed story to its prior
 state, preserving worktrees and branches — plain `story unclaim`, which touches
 no on-disk state by construction rather than by opting out of doing so.
