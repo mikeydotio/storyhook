@@ -347,6 +347,89 @@ fn source_object_store_and_descendants_are_rejected_before_git_writes() {
 }
 
 #[test]
+fn an_empty_linked_worktree_returns_the_empty_tree_without_mutating_source_git_state() {
+    let fixture = scratch_dir();
+    let primary = fixture.path().join("primary");
+    let linked = fixture.path().join("linked");
+    std::fs::create_dir(&primary).expect("creating the primary checkout");
+
+    assert_ok(&git(&primary, &["init", "-q", "-b", "main"]), "git init");
+    assert_ok(
+        &git(
+            &primary,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "init",
+            ],
+        ),
+        "creating the empty initial commit",
+    );
+
+    let add_worktree = Command::new("git")
+        .args(["worktree", "add", "-q", "-b", "linked"])
+        .arg(&linked)
+        .current_dir(&primary)
+        .output()
+        .expect("running git worktree add");
+    assert_ok(&add_worktree, "creating the linked worktree");
+    assert!(
+        trimmed_stdout(&git(&linked, &["ls-files"])).is_empty(),
+        "the linked fixture must have an empty tracked index"
+    );
+
+    let expected = trimmed_stdout(&git(&linked, &["rev-parse", "HEAD^{tree}"]));
+    let canonical = trimmed_stdout(&git(&linked, &["hash-object", "-t", "tree", "/dev/null"]));
+    assert_eq!(expected, canonical, "the fixture must use the empty tree");
+
+    let linked_git_dir = PathBuf::from(trimmed_stdout(&git(
+        &linked,
+        &["rev-parse", "--absolute-git-dir"],
+    )));
+    let linked_index = linked_git_dir.join("index");
+    let index_before = std::fs::read(&linked_index).expect("snapshotting the linked index");
+    let head_before = trimmed_stdout(&git(&linked, &["rev-parse", "HEAD"]));
+    let common_objects = primary.join(".git").join("objects");
+    let mut immutable = ImmutableObjects::freeze(common_objects.clone());
+    let objects_before = object_database_state(&common_objects);
+
+    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("scripts")
+        .join("tracked-tree.sh");
+    let out = Command::new("bash")
+        .arg(script)
+        .current_dir(&linked)
+        .output()
+        .expect("running tracked-tree.sh in the empty linked worktree");
+    let actual = trimmed_stdout(&out);
+    let objects_after = object_database_state(&common_objects);
+
+    immutable.restore();
+
+    assert_ok(&out, "empty linked-worktree tracked-tree generation");
+    assert_eq!(actual, expected, "the empty tree must be returned verbatim");
+    assert_eq!(
+        objects_before, objects_after,
+        "empty-tree identity generation must not mutate shared objects"
+    );
+    assert_eq!(
+        std::fs::read(&linked_index).expect("re-reading the linked index"),
+        index_before,
+        "empty-tree identity generation must not mutate the linked index"
+    );
+    assert_eq!(
+        trimmed_stdout(&git(&linked, &["rev-parse", "HEAD"])),
+        head_before,
+        "empty-tree identity generation must not move the linked ref"
+    );
+}
+
+#[test]
 fn caller_owned_objects_keep_a_dirty_tracked_tree_resolvable_without_mutating_git_state() {
     let fixture = scratch_dir();
     let repo = fixture.path().join("repo");

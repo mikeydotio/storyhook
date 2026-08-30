@@ -86,6 +86,15 @@ impl TreeRepo {
         repo
     }
 
+    fn empty() -> Self {
+        let repo = Self { dir: scratch_dir() };
+        repo.git(&["init", "-q", "-b", "main"]);
+        repo.git(&["config", "user.email", "t@t"]);
+        repo.git(&["config", "user.name", "t"]);
+        repo.git(&["commit", "--allow-empty", "-qm", "init"]);
+        repo
+    }
+
     fn path(&self) -> &Path {
         self.dir.path()
     }
@@ -126,6 +135,26 @@ fn a_clean_repo_prints_a_tree_oid() {
     assert!(
         oid.bytes().all(|b| b.is_ascii_hexdigit()),
         "not all hex: {oid:?}"
+    );
+}
+
+#[test]
+fn an_empty_committed_repo_prints_the_canonical_empty_tree_oid() {
+    let repo = TreeRepo::empty();
+    let expected = stdout(&repo.git(&["rev-parse", "HEAD^{tree}"]));
+    let canonical = stdout(&repo.git(&["hash-object", "-t", "tree", "/dev/null"]));
+    assert_eq!(
+        expected, canonical,
+        "the fixture's empty commit must use Git's canonical empty tree"
+    );
+
+    let out = repo.tree();
+
+    assert_ok(&out, "tracked-tree.sh on an empty committed repo");
+    assert_eq!(
+        stdout(&out),
+        expected,
+        "an empty committed repo must have an ordinary tracked-tree identity"
     );
 }
 
@@ -309,6 +338,26 @@ impl ManifestFixture {
         fixture
     }
 
+    /// `.git` and the production script are present, but `HEAD`'s tree has
+    /// no entries. This is still a valid committed checkout and must receive
+    /// an ordinary build identity rather than the missing-stamp fallback.
+    fn with_empty_git_and_script() -> Self {
+        let fixture = Self::bare();
+        fixture.git(&["init", "-q", "-b", "main"]);
+        fixture.git(&["config", "user.email", "t@t"]);
+        fixture.git(&["config", "user.name", "t"]);
+        fixture.git(&["commit", "--allow-empty", "-qm", "init"]);
+
+        std::fs::create_dir(fixture.path().join("scripts")).expect("fixture: scripts dir");
+        std::os::unix::fs::symlink(
+            checkout().join("scripts").join("tracked-tree.sh"),
+            fixture.path().join("scripts").join("tracked-tree.sh"),
+        )
+        .expect("fixture: linking the tracked script");
+
+        fixture
+    }
+
     /// `.git` present, but no `scripts/tracked-tree.sh` — the "checkout is
     /// missing the script" case, distinct from "no `.git` at all."
     fn with_git_no_script() -> Self {
@@ -388,6 +437,25 @@ fn with_git_and_the_script_it_stamps_the_tracked_tree_id() {
         stdout(&out)
     );
     assert!(!emitted_warning(&out), "the expected case must be silent");
+}
+
+#[test]
+fn an_empty_committed_repo_receives_the_empty_tree_build_id() {
+    let fixture = ManifestFixture::with_empty_git_and_script();
+    let expected = stdout(&fixture.git(&["rev-parse", "HEAD^{tree}"]));
+
+    let out = fixture.run_build_script(&[]);
+
+    assert_ok(&out, "build.rs against an empty committed repo");
+    assert_eq!(
+        emitted_build_id(&out).as_deref(),
+        Some(&expected[..12]),
+        "build.rs must stamp the empty tree instead of treating it as a missing identity"
+    );
+    assert!(
+        !emitted_warning(&out),
+        "an empty committed repo is an expected stamped build, not a warning case"
+    );
 }
 
 #[test]
