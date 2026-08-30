@@ -394,6 +394,12 @@ story next [--count <n>] [--phase <N>] [--epic <id>] [--exclude-label <csv>]
 story claim <id> [--comment <text> | --no-comment] [--dry-run]
 story claim --next [--phase <N>] [--epic <id>] [--exclude-label <csv>] [--comment <text> | --no-comment] [--dry-run]
 story unclaim <id> [--comment <text> | --no-comment] [--dry-run]
+story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex]
+story engine status [--run <run-id>]
+story engine pause [--run <run-id>]
+story engine resume [--run <run-id>]
+story engine stop [--run <run-id>] [--now]
+story engine ack [--run <run-id>]
 story summary
 story report [--html]
 story search <query>
