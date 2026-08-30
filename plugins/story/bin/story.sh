@@ -196,7 +196,11 @@ claude_capability_json() {
       {id:"haiku",    label:"Haiku"}
     ],
     efforts: [{id:"low"},{id:"medium"},{id:"high"},{id:"xhigh"},{id:"max"}],
-    speeds: [{id:"standard", default:true}, {id:"fast", label:"Fast"}]
+    # No "standard" entry: speed is a plain toggle with no wire-level
+    # "explicit standard" distinct from omitting --speed entirely, so the
+    # one selectable alternative to the placeholder "Default" a caller
+    # (the web dispatch dialog, most concretely) would render is this.
+    speeds: [{id:"fast", label:"Fast"}]
   }'
 }
 
@@ -211,7 +215,11 @@ codex_capability_json() {
       {id:"gpt-5.6-luna",  label:"GPT-5.6 Luna"}
     ],
     efforts: [{id:"none"},{id:"low"},{id:"medium"},{id:"high"},{id:"xhigh"},{id:"max"}],
-    speeds: [{id:"standard", default:true}, {id:"fast", label:"Fast"}]
+    # No "standard" entry: speed is a plain toggle with no wire-level
+    # "explicit standard" distinct from omitting --speed entirely, so the
+    # one selectable alternative to the placeholder "Default" a caller
+    # (the web dispatch dialog, most concretely) would render is this.
+    speeds: [{id:"fast", label:"Fast"}]
   }'
 }
 
