@@ -530,8 +530,16 @@ mod tests {
 
     #[test]
     fn the_direct_gate_keeps_mutation_guard_before_token() {
-        let env = storyhook_test_support::TestEnv::isolated();
-        let controller = Arc::new(EngineController::open(&env.environment()).unwrap());
+        // `Environment::at` over a scratch home rather than
+        // `TestEnv::isolated().environment()`. A unit test inside `src/` sees
+        // `storyhook_test_support`'s OWN view of this crate, so a
+        // `storyhook::env::Environment` handed back from there is a different
+        // type to the one being compiled here — `error[E0308]: there are
+        // multiple different versions of crate `storyhook``. `scratch_dir()`
+        // returns a plain path and crosses that boundary safely, which is why
+        // five other `src/` files already use it and none uses `TestEnv`.
+        let home = storyhook_test_support::scratch_dir();
+        let controller = Arc::new(EngineController::open(&Environment::at(home.path())).unwrap());
         let now = Instant::now();
         let tokens = TokenRegistry::new(Utc::now(), now);
         let reply = intercept(
