@@ -367,8 +367,14 @@ pub(super) fn engine_lanes(
 ) -> Result<Vec<EngineLaneRecord>, StoreError> {
     let mut stmt = sql(
         conn.prepare_cached(
+            // `last_progress_seq`/`last_progress_at` are appended at the end
+            // rather than beside `last_observed_at`, so every existing
+            // positional `row.get(N)` below keeps its index (SH-365: this
+            // struct is filled BY POSITION, and swapping an adjacent pair
+            // names every field correctly and fills every one wrong).
             "SELECT run_id, lane_index, state, story_id, window_name, worktree_path, \
-                    dispatched_at, last_observed_at, outcome, outcome_detail \
+                    dispatched_at, last_observed_at, outcome, outcome_detail, \
+                    last_progress_seq, last_progress_at \
              FROM engine_lanes WHERE run_id = ?1 ORDER BY lane_index",
         ),
         "preparing engine lanes",
@@ -386,6 +392,8 @@ pub(super) fn engine_lanes(
                 row.get::<_, String>(7)?,
                 row.get::<_, Option<String>>(8)?,
                 row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<i64>>(10)?,
+                row.get::<_, Option<String>>(11)?,
             ))
         }),
         "reading engine lanes",
@@ -404,6 +412,8 @@ pub(super) fn engine_lanes(
                 last_observed_at,
                 outcome,
                 outcome_detail,
+                last_progress_seq,
+                last_progress_at,
             )| {
                 let state = EngineLaneState::parse(&state).ok_or_else(|| {
                     StoreError::Corrupt(format!("engine_lanes.state holds unknown value `{state}`"))
@@ -417,6 +427,8 @@ pub(super) fn engine_lanes(
                     worktree_path,
                     dispatched_at,
                     last_observed_at,
+                    last_progress_seq: last_progress_seq.map(GlobalSeq::new),
+                    last_progress_at,
                     outcome,
                     outcome_detail,
                 })
