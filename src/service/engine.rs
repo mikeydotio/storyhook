@@ -15,10 +15,16 @@ use std::time::Duration;
 use regex::Regex;
 use wait_timeout::ChildExt;
 
+use crate::domain::is_epic;
 use crate::env::Environment;
 use crate::env::spawn_env::apply_dispatch_allowlist;
 use crate::error::AppError;
-use crate::store::EngineAgent;
+use crate::store::{
+    EngineAgent, EngineLaneRecord, EngineLaneState, EngineRunRecord, EngineRunState, EngineScope,
+    ReadOps, Store, StoreError, WriteOps,
+};
+
+use super::{Ctx, project_prefix, resolve_story};
 
 /// How long the worktree/tmux/agent helper may run.
 ///
@@ -26,6 +32,13 @@ use crate::store::EngineAgent;
 /// readiness handoff is bounded below this, while a networked `git fetch` is
 /// the genuinely variable part.
 const DISPATCH_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// The design record models lane count as a `u8`. Keep the service boundary
+/// faithful even though SQLite stores the value in an INTEGER column.
+pub const MAX_ENGINE_LANES: u32 = u8::MAX as u32;
+
+pub const OPERATOR_STOPPED: &str = "operator-stopped";
+pub const OPERATOR_STOPPED_NOW: &str = "operator-stopped-now";
 
 /// A tmux client normally answers in milliseconds. The shared machine-probe
 /// budget bounds a wedged server without inventing another patience value.
@@ -50,6 +63,13 @@ pub struct DispatchRequest {
     pub project: String,
     pub story: String,
     pub agent: EngineAgent,
+}
+
+/// Everything the shell helper needs to release one engine-owned claim.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnclaimRequest {
+    pub project: String,
+    pub story: String,
 }
 
 /// A parsed answer from `story.sh`.
@@ -84,6 +104,7 @@ impl DispatchOutcome {
 /// The testability seam around worktree/tmux/agent side effects.
 pub trait Dispatcher: Send + Sync {
     fn dispatch(&self, request: DispatchRequest) -> Result<DispatchOutcome, AppError>;
+    fn unclaim(&self, request: UnclaimRequest) -> Result<DispatchOutcome, AppError>;
     fn window_alive(&self, window: &str) -> bool;
     fn kill_window(&self, window: &str) -> Result<(), AppError>;
 }
@@ -119,6 +140,15 @@ impl Dispatcher for ShellDispatcher {
             request.agent,
             true,
             true,
+            &self.env,
+        )
+    }
+
+    fn unclaim(&self, request: UnclaimRequest) -> Result<DispatchOutcome, AppError> {
+        run_shell_unclaim(
+            &self.story_sh_path,
+            &request.project,
+            &request.story,
             &self.env,
         )
     }
@@ -176,6 +206,385 @@ impl Dispatcher for ShellDispatcher {
             ))),
         }
     }
+}
+
+/// Stable identity for one engine run.
+pub type RunId = String;
+
+/// The caller-selected shape of a new run. Project identity comes from the
+/// service context, so a request cannot name one project while writing another.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StartRequest {
+    pub scope: EngineScope,
+    pub lanes: u32,
+    pub agent: EngineAgent,
+}
+
+/// One transactionally consistent run and its ordered lanes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunView {
+    pub run: EngineRunRecord,
+    pub lanes: Vec<EngineLaneRecord>,
+}
+
+/// The durable lifecycle of Full Auto runs, excluding reconciliation.
+pub struct EngineService<'ctx, S: Store, D: Dispatcher> {
+    ctx: &'ctx Ctx<'ctx, S>,
+    dispatcher: &'ctx D,
+}
+
+impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
+    #[must_use]
+    pub fn new(ctx: &'ctx Ctx<'ctx, S>, dispatcher: &'ctx D) -> Self {
+        Self { ctx, dispatcher }
+    }
+
+    /// Starts one run and all of its idle lanes in a single transaction.
+    pub fn start(&self, request: StartRequest) -> Result<EngineRunRecord, AppError> {
+        if !(1..=MAX_ENGINE_LANES).contains(&request.lanes) {
+            return Err(AppError::Validation(format!(
+                "an engine run needs between 1 and {MAX_ENGINE_LANES} lanes"
+            )));
+        }
+
+        let project = self.ctx.project();
+        let now = self.ctx.now();
+        let run_id = uuid::Uuid::new_v4().simple().to_string();
+        let result = self.ctx.store().write(|tx| {
+            let project_record = tx
+                .project(project)?
+                .ok_or_else(|| StoreError::NotFound(format!("project {project} does not exist")))?;
+            if tx.checkout_path(project)?.is_none() {
+                return Err(StoreError::from(AppError::Validation(no_checkout_refusal(
+                    &project_record.slug,
+                ))));
+            }
+
+            if let EngineScope::Epic(id) = &request.scope {
+                let prefix = project_prefix(&*tx, project)?;
+                let (_, row) =
+                    resolve_story(&*tx, project, &prefix, id).map_err(StoreError::from)?;
+                if !is_epic(&row.snapshot) {
+                    return Err(StoreError::from(AppError::Validation(format!(
+                        "story `{id}` is not an epic, so it cannot scope an engine run"
+                    ))));
+                }
+            }
+
+            let run = EngineRunRecord {
+                id: run_id.clone(),
+                project_slug: project_record.slug,
+                scope: request.scope.clone(),
+                lanes: request.lanes,
+                agent: request.agent,
+                state: EngineRunState::Running,
+                consecutive_hard_stops: 0,
+                stop_reason: None,
+                acknowledged_at: None,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+            };
+            tx.create_engine_run(&run)?;
+            for lane_index in 0..request.lanes {
+                tx.put_engine_lane(&idle_lane(&run.id, lane_index, &now))?;
+            }
+            Ok(run)
+        });
+
+        match result {
+            Ok(run) => Ok(run),
+            Err(StoreError::Invariant(detail)) if is_live_run_collision(&detail) => {
+                let slug = self.project_slug()?;
+                Err(AppError::Validation(format!(
+                    "project `{slug}` already has a live engine run"
+                )))
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Reads all project runs, or exactly one named run, with ordered lanes.
+    pub fn status(&self, run_id: Option<&RunId>) -> Result<Vec<RunView>, AppError> {
+        let project = self.ctx.project();
+        Ok(self.ctx.store().read(|tx| {
+            let slug = tx
+                .project(project)?
+                .ok_or_else(|| StoreError::NotFound(format!("project {project} does not exist")))?
+                .slug;
+            let runs = match run_id {
+                Some(id) => vec![run_for_project(tx, &slug, id)?],
+                None => tx.engine_runs(&slug)?,
+            };
+            runs.into_iter()
+                .map(|run| {
+                    let lanes = tx.engine_lanes(&run.id)?;
+                    Ok(RunView { run, lanes })
+                })
+                .collect()
+        })?)
+    }
+
+    pub fn pause(&self, run_id: &RunId) -> Result<RunView, AppError> {
+        self.transition(run_id, |run, _lanes| {
+            require_state(run, "pause", &[EngineRunState::Running])?;
+            run.state = EngineRunState::Paused;
+            Ok(())
+        })
+    }
+
+    pub fn resume(&self, run_id: &RunId) -> Result<RunView, AppError> {
+        self.transition(run_id, |run, _lanes| {
+            require_state(run, "resume", &[EngineRunState::Paused])?;
+            run.state = EngineRunState::Running;
+            Ok(())
+        })
+    }
+
+    /// Stops a run gracefully or releases every occupied lane immediately.
+    pub fn stop(&self, run_id: &RunId, now: bool) -> Result<RunView, AppError> {
+        if now {
+            self.stop_now(run_id)
+        } else {
+            self.transition(run_id, |run, lanes| {
+                require_state(
+                    run,
+                    "stop",
+                    &[EngineRunState::Running, EngineRunState::Paused],
+                )?;
+                run.state = if lanes.iter().all(|lane| lane.state == EngineLaneState::Idle) {
+                    EngineRunState::Finished
+                } else {
+                    EngineRunState::Draining
+                };
+                run.stop_reason = Some(OPERATOR_STOPPED.to_string());
+                run.acknowledged_at = None;
+                Ok(())
+            })
+        }
+    }
+
+    /// Clears the persistent notification for a run with a recorded reason.
+    pub fn acknowledge(&self, run_id: &RunId) -> Result<RunView, AppError> {
+        self.set_acknowledged(run_id)
+    }
+
+    fn stop_now(&self, run_id: &RunId) -> Result<RunView, AppError> {
+        let project = self.ctx.project();
+        let transition_at = self.ctx.now();
+        let (slug, lanes) = self.ctx.store().write(|tx| {
+            let slug = project_slug(tx, project)?;
+            let mut run = run_for_project(tx, &slug, run_id)?;
+            require_state(
+                &run,
+                "stop --now",
+                &[
+                    EngineRunState::Running,
+                    EngineRunState::Paused,
+                    EngineRunState::Draining,
+                ],
+            )?;
+            let lanes = tx.engine_lanes(run_id)?;
+            run.state = EngineRunState::Draining;
+            if run.stop_reason.as_deref() != Some(OPERATOR_STOPPED_NOW) {
+                run.stop_reason = Some(OPERATOR_STOPPED_NOW.to_string());
+                run.acknowledged_at = None;
+            }
+            run.updated_at = transition_at.clone();
+            tx.update_engine_run(&run)?;
+            Ok((slug, lanes))
+        })?;
+
+        for lane in lanes
+            .into_iter()
+            .filter(|lane| lane.state != EngineLaneState::Idle)
+        {
+            if lane.state == EngineLaneState::Quarantined {
+                self.clear_quarantined_lane(&lane)?;
+                continue;
+            }
+            let story = lane.story_id.clone().expect("filtered occupied lane");
+            let outcome = self
+                .dispatcher
+                .unclaim(UnclaimRequest {
+                    project: slug.clone(),
+                    story: story.clone(),
+                })
+                .map_err(|error| {
+                    error.with_context(&format!(
+                        "engine run `{run_id}` could not immediately stop lane {} story `{story}`",
+                        lane.lane_index
+                    ))
+                })?;
+            if outcome.state == DispatchOutcomeState::Refused {
+                return Err(AppError::Validation(format!(
+                    "engine run `{run_id}` could not immediately stop lane {} story `{story}`: {}",
+                    lane.lane_index,
+                    helper_diagnosis(&outcome.payload)
+                )));
+            }
+            self.release_lane(&lane, &outcome.payload)?;
+        }
+
+        let finished_at = self.ctx.now();
+        self.ctx.store().write(|tx| {
+            let mut run = run_for_project(tx, &slug, run_id)?;
+            let lanes = tx.engine_lanes(run_id)?;
+            if lanes.iter().any(|lane| lane.state != EngineLaneState::Idle) {
+                return Err(StoreError::from(AppError::Validation(format!(
+                    "engine run `{run_id}` still has occupied lanes after immediate stop"
+                ))));
+            }
+            run.state = EngineRunState::Finished;
+            run.updated_at = finished_at;
+            tx.update_engine_run(&run)
+        })?;
+        self.one_view(run_id)
+    }
+
+    fn release_lane(
+        &self,
+        lane: &EngineLaneRecord,
+        payload: &serde_json::Value,
+    ) -> Result<(), AppError> {
+        let observed_at = self.ctx.now();
+        let mut idle = idle_lane(&lane.run_id, lane.lane_index, &observed_at);
+        idle.outcome = Some(OPERATOR_STOPPED_NOW.to_string());
+        idle.outcome_detail = Some(payload.to_string());
+        self.ctx.store().write(|tx| tx.put_engine_lane(&idle))?;
+        Ok(())
+    }
+
+    fn clear_quarantined_lane(&self, lane: &EngineLaneRecord) -> Result<(), AppError> {
+        let observed_at = self.ctx.now();
+        let mut idle = idle_lane(&lane.run_id, lane.lane_index, &observed_at);
+        idle.outcome = lane.outcome.clone();
+        idle.outcome_detail = lane.outcome_detail.clone();
+        self.ctx.store().write(|tx| tx.put_engine_lane(&idle))?;
+        Ok(())
+    }
+
+    fn transition(
+        &self,
+        run_id: &RunId,
+        mutate: impl FnOnce(&mut EngineRunRecord, &[EngineLaneRecord]) -> Result<(), StoreError>,
+    ) -> Result<RunView, AppError> {
+        let project = self.ctx.project();
+        let updated_at = self.ctx.now();
+        self.ctx.store().write(|tx| {
+            let slug = project_slug(tx, project)?;
+            let mut run = run_for_project(tx, &slug, run_id)?;
+            let lanes = tx.engine_lanes(run_id)?;
+            let before = run.clone();
+            mutate(&mut run, &lanes)?;
+            if run != before {
+                run.updated_at = updated_at;
+                tx.update_engine_run(&run)?;
+            }
+            Ok(())
+        })?;
+        self.one_view(run_id)
+    }
+
+    fn set_acknowledged(&self, run_id: &RunId) -> Result<RunView, AppError> {
+        let project = self.ctx.project();
+        let at = self.ctx.now();
+        self.ctx.store().write(|tx| {
+            let slug = project_slug(tx, project)?;
+            let mut run = run_for_project(tx, &slug, run_id)?;
+            if run.stop_reason.is_none() {
+                return Err(StoreError::from(AppError::Validation(format!(
+                    "engine run `{run_id}` has no stop notification to acknowledge"
+                ))));
+            }
+            if run.acknowledged_at.is_none() {
+                run.acknowledged_at = Some(at.clone());
+                run.updated_at = at.clone();
+                tx.update_engine_run(&run)?;
+            }
+            Ok(())
+        })?;
+        self.one_view(run_id)
+    }
+
+    fn one_view(&self, run_id: &RunId) -> Result<RunView, AppError> {
+        self.status(Some(run_id))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| AppError::NotFound(format!("engine run `{run_id}` not found")))
+    }
+
+    fn project_slug(&self) -> Result<String, AppError> {
+        Ok(self
+            .ctx
+            .store()
+            .read(|tx| project_slug(tx, self.ctx.project()))?)
+    }
+}
+
+fn idle_lane(run_id: &str, lane_index: u32, at: &str) -> EngineLaneRecord {
+    EngineLaneRecord {
+        run_id: run_id.to_string(),
+        lane_index,
+        state: EngineLaneState::Idle,
+        story_id: None,
+        window_name: None,
+        worktree_path: None,
+        dispatched_at: None,
+        last_observed_at: at.to_string(),
+        outcome: None,
+        outcome_detail: None,
+    }
+}
+
+fn project_slug(tx: &impl ReadOps, project: crate::store::ProjectId) -> Result<String, StoreError> {
+    Ok(tx
+        .project(project)?
+        .ok_or_else(|| StoreError::NotFound(format!("project {project} does not exist")))?
+        .slug)
+}
+
+fn run_for_project(
+    tx: &impl ReadOps,
+    project_slug: &str,
+    run_id: &str,
+) -> Result<EngineRunRecord, StoreError> {
+    tx.engine_run(run_id)?
+        .filter(|run| run.project_slug == project_slug)
+        .ok_or_else(|| StoreError::NotFound(format!("engine run `{run_id}` not found")))
+}
+
+fn require_state(
+    run: &EngineRunRecord,
+    action: &str,
+    allowed: &[EngineRunState],
+) -> Result<(), StoreError> {
+    if allowed.contains(&run.state) {
+        return Ok(());
+    }
+    Err(StoreError::from(AppError::Validation(format!(
+        "engine run `{}` is `{}` and cannot `{action}`",
+        run.id,
+        run.state.as_str()
+    ))))
+}
+
+fn no_checkout_refusal(project_slug: &str) -> String {
+    format!(
+        "project `{project_slug}` has no checkout on this machine, so there is nowhere to run a git worktree — record one with `story --project {project_slug} project link checkout <path>`. Its stories stay readable meanwhile; only the repo-side verbs need a directory."
+    )
+}
+
+fn is_live_run_collision(detail: &str) -> bool {
+    detail.contains("UNIQUE constraint failed: engine_runs.project_slug")
+}
+
+fn helper_diagnosis(payload: &serde_json::Value) -> String {
+    payload
+        .get("display")
+        .or_else(|| payload.get("reason"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("the unclaim helper refused without a diagnosis")
+        .to_string()
 }
 
 /// Runs one helper invocation. The dashboard uses `auto` from its request and
@@ -255,6 +664,49 @@ pub(crate) fn run_shell_dispatch(
         }
         CaptureError::Timeout => AppError::Storage(format!(
             "dispatch did not finish within {}s and was terminated",
+            DISPATCH_TIMEOUT.as_secs()
+        )),
+    })?;
+    classify_dispatch_bytes(&captured.stdout, &captured.stderr)
+}
+
+/// Runs the non-destructive inverse of dispatch through the same helper
+/// boundary. `story.sh unclaim` owns prior-state restoration and window
+/// closure; the engine deliberately does not reproduce either half.
+fn run_shell_unclaim(
+    script: &Path,
+    project: &str,
+    story: &str,
+    env: &Environment,
+) -> Result<DispatchOutcome, AppError> {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("story"));
+    let mut command = Command::new("bash");
+    command
+        .arg(script)
+        .arg("--project")
+        .arg(project)
+        .arg("unclaim")
+        .arg(story);
+    apply_dispatch_allowlist(&mut command);
+    command
+        .current_dir(env.home())
+        .env("STORY_BIN", exe)
+        .env("STORYHOOK_STORE_PATH", env.store_path())
+        .env("STORY_TARGET_SESSION", project)
+        .env("GIT_TERMINAL_PROMPT", "0");
+
+    let captured = run_captured(command, DISPATCH_TIMEOUT).map_err(|error| match error {
+        CaptureError::Stage(detail) => {
+            AppError::Storage(format!("could not stage unclaim output: {detail}"))
+        }
+        CaptureError::Spawn(detail) => {
+            AppError::Storage(format!("failed to start the unclaim helper: {detail}"))
+        }
+        CaptureError::Wait(detail) => {
+            AppError::Storage(format!("could not wait for the unclaim helper: {detail}"))
+        }
+        CaptureError::Timeout => AppError::Storage(format!(
+            "unclaim did not finish within {}s and was terminated",
             DISPATCH_TIMEOUT.as_secs()
         )),
     })?;

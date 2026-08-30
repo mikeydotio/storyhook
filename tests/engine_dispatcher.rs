@@ -3,6 +3,7 @@ use std::path::Path;
 use storyhook::env::Environment;
 use storyhook::service::engine::{
     DispatchOutcome, DispatchOutcomeState, DispatchRequest, Dispatcher, ShellDispatcher,
+    UnclaimRequest,
 };
 use storyhook::store::EngineAgent;
 use storyhook_test_support::{DispatcherCall, DispatcherStep, FakeDispatcher, scratch_dir};
@@ -16,6 +17,13 @@ fn request() -> DispatchRequest {
         project: "alpha".to_string(),
         story: "ALPHA-7".to_string(),
         agent: EngineAgent::Codex,
+    }
+}
+
+fn unclaim_request() -> UnclaimRequest {
+    UnclaimRequest {
+        project: "alpha".to_string(),
+        story: "ALPHA-7".to_string(),
     }
 }
 
@@ -66,6 +74,30 @@ fn shell_dispatcher_relays_a_nonzero_refusal_instead_of_reclassifying_it_as_fail
 }
 
 #[test]
+fn shell_dispatcher_invokes_the_non_destructive_unclaim_contract() {
+    let root = scratch_dir();
+    let home = root.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let script = root.path().join("story.sh");
+    write_script(
+        &script,
+        r#"printf '{"ok":true,"argv":"%s","store":"%s","closed_window":true,"worktree_status":"dirty"}\n' "$*" "$STORYHOOK_STORE_PATH""#,
+    );
+    let env = Environment::at(&home);
+    let expected_store = env.store_path().to_string_lossy().to_string();
+
+    let outcome = ShellDispatcher::new(&script, env)
+        .unclaim(unclaim_request())
+        .unwrap();
+
+    assert_eq!(outcome.state, DispatchOutcomeState::Ok);
+    assert_eq!(outcome.payload["argv"], "--project alpha unclaim ALPHA-7");
+    assert_eq!(outcome.payload["store"], expected_store);
+    assert_eq!(outcome.payload["closed_window"], true);
+    assert_eq!(outcome.payload["worktree_status"], "dirty");
+}
+
+#[test]
 fn shell_dispatcher_fails_only_when_the_helper_does_not_answer_with_json() {
     let root = scratch_dir();
     let home = root.path().join("home");
@@ -87,6 +119,7 @@ fn fake_dispatcher_scripts_calls_in_order_and_records_them() {
     }));
     let fake = FakeDispatcher::new([
         DispatcherStep::Dispatch(refused.clone()),
+        DispatcherStep::Unclaim(refused.clone()),
         DispatcherStep::WindowAlive {
             window: "@7".to_string(),
             alive: false,
@@ -98,12 +131,14 @@ fn fake_dispatcher_scripts_calls_in_order_and_records_them() {
     ]);
 
     assert_eq!(fake.dispatch(request()).unwrap(), refused);
+    assert_eq!(fake.unclaim(unclaim_request()).unwrap(), refused);
     assert!(!fake.window_alive("@7"));
     fake.kill_window("@7").unwrap();
     assert_eq!(
         fake.calls(),
         vec![
             DispatcherCall::Dispatch(request()),
+            DispatcherCall::Unclaim(unclaim_request()),
             DispatcherCall::WindowAlive("@7".to_string()),
             DispatcherCall::KillWindow("@7".to_string()),
         ]

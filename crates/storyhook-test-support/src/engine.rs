@@ -7,13 +7,15 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use storyhook::error::AppError;
-use storyhook::service::engine::{DispatchOutcome, DispatchRequest, Dispatcher};
+use storyhook::service::engine::{DispatchOutcome, DispatchRequest, Dispatcher, UnclaimRequest};
 
 /// One answer the fake will consume, in exact call order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DispatcherStep {
     Dispatch(DispatchOutcome),
     DispatchFailure(String),
+    Unclaim(DispatchOutcome),
+    UnclaimFailure(String),
     WindowAlive {
         window: String,
         alive: bool,
@@ -28,6 +30,7 @@ pub enum DispatcherStep {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DispatcherCall {
     Dispatch(DispatchRequest),
+    Unclaim(UnclaimRequest),
     WindowAlive(String),
     KillWindow(String),
 }
@@ -80,6 +83,14 @@ impl Dispatcher for FakeDispatcher {
             DispatcherStep::Dispatch(outcome) => Ok(outcome),
             DispatcherStep::DispatchFailure(detail) => Err(AppError::Storage(detail)),
             step => panic!("FakeDispatcher expected a dispatch step, got {step:?}"),
+        }
+    }
+
+    fn unclaim(&self, request: UnclaimRequest) -> Result<DispatchOutcome, AppError> {
+        match self.next(DispatcherCall::Unclaim(request)) {
+            DispatcherStep::Unclaim(outcome) => Ok(outcome),
+            DispatcherStep::UnclaimFailure(detail) => Err(AppError::Storage(detail)),
+            step => panic!("FakeDispatcher expected an unclaim step, got {step:?}"),
         }
     }
 

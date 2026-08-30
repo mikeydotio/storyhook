@@ -97,6 +97,88 @@ common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd)" \
 
 receipts="$common_dir/storyhook/gate-receipts"
 preflight_state="$git_dir/storyhook-gate-preflight"
+source_objects="$(cd "$common_dir/objects" && pwd -P)" \
+    || die "cannot resolve the shared object directory"
+lease_prefix="$git_dir/storyhook-gate-objects."
+
+lease=""
+cleanup_lease=0
+cleanup_state=0
+state_tmp=""
+receipt_tmp=""
+
+lease_path_is_scoped() {
+    candidate="$1"
+    case "$candidate" in
+    "$lease_prefix"*) ;;
+    *) return 1 ;;
+    esac
+    suffix="${candidate#"$lease_prefix"}"
+    [ -n "$suffix" ] || return 1
+    case "$suffix" in
+    */*) return 1 ;;
+    esac
+}
+
+lease_is_valid() {
+    lease_path_is_scoped "$1" && [ -d "$1" ]
+}
+
+remove_lease() {
+    lease_is_valid "$1" || return 1
+    rm -rf "$1"
+}
+
+cleanup() {
+    if [ -n "$receipt_tmp" ]; then
+        rm -f "$receipt_tmp"
+        receipt_tmp=""
+    fi
+    if [ -n "$state_tmp" ]; then
+        rm -f "$state_tmp"
+        state_tmp=""
+    fi
+    if [ "$cleanup_state" -eq 1 ]; then
+        rm -f "$preflight_state"
+        cleanup_state=0
+    fi
+    if [ "$cleanup_lease" -eq 1 ] && [ -n "$lease" ]; then
+        remove_lease "$lease" 2>/dev/null || true
+        lease=""
+        cleanup_lease=0
+    fi
+}
+
+on_signal() {
+    status="$1"
+    trap - EXIT HUP INT TERM
+    cleanup
+    exit "$status"
+}
+
+trap cleanup EXIT
+trap 'on_signal 129' HUP
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
+
+load_preflight_state() {
+    [ -f "$preflight_state" ] || return 1
+    state_body="$(cat "$preflight_state" 2>/dev/null)" || return 1
+    state_tree="$(sed -n 's/^tree //p' "$preflight_state" 2>/dev/null)"
+    state_lease="$(sed -n 's/^objects //p' "$preflight_state" 2>/dev/null)"
+    expected_state="tree $state_tree
+objects $state_lease"
+    [ "$state_body" = "$expected_state" ] || return 1
+    printf '%s\n' "$state_tree" | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$' \
+        || return 1
+    lease_is_valid "$state_lease"
+}
+
+git_with_lease() {
+    GIT_OBJECT_DIRECTORY="$lease" \
+        GIT_ALTERNATE_OBJECT_DIRECTORIES="$source_objects" \
+        git "$@"
+}
 
 # The tree object id of every TRACKED file as it currently stands in this
 # worktree — HEAD's tree with any uncommitted edits to tracked files folded in.
@@ -113,11 +195,34 @@ preflight_state="$git_dir/storyhook-gate-preflight"
 # proves this script, rather than an in-process sourcing relationship a test
 # could only pin by static inspection.
 tracked_tree() {
-    "$(dirname "${BASH_SOURCE[0]}")/tracked-tree.sh"
+    if [ "$#" -eq 1 ]; then
+        "$(dirname "${BASH_SOURCE[0]}")/tracked-tree.sh" "$1"
+    else
+        "$(dirname "${BASH_SOURCE[0]}")/tracked-tree.sh"
+    fi
 }
 
 case "$phase" in
 preflight)
+    # A killed or abandoned gate can leave the prior caller-owned object
+    # lease behind. Reap it only after validating that the state names an
+    # actual directory in this worktree's private git directory. Corrupt
+    # state is removed but never followed to an arbitrary deletion target.
+    if [ -e "$preflight_state" ]; then
+        if load_preflight_state; then
+            note "discarding an abandoned preflight for tree $state_tree"
+            remove_lease "$state_lease" \
+                || die "could not remove abandoned object storage"
+            rm -f "$preflight_state" \
+                || die "could not remove abandoned preflight state"
+        else
+            rm -f "$preflight_state" \
+                || die "could not remove invalid preflight state"
+            die "discarded invalid preflight state without deleting any object directory; run the gate again"
+        fi
+    fi
+    cleanup_state=1
+
     # 1. Enrol — idempotent, silent when already right, loud when it changes,
     #    and refusing rather than clobbering a value another tool owns.
     current="$(git config --local --get core.hooksPath 2>/dev/null || true)"
@@ -160,13 +265,42 @@ onto main:"
         printf '%s' "$stale" >&2
     fi
 
-    tree="$(tracked_tree)" \
+    lease="$(mktemp -d "$lease_prefix"XXXXXX)" \
+        || die "could not create private object storage"
+    cleanup_lease=1
+    lease_is_valid "$lease" \
+        || die "created object storage outside the expected worktree-private location"
+
+    tree="$(tracked_tree "$lease")" \
         || die "could not resolve this worktree's tracked content"
-    printf '%s\n' "$tree" > "$preflight_state" \
+    state_tmp="$preflight_state.tmp.$$"
+    {
+        printf 'tree %s\n' "$tree"
+        printf 'objects %s\n' "$lease"
+        true
+    } > "$state_tmp" || die "could not stage the preflight state"
+    mv -f "$state_tmp" "$preflight_state" \
         || die "could not record the preflight tree"
+    state_tmp=""
+    cleanup_lease=0
+    cleanup_state=0
     ;;
 
 postlude)
+    [ -f "$preflight_state" ] \
+        || die "no preflight was recorded — 'make test' must run \
+'gate-receipt.sh preflight' before its first leg, or nothing certified is \
+certified against anything"
+    if ! load_preflight_state; then
+        rm -f "$preflight_state" \
+            || die "could not remove invalid preflight state"
+        die "preflight state is invalid; no object directory was deleted and nothing was certified"
+    fi
+    before="$state_tree"
+    lease="$state_lease"
+    cleanup_lease=1
+    cleanup_state=1
+
     tier="${2:-gate}"
     base_tree="${3:-}"
     case "$tier" in
@@ -186,21 +320,18 @@ changed receipt must name a tree that was itself fully certified, not another se
         die "only 'changed' takes a base tree; got tier '$tier' with base '$base_tree'"
     fi
 
-    [ -f "$preflight_state" ] \
-        || die "no preflight was recorded — 'make test' must run \
-'gate-receipt.sh preflight' before its first leg, or nothing certified is \
-certified against anything"
-    before="$(cat "$preflight_state")"
-    after="$(tracked_tree)" \
+    after="$(tracked_tree "$lease")" \
         || die "could not resolve this worktree's tracked content"
 
     # Mid-run drift. Nine minutes is long enough for an agent to edit tracked
     # files while the suite runs, and a receipt written blind at the end would
     # certify a mixture no single run ever tested end to end.
     if [ "$before" != "$after" ]; then
+        changed_paths="$(git_with_lease diff --name-only "$before" "$after" 2>/dev/null)" \
+            || die "could not compare the preflight tree with the current tracked content"
         note "tracked content changed while the suite was running, so this run \
 certifies nothing. Changed:"
-        git diff --name-only "$before" "$after" 2>/dev/null | sed 's/^/  /' >&2
+        printf '%s\n' "$changed_paths" | sed 's/^/  /' >&2
         die "run the gate again on the tree you intend to push"
     fi
 
@@ -224,7 +355,6 @@ certifies nothing. Changed:"
         if [ "$(tier_rank "$tier")" -lt "$(tier_rank "$existing_tier")" ]; then
             note "tree $after already carries a $existing_tier receipt; a $tier-tier \
 run does not downgrade it"
-            rm -f "$preflight_state"
             exit 0
         fi
     fi
@@ -232,7 +362,7 @@ run does not downgrade it"
     # Atomic: the filename IS the claim, so a half-written one would read as
     # valid. rename(2) within a directory is atomic; a SIGTERM mid-write — the
     # exact failure this story measured — leaves the temp file, not a receipt.
-    tmp="$receipts/.tmp.$$"
+    receipt_tmp="$receipts/.tmp.$$"
     {
         printf 'tree %s\n' "$after"
         printf 'worktree %s\n' "$root"
@@ -241,9 +371,9 @@ run does not downgrade it"
             printf 'base %s\n' "$base_tree"
         fi
         true
-    } > "$tmp" || die "could not stage the receipt"
-    mv -f "$tmp" "$receipts/$after" || die "could not publish the receipt"
-    rm -f "$preflight_state"
+    } > "$receipt_tmp" || die "could not stage the receipt"
+    mv -f "$receipt_tmp" "$receipts/$after" || die "could not publish the receipt"
+    receipt_tmp=""
     ;;
 
 *)
