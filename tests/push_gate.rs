@@ -409,6 +409,39 @@ fn a_receipt_from_the_production_writer_lets_the_same_push_through() {
     );
 }
 
+#[test]
+fn an_empty_committed_repo_can_be_certified_and_pushed() {
+    let repo = GateRepo::new();
+    assert_ok(
+        &repo.git(&["rm", "-q", "f"]),
+        "removing the only tracked file",
+    );
+    assert_ok(
+        &repo.git(&["commit", "-qm", "empty tree"]),
+        "committing the empty tree",
+    );
+    let tree = String::from_utf8_lossy(&repo.git(&["rev-parse", "HEAD^{tree}"]).stdout)
+        .trim()
+        .to_string();
+
+    repo.enroll_and_certify();
+
+    assert!(
+        repo.path()
+            .join(".git/storyhook/gate-receipts")
+            .join(&tree)
+            .is_file(),
+        "gate preflight/postlude must write a receipt keyed by the empty tree"
+    );
+    let out = repo.push(&[]);
+    assert_ok(&out, "pushing a certified empty committed repo");
+    assert_eq!(
+        repo.remote_sha("main").as_deref(),
+        Some(repo.head().as_str()),
+        "the certified empty committed repo must reach the protected branch"
+    );
+}
+
 /// The receipt's own failure class: it certifies one tree, not a branch.
 ///
 /// This is the shape that makes a receipt worth having — "tested, then changed
