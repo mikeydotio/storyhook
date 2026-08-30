@@ -118,6 +118,7 @@ impl Dispatcher for ShellDispatcher {
             &request.story,
             request.agent,
             true,
+            true,
             &self.env,
         )
     }
@@ -177,14 +178,17 @@ impl Dispatcher for ShellDispatcher {
     }
 }
 
-/// Runs one helper invocation. The dashboard uses `auto` from its request;
-/// [`ShellDispatcher`] always supplies true for engine lanes.
+/// Runs one helper invocation. The dashboard uses `auto` from its request and
+/// never supplies `full_auto`; [`ShellDispatcher`] supplies both flags for an
+/// engine lane so that only the engine receives that identity and isolation
+/// boundary.
 pub(crate) fn run_shell_dispatch(
     script: &Path,
     project: &str,
     story: &str,
     agent: EngineAgent,
     auto: bool,
+    full_auto: bool,
     env: &Environment,
 ) -> Result<DispatchOutcome, AppError> {
     let [
@@ -225,6 +229,10 @@ pub(crate) fn run_shell_dispatch(
         .arg(format!("--agent={}", agent.as_str()));
     if auto {
         command.arg("--auto");
+    }
+    if full_auto {
+        debug_assert!(auto, "Full Auto is a modifier of autonomous dispatch");
+        command.arg("--full-auto");
     }
     apply_dispatch_allowlist(&mut command);
     command

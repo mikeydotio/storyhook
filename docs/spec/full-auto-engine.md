@@ -405,10 +405,12 @@ When active:
 | Everything else | no decision | — |
 
 The permission *posture* is not the hook's job: the engine launches the lane
-with the host's own flag via `STORY_LAUNCH_CMD` (Claude: plan mode plus an
-accept-edits posture after approval), so the hook decides two things and
-annotates nothing else. A hook that annotates must never decide, and one that
-decides must decide only what it was built to (SH-355).
+with the provider's built-in Auto command, or the dedicated
+`STORY_FULL_AUTO_LAUNCH_CMD` override (Claude: plan mode plus an accept-edits
+posture after approval). The daemon's general `STORY_LAUNCH_CMD` is never used
+for an engine lane. The hook decides two things and annotates nothing else. A
+hook that annotates must never decide, and one that decides must decide only
+what it was built to (SH-355).
 
 ### Codex `PreToolUse` contract (SH-459)
 
@@ -1105,3 +1107,43 @@ result with that override reports `launch_source: "STORY_LAUNCH_CMD"`,
 weakened. Built-in Auto reports `launch_source: "builtin"`; attended JSON and
 commands remain unchanged. The dashboard and operator docs describe Auto as
 zero-interaction rather than asking a person to approve the plan.
+
+### SH-461 — engine dispatch identity and override isolation
+
+`ShellDispatcher` is the only caller that adds `--full-auto`, and its exact
+helper argv ends in `--auto --full-auto`. The modifier is accepted only once,
+with `--auto` and a named story. In particular, `dispatch --next --auto
+--full-auto` is invalid: the reconcile loop has already selected the story, so
+an id-less helper claim would erase the identity the engine is responsible for
+tracking. Validation happens before the story, tmux, checkout, or claim gates.
+Dashboard dispatch, plugin adapters, skills, and direct ordinary Auto callers
+continue to supply only `--auto`.
+
+The tmux boundary exports a complete marker matrix on every new window:
+
+| Dispatch kind | `STORYHOOK_AUTO` | `STORYHOOK_FULL_AUTO` |
+|---|---|---|
+| attended | empty | empty |
+| ordinary `--auto` | story id | empty |
+| engine `--auto --full-auto` | empty | story id |
+
+Both values are `tmux new-window -e` arguments. A non-empty lane marker is
+never installed into the tmux session environment, and explicit empties contain
+a stale value inherited by a later non-lane window. Claude inherits the chosen
+pair in its hook process. The Codex exact-pane watcher receives the same pair in
+its `tmux run-shell` environment; SH-461 changes neither provider's approval
+predicate nor its timing.
+
+Full Auto deliberately reuses `DEFAULT_AUTO_LAUNCH_TPL`, the provider posture
+landed and live-proven by SH-511. `STORY_FULL_AUTO_LAUNCH_CMD` is its only
+override. A non-empty inherited `STORY_LAUNCH_CMD` is ignored and reported as
+`ignored_general_override: "STORY_LAUNCH_CMD"`; Full Auto still reports its
+selected `launch_source`, `launch_overridden`, and `full_auto: true`. Non-Full-
+Auto JSON is unchanged except that both empty marker values now appear at the
+tmux window boundary.
+
+The blast radius is one edit-capable agent in one disposable worktree. Its
+autonomous charter still prohibits version, release, and deployment actions,
+and it may merge only through the certified path. The dedicated override can
+widen that provider posture, so it is reported in JSON and display; a daemon's
+general expert override cannot widen it accidentally.

@@ -18,7 +18,7 @@
 # boolean and a human-readable `display`, mirroring issue.sh/storywork's own
 # contract:
 #
-#   dispatch <id> [--auto] [--force] [--agent=claude|codex]
+#   dispatch <id> [--auto] [--full-auto] [--force] [--agent=claude|codex]
 #                   Refuse unless <id> is READY (issue #40's core ask — see
 #                    the READY-GATE step below) and not already claimed, then
 #                    claim it via storyhook's CAS primitive, create a NEW git
@@ -110,7 +110,7 @@ set -euo pipefail
 
 # The daemon<->script argv contract this file implements (SH-196). The
 # dashboard's dispatch endpoint (src/api/dispatch.rs) invokes this script as
-# `story.sh --project <slug> dispatch <id> [--auto] [--force]
+# `story.sh --project <slug> dispatch <id> [--auto] [--full-auto] [--force]
 # [--agent=claude|codex]`; before SH-196, a daemon
 # and a script that disagreed about that contract failed by relaying this
 # script's own generic top-level usage error as a well-formed business
@@ -225,6 +225,26 @@ configure_agent() {
     AUTO_LAUNCH_TPL="$DEFAULT_AUTO_LAUNCH_TPL"
     AUTO_LAUNCH_SOURCE="builtin"
     AUTO_LAUNCH_OVERRIDDEN=false
+  fi
+  # ENGINE FULL AUTO BLAST RADIUS (SH-461). An engine lane gives the selected
+  # agent edit rights inside one disposable worktree. The autonomous charter's
+  # version/release/deploy prohibitions remain intact, and merge is allowed only
+  # through its certified path. Reuse the provider posture proven by SH-511,
+  # but isolate it from the daemon's general expert override: an inherited
+  # STORY_LAUNCH_CMD may weaken ordinary dispatches, never an engine lane.
+  if [ -n "${STORY_FULL_AUTO_LAUNCH_CMD:-}" ]; then
+    FULL_AUTO_LAUNCH_TPL="$STORY_FULL_AUTO_LAUNCH_CMD"
+    FULL_AUTO_LAUNCH_SOURCE="STORY_FULL_AUTO_LAUNCH_CMD"
+    FULL_AUTO_LAUNCH_OVERRIDDEN=true
+  else
+    FULL_AUTO_LAUNCH_TPL="$DEFAULT_AUTO_LAUNCH_TPL"
+    FULL_AUTO_LAUNCH_SOURCE="builtin"
+    FULL_AUTO_LAUNCH_OVERRIDDEN=false
+  fi
+  if [ -n "${STORY_LAUNCH_CMD:-}" ]; then
+    FULL_AUTO_IGNORED_GENERAL_OVERRIDE="STORY_LAUNCH_CMD"
+  else
+    FULL_AUTO_IGNORED_GENERAL_OVERRIDE=""
   fi
   WORKTREE_IGNORE_PATH="${STORY_WORKTREE_IGNORE_PATH:-$DEFAULT_WORKTREE_IGNORE_PATH}"
   READY_PROMPT_GLYPH="${STORY_READY_PROMPT_GLYPH:-$DEFAULT_READY_PROMPT_GLYPH}"
@@ -784,14 +804,16 @@ ensure_provider_plan_mode() {
 # instead of the short-lived dispatch process's. All shell-bound values are
 # quoted before tmux hands the command to its shell.
 schedule_codex_plan_approval() {
-  local pane="$1" story_id="$2" hook_q pane_q id_q
+  local pane="$1" auto_marker="$2" full_auto_marker="$3"
+  local hook_q pane_q auto_q full_auto_q
   [ "$AGENT" = codex ] || return 0
   [[ "$pane" =~ ^%[0-9]+$ ]] || return 1
   printf -v hook_q '%q' "$AUTO_APPROVAL_HOOK"
   printf -v pane_q '%q' "$pane"
-  printf -v id_q '%q' "$story_id"
+  printf -v auto_q '%q' "$auto_marker"
+  printf -v full_auto_q '%q' "$full_auto_marker"
   tmux run-shell -b -t "$pane" \
-    "env STORYHOOK_AUTO=$id_q bash $hook_q --approve-codex-plan $pane_q" \
+    "env STORYHOOK_AUTO=$auto_q STORYHOOK_FULL_AUTO=$full_auto_q bash $hook_q --approve-codex-plan $pane_q" \
     >/dev/null 2>&1
 }
 
@@ -979,7 +1001,7 @@ council_vote_available() {
 
 # ---- subcommand: dispatch ---------------------------------------------------
 cmd_dispatch() {
-  # <story-id> XOR --next may appear before or after --auto/--force/--agent; anything past
+  # <story-id> XOR --next may appear before or after --auto/--full-auto/--force/--agent; anything past
   # that (a second positional, an unknown flag) is a hard fail rather than
   # the silent ignore this verb used to give a stray trailing token —
   # matching view/list/capture/doctor/complete-plan, which already reject
@@ -988,17 +1010,20 @@ cmd_dispatch() {
   # see the NEXT MODE section below for why this is a second mode and not a
   # rewrite of the id-directed claim, which since SH-482 goes through the same
   # verb as `story claim <id>`.
-  local id="" auto="" want_next="" force="" requested_agent=""
+  local id="" auto="" full_auto="" want_next="" force="" requested_agent=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --auto)
-        [ -z "$auto" ] || fail "--auto may be specified only once — usage: story.sh dispatch (<story-id> | --next) [--auto] [--force] [--agent=claude|codex]"
+        [ -z "$auto" ] || fail "--auto may be specified only once — usage: story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--agent=claude|codex]"
         auto=1; shift ;;
+      --full-auto)
+        [ -z "$full_auto" ] || fail "--full-auto may be specified only once — usage: story.sh dispatch <story-id> --auto [--full-auto] [--force] [--agent=claude|codex]"
+        full_auto=1; shift ;;
       --force)
-        [ -z "$force" ] || fail "--force may be specified only once — usage: story.sh dispatch <story-id> [--auto] [--force] [--agent=claude|codex]"
+        [ -z "$force" ] || fail "--force may be specified only once — usage: story.sh dispatch <story-id> [--auto] [--full-auto] [--force] [--agent=claude|codex]"
         force=1; shift ;;
       --agent=*)
-        [ -z "$requested_agent" ] || fail "--agent may be specified only once — usage: story.sh dispatch (<story-id> | --next) [--auto] [--force] [--agent=claude|codex]"
+        [ -z "$requested_agent" ] || fail "--agent may be specified only once — usage: story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--agent=claude|codex]"
         requested_agent="${1#--agent=}"
         case "$requested_agent" in
           claude|codex) ;;
@@ -1006,18 +1031,22 @@ cmd_dispatch() {
         esac
         shift ;;
       --next)
-        [ -z "$want_next" ] || fail "--next may be specified only once — usage: story.sh dispatch (<story-id> | --next) [--auto] [--force] [--agent=claude|codex]"
-        [ -z "$id" ] || fail "--next cannot be combined with a story id \`$id\` — usage: story.sh dispatch (<story-id> | --next) [--auto] [--force] [--agent=claude|codex]"
+        [ -z "$want_next" ] || fail "--next may be specified only once — usage: story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--agent=claude|codex]"
+        [ -z "$id" ] || fail "--next cannot be combined with a story id \`$id\` — usage: story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--agent=claude|codex]"
         want_next=1; shift ;;
       *)
-        [ -z "$id" ] || fail "unexpected argument \`$1\` — usage: story.sh dispatch (<story-id> | --next) [--auto] [--force] [--agent=claude|codex]"
-        [ -z "$want_next" ] || fail "--next cannot be combined with a story id \`$1\` — usage: story.sh dispatch (<story-id> | --next) [--auto] [--force] [--agent=claude|codex]"
+        [ -z "$id" ] || fail "unexpected argument \`$1\` — usage: story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--agent=claude|codex]"
+        [ -z "$want_next" ] || fail "--next cannot be combined with a story id \`$1\` — usage: story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--agent=claude|codex]"
         id="$1"; shift ;;
     esac
   done
-  [ -n "$id" ] || [ -n "$want_next" ] || fail "usage: story.sh dispatch (<story-id> | --next) [--auto] [--force] [--agent=claude|codex]"
+  [ -n "$id" ] || [ -n "$want_next" ] || fail "usage: story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--agent=claude|codex]"
   [ -z "$want_next" ] || [ -z "$force" ] \
-    || fail "--force requires a named story id and cannot be combined with --next — usage: story.sh dispatch <story-id> [--auto] [--force] [--agent=claude|codex]"
+    || fail "--force requires a named story id and cannot be combined with --next — usage: story.sh dispatch <story-id> [--auto] [--full-auto] [--force] [--agent=claude|codex]"
+  [ -z "$full_auto" ] || [ -n "$auto" ] \
+    || fail "--full-auto requires --auto — usage: story.sh dispatch <story-id> --auto --full-auto [--force] [--agent=claude|codex]"
+  [ -z "$full_auto" ] || [ -n "$id" ] \
+    || fail "--full-auto requires a named story id and cannot be combined with --next — usage: story.sh dispatch <story-id> --auto --full-auto [--force] [--agent=claude|codex]"
   [ -z "$id" ] || valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
 
   # The explicit dispatch option outranks STORY_AGENT. Both are resolved
@@ -1028,7 +1057,15 @@ cmd_dispatch() {
   else
     configure_agent "${STORY_AGENT:-claude}"
   fi
-  if [ -n "$auto" ]; then
+  local launch_source="$AUTO_LAUNCH_SOURCE" launch_overridden="$AUTO_LAUNCH_OVERRIDDEN"
+  local ignored_general_override=""
+  if [ -n "$full_auto" ]; then
+    LAUNCH_TPL="$FULL_AUTO_LAUNCH_TPL"
+    launch_source="$FULL_AUTO_LAUNCH_SOURCE"
+    launch_overridden="$FULL_AUTO_LAUNCH_OVERRIDDEN"
+    ignored_general_override="$FULL_AUTO_IGNORED_GENERAL_OVERRIDE"
+    READY_LAUNCH_BIN="${LAUNCH_TPL%% *}"
+  elif [ -n "$auto" ]; then
     LAUNCH_TPL="$AUTO_LAUNCH_TPL"
     READY_LAUNCH_BIN="${LAUNCH_TPL%% *}"
   fi
@@ -1299,13 +1336,19 @@ cmd_dispatch() {
   # cannot reliably reconstruct any of the three on its own, so it is handed
   # the literal command rather than instructions to improvise one. A no-op
   # substitution for the attended template, which never references <reap>.
-  local launch_cmd prompt reap_cmd completion_state="" auto_tmux_arg=""
+  local launch_cmd prompt reap_cmd completion_state=""
+  local auto_marker="" full_auto_marker="" marker_tmux_args=""
   reap_cmd="bash \"$SELF_PATH\" --project \"$PROJECT_SLUG\" reap \"$id\""
   if [ -n "$auto" ]; then
     completion_state=$(story_closed_state)
   fi
   launch_cmd=$(render_template "$LAUNCH_TPL" "$id" "$wname" "$dir")
-  [ -z "$auto" ] || auto_tmux_arg="-e STORYHOOK_AUTO=$id "
+  if [ -n "$full_auto" ]; then
+    full_auto_marker="$id"
+  elif [ -n "$auto" ]; then
+    auto_marker="$id"
+  fi
+  marker_tmux_args="-e STORYHOOK_AUTO=$auto_marker -e STORYHOOK_FULL_AUTO=$full_auto_marker "
   prompt=$(render_template "$prompt_tpl" "$id" "$wname" "$dir" "$reap_cmd" "$completion_state")
   [ -n "$PROMPT_EXTRA" ] && prompt="$prompt $PROMPT_EXTRA"
 
@@ -1315,13 +1358,19 @@ cmd_dispatch() {
   # deny question tools instead of waiting for a person who is not there.
   local auto_note=""
   if [ -n "$auto" ]; then
+    local autonomy_label="Autonomous (--auto)"
+    [ -z "$full_auto" ] || autonomy_label="Full Auto (--auto --full-auto)"
     if [ "$council" = "true" ]; then
-      auto_note=" Autonomous (--auto): the child starts in Plan mode, Storyhook approves the plan automatically, and the provider launch posture handles later permissions. It then runs to completion on its own -- researching and deciding its easy questions itself, convening council-vote for the genuinely hard ones, merging its own PR, closing $id itself, and reclaiming its own worktree, branch and window once it does."
+      auto_note=" $autonomy_label: the child starts in Plan mode, Storyhook approves the plan automatically, and the provider launch posture handles later permissions. It then runs to completion on its own -- researching and deciding its easy questions itself, convening council-vote for the genuinely hard ones, merging its own PR, closing $id itself, and reclaiming its own worktree, branch and window once it does."
     else
-      auto_note=" Autonomous (--auto): the child starts in Plan mode, Storyhook approves the plan automatically, and the provider launch posture handles later permissions. No council-vote skill was found, so it researches and decides its hard questions too, rather than convening a council. It then runs to completion on its own -- merging its own PR, closing $id itself, and reclaiming its own worktree, branch and window once it does."
+      auto_note=" $autonomy_label: the child starts in Plan mode, Storyhook approves the plan automatically, and the provider launch posture handles later permissions. No council-vote skill was found, so it researches and decides its hard questions too, rather than convening a council. It then runs to completion on its own -- merging its own PR, closing $id itself, and reclaiming its own worktree, branch and window once it does."
     fi
     [ "$AGENT" != "codex" ] || auto_note="$auto_note Codex has no stable machine-readable skill inventory, so automatic council discovery uses the safe solo charter unless STORY_COUNCIL=on is set explicitly."
-    [ "$AUTO_LAUNCH_OVERRIDDEN" = false ] || auto_note="$auto_note Launch override $AUTO_LAUNCH_SOURCE is active and may weaken unattendedness."
+    if [ -n "$full_auto" ]; then
+      auto_note="$auto_note Full Auto launch source: $launch_source (launch_overridden=$launch_overridden)."
+    fi
+    [ "$launch_overridden" = false ] || auto_note="$auto_note Launch override $launch_source is active and may weaken unattendedness."
+    [ -z "$ignored_general_override" ] || auto_note="$auto_note Ignored $ignored_general_override because Full Auto accepts only its dedicated launch override."
   fi
 
   local ignore_status
@@ -1351,9 +1400,12 @@ cmd_dispatch() {
       --arg ignore_status "$ignore_status" \
       --arg detach "$detach" --arg target "$target" \
       --argjson auto "$([ -n "$auto" ] && echo true || echo false)" --arg auto_note "$auto_note" \
-      --arg launch_source "$AUTO_LAUNCH_SOURCE" \
-      --argjson launch_overridden "$AUTO_LAUNCH_OVERRIDDEN" \
-      --arg auto_tmux_arg "$auto_tmux_arg" \
+      --argjson full_auto "$([ -n "$full_auto" ] && echo true || echo false)" \
+      --arg launch_source "$launch_source" \
+      --argjson launch_overridden "$launch_overridden" \
+      --arg ignored_general_override "$ignored_general_override" \
+      --arg marker_tmux_args "$marker_tmux_args" \
+      --arg auto_marker "$auto_marker" --arg full_auto_marker "$full_auto_marker" \
       --argjson council "$council" \
       --argjson forced "$([ -n "$force" ] && echo true || echo false)" \
       --argjson reused_claim "$reused_claim" \
@@ -1368,13 +1420,15 @@ cmd_dispatch() {
         gitignore: (if $ignore_status == "already-ignored" then "already-ignored" else "would-add" end),
         commands: ((if $claim_cmd == "" then [] else [$claim_cmd] end) + [
           ("git worktree add --no-track -b " + $wtbranch + " " + $wtpath + " <base-oid>"),
-          ("tmux new-window " + $target + $detach + $auto_tmux_arg + "-c " + $wtpath + " -n " + $wname + " -P -F #{pane_id} " + $launch
+          ("tmux new-window " + $target + $detach + $marker_tmux_args + "-c " + $wtpath + " -n " + $wname + " -P -F #{pane_id} " + $launch
              + " \\; set-window-option -t " + $wname + " remain-on-exit on"
              + " \\; set-window-option -t " + $wname + " automatic-rename off"
              + " \\; set-window-option -t " + $wname + " allow-rename off"),
           (if $agent == "codex" then ("tmux send-keys -t <pane> " + $plan_key + " # if Plan footer is absent") else empty end),
           (if $agent == "codex" and $auto then
-             ("tmux run-shell -b -t <pane> env STORYHOOK_AUTO=" + $id + " bash " + $approval_hook + " --approve-codex-plan <pane>")
+             ("tmux run-shell -b -t <pane> env STORYHOOK_AUTO=" + $auto_marker
+              + " STORYHOOK_FULL_AUTO=" + $full_auto_marker + " bash " + $approval_hook
+              + " --approve-codex-plan <pane>")
            else empty end),
           ("printf %s " + $prompt + " | tmux load-buffer -b story-" + $id + " -"),
           ("tmux paste-buffer -p -d -b story-" + $id + " -t <pane>"),
@@ -1388,7 +1442,10 @@ cmd_dispatch() {
       + (if $auto then {
           launch_source: $launch_source,
           launch_overridden: $launch_overridden
-        } else {} end)'
+        } else {} end)
+      + (if $full_auto then {full_auto: true} else {} end)
+      + (if $ignored_general_override == "" then {}
+         else {ignored_general_override: $ignored_general_override} end)'
     return 0
   fi
 
@@ -1518,7 +1575,7 @@ cmd_dispatch() {
   # of these calls has a message worth surfacing on the happy path.
   local new_window_args pane window set_target
   new_window_args=(-c "$worktree_path" -n "$wname" -P -F '#{pane_id}')
-  [ -z "$auto" ] || new_window_args=(-e "STORYHOOK_AUTO=$id" "${new_window_args[@]}")
+  new_window_args=(-e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" "${new_window_args[@]}")
   [ -z "$FOREGROUND" ] && new_window_args=(-d "${new_window_args[@]}")
   [ -n "$TARGET_SESSION" ] && new_window_args=(-t "$TARGET_SESSION:" "${new_window_args[@]}")
   set_target="$wname"
@@ -1604,7 +1661,7 @@ cmd_dispatch() {
   # be armed; otherwise this command would claim unattendedness while knowingly
   # launching a session that must stop for a person.
   if [ -n "$auto" ] && [ "$AGENT" = codex ] \
-     && ! schedule_codex_plan_approval "$pane" "$id"; then
+     && ! schedule_codex_plan_approval "$pane" "$auto_marker" "$full_auto_marker"; then
     local approval_tail
     approval_tail=$(pane_tail "$pane")
     git worktree remove --force "$worktree_path" >/dev/null 2>&1 || true
@@ -1693,8 +1750,10 @@ cmd_dispatch() {
     --argjson pconf "$prompt_confirmed" \
     --argjson paccept "$prompt_accepted_flag" \
     --argjson auto "$([ -n "$auto" ] && echo true || echo false)" --argjson council "$council" \
-    --arg launch_source "$AUTO_LAUNCH_SOURCE" \
-    --argjson launch_overridden "$AUTO_LAUNCH_OVERRIDDEN" \
+    --argjson full_auto "$([ -n "$full_auto" ] && echo true || echo false)" \
+    --arg launch_source "$launch_source" \
+    --argjson launch_overridden "$launch_overridden" \
+    --arg ignored_general_override "$ignored_general_override" \
     --argjson forced "$([ -n "$force" ] && echo true || echo false)" \
     --argjson reused_claim "$reused_claim" --argjson claim_transitioned "$claim_transitioned" \
     --arg warning "$warning" --arg tail "$tail_evidence" --arg display "$display" \
@@ -1720,6 +1779,9 @@ cmd_dispatch() {
         launch_source: $launch_source,
         launch_overridden: $launch_overridden
       } else {} end)
+    + (if $full_auto then {full_auto: true} else {} end)
+    + (if $ignored_general_override == "" then {}
+       else {ignored_general_override: $ignored_general_override} end)
     + (if $warning == "" then {} else {warning: $warning} end)
     + (if $tail == "" then {} else {pane_tail: $tail} end)
     + (if $session == "" then {} else {session: $session, session_created: $session_created} end)
@@ -3639,5 +3701,5 @@ case "${1:-}" in
   triage)     shift; cmd_triage "$@" ;;
   scaffold-claude-md) shift; cmd_scaffold_claude_md "$@" ;;
   scaffold-agents-md) shift; cmd_scaffold_agents_md "$@" ;;
-  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] [--force] [--agent=claude|codex] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | unclaim <story-id> [--comment <t> | --no-comment] | reset <story-id> [--force] [--comment <t> | --no-comment] | doctor | capture <story-id> | ensure-cli | context [--full] | sync [--since <d>] | handoff [--since <d>] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
+  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--agent=claude|codex] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | unclaim <story-id> [--comment <t> | --no-comment] | reset <story-id> [--force] [--comment <t> | --no-comment] | doctor | capture <story-id> | ensure-cli | context [--full] | sync [--since <d>] | handoff [--since <d>] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
 esac
