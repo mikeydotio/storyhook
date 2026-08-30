@@ -57,17 +57,15 @@
 # the SH-306 rule (silence is never a pass) applied to the tier this script
 # does not run.
 #
-# WHY THIS SCRIPT HAS NO AUTOMATED TEST. `scripts/merge-preflight.sh` — the
-# part that decides correctness — has an exhaustive real-git suite
-# (tests/merge_gate.rs), because that is where a wrong answer would be a
-# silent gate failure. This script is thin orchestration on top of already-
-# tested primitives (merge-preflight.sh, `gate-receipt.sh` via a plain `make
-# test`) plus real GitHub API calls; this project's own testing tenets are
-# explicit that mocking *behaviour* (as opposed to data) validates the mock,
-# not the integration — SH-263 and SH-345 are exactly the cases where a
-# fixture that didn't behave like the real thing lied to the gate it fed.
-# Verified by hand instead, against this repo's own live PRs, each time this
-# script changes.
+# WHY THE GITHUB SHELL HAS NO AUTOMATED TEST. The polling and comment layer is
+# thin orchestration over `gh`; this project's testing tenets are explicit
+# that mocking behaviour validates the mock, not the integration (SH-263,
+# SH-345). The local correctness boundary is different and is tested:
+# `merge-preflight.sh` decides the tree, while this script's private
+# `--speculative-run` mode owns the object lease, checkout, gate-command
+# environment, restoration, and cleanup. tests/merge_gate.rs drives both
+# against real Git and leaves only the live GitHub API shell for hand
+# verification against this repository's own PRs.
 
 set -uo pipefail
 
@@ -80,13 +78,175 @@ note() {
     printf 'merge-watch: %s\n' "$1" >&2
 }
 
-command -v gh >/dev/null 2>&1 || die "the gh CLI is required and was not found"
-
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" \
+    || die "cannot resolve the production script directory"
 root="$(git rev-parse --show-toplevel 2>/dev/null)" || die "not inside a git worktree"
 cd "$root" || die "cannot enter $root"
 
 common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd)" \
     || die "cannot resolve the shared git directory"
+source_objects="$(cd "$common_dir/objects" && pwd -P)" \
+    || die "cannot resolve the shared object directory"
+
+# The real-Git core of an uncertified candidate, separated from the GitHub
+# polling shell for the same reason land-pr.sh exposes --certified-run: tests
+# can provoke object ownership, checkout, command failure, and signals without
+# pretending a gh shim proves anything about GitHub. This is a private
+# self-entry point, not an additional user-facing command.
+if [ "${1:-}" = "--speculative-run" ]; then
+    [ "$#" -ge 7 ] && [ "${6:-}" = "--" ] \
+        || die "private usage: merge-watch.sh --speculative-run <expected-tree> <base-ref> <head-ref> <poller-worktree> -- <command...>"
+    expected_tree="$2"
+    base="$3"
+    head="$4"
+    poller_wt="$5"
+    shift 6
+
+    [ -e "$poller_wt/.git" ] \
+        || die "the speculative poller worktree at $poller_wt has no .git entry"
+
+    lease_root="$common_dir/storyhook"
+    mkdir -p "$lease_root" || die "could not create private merge state at $lease_root"
+    lease_root="$(cd "$lease_root" && pwd -P)" \
+        || die "cannot resolve the private merge-state directory"
+    lease_prefix="$lease_root/merge-watch-objects."
+    lease=""
+    child=""
+    poller_needs_restore=0
+    retain_lease=0
+    inherited_alternates="${GIT_ALTERNATE_OBJECT_DIRECTORIES:-}"
+
+    lease_is_valid() {
+        candidate="$1"
+        case "$candidate" in
+        "$lease_prefix"*) ;;
+        *) return 1 ;;
+        esac
+        suffix="${candidate#"$lease_prefix"}"
+        [ -n "$suffix" ] || return 1
+        case "$suffix" in
+        */*) return 1 ;;
+        esac
+        [ -d "$candidate" ] && [ ! -L "$candidate" ] || return 1
+        physical="$(cd "$candidate" && pwd -P)" || return 1
+        [ "$physical" = "$candidate" ]
+    }
+
+    git_private() {
+        GIT_OBJECT_DIRECTORY="$lease" \
+            GIT_ALTERNATE_OBJECT_DIRECTORIES="$source_objects" \
+            git "$@"
+    }
+
+    restore_poller() {
+        [ "$poller_needs_restore" -eq 1 ] || return 0
+        if git_private -C "$poller_wt" checkout -q --detach "$base"; then
+            poller_needs_restore=0
+            return 0
+        fi
+        retain_lease=1
+        return 1
+    }
+
+    cleanup() {
+        if ! restore_poller; then
+            note "could not restore $poller_wt to $base; retaining private objects at $lease for recovery"
+            return
+        fi
+        if [ -n "$lease" ]; then
+            if [ "$retain_lease" -eq 0 ] && lease_is_valid "$lease"; then
+                if rm -rf "$lease"; then
+                    lease=""
+                else
+                    retain_lease=1
+                    note "could not remove private-object lease at $lease; retaining it for recovery"
+                    return 1
+                fi
+            elif [ "$retain_lease" -eq 0 ]; then
+                note "refusing to remove an invalid private-object lease path: $lease"
+                retain_lease=1
+                return 1
+            fi
+        fi
+        return 0
+    }
+
+    on_signal() {
+        signal="$1"
+        if [ -n "$child" ]; then
+            kill -s "$signal" "$child" 2>/dev/null || true
+            wait "$child" 2>/dev/null || true
+            child=""
+        fi
+        trap - "$signal" EXIT
+        cleanup || true
+        kill -s "$signal" $$
+    }
+
+    trap cleanup EXIT
+    trap 'on_signal HUP' HUP
+    trap 'on_signal INT' INT
+    trap 'on_signal TERM' TERM
+
+    created_lease="$(mktemp -d "$lease_prefix"XXXXXX)" \
+        || die "could not create private merge object storage"
+    lease="$created_lease"
+    canonical_lease="$(cd "$created_lease" && pwd -P)" \
+        || die "could not resolve private merge object storage"
+    lease="$canonical_lease"
+    lease_is_valid "$lease" \
+        || die "created object storage outside the expected private location"
+
+    candidate_tree="$(bash "$script_dir/merge-preflight.sh" \
+        --object-dir "$lease" "$base" "$head")"
+    preflight_status=$?
+    case "$preflight_status" in
+    0 | 1) ;;
+    2) exit 2 ;;
+    *) die "merge preflight failed with status $preflight_status" ;;
+    esac
+    [ "$candidate_tree" = "$expected_tree" ] \
+        || die "predicted tree changed from $expected_tree to ${candidate_tree:-<none>} before the speculative run"
+
+    merge_commit="$(git_private -C "$poller_wt" commit-tree "$candidate_tree" \
+        -p "$base" -p "$head" -m "merge-watch: speculative merge")" \
+        || die "could not build the speculative merge commit"
+    git_private -C "$poller_wt" checkout -q --detach "$merge_commit" \
+        || die "could not check out the speculative merge"
+    poller_needs_restore=1
+
+    candidate_alternates="$lease"
+    if [ -n "$inherited_alternates" ]; then
+        candidate_alternates="$candidate_alternates:$inherited_alternates"
+    fi
+
+    # `wait` is explicit so signal traps run immediately instead of being
+    # deferred until a long gate command exits. fd 3 preserves stdin for a
+    # command that needs it, matching machine-lock.sh's transparent wrapper.
+    exec 3<&0
+    (
+        trap - HUP INT TERM
+        cd "$poller_wt" || exit 1
+        exec env -u GIT_OBJECT_DIRECTORY \
+            GIT_ALTERNATE_OBJECT_DIRECTORIES="$candidate_alternates" \
+            "$@"
+    ) <&3 &
+    child=$!
+    exec 3<&-
+    wait "$child"
+    command_status=$?
+    child=""
+
+    if ! restore_poller; then
+        die "the gate command finished, but the poller worktree could not be restored; private objects were retained at $lease"
+    fi
+    cleanup \
+        || die "the gate command finished, but its private-object lease could not be removed"
+    trap - EXIT HUP INT TERM
+    exit "$command_status"
+fi
+
+command -v gh >/dev/null 2>&1 || die "the gh CLI is required and was not found"
 
 repo_slug="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)" \
     || die "could not resolve the GitHub repo slug — is gh authenticated?"
@@ -226,13 +386,9 @@ _Merging now lands a tree \`.githooks/pre-push\` already recognizes. Automated c
     1)
         note "PR #$pr: uncertified (tree $tree) — running the gate"
         log="$(mktemp -t storyhook-merge-watch-log.XXXXXX)"
-        merge_commit="$(git -C "$poller_wt" commit-tree "$tree" -p origin/main -p "$head_sha" \
-            -m "merge-watch: speculative merge of PR #$pr")" \
-            || die "PR #$pr: could not build the speculative merge commit"
-        git -C "$poller_wt" checkout -q --detach "$merge_commit" \
-            || die "PR #$pr: could not check out the speculative merge"
-
-        if (cd "$poller_wt" && make test) >"$log" 2>&1; then
+        if bash "$script_dir/merge-watch.sh" --speculative-run "$tree" \
+            origin/main "$head_sha" "$poller_wt" -- \
+            make test >"$log" 2>&1; then
             note "PR #$pr: gate passed — tree $tree is now certified"
             tail_ctx=""
             body="$marker
