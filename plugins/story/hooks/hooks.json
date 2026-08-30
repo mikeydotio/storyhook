@@ -1,5 +1,5 @@
 {
-  "description": "Storyhook agent-session hooks: startup context, Full Auto lane enforcement, post-git sync, and session handoff.",
+  "description": "Storyhook agent-session hooks: startup context, autonomous-session enforcement, post-git sync, and session handoff.",
   "hooks": {
     "SessionStart": [
       {
@@ -36,6 +36,18 @@
       },
       {
         "matcher": "request_user_input",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/full-auto.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "ExitPlanMode",
         "hooks": [
           {
             "type": "command",

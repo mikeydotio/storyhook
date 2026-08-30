@@ -19,6 +19,16 @@ The helper owns the compare-and-swap claim, fresh base, `.codex/worktrees/<id>` 
 tmux window, `codex --no-alt-screen` launch, screen readiness, Shift+Tab transition into Plan
 mode, bracketed paste, and Tab submission. Do not repeat those side effects.
 
+With `--auto`, the helper adds `--approve-for-me` and
+`--dangerously-bypass-hook-trust`, and gives the child
+`STORYHOOK_AUTO=<story-id>`. After confirming Plan mode, it arms a pane-lifetime
+watcher that sends Return only when Codex's exact three-option plan review is
+visible with “Yes, implement this plan” selected. Automatic workspace-write
+review handles later tool approvals; the trusted packaged hook refuses
+`request_user_input` so the unattended session cannot wait for a person. A
+custom `STORY_LAUNCH_CMD` remains wholesale and is reported as potentially
+weakening that guarantee. Attended dispatch is unchanged.
+
 Codex has no `ExitPlanMode` tool boundary corresponding to Claude's. Storyhook's built-in
 Codex prompts therefore require the plan presented for approval to make posting that exact
 plan to the story its first implementation step. Custom `STORY_PROMPT`, `STORY_AUTO_PROMPT`,
@@ -50,13 +60,15 @@ host rather than only in the shared router.
 
 ## Hooks and trust
 
-Codex discovers this installed plugin's `hooks/hooks.json`. The same SessionStart,
-PreToolUse, PostToolUse(Bash), and Stop hook protocol is shared with Claude Code. A locally
+Codex discovers this installed plugin's `hooks/hooks.json`. The SessionStart,
+PreToolUse, PostToolUse(Bash), and Stop hook protocol is shared with Claude Code;
+Claude additionally emits `PermissionRequest(ExitPlanMode)` for its plan-review pane. A locally
 installed, non-managed plugin may require explicit trust/review in Codex before its hooks run.
 
-The PreToolUse entries are Full Auto's (`hooks/full-auto.sh`, SH-460), and they are inert in an
-ordinary session: with `STORYHOOK_FULL_AUTO` unset the hook emits no decision. Inside an engine
-lane it approves the plan exit and refuses the question-asking tool, handing the model an
+The autonomous entries are implemented by `hooks/full-auto.sh`. They are inert unless
+`STORYHOOK_AUTO` or `STORYHOOK_FULL_AUTO` is set. In an autonomous session they approve
+Claude's plan tool call, accept its separate plan-review pane with one exact-gated tmux
+Return, and refuse the provider's question-asking tool, handing the model an
 instruction to decide or convene a council instead of waiting for a person who is not there.
 Codex's arm was measured live rather than assumed (SH-459, CLI 0.149.0): a matcher named
 `request_user_input` runs before the question UI, and `permissionDecisionReason` is returned to

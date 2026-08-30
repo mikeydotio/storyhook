@@ -27,6 +27,15 @@ plan-mode launch and readiness checks, and prompt submission. Do not repeat thos
 closure, and the final `story.sh reap <id>` cleanup. `STORY_COUNCIL` controls council probing.
 Do not rewrite those templates in prose.
 
+Autonomous Claude remains in Plan mode, but the child receives
+`STORYHOOK_AUTO=<story-id>` so the packaged hook allows `ExitPlanMode`, then
+uses Claude's `PermissionRequest(ExitPlanMode)` event to send Return to the exact
+selected Auto option in that child's tmux pane. The same hook refuses
+`AskUserQuestion`. Its launch settings make `acceptEdits` the post-plan default.
+A wholesale `STORY_LAUNCH_CMD` override is preserved and reported as
+potentially weakening this posture. Attended dispatch receives no marker and is
+unchanged.
+
 ## Capture (`capture <id>`)
 
 Run `STORY_AGENT=claude bash "<story-helper>" capture <id>`, show `display`, and stop.
