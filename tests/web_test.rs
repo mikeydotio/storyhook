@@ -981,6 +981,14 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"id="dispatch-modal""#));
     assert!(body.contains(r#"id="dispatch-client""#));
     assert!(body.contains(r#"id="dispatch-agent""#));
+    // SH-517: Provider/Model/Effort/Speed. The dashboard's own label reads
+    // "Provider" now that "Model" names something else -- pinned on the
+    // label element's `for` target rather than its text, so the copy can
+    // still be edited without this test drifting for no reason.
+    assert!(body.contains(r#"<label for="dispatch-agent">Provider</label>"#));
+    assert!(body.contains(r#"id="dispatch-model""#));
+    assert!(body.contains(r#"id="dispatch-effort""#));
+    assert!(body.contains(r#"id="dispatch-speed""#));
     assert!(body.contains(r#"id="dispatch-auto""#));
     // Multi-repo screens (#20): the header's project selector (SH-42), home
     // dashboard, settings
