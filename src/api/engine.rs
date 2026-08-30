@@ -559,8 +559,20 @@ mod tests {
 
     #[test]
     fn the_direct_gate_keeps_mutation_guard_before_token() {
-        let env = storyhook_test_support::TestEnv::isolated();
-        let controller = Arc::new(EngineController::open(&env.environment()).unwrap());
+        // `storyhook-test-support` is a *dev*-dependency that itself depends
+        // on `storyhook` (Cargo.toml's header comment), so its own compiled
+        // `storyhook::env::Environment` is a DIFFERENT type from this crate's
+        // — `TestEnv::isolated().environment()` returned one, and passing it
+        // to `EngineController::open` (expecting this compilation's own
+        // `Environment`) is what actually produced the E0308 "multiple
+        // different versions of crate `storyhook`" error, not a real API
+        // mismatch. `scratch_dir()` sidesteps this because `tempfile::TempDir`
+        // is a third-party type neither compilation defines; `Environment::at`
+        // is the in-crate constructor every other unit test in this file's
+        // position already uses for exactly that reason.
+        let scratch = storyhook_test_support::scratch_dir();
+        let env = Environment::at(scratch.path());
+        let controller = Arc::new(EngineController::open(&env).unwrap());
         let now = Instant::now();
         let tokens = TokenRegistry::new(Utc::now(), now);
         let reply = intercept(
