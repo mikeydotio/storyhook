@@ -1078,9 +1078,9 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     // checkout receive the menu item.
     assert!(body.contains("\"Dispatch\""));
     assert!(!body.contains("\"Dispatch Auto\""));
-    assert!(body.contains(
-        r#"var dispatchHidden = st.state !== "todo" || !currentRepoHasCheckout();"#
-    ));
+    assert!(
+        body.contains(r#"var dispatchHidden = st.state !== "todo" || !currentRepoHasCheckout();"#)
+    );
 
     // SH-197: the context menu's Set Status submenu.
     assert!(body.contains("\"Set Status\""));
