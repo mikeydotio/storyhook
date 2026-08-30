@@ -170,6 +170,10 @@ struct Serving<'a, S: Store> {
     /// answered off the store thread, so it is not reached through
     /// [`dispatch`] the way everything else in this struct is.
     dispatch_registry: Arc<crate::api::dispatch::DispatchRegistry>,
+    /// Engine controls are answered on per-connection workers, never the
+    /// fixed store-dispatch pool. This controller owns the persistent store
+    /// handle those `'static` workers require.
+    engine: Arc<crate::api::engine::EngineController>,
     /// Every handoff coupon this daemon has armed and not yet spent (SH-251).
     /// An `Arc` for the same reason `dispatch_registry` is one: redemption
     /// needs nothing from the store, so it is answered on the `worker` thread
@@ -272,6 +276,7 @@ where
             started_at: env.now(),
         },
         dispatch_registry: Arc::new(crate::api::dispatch::DispatchRegistry::load(env)),
+        engine: Arc::new(crate::api::engine::EngineController::open(env)?),
         handoff: Arc::new(crate::api::handoff::HandoffRegistry::new()),
         tokens: Arc::new(crate::api::tokens::TokenRegistry::load(env)),
         cookie_name: crate::api::tokens::cookie_name(env),
@@ -935,6 +940,7 @@ fn accept_loop<S: Store>(
     let trusted_hosts = Arc::clone(&serving.trusted_hosts);
     let env = serving.env.clone();
     let dispatch_registry = Arc::clone(&serving.dispatch_registry);
+    let engine = Arc::clone(&serving.engine);
     let handoff = Arc::clone(&serving.handoff);
     let tokens = Arc::clone(&serving.tokens);
 
@@ -976,6 +982,7 @@ fn accept_loop<S: Store>(
             &trusted_hosts,
             &env,
             &dispatch_registry,
+            &engine,
             &handoff,
             &tokens,
             &cookie_name,
@@ -1053,6 +1060,7 @@ fn worker(
     trusted_hosts: &TrustedHosts,
     env: &Environment,
     dispatch_registry: &Arc<crate::api::dispatch::DispatchRegistry>,
+    engine: &Arc<crate::api::engine::EngineController>,
     handoff: &Arc<crate::api::handoff::HandoffRegistry>,
     tokens: &Arc<crate::api::tokens::TokenRegistry>,
     cookie_name: &str,
@@ -1202,6 +1210,28 @@ fn worker(
     } else {
         String::new()
     };
+
+    // Engine controls can synchronously run `story.sh unclaim`, whose own
+    // `story` calls return through `/api/v1/invoke`. Intercept after admission
+    // and body acquisition, but before a `Job` can occupy the fixed store
+    // pool, so that nested work always has a dispatcher available.
+    if let Some(reply) = crate::api::engine::intercept(
+        &segments,
+        &method,
+        query.as_deref(),
+        &headers,
+        &body,
+        trusted_hosts,
+        token,
+        engine,
+        &bus,
+        tokens,
+        cookie_name,
+        chrono::Utc::now(),
+    ) {
+        finish(request, reply);
+        return;
+    }
 
     // A request nested inside an event hook must never queue behind the
     // dispatcher pool: a hook runs *inside* a dispatcher, so if enough of

@@ -293,6 +293,12 @@ fn route_project<S: Store>(
             Ok(json) => json_reply(200, json).no_cache(),
             Err(e) => error_reply(&e),
         },
+        // Answered by [`crate::api::engine::intercept`] in the per-connection
+        // worker so a stop-now helper can call back into the daemon without
+        // occupying this fixed store pool.
+        ProjectRoute::Engine
+        | ProjectRoute::EngineAction { .. }
+        | ProjectRoute::EngineActionUnknown => text_reply(404, "Not found"),
         ProjectRoute::StoryCreate => {
             guarded(headers, trusted_hosts, body, |b| route_create_story(ctx, b))
         }
