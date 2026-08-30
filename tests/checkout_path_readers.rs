@@ -51,6 +51,10 @@ const ALLOWED: &[(&str, &str)] = &[
         "a web write needs a working directory to fire the project's hooks in",
     ),
     (
+        "src/api/engine.rs",
+        "the engine HTTP controller chooses a working directory only after resolving the project by slug",
+    ),
+    (
         "src/service/catalog.rs",
         "doctor's orphan audit, the catalog listing, and the unregistered-origin probe",
     ),

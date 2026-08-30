@@ -1213,7 +1213,7 @@ pub const REQUIRED_DISPATCH_PROTOCOL: u32 = 1;
 /// that predates the argv shape this daemon invokes it with is exactly as
 /// wrong to run as one that cannot be found at all, and belongs to the same
 /// "describes this daemon, not one dispatch attempt" category above.
-fn resolve_dispatch_script(agent: DispatchAgent) -> Result<PathBuf, String> {
+pub(crate) fn resolve_dispatch_script(agent: DispatchAgent) -> Result<PathBuf, String> {
     resolve_dispatch_script_from_for_agent(
         std::env::var("STORYHOOK_DISPATCH_SCRIPT").ok(),
         std::env::var("HOME").ok().map(PathBuf::from),

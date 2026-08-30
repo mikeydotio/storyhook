@@ -4215,6 +4215,202 @@ fn post_json_unguarded(
         .send(body)
 }
 
+fn response_json(response: ureq::http::Response<ureq::Body>) -> serde_json::Value {
+    serde_json::from_str(&response.into_body().read_to_string().unwrap()).unwrap()
+}
+
+// --- Full Auto engine HTTP control (SH-468) ---
+
+#[test]
+fn engine_http_serves_every_control_and_stable_run_views() {
+    let fixture = served();
+    let base = format!(
+        "http://127.0.0.1:{}/api/repos/{}/engine",
+        fixture.port, fixture.repo_id
+    );
+
+    let started = post_json(&fixture, &base, r#"{"lanes":2,"agent":"codex"}"#)
+        .expect("starting an engine run");
+    assert_eq!(started.status(), 201);
+    let started = response_json(started);
+    assert_eq!(started["result"], "ok");
+    assert_eq!(started["run"]["project"], fixture.repo_id);
+    assert_eq!(started["run"]["scope"]["kind"], "project");
+    assert_eq!(started["run"]["lane_count"], 2);
+    assert_eq!(started["run"]["agent"], "codex");
+    assert_eq!(started["run"]["state"], "running");
+    assert_eq!(started["run"]["lanes"].as_array().unwrap().len(), 2);
+    let run = started["run"]["id"].as_str().unwrap().to_string();
+
+    let duplicate = post_json(&fixture, &base, "{}").unwrap_err();
+    assert_eq!(status_of(duplicate), 409);
+
+    let all = response_json(fixture.agent().get(base.as_str()).call().unwrap());
+    assert_eq!(all["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(all["runs"][0]["id"], run);
+
+    let exact = response_json(
+        fixture
+            .agent()
+            .get(format!("{base}?run={run}"))
+            .call()
+            .unwrap(),
+    );
+    assert_eq!(exact["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(exact["runs"][0]["id"], run);
+
+    for (action, expected) in [("pause", "paused"), ("resume", "running")] {
+        let reply = post_json(
+            &fixture,
+            &format!("{base}/{action}"),
+            &serde_json::json!({ "run": run }).to_string(),
+        )
+        .unwrap();
+        assert_eq!(response_json(reply)["run"]["state"], expected, "{action}");
+    }
+
+    let stopped = post_json(
+        &fixture,
+        &format!("{base}/stop"),
+        &serde_json::json!({ "run": run }).to_string(),
+    )
+    .unwrap();
+    let stopped = response_json(stopped);
+    assert_eq!(stopped["run"]["state"], "finished");
+    assert_eq!(stopped["run"]["stop_reason"], "operator-stopped");
+
+    let acknowledged = post_json(
+        &fixture,
+        &format!("{base}/ack"),
+        &serde_json::json!({ "run": run }).to_string(),
+    )
+    .unwrap();
+    assert!(response_json(acknowledged)["run"]["acknowledged_at"].is_string());
+
+    let second = response_json(post_json(&fixture, &base, "{}").unwrap());
+    let second_run = second["run"]["id"].as_str().unwrap();
+    let stopped_now = post_json(
+        &fixture,
+        &format!("{base}/stop"),
+        &serde_json::json!({ "run": second_run, "now": true }).to_string(),
+    )
+    .unwrap();
+    let stopped_now = response_json(stopped_now);
+    assert_eq!(stopped_now["run"]["state"], "finished");
+    assert_eq!(stopped_now["run"]["stop_reason"], "operator-stopped-now");
+}
+
+#[test]
+fn engine_http_refuses_bad_input_unknown_resources_and_pathless_start() {
+    let fixture = served();
+    let base = format!(
+        "http://127.0.0.1:{}/api/repos/{}/engine",
+        fixture.port, fixture.repo_id
+    );
+
+    assert_eq!(status_of(post_json(&fixture, &base, "{").unwrap_err()), 400);
+    assert_eq!(
+        status_of(post_json(&fixture, &base, r#"{"lanes":0}"#).unwrap_err()),
+        422
+    );
+    assert_eq!(
+        status_of(
+            post_json(&fixture, &format!("{base}/pause"), r#"{"run":"missing"}"#).unwrap_err()
+        ),
+        404
+    );
+    assert_eq!(
+        status_of(
+            fixture
+                .agent()
+                .get(format!("{base}?run=missing"))
+                .call()
+                .unwrap_err()
+        ),
+        404
+    );
+    assert_eq!(
+        status_of(
+            fixture
+                .agent()
+                .get(format!(
+                    "http://127.0.0.1:{}/api/repos/missing/engine",
+                    fixture.port
+                ))
+                .call()
+                .unwrap_err()
+        ),
+        404
+    );
+    assert_eq!(
+        status_of(post_json(&fixture, &format!("{base}/unknown"), r#"{"run":"x"}"#).unwrap_err()),
+        404
+    );
+
+    let (_other_dir, other_slug) = fixture.add_project();
+    let other = response_json(
+        fixture
+            .agent()
+            .get(format!(
+                "http://127.0.0.1:{}/api/repos/{other_slug}/engine",
+                fixture.port
+            ))
+            .call()
+            .unwrap(),
+    );
+    assert!(other["runs"].as_array().unwrap().is_empty());
+
+    fixture.deregister();
+    let refusal = post_json(&fixture, &base, "{}").unwrap_err();
+    assert_eq!(status_of(refusal), 422);
+}
+
+#[test]
+fn engine_http_collection_and_actions_keep_the_existing_authorization_chain() {
+    let fixture = served();
+    let base = format!(
+        "http://127.0.0.1:{}/api/repos/{}/engine",
+        fixture.port, fixture.repo_id
+    );
+
+    assert_eq!(status_of(ureq::get(base.as_str()).call().unwrap_err()), 401);
+    assert_eq!(
+        status_of(
+            ureq::post(base.as_str())
+                .header("X-Storyhook", "1")
+                .content_type("application/json")
+                .send("{}")
+                .unwrap_err()
+        ),
+        401
+    );
+    assert_eq!(
+        status_of(
+            ureq::post(format!("{base}/pause"))
+                .header("X-Storyhook", "1")
+                .content_type("application/json")
+                .send(r#"{"run":"missing"}"#)
+                .unwrap_err()
+        ),
+        401
+    );
+
+    assert_eq!(
+        status_of(post_json_unguarded(&fixture, &base, "{}").unwrap_err()),
+        403
+    );
+    assert_eq!(
+        status_of(
+            post_json_unguarded(&fixture, &format!("{base}/pause"), r#"{"run":"missing"}"#)
+                .unwrap_err()
+        ),
+        403
+    );
+
+    let positive = post_json(&fixture, &base, "{}").unwrap();
+    assert_eq!(positive.status(), 201);
+}
+
 fn status_of(err: ureq::Error) -> u16 {
     match err {
         ureq::Error::StatusCode(code) => code,

@@ -6,6 +6,8 @@
 //!   behind (SH-187), reads and writes alike, on both listeners.
 //! * [`dispatch`] — the dashboard's dispatch endpoint (SH-50): token-gated,
 //!   answered off the store-owning thread, on both listeners.
+//! * [`engine`] — Full Auto lifecycle controls, likewise intercepted off the
+//!   store-owning threads because immediate stop can invoke `story.sh`.
 //! * [`handoff`] — the one-shot coupon `story web open` arms and the dashboard
 //!   redeems for the token (SH-251), so a one-click dashboard never prompts
 //!   and nothing anywhere is relaxed to achieve it.
@@ -30,6 +32,7 @@
 
 pub mod admission;
 pub mod dispatch;
+pub(crate) mod engine;
 pub mod handoff;
 pub mod http;
 pub mod rest;

@@ -78,6 +78,27 @@ impl StoryAction {
     }
 }
 
+/// The controls exposed under `POST /api/repos/{id}/engine/{action}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineAction {
+    Pause,
+    Resume,
+    Stop,
+    Ack,
+}
+
+impl EngineAction {
+    fn parse(slug: &str) -> Option<Self> {
+        Some(match slug {
+            "pause" => Self::Pause,
+            "resume" => Self::Resume,
+            "stop" => Self::Stop,
+            "ack" => Self::Ack,
+            _ => return None,
+        })
+    }
+}
+
 /// Everything served under `/api/repos/{id}/…`, once `{id}` has been split off.
 ///
 /// The project itself is **not** resolved here — that is a store read, and this
@@ -88,6 +109,12 @@ impl StoryAction {
 pub enum ProjectRoute<'a> {
     /// `GET .../data` — the whole board in one request.
     Data,
+    /// `GET|POST .../engine` — inspect or start Full Auto.
+    Engine,
+    /// `POST .../engine/{action}` — control one engine run.
+    EngineAction { action: EngineAction },
+    /// `POST .../engine/{action}` for an action that does not exist.
+    EngineActionUnknown,
     /// `POST .../story`
     StoryCreate,
     /// `GET .../story/{id}`
@@ -243,6 +270,15 @@ fn classify_project<'a>(rest: &[&'a str], method: &Method) -> ProjectRoute<'a> {
             Method::Get => ProjectRoute::Data,
             _ => ProjectRoute::MethodNotAllowed,
         },
+        ["engine"] => match method {
+            Method::Get | Method::Post => ProjectRoute::Engine,
+            _ => ProjectRoute::MethodNotAllowed,
+        },
+        ["engine", action] => match (method, EngineAction::parse(action)) {
+            (Method::Post, Some(action)) => ProjectRoute::EngineAction { action },
+            (Method::Post, None) => ProjectRoute::EngineActionUnknown,
+            _ => ProjectRoute::MethodNotAllowed,
+        },
         ["story"] => match method {
             Method::Post => ProjectRoute::StoryCreate,
             _ => ProjectRoute::MethodNotAllowed,
@@ -333,6 +369,9 @@ impl ProjectRoute<'_> {
     pub fn name(&self) -> &'static str {
         match self {
             ProjectRoute::Data => "Data",
+            ProjectRoute::Engine => "Engine",
+            ProjectRoute::EngineAction { .. } => "EngineAction",
+            ProjectRoute::EngineActionUnknown => "EngineActionUnknown",
             ProjectRoute::StoryCreate => "StoryCreate",
             ProjectRoute::StoryShow { .. } => "StoryShow",
             ProjectRoute::StoryPatch { .. } => "StoryPatch",
@@ -438,6 +477,70 @@ mod tests {
                     }
                 },
                 "{slug}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_engine_action_slug_classifies() {
+        for (slug, expected) in [
+            ("pause", EngineAction::Pause),
+            ("resume", EngineAction::Resume),
+            ("stop", EngineAction::Stop),
+            ("ack", EngineAction::Ack),
+        ] {
+            let path = format!("/api/repos/p/engine/{slug}");
+            assert_eq!(
+                at(Box::leak(path.into_boxed_str()), &Method::Post),
+                Route::Project {
+                    id: "p",
+                    route: ProjectRoute::EngineAction { action: expected }
+                },
+                "{slug}"
+            );
+        }
+        assert_eq!(
+            at("/api/repos/p/engine/nope", &Method::Post),
+            Route::Project {
+                id: "p",
+                route: ProjectRoute::EngineActionUnknown
+            }
+        );
+        assert_eq!(
+            at("/api/repos/p/engine/pause", &Method::Get),
+            Route::Project {
+                id: "p",
+                route: ProjectRoute::MethodNotAllowed
+            }
+        );
+    }
+
+    #[test]
+    fn the_engine_route_is_spelled_the_same_here_as_in_its_worker_gate() {
+        for (path, expected) in [
+            ("/api/repos/p/engine", true),
+            ("/api/repos/p/engine/pause", true),
+            ("/api/repos/p/engine/pause/extra", false),
+            ("/api/repos/p/story/SH-1", false),
+        ] {
+            let classified = matches!(
+                at(path, &Method::Post),
+                Route::Project {
+                    route: ProjectRoute::Engine
+                        | ProjectRoute::EngineAction { .. }
+                        | ProjectRoute::EngineActionUnknown,
+                    ..
+                }
+            );
+            let parts = segments(path);
+            assert_eq!(
+                classified, expected,
+                "the route table disagrees about `{path}`"
+            );
+            assert_eq!(
+                crate::api::engine::is_engine_path(&parts),
+                expected,
+                "the worker gate disagrees about `{path}`"
             );
         }
     }
