@@ -619,7 +619,8 @@ fn the_real_dispatch_postcheck_matches_only_the_exact_spec() {
     let runner = read("scripts/run-e2e.sh");
     let pattern = dispatch_selected_pattern(&runner);
     let real = "[chromium] › specs/dispatch.spec.ts:83:5 › Dispatch is absent\n";
-    let stubbed = "[chromium] › specs/story-context-menu-dispatch.spec.ts:72:5 › Dispatch is present\n";
+    let stubbed =
+        "[chromium] › specs/story-context-menu-dispatch.spec.ts:72:5 › Dispatch is present\n";
 
     assert_eq!(
         grep_count(pattern, real),
