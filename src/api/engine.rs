@@ -18,6 +18,7 @@ use crate::api::http::{
     Reply, TrustedHosts, content_type_is_json, error_reply, json_reply, mutation_guard_ok,
     text_reply,
 };
+use crate::api::routes::EngineAction;
 use crate::api::rpc::token_ok;
 use crate::api::tokens::TokenRegistry;
 use crate::daemon::bus::{Change, ChangeBus};
@@ -130,36 +131,6 @@ impl EngineController {
                     EngineAction::Stop => unreachable!("handled above"),
                 }
             }
-        }
-    }
-}
-
-/// The four actions accepted after `/engine/`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum EngineAction {
-    Pause,
-    Resume,
-    Stop,
-    Ack,
-}
-
-impl EngineAction {
-    fn parse(raw: &str) -> Option<Self> {
-        Some(match raw {
-            "pause" => Self::Pause,
-            "resume" => Self::Resume,
-            "stop" => Self::Stop,
-            "ack" => Self::Ack,
-            _ => return None,
-        })
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Pause => "engine pause",
-            Self::Resume => "engine resume",
-            Self::Stop => "engine stop",
-            Self::Ack => "engine ack",
         }
     }
 }
