@@ -51,6 +51,7 @@ use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use storyhook_test_support::{ChildGuard, scratch_dir};
 use tempfile::TempDir;
@@ -74,10 +75,20 @@ fn read_checkout_file(relative: &str) -> String {
 /// `target/debug/` and a symlink to the tracked script.
 struct Fixture {
     root: TempDir,
+    _process_scan: Option<RwLockReadGuard<'static, ()>>,
 }
 
 impl Fixture {
     fn new() -> Self {
+        let process_scan = share_orphan_process_scan();
+        Self::new_with_process_scan(Some(process_scan))
+    }
+
+    fn new_while_aged_global_process_is_leased() -> Self {
+        Self::new_with_process_scan(None)
+    }
+
+    fn new_with_process_scan(process_scan: Option<RwLockReadGuard<'static, ()>>) -> Self {
         let root = scratch_dir();
         run(root.path(), "git", &["init", "-q"]);
         std::fs::create_dir_all(root.path().join("target/debug"))
@@ -88,7 +99,15 @@ impl Fixture {
             root.path().join("scripts/check-no-orphan-servers.sh"),
         )
         .expect("fixture: linking the tracked script");
-        Self { root }
+        std::os::unix::fs::symlink(
+            checkout().join("scripts/with-orphan-postlude.sh"),
+            root.path().join("scripts/with-orphan-postlude.sh"),
+        )
+        .expect("fixture: linking the tracked wrapper");
+        Self {
+            root,
+            _process_scan: process_scan,
+        }
     }
 
     fn path(&self) -> &Path {
@@ -97,6 +116,10 @@ impl Fixture {
 
     fn script(&self) -> PathBuf {
         self.path().join("scripts/check-no-orphan-servers.sh")
+    }
+
+    fn wrapper(&self) -> PathBuf {
+        self.path().join("scripts/with-orphan-postlude.sh")
     }
 
     /// Writes an executable shell shim at `target/debug/story` — the exact
@@ -147,8 +170,21 @@ impl Fixture {
 
     /// Runs the fixture's script for one phase.
     fn run(&self, args: &[&str]) -> Output {
+        self.run_while_aged_global_process_is_leased(args)
+    }
+
+    /// Runs while this test already holds the aged-global-process write lease.
+    fn run_while_aged_global_process_is_leased(&self, args: &[&str]) -> Output {
         let script = self.script().display().to_string();
         let mut full = vec![script.as_str()];
+        full.extend_from_slice(args);
+        run(self.path(), "bash", &full)
+    }
+
+    /// Runs a command through the tracked unconditional-postlude wrapper.
+    fn run_wrapped(&self, args: &[&str]) -> Output {
+        let wrapper = self.wrapper().display().to_string();
+        let mut full = vec![wrapper.as_str()];
         full.extend_from_slice(args);
         run(self.path(), "bash", &full)
     }
@@ -299,6 +335,92 @@ fn pid_running(pid: u32) -> bool {
 // ---------------------------------------------------------------------------
 // The provocation
 // ---------------------------------------------------------------------------
+
+/// SH-491 itself: a red test body used to make `make` stop before the orphan
+/// postlude, so the daemon it leaked poisoned the next run. The wrapper must
+/// preserve that red status, but only after the tracked postlude has collected
+/// the process and left the next preflight clean.
+#[test]
+fn a_red_wrapped_body_is_returned_only_after_its_daemon_is_reaped() {
+    let fixture = Fixture::new();
+    let shim = fixture.shim("sleep 60");
+    let store = fixture.live_store();
+    let body = fixture.helper(
+        "red-body.sh",
+        &format!(
+            "\"{}\" --store-path \"{}\" daemon --serve --port 0 </dev/null >/dev/null 2>&1 &\nsleep 0.3\nexit 23",
+            shim.display(),
+            store.display()
+        ),
+    );
+    let body = body.display().to_string();
+
+    let out = fixture.run_wrapped(&["--", "bash", &body]);
+    assert_eq!(
+        out.status.code(),
+        Some(23),
+        "the wrapper must preserve the red body's status after cleanup\nstderr: {}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("reaping"),
+        "the red body's daemon must reach the real postlude\nstderr: {}",
+        stderr(&out)
+    );
+    assert!(
+        !fixture.anything_still_matches(),
+        "the wrapper must not return while the red body's daemon is still alive"
+    );
+
+    let next = fixture.run(&["preflight"]);
+    assert!(
+        next.status.success(),
+        "the next preflight must be clean without a manual kill\nstderr: {}",
+        stderr(&next)
+    );
+}
+
+/// Exit-status precedence is the wrapper's receipt-safety contract. A cleanup
+/// failure must make a green body red, while an already-red body keeps its own
+/// status so the original failing leg remains the primary diagnosis. In both
+/// cases the cleanup diagnostic must remain visible.
+#[test]
+fn the_wrapper_preserves_a_body_failure_and_never_hides_a_cleanup_failure() {
+    for (body_status, expected) in [(0, 41), (23, 23)] {
+        let fixture = Fixture::new();
+        std::fs::remove_file(fixture.script()).expect("fixture: removing the orphan symlink");
+        write_executable(&fixture.script(), "echo cleanup-failed >&2\nexit 41");
+        let command = format!("exit {body_status}");
+
+        let out = fixture.run_wrapped(&["--", "bash", "-c", &command]);
+        assert_eq!(
+            out.status.code(),
+            Some(expected),
+            "body={body_status}, cleanup=41 must return {expected}\nstderr: {}",
+            stderr(&out)
+        );
+        assert!(
+            stderr(&out).contains("cleanup-failed"),
+            "cleanup diagnostics must remain visible when body={body_status}\nstderr: {}",
+            stderr(&out)
+        );
+    }
+
+    let fixture = Fixture::new();
+    std::fs::remove_file(fixture.script()).expect("fixture: removing the orphan symlink");
+    write_executable(&fixture.script(), "echo cleanup-must-not-run >&2\nexit 41");
+    let out = fixture.run_wrapped(&["--make-no-exec", "--", "bash", "-c", "exit 0"]);
+    assert!(
+        out.status.success(),
+        "a recursive make no-exec operation must return its own status without running cleanup\nstderr: {}",
+        stderr(&out)
+    );
+    assert!(
+        !stderr(&out).contains("cleanup-must-not-run"),
+        "--make-no-exec must not invoke the real orphan postlude\nstderr: {}",
+        stderr(&out)
+    );
+}
 
 /// The defect itself, and its fix, in one test: a shim alive past the grace
 /// period that ignores SIGTERM is escalated to SIGKILL and the postlude
@@ -693,11 +815,37 @@ fn the_grace_period_is_derived_from_the_parent_watch_tick_it_disproves() {
 //   whole rule. The too-young one is safe for as long as it is too young,
 //   which is `ABANDONED_STORE_MIN_AGE_SECS`, and it asserts immediately.
 
+/// Separates this binary's ordinary orphan scans from cases that keep a
+/// globally visible daemon alive past the abandoned-store age floor.
+///
+/// The process being global is the production property those cases prove,
+/// but it also means ANY case's orphan scan can collect a missing-store process
+/// first. Ordinary scans take a shared lease and remain parallel. An aged
+/// global-process case takes the exclusive lease before spawning and uses the
+/// already-held run path below; taking it only before its own scan would let a
+/// blocked case's process age into another reader's candidate set. A poison is
+/// recovered so one assertion failure does not turn every later case into lock
+/// noise that hides the first cause.
+static AGED_GLOBAL_PROCESS_CASE: RwLock<()> = RwLock::new(());
+
+fn share_orphan_process_scan() -> RwLockReadGuard<'static, ()> {
+    AGED_GLOBAL_PROCESS_CASE
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn serialize_aged_global_process_case() -> RwLockWriteGuard<'static, ()> {
+    AGED_GLOBAL_PROCESS_CASE
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// A daemon running from a copy of the binary somewhere else entirely, on a
 /// store that is gone, is collected — the exact population SH-493 counted.
 #[test]
 fn a_daemon_on_a_vanished_store_is_collected_wherever_its_binary_lives() {
-    let fixture = Fixture::new();
+    let _serial = serialize_aged_global_process_case();
+    let fixture = Fixture::new_while_aged_global_process_is_leased();
     // Deliberately NOT under `target/debug`: the point of this case is the one
     // place the checkout-anchored pattern cannot reach. `package/story` is the
     // literal layout `tests/plugin_install.rs::Harness::new(true)` builds.
@@ -707,7 +855,7 @@ fn a_daemon_on_a_vanished_store_is_collected_wherever_its_binary_lives() {
     let _guard = ChildGuard::new(child);
     wait_until_old_enough();
 
-    let out = fixture.run(&["preflight"]);
+    let out = fixture.run_while_aged_global_process_is_leased(&["preflight"]);
     let err = stderr(&out);
 
     assert!(
@@ -735,14 +883,15 @@ fn a_daemon_on_a_vanished_store_is_collected_wherever_its_binary_lives() {
 /// over a mess it did not make is the SH-306 pressure exactly.
 #[test]
 fn collecting_an_abandoned_daemon_never_fails_the_phase() {
-    let fixture = Fixture::new();
+    let _serial = serialize_aged_global_process_case();
+    let fixture = Fixture::new_while_aged_global_process_is_leased();
     let packaged = fixture.helper("package/story", SLEEPS_UNTIL_KILLED);
     let child = spawn_matching(&packaged, &fixture.missing_store());
     let _guard = ChildGuard::new(child);
     wait_until_old_enough();
 
     for phase in ["preflight", "postlude", "check"] {
-        let out = fixture.run(&[phase]);
+        let out = fixture.run_while_aged_global_process_is_leased(&[phase]);
         assert!(
             out.status.success(),
             "`{phase}` must collect an abandoned daemon rather than refuse over \
@@ -759,14 +908,15 @@ fn collecting_an_abandoned_daemon_never_fails_the_phase() {
 /// worktree's live suite.
 #[test]
 fn a_daemon_whose_store_still_exists_is_left_alone() {
-    let fixture = Fixture::new();
+    let _serial = serialize_aged_global_process_case();
+    let fixture = Fixture::new_while_aged_global_process_is_leased();
     let packaged = fixture.helper("package/story", SLEEPS_UNTIL_KILLED);
     let child = spawn_matching(&packaged, &fixture.live_store());
     let pid = child.id();
     let _guard = ChildGuard::new(child);
     wait_until_old_enough();
 
-    let out = fixture.run(&["preflight"]);
+    let out = fixture.run_while_aged_global_process_is_leased(&["preflight"]);
     let err = stderr(&out);
 
     assert!(
@@ -826,7 +976,8 @@ fn a_daemon_too_young_to_have_opened_its_store_is_left_alone() {
 /// this is the case that fails if anyone ever goes back to field-splitting.
 #[test]
 fn a_store_path_containing_a_space_is_read_whole_and_its_daemon_left_alone() {
-    let fixture = Fixture::new();
+    let _serial = serialize_aged_global_process_case();
+    let fixture = Fixture::new_while_aged_global_process_is_leased();
     let spaced = fixture.path().join("Ada Lovelace/store.db");
     std::fs::create_dir_all(spaced.parent().unwrap()).expect("fixture: creating a spaced dir");
     std::fs::write(&spaced, b"exists, and is therefore nobody's to collect")
@@ -838,7 +989,7 @@ fn a_store_path_containing_a_space_is_read_whole_and_its_daemon_left_alone() {
     let _guard = ChildGuard::new(child);
     wait_until_old_enough();
 
-    let out = fixture.run(&["preflight"]);
+    let out = fixture.run_while_aged_global_process_is_leased(&["preflight"]);
     let err = stderr(&out);
 
     assert!(
@@ -876,6 +1027,57 @@ fn the_abandoned_age_floor_is_derived_from_the_spawn_deadline_it_disproves() {
          store means it is starting rather than abandoned — reaping there \
          would make this script the cause of the failure it exists to report."
     );
+}
+
+/// The regression fence for the same-process race: every case that lets a
+/// globally visible daemon age must take the exclusive lease before it spawns
+/// and use the already-held execution path rather than trying to re-lock.
+/// Naming the four cases makes a new fifth case a conscious update here,
+/// rather than another process silently joining the race.
+#[test]
+fn every_aged_global_process_case_serializes_before_spawning() {
+    let source = read_checkout_file("tests/orphan_check.rs");
+    let cases = [
+        "a_daemon_on_a_vanished_store_is_collected_wherever_its_binary_lives",
+        "collecting_an_abandoned_daemon_never_fails_the_phase",
+        "a_daemon_whose_store_still_exists_is_left_alone",
+        "a_store_path_containing_a_space_is_read_whole_and_its_daemon_left_alone",
+    ];
+
+    for name in cases {
+        let marker = format!("fn {name}()");
+        let body = source
+            .split(&marker)
+            .nth(1)
+            .unwrap_or_else(|| panic!("the aged global-process case {name} must still exist"))
+            .split("#[test]")
+            .next()
+            .expect("a test body always has an end");
+        let serial = body
+            .find("serialize_aged_global_process_case()")
+            .unwrap_or_else(|| panic!("{name} must take the aged-process serial lease"));
+        let spawn = body
+            .find("spawn_matching(")
+            .unwrap_or_else(|| panic!("{name} must still provoke a real process"));
+        let fixture = body
+            .find("new_while_aged_global_process_is_leased")
+            .unwrap_or_else(|| panic!("{name} must construct under its exclusive lease"));
+        let run = body
+            .find("run_while_aged_global_process_is_leased")
+            .unwrap_or_else(|| panic!("{name} must run under its already-held lease"));
+        assert!(
+            serial < spawn,
+            "{name} must take the serial lease before its globally visible process is spawned"
+        );
+        assert!(
+            serial < fixture && fixture < spawn,
+            "{name} must construct its fixture under the exclusive lease before spawning"
+        );
+        assert!(
+            spawn < run,
+            "{name} must keep the lease while it invokes the orphan script"
+        );
+    }
 }
 
 /// `readonly ABANDONED_STORE_MIN_AGE_SECS=<n>` in the tracked script.
