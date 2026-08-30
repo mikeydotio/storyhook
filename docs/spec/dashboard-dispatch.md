@@ -457,20 +457,20 @@ and forgot the other), which is the literal reason `claude plugin update` answer
 
 ## As built — SH-197 (a second entry point: the story context menu)
 
-**Dispatch is reachable from two places, sharing one gate.** SH-197 originally added
-parallel Dispatch and Dispatch Auto actions; SH-436 consolidated their configuration into
-one modal-backed Dispatch action in both the right-click context menu (`storyMenuModel`,
-`src/web_dashboard.html`) and drawer footer (`renderDrawerFooter`/`dispatchButton`). Both
-read the identical expression —
-`stateSuperstate(st.state) === "CLOSED"` (or the equivalent `isClosed`) `||
-!currentRepoHasCheckout()` — rather than each surface computing its own answer, so the
-two can never disagree about whether a story is dispatchable. Both call the same
+**Dispatch is reachable from two places, with deliberately different state gates.** SH-197
+originally added parallel Dispatch and Dispatch Auto actions; SH-436 consolidated their
+configuration into one modal-backed Dispatch action in both the right-click context menu
+(`storyMenuModel`, `src/web_dashboard.html`) and drawer footer
+(`renderDrawerFooter`/`dispatchButton`). SH-512 narrowed the context-menu item to
+`st.state === "todo" && currentRepoHasCheckout()` because the dashboard does not expose
+dispatch's explicit `--force` path and therefore must not offer an ordinary dispatch for an
+already-claimed `in-progress` story. The drawer footer retains its original
+OPEN-state-plus-checkout gate. Both surfaces still call the same
 configuration modal and then `startDispatch(id, agent, auto)`, and disable while
 `state.dispatches[id]` holds an entry,
 matching `DispatchRegistry::try_start`'s per-story (not per-mode) dedupe on the daemon
-side. The context menu HIDES the item rather than disabling it when the gate
-fails — nothing a menu click can do lifts "closed" or "no checkout" — the same choice
-the drawer footer already made by omitting the button outright.
+side. The context menu HIDES the item rather than disabling it when its gate fails; an
+eligible `todo` story remains visible-but-disabled only while its own dispatch is in flight.
 
 ## As built — SH-436/SH-510 (dispatch configuration and remembered defaults)
 
