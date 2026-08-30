@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Full Auto PreToolUse hook for storyhook (Claude Code and Codex).
+# Autonomous PreToolUse hook for storyhook (Claude Code and Codex).
 #
 # Decision D6 of docs/spec/full-auto-engine.md. Inside an engine lane there is
 # nobody at the prompt, so two tool calls have to be answered by something other
@@ -17,16 +17,16 @@
 # before the question UI, and `permissionDecisionReason` is returned to the
 # model as the blocking reason.
 #
-# INERT UNLESS A LANE SAYS OTHERWISE. `STORYHOOK_FULL_AUTO` is the whole of the
-# activation, and only the engine sets it (SH-461). Auto-approving plans in a
-# developer's own session would be a far worse defect than the stall this
-# prevents, so inertness is a tested property rather than a claim --
+# INERT UNLESS AN AUTONOMOUS DISPATCH SAYS OTHERWISE. `STORYHOOK_AUTO` marks an
+# ordinary `dispatch --auto`; `STORYHOOK_FULL_AUTO` remains the engine lane
+# marker. Auto-approving plans in a developer's own session would be a far
+# worse defect than the stall this prevents, so inertness is a tested property --
 # tests/test-full-auto-inert.sh, in the shape test-charter-inert.sh already
 # tests the charter's. Unset AND set-but-empty are both inert: a launcher that
-# computed the marker and got nothing must not activate a lane that does not
+# computed the marker and got nothing must not activate a session that does not
 # exist.
 #
-# The variable carries the lane's STORY ID, which the feedback then names. A
+# The selected variable carries the session's STORY ID, which the feedback names. A
 # value that is not shaped like one still enforces -- it just falls back to
 # generic wording rather than echoing a bogus id at the model.
 #
@@ -48,8 +48,9 @@
 # THE KNOWN HOLE, STATED RATHER THAN PAPERED OVER. PreToolUse fails OPEN at its
 # manifest timeout on both hosts -- measured for Claude in SH-306 and for Codex
 # in SH-459. If this hook times out, the agent asks, nobody answers, and the
-# lane stalls; the engine's stall ceiling quarantines it with a reason naming
-# exactly that. The same reasoning governs an unreadable payload below: a hook
+# session stalls. An engine lane's ceiling quarantines it with a reason naming
+# exactly that; an ordinary Auto window remains available for operator capture.
+# The same reasoning governs an unreadable payload below: a hook
 # that cannot tell which tool it is must not decide. Detected and reported, not
 # silent, which is the bar.
 set -uo pipefail
@@ -61,9 +62,9 @@ if ! [ -t 0 ]; then
   stdin_json=$(cat)
 fi
 
-# The inert path pays no interpreter start: it is the path every session but a
-# lane takes, on every plan exit and every question a human is there to answer.
-if [ -z "${STORYHOOK_FULL_AUTO:-}" ]; then
+# The inert path pays no interpreter start: it is the path every attended
+# session takes, on every plan exit and every question a human can answer.
+if [ -z "${STORYHOOK_AUTO:-}${STORYHOOK_FULL_AUTO:-}" ]; then
   printf '{}'
   exit 0
 fi
@@ -101,11 +102,13 @@ def envelope(decision, reason):
 
 marker = os.environ.get("STORYHOOK_FULL_AUTO", "").strip()
 if not marker:
+    marker = os.environ.get("STORYHOOK_AUTO", "").strip()
+if not marker:
     emit("{}")
 
-lane = marker if STORY_ID.match(marker) else ""
-label = " " + lane if lane else ""
-target = lane if lane else "this lane's story"
+story_id = marker if STORY_ID.match(marker) else ""
+label = " " + story_id if story_id else ""
+target = story_id if story_id else "this session's story"
 
 try:
     payload = json.loads(os.environ.get("FULL_AUTO_PAYLOAD", ""))
@@ -127,7 +130,7 @@ if tool == PLAN_EXIT:
     emit(
         envelope(
             "allow",
-            "Full Auto lane%s: nobody is at the prompt, so this plan is approved "
+            "Autonomous Storyhook session%s: nobody is at the prompt, so this plan is approved "
             "automatically. Post it as a comment on %s before you start "
             "implementing." % (label, target),
         )
@@ -141,7 +144,7 @@ if tool in QUESTION_TOOLS:
     emit(
         envelope(
             "deny",
-            "This is an unattended Full Auto lane; nobody can answer. If the "
+            "This is an unattended Storyhook session; nobody can answer. If the "
             "question has one clear best answer, research current best practice "
             "and decide it yourself. If two or more are genuinely defensible, "
             "convene /council-vote instead of asking. If /council-vote is "

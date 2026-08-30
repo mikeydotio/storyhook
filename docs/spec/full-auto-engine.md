@@ -388,9 +388,10 @@ second, differently-behaved door onto the same script.
 existing `hooks.json` — the same file both Claude Code and Codex already
 discover for `SessionStart`, `PostToolUse(Bash)` and `Stop`.
 
-**Inert by default.** With `STORYHOOK_FULL_AUTO` unset, the hook emits no
-decision and exits 0. Only a lane window has the variable, because only the
-engine sets it. This inertness is a tested property, in the shape
+**Inert by default.** With both `STORYHOOK_AUTO` and `STORYHOOK_FULL_AUTO`
+unset, the hook emits no decision and exits 0. An ordinary autonomous dispatch
+sets the first marker; only an engine lane sets the second. This inertness is a
+tested property, in the shape
 `test-charter-inert.sh` already tests the charter's.
 
 When active:
@@ -398,7 +399,7 @@ When active:
 | Tool | Decision | Feedback to the agent |
 |---|---|---|
 | Plan exit (`ExitPlanMode`) | allow | — |
-| Question-asking (Claude's `AskUserQuestion`; Codex's `request_user_input`) | **deny** | "This is an unattended Full Auto lane; nobody can answer. If the question has one clear best answer, research and decide it. If two or more are defensible, convene `/council-vote`. Record the decision as a comment on `<story>` the moment you make it." |
+| Question-asking (Claude's `AskUserQuestion`; Codex's `request_user_input`) | **deny** | "This is an unattended Storyhook session; nobody can answer. If the question has one clear best answer, research and decide it. If two or more are defensible, convene `/council-vote`. Record the decision as a comment on `<story>` the moment you make it." |
 | Everything else | no decision | — |
 
 The permission *posture* is not the hook's job: the engine launches the lane
@@ -1007,10 +1008,12 @@ plugin's existing `hooks.json`. It allows `ExitPlanMode`, denies
 answers nothing else. Five things the story left open were decided here, because
 SH-461 is unwritten and the hook is what owns the marker's contract.
 
-**`STORYHOOK_FULL_AUTO` carries the lane's story id, and any non-empty value
-activates.** One variable, not two: the marker and the id the feedback has to
-name are the same fact. Unset *and* set-but-empty are both inert — a launcher
-that computed the id and got nothing must not activate a lane that does not
+**`STORYHOOK_FULL_AUTO` carries an engine lane's story id, and any non-empty
+value activates.** SH-511 later added `STORYHOOK_AUTO` for an ordinary
+autonomous dispatch without weakening this engine-only identity. The hook
+selects the Full Auto marker first when both are present, then the ordinary
+Auto marker. Unset *and* set-but-empty markers are inert — a launcher that
+computed the id and got nothing must not activate a session that does not
 exist. A value that is not shaped like a story id still enforces; it just falls
 back to generic wording rather than echoing a bogus id at the model, which is
 `STORYHOOK_FULL_AUTO=1`'s case and is pinned as one.
@@ -1080,3 +1083,27 @@ criterion — a lane reaching the charter with no human keystroke — is the
 end-to-end measurement, and SH-473 will not close without a real engine run
 having been observed. Until one has, this hook's Claude arm is tested against
 the contract and not against the host.
+
+### SH-511 — ordinary Auto plan approval
+
+SH-511 makes the existing `dispatch --auto` contract fully unattended without
+making it an engine lane. Every Auto child receives
+`STORYHOOK_AUTO=<story-id>` through `tmux new-window -e`; attended children
+receive no marker. The shared hook therefore approves Claude's `ExitPlanMode`
+and denies both providers' question tools for ordinary Auto as well as Full
+Auto, while the distinct variable keeps engine identity available to the
+reconcile loop.
+
+The provider launch posture supplies what the hook does not. Claude keeps
+`--permission-mode plan` and sets `permissions.defaultMode` to `acceptEdits`.
+Codex keeps Storyhook's confirmed Shift+Tab transition into Plan mode and adds
+`--approve-for-me` plus `--dangerously-bypass-hook-trust`; automatic review
+handles the plan and later workspace-write requests, while the trust flag
+prevents the packaged unattendedness hook from stalling on its own prompt.
+
+`STORY_LAUNCH_CMD` remains a wholesale compatibility escape hatch. An Auto
+result with that override reports `launch_source: "STORY_LAUNCH_CMD"`,
+`launch_overridden: true`, and a display warning that unattendedness may be
+weakened. Built-in Auto reports `launch_source: "builtin"`; attended JSON and
+commands remain unchanged. The dashboard and operator docs describe Auto as
+zero-interaction rather than asking a person to approve the plan.

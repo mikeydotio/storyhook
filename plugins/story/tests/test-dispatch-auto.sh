@@ -39,6 +39,11 @@ out=$(dry)
 assert_eq "$(jqf "$out" .ok)" "true" "attended: ok:true"
 assert_eq "$(jqf "$out" .auto)" "false" "attended: auto:false"
 assert_eq "$(jqf "$out" .council)" "false" "attended: council:false"
+assert_eq "$(jqf "$out" '.launch_source // "absent"')" "absent" \
+  "attended: autonomous launch metadata is absent"
+case "$(jqf "$out" '.commands|join(" ")')" in
+  *STORYHOOK_AUTO*) fail_test "attended: autonomous marker leaked into tmux command" ;;
+esac
 assert_eq "$(jqf "$out" .prompt)" "$expected_attended_prompt" "attended: prompt is byte-identical to today's"
 for marker in "AUTONOMOUS" "council-vote" "land-pr.sh" "story block" "story move $id" "reap" "genuinely defensible answers" "do not stall"; do
   case "$(jqf "$out" .prompt)" in
@@ -49,13 +54,21 @@ case "$(jqf "$out" .display)" in
   *utonomous*) fail_test "attended: display mentions autonomy without --auto" ;;
 esac
 
-# --- --auto dry run: charter content, auto:true, display warns about
-#     auto-accept-edits. STORY_COUNCIL=on pins the council charter regardless
+# --- --auto dry run: charter content plus a provider-native unattended launch.
+#     STORY_COUNCIL=on pins the council charter regardless
 #     of what's actually installed wherever this suite runs. ---
 out=$(STORY_COUNCIL=on dry --auto)
 assert_eq "$(jqf "$out" .ok)" "true" "auto: ok:true"
 assert_eq "$(jqf "$out" .auto)" "true" "auto: auto:true"
 assert_eq "$(jqf "$out" .council)" "true" "auto+council-on: council:true"
+assert_eq "$(jqf "$out" .launch_source)" "builtin" "auto: builtin launch source"
+assert_eq "$(jqf "$out" .launch_overridden)" "false" "auto: builtin launch is not overridden"
+commands=$(jqf "$out" '.commands|join(" ")')
+assert_contains "$commands" \
+  "claude --permission-mode plan --model opusplan --settings '{\"permissions\":{\"defaultMode\":\"acceptEdits\"}}'" \
+  "auto: Claude keeps Plan mode and returns to acceptEdits"
+assert_contains "$commands" "-e STORYHOOK_AUTO=$id" \
+  "auto: tmux child receives the autonomous hook marker"
 prompt=$(jqf "$out" .prompt)
 for marker in \
   "AUTONOMOUS" \
@@ -187,9 +200,26 @@ case "$display" in
   *) fail_test "auto: display does not mention autonomy" ;;
 esac
 case "$display" in
-  *"auto-accept edits"*) : ;;
-  *) fail_test "auto: display does not warn about choosing auto-accept edits" ;;
+  *"approves the plan automatically"*) : ;;
+  *) fail_test "auto: display does not report automatic plan approval" ;;
 esac
+case "$display" in
+  *"choose auto-accept"*|*"Review its plan"*) fail_test "auto: display still asks for human plan approval" ;;
+esac
+
+# A wholesale launch override stays wholesale. Because Storyhook can no longer
+# guarantee the provider-native posture, both JSON and display say so.
+override_out=$(cd "$repo" && STORY_DRY_RUN=1 STORY_COUNCIL=off \
+  STORY_LAUNCH_CMD="claude --permission-mode plan --custom" \
+  bash "$SCRIPT" dispatch "$id" --auto 2>&1)
+assert_eq "$(jqf "$override_out" .launch_source)" "STORY_LAUNCH_CMD" \
+  "auto+override: source is visible"
+assert_eq "$(jqf "$override_out" .launch_overridden)" "true" \
+  "auto+override: override is visible"
+assert_contains "$(jqf "$override_out" '.commands|join(" ")')" \
+  "claude --permission-mode plan --custom" "auto+override: command remains wholesale"
+assert_contains "$(jqf "$override_out" .display)" "may weaken unattendedness" \
+  "auto+override: display warns about the weakened guarantee"
 
 # --- --auto is accepted before the id too ---
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch --auto "$id" 2>&1)
@@ -263,6 +293,9 @@ assert_eq "$(jqf "$out" .ok)" "true" "real auto dispatch: ok:true"
 assert_eq "$(jqf "$out" .auto)" "true" "real auto dispatch: auto:true"
 assert_eq "$(jqf "$out" .claimed)" "true" "real auto dispatch: claimed:true"
 assert_contains "$(jqf "$out" .display)" "utonomous" "real auto dispatch: display names the session autonomous"
-assert_contains "$(jqf "$out" .display)" "auto-accept edits" "real auto dispatch: display warns about auto-accept edits"
+assert_contains "$(jqf "$out" .display)" "approves the plan automatically" \
+  "real auto dispatch: display reports automatic approval"
+assert_contains "$(cat "$FAKE_TMUX_STATE/new_window_args.log")" \
+  "-e STORYHOOK_AUTO=$id" "real auto dispatch: marker reaches tmux new-window"
 
 finish

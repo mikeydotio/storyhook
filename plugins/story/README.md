@@ -233,6 +233,15 @@ Worth knowing before changing anything here:
   rather than best-effort, since nobody is watching to read a partial
   result. The attended path is unchanged: teardown there still stays a later
   `/story complete <id>` from the main checkout.
+- **`--auto` retains Plan mode but requires no person at the prompt.** Every
+  autonomous tmux child receives `STORYHOOK_AUTO=<story-id>`. The packaged
+  `PreToolUse` hook approves Claude's plan exit and denies either provider's
+  question tool; Codex uses `--approve-for-me` for its plan approval. Claude's
+  post-plan default is `acceptEdits`, while Codex keeps workspace-write automatic
+  review and bypasses only interactive trust for the packaged hook. Attended
+  dispatches receive no marker and keep their existing launch commands. A
+  wholesale `STORY_LAUNCH_CMD` override is preserved and visibly reported as
+  potentially weakening unattendedness.
 - **Dispatch is provider-selected, not inferred from terminal prose.** Adapters pass
   `--agent=claude|codex`; an explicit dispatch flag overrides the active host and an
   omitted flag retains that adapter's host default. The helper also accepts
@@ -262,7 +271,7 @@ All knobs are `STORY_*`. The commonly useful ones:
 |---|---|
 | `STORY_AGENT` | provider contract: `claude` (default) or `codex`; `claude-code` is a deprecated compatibility alias |
 | `STORY_DRY_RUN=1` | preview any side-effecting verb; changes nothing |
-| `STORY_LAUNCH_CMD` | what `dispatch` launches (must **not** include `-w`) |
+| `STORY_LAUNCH_CMD` | wholesale dispatch launch override (must **not** include `-w`); autonomous results warn because it may weaken unattendedness |
 | `STORY_PROMPT` / `STORY_PROMPT_EXTRA` | the handoff prompt, and a clause appended to it |
 | `STORY_AUTO_PROMPT` / `STORY_AUTO_PROMPT_SOLO` | the two `--auto` charters — council-available and no-council, respectively (same seam as `STORY_PROMPT`; either wins outright over the probe below); `<done-state>` renders as the project-specific completion state |
 | `STORY_COUNCIL` | `auto` (default, probes for real)/`on`/`off` — which `--auto` charter `council_vote_available` picks |

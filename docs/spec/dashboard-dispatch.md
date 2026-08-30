@@ -211,9 +211,16 @@ unilaterally.
 > operation, nothing partial — see `story.sh`'s `cmd_reap` for the full guard list), so
 > the worst a compromised or malicious auto-dispatch can do to the workspace itself is
 > what an attended one already could: modify files inside a worktree a human is meant
-> to review via the PR before it merges. The token gate and plan-approval gate are the
-> load-bearing controls on *starting* an autonomous run at all; nothing about `--auto`
-> weakens either.
+> to review via the PR before it merges.
+>
+> **Re-argued for SH-511 (automatic plan approval).** The human plan-approval gate
+> above is deliberately removed from `--auto` and is no longer a mitigation. Plan
+> mode remains: the child must still produce and persist a plan before implementation,
+> but Storyhook's provider-native posture approves it without a person. The surviving
+> controls are the named dashboard token, the fixed autonomous charter, isolation in a
+> disposable worktree, the explicit version/release/deploy prohibition, a pushed PR,
+> the required full-suite green receipt before merge, and `reap`'s destructive-safety
+> guards. Attended dispatch retains human plan approval unchanged.
 
 **F4 — the token's scope and limits, stated plainly.** Minted once per daemon lifetime
 (`lifecycle::mint_token`), not per-user, not rotated except by restart. Its

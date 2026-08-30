@@ -1,5 +1,5 @@
 {
-  "description": "Storyhook agent-session hooks: startup context, Full Auto lane enforcement, post-git sync, and session handoff.",
+  "description": "Storyhook agent-session hooks: startup context, autonomous-session enforcement, post-git sync, and session handoff.",
   "hooks": {
     "SessionStart": [
       {
