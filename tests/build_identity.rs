@@ -48,6 +48,23 @@ fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
+fn tracked_tree_artifacts(tmpdir: &Path) -> Vec<PathBuf> {
+    let mut artifacts = std::fs::read_dir(tmpdir)
+        .expect("reading the isolated temporary root")
+        .map(|entry| entry.expect("reading a temporary entry").path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.starts_with("storyhook-tracked-tree-index.")
+                        || name.starts_with("storyhook-tracked-tree-objects.")
+                })
+        })
+        .collect::<Vec<_>>();
+    artifacts.sort();
+    artifacts
+}
+
 // ---------------------------------------------------------------------------
 // scripts/tracked-tree.sh — provoked directly, real git, real repo
 // ---------------------------------------------------------------------------
@@ -141,6 +158,43 @@ fn an_untracked_file_does_not_change_the_oid() {
     assert_eq!(
         before, after,
         "an untracked file must not affect the tracked-content identity"
+    );
+}
+
+#[test]
+fn deleting_a_tracked_file_changes_the_oid() {
+    let repo = TreeRepo::new();
+    let before = stdout(&repo.tree());
+
+    std::fs::remove_file(repo.path().join("f")).expect("deleting the tracked fixture file");
+    let after = stdout(&repo.tree());
+
+    assert_ne!(
+        before, after,
+        "a deleted tracked file must be absent from the tracked-content identity"
+    );
+}
+
+#[test]
+fn a_standalone_call_removes_its_private_index_and_objects() {
+    let repo = TreeRepo::new();
+    repo.write("f", "dirty content requiring a new blob\n");
+    let private_tmp = scratch_dir();
+    let script = checkout().join("scripts").join("tracked-tree.sh");
+
+    let out = Command::new("bash")
+        .arg(script)
+        .current_dir(repo.path())
+        .env("TMPDIR", private_tmp.path())
+        .output()
+        .expect("running tracked-tree.sh with an isolated temporary root");
+
+    assert_ok(&out, "standalone tracked-tree.sh");
+    let leftovers = tracked_tree_artifacts(private_tmp.path());
+    assert!(
+        leftovers.is_empty(),
+        "standalone identity generation must remove its private index and object store; left: {:?}",
+        leftovers.iter().collect::<Vec<_>>()
     );
 }
 
@@ -277,6 +331,12 @@ impl ManifestFixture {
         run(self.path(), "git", args)
     }
 
+    fn replace_tracked_tree_script(&self, body: &str) {
+        let script = self.path().join("scripts").join("tracked-tree.sh");
+        std::fs::remove_file(&script).expect("fixture: removing the production-script symlink");
+        std::fs::write(script, body).expect("fixture: writing a tracked-tree probe script");
+    }
+
     /// Runs the compiled `build.rs` with `CARGO_MANIFEST_DIR` pointed at this
     /// fixture — the one variable cargo would otherwise supply.
     fn run_build_script(&self, extra_env: &[(&str, &str)]) -> Output {
@@ -328,6 +388,66 @@ fn with_git_and_the_script_it_stamps_the_tracked_tree_id() {
         stdout(&out)
     );
     assert!(!emitted_warning(&out), "the expected case must be silent");
+}
+
+#[test]
+fn build_rs_removes_inherited_git_object_redirection_before_running_the_script() {
+    let fixture = ManifestFixture::with_git_and_script();
+    fixture.replace_tracked_tree_script(
+        r#"#!/usr/bin/env bash
+if [ "${GIT_OBJECT_DIRECTORY+x}" = x ] || [ "${GIT_ALTERNATE_OBJECT_DIRECTORIES+x}" = x ]; then
+    exit 41
+fi
+printf '%s\n' 0123456789abcdef0123456789abcdef01234567
+"#,
+    );
+
+    let out = fixture.run_build_script(&[
+        ("GIT_OBJECT_DIRECTORY", "/inherited/object/directory"),
+        (
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "/inherited/alternate/directory",
+        ),
+    ]);
+
+    assert_ok(&out, "build.rs with inherited Git object redirection");
+    assert_eq!(
+        emitted_build_id(&out).as_deref(),
+        Some("0123456789ab"),
+        "the child script must see neither inherited object-redirection variable"
+    );
+    assert!(
+        !emitted_warning(&out),
+        "a scrubbed environment must not warn"
+    );
+}
+
+#[test]
+fn build_rs_standalone_identity_call_leaves_no_private_artifacts() {
+    let fixture = ManifestFixture::with_git_and_script();
+    std::fs::write(fixture.path().join("f"), "dirty build input\n")
+        .expect("fixture: dirtying a tracked build input");
+    let private_tmp = scratch_dir();
+
+    let out = fixture.run_build_script(&[(
+        "TMPDIR",
+        private_tmp
+            .path()
+            .to_str()
+            .expect("temporary path must be UTF-8"),
+    )]);
+
+    assert_ok(&out, "build.rs over dirty tracked content");
+    assert!(
+        emitted_build_id(&out).is_some(),
+        "the dirty build must still receive a tracked-tree identity"
+    );
+    let leftovers = tracked_tree_artifacts(private_tmp.path());
+    assert!(
+        leftovers.is_empty(),
+        "build.rs's standalone producer call must remove private artifacts; left: {:?}",
+        leftovers.iter().collect::<Vec<_>>()
+    );
 }
 
 #[test]
