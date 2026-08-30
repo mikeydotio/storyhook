@@ -46,4 +46,5 @@ pub mod lifecycle;
 pub mod serve;
 pub mod subscribe;
 pub mod tailnet;
+pub mod verification;
 pub mod watch;

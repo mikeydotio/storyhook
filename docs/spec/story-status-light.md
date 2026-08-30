@@ -26,11 +26,11 @@ resolved before implementation:
 
 1. **The palette had to become semantic, not stay positional.** `stateColor()` indexed
    `STATE_PALETTE` by a state's position in `meta().states` — with the default catalog
-   (`todo`, `in-progress`, `blocked`, `done`, in that configured order) `done` landed on
-   index 3 and painted every completed story **red**. A status light that colours by
+   (`todo`, `in-progress`, `verifying`, `blocked`, `done`, `closed`, in that configured order) `done` landed on
+   index 4 and painted every completed story **red**. A status light that colours by
    column has to mean something, and the story's own "a cleared blocker's light turns
    green" would have been flatly false under the old mapping. Resolved by anchoring the
-   four `REQUIRED_STATES` slugs (`src/domain.rs`) to semantic tokens — `blocked` →
+   `REQUIRED_STATES` slugs (`src/domain.rs`) to semantic tokens — `blocked` →
    `--danger`, any CLOSED state → `--success`, the `role: "active"` state → `--accent`,
    `todo` → `--fg-faint` — before falling back to the original positional palette for
    anything a project adds beyond that floor, which has no slug to anchor to. Still one

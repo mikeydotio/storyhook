@@ -85,12 +85,23 @@ fn init_creates_a_project_with_its_catalog_and_counters() {
     let slugs: Vec<&str> = states.iter().map(|state| state.slug.as_str()).collect();
     // The floor and the default are the same set (SH-125), so a project is
     // conforming the instant it exists.
-    assert_eq!(slugs, ["todo", "in-progress", "blocked", "done", "closed"]);
+    assert_eq!(
+        slugs,
+        [
+            "todo",
+            "in-progress",
+            "verifying",
+            "blocked",
+            "done",
+            "closed"
+        ]
+    );
     assert_eq!(states[0].super_state, SuperState::Open);
     assert_eq!(states[1].role.as_deref(), Some("active"));
     assert_eq!(states[2].super_state, SuperState::Open);
-    assert_eq!(states[3].super_state, SuperState::Closed);
+    assert_eq!(states[3].super_state, SuperState::Open);
     assert_eq!(states[4].super_state, SuperState::Closed);
+    assert_eq!(states[5].super_state, SuperState::Closed);
 
     let types = fixture
         .store
@@ -434,7 +445,10 @@ fn agents_md_names_the_projects_own_closed_state() {
     fixture.init(&InitOptions::default());
     let content = std::fs::read_to_string(fixture.root().canonicalize().unwrap().join("AGENTS.md"))
         .expect("reading AGENTS.md");
-    assert!(content.contains("story move SH-<n> shipped"), "{content}");
+    assert!(
+        content.contains("moves the story to `shipped`"),
+        "{content}"
+    );
 }
 
 #[test]

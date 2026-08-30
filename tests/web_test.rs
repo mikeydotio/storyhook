@@ -1176,7 +1176,7 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"role: "img""#));
     assert!(body.contains(r#""Status: " + slug"#));
     // stateColor() re-colours by meaning, not board position (SH-203): the
-    // four REQUIRED_STATES anchors, checked in this order so a renamed or
+    // semantic REQUIRED_STATES anchors, checked in this order so a renamed or
     // reordered catalog still reads right.
     assert!(body.contains("function stateColor"));
     assert!(body.contains(r#"slug === "blocked""#));
@@ -5877,7 +5877,14 @@ fn web_states_list_reports_config_and_counts_in_board_order() {
     let json = get_states(&fixture, port, repo_id);
     assert_eq!(
         slugs(&json),
-        vec!["todo", "in-progress", "blocked", "done", "closed"]
+        vec![
+            "todo",
+            "in-progress",
+            "verifying",
+            "blocked",
+            "done",
+            "closed"
+        ]
     );
 
     let todo = &json["states"][0];
@@ -5907,7 +5914,15 @@ fn web_states_create_adds_a_state_and_returns_the_new_list() {
     let json = json_body(resp);
     assert_eq!(
         slugs(&json),
-        vec!["todo", "in-progress", "blocked", "done", "closed", "review"]
+        vec![
+            "todo",
+            "in-progress",
+            "verifying",
+            "blocked",
+            "done",
+            "closed",
+            "review"
+        ]
     );
     assert_eq!(
         state_named(&json, "review")["description"],
@@ -6105,7 +6120,14 @@ fn web_states_delete_removes_and_migrates() {
         json_body(delete_json(&fixture, &url, r#"{"move_stories_to":"in-progress"}"#).unwrap());
     assert_eq!(
         slugs(&json),
-        vec!["todo", "in-progress", "blocked", "done", "closed"]
+        vec![
+            "todo",
+            "in-progress",
+            "verifying",
+            "blocked",
+            "done",
+            "closed"
+        ]
     );
     assert_eq!(json["states"][1]["open_count"], 1);
 }

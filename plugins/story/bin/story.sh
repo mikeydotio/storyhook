@@ -290,7 +290,7 @@ LAUNCH_TPL="${STORY_LAUNCH_CMD:-$DEFAULT_LAUNCH_TPL}"
 # It had been true of neither half since the --auto charter landed. The ‘ ’
 # quotes deliberately break the ASCII half; UTF-8 already rides this pipeline,
 # since READY_PROMPT_GLYPH is U+276F and appears in every capture.)
-PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this repo. Begin by reading it with ‘story show <n> --json’ -- its comments carry the discussion history. When your plan is finalized and approved, post it as a comment on <n> via ‘story comment <n> your-plan’ before you start implementing. Push your commits and open the pull request referencing story <n> in its body before you run the local test suite, so the work is preserved even if testing turns something up -- comment a link to the PR on <n> once it is open, then run the suite and merge only once it passes. Do not bump the version or deploy from this worktree: do not run semver bump, deployit deploy, or any release/version step, and do not plan for them -- versioning and deployment happen later from the main branch, not here.}"
+PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this repo. Begin by reading it with ‘story show <n> --json’ -- its comments carry the discussion history. When your plan is finalized and approved, post it as a comment on <n> via ‘story comment <n> your-plan’ before you start implementing. Implement the approved work and run only its new and directly impacted tests. Commit and push the work, open one pull request whose body references story <n>, link it with ‘story link-pr <n> PR-URL’, and comment the PR link on <n>. Then move the story with ‘story move <n> verifying’ as your absolute last action and stop: the centralized verifier owns the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair the existing PR without rewriting published history, run the new and impacted tests, push, move <n> back to verifying, and stop again. Do not run make test, land-pr.sh, story move <n> done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them.}"
 # Claude's ExitPlanMode tool gives the PreToolUse hook an approval boundary at
 # which it can remind the model to persist the plan. Codex changes modes in the
 # TUI and exposes no corresponding tool call, so its built-in charter has to
@@ -303,10 +303,9 @@ CODEX_PLAN_COMMENT_CLAUSE="Codex Plan mode cannot write that comment before appr
 # The autonomous charter `--auto` swaps in for PROMPT_TPL. SH-511 removed its
 # last human interaction: plan approval is scoped by provider events (with one
 # exact-gated tmux Return for Claude), and question refusal is provider-native;
-# testing, merge, closure and hard stops remain the child's own call.
-# Closure goes through a plain
-# `story move`, never `story complete`: that verb asks a question (fatal to an
-# unattended run) and would try to remove the very worktree the child occupies.
+# targeted testing and repair remain the child's own call. The daemon-owned
+# verifier takes over after the child publishes exactly one linked PR and moves
+# the story to `verifying`; it owns the full suite, merge, closure, and reap.
 #
 # It used to open by anchoring every `story` write at the main checkout,
 # because a worktree carried its own copy of the tracker and a write made
@@ -350,7 +349,7 @@ AUTO_SOLO_CLAUSE="When a decision has two or more genuinely defensible answers -
 # with a single right answer independent of whether council-vote is
 # reachable, so it does not vary between COUNCIL and SOLO.
 AUTO_SCOPE_CLAUSE="When you uncover a second problem while working <n>, prefer adopting it into <n> over filing a new story: fix it in its own commit with its own regression test, and comment on <n> what you adopted and why -- that is two hats intact, since two hats governs commits, not stories. Adopt and fix it now only while at least half your context window is still unused and the extra work is small enough to finish and test in this session. Otherwise widen <n> to cover it without doing the work now -- comment what you found and leave <n> open rather than closing it, so the next session picks up where you stopped. If you cannot tell how much context remains, treat it as spent. File a new story only for work that is genuinely separate, genuinely too large for one session, or blocked on something you cannot reach."
-AUTO_PROMPT_TAIL="Push your commits and open the pull request referencing story <n> in its body before you run the test suite, so the work is preserved even if testing turns something up -- comment a link to the PR on <n> once it is open. Only then run the full local suite with ‘make test’ and confirm it passes -- the push itself is no longer gated on this, but the merge still is: ‘bash scripts/land-pr.sh PR-NUMBER’ refuses until the merge tree carries a green receipt, so testing still happens before every merge, just after the PR already exists rather than before it does. Once it passes, merge each PR yourself with ‘bash scripts/land-pr.sh PR-NUMBER’ -- the tool takes the machine-wide merge lock, makes a merge commit through GitHub, verifies the exact landed tree, and deletes the remote source branch. Merging yourself deliberately overrides the standing \"in a linked worktree, stop after opening the PR\" rule, for the merge only. Do not bump the version or deploy from this worktree: do not run semver bump, deployit deploy, or any release/version step, and do not plan for them -- versioning and deployment happen later from the main branch, not here. Once every merge lands, judge <n> against its own acceptance criteria and your record of the work: if it is genuinely complete, move it with ‘story move <n> <done-state>’. That exact state is the project specific completion state. Another CLOSED-superstate state may mean abandoned work and is not a substitute. The ‘<reap>’ command refuses any other state and leaves the workspace intact, so correct the state and retry if it reports not-completion-state. Reaping closes this window moments later, so say everything worth recording BEFORE the move. Once <n> is complete, run ‘<reap>’ as your absolute last action -- it reclaims this worktree, deletes its branch, and then closes this very tmux window, so nothing you do after it can be observed. Never run ‘/story complete’ yourself: it asks a question, and a session with nobody left to answer it cannot survive one. If your own output shows further PRs or testing are still needed, leave <n> open, comment naming exactly what remains, and do not run ‘<reap>’ -- it refuses a story that is not yet complete, but do not rely on that refusal. If you hit a hard stop you cannot resolve -- red tests, a failing merge, an unresolvable conflict -- post a comment on <n> with full diagnostics, run ‘story block <n> the-reason’, leave the PR open and this worktree intact, and stop. Never merge past a hard stop, and never run ‘<reap>’ after a hard stop."
+AUTO_PROMPT_TAIL="Implement the approved work and run only its new and directly impacted tests. Commit and push the work, open exactly one pull request whose body references story <n>, link it with ‘story link-pr <n> PR-URL’, and comment the PR link on <n>. Then move the story with ‘story move <n> verifying’ as your absolute last action and stop: the centralized verifier owns the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair the existing PR without rewriting published history, run the new and impacted tests, push, move <n> back to verifying, and stop again. Do not run make test, land-pr.sh, story move <n> done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them. If you hit a hard stop you cannot resolve before submission, post a comment on <n> with full diagnostics, run ‘story block <n> the-reason’, leave the worktree intact, and stop."
 AUTO_PROMPT_TPL="${STORY_AUTO_PROMPT:-$AUTO_PROMPT_HEAD $AUTO_COUNCIL_CLAUSE $AUTO_SCOPE_CLAUSE $AUTO_PROMPT_TAIL}"
 AUTO_PROMPT_SOLO_TPL="${STORY_AUTO_PROMPT_SOLO:-$AUTO_PROMPT_HEAD $AUTO_SOLO_CLAUSE $AUTO_SCOPE_CLAUSE $AUTO_PROMPT_TAIL}"
 # Which charter --auto gets: 'auto' (default) probes council_vote_available
@@ -1422,11 +1421,8 @@ cmd_dispatch() {
   if [ "$AGENT" = "codex" ] && [ "$prompt_builtin" = "true" ]; then
     prompt_tpl="$prompt_tpl $CODEX_PLAN_COMMENT_CLAUSE"
   fi
-  # The autonomous charter's own last act (SH-208): the exact `reap` command
-  # for THIS story, in THIS project, via THIS script -- an unattended session
-  # cannot reliably reconstruct any of the three on its own, so it is handed
-  # the literal command rather than instructions to improvise one. A no-op
-  # substitution for the attended template, which never references <reap>.
+  # Keep legacy placeholders available to wholesale prompt overrides even
+  # though the built-in charters no longer delegate completion or reap.
   local launch_cmd prompt reap_cmd completion_state=""
   local auto_marker="" full_auto_marker="" marker_tmux_args=""
   reap_cmd="bash \"$SELF_PATH\" --project \"$PROJECT_SLUG\" reap \"$id\""
@@ -1452,9 +1448,9 @@ cmd_dispatch() {
     local autonomy_label="Autonomous (--auto)"
     [ -z "$full_auto" ] || autonomy_label="Full Auto (--auto --full-auto)"
     if [ "$council" = "true" ]; then
-      auto_note=" $autonomy_label: the child starts in Plan mode, Storyhook approves the plan automatically, and the provider launch posture handles later permissions. It then runs to completion on its own -- researching and deciding its easy questions itself, convening council-vote for the genuinely hard ones, merging its own PR, closing $id itself, and reclaiming its own worktree, branch and window once it does."
+      auto_note=" $autonomy_label: the child starts in Plan mode, Storyhook approves the plan automatically, and the provider launch posture handles later permissions. It researches and decides its easy questions itself, convenes council-vote for the genuinely hard ones, then publishes one linked PR and hands $id to the centralized verifier."
     else
-      auto_note=" $autonomy_label: the child starts in Plan mode, Storyhook approves the plan automatically, and the provider launch posture handles later permissions. No council-vote skill was found, so it researches and decides its hard questions too, rather than convening a council. It then runs to completion on its own -- merging its own PR, closing $id itself, and reclaiming its own worktree, branch and window once it does."
+      auto_note=" $autonomy_label: the child starts in Plan mode, Storyhook approves the plan automatically, and the provider launch posture handles later permissions. No council-vote skill was found, so it researches and decides its hard questions too, rather than convening a council. It then publishes one linked PR and hands $id to the centralized verifier."
     fi
     [ "$AGENT" != "codex" ] || auto_note="$auto_note Codex has no stable machine-readable skill inventory, so automatic council discovery uses the safe solo charter unless STORY_COUNCIL=on is set explicitly."
     if [ -n "$full_auto" ]; then
@@ -1514,7 +1510,8 @@ cmd_dispatch() {
           ("tmux new-window " + $target + $detach + $marker_tmux_args + "-c " + $wtpath + " -n " + $wname + " -P -F #{pane_id} " + $launch
              + " \\; set-window-option -t " + $wname + " remain-on-exit on"
              + " \\; set-window-option -t " + $wname + " automatic-rename off"
-             + " \\; set-window-option -t " + $wname + " allow-rename off"),
+             + " \\; set-window-option -t " + $wname + " allow-rename off"
+             + " \\; set-window-option -t " + $wname + " @storyhook-agent " + $agent),
           (if $agent == "codex" then ("tmux send-keys -t <pane> " + $plan_key + " # if Plan footer is absent") else empty end),
           (if $agent == "codex" and $auto then
              ("tmux run-shell -b -t <pane> env STORYHOOK_AUTO=" + $auto_marker
@@ -1674,7 +1671,8 @@ cmd_dispatch() {
   pane=$(tmux new-window "${new_window_args[@]}" "$launch_cmd" \; \
            set-window-option -t "$set_target" remain-on-exit on \; \
            set-window-option -t "$set_target" automatic-rename off \; \
-           set-window-option -t "$set_target" allow-rename off \
+           set-window-option -t "$set_target" allow-rename off \; \
+           set-window-option -t "$set_target" @storyhook-agent "$AGENT" \
          2>/dev/null || true)
   if [ -z "$pane" ]; then
     git worktree remove --force "$worktree_path" >/dev/null 2>&1 || true
@@ -2541,6 +2539,38 @@ cmd_capture() {
       ok: true, id: $id, window_name: $wname, pane: $pane, transcript: $tx,
       display: ("[story] capture " + $wname + " (" + $pane + ") — recent rendered rows:\n\n" + $tx)
     }'
+}
+
+# cmd_notify <story-id> <message> — resume the exact dispatched agent after
+# centralized verification returns its PR for repair (SH-521).
+cmd_notify() {
+  local id="${1:-}" message="${2:-}"
+  [ -n "$id" ] && [ -n "$message" ] && [ "$#" -eq 2 ] \
+    || fail "usage: story.sh notify <story-id> <message>"
+  valid_story_id "$id" \
+    || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
+
+  local wname pane buffer provider
+  wname=$(resolve_wname "$id")
+  pane=$(pane_for_window "$wname") || pane=""
+  [ -n "$pane" ] \
+    || refuse "pane-unavailable" "no live tmux window named \`$wname\`; verification diagnostics remain on $id, which has been blocked for manual recovery."
+  provider=$(tmux show-options -w -v -t "$pane" @storyhook-agent 2>/dev/null || printf '')
+  case "$provider" in
+  claude | codex) configure_agent "$provider" ;;
+  *) refuse "pane-provider-unknown" "tmux window \`$wname\` has no valid StoryHook provider identity; refusing to type into an unverified pane." ;;
+  esac
+  pane_runs "$pane" \
+    || refuse "pane-changed" "tmux window \`$wname\` no longer runs the dispatched $AGENT_LABEL process; refusing to type into an unrelated pane."
+
+  buffer="story-verify-$id"
+  paste_prompt "$pane" "$message" "$buffer" \
+    || refuse "delivery-failed" "could not paste the verification remediation into pane \`$pane\`."
+  tmux send-keys -t "$pane" Enter 2>/dev/null \
+    || refuse "delivery-failed" "the remediation reached pane \`$pane\`, but tmux refused the submit key."
+  jq -n --arg id "$id" --arg window "$wname" --arg pane "$pane" \
+    '{ok:true, id:$id, window_name:$window, pane:$pane,
+      display:("[story] notified " + $id + " in window `" + $window + "` (" + $pane + ").")}'
 }
 
 # _project_integrity — run the CLI's own `story doctor` tolerantly.
@@ -3785,6 +3815,7 @@ case "${1:-}" in
   create)     shift; cmd_create "$@" ;;
   doctor)     shift; cmd_doctor "$@" ;;
   capture)    shift; cmd_capture "$@" ;;
+  notify)     shift; cmd_notify "$@" ;;
   ensure-cli) shift; cmd_ensure_cli "$@" ;;
   context)    shift; cmd_context "$@" ;;
   sync)       shift; cmd_sync "$@" ;;
@@ -3792,5 +3823,5 @@ case "${1:-}" in
   triage)     shift; cmd_triage "$@" ;;
   scaffold-claude-md) shift; cmd_scaffold_claude_md "$@" ;;
   scaffold-agents-md) shift; cmd_scaffold_agents_md "$@" ;;
-  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--agent=claude|codex] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | unclaim <story-id> [--comment <t> | --no-comment] | reset <story-id> [--force] [--comment <t> | --no-comment] | doctor | capture <story-id> | ensure-cli | context [--full] | sync [--since <d>] | handoff [--since <d>] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
+  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--agent=claude|codex] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | unclaim <story-id> [--comment <t> | --no-comment] | reset <story-id> [--force] [--comment <t> | --no-comment] | doctor | capture <story-id> | notify <story-id> <message> | ensure-cli | context [--full] | sync [--since <d>] | handoff [--since <d>] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
 esac

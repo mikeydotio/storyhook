@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+#
+# Verify and land exactly one StoryHook-submitted pull request (SH-521).
+#
+# Queue selection belongs to the daemon. This script owns the repository-side
+# transaction for that one candidate: refresh the base and PR refs, compute the
+# exact merge tree, run the release gate in the persistent verifier worktree
+# when needed, then delegate the guarded merge to land-pr.sh.
+
+set -uo pipefail
+
+die_json() {
+    jq -n --arg detail "$1" '{result:"infrastructure-failure", detail:$detail}'
+    exit 0
+}
+
+root="$(git rev-parse --show-toplevel 2>/dev/null)" \
+    || die_json "not inside a git worktree"
+cd "$root" || die_json "cannot enter repository root $root"
+command -v jq >/dev/null 2>&1 || die_json "jq is required"
+common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd -P)" \
+    || die_json "could not resolve the shared git directory"
+
+classify_land() {
+    land_status="$1"
+    land_output="$2"
+    landed_pr="$3"
+    landed_tree="$4"
+    case "$land_status" in
+    (0)
+        jq -n --arg tree "$landed_tree" --arg detail "$land_output" \
+            '{result:"merged", tree:$tree, detail:$detail}'
+        ;;
+    (2)
+        jq -n --arg detail "$land_output" '{result:"conflict", detail:$detail}'
+        ;;
+    (*)
+        die_json "land-pr.sh refused PR #$landed_pr after verification: $land_output"
+        ;;
+    esac
+    exit 0
+}
+
+recover_merged() {
+    recovered_base="$1"
+    merge_oid="$2"
+    recovered_pr="$3"
+    git cat-file -e "$merge_oid^{commit}" 2>/dev/null \
+        || die_json "merged PR #$recovered_pr reports $merge_oid, but the refreshed base does not carry its object"
+    git merge-base --is-ancestor "$merge_oid" "$recovered_base" \
+        || die_json "merged PR #$recovered_pr reports $merge_oid, but it is not on the refreshed base"
+    tree="$(git rev-parse "$merge_oid^{tree}" 2>/dev/null)" \
+        || die_json "could not read merged PR #$recovered_pr tree"
+    receipt="$common_dir/storyhook/gate-receipts/$tree"
+    [ -f "$receipt" ] \
+        || die_json "merged PR #$recovered_pr landed tree $tree without a release-gate receipt"
+    tier="$(sed -n 's/^tier //p' "$receipt" | head -n1)"
+    tier="${tier:-gate}"
+    case "$tier" in
+    gate | full) ;;
+    *) die_json "merged PR #$recovered_pr landed tree $tree with insufficient '$tier' receipt" ;;
+    esac
+    jq -n --arg tree "$tree" --arg detail "recovered already-merged PR #$recovered_pr at $merge_oid after verifier restart" \
+        '{result:"merged", tree:$tree, detail:$detail}'
+    exit 0
+}
+
+# Protocol-classification seam. The live path supplies land-pr.sh's real
+# status and diagnostics; tests can pin the existing status contract without
+# imitating GitHub.
+if [ "${1:-}" = --classify-land ]; then
+    [ "$#" -eq 5 ] \
+        || die_json "private usage: verify-pr.sh --classify-land <status> <detail> <pr-number> <tree>"
+    classify_land "$2" "$3" "$4" "$5"
+fi
+
+# Real-Git recovery seam. The public path refreshes GitHub's base before
+# entering it; tests can exercise the local proof without imitating GitHub.
+if [ "${1:-}" = --recover-merged ]; then
+    [ "$#" -eq 4 ] \
+        || die_json "private usage: verify-pr.sh --recover-merged <base-ref> <merge-oid> <pr-number>"
+    recover_merged "$2" "$3" "$4"
+fi
+
+[ "$#" -eq 1 ] || die_json "usage: verify-pr.sh <pr-url>"
+submitted_pr="$1"
+command -v gh >/dev/null 2>&1 || die_json "the gh CLI is required"
+
+metadata="$(gh pr view "$submitted_pr" --json number,state,isDraft,isCrossRepository,baseRefName,headRefOid,mergeCommit 2>/dev/null)" \
+    || die_json "could not read submitted pull request $submitted_pr from GitHub"
+pr="$(printf '%s' "$metadata" | jq -er '.number')" || die_json "submitted pull request returned no number"
+state="$(printf '%s' "$metadata" | jq -er '.state')" || die_json "PR #$pr returned no state"
+draft="$(printf '%s' "$metadata" | jq -er '.isDraft')" || die_json "PR #$pr returned no draft status"
+cross="$(printf '%s' "$metadata" | jq -er '.isCrossRepository')" || die_json "PR #$pr returned no repository relationship"
+base="$(printf '%s' "$metadata" | jq -er '.baseRefName')" || die_json "PR #$pr returned no base branch"
+reported_head="$(printf '%s' "$metadata" | jq -er '.headRefOid')" || die_json "PR #$pr returned no head oid"
+[ "$draft" = false ] || die_json "PR #$pr is a draft"
+[ "$cross" = false ] || die_json "PR #$pr comes from a fork; centralized verification accepts same-repository PRs only"
+
+base_ref="refs/remotes/origin/$base"
+head_ref="refs/remotes/origin/pr/$pr"
+if [ "$state" = MERGED ]; then
+    merge_oid="$(printf '%s' "$metadata" | jq -er '.mergeCommit.oid // empty')" \
+        || die_json "merged PR #$pr returned no merge commit"
+    git fetch -q origin "+refs/heads/$base:$base_ref" \
+        || die_json "could not refresh origin/$base for merged PR #$pr"
+    recover_merged "$base_ref" "$merge_oid" "$pr"
+fi
+
+[ "$state" = OPEN ] || die_json "PR #$pr is $state, not OPEN or MERGED"
+git fetch -q origin \
+    "+refs/heads/$base:$base_ref" \
+    "+refs/pull/$pr/head:$head_ref" \
+    || die_json "could not refresh origin/$base and PR #$pr"
+head="$(git rev-parse "$head_ref" 2>/dev/null)" || die_json "could not resolve fetched PR #$pr"
+[ "$head" = "$reported_head" ] || die_json "PR #$pr moved while its refs were being refreshed"
+
+verifier_wt="$common_dir/storyhook/verification-worktree"
+if [ ! -e "$verifier_wt/.git" ]; then
+    mkdir -p "$(dirname "$verifier_wt")" \
+        || die_json "could not create private verifier state"
+    git worktree add -q --detach "$verifier_wt" "$base_ref" \
+        || die_json "could not create the persistent verifier worktree"
+fi
+
+preflight="$(bash scripts/merge-preflight.sh "$base_ref" "$head_ref" 2>&1)"
+preflight_status=$?
+tree="$(printf '%s\n' "$preflight" | head -n1)"
+case "$preflight_status" in
+(2)
+    jq -n --arg detail "$preflight" '{result:"conflict", detail:$detail}'
+    exit 0
+    ;;
+(0) : ;;
+(1)
+    logs="$common_dir/storyhook/verification-logs"
+    mkdir -p "$logs" || die_json "could not create verification log directory"
+    log="$logs/pr-$pr-$tree.log"
+    if ! bash scripts/merge-watch.sh --speculative-run "$tree" \
+        "$base_ref" "$head_ref" "$verifier_wt" -- make test >"$log" 2>&1; then
+        tail_context="$(tail -n 40 "$log")"
+        jq -n --arg tree "$tree" --arg log "$log" --arg detail "$tail_context" \
+            '{result:"tests-failed", tree:$tree, log:$log, detail:$detail}'
+        exit 0
+    fi
+    ;;
+(*) die_json "merge preflight returned unexpected status $preflight_status: $preflight" ;;
+esac
+
+land_output="$(bash scripts/land-pr.sh "$submitted_pr" 2>&1)"
+land_status=$?
+classify_land "$land_status" "$land_output" "$pr" "$tree"

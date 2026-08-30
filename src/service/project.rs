@@ -1738,6 +1738,12 @@ pub fn default_states() -> Vec<StateDef> {
             description: None,
         },
         StateDef {
+            slug: "verifying".to_string(),
+            super_state: SuperState::Open,
+            role: None,
+            description: None,
+        },
+        StateDef {
             slug: "blocked".to_string(),
             super_state: SuperState::Open,
             role: None,

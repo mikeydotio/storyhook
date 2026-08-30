@@ -33,7 +33,7 @@ pub fn new_store() -> (TempDir, SqliteStore) {
     (dir, store)
 }
 
-/// The default state set: three open states and one closed, with an active
+/// The default state set: four open states and two closed, with an active
 /// role.
 ///
 /// Carries `blocked` because [`storyhook::domain::REQUIRED_STATES`] requires it
@@ -54,6 +54,12 @@ pub fn default_states() -> Vec<StateDef> {
             slug: "in-progress".into(),
             super_state: SuperState::Open,
             role: Some("active".into()),
+            description: None,
+        },
+        StateDef {
+            slug: "verifying".into(),
+            super_state: SuperState::Open,
+            role: None,
             description: None,
         },
         StateDef {

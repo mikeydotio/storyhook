@@ -41,8 +41,8 @@ being picked.
 | D1 | **The daemon owns the engine.** Run and lane state live in the store; the reconcile loop runs in the daemon. | A shell poller in the `merge-watch.sh` mould was the cheaper build, but run state that dies with a terminal window cannot answer the dashboard, cannot survive a daemon restart, and gives the CLI and the web UI two different notions of "is a run live". |
 | D2 | **A lane is a window + worktree per story**, created and reaped per story exactly as `--auto` does today. | Context reset is free: each story gets a new process. The alternative — one long-lived lane session freshen-cleared between stories — buys faster startup at the cost of switching a live session's worktree and cwd, and a wedged pane then strands the lane rather than one story. |
 | D3 | **Completion is a store fact, not a rendered one.** A lane frees when its story leaves the OPEN superstate. Window liveness and a stall timeout detect a *dead* lane; they never declare success. | SH-226: a frame rule and a prompt glyph were read as "the agent is ready" and the charter was executed by zsh. A tmux window closing is evidence about a window. |
-| D4 | **`make test` serializes behind a machine-wide lock**, taken inside `scripts/run-tests.sh`, applying to every caller including interactive ones. `STORYHOOK_GATE_LOCK=0` bypasses it and says so on stderr. | `make test` is 36.4s median warm and idle (`docs/rearch/baseline/timings.md`) but has been measured at 873s under 3–4 concurrent worktree suites, and that contention is the documented cause of an open class of load-sensitive failures (SH-347, SH-349, SH-375, SH-378, SH-401, SH-419). Lanes multiply exactly that. An interactive suite contends identically, so exempting it would leave the hole open in the case where a human is present to be confused by it. The bypass is explicit and reported, never silent — SH-306. |
-| D5 | **Lane agents merge their own PRs, through `scripts/land-pr.sh`, under a machine-wide merge lock.** The script certifies the merge tree with `merge-preflight.sh` inside the lock, then merges. | Merge authority stays where the charter already puts it, but a bare `gh pr merge --merge` is replaced by a deterministic script, so the lock is taken by the tool rather than remembered by the agent. Certifying inside the same lock is what makes lane PRs land promptly instead of waiting on `merge-watch.sh`'s 1–3 minute poll, which becomes the throughput ceiling at N lanes (SH-396). |
+| D4 | **Lane agents run only new and directly impacted tests. One daemon verification worker serializes `make test` for stories in required OPEN state `verifying`.** | The expensive release gate is a machine concern, not per-agent work. A store-derived queue survives restarts, removes suite contention between lanes, and orders candidates by priority then age (SH-521). |
+| D5 | **The verification worker owns exact-merge-tree certification, `land-pr.sh`, the transition to `done`, and reap.** Agents publish and link exactly one open close-on-merge PR, move the story to `verifying` as their final action, and stop. | Merge authority must not depend on a lane remembering policy. The daemon can serialize every project, retry infrastructure failures without blaming the author, and return conflict/red candidates to their exact provider-tagged pane (SH-521). |
 | D6 | **Unattendedness is enforced by provider-scoped approval gates**, inert unless the lane's marker environment variable is set. `PreToolUse` allows Claude's plan tool and denies question tools; Claude's subsequent `PermissionRequest(ExitPlanMode)` starts a bounded exact-pane helper. Codex, which exposes no plan event, gets a pane-lifetime exact watcher after Plan mode is confirmed. Each sends one Return to its provider's selected approval option. | Live probes proved neither Claude's `PreToolUse allow` nor Codex's `--approve-for-me` accepts the separate plan-review UI. Provider-specific exact strings and pane identity guard the only keystroke. A changed UI fails closed instead of receiving input. |
 | D7 | **Both agents. Codex was verified first.** SH-459 measured Codex CLI 0.149.0 denying `request_user_input` through `PreToolUse`, returning the denial reason to the model, and failing open at the configured timeout. | A Codex lane that silently stalls on a question nobody will answer is the exact failure Full Auto exists to remove. The native denial surface exists, so both provider arms ship; the measured timeout hole remains covered by the stall ceiling and quarantine. |
 | D8 | **Epic semantics from SH-446 are absorbed into this program**, not merely depended on: epic state becomes computed from children, epic priority stays stored, and `story next` breaks priority ties on epic priority. | The epic entry point is meaningless without it, and "an epic with all finished children is finished" is the run's own termination condition. |
@@ -78,6 +78,7 @@ flowchart TB
         API["api::engine — off the store thread"]
         SVC["service::engine::EngineService"]
         REC["Reconciler — wakes on bus + tick"]
+        VER["Verification worker — global priority queue"]
         BUS["Change bus"]
     end
 
@@ -91,7 +92,7 @@ flowchart TB
         SH["story.sh dispatch --auto"]
         TMUX["tmux window + git worktree"]
         AGENT["Claude / Codex lane session"]
-        LOCKS["machine locks: gate, merge"]
+        LOCKS["exact merge-tree gate + merge lock"]
     end
 
     CLI --> API
@@ -102,11 +103,14 @@ flowchart TB
     SVC --> LANES
     REC --> SVC
     BUS --> REC
+    BUS --> VER
     STORIES --> BUS
     SVC -->|spawn, off store thread| SH
     SH --> TMUX --> AGENT
-    AGENT -->|story move / comment / block| STORIES
-    AGENT -->|make test, land-pr.sh| LOCKS
+    AGENT -->|targeted tests, link PR, move verifying| STORIES
+    STORIES --> VER
+    VER --> LOCKS
+    VER -->|done / remediation| STORIES
 ```
 
 The load-bearing shape: **the agent never reports to the engine.** It writes to
@@ -266,7 +270,7 @@ sequenceDiagram
     participant Store
     participant Sh as story.sh dispatch --auto
     participant Lane as Lane agent (claude/codex)
-    participant Locks as machine locks
+    participant Ver as centralized verifier
     participant GH as GitHub
 
     Rec->>Store: story claim --next (scope, exclude no-auto)
@@ -276,15 +280,18 @@ sequenceDiagram
     Sh-->>Rec: ok, window name
     Rec->>Store: lane -> Working
     Lane->>Store: plan comment on SH-N
-    Lane->>Locks: make test (gate lock)
     Lane->>GH: push + open PR
-    Lane->>Store: comment PR link
-    Lane->>Locks: land-pr.sh (merge lock -> merge-preflight -> merge)
-    Lane->>Store: story move SH-N done
+    Lane->>Store: link PR + comment URL
+    Lane->>Store: story move SH-N verifying (final action)
+    Store-->>Ver: Change::Project(slug)
+    Ver->>GH: fetch current base + submitted head
+    Ver->>Ver: exact merge tree + make test
+    Ver->>GH: land-pr.sh
+    Ver->>Store: PR merged + story done
     Store-->>Rec: Change::Project(slug)
     Rec->>Store: read SH-N -> CLOSED
     Rec->>Store: lane -> Idle, streak reset
-    Lane->>Sh: reap (worktree, branch, window)
+    Ver->>Sh: reap (worktree, branch, window)
 ```
 
 ## The store
@@ -484,20 +491,20 @@ question, nobody answers, and the lane stalls. That is caught by the stall
 ceiling and quarantined with a reason naming it. Detected and reported, not
 silent — which is the bar.
 
-## The machine locks
+## Central verification and machine locks
 
 `scripts/machine-lock.sh <name> -- <command...>`: a pid-checked, stale-tolerant
 machine-wide lock, in the shape `browser-watch.sh`'s own lock already uses.
-Two names are reserved.
+Two names remain reserved, but lane agents no longer acquire either release
+gate themselves (SH-521).
 
-- **`gate`** — taken inside `scripts/run-tests.sh`, so every `make test` on the
-  machine serializes (D4). `STORYHOOK_GATE_LOCK=0` bypasses and prints a line
-  naming the bypass; a bypass nobody can see is the SH-306 shape.
+- **`gate`** — taken inside `scripts/run-tests.sh`. The one verification worker
+  invokes `make test` against the predicted merge tree in a persistent private
+  worktree; interactive callers still serialize with it.
 - **`merge`** — taken by `scripts/land-pr.sh <pr>`, which runs
   `merge-preflight.sh` for the PR, merges with `gh pr merge --merge`, verifies
-  the merge landed, and deletes the branch. The autonomous charter's merge step
-  becomes this script instead of a bare `gh pr merge`, so the lock is taken by
-  the tool the agent runs rather than remembered by the agent.
+  the merge landed, and deletes the branch. The verification worker invokes it
+  only after the exact tree has a gate/full receipt.
 
 Waiting is reported, and every wait ceiling derives from the suite's own
 measured budget rather than a bare literal (SH-394).
@@ -705,8 +712,9 @@ mock. `ShellDispatcher` is exercised by the shell suite against the real script.
 
 - Cross-project runs. A run is one project's.
 - Resuming a story whose lane died. Quarantine, then a deliberate re-dispatch.
-- Replacing `merge-watch.sh` or `browser-watch.sh`. The engine certifies its own
-  lanes' PRs promptly; those pollers keep every other PR and the release tier.
+- Replacing `browser-watch.sh`. The broad open-PR mode of `merge-watch.sh` is
+  retired; only its private exact-tree execution primitive remains for the
+  `verifying` queue.
 - Any relaxation of the version-bump or deploy prohibitions.
 
 ## Waves
@@ -716,7 +724,7 @@ mock. `ShellDispatcher` is exercised by the shell suite against the real script.
 | W1 | Epic semantics (SH-446 absorbed): computed state, stored priority, `next` tie-break, epics-not-actionable, the Show-Epics filter | — |
 | W2 | Reserved labels: `human-only` filtering, `no-auto` reservation, orange tint | W1 (shares the `next` path) |
 | W3 | `--epic` and `--exclude-label` on `story next` and `story claim --next` | W1, W2, SH-476 |
-| W4 | `machine-lock.sh`, the gate lock in `run-tests.sh`, `land-pr.sh`, charter change | — |
+| W4 | Machine locks plus centralized `verifying` queue, verifier, and charter handoff | — |
 | W5 | Codex hook-surface spike; the `PreToolUse` full-auto hook; lane launch posture | — |
 | W6 | Store migration, `EngineService`, the `Dispatcher` seam, the reconcile loop, breaker, restart reconciliation | W3 |
 | W7 | CLI verbs, HTTP API, `story dispatch <epic> --auto` entry point | W6 |
@@ -739,6 +747,7 @@ order, so `ready_order` hands them out in a workable sequence at equal priority.
 | W4 | SH-456 | `scripts/machine-lock.sh` |
 | W4 | SH-457 | Gate lock inside `scripts/run-tests.sh` |
 | W4 | SH-458 | `scripts/land-pr.sh` — certify and merge under the merge lock |
+| W4 | SH-521 | Required `verifying` state; daemon-owned priority queue, exact-tree gate, merge, remediation, completion, and reap |
 | W5 | SH-459 | Spike: can a Codex hook deny a tool call with feedback? |
 | W5 | SH-460 | The full-auto `PreToolUse` hook |
 | W5 | SH-461 | Lane launch posture and the `STORYHOOK_FULL_AUTO` marker |

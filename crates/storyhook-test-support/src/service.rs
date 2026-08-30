@@ -55,7 +55,7 @@ pub struct ServiceFixture {
 
 impl ServiceFixture {
     /// A fixture with the default catalog: `todo` (open), `in-progress` (open,
-    /// active), `blocked` (open), `done` and `closed` (both closed); types
+    /// active), `verifying` and `blocked` (open), `done` and `closed` (both closed); types
     /// `feature` and `bug`; no members.
     #[must_use]
     pub fn new() -> Self {
@@ -258,6 +258,12 @@ pub fn default_states() -> Vec<StateDef> {
             slug: "in-progress".into(),
             super_state: SuperState::Open,
             role: Some("active".into()),
+            description: None,
+        },
+        StateDef {
+            slug: "verifying".into(),
+            super_state: SuperState::Open,
+            role: None,
             description: None,
         },
         StateDef {
