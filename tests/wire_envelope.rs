@@ -19,9 +19,10 @@
 
 use storyhook::cli::{
     AbandonedAction, Attach, AttachmentAction, ClaimComment, ClaimTarget, CrashesAction,
-    DaemonAction, EpicAction, GithubAuthAction, GraphMode, HistoryAction, HooksAction, Invocation,
-    MemberInput, NewProjectRequest, NewProjectSpec, PhaseAction, PluginAction, ProjectAction,
-    SettingsAction, StateAction, StoreAction, TokenAction, TypeAction, UnclaimComment, WebAction,
+    DaemonAction, EngineAction, EpicAction, GithubAuthAction, GraphMode, HistoryAction,
+    HooksAction, Invocation, MemberInput, NewProjectRequest, NewProjectSpec, PhaseAction,
+    PluginAction, ProjectAction, SettingsAction, StateAction, StoreAction, TokenAction, TypeAction,
+    UnclaimComment, WebAction,
 };
 use storyhook::domain::finding::{Finding, FindingCode, FindingData};
 use storyhook::domain::{
@@ -30,12 +31,13 @@ use storyhook::domain::{
 };
 use storyhook::error::{AppError, IntegrityDetail, WireError};
 use storyhook::output::{
-    BlockedChainView, ConfirmationPlan, DeletePlan, GraphOverview, GraphView, PhaseView,
-    ProjectSnapshotView, ReferencedBy, Response, SetPrefixPlan, SettingKind, SettingSource,
-    SettingView, StaleInfo, StoryDeletePlan, StoryView, SummaryView, UnclaimFallback,
-    UnclaimOutcome, render_error, render_response,
+    BlockedChainView, ConfirmationPlan, DeletePlan, EngineLaneView, EngineNeedsHumanView,
+    EngineRunView, EngineScopeView, GraphOverview, GraphView, PhaseView, ProjectSnapshotView,
+    ReferencedBy, Response, SetPrefixPlan, SettingKind, SettingSource, SettingView, StaleInfo,
+    StoryDeletePlan, StoryView, SummaryView, UnclaimFallback, UnclaimOutcome, render_error,
+    render_response,
 };
-use storyhook::store::{GlobalSeq, PrLink};
+use storyhook::store::{EngineAgent, EngineLaneState, EngineRunState, GlobalSeq, PrLink};
 
 /// The four ways a `Response` can be rendered. Every case in this file is
 /// checked in all of them, because `--quiet` and `--json` route through
@@ -337,6 +339,36 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                 message: Some("Created 1 story".to_string()),
                 warnings: vec!["example mutation warning for SH-4".to_string()],
             },
+        ),
+        (
+            "engine_run",
+            Response::EngineRun(Box::new(EngineRunView {
+                id: "run-1".to_string(),
+                scope: EngineScopeView {
+                    kind: "epic".to_string(),
+                    epic: Some("SH-9".to_string()),
+                },
+                agent: EngineAgent::Codex,
+                state: EngineRunState::Draining,
+                lane_count: 2,
+                consecutive_hard_stops: 2,
+                stop_reason: Some("operator-stopped".to_string()),
+                acknowledged_at: None,
+                created_at: "2026-08-30T20:00:00Z".to_string(),
+                updated_at: "2026-08-30T20:01:00Z".to_string(),
+                lanes: vec![EngineLaneView {
+                    index: 0,
+                    state: EngineLaneState::Working,
+                    story: Some("SH-10".to_string()),
+                    elapsed_seconds: Some(61),
+                    outcome: None,
+                    outcome_detail: None,
+                }],
+                needs_human: vec![EngineNeedsHumanView {
+                    id: "SH-11".to_string(),
+                    title: "Approve the rollout".to_string(),
+                }],
+            })),
         ),
         ("summary", Response::Summary(Box::new(summary()))),
         (
@@ -744,6 +776,7 @@ fn the_response_corpus_covers_every_variant() {
             Response::Claimed(..) => "claimed",
             Response::Unclaimed(..) => "unclaimed",
             Response::Stories { .. } => "stories",
+            Response::EngineRun(_) => "engine_run",
             Response::Summary(_) => "summary",
             Response::Graph(_) => "graph",
             Response::Issues(_) => "issues",
@@ -758,13 +791,14 @@ fn the_response_corpus_covers_every_variant() {
         }
     }
 
-    const EVERY_VARIANT: [&str; 17] = [
+    const EVERY_VARIANT: [&str; 18] = [
         "message",
         "message_with_warnings",
         "story",
         "claimed",
         "unclaimed",
         "stories",
+        "engine_run",
         "summary",
         "graph",
         "issues",
@@ -798,6 +832,23 @@ fn the_response_corpus_covers_every_variant() {
     );
 }
 
+#[test]
+fn engine_run_renders_elapsed_as_human_time_and_json_data() {
+    let response = response_corpus()
+        .into_iter()
+        .find(|(name, _)| *name == "engine_run")
+        .map(|(_, response)| response)
+        .expect("engine run corpus row");
+    let human = render_response(&response, false, false);
+    assert!(human.contains("1m 1s"), "{human}");
+    assert!(human.contains("needs a human (no-auto)"), "{human}");
+
+    let json: serde_json::Value =
+        serde_json::from_str(&render_response(&response, true, false)).unwrap();
+    assert_eq!(json["run"]["lanes"][0]["elapsed_seconds"], 61);
+    assert_eq!(json["run"]["needs_human"][0]["id"], "SH-11");
+}
+
 /// `Response`'s wire form is externally tagged, so the variant travels as the
 /// single top-level key. Pinned because a receiver that has to *guess* the
 /// variant from the payload's shape is the failure mode this envelope exists
@@ -811,6 +862,7 @@ fn response_variants_travel_as_snake_case_keys() {
         ("claimed", "claimed"),
         ("unclaimed", "unclaimed"),
         ("stories_empty", "stories"),
+        ("engine_run", "engine_run"),
         ("summary", "summary"),
         ("graph_overview", "graph"),
         ("issues", "issues"),
@@ -1616,6 +1668,35 @@ fn invocation_corpus() -> Vec<Invocation> {
             comment: UnclaimComment::Suppressed,
             dry_run: true,
         },
+        Invocation::Engine {
+            action: EngineAction::Start {
+                epic: Some("SH-9".to_string()),
+                lanes: 2,
+                agent: EngineAgent::Codex,
+            },
+        },
+        Invocation::Engine {
+            action: EngineAction::Status {
+                run: Some("run-1".to_string()),
+            },
+        },
+        Invocation::Engine {
+            action: EngineAction::Pause { run: None },
+        },
+        Invocation::Engine {
+            action: EngineAction::Resume { run: None },
+        },
+        Invocation::Engine {
+            action: EngineAction::Stop {
+                run: Some("run-1".to_string()),
+                now: true,
+            },
+        },
+        Invocation::Engine {
+            action: EngineAction::Ack {
+                run: Some("run-1".to_string()),
+            },
+        },
         Invocation::Attachment {
             action: AttachmentAction::List {
                 id: "SH-1".to_string(),
@@ -1652,6 +1733,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Next { .. } => "Next",
         Invocation::Claim { .. } => "Claim",
         Invocation::Unclaim { .. } => "Unclaim",
+        Invocation::Engine { .. } => "Engine",
         Invocation::Summary => "Summary",
         Invocation::Report { .. } => "Report",
         Invocation::Doctor { .. } => "Doctor",
@@ -1719,7 +1801,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        65,
+        66,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

@@ -15,7 +15,7 @@ use std::time::Duration;
 use regex::Regex;
 use wait_timeout::ChildExt;
 
-use crate::domain::is_epic;
+use crate::domain::{LABEL_NO_AUTO, is_epic};
 use crate::env::Environment;
 use crate::env::spawn_env::apply_dispatch_allowlist;
 use crate::error::AppError;
@@ -24,7 +24,7 @@ use crate::store::{
     ReadOps, Store, StoreError, WriteOps,
 };
 
-use super::{Ctx, project_prefix, resolve_story};
+use super::{Ctx, QueryService, ReadyQueueFilters, project_prefix, resolve_story};
 
 /// How long the worktree/tmux/agent helper may run.
 ///
@@ -107,6 +107,39 @@ pub trait Dispatcher: Send + Sync {
     fn unclaim(&self, request: UnclaimRequest) -> Result<DispatchOutcome, AppError>;
     fn window_alive(&self, window: &str) -> bool;
     fn kill_window(&self, window: &str) -> Result<(), AppError>;
+}
+
+/// Refusing dispatcher for lifecycle operations that are store-only.
+///
+/// Keeping this explicit rather than faking a helper path means an accidental
+/// expansion of `pause`, `resume`, status, or graceful stop into an external
+/// side effect fails loudly at the exact call site. Immediate stop and the
+/// reconciler receive a real [`ShellDispatcher`] or test fake instead.
+pub(crate) struct StoreOnlyDispatcher;
+
+impl Dispatcher for StoreOnlyDispatcher {
+    fn dispatch(&self, _request: DispatchRequest) -> Result<DispatchOutcome, AppError> {
+        Err(store_only_dispatcher_error())
+    }
+
+    fn unclaim(&self, _request: UnclaimRequest) -> Result<DispatchOutcome, AppError> {
+        Err(store_only_dispatcher_error())
+    }
+
+    fn window_alive(&self, _window: &str) -> bool {
+        false
+    }
+
+    fn kill_window(&self, _window: &str) -> Result<(), AppError> {
+        Err(store_only_dispatcher_error())
+    }
+}
+
+fn store_only_dispatcher_error() -> AppError {
+    AppError::Storage(
+        "internal: a store-only engine control attempted an external dispatch operation"
+            .to_string(),
+    )
 }
 
 /// Production dispatcher backed by Storyhook's existing shell helper and tmux.
@@ -222,9 +255,18 @@ pub struct StartRequest {
 
 /// One transactionally consistent run and its ordered lanes.
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SkippedNoAutoStory {
+    pub id: String,
+    pub title: String,
+}
+
+/// One transactionally consistent run, its ordered lanes, and work the run is
+/// deliberately leaving for a person.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunView {
     pub run: EngineRunRecord,
     pub lanes: Vec<EngineLaneRecord>,
+    pub skipped_no_auto: Vec<SkippedNoAutoStory>,
 }
 
 /// The durable lifecycle of Full Auto runs, excluding reconciliation.
@@ -306,6 +348,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     /// Reads all project runs, or exactly one named run, with ordered lanes.
     pub fn status(&self, run_id: Option<&RunId>) -> Result<Vec<RunView>, AppError> {
         let project = self.ctx.project();
+        let now = self.ctx.now();
         Ok(self.ctx.store().read(|tx| {
             let slug = tx
                 .project(project)?
@@ -318,10 +361,68 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             runs.into_iter()
                 .map(|run| {
                     let lanes = tx.engine_lanes(&run.id)?;
-                    Ok(RunView { run, lanes })
+                    let skipped_no_auto = if run.state.is_live() {
+                        QueryService::new(tx, project, &now)
+                            .next_filtered(
+                                usize::MAX,
+                                ReadyQueueFilters {
+                                    phase: None,
+                                    epic: run.scope.story_id(),
+                                    exclude_label: None,
+                                },
+                            )
+                            .map_err(StoreError::from)?
+                            .into_iter()
+                            .filter(|view| {
+                                view.story.labels.iter().any(|label| label == LABEL_NO_AUTO)
+                            })
+                            .map(|view| SkippedNoAutoStory {
+                                id: view.story.id,
+                                title: view.story.title,
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    Ok(RunView {
+                        run,
+                        lanes,
+                        skipped_no_auto,
+                    })
                 })
                 .collect()
         })?)
+    }
+
+    /// Resolves an optional CLI/HTTP run selector without guessing among
+    /// historical runs. The schema permits at most one live run per project;
+    /// spelling the multi-live case anyway makes corruption fail closed in
+    /// every Store implementation, not only SQLite.
+    pub fn resolve_run_id(&self, requested: Option<&RunId>) -> Result<RunId, AppError> {
+        if let Some(run_id) = requested {
+            return Ok(run_id.clone());
+        }
+        let project = self.ctx.project();
+        let (slug, live) = self.ctx.store().read(|tx| {
+            let slug = project_slug(tx, project)?;
+            let live = tx
+                .engine_runs(&slug)?
+                .into_iter()
+                .filter(|run| run.state.is_live())
+                .map(|run| run.id)
+                .collect::<Vec<_>>();
+            Ok((slug, live))
+        })?;
+        match live.as_slice() {
+            [run_id] => Ok(run_id.clone()),
+            [] => Err(AppError::Validation(format!(
+                "project `{slug}` has no live engine run; pass `--run <id>` to name a halted or finished run"
+            ))),
+            many => Err(AppError::Validation(format!(
+                "project `{slug}` has {} live engine runs, so none can be inferred; pass `--run <id>` to name one",
+                many.len()
+            ))),
+        }
     }
 
     pub fn pause(&self, run_id: &RunId) -> Result<RunView, AppError> {

@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::normalize_labels;
 use crate::error::AppError;
+use crate::service::engine::MAX_ENGINE_LANES;
+use crate::store::EngineAgent;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HooksAction {
@@ -126,6 +128,35 @@ pub enum EpicAction {
     Add { epic_id: String, story_id: String },
 }
 
+/// The six controls under `story engine` (SH-467).
+///
+/// Run ids are opaque engine identities, not story ids. Only `Start::epic`
+/// participates in story-id canonicalization.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EngineAction {
+    Start {
+        epic: Option<String>,
+        lanes: u32,
+        agent: EngineAgent,
+    },
+    Status {
+        run: Option<String>,
+    },
+    Pause {
+        run: Option<String>,
+    },
+    Resume {
+        run: Option<String>,
+    },
+    Stop {
+        run: Option<String>,
+        now: bool,
+    },
+    Ack {
+        run: Option<String>,
+    },
+}
+
 pub const HELP_TEXT: &str = r#"story - CLI-first issue tracker for AI agents
 
 Usage:
@@ -172,6 +203,10 @@ Usage:
                                                     (take a story, atomically)
   story unclaim <id> [--comment <text> | --no-comment]
                      [--dry-run]                    (hand it back where it came from)
+  story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex]
+  story engine status [--run <id>]
+  story engine pause|resume|ack [--run <id>]
+  story engine stop [--run <id>] [--now]
   story summary
   story report [--html]
   story search <query>
@@ -497,6 +532,10 @@ pub enum Invocation {
         comment: UnclaimComment,
         /// `--dry-run`: read for real, write symbolically.
         dry_run: bool,
+    },
+    /// `story engine start|status|pause|resume|stop|ack` (SH-467).
+    Engine {
+        action: EngineAction,
     },
     Summary,
     Report {
@@ -1595,6 +1634,36 @@ static VERB_FLAGS: &[VerbFlags] = &[
         flags: &[value("comment"), bare("no-comment"), bare("dry-run")],
     },
     VerbFlags {
+        verb: "engine",
+        subcommand: Some("start"),
+        flags: &[value("epic"), value("lanes"), value("agent")],
+    },
+    VerbFlags {
+        verb: "engine",
+        subcommand: Some("status"),
+        flags: &[value("run")],
+    },
+    VerbFlags {
+        verb: "engine",
+        subcommand: Some("pause"),
+        flags: &[value("run")],
+    },
+    VerbFlags {
+        verb: "engine",
+        subcommand: Some("resume"),
+        flags: &[value("run")],
+    },
+    VerbFlags {
+        verb: "engine",
+        subcommand: Some("stop"),
+        flags: &[value("run"), bare("now")],
+    },
+    VerbFlags {
+        verb: "engine",
+        subcommand: Some("ack"),
+        flags: &[value("run")],
+    },
+    VerbFlags {
         verb: "set",
         subcommand: None,
         flags: &[
@@ -2060,6 +2129,7 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "next" => parse_next(args),
         "claim" => parse_claim(args),
         "unclaim" => parse_unclaim(args),
+        "engine" => parse_engine(args),
         "summary" => {
             expect_no_more(&args[1..], "usage: story summary")?;
             Ok(Invocation::Summary)
@@ -3163,6 +3233,142 @@ fn parse_unclaim(args: &[String]) -> Result<Invocation, AppError> {
         comment,
         dry_run,
     })
+}
+
+const ENGINE_START_USAGE: &str =
+    "usage: story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex]";
+const ENGINE_STATUS_USAGE: &str = "usage: story engine status [--run <id>]";
+const ENGINE_PAUSE_USAGE: &str = "usage: story engine pause [--run <id>]";
+const ENGINE_RESUME_USAGE: &str = "usage: story engine resume [--run <id>]";
+const ENGINE_STOP_USAGE: &str = "usage: story engine stop [--run <id>] [--now]";
+const ENGINE_ACK_USAGE: &str = "usage: story engine ack [--run <id>]";
+
+/// `story engine start|status|pause|resume|stop|ack` (SH-467).
+///
+/// Every complete arm delegates to a parser that calls [`expect_no_more`]
+/// with that arm's own usage string. The separation is deliberate: a shared
+/// catch-all would report `engine`'s family usage and lose which command
+/// rejected the word, the exact SH-357 parser contract this family inherits.
+fn parse_engine(args: &[String]) -> Result<Invocation, AppError> {
+    let Some(action) = args.get(1).map(String::as_str) else {
+        return Err(AppError::Usage(
+            "usage: story engine <start|status|pause|resume|stop|ack>".to_string(),
+        ));
+    };
+    let action = match action {
+        "start" => parse_engine_start(args)?,
+        "status" => EngineAction::Status {
+            run: parse_engine_run(args, ENGINE_STATUS_USAGE)?,
+        },
+        "pause" => EngineAction::Pause {
+            run: parse_engine_run(args, ENGINE_PAUSE_USAGE)?,
+        },
+        "resume" => EngineAction::Resume {
+            run: parse_engine_run(args, ENGINE_RESUME_USAGE)?,
+        },
+        "stop" => parse_engine_stop(args)?,
+        "ack" => EngineAction::Ack {
+            run: parse_engine_run(args, ENGINE_ACK_USAGE)?,
+        },
+        _ => {
+            return Err(AppError::Usage(
+                "usage: story engine <start|status|pause|resume|stop|ack>".to_string(),
+            ));
+        }
+    };
+    Ok(Invocation::Engine { action })
+}
+
+fn parse_engine_start(args: &[String]) -> Result<EngineAction, AppError> {
+    let mut epic = None;
+    let mut lanes = 1_u32;
+    let mut agent = EngineAgent::Claude;
+    let mut index = 2;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--epic" => {
+                epic = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| AppError::Usage(ENGINE_START_USAGE.to_string()))?
+                        .clone(),
+                );
+                index += 2;
+            }
+            "--lanes" => {
+                let raw = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(ENGINE_START_USAGE.to_string()))?;
+                lanes = raw.parse::<u32>().map_err(|_| {
+                    AppError::Usage(format!(
+                        "--lanes must be an integer from 1 through {MAX_ENGINE_LANES}"
+                    ))
+                })?;
+                if !(1..=MAX_ENGINE_LANES).contains(&lanes) {
+                    return Err(AppError::Usage(format!(
+                        "--lanes must be an integer from 1 through {MAX_ENGINE_LANES}"
+                    )));
+                }
+                index += 2;
+            }
+            "--agent" => {
+                let raw = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(ENGINE_START_USAGE.to_string()))?;
+                agent = EngineAgent::parse(raw).ok_or_else(|| {
+                    AppError::Usage("--agent must be `claude` or `codex`".to_string())
+                })?;
+                index += 2;
+            }
+            _ => break,
+        }
+    }
+    expect_no_more(&args[index..], ENGINE_START_USAGE)?;
+    Ok(EngineAction::Start { epic, lanes, agent })
+}
+
+fn parse_engine_run(args: &[String], usage: &str) -> Result<Option<String>, AppError> {
+    let mut run = None;
+    let mut index = 2;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--run" => {
+                run = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| AppError::Usage(usage.to_string()))?
+                        .clone(),
+                );
+                index += 2;
+            }
+            _ => break,
+        }
+    }
+    expect_no_more(&args[index..], usage)?;
+    Ok(run)
+}
+
+fn parse_engine_stop(args: &[String]) -> Result<EngineAction, AppError> {
+    let mut run = None;
+    let mut now = false;
+    let mut index = 2;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--run" => {
+                run = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| AppError::Usage(ENGINE_STOP_USAGE.to_string()))?
+                        .clone(),
+                );
+                index += 2;
+            }
+            "--now" => {
+                now = true;
+                index += 1;
+            }
+            _ => break,
+        }
+    }
+    expect_no_more(&args[index..], ENGINE_STOP_USAGE)?;
+    Ok(EngineAction::Stop { run, now })
 }
 
 fn parse_report(args: &[String]) -> Result<Invocation, AppError> {
