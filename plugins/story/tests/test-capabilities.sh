@@ -28,10 +28,8 @@ assert_eq "$(jqf "$out" '[.models[] | select(.default==true)] | length')" \
   "1" "claude: exactly one default model"
 assert_eq "$(jqf "$out" '.efforts | map(.id) | sort | join(",")')" \
   "high,low,max,medium,xhigh" "claude: effort id set"
-assert_eq "$(jqf "$out" '.speeds | map(.id) | sort | join(",")')" \
-  "fast,standard" "claude: speed id set"
-assert_eq "$(jqf "$out" '.speeds[] | select(.id=="standard") | .default')" \
-  "true" "claude: standard is the default speed"
+assert_eq "$(jqf "$out" '.speeds | map(.id) | join(",")')" \
+  "fast" "claude: speed offers only the one alternative to Default -- no redundant standard entry"
 
 # Codex's catalog: the GPT-5.6 trio the story names, no forced default model
 # (its own config.toml decides, matching dispatch's existing no-flag
@@ -45,8 +43,8 @@ assert_eq "$(jqf "$out" '[.models[] | select(.default==true)] | length')" \
   "0" "codex: no forced default model"
 assert_eq "$(jqf "$out" '.efforts | map(.id) | sort | join(",")')" \
   "high,low,max,medium,none,xhigh" "codex: effort id set (includes none)"
-assert_eq "$(jqf "$out" '.speeds | map(.id) | sort | join(",")')" \
-  "fast,standard" "codex: speed id set"
+assert_eq "$(jqf "$out" '.speeds | map(.id) | join(",")')" \
+  "fast" "codex: speed offers only fast, same as claude"
 
 # STORY_AGENT is the fallback when --agent is omitted, exactly like every
 # other verb.
