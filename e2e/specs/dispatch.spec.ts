@@ -135,7 +135,7 @@ test("Dispatch opens with defaults and does not remember cancelled edits", async
   await expect(page.locator("#dispatch-agent")).toHaveValue("claude");
   await expect(page.locator("#dispatch-auto")).not.toBeChecked();
   await expect(page.locator(".dispatch-auto-help")).toHaveText(
-    "Uses Council for questions, auto-merges PRs, and cleans up its workspace when done. Does not auto-approve the implementation plan.",
+    "Auto-approves the implementation plan, handles questions autonomously, merges PRs, and cleans up its workspace when done.",
   );
 
   await page.locator("#dispatch-agent").selectOption("codex");

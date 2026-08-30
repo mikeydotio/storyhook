@@ -131,8 +131,14 @@ out=$(cd "$repo_plan" && PATH="$FAKE_BIN:$PATH" STORY_AGENT=codex STORY_DRY_RUN=
 assert_eq "$(jqf "$out" .agent)" "codex" "dry auto: selected provider"
 assert_eq "$(jqf "$out" .council)" "false" "dry auto: safe solo fallback"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" \
-  "codex --no-alt-screen -c check_for_update_on_startup=false" \
-  "dry auto: Codex launch suppresses the managed child's update chooser"
+  "codex --no-alt-screen -c check_for_update_on_startup=false --approve-for-me --dangerously-bypass-hook-trust" \
+  "dry auto: Codex uses automatic review and trusts the packaged hook"
+assert_contains "$(jqf "$out" '.commands|join(" ")')" \
+  "-e STORYHOOK_AUTO=$id_auto" "dry auto: Codex child receives the autonomous marker"
+assert_eq "$(jqf "$out" .launch_source)" "builtin" "dry auto: builtin launch source"
+assert_eq "$(jqf "$out" .launch_overridden)" "false" "dry auto: launch is not overridden"
+assert_contains "$(jqf "$out" .display)" "approves the plan automatically" \
+  "dry auto: display reports automatic plan approval"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" "send-keys -t <pane> Tab" \
   "dry auto: Tab submission"
 assert_contains "$(jqf "$out" .prompt)" \

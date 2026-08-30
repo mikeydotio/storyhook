@@ -240,10 +240,10 @@ pub struct DispatchRecord {
     /// Claude — the only provider those daemons could have launched.
     #[serde(default)]
     pub agent: DispatchAgent,
-    /// Whether this dispatch runs `story.sh`'s autonomous charter (SH-208):
-    /// plan approval is still the one human interaction, but everything
-    /// past it — council-voting open questions, merging its own PR, closing
-    /// the story, reclaiming its own worktree — runs unattended. Never
+    /// Whether this dispatch runs `story.sh`'s autonomous charter (SH-208,
+    /// SH-511): Plan mode is retained but approved automatically, and
+    /// everything after it — deciding open questions, merging its own PR,
+    /// closing the story, reclaiming its own worktree — runs unattended. Never
     /// `skip_serializing_if`, unlike the fields below: this is never
     /// absent, only ever true or false, for the lifetime of the record.
     pub auto: bool,

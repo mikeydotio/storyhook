@@ -196,13 +196,16 @@ compatibility alias. Claude keeps its existing
 Shift+Tab, and submits the bracketed-pasted charter with Tab. A failed readiness or
 Plan-mode check rolls back the claim and worktree before any charter is submitted.
 
-`--auto` keeps plan approval as the *only* human interaction. In Claude, choose
-auto-accept edits when you approve. In Codex, review the plan, Shift+Tab to Default
-mode, and submit approval. The session then runs to completion on its own. Claude
-can probe for `/council-vote`; Codex has no stable machine-readable skill inventory,
-so its default is the safe solo charter unless `STORY_COUNCIL=on` opts in explicitly.
-Both paths research and decide clear questions, run tests, merge their PRs, close the
-story when its acceptance criteria pass, and stop safely on a hard failure.
+`--auto` is fully unattended while retaining Plan mode. Storyhook approves Claude's
+plan exit through its packaged hook and launches Claude with `acceptEdits` as the
+post-plan default. Codex uses workspace-write automatic review and trusts that same
+packaged hook for the invocation. The hook also refuses question tools instead of
+waiting for a person who is not there. Claude can probe for `/council-vote`; Codex has
+no stable machine-readable skill inventory, so its default is the safe solo charter
+unless `STORY_COUNCIL=on` opts in explicitly. Both paths research and decide clear
+questions, run tests, merge their PRs, close the story when its acceptance criteria
+pass, and stop safely on a hard failure. A custom `STORY_LAUNCH_CMD` remains wholesale
+and is reported as potentially weakening this unattended posture.
 Because Codex changes modes through the UI rather than an `ExitPlanMode` tool call, the
 built-in Codex prompt makes posting the exact approved plan to the story the first
 implementation step. Wholesale custom prompt overrides must supply that instruction when

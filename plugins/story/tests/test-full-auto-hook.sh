@@ -74,6 +74,21 @@ case "$(reason_of "$out")" in
   *) fail_test "ExitPlanMode: the approval reason does not name the lane's story" ;;
 esac
 
+# SH-511: ordinary `dispatch --auto` activates the same native decision surface
+# through its own marker, without claiming to be an engine lane.
+unset STORYHOOK_FULL_AUTO
+export STORYHOOK_AUTO="SH-511"
+out=$(fire ExitPlanMode "$(claude_payload ExitPlanMode '{"plan":"do the thing"}')")
+assert_eq "$(decision_of "$out")" "allow" "STORYHOOK_AUTO: the plan is approved"
+assert_contains "$(reason_of "$out")" "SH-511" \
+  "STORYHOOK_AUTO: the approval reason names the autonomous story"
+out=$(fire request_user_input "$(codex_payload)")
+assert_eq "$(decision_of "$out")" "deny" "STORYHOOK_AUTO: Codex questions are refused"
+assert_contains "$(reason_of "$out")" "SH-511" \
+  "STORYHOOK_AUTO: question feedback names the autonomous story"
+unset STORYHOOK_AUTO
+export STORYHOOK_FULL_AUTO="$LANE_STORY"
+
 # --- the question is refused, on both hosts, with the same instruction ------
 for probe in "AskUserQuestion:$(claude_payload AskUserQuestion '{"questions":[{"question":"which?"}]}')" \
              "request_user_input:$(codex_payload)"; do

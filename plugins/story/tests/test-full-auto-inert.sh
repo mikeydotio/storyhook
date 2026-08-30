@@ -37,7 +37,7 @@ payload() {
 }
 
 # run <matcher> <tool> -- fire the manifest's command for <matcher> with a
-# <tool> payload, in whatever STORYHOOK_FULL_AUTO the caller has arranged.
+# <tool> payload, in whatever autonomous markers the caller has arranged.
 run() {
   local command
   command=$(hook_command "$1")
@@ -51,6 +51,7 @@ TOOLS="ExitPlanMode:ExitPlanMode AskUserQuestion:AskUserQuestion request_user_in
 
 # --- unset: the marker is absent, as it is in every session but a lane -------
 unset STORYHOOK_FULL_AUTO
+unset STORYHOOK_AUTO
 for pair in $TOOLS; do
   matcher="${pair%%:*}"; tool="${pair#*:}"
   out=$(run "$matcher" "$tool"); status=$?
@@ -64,6 +65,7 @@ done
 # nothing would otherwise activate the hook with an empty story id -- deciding
 # on behalf of a lane that does not exist.
 export STORYHOOK_FULL_AUTO=""
+export STORYHOOK_AUTO=""
 for pair in $TOOLS; do
   matcher="${pair%%:*}"; tool="${pair#*:}"
   out=$(run "$matcher" "$tool"); status=$?
@@ -71,6 +73,7 @@ for pair in $TOOLS; do
   assert_eq "$out" "{}" "inert/empty: $tool emits an empty directive"
 done
 unset STORYHOOK_FULL_AUTO
+unset STORYHOOK_AUTO
 
 # --- no decision word reaches the transcript in either case -----------------
 #
@@ -108,6 +111,7 @@ export FULL_AUTO_DECOY_LOG="$DECOY/reached"
 : >"$FULL_AUTO_DECOY_LOG"
 
 unset STORYHOOK_FULL_AUTO
+unset STORYHOOK_AUTO
 for pair in $TOOLS; do
   matcher="${pair%%:*}"; tool="${pair#*:}"
   command=$(hook_command "$matcher")
@@ -128,6 +132,7 @@ command=$(hook_command AskUserQuestion)
 assert_eq "$(wc -l <"$FULL_AUTO_DECOY_LOG" | tr -d ' ')" "1" \
   "the decoy python3 was never reachable -- the no-interpreter assertion above proves nothing"
 unset STORYHOOK_FULL_AUTO
+unset STORYHOOK_AUTO
 
 # --- inertness must never be buyable by deleting the decisions --------------
 #
@@ -136,7 +141,7 @@ unset STORYHOOK_FULL_AUTO
 [ -f "$HOOK" ] || fail_test "full-auto-inert: $HOOK does not exist"
 source_text=$(cat "$HOOK" 2>/dev/null || true)
 for needle in ExitPlanMode AskUserQuestion request_user_input \
-              '"allow"' '"deny"' STORYHOOK_FULL_AUTO council-vote; do
+              '"allow"' '"deny"' STORYHOOK_AUTO STORYHOOK_FULL_AUTO council-vote; do
   case "$source_text" in
     *"$needle"*) ;;
     *) fail_test "full-auto-inert: the hook no longer names '$needle' -- inertness must not be bought by removing the decisions" ;;
