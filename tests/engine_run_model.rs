@@ -94,7 +94,11 @@ fn migration_24_applies_forward_without_touching_story_data() {
     let project = seed_project(&store, "alpha", "SH");
     let story = create_story(&store, project, "Already here", "2026-08-29T19:00:00Z");
 
-    let report = store.migrate().unwrap();
+    // Bounded to 24 rather than `store.migrate()`. This test is about what
+    // migration 24 does, so it applies exactly migration 24: an unbounded
+    // upgrade sweeps in every later migration too, which made this fail the
+    // moment 25 existed and would have failed again on 26.
+    let report = store.migrate_with(&migrate::MIGRATIONS[..24]).unwrap();
 
     assert_eq!(report.from_version, 23);
     assert_eq!(report.to_version, 24);
