@@ -7,7 +7,7 @@ use crate::domain::{
     StorySnapshot, SuperState,
 };
 use crate::error::AppError;
-use crate::store::PrLink;
+use crate::store::{EngineAgent, EngineLaneState, EngineRunState, EngineScope, PrLink};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StaleInfo {
@@ -113,6 +113,113 @@ pub struct StoryView {
     /// divergent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head_global_seq: Option<crate::store::GlobalSeq>,
+}
+
+/// Structured scope in the `story engine … --json` run object.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineScopeView {
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub epic: Option<String>,
+}
+
+/// One lane as presented by the engine control surfaces.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineLaneView {
+    pub index: u32,
+    pub state: EngineLaneState,
+    pub story: Option<String>,
+    pub elapsed_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome_detail: Option<String>,
+}
+
+/// One `no-auto` story this run deliberately leaves for a person.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineNeedsHumanView {
+    pub id: String,
+    pub title: String,
+}
+
+/// One engine run, shared by all six CLI controls and their JSON envelope.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineRunView {
+    pub id: String,
+    pub scope: EngineScopeView,
+    pub agent: EngineAgent,
+    pub state: EngineRunState,
+    pub lane_count: u32,
+    pub consecutive_hard_stops: u32,
+    pub stop_reason: Option<String>,
+    pub acknowledged_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub lanes: Vec<EngineLaneView>,
+    pub needs_human: Vec<EngineNeedsHumanView>,
+}
+
+impl EngineRunView {
+    /// Converts the service's durable timestamps into a presentation-relative
+    /// elapsed value once, before the response crosses the daemon wire.
+    pub fn from_service(view: crate::service::engine::RunView, now: &str) -> Self {
+        let now = chrono::DateTime::parse_from_rfc3339(now).ok();
+        let scope = match view.run.scope {
+            EngineScope::Project => EngineScopeView {
+                kind: "project".to_string(),
+                epic: None,
+            },
+            EngineScope::Epic(epic) => EngineScopeView {
+                kind: "epic".to_string(),
+                epic: Some(epic),
+            },
+        };
+        let lanes = view
+            .lanes
+            .into_iter()
+            .map(|lane| {
+                let elapsed_seconds = lane.dispatched_at.as_deref().and_then(|started| {
+                    let started = chrono::DateTime::parse_from_rfc3339(started).ok()?;
+                    Some(
+                        now.as_ref()?
+                            .signed_duration_since(started)
+                            .num_seconds()
+                            .max(0) as u64,
+                    )
+                });
+                EngineLaneView {
+                    index: lane.lane_index,
+                    state: lane.state,
+                    story: lane.story_id,
+                    elapsed_seconds,
+                    outcome: lane.outcome,
+                    outcome_detail: lane.outcome_detail,
+                }
+            })
+            .collect();
+        Self {
+            id: view.run.id,
+            scope,
+            agent: view.run.agent,
+            state: view.run.state,
+            lane_count: view.run.lanes,
+            consecutive_hard_stops: view.run.consecutive_hard_stops,
+            stop_reason: view.run.stop_reason,
+            acknowledged_at: view.run.acknowledged_at,
+            created_at: view.run.created_at,
+            updated_at: view.run.updated_at,
+            lanes,
+            needs_human: view
+                .skipped_no_auto
+                .into_iter()
+                .map(|story| EngineNeedsHumanView {
+                    id: story.id,
+                    title: story.title,
+                })
+                .collect(),
+        }
+    }
 }
 
 /// What `story project delete` would destroy, counted before anything is.
@@ -735,6 +842,8 @@ pub enum Response {
         /// every other `Response` construction site already passes.
         warnings: Vec<String>,
     },
+    /// One Full Auto engine run after a start, read, or control mutation.
+    EngineRun(Box<EngineRunView>),
     Summary(Box<SummaryView>),
     Graph(Box<GraphView>),
     Issues(Vec<String>),
@@ -1030,6 +1139,10 @@ fn render_json(response: &Response) -> String {
             warnings,
             flagged_reasons: &[],
         }),
+        Response::EngineRun(run) => serde_json::to_string_pretty(&serde_json::json!({
+            "result": "ok",
+            "run": run,
+        })),
         Response::Summary(summary) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
             claimed_from: None,
@@ -1315,6 +1428,7 @@ fn render_human(response: &Response) -> String {
             }
             body
         }
+        Response::EngineRun(run) => render_engine_run(run),
         Response::Summary(summary) => render_summary(summary),
         Response::Graph(graph) => render_graph(graph),
         Response::Issues(issues) => {
@@ -1382,6 +1496,62 @@ fn render_human(response: &Response) -> String {
         Response::StoryLog { id, title, entries } => render_story_log(id, title, entries),
         Response::Project(view) => render_project(view),
         Response::ConfirmationRequired(plan) => render_confirmation_plan(plan),
+    }
+}
+
+fn render_engine_run(run: &EngineRunView) -> String {
+    let scope = run
+        .scope
+        .epic
+        .as_deref()
+        .map_or_else(|| run.scope.kind.clone(), |epic| format!("epic {epic}"));
+    let mut body = format!(
+        "run: {}\nscope: {}\nstate: {}\nagent: {}\nlanes: {}\nconsecutive hard stops: {}\n",
+        run.id,
+        scope,
+        run.state.as_str(),
+        run.agent.as_str(),
+        run.lane_count,
+        run.consecutive_hard_stops
+    );
+    if let Some(reason) = &run.stop_reason {
+        body.push_str(&format!("stop reason: {reason}\n"));
+        body.push_str(&format!(
+            "acknowledged: {}\n",
+            run.acknowledged_at.as_deref().unwrap_or("no")
+        ));
+    }
+    body.push_str("\nlane  state        story       elapsed\n");
+    for lane in &run.lanes {
+        body.push_str(&format!(
+            "{:<5} {:<12} {:<11} {}\n",
+            lane.index + 1,
+            lane.state.as_str(),
+            lane.story.as_deref().unwrap_or("-"),
+            lane.elapsed_seconds
+                .map(format_elapsed)
+                .unwrap_or_else(|| "-".to_string())
+        ));
+    }
+    if !run.needs_human.is_empty() {
+        body.push_str("\nneeds a human (no-auto):\n");
+        for story in &run.needs_human {
+            body.push_str(&format!("  {} — {}\n", story.id, story.title));
+        }
+    }
+    body
+}
+
+fn format_elapsed(seconds: u64) -> String {
+    let hours = seconds / 3600;
+    let minutes = (seconds % 3600) / 60;
+    let seconds = seconds % 60;
+    if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else if minutes > 0 {
+        format!("{minutes}m {seconds}s")
+    } else {
+        format!("{seconds}s")
     }
 }
 

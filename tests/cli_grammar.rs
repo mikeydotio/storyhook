@@ -3,6 +3,8 @@
 
 use assert_cmd::Command;
 use predicates::prelude::*;
+use storyhook::cli::{EngineAction, Invocation, parse_invocation};
+use storyhook::store::EngineAgent;
 use tempfile::tempdir;
 
 fn story(dir: &std::path::Path) -> Command {
@@ -757,4 +759,199 @@ fn load_context_basic() {
         .success()
         .stdout(predicate::str::contains("# Project Status"))
         .stdout(predicate::str::contains("1 open"));
+}
+
+fn invocation(args: &[&str]) -> Result<Invocation, storyhook::error::AppError> {
+    parse_invocation(
+        &args
+            .iter()
+            .map(|word| (*word).to_string())
+            .collect::<Vec<_>>(),
+    )
+}
+
+#[test]
+fn engine_parser_covers_every_action_and_default() {
+    assert_eq!(
+        invocation(&["engine", "start"]).unwrap(),
+        Invocation::Engine {
+            action: EngineAction::Start {
+                epic: None,
+                lanes: 1,
+                agent: EngineAgent::Claude,
+            },
+        }
+    );
+    assert_eq!(
+        invocation(&[
+            "engine", "start", "--agent", "codex", "--lanes", "3", "--epic", "SH-9",
+        ])
+        .unwrap(),
+        Invocation::Engine {
+            action: EngineAction::Start {
+                epic: Some("SH-9".to_string()),
+                lanes: 3,
+                agent: EngineAgent::Codex,
+            },
+        }
+    );
+    for (args, expected) in [
+        (
+            vec!["engine", "status", "--run", "run-1"],
+            EngineAction::Status {
+                run: Some("run-1".to_string()),
+            },
+        ),
+        (vec!["engine", "pause"], EngineAction::Pause { run: None }),
+        (
+            vec!["engine", "resume", "--run", "run-1"],
+            EngineAction::Resume {
+                run: Some("run-1".to_string()),
+            },
+        ),
+        (
+            vec!["engine", "stop", "--now", "--run", "run-1"],
+            EngineAction::Stop {
+                run: Some("run-1".to_string()),
+                now: true,
+            },
+        ),
+        (vec!["engine", "ack"], EngineAction::Ack { run: None }),
+    ] {
+        assert_eq!(
+            invocation(&args).unwrap(),
+            Invocation::Engine { action: expected }
+        );
+    }
+}
+
+#[test]
+fn engine_parser_refuses_bad_values_scoped_flags_and_trailing_words() {
+    for args in [
+        vec!["engine", "start", "--lanes", "0"],
+        vec!["engine", "start", "--lanes", "256"],
+        vec!["engine", "start", "--lanes", "many"],
+        vec!["engine", "start", "--agent", "other"],
+    ] {
+        assert!(
+            invocation(&args).is_err(),
+            "story {} must fail",
+            args.join(" ")
+        );
+    }
+
+    let wrong_flag = invocation(&["engine", "status", "--now"]).unwrap_err();
+    assert!(wrong_flag.to_string().contains("unknown flag `--now`"));
+
+    let trailing = invocation(&["engine", "ack", "extra"]).unwrap_err();
+    assert!(trailing.to_string().contains("unexpected argument `extra`"));
+    assert!(trailing.to_string().contains("usage: story engine ack"));
+
+    assert!(invocation(&["engine"]).is_err());
+    assert!(invocation(&["engine", "launch"]).is_err());
+}
+
+#[test]
+fn engine_cli_runs_the_lifecycle_and_reports_no_auto_work() {
+    let dir = tempdir().unwrap();
+    let path = dir.path();
+    story(path)
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+    story(path)
+        .args(["new", "Approve the rollout", "--labels", "no-auto"])
+        .assert()
+        .success();
+
+    let started = story(path)
+        .args(["engine", "start", "--lanes", "2", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let started: serde_json::Value = serde_json::from_slice(&started.stdout).unwrap();
+    let run_id = started["run"]["id"].as_str().unwrap().to_string();
+    assert_eq!(started["run"]["scope"]["kind"], "project");
+    assert_eq!(started["run"]["agent"], "claude");
+    assert_eq!(started["run"]["lane_count"], 2);
+    assert_eq!(started["run"]["lanes"].as_array().unwrap().len(), 2);
+    assert_eq!(started["run"]["needs_human"][0]["id"], "SH-1");
+
+    story(path)
+        .args(["engine", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!("run: {run_id}")))
+        .stdout(predicate::str::contains("lane  state"))
+        .stdout(predicate::str::contains("needs a human (no-auto)"));
+    story(path)
+        .args(["engine", "pause"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("state: paused"));
+    story(path)
+        .args(["engine", "resume"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("state: running"));
+    story(path)
+        .args(["engine", "stop"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("state: finished"))
+        .stdout(predicate::str::contains("stop reason: operator-stopped"));
+
+    story(path)
+        .args(["engine", "status"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("has no live engine run"));
+    story(path)
+        .args(["engine", "ack", "--run", &run_id, "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"acknowledged_at\""));
+    story(path)
+        .args(["engine", "status", "--run", &run_id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("acknowledged: 20"));
+
+    story(path)
+        .args(["engine", "start"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("state: running"));
+    story(path)
+        .args(["engine", "stop", "--now"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("state: finished"))
+        .stdout(predicate::str::contains(
+            "stop reason: operator-stopped-now",
+        ));
+}
+
+#[test]
+fn engine_start_canonicalizes_a_bare_epic_id() {
+    let dir = tempdir().unwrap();
+    let path = dir.path();
+    story(path)
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+    story(path)
+        .args(["new", "Release epic", "--type", "epic"])
+        .assert()
+        .success();
+
+    story(path)
+        .args(["engine", "start", "--epic", "1", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"epic\": \"SH-1\""));
 }
