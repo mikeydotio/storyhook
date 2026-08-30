@@ -1154,6 +1154,7 @@ fn run_child(
         story,
         engine_agent,
         auto,
+        false,
         env,
     ))
 }

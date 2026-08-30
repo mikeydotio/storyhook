@@ -41,9 +41,9 @@ assert_eq "$(jqf "$out" .auto)" "false" "attended: auto:false"
 assert_eq "$(jqf "$out" .council)" "false" "attended: council:false"
 assert_eq "$(jqf "$out" '.launch_source // "absent"')" "absent" \
   "attended: autonomous launch metadata is absent"
-case "$(jqf "$out" '.commands|join(" ")')" in
-  *STORYHOOK_AUTO*) fail_test "attended: autonomous marker leaked into tmux command" ;;
-esac
+assert_contains "$(jqf "$out" '.commands|join(" ")')" \
+  "-e STORYHOOK_AUTO= -e STORYHOOK_FULL_AUTO=" \
+  "attended: both autonomous markers are explicitly contained"
 assert_eq "$(jqf "$out" .prompt)" "$expected_attended_prompt" "attended: prompt is byte-identical to today's"
 for marker in "AUTONOMOUS" "council-vote" "land-pr.sh" "story block" "story move $id" "reap" "genuinely defensible answers" "do not stall"; do
   case "$(jqf "$out" .prompt)" in
@@ -69,6 +69,8 @@ assert_contains "$commands" \
   "auto: Claude keeps Plan mode and returns to acceptEdits"
 assert_contains "$commands" "-e STORYHOOK_AUTO=$id" \
   "auto: tmux child receives the autonomous hook marker"
+assert_contains "$commands" "-e STORYHOOK_FULL_AUTO=" \
+  "auto: engine marker is explicitly empty"
 prompt=$(jqf "$out" .prompt)
 for marker in \
   "AUTONOMOUS" \
@@ -297,6 +299,8 @@ assert_contains "$(jqf "$out" .display)" "approves the plan automatically" \
   "real auto dispatch: display reports automatic approval"
 assert_contains "$(cat "$FAKE_TMUX_STATE/new_window_args.log")" \
   "-e STORYHOOK_AUTO=$id" "real auto dispatch: marker reaches tmux new-window"
+assert_contains "$(cat "$FAKE_TMUX_STATE/new_window_args.log")" \
+  "-e STORYHOOK_FULL_AUTO=" "real auto dispatch: engine marker is contained"
 [ ! -e "$FAKE_TMUX_STATE/run_shell.log" ] \
   || fail_test "real Claude auto dispatch: armed Codex's pane watcher"
 

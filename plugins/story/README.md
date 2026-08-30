@@ -81,6 +81,7 @@ and then runs the same packaged helper, preserving the one-JSON-object contract.
 | `list` | bare `/story` |
 | `view <id>` | `/story view`, `/story <id>` |
 | `dispatch <id> [--auto] [--force] [--agent=claude\|codex]` | `/story do`; `--force` reuses an existing claim without another state transition |
+| `dispatch <id> --auto --full-auto [--force] [--agent=claude\|codex]` | engine-only lane launch; the dashboard, skills, and ordinary autonomous dispatch never add `--full-auto` |
 | `dispatch --next [--auto] [--agent=claude\|codex]` | not routed by any skill (SH-344) — the id-less sibling: claims whatever `story claim --next` picks atomically, so a caller dispatching several stories at once (a fleet, a loop) gets a distinct story per call instead of racing the same id |
 | `create --title …` | `/story new` |
 | `complete <plan\|execute> <id> [--no-close] [--no-clean] [--force]` | `/story complete` |
@@ -242,10 +243,22 @@ Worth knowing before changing anything here:
   The hook denies either provider's question tool; Codex uses `--approve-for-me`
   for later tool approvals. Claude's
   post-plan default is `acceptEdits`, while Codex keeps workspace-write automatic
-  review and bypasses only interactive trust for the packaged hook. Attended
-  dispatches receive no marker and keep their existing launch commands. A
-  wholesale `STORY_LAUNCH_CMD` override is preserved and visibly reported as
-  potentially weakening unattendedness.
+  review and bypasses only interactive trust for the packaged hook. A wholesale
+  `STORY_LAUNCH_CMD` override is preserved and visibly reported as potentially
+  weakening unattendedness.
+- **Full Auto is an engine identity, not another spelling of `--auto`.** The
+  helper accepts `--full-auto` only once, alongside `--auto` and a named story;
+  `--next` and every incomplete composition are refused before a claim or
+  resource exists. Each `tmux new-window` receives both markers explicitly:
+  attended dispatch has `STORYHOOK_AUTO=` and `STORYHOOK_FULL_AUTO=`, ordinary
+  Auto has `STORYHOOK_AUTO=<story-id>` and an empty Full Auto marker, and an
+  engine lane has the inverse. No non-empty marker is written to tmux's session
+  environment. Full Auto reuses the provider's built-in Auto command unless
+  `STORY_FULL_AUTO_LAUNCH_CMD` is set; inherited `STORY_LAUNCH_CMD` is ignored
+  and reported, so a daemon-wide expert override cannot silently weaken an
+  engine lane. That lane is edit-capable only in its disposable worktree; the
+  charter still forbids version/release/deploy work and permits merge only
+  through the certified path.
 - **Dispatch is provider-selected, not inferred from terminal prose.** Adapters pass
   `--agent=claude|codex`; an explicit dispatch flag overrides the active host and an
   omitted flag retains that adapter's host default. The helper also accepts
@@ -275,7 +288,8 @@ All knobs are `STORY_*`. The commonly useful ones:
 |---|---|
 | `STORY_AGENT` | provider contract: `claude` (default) or `codex`; `claude-code` is a deprecated compatibility alias |
 | `STORY_DRY_RUN=1` | preview any side-effecting verb; changes nothing |
-| `STORY_LAUNCH_CMD` | wholesale dispatch launch override (must **not** include `-w`); autonomous results warn because it may weaken unattendedness |
+| `STORY_LAUNCH_CMD` | wholesale attended/ordinary-Auto launch override (must **not** include `-w`); ordinary autonomous results warn because it may weaken unattendedness; Full Auto reports and ignores it |
+| `STORY_FULL_AUTO_LAUNCH_CMD` | engine-only wholesale launch override; when unset, Full Auto reuses the provider's built-in Auto command |
 | `STORY_PROMPT` / `STORY_PROMPT_EXTRA` | the handoff prompt, and a clause appended to it |
 | `STORY_AUTO_PROMPT` / `STORY_AUTO_PROMPT_SOLO` | the two `--auto` charters — council-available and no-council, respectively (same seam as `STORY_PROMPT`; either wins outright over the probe below); `<done-state>` renders as the project-specific completion state |
 | `STORY_COUNCIL` | `auto` (default, probes for real)/`on`/`off` — which `--auto` charter `council_vote_available` picks |

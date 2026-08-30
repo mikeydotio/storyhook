@@ -333,11 +333,11 @@ fn every_declared_hook_script_exists_and_spells_deadline_as_a_flag() {
 /// The scripts `hooks.json` currently names, one row per declared entry, pinned
 /// so a change to the manifest is a visible diff in this test rather than silent.
 ///
-/// `full-auto.sh` appears three times because `PreToolUse` declares it three
-/// times -- one exact matcher per tool it answers for (SH-460). Enumeration is
-/// per entry, not per file, so losing one of those matchers is a diff here. — the same
-/// property the hand-maintained list used to give, minus the failure mode
-/// where the list and the manifest could disagree.
+/// `full-auto.sh` appears four times: three `PreToolUse` matchers (SH-460) and
+/// one `PermissionRequest` matcher (SH-511). Enumeration is per entry, not per
+/// file, so losing either plan-review path or one of the question matchers is a
+/// visible diff here -- the same property the hand-maintained list used to
+/// give, minus the failure mode where the list and the manifest could disagree.
 #[test]
 fn the_manifest_currently_declares_exactly_these_four_scripts() {
     let mut scripts: Vec<String> = storyhook_test_support::all_declared_hooks()
@@ -348,6 +348,7 @@ fn the_manifest_currently_declares_exactly_these_four_scripts() {
     assert_eq!(
         scripts,
         vec![
+            "full-auto.sh",
             "full-auto.sh",
             "full-auto.sh",
             "full-auto.sh",
@@ -380,18 +381,26 @@ fn hook_manifest_has_the_shared_provider_contract() {
     events.sort_unstable();
     assert_eq!(
         events,
-        ["PostToolUse", "PreToolUse", "SessionStart", "Stop"]
+        [
+            "PermissionRequest",
+            "PostToolUse",
+            "PreToolUse",
+            "SessionStart",
+            "Stop"
+        ]
     );
 
-    // One row per (event, matcher). `PreToolUse` carries three because SH-460
-    // wires each tool it answers for under its own exact name: Codex's matcher
-    // semantics were measured (SH-459) only for a plain tool name, and a
-    // wildcard would pay a hook process on every tool call a lane makes.
+    // One row per (event, matcher). `PreToolUse` retains Claude's plan-tool
+    // allow plus the two question tools, while `PermissionRequest` carries the
+    // separate chooser path from SH-511. Codex's matcher semantics were
+    // measured (SH-459) only for a plain tool name, and a wildcard would pay a
+    // hook process on every tool call a lane makes.
     let expected = [
         ("SessionStart", "*", "session-start.sh", 5),
         ("PreToolUse", "ExitPlanMode", "full-auto.sh", 10),
         ("PreToolUse", "AskUserQuestion", "full-auto.sh", 10),
         ("PreToolUse", "request_user_input", "full-auto.sh", 10),
+        ("PermissionRequest", "ExitPlanMode", "full-auto.sh", 10),
         ("PostToolUse", "Bash", "post-git.sh", 10),
         ("Stop", "*", "stop-handoff.sh", 15),
     ];
