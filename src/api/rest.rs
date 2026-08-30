@@ -33,7 +33,7 @@ use crate::api::http::{
     Reply, TrustedHosts, error_reply, get_bool, get_str, get_str_array, guarded, guarded_no_body,
     html_reply, json_reply, parse_json_object, path_segments, require_str, text_reply, to_json,
 };
-use crate::api::routes::{ProjectRoute, Route, StoryAction, classify};
+use crate::api::routes::{EngineAction, ProjectRoute, Route, StoryAction, classify};
 use crate::cli::{Invocation, ProjectAction, StateAction};
 use crate::domain::provenance::Provenance;
 use crate::domain::{Priority, default_open_state, default_type};
@@ -180,6 +180,20 @@ fn route_provenance(route: &ProjectRoute<'_>) -> Provenance {
         ProjectRoute::StoryActionUnknown => "unknown-action",
         ProjectRoute::Dispatch { .. } => "dispatch",
         ProjectRoute::DispatchPoll => "dispatch-poll",
+        // Answered by `crate::api::engine::intercept` before this match ever
+        // sees them — the same early-interception shape as Dispatch and
+        // DispatchPoll above — so this arm is reached only through this
+        // match's own defensive Engine* fallback below. Labelled anyway, for
+        // the same reason every route here is: exhaustiveness with no
+        // wildcard, so a route added later can't silently fall through.
+        ProjectRoute::Engine => "engine",
+        ProjectRoute::EngineAction { action } => match action {
+            EngineAction::Pause => "engine-pause",
+            EngineAction::Resume => "engine-resume",
+            EngineAction::Stop => "engine-stop",
+            EngineAction::Ack => "engine-ack",
+        },
+        ProjectRoute::EngineActionUnknown => "engine-unknown-action",
         ProjectRoute::States => "states",
         ProjectRoute::StateCreate => "state-create",
         ProjectRoute::StatesReorder => "states-reorder",
