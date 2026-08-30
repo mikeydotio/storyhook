@@ -138,6 +138,8 @@ assert_contains "$(jqf "$out" '.commands|join(" ")')" \
   "dry auto: Codex uses later automatic review and trusts the packaged hook"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" \
   "-e STORYHOOK_AUTO=$id_auto" "dry auto: Codex child receives the autonomous marker"
+assert_contains "$(jqf "$out" '.commands|join(" ")')" \
+  "-e STORYHOOK_FULL_AUTO=" "dry auto: Codex child contains the engine marker"
 assert_eq "$(jqf "$out" .launch_source)" "builtin" "dry auto: builtin launch source"
 assert_eq "$(jqf "$out" .launch_overridden)" "false" "dry auto: launch is not overridden"
 assert_contains "$(jqf "$out" .display)" "approves the plan automatically" \
@@ -164,6 +166,8 @@ out=$(run_codex "$repo_auto" dispatch "$id_auto_real" --auto)
 assert_eq "$(jqf "$out" .ok)" "true" "real auto: dispatch succeeds"
 assert_contains "$(cat "$FAKE_TMUX_STATE/run_shell.log")" \
   "STORYHOOK_AUTO=$id_auto_real" "real auto: watcher carries the story marker"
+assert_contains "$(cat "$FAKE_TMUX_STATE/run_shell.log")" \
+  "STORYHOOK_FULL_AUTO=" "real auto: watcher contains the engine marker"
 assert_contains "$(cat "$FAKE_TMUX_STATE/run_shell.log")" \
   "--approve-codex-plan %1" "real auto: watcher targets the confirmed pane"
 

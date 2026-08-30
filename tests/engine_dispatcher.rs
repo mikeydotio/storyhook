@@ -38,7 +38,7 @@ fn shell_dispatcher_invokes_the_autonomous_project_contract_and_relays_success()
     assert_eq!(outcome.state, DispatchOutcomeState::Ok);
     assert_eq!(
         outcome.payload["argv"],
-        "--project alpha dispatch ALPHA-7 --agent=codex --auto"
+        "--project alpha dispatch ALPHA-7 --agent=codex --auto --full-auto"
     );
     assert_eq!(outcome.payload["session"], "alpha");
     assert_eq!(outcome.payload["create"], "1");
