@@ -14,6 +14,12 @@ only when the user requested them. Use the user's explicit agent when present; o
 interface. `--force` reuses a named story's existing claim without another
 state transition; it does not override any worktree, branch, tmux, or provider safety gate.
 
+For a typed epic, the same helper invocation has a separate boundary: `--auto` starts a
+daemon-owned Full Auto run scoped to the epic and returns `kind:"engine-run"`; it does not
+claim the epic or launch a Claude pane directly. Show `display` and stop. Without `--auto`,
+the helper refuses and names the engine remedy. Never add the engine-private `--full-auto`
+lane marker here.
+
 - `ok:false`: show `display` and stop. Common causes include a missing or closed story, an
   existing claim without `--force`, an unready state, or extra arguments.
 - `ok:true`: show `display` verbatim. Surface `warning` and a fenced `pane_tail` when present.

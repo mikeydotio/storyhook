@@ -32,7 +32,7 @@ authority, so do not guess a displayed name or re-derive the workflow from memor
 |---|---|
 | No operation supplied | Run **List → Pick** below. |
 | A story id such as `SH-45` | Run **View + Offer** below. A bare token is an id only if it matches `^[A-Za-z0-9]+-[0-9]+$`. |
-| `do <id> [--auto] [--force] [--agent=claude|codex]` | Run **Provider dispatch** below. `--force` is only for a named story already in the project's active-role state (`in-progress` unless the project moved the role); it reuses that claim without writing another transition. |
+| `do <id> [--auto] [--force] [--agent=claude|codex]` | Run **Provider dispatch** below. For a typed epic, `--auto` starts a Full Auto engine run scoped to its descendants; without `--auto` the helper refuses because the epic has no actionable steps. `--force` is only for a named non-epic story already in the project's active-role state (`in-progress` unless the project moved the role); it reuses that claim without writing another transition. |
 | `view <id>` | Run `bash "<story-helper>" view <id>`, show `display`, stop. |
 | `new <description>` | Load `<plugin-root>/references/story-new.md` and follow it. |
 | `complete <id>` | Load `<plugin-root>/references/story-complete.md` and follow it. |
@@ -139,6 +139,12 @@ one, the adapter supplies its own host as the default. If no adapter exists for 
 active host, explain that the provider-specific operation is unavailable and suggest `claim <id>` for
 safe in-session work. Never invoke a different provider's adapter or report dispatch success
 without one.
+
+The helper, not the adapter, distinguishes an actionable story from a typed epic. An epic with
+`--auto` returns `kind:"engine-run"` after starting the daemon-owned engine and creates no
+claim, worktree, tmux window, prompt, or direct agent handoff. Show that result's `display` and
+stop. A bare epic is refused with the `--auto` remedy. Never add the engine-private
+`--full-auto` lane marker to an epic start.
 
 ## Shared notes
 
