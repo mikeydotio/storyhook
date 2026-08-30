@@ -706,7 +706,7 @@ test("toast and dispatch-history overlays never exceed a narrow viewport", async
 });
 
 /**
- * SH-235 (D3, WCAG 2.2 SC 2.5.8): every `button`, link and `select` across
+ * SH-235 (D3, WCAG 2.2 SC 2.5.8): every `button`, link, number stepper and `select` across
  * the dashboard's surfaces measures at least 44 CSS px on both axes under
  * a coarse pointer -- the fingertip-comfortable size this suite holds tap
  * targets to (`--tap-min`'s coarse value; 24px is the floor everywhere
@@ -779,8 +779,8 @@ async function sweepTapTargets(page: Page, selector: string): Promise<void> {
   await expectNoSmallTargets(page.locator(".settings"), "the statuses editor", selector);
 }
 
-test("every button and link meets the coarse-pointer tap-target minimum", async ({ page }) => {
-  await sweepTapTargets(page, "button, a[href]");
+test("every button, link and number stepper meets the coarse-pointer tap-target minimum", async ({ page }) => {
+  await sweepTapTargets(page, "button, a[href], input[type=number]");
 });
 
 test("every select meets the coarse-pointer tap-target minimum", async ({ page }) => {
