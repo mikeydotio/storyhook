@@ -88,7 +88,15 @@ pub enum EngineAction {
 }
 
 impl EngineAction {
-    fn parse(slug: &str) -> Option<Self> {
+    /// Parses one `/engine/{action}` slug.
+    ///
+    /// `pub(crate)` because the worker interceptor parses the same slugs: it
+    /// answers these routes before the router ever classifies them, so both
+    /// doors have to agree on the vocabulary. They agree by BEING the same
+    /// function — `src/api/engine.rs` carried its own private copy of this
+    /// enum and this parser until SH-520, which is two spellings of one
+    /// vocabulary with nothing pinning them together (SH-136).
+    pub(crate) fn parse(slug: &str) -> Option<Self> {
         Some(match slug {
             "pause" => Self::Pause,
             "resume" => Self::Resume,
@@ -96,6 +104,16 @@ impl EngineAction {
             "ack" => Self::Ack,
             _ => return None,
         })
+    }
+
+    /// How the action reads in an operator-facing refusal.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Pause => "engine pause",
+            Self::Resume => "engine resume",
+            Self::Stop => "engine stop",
+            Self::Ack => "engine ack",
+        }
     }
 }
 

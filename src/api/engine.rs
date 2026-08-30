@@ -18,6 +18,7 @@ use crate::api::http::{
     Reply, TrustedHosts, content_type_is_json, error_reply, json_reply, mutation_guard_ok,
     text_reply,
 };
+use crate::api::routes::EngineAction;
 use crate::api::rpc::token_ok;
 use crate::api::tokens::TokenRegistry;
 use crate::daemon::bus::{Change, ChangeBus};
@@ -130,36 +131,6 @@ impl EngineController {
                     EngineAction::Stop => unreachable!("handled above"),
                 }
             }
-        }
-    }
-}
-
-/// The four actions accepted after `/engine/`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum EngineAction {
-    Pause,
-    Resume,
-    Stop,
-    Ack,
-}
-
-impl EngineAction {
-    fn parse(raw: &str) -> Option<Self> {
-        Some(match raw {
-            "pause" => Self::Pause,
-            "resume" => Self::Resume,
-            "stop" => Self::Stop,
-            "ack" => Self::Ack,
-            _ => return None,
-        })
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Pause => "engine pause",
-            Self::Resume => "engine resume",
-            Self::Stop => "engine stop",
-            Self::Ack => "engine ack",
         }
     }
 }
@@ -559,8 +530,16 @@ mod tests {
 
     #[test]
     fn the_direct_gate_keeps_mutation_guard_before_token() {
-        let env = storyhook_test_support::TestEnv::isolated();
-        let controller = Arc::new(EngineController::open(&env.environment()).unwrap());
+        // `Environment::at` over a scratch home rather than
+        // `TestEnv::isolated().environment()`. A unit test inside `src/` sees
+        // `storyhook_test_support`'s OWN view of this crate, so a
+        // `storyhook::env::Environment` handed back from there is a different
+        // type to the one being compiled here — `error[E0308]: there are
+        // multiple different versions of crate `storyhook``. `scratch_dir()`
+        // returns a plain path and crosses that boundary safely, which is why
+        // five other `src/` files already use it and none uses `TestEnv`.
+        let home = storyhook_test_support::scratch_dir();
+        let controller = Arc::new(EngineController::open(&Environment::at(home.path())).unwrap());
         let now = Instant::now();
         let tokens = TokenRegistry::new(Utc::now(), now);
         let reply = intercept(
