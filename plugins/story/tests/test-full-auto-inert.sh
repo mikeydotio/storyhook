@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # SH-460 -- the FULL-AUTO-INERT invariant.
 #
-# `full-auto.sh` is the only hook in this plugin that can DECIDE: it approves a
-# plan exit and refuses a question. Both are correct inside an engine lane and
+# `full-auto.sh` is the only hook in this plugin that can DECIDE or TYPE: it
+# approves a plan exit and refuses a question. Both are correct inside a lane and
 # both are hostile everywhere else -- a hook that silently auto-approved plans
 # in a developer's own session would be a far worse defect than the stall it
 # exists to prevent. So the marker environment variable is the whole of its
@@ -21,12 +21,22 @@ MANIFEST="$PLUGIN_ROOT/hooks/hooks.json"
 repo=$(mktemp -d /tmp/story-test-fullauto-inert.XXXXXX)
 _TMP_REPOS+=("$repo")
 
+INERT_TMUX=$(mktemp -d /tmp/story-test-fullauto-inert-tmux.XXXXXX)
+_TMP_REPOS+=("$INERT_TMUX")
+cat >"$INERT_TMUX/tmux" <<'INERTTMUX'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FULL_AUTO_INERT_TMUX_LOG"
+INERTTMUX
+chmod +x "$INERT_TMUX/tmux"
+export FULL_AUTO_INERT_TMUX_LOG="$INERT_TMUX/calls.log"
+: >"$FULL_AUTO_INERT_TMUX_LOG"
+
 # hook_command <matcher> -- the command hooks.json ships for one PreToolUse
 # matcher. Looked up BY MATCHER, never by position: this event carries three
 # entries and an index would quietly hand a case somebody else's wiring.
 hook_command() {
-  jq -r --arg m "$1" \
-    '.hooks.PreToolUse[] | select(.matcher == $m) | .hooks[0].command' "$MANIFEST"
+  jq -r --arg e "${2:-PreToolUse}" --arg m "$1" \
+    '.hooks[$e][] | select(.matcher == $m) | .hooks[0].command' "$MANIFEST"
 }
 
 # payload <tool> -- a provider-shaped PreToolUse envelope for <tool>.
@@ -47,6 +57,15 @@ run() {
     bash -c "$command")
 }
 
+run_permission() {
+  local command
+  command=$(hook_command ExitPlanMode PermissionRequest)
+  [ -n "$command" ] && [ "$command" != null ] \
+    || fail_test "full-auto-inert: hooks.json declares no PermissionRequest matcher 'ExitPlanMode'"
+  (cd "$repo" && printf '{"hook_event_name":"PermissionRequest","tool_name":"ExitPlanMode","tool_input":{"plan":"do it"}}' \
+    | env -u CLAUDE_PLUGIN_ROOT PLUGIN_ROOT="$PLUGIN_ROOT" TMUX_PANE=%4242 bash -c "$command")
+}
+
 TOOLS="ExitPlanMode:ExitPlanMode AskUserQuestion:AskUserQuestion request_user_input:request_user_input"
 
 # --- unset: the marker is absent, as it is in every session but a lane -------
@@ -58,6 +77,13 @@ for pair in $TOOLS; do
   assert_eq "$status" "0" "inert/unset: $tool exits 0"
   assert_eq "$out" "{}" "inert/unset: $tool emits an empty directive"
 done
+assert_eq "$(PATH="$INERT_TMUX:$PATH" run_permission)" "{}" \
+  "inert/unset: PermissionRequest emits an empty directive and types nothing"
+assert_eq "$(cat "$FULL_AUTO_INERT_TMUX_LOG")" "" \
+  "inert/unset: PermissionRequest never contacts tmux"
+PATH="$INERT_TMUX:$PATH" bash "$HOOK" --approve-codex-plan %4242 1
+assert_eq "$(cat "$FULL_AUTO_INERT_TMUX_LOG")" "" \
+  "inert/unset: the Codex watcher never contacts tmux"
 
 # --- set but EMPTY: an export with no value is not a lane -------------------
 #
@@ -72,6 +98,13 @@ for pair in $TOOLS; do
   assert_eq "$status" "0" "inert/empty: $tool exits 0"
   assert_eq "$out" "{}" "inert/empty: $tool emits an empty directive"
 done
+assert_eq "$(PATH="$INERT_TMUX:$PATH" run_permission)" "{}" \
+  "inert/empty: PermissionRequest emits an empty directive and types nothing"
+assert_eq "$(cat "$FULL_AUTO_INERT_TMUX_LOG")" "" \
+  "inert/empty: PermissionRequest never contacts tmux"
+PATH="$INERT_TMUX:$PATH" bash "$HOOK" --approve-codex-plan %4242 1
+assert_eq "$(cat "$FULL_AUTO_INERT_TMUX_LOG")" "" \
+  "inert/empty: the Codex watcher never contacts tmux"
 unset STORYHOOK_FULL_AUTO
 unset STORYHOOK_AUTO
 
@@ -140,7 +173,8 @@ unset STORYHOOK_AUTO
 # passes every assertion above and is useless. These are the load-bearing spans.
 [ -f "$HOOK" ] || fail_test "full-auto-inert: $HOOK does not exist"
 source_text=$(cat "$HOOK" 2>/dev/null || true)
-for needle in ExitPlanMode AskUserQuestion request_user_input \
+for needle in ExitPlanMode PermissionRequest AskUserQuestion request_user_input \
+              approve-codex-plan 'Implement this plan?' \
               '"allow"' '"deny"' STORYHOOK_AUTO STORYHOOK_FULL_AUTO council-vote; do
   case "$source_text" in
     *"$needle"*) ;;
@@ -157,5 +191,10 @@ for matcher in ExitPlanMode AskUserQuestion request_user_input; do
     *) fail_test "full-auto-inert: hooks.json's PreToolUse '$matcher' entry no longer runs full-auto.sh" ;;
   esac
 done
+command=$(hook_command ExitPlanMode PermissionRequest)
+case "$command" in
+  *hooks/full-auto.sh*) ;;
+  *) fail_test "full-auto-inert: hooks.json's PermissionRequest ExitPlanMode entry no longer runs full-auto.sh" ;;
+esac
 
 finish

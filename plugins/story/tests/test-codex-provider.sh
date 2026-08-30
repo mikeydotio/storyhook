@@ -14,7 +14,8 @@ fresh_tmux() {
   export FAKE_TMUX_STATE
   FAKE_TMUX_STATE=$(mktemp -d /tmp/story-test-codex-tmux.XXXXXX)
   _TMP_REPOS+=("$FAKE_TMUX_STATE")
-  unset FAKE_TMUX_LAUNCH_MANGLE FAKE_TMUX_FAIL_SEND_KEYS FAKE_TMUX_CAPTURE
+  unset FAKE_TMUX_LAUNCH_MANGLE FAKE_TMUX_FAIL_SEND_KEYS \
+    FAKE_TMUX_FAIL_RUN_SHELL FAKE_TMUX_CAPTURE
 }
 
 run_codex() {
@@ -58,6 +59,8 @@ assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" \
 assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" \
   "post the plan verbatim rather than summarizing it" \
   "dispatch: attended Codex persists the exact approved plan"
+[ ! -e "$FAKE_TMUX_STATE/run_shell.log" ] \
+  || fail_test "dispatch: attended Codex armed the autonomous plan watcher"
 
 # Codex renders its prompt before the model is ready. A Shift+Tab sent during
 # that loading footer is silently ignored, so dispatch must wait for the footer
@@ -132,7 +135,7 @@ assert_eq "$(jqf "$out" .agent)" "codex" "dry auto: selected provider"
 assert_eq "$(jqf "$out" .council)" "false" "dry auto: safe solo fallback"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" \
   "codex --no-alt-screen -c check_for_update_on_startup=false --approve-for-me --dangerously-bypass-hook-trust" \
-  "dry auto: Codex uses automatic review and trusts the packaged hook"
+  "dry auto: Codex uses later automatic review and trusts the packaged hook"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" \
   "-e STORYHOOK_AUTO=$id_auto" "dry auto: Codex child receives the autonomous marker"
 assert_eq "$(jqf "$out" .launch_source)" "builtin" "dry auto: builtin launch source"
@@ -141,12 +144,40 @@ assert_contains "$(jqf "$out" .display)" "approves the plan automatically" \
   "dry auto: display reports automatic plan approval"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" "send-keys -t <pane> Tab" \
   "dry auto: Tab submission"
+assert_contains "$(jqf "$out" '.commands|join(" ")')" \
+  "--approve-codex-plan <pane>" \
+  "dry auto: exact-pane plan approval is armed"
 assert_contains "$(jqf "$out" .prompt)" \
   "story comment $id_auto your-exact-approved-plan’ the first implementation step" \
   "dry auto: Codex plan persists itself as step one"
 assert_contains "$(jqf "$out" .prompt)" \
   "before changing files or running tests" \
   "dry auto: persistence precedes implementation"
+
+# A real fake-tmux Auto dispatch arms the pane watcher after Plan mode is
+# confirmed and before prompt submission. An arming failure is a pre-handoff
+# refusal with complete claim/worktree rollback.
+fresh_tmux
+repo_auto=$(mk_story_repo CDA)
+id_auto_real=$(new_story "$repo_auto" "Codex auto watcher")
+out=$(run_codex "$repo_auto" dispatch "$id_auto_real" --auto)
+assert_eq "$(jqf "$out" .ok)" "true" "real auto: dispatch succeeds"
+assert_contains "$(cat "$FAKE_TMUX_STATE/run_shell.log")" \
+  "STORYHOOK_AUTO=$id_auto_real" "real auto: watcher carries the story marker"
+assert_contains "$(cat "$FAKE_TMUX_STATE/run_shell.log")" \
+  "--approve-codex-plan %1" "real auto: watcher targets the confirmed pane"
+
+fresh_tmux
+repo_auto_fail=$(mk_story_repo CDF)
+id_auto_fail=$(new_story "$repo_auto_fail" "Codex auto watcher failure")
+out=$(FAKE_TMUX_FAIL_RUN_SHELL=1 run_codex "$repo_auto_fail" dispatch "$id_auto_fail" --auto)
+assert_eq "$(jqf "$out" .ok)" "false" "auto watcher failure: refused"
+assert_eq "$(jqf "$out" .reason)" "plan-approval-unarmed" \
+  "auto watcher failure: reason"
+assert_eq "$(cd "$repo_auto_fail" && story show "$id_auto_fail" --json | jq -r '.story.story.state')" \
+  "todo" "auto watcher failure: claim rolled back"
+assert_eq "$(jqf "$out" .plan_approval_armed)" "false" \
+  "auto watcher failure: JSON reports the missing gate"
 
 # The provider clause belongs only to Storyhook's built-in prompts. Every
 # custom prompt remains a wholesale override, while PROMPT_EXTRA still follows
