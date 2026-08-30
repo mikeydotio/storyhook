@@ -87,6 +87,16 @@ test("the board's own focus indicators, in every theme", async ({ page }) => {
   );
 });
 
+test("the Full Auto lanes stepper's focus indicator, in every theme", async ({ page }) => {
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await expect(page.locator(".engine-lanes-input")).toBeEnabled();
+
+  await measureFocusIndicator(page, ".engine-lanes-input:focus", "the Full Auto lanes stepper", () =>
+    tabOnto(page, "#filter-clear", ".engine-lanes-input"),
+  );
+});
+
 test("the list view's own focus indicator, in every theme", async ({ page }) => {
   await page.goto("/");
   await openProject(page, "Alpha Project");

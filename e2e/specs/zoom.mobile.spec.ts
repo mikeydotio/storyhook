@@ -201,23 +201,25 @@ test("every text-entry control the document ships with is at least 16px", async 
   );
 });
 
-test("the topbar's search field is at least 16px", async ({ page }) => {
+test("the project header's text-entry controls are at least 16px", async ({ page }) => {
   await page.goto("/");
   await openProject(page, "Alpha Project");
 
   await expectNoZoomingControls(page.locator(".topbar"), "the topbar", 1);
 
-  // The filter bar is checkbox-only today (Show closed / Show archived /
-  // Hide empty columns), so it should measure empty -- a text filter added
-  // there in future must join this sweep, not slip past it silently.
+  // Full Auto's number stepper shares the project header/filter-summary row.
+  // Number inputs raise the keyboard and zoom on WebKit exactly like text,
+  // so this is a positive measurement rather than the old empty-bar check.
   const filterBarControls = await measureControls(
     page.locator("#filter-bar"),
     true,
   );
   expect(
-    filterBarControls,
-    "the filter bar grew a text-entry control that isn't covered by this sweep yet",
-  ).toEqual([]);
+    filterBarControls.length,
+    "the project header should expose exactly the Full Auto lanes stepper",
+  ).toBe(1);
+  expect(filterBarControls[0].describe).toContain("#engine-lanes");
+  expect(filterBarControls[0].fontSizePx).toBeGreaterThanOrEqual(16);
 });
 
 test("the create-story modal's controls are at least 16px", async ({
