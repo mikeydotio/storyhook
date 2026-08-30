@@ -152,6 +152,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../hooks/lib.sh"
 # charter's `<reap>` placeholder (SH-208) expands to: the exact script an
 # unattended session must call back into to reclaim its own worktree.
 SELF_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+AUTO_APPROVAL_HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/../hooks" && pwd)/full-auto.sh"
 
 # ---- config (all env-overridable) -------------------------------------------
 STORY="${STORY_BIN:-story}"
@@ -178,6 +179,7 @@ configure_agent() {
   claude)
     AGENT_LABEL="Claude Code"
     DEFAULT_LAUNCH_TPL="claude --permission-mode plan --model opusplan"
+    DEFAULT_AUTO_LAUNCH_TPL="claude --permission-mode plan --model opusplan --settings '{\"permissions\":{\"defaultMode\":\"acceptEdits\"}}'"
     DEFAULT_WORKTREE_IGNORE_PATH=".claude/worktrees/"
     DEFAULT_READY_PROCESS_PATTERN='^(claude|node)$'
     DEFAULT_READY_PROMPT_GLYPH='❯'
@@ -192,6 +194,7 @@ configure_agent() {
     # dispatch back. Suppress that chooser for this one managed process; the
     # user's durable Codex update preference remains untouched.
     DEFAULT_LAUNCH_TPL="codex --no-alt-screen -c check_for_update_on_startup=false"
+    DEFAULT_AUTO_LAUNCH_TPL="codex --no-alt-screen -c check_for_update_on_startup=false --approve-for-me --dangerously-bypass-hook-trust"
     DEFAULT_WORKTREE_IGNORE_PATH=".codex/worktrees/"
     DEFAULT_READY_PROCESS_PATTERN='^(codex)$'
     DEFAULT_READY_PROMPT_GLYPH='›'
@@ -205,6 +208,24 @@ configure_agent() {
   # environment-selected provider; doing only AGENT would launch one provider
   # with the other's worktree and keyboard contract.
   LAUNCH_TPL="${STORY_LAUNCH_CMD:-$DEFAULT_LAUNCH_TPL}"
+  # AUTONOMOUS BLAST RADIUS (SH-511). These provider defaults keep Plan mode
+  # while allowing the approved plan to proceed without a person: Claude's
+  # PermissionRequest-scoped helper selects Auto and returns to acceptEdits;
+  # Codex's exact-pane watcher accepts its plan and workspace-write automatic
+  # review handles later tool approvals while trusting the packaged hook.
+  # The child still lives in a disposable worktree and its charter still bans
+  # version/release/deploy work. STORY_LAUNCH_CMD remains a wholesale expert
+  # override, so an autonomous dispatch reports when it cannot guarantee this
+  # posture rather than silently claiming that it can.
+  if [ -n "${STORY_LAUNCH_CMD:-}" ]; then
+    AUTO_LAUNCH_TPL="$STORY_LAUNCH_CMD"
+    AUTO_LAUNCH_SOURCE="STORY_LAUNCH_CMD"
+    AUTO_LAUNCH_OVERRIDDEN=true
+  else
+    AUTO_LAUNCH_TPL="$DEFAULT_AUTO_LAUNCH_TPL"
+    AUTO_LAUNCH_SOURCE="builtin"
+    AUTO_LAUNCH_OVERRIDDEN=false
+  fi
   WORKTREE_IGNORE_PATH="${STORY_WORKTREE_IGNORE_PATH:-$DEFAULT_WORKTREE_IGNORE_PATH}"
   READY_PROMPT_GLYPH="${STORY_READY_PROMPT_GLYPH:-$DEFAULT_READY_PROMPT_GLYPH}"
   READY_PROCESS_PATTERN="${STORY_READY_PROCESS_PATTERN:-$DEFAULT_READY_PROCESS_PATTERN}"
@@ -255,9 +276,11 @@ PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this rep
 # and applied only to built-ins so STORY_PROMPT and the two autonomous overrides
 # remain wholesale overrides rather than unexpectedly acquiring policy text.
 CODEX_PLAN_COMMENT_CLAUSE="Codex Plan mode cannot write that comment before approval. In the plan you present, make ‘story comment <n> your-exact-approved-plan’ the first implementation step. After approval, execute that step before changing files or running tests, and post the plan verbatim rather than summarizing it."
-# The autonomous charter `--auto` swaps in for PROMPT_TPL — plan approval stays
-# the ONE human interaction; everything past it (ambiguity, testing, merge,
-# closure, hard stops) is the child's own call. Closure goes through a plain
+# The autonomous charter `--auto` swaps in for PROMPT_TPL. SH-511 removed its
+# last human interaction: plan approval is scoped by provider events (with one
+# exact-gated tmux Return for Claude), and question refusal is provider-native;
+# testing, merge, closure and hard stops remain the child's own call.
+# Closure goes through a plain
 # `story move`, never `story complete`: that verb asks a question (fatal to an
 # unattended run) and would try to remove the very worktree the child occupies.
 #
@@ -755,6 +778,23 @@ ensure_provider_plan_mode() {
   return 1
 }
 
+# Codex has no hook event at its plan-review dialog (measured on CLI 0.149.0).
+# Arm the exact-pane watcher after Plan mode is confirmed and before the prompt
+# is submitted. tmux owns the continuation, so it shares the pane's lifetime
+# instead of the short-lived dispatch process's. All shell-bound values are
+# quoted before tmux hands the command to its shell.
+schedule_codex_plan_approval() {
+  local pane="$1" story_id="$2" hook_q pane_q id_q
+  [ "$AGENT" = codex ] || return 0
+  [[ "$pane" =~ ^%[0-9]+$ ]] || return 1
+  printf -v hook_q '%q' "$AUTO_APPROVAL_HOOK"
+  printf -v pane_q '%q' "$pane"
+  printf -v id_q '%q' "$story_id"
+  tmux run-shell -b -t "$pane" \
+    "env STORYHOOK_AUTO=$id_q bash $hook_q --approve-codex-plan $pane_q" \
+    >/dev/null 2>&1
+}
+
 dispatch_ready_note() {
   case "$WAIT_READY_REASON" in
     wrong-process)
@@ -987,6 +1027,10 @@ cmd_dispatch() {
     configure_agent "$requested_agent"
   else
     configure_agent "${STORY_AGENT:-claude}"
+  fi
+  if [ -n "$auto" ]; then
+    LAUNCH_TPL="$AUTO_LAUNCH_TPL"
+    READY_LAUNCH_BIN="${LAUNCH_TPL%% *}"
   fi
 
   # Step 1: tmux precondition (relaxed under dry-run and under
@@ -1255,28 +1299,29 @@ cmd_dispatch() {
   # cannot reliably reconstruct any of the three on its own, so it is handed
   # the literal command rather than instructions to improvise one. A no-op
   # substitution for the attended template, which never references <reap>.
-  local launch_cmd prompt reap_cmd completion_state=""
+  local launch_cmd prompt reap_cmd completion_state="" auto_tmux_arg=""
   reap_cmd="bash \"$SELF_PATH\" --project \"$PROJECT_SLUG\" reap \"$id\""
   if [ -n "$auto" ]; then
     completion_state=$(story_closed_state)
   fi
   launch_cmd=$(render_template "$LAUNCH_TPL" "$id" "$wname" "$dir")
+  [ -z "$auto" ] || auto_tmux_arg="-e STORYHOOK_AUTO=$id "
   prompt=$(render_template "$prompt_tpl" "$id" "$wname" "$dir" "$reap_cmd" "$completion_state")
   [ -n "$PROMPT_EXTRA" ] && prompt="$prompt $PROMPT_EXTRA"
 
-  # Surfaced in both the dry-run and real result so the skill can warn the
-  # caller: an auto session's ONLY human interaction is plan approval, so
-  # auto-accept-edits must be chosen there or a later Bash permission prompt
-  # stalls the unattended run forever.
+  # Surfaced in both the dry-run and real result. SH-511 removed autonomous
+  # dispatch's last human interaction: the packaged hook accepts Claude's
+  # plan review, Codex's exact-pane watcher accepts its plan, and both providers
+  # deny question tools instead of waiting for a person who is not there.
   local auto_note=""
   if [ -n "$auto" ]; then
-    if [ "$AGENT" = "codex" ]; then
-      auto_note=" Autonomous (--auto): the child starts in Codex Plan mode. Review its plan, switch it to Default mode with Shift+Tab, and submit your approval once; the charter then tells it to continue without further questions. Codex has no stable skill-inventory API, so automatic council discovery uses the safe solo charter unless STORY_COUNCIL=on is set explicitly."
-    elif [ "$council" = "true" ]; then
-      auto_note=" Autonomous (--auto): choose auto-accept edits at the plan-approval prompt, or a later permission prompt can stall the unattended run. From there it runs to completion on its own -- researching and deciding its easy questions itself, convening council-vote for the genuinely hard ones, merging its own PR, closing $id itself, and reclaiming its own worktree, branch and window once it does."
+    if [ "$council" = "true" ]; then
+      auto_note=" Autonomous (--auto): the child starts in Plan mode, Storyhook approves the plan automatically, and the provider launch posture handles later permissions. It then runs to completion on its own -- researching and deciding its easy questions itself, convening council-vote for the genuinely hard ones, merging its own PR, closing $id itself, and reclaiming its own worktree, branch and window once it does."
     else
-      auto_note=" Autonomous (--auto): choose auto-accept edits at the plan-approval prompt, or a later permission prompt can stall the unattended run. No council-vote skill was found, so it researches and decides its hard questions too, rather than convening a council. From there it runs to completion on its own -- merging its own PR, closing $id itself, and reclaiming its own worktree, branch and window once it does."
+      auto_note=" Autonomous (--auto): the child starts in Plan mode, Storyhook approves the plan automatically, and the provider launch posture handles later permissions. No council-vote skill was found, so it researches and decides its hard questions too, rather than convening a council. It then runs to completion on its own -- merging its own PR, closing $id itself, and reclaiming its own worktree, branch and window once it does."
     fi
+    [ "$AGENT" != "codex" ] || auto_note="$auto_note Codex has no stable machine-readable skill inventory, so automatic council discovery uses the safe solo charter unless STORY_COUNCIL=on is set explicitly."
+    [ "$AUTO_LAUNCH_OVERRIDDEN" = false ] || auto_note="$auto_note Launch override $AUTO_LAUNCH_SOURCE is active and may weaken unattendedness."
   fi
 
   local ignore_status
@@ -1299,12 +1344,16 @@ cmd_dispatch() {
       --arg id "$id" --arg title "$title" --arg dir "$dir" \
       --arg agent "$AGENT" --arg agent_label "$AGENT_LABEL" \
       --arg submit_key "$SUBMIT_KEY" --arg plan_key "$CODEX_PLAN_KEY" \
+      --arg approval_hook "$AUTO_APPROVAL_HOOK" \
       --arg wname "$wname" --arg launch "$launch_cmd" --arg prompt "$prompt" \
       --arg state "$state" --arg claim_cmd "$claim_cmd_desc" \
       --arg claim_note "$dry_claim_note" \
       --arg ignore_status "$ignore_status" \
       --arg detach "$detach" --arg target "$target" \
       --argjson auto "$([ -n "$auto" ] && echo true || echo false)" --arg auto_note "$auto_note" \
+      --arg launch_source "$AUTO_LAUNCH_SOURCE" \
+      --argjson launch_overridden "$AUTO_LAUNCH_OVERRIDDEN" \
+      --arg auto_tmux_arg "$auto_tmux_arg" \
       --argjson council "$council" \
       --argjson forced "$([ -n "$force" ] && echo true || echo false)" \
       --argjson reused_claim "$reused_claim" \
@@ -1319,11 +1368,14 @@ cmd_dispatch() {
         gitignore: (if $ignore_status == "already-ignored" then "already-ignored" else "would-add" end),
         commands: ((if $claim_cmd == "" then [] else [$claim_cmd] end) + [
           ("git worktree add --no-track -b " + $wtbranch + " " + $wtpath + " <base-oid>"),
-          ("tmux new-window " + $target + $detach + "-c " + $wtpath + " -n " + $wname + " -P -F #{pane_id} " + $launch
+          ("tmux new-window " + $target + $detach + $auto_tmux_arg + "-c " + $wtpath + " -n " + $wname + " -P -F #{pane_id} " + $launch
              + " \\; set-window-option -t " + $wname + " remain-on-exit on"
              + " \\; set-window-option -t " + $wname + " automatic-rename off"
              + " \\; set-window-option -t " + $wname + " allow-rename off"),
           (if $agent == "codex" then ("tmux send-keys -t <pane> " + $plan_key + " # if Plan footer is absent") else empty end),
+          (if $agent == "codex" and $auto then
+             ("tmux run-shell -b -t <pane> env STORYHOOK_AUTO=" + $id + " bash " + $approval_hook + " --approve-codex-plan <pane>")
+           else empty end),
           ("printf %s " + $prompt + " | tmux load-buffer -b story-" + $id + " -"),
           ("tmux paste-buffer -p -d -b story-" + $id + " -t <pane>"),
           ("tmux send-keys -t <pane> " + $submit_key)
@@ -1332,7 +1384,11 @@ cmd_dispatch() {
                   + "): " + $claim_note + ", create worktree " + $wtpath + " (branch " + $wtbranch
                   + "), open a new tmux window named " + $wname + " with " + $agent_label
                   + ", and run the listed commands." + $auto_note)
-      }'
+      }
+      + (if $auto then {
+          launch_source: $launch_source,
+          launch_overridden: $launch_overridden
+        } else {} end)'
     return 0
   fi
 
@@ -1462,6 +1518,7 @@ cmd_dispatch() {
   # of these calls has a message worth surfacing on the happy path.
   local new_window_args pane window set_target
   new_window_args=(-c "$worktree_path" -n "$wname" -P -F '#{pane_id}')
+  [ -z "$auto" ] || new_window_args=(-e "STORYHOOK_AUTO=$id" "${new_window_args[@]}")
   [ -z "$FOREGROUND" ] && new_window_args=(-d "${new_window_args[@]}")
   [ -n "$TARGET_SESSION" ] && new_window_args=(-t "$TARGET_SESSION:" "${new_window_args[@]}")
   set_target="$wname"
@@ -1542,6 +1599,26 @@ cmd_dispatch() {
               plan_mode_reason:$reason, pane_tail:$tail, claimed:$claimed}')"
   fi
 
+  # `--approve-for-me` reviews Codex tool calls, not the separate Plan-mode
+  # dialog. Refuse before handoff if the exact-pane Return watcher cannot even
+  # be armed; otherwise this command would claim unattendedness while knowingly
+  # launching a session that must stop for a person.
+  if [ -n "$auto" ] && [ "$AGENT" = codex ] \
+     && ! schedule_codex_plan_approval "$pane" "$id"; then
+    local approval_tail
+    approval_tail=$(pane_tail "$pane")
+    git worktree remove --force "$worktree_path" >/dev/null 2>&1 || true
+    git worktree prune >/dev/null 2>&1 || true
+    git branch -D "$worktree_branch" >/dev/null 2>&1 || true
+    refuse_with plan-approval-unarmed \
+      "[story] $id → Codex Plan mode is confirmed in window \`$wname\`, but its autonomous plan-approval watcher could not be armed. Nothing was typed into that pane. The window is left open; the worktree and branch were rolled back.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
+            --arg pane "$pane" --arg tail "$approval_tail" --argjson claimed "$reused_claim" \
+            '{id:$id, window:$window, window_name:$wname, pane:$pane,
+              readiness_confirmed:true, plan_mode_confirmed:true,
+              plan_approval_armed:false, pane_tail:$tail, claimed:$claimed}')"
+  fi
+
   # Step 12: type + submit the prompt, confirmed. SEND_PROMPT_PHASE distinguishes
   # a handoff that never left the keyboard from one that may already be in front
   # of a live agent — see the rollback asymmetry below.
@@ -1616,6 +1693,8 @@ cmd_dispatch() {
     --argjson pconf "$prompt_confirmed" \
     --argjson paccept "$prompt_accepted_flag" \
     --argjson auto "$([ -n "$auto" ] && echo true || echo false)" --argjson council "$council" \
+    --arg launch_source "$AUTO_LAUNCH_SOURCE" \
+    --argjson launch_overridden "$AUTO_LAUNCH_OVERRIDDEN" \
     --argjson forced "$([ -n "$force" ] && echo true || echo false)" \
     --argjson reused_claim "$reused_claim" --argjson claim_transitioned "$claim_transitioned" \
     --arg warning "$warning" --arg tail "$tail_evidence" --arg display "$display" \
@@ -1637,6 +1716,10 @@ cmd_dispatch() {
       base_oid: $base_oid, base_fresh: $base_fresh,
       worktree_branch: $wtbranch, worktree_path: $wtpath
     }
+    + (if $auto then {
+        launch_source: $launch_source,
+        launch_overridden: $launch_overridden
+      } else {} end)
     + (if $warning == "" then {} else {warning: $warning} end)
     + (if $tail == "" then {} else {pane_tail: $tail} end)
     + (if $session == "" then {} else {session: $session, session_created: $session_created} end)

@@ -294,6 +294,10 @@ _paste_keys() {
 }
 
 case "${1:-}" in
+  run-shell)
+    [ "${FAKE_TMUX_FAIL_RUN_SHELL:-}" != 1 ] || exit 1
+    printf '%s\n' "$*" >> "$STATE/run_shell.log" 2>/dev/null || true
+    ;;
   new-window)
     # First side effect of a dispatch: reset the virtual input box so every run
     # starts clean, and seed the prompt-Enter absorb counter from the knob. Also

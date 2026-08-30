@@ -43,7 +43,7 @@ being picked.
 | D3 | **Completion is a store fact, not a rendered one.** A lane frees when its story leaves the OPEN superstate. Window liveness and a stall timeout detect a *dead* lane; they never declare success. | SH-226: a frame rule and a prompt glyph were read as "the agent is ready" and the charter was executed by zsh. A tmux window closing is evidence about a window. |
 | D4 | **`make test` serializes behind a machine-wide lock**, taken inside `scripts/run-tests.sh`, applying to every caller including interactive ones. `STORYHOOK_GATE_LOCK=0` bypasses it and says so on stderr. | `make test` is 36.4s median warm and idle (`docs/rearch/baseline/timings.md`) but has been measured at 873s under 3–4 concurrent worktree suites, and that contention is the documented cause of an open class of load-sensitive failures (SH-347, SH-349, SH-375, SH-378, SH-401, SH-419). Lanes multiply exactly that. An interactive suite contends identically, so exempting it would leave the hole open in the case where a human is present to be confused by it. The bypass is explicit and reported, never silent — SH-306. |
 | D5 | **Lane agents merge their own PRs, through `scripts/land-pr.sh`, under a machine-wide merge lock.** The script certifies the merge tree with `merge-preflight.sh` inside the lock, then merges. | Merge authority stays where the charter already puts it, but a bare `gh pr merge --merge` is replaced by a deterministic script, so the lock is taken by the tool rather than remembered by the agent. Certifying inside the same lock is what makes lane PRs land promptly instead of waiting on `merge-watch.sh`'s 1–3 minute poll, which becomes the throughput ceiling at N lanes (SH-396). |
-| D6 | **Unattendedness is enforced by a `PreToolUse` hook** in the plugin's existing `hooks.json`, inert unless the lane's marker environment variable is set. It auto-approves plan exit and denies question-asking tools with an instruction to decide or convene `/council-vote`. | Deterministic, per-tool-call, and host-native. Watching the pane and typing the approval is screen-scraping a TUI, which is what SH-226 cost this project. |
+| D6 | **Unattendedness is enforced by provider-scoped approval gates**, inert unless the lane's marker environment variable is set. `PreToolUse` allows Claude's plan tool and denies question tools; Claude's subsequent `PermissionRequest(ExitPlanMode)` starts a bounded exact-pane helper. Codex, which exposes no plan event, gets a pane-lifetime exact watcher after Plan mode is confirmed. Each sends one Return to its provider's selected approval option. | Live probes proved neither Claude's `PreToolUse allow` nor Codex's `--approve-for-me` accepts the separate plan-review UI. Provider-specific exact strings and pane identity guard the only keystroke. A changed UI fails closed instead of receiving input. |
 | D7 | **Both agents. Codex was verified first.** SH-459 measured Codex CLI 0.149.0 denying `request_user_input` through `PreToolUse`, returning the denial reason to the model, and failing open at the configured timeout. | A Codex lane that silently stalls on a question nobody will answer is the exact failure Full Auto exists to remove. The native denial surface exists, so both provider arms ship; the measured timeout hole remains covered by the stall ceiling and quarantine. |
 | D8 | **Epic semantics from SH-446 are absorbed into this program**, not merely depended on: epic state becomes computed from children, epic priority stays stored, and `story next` breaks priority ties on epic priority. | The epic entry point is meaningless without it, and "an epic with all finished children is finished" is the run's own termination condition. |
 | D9 | **The queue is live and unbounded.** `story next` is re-asked every time a lane frees; a run ends when nothing is claimable. | An epic's children unblock each other as the run's own merges land; a snapshot taken at start would miss most of them. |
@@ -384,21 +384,24 @@ second, differently-behaved door onto the same script.
 
 ## Enforcing unattendedness
 
-`plugins/story/hooks/full-auto.sh`, wired as `PreToolUse` in the plugin's
-existing `hooks.json` — the same file both Claude Code and Codex already
+`plugins/story/hooks/full-auto.sh`, wired as `PreToolUse` and Claude's
+`PermissionRequest` in the plugin's existing `hooks.json` — the same file both Claude Code and Codex already
 discover for `SessionStart`, `PostToolUse(Bash)` and `Stop`.
 
-**Inert by default.** With `STORYHOOK_FULL_AUTO` unset, the hook emits no
-decision and exits 0. Only a lane window has the variable, because only the
-engine sets it. This inertness is a tested property, in the shape
+**Inert by default.** With both `STORYHOOK_AUTO` and `STORYHOOK_FULL_AUTO`
+unset, the hook emits no decision and exits 0. An ordinary autonomous dispatch
+sets the first marker; only an engine lane sets the second. This inertness is a
+tested property, in the shape
 `test-charter-inert.sh` already tests the charter's.
 
 When active:
 
 | Tool | Decision | Feedback to the agent |
 |---|---|---|
-| Plan exit (`ExitPlanMode`) | allow | — |
-| Question-asking (Claude's `AskUserQuestion`; Codex's `request_user_input`) | **deny** | "This is an unattended Full Auto lane; nobody can answer. If the question has one clear best answer, research and decide it. If two or more are defensible, convene `/council-vote`. Record the decision as a comment on `<story>` the moment you make it." |
+| Plan tool (`PreToolUse: ExitPlanMode`) | allow | — |
+| Claude plan review (`PermissionRequest: ExitPlanMode`) | one exact-gated tmux Return | Selects the already-highlighted “Yes, and use auto mode” only in the hook's own pane. |
+| Codex plan review (watcher armed after confirmed Plan mode) | one exact-gated tmux Return | Selects the already-highlighted “Yes, implement this plan” only in the dispatched pane. |
+| Question-asking (Claude's `AskUserQuestion`; Codex's `request_user_input`) | **deny** | "This is an unattended Storyhook session; nobody can answer. If the question has one clear best answer, research and decide it. If two or more are defensible, convene `/council-vote`. Record the decision as a comment on `<story>` the moment you make it." |
 | Everything else | no decision | — |
 
 The permission *posture* is not the hook's job: the engine launches the lane
@@ -999,23 +1002,25 @@ preflight makes the uncertified/conflict witnesses run, and deleting the lock
 proof makes the direct private-mode refusal test fail. The module document in
 `tests/land_pr.rs` carries the measured table.
 
-### SH-460 — the `PreToolUse` hook
+### SH-460 / SH-511 — autonomous approval hooks
 
-`plugins/story/hooks/full-auto.sh`, wired as three `PreToolUse` entries in the
-plugin's existing `hooks.json`. It allows `ExitPlanMode`, denies
-`AskUserQuestion` and `request_user_input` with the feedback D6 specifies, and
-answers nothing else. Five things the story left open were decided here, because
-SH-461 is unwritten and the hook is what owns the marker's contract.
+`plugins/story/hooks/full-auto.sh`, wired as three `PreToolUse` entries and one
+Claude `PermissionRequest` entry in the plugin's existing `hooks.json`. It allows
+the `ExitPlanMode` tool, accepts Claude's separate plan-review pane with one
+exact-gated Return, denies `AskUserQuestion` and `request_user_input` with the
+feedback D6 specifies, and answers nothing else.
 
-**`STORYHOOK_FULL_AUTO` carries the lane's story id, and any non-empty value
-activates.** One variable, not two: the marker and the id the feedback has to
-name are the same fact. Unset *and* set-but-empty are both inert — a launcher
-that computed the id and got nothing must not activate a lane that does not
+**`STORYHOOK_FULL_AUTO` carries an engine lane's story id, and any non-empty
+value activates.** SH-511 later added `STORYHOOK_AUTO` for an ordinary
+autonomous dispatch without weakening this engine-only identity. The hook
+selects the Full Auto marker first when both are present, then the ordinary
+Auto marker. Unset *and* set-but-empty markers are inert — a launcher that
+computed the id and got nothing must not activate a session that does not
 exist. A value that is not shaped like a story id still enforces; it just falls
 back to generic wording rather than echoing a bogus id at the model, which is
 `STORYHOOK_FULL_AUTO=1`'s case and is pinned as one.
 
-**Three exact matchers, not a regex alternation and not `*`.** SH-459 measured
+**Four exact matchers across two events, not a regex alternation and not `*`.** SH-459 measured
 Codex against a plain tool name; its matcher's regex semantics are *unmeasured*,
 and this project does not ship on documentation where it can ship on a
 measurement (SH-226, SH-306). Exact names are demonstrated on both hosts —
@@ -1025,7 +1030,7 @@ payload anyway, so it stays correct under any matcher, and
 `test-full-auto-hook.sh` fires a `Bash` payload through the `ExitPlanMode` door
 to prove it decides on the payload rather than on having been invoked.
 
-**No `set -e`, deliberately.** For `PreToolUse` the exit status *is* a decision
+**No `set -e`, deliberately.** For hook events the exit status *is* a decision
 channel — the host acts on a nonzero exit, and `2` blocks the call outright — so
 a stray failing command must never get to decide one. Every path ends in an
 explicit `exit 0` and the decision travels in the JSON. This is SH-355's rule one
@@ -1063,20 +1068,40 @@ new segment) — stated rather than claimed away, because the direction of that
 error is safe: it demands a deadline nobody needs, loudly, where the opposite
 would silently exempt a hook that really does wait.
 
-**The Claude arm is measured only against the schema, not against the host — and
-that is a gap, named.** SH-459 measured Codex live. The equivalent probe for
-Claude could not be run from inside a Claude Code session: a nested
-`claude -p` exits with `401 OAuth access token has been revoked`, so the host
-never reached a tool call. The recipe is left runnable rather than assumed —
-a directory holding a `settings.json` whose `PreToolUse` matchers for
-`ExitPlanMode` and `AskUserQuestion` run a logging wrapper around
-`plugins/story/hooks/full-auto.sh` with `STORYHOOK_FULL_AUTO` set, then
-`claude --settings <that file> --permission-mode plan -p '<a prompt that plans,
-and one that asks>'`, reading the wrapper's log for what fired and what the host
-did with the answer. What is *not* in doubt is the wire shape: `greenlight`, a
-`PreToolUse` hook installed on this machine, emits the identical
-`hookSpecificOutput.permissionDecision` envelope. SH-461's own acceptance
-criterion — a lane reaching the charter with no human keystroke — is the
-end-to-end measurement, and SH-473 will not close without a real engine run
-having been observed. Until one has, this hook's Claude arm is tested against
-the contract and not against the host.
+**The Claude arm is measured against the live host.** SH-511's first Claude Code
+2.1.251 TUI probe falsified the original assumption: `PreToolUse(ExitPlanMode)`
+received `permissionDecision=allow`, yet Claude still stopped at a separate
+“Ready to code?” review pane. A second probe showed that pane emits
+`PermissionRequest(ExitPlanMode)`. The final isolated probe used that event to
+schedule the bounded helper on its own `$TMUX_PANE`; after a 500ms provider-input
+handoff, all three exact strings matched, one Return selected “Yes, and use auto
+mode,” Claude switched to Auto, and the requested proof file was written without
+a driver keystroke. `claude -p` is not a valid substitute for this measurement:
+the same version explicitly disables `ExitPlanMode` in print mode.
+
+### SH-511 — ordinary Auto plan approval
+
+SH-511 makes the existing `dispatch --auto` contract fully unattended without
+making it an engine lane. Every Auto child receives
+`STORYHOOK_AUTO=<story-id>` through `tmux new-window -e`; attended children
+receive no marker. The shared hook therefore allows Claude's `ExitPlanMode`,
+accepts its separate plan review at `PermissionRequest(ExitPlanMode)`, and denies
+both providers' question tools for ordinary Auto as well as Full Auto, while the
+distinct variable keeps engine identity available to the reconcile loop.
+
+The provider launch posture supplies what the hook does not. Claude keeps
+`--permission-mode plan` and sets `permissions.defaultMode` to `acceptEdits`.
+Codex keeps Storyhook's confirmed Shift+Tab transition into Plan mode and adds
+`--approve-for-me` plus `--dangerously-bypass-hook-trust`. A pane-lifetime
+watcher, armed after Plan confirmation, checks once per second for the exact
+three-option “Implement this plan?” UI and sends one Return to its selected first
+option. Codex 0.149.0 proved `--approve-for-me` does not accept that separate UI;
+it handles later workspace-write requests, while the trust flag prevents the
+packaged unattendedness hook from stalling on its own prompt.
+
+`STORY_LAUNCH_CMD` remains a wholesale compatibility escape hatch. An Auto
+result with that override reports `launch_source: "STORY_LAUNCH_CMD"`,
+`launch_overridden: true`, and a display warning that unattendedness may be
+weakened. Built-in Auto reports `launch_source: "builtin"`; attended JSON and
+commands remain unchanged. The dashboard and operator docs describe Auto as
+zero-interaction rather than asking a person to approve the plan.
