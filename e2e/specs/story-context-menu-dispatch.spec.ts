@@ -121,6 +121,16 @@ test("Dispatch is absent after a todo story moves to in-progress, with no stray 
   await expect(menu.locator(".ctxmenu-sep")).toHaveCount(2);
 
   await page.keyboard.press("Escape");
+  // deleteStory deliberately finds its target in the todo column. Restore
+  // this fixture the same way story-context-menu-status.spec.ts restores its
+  // moved stories before handing cleanup to that shared helper.
+  await movedCard.click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await page.locator("#drawer-body select").first().selectOption("todo");
+  await expect(
+    page.locator('.column[data-state="todo"] .card', { hasText: title }),
+  ).toBeVisible();
+  await page.locator("#drawer-close").click();
   await deleteStory(page, title);
 });
 
