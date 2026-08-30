@@ -38,6 +38,7 @@
 //! project.run(&["move", &id, "in-progress"]).success();
 //! ```
 
+pub mod command_reference;
 mod crash;
 mod engine;
 mod env;

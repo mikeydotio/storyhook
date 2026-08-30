@@ -16,15 +16,21 @@ static TOPICS: std::sync::LazyLock<BTreeMap<&'static str, &'static str>> =
 
         m.insert(
             "project",
-            r#"story project new [--prefix <PREFIX>] [--name <NAME>]
+            r#"story project new
+story project new --prefix <PREFIX> [--name <NAME>]
                   [--attach <PATH> | --no-attach] [--no-agents-md]
 story project delete [--force]
 story project set-prefix <NEW-PREFIX> [--force]
 story project show
 story project list
-story project link origin [URL] | link checkout [PATH]
-story project unlink origin [URL] | unlink checkout
-story project settings list | get <key> | set <key> <value> | unset <key>
+story project link origin [URL]
+story project link checkout [PATH]
+story project unlink origin [URL]
+story project unlink checkout
+story project settings list
+story project settings get <key>
+story project settings set <key> <value>
+story project settings unset <key>
 
 A repository's whole lifecycle with storyhook: register one, list them,
 remove one, attach the git associations it answers to, and change how
@@ -293,7 +299,11 @@ Related:
 
         m.insert(
             "list",
-            r#"story list [filters]
+            r#"story list [--state <slug>] [--assignee <id>] [--flagged]
+           [--priority <levels>] [--label <labels>] [--created-after <date>]
+           [--updated-after <date>] [--blocked] [--ready] [--stale <duration>]
+           [--phase <N>] [--type <slug>] [--drafts] [--unassessed]
+           [--include-closed] [--include-archived] [--all]
 
 List open stories with optional filters. Returns all open stories by
 default: closed and archived stories are excluded, with
@@ -630,7 +640,11 @@ Related:
 
         m.insert(
             "phase",
-            r#"story phase list|show|add|remove|create
+            r#"story phase list
+story phase show <N>
+story phase add <id> <N>
+story phase remove <id>
+story phase create <N> ["<title>"]
 
 Manage story phases. Phases are a convention on labels: a story in
 phase 2 has the label "phase:2". Phase commands are sugar over the
@@ -952,7 +966,10 @@ Related:
 
         m.insert(
             "hooks",
-            r#"story hooks install|uninstall|list|test <event_type>
+            r#"story hooks install
+story hooks uninstall
+story hooks list
+story hooks test <event_type>
 
 Manage storyhook event hooks. Event hooks fire custom commands when
 story events occur (create, state change, close, etc.).
@@ -1660,7 +1677,8 @@ Related:
 
         m.insert(
             "block",
-            r#"story block <id> [--on <blocker>]... ["<reason>"]
+            r#"story block <id> --on <blocker> [--on <blocker>]... ["<reason>"]
+story block <id> "<reason>"
 
 Mark a story as blocked. Blocked stories are excluded from 'story
 next' results and highlighted in listings.
@@ -1741,10 +1759,10 @@ Related:
 
         m.insert(
             "set",
-            r#"story set <id> [--title "text"] [--state <slug>] [--priority <level>]
-              [--assignee <member>] [--labels <csv>] [--blocked "<reason>"]
-              [--unblocked] [--json '{"key": "value"}'] [--type <slug>]
-              [--description "text"]
+            r#"story set <id> (--title "<title>" | --state <slug> | --priority <level>
+              | --assignee <member> | --labels "<csv>" | --blocked "<reason>"
+              | --unblocked | --json "<json>" | --type <slug>
+              | --description "<text>")
 
 Update multiple fields on a story in a single command. Accepts any
 combination of field flags. Use --json for arbitrary key-value data.
@@ -2509,7 +2527,6 @@ story web stop
 story web status
 story web open
 story web address
-story web revoke
 
 Launch a single web dashboard that serves every storyhook project
 the store knows: a home screen with a summary card per
@@ -2540,13 +2557,10 @@ Commands:
                the tailnet URL when Tailscale is up (so it works from
                your other devices), else loopback. Both open/address
                fail with this summary if the dashboard isn't running.
-  revoke       End every open dashboard session at once. 'story web
-               open' hands the browser a scoped session rather than the
-               daemon's token: it can edit stories and states, it works
-               only from this machine, and it lasts until the daemon
-               stops or you revoke it. Creating or deleting a project
-               and dispatching an agent are not part of it, and ask for
-               the daemon's token instead.
+  'story web open' hands the browser a named token rather than the
+  daemon's rotating token. Use 'story token list' to see active tokens
+  and 'story token revoke <name>' to end one. The retired 'story web
+  revoke' command no longer ends every session at once.
 
 There is no separate registration step. A project reaches the dashboard
 by existing: 'story project new' puts it in the store, and the store is
@@ -2568,7 +2582,8 @@ Examples:
   story web status                     # Check if running
   story web open                       # Open the dashboard in your browser
   story web address                    # Copy the dashboard URL to the clipboard
-  story web revoke                     # End every open dashboard session
+  story token list                     # See named dashboard/API tokens
+  story token revoke laptop            # Revoke one named token
 
 Screens:
   Home      One summary card per project (open/ready/blocked
@@ -2799,7 +2814,7 @@ Related:
 
         m.insert(
             "relink",
-            r#"story relink is now story project link checkout
+            r#"`story relink` is now `story project link checkout`.
 
 Point a project at the checkout it now lives in:
 
