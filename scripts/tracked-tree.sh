@@ -30,6 +30,13 @@
 # error. A caller that must never fail on this file's behalf (`build.rs`)
 # reads a nonzero exit as "no stamp available," not as an error to propagate.
 #
+# A caller that needs to resolve a generated dirty-tree oid after this process
+# exits may pass one absolute, existing object directory. The caller owns that
+# directory and its lifetime. With no argument this script owns a temporary
+# object directory and removes it before returning. In both forms the source
+# repository's canonical object database is a read-only alternate: identity
+# generation never inserts objects into the checkout it is inspecting.
+#
 # Measured cost on this repo (2026-08-18, warm, this checkout's tree size):
 # ~130ms per invocation -- three git subprocess spawns plus a full
 # tracked-file walk via `git add -u -- :/`. `build.rs` pays this whenever
@@ -46,12 +53,70 @@ set -uo pipefail
 root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 1
 cd "$root" || exit 1
 
-idx="$(mktemp -t storyhook-tracked-tree.XXXXXX)" || exit 1
+common_dir="$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" && pwd -P)" \
+    || exit 1
+source_objects="$(cd "$common_dir/objects" && pwd -P)" || exit 1
+
+objects=""
+owned_objects=0
+idx=""
+
+cleanup() {
+    if [ -n "$idx" ]; then
+        rm -f "$idx"
+        idx=""
+    fi
+    if [ "$owned_objects" -eq 1 ] && [ -n "$objects" ]; then
+        rm -rf "$objects"
+        objects=""
+        owned_objects=0
+    fi
+}
+
+on_signal() {
+    status="$1"
+    trap - EXIT HUP INT TERM
+    cleanup
+    exit "$status"
+}
+
+trap cleanup EXIT
+trap 'on_signal 129' HUP
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
+
+case "$#" in
+0)
+    objects="$(mktemp -d -t storyhook-tracked-tree-objects.XXXXXX)" || exit 1
+    owned_objects=1
+    ;;
+1)
+    case "$1" in
+    /*) ;;
+    *) exit 1 ;;
+    esac
+    [ -d "$1" ] || exit 1
+    objects="$(cd "$1" && pwd -P)" || exit 1
+    [ "$objects" != "$source_objects" ] || exit 1
+    ;;
+*)
+    exit 1
+    ;;
+esac
+
+idx="$(mktemp -t storyhook-tracked-tree-index.XXXXXX)" || exit 1
 rm -f "$idx"
-GIT_INDEX_FILE="$idx" git read-tree HEAD 2>/dev/null || { rm -f "$idx"; exit 1; }
-GIT_INDEX_FILE="$idx" git add -u -- :/ 2>/dev/null || { rm -f "$idx"; exit 1; }
-tree="$(GIT_INDEX_FILE="$idx" git write-tree 2>/dev/null)" || { rm -f "$idx"; exit 1; }
-rm -f "$idx"
+
+git_private() {
+    GIT_INDEX_FILE="$idx" \
+        GIT_OBJECT_DIRECTORY="$objects" \
+        GIT_ALTERNATE_OBJECT_DIRECTORIES="$source_objects" \
+        git "$@"
+}
+
+git_private read-tree HEAD 2>/dev/null || exit 1
+git_private add -u -- :/ 2>/dev/null || exit 1
+tree="$(git_private write-tree 2>/dev/null)" || exit 1
 
 [ -n "$tree" ] || exit 1
 printf '%s\n' "$tree"
