@@ -480,7 +480,10 @@ WRAPPER
   # was passed"), which a per-project `--project=X` invocation would always
   # defeat even on an otherwise-unfiltered run (SH-335) -- asking Playwright
   # directly is correct under any combination of project and extra filters.
-  dispatch_selected="$(printf '%s\n' "$list_output" | grep -c "dispatch\.spec\.ts" || true)"
+  # Include the exact path and Playwright's following `:`. A suffix-only
+  # match also selects story-context-menu-dispatch.spec.ts, whose requests
+  # are all stubbed, then falsely fails the fake-tmux post-check below.
+  dispatch_selected="$(printf '%s\n' "$list_output" | grep -c "specs/dispatch\.spec\.ts:" || true)"
 
   # `|| status=$?` rather than `if ! npx ...; then status=$?`: under `!`,
   # bash inverts the command's exit status, so `$?` inside that then-branch

@@ -23,6 +23,9 @@
 //! 4. A failed project stops the matrix or a later project's Playwright
 //!    invocation erases its failure artifacts --
 //!    `the_matrix_records_failures_continues_and_keeps_each_projects_artifacts`.
+//! 5. The real-dispatch post-check selects exactly `specs/dispatch.spec.ts`,
+//!    not another stubbed spec whose filename happens to end in the same
+//!    substring -- `the_real_dispatch_postcheck_matches_only_the_exact_spec`.
 
 use std::path::{Path, PathBuf};
 
@@ -556,5 +559,82 @@ fn the_matrix_records_failures_continues_and_keeps_each_projects_artifacts() {
         runner.contains("--output=\"$results_root/$project\""),
         "each Playwright invocation must write beneath a project-keyed output directory; the \
          default shared test-results directory is cleared at the start of every invocation"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 5. The real-dispatch post-check selects exactly one spec
+// ---------------------------------------------------------------------------
+
+/// Reads the basic-regex argument from run-e2e.sh's live `grep -c` assignment
+/// rather than copying the expression into this test. The assertion below
+/// therefore exercises the pattern the harness will actually run.
+fn dispatch_selected_pattern(runner: &str) -> &str {
+    let assignment = runner
+        .lines()
+        .find(|line| line.trim_start().starts_with("dispatch_selected="))
+        .expect("scripts/run-e2e.sh must assign dispatch_selected");
+    let marker = "grep -c \"";
+    let after = assignment
+        .split_once(marker)
+        .unwrap_or_else(|| panic!("dispatch_selected does not contain `{marker}`: {assignment}"))
+        .1;
+    let end = after
+        .find('"')
+        .unwrap_or_else(|| panic!("dispatch_selected's grep pattern never closes: {assignment}"));
+    &after[..end]
+}
+
+fn grep_count(pattern: &str, input: &str) -> usize {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new("grep")
+        .args(["-c", pattern])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawning the same grep scripts/run-e2e.sh uses");
+    child
+        .stdin
+        .as_mut()
+        .expect("grep stdin was piped")
+        .write_all(input.as_bytes())
+        .expect("writing synthetic Playwright list output to grep");
+    let output = child.wait_with_output().expect("waiting for grep");
+    assert!(
+        output.status.success() || output.status.code() == Some(1),
+        "grep failed unexpectedly: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("grep -c output is UTF-8")
+        .trim()
+        .parse()
+        .expect("grep -c output is a count")
+}
+
+#[test]
+fn the_real_dispatch_postcheck_matches_only_the_exact_spec() {
+    let runner = read("scripts/run-e2e.sh");
+    let pattern = dispatch_selected_pattern(&runner);
+    let real = "[chromium] › specs/dispatch.spec.ts:83:5 › Dispatch is absent\n";
+    let stubbed =
+        "[chromium] › specs/story-context-menu-dispatch.spec.ts:72:5 › Dispatch is present\n";
+
+    assert_eq!(
+        grep_count(pattern, real),
+        1,
+        "the post-check must recognize the one spec that drives a real dispatch"
+    );
+    assert_eq!(
+        grep_count(pattern, stubbed),
+        0,
+        "the post-check must not mistake the stubbed context-menu spec for dispatch.spec.ts"
+    );
+    assert_eq!(
+        grep_count(pattern, &format!("{stubbed}{real}")),
+        1,
+        "a mixed Playwright list must count only the exact real-dispatch spec"
     );
 }

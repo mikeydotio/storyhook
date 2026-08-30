@@ -8,11 +8,11 @@ import {
 } from "./support";
 
 /**
- * Exercises SH-197's context menu Dispatch action, gated identically to
- * the drawer footer's own Dispatch button (SH-50/SH-208/SH-436,
- * `docs/spec/dashboard-dispatch.md`'s As-built section for this story names
- * the shared expression). Every dispatch request here is stubbed via
- * `page.route` -- that the endpoint really runs `story.sh` end to end is
+ * Exercises SH-197's context menu Dispatch action. SH-512 deliberately
+ * narrows this surface to literal `todo` stories while the drawer footer
+ * retains its broader OPEN-state gate; `docs/spec/dashboard-dispatch.md`'s
+ * As-built section records the split. Every dispatch request here is stubbed
+ * via `page.route` -- that the endpoint really runs `story.sh` end to end is
  * already proven by `dispatch.spec.ts` against Alpha's real story; stubbing
  * here means this file never claims that story out from under it and never
  * pays for a real worktree.
@@ -69,7 +69,7 @@ function stubbedDispatchBody(
   });
 }
 
-test("Dispatch is present for an open story with a checkout", async ({
+test("Dispatch is present for a todo story with a checkout", async ({
   page,
 }) => {
   await openProject(page, "Alpha Project");
@@ -86,6 +86,51 @@ test("Dispatch is present for an open story with a checkout", async ({
   await expect(page.locator("#dispatch-modal")).toHaveClass(/open/);
   await page.locator("#dispatch-modal-cancel").click();
   await expect(card).toBeFocused();
+  await deleteStory(page, title);
+});
+
+test("Dispatch is absent after a todo story moves to in-progress, with no stray separator", async ({
+  page,
+}) => {
+  await openProject(page, "Alpha Project");
+  const title = "SH-512 context menu — dispatch only from todo";
+  const card = await createStory(page, title);
+
+  await card.click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await page.locator("#drawer-body select").first().selectOption("in-progress");
+  const movedCard = page.locator('.column[data-state="in-progress"] .card', {
+    hasText: title,
+  });
+  await expect(movedCard).toBeVisible();
+  await page.locator("#drawer-close").click();
+
+  await movedCard.click({ button: "right" });
+  const menu = page.locator(".ctxmenu");
+  await expect(menu).toBeVisible();
+  await expect(
+    menu.locator(".ctxmenu-item", { hasText: /^Dispatch$/ }),
+  ).toHaveCount(0);
+  await expect(
+    menu.locator(".ctxmenu-item", { hasText: "Dispatch Auto" }),
+  ).toHaveCount(0);
+  // Copy ID/URL/Description, Set Status, Set Priority, Close and Delete
+  // survive. compactSeparators() collapses the now-empty dispatch group, so
+  // only the copy/status and priority/close boundaries remain.
+  await expect(menu.locator(".ctxmenu-item")).toHaveCount(7);
+  await expect(menu.locator(".ctxmenu-sep")).toHaveCount(2);
+
+  await page.keyboard.press("Escape");
+  // deleteStory deliberately finds its target in the todo column. Restore
+  // this fixture the same way story-context-menu-status.spec.ts restores its
+  // moved stories before handing cleanup to that shared helper.
+  await movedCard.click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await page.locator("#drawer-body select").first().selectOption("todo");
+  await expect(
+    page.locator('.column[data-state="todo"] .card', { hasText: title }),
+  ).toBeVisible();
+  await page.locator("#drawer-close").click();
   await deleteStory(page, title);
 });
 
