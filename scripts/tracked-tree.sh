@@ -35,8 +35,9 @@
 # resides outside the source repository's object database. The caller owns
 # that directory and its lifetime. With no argument this script owns a
 # temporary object directory and removes it before returning. In both forms
-# the source repository's canonical object database is a read-only alternate:
-# identity generation never inserts objects into the checkout it is inspecting.
+# the source repository's canonical object database, plus any read-only
+# alternates the caller needs to resolve HEAD, remain alternates: identity
+# generation never inserts objects into the checkout it is inspecting.
 #
 # Measured cost on this repo (2026-08-18, warm, this checkout's tree size):
 # ~130ms per invocation -- three git subprocess spawns plus a full
@@ -57,6 +58,11 @@ cd "$root" || exit 1
 common_dir="$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" && pwd -P)" \
     || exit 1
 source_objects="$(cd "$common_dir/objects" && pwd -P)" || exit 1
+inherited_alternates="${GIT_ALTERNATE_OBJECT_DIRECTORIES:-}"
+source_alternates="$source_objects"
+if [ -n "$inherited_alternates" ]; then
+    source_alternates="$source_alternates:$inherited_alternates"
+fi
 
 objects=""
 owned_objects=0
@@ -118,7 +124,7 @@ rm -f "$idx"
 git_private() {
     GIT_INDEX_FILE="$idx" \
         GIT_OBJECT_DIRECTORY="$objects" \
-        GIT_ALTERNATE_OBJECT_DIRECTORIES="$source_objects" \
+        GIT_ALTERNATE_OBJECT_DIRECTORIES="$source_alternates" \
         git "$@"
 }
 

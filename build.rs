@@ -131,12 +131,13 @@ fn build_id_from_tracked_tree() -> Option<String> {
     let output = match Command::new("bash")
         .arg(&script)
         .current_dir(&manifest_dir)
-        // The tracked-tree producer owns object redirection for this call.
-        // Cargo can inherit these variables from a caller doing unrelated Git
-        // plumbing; letting them leak across this boundary would make the
-        // build stamp depend on an external object's lifetime or authority.
+        // The tracked-tree producer owns the writable primary for this call.
+        // A read-only alternate is deliberately retained: merge-watch checks
+        // out a speculative commit whose objects live in its caller-owned
+        // lease, and the build stamp still has to describe that exact tree.
+        // tracked-tree.sh appends the inherited alternate behind its own
+        // canonical source store while keeping all generated objects private.
         .env_remove("GIT_OBJECT_DIRECTORY")
-        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
         .output()
     {
         Ok(output) => output,

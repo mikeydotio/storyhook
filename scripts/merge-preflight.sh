@@ -25,10 +25,18 @@
 # merge's tree byte-for-byte, and that tree matches neither parent — no
 # receipt could have existed for it.
 #
-# This script is read-only: it never writes a receipt, never touches the
-# working tree, never runs the suite. It only answers "has this exact content
-# gone green before". `scripts/merge-watch.sh` is what runs `make test`
-# against an uncertified tree and, on green, certifies it for real.
+# This script is read-only with respect to the source repository: it never
+# writes a receipt, never touches the working tree, never runs the suite, and
+# gives Git a private primary object database for the tree objects that
+# `merge-tree --write-tree` necessarily materializes. It only answers "has
+# this exact content gone green before". `scripts/merge-watch.sh` is what runs
+# `make test` against an uncertified tree and, on green, certifies it for real.
+#
+# A caller that needs the predicted tree to remain resolvable after this
+# process exits may pass `--object-dir <absolute-directory>`. The caller owns
+# that directory and its lifetime. With no option this script owns a temporary
+# directory and removes it before returning. In both forms the source
+# repository's canonical object database is a read-only alternate.
 #
 # EXIT CODES
 #   0   the merge is clean and its tree already carries a gate/full receipt
@@ -45,6 +53,8 @@
 
 set -uo pipefail
 
+readonly USAGE="usage: merge-preflight.sh [--object-dir <absolute-directory>] <base-ref> <head-ref>"
+
 die() {
     printf 'merge-preflight: %s\n' "$1" >&2
     exit 1
@@ -54,10 +64,16 @@ note() {
     printf 'merge-preflight: %s\n' "$1" >&2
 }
 
-base="${1:-}"
-head="${2:-}"
-[ -n "$base" ] && [ -n "$head" ] \
-    || die "usage: merge-preflight.sh <base-ref> <head-ref>"
+object_arg=""
+if [ "${1:-}" = "--object-dir" ]; then
+    [ "$#" -eq 4 ] || die "$USAGE"
+    object_arg="$2"
+    shift 2
+else
+    [ "$#" -eq 2 ] || die "$USAGE"
+fi
+base="$1"
+head="$2"
 
 root="$(git rev-parse --show-toplevel 2>/dev/null)" \
     || die "not inside a git worktree"
@@ -70,6 +86,79 @@ cd "$root" || die "cannot enter $root"
 common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd)" \
     || die "cannot resolve the shared git directory"
 receipts="$common_dir/storyhook/gate-receipts"
+source_objects="$(cd "$common_dir/objects" && pwd -P)" \
+    || die "cannot resolve the shared object directory"
+
+objects=""
+owned_objects=0
+output_tmp=""
+child=""
+
+cleanup() {
+    if [ -n "$output_tmp" ]; then
+        rm -f "$output_tmp"
+        output_tmp=""
+    fi
+    if [ "$owned_objects" -eq 1 ] && [ -n "$objects" ]; then
+        if rm -rf "$objects"; then
+            objects=""
+            owned_objects=0
+        else
+            note "could not remove private object storage at $objects"
+            return 1
+        fi
+    fi
+}
+
+on_signal() {
+    signal="$1"
+    if [ -n "$child" ]; then
+        kill -s "$signal" "$child" 2>/dev/null || true
+        wait "$child" 2>/dev/null || true
+        child=""
+    fi
+    trap - "$signal" EXIT
+    cleanup
+    kill -s "$signal" $$
+}
+
+trap cleanup EXIT
+trap 'on_signal HUP' HUP
+trap 'on_signal INT' INT
+trap 'on_signal TERM' TERM
+
+validate_object_dir() {
+    candidate="$1"
+    case "$candidate" in
+    /*) ;;
+    *) return 1 ;;
+    esac
+    [ -d "$candidate" ] && [ ! -L "$candidate" ] || return 1
+    physical="$(cd "$candidate" && pwd -P)" || return 1
+    case "$physical" in
+    "$source_objects" | "$source_objects"/*) return 1 ;;
+    esac
+    printf '%s\n' "$physical"
+}
+
+if [ -n "$object_arg" ]; then
+    objects="$(validate_object_dir "$object_arg")" \
+        || die "--object-dir must name an absolute, existing, non-symlink directory outside the source object database"
+else
+    created_objects="$(mktemp -d -t storyhook-merge-objects.XXXXXX)" \
+        || die "could not create private object storage"
+    objects="$created_objects"
+    owned_objects=1
+    canonical_objects="$(validate_object_dir "$created_objects")" \
+        || die "created object storage outside the permitted private location"
+    objects="$canonical_objects"
+fi
+
+git_private() {
+    GIT_OBJECT_DIRECTORY="$objects" \
+        GIT_ALTERNATE_OBJECT_DIRECTORIES="$source_objects" \
+        git "$@"
+}
 
 # On a clean merge, `--write-tree` prints exactly one line: the tree oid, and
 # nothing else. On conflict it exits non-zero and stdout instead carries
@@ -77,8 +166,16 @@ receipts="$common_dir/storyhook/gate-receipts"
 # baked in — that oid must never be treated as a real result, which is why
 # this checks the exit status rather than trying to validate the first line
 # as a hash.
-output="$(git merge-tree --write-tree "$base" "$head" 2>&1)"
+output_tmp="$(mktemp -t storyhook-merge-preflight-output.XXXXXX)" \
+    || die "could not create temporary merge output"
+git_private merge-tree --write-tree "$base" "$head" >"$output_tmp" 2>&1 &
+child=$!
+wait "$child"
 status=$?
+child=""
+output="$(cat "$output_tmp")"
+rm -f "$output_tmp"
+output_tmp=""
 
 if [ "$status" -ne 0 ]; then
     note "CONFLICT — $head does not merge cleanly onto $base"
