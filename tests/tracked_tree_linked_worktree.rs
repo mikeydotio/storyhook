@@ -46,6 +46,10 @@ fn trimmed_stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
+fn trimmed_stderr(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stderr).trim().to_string()
+}
+
 struct ImmutableObjects {
     path: PathBuf,
     armed: bool,
@@ -232,6 +236,113 @@ fn a_linked_worktree_prints_its_tracked_tree_without_writing_shared_objects() {
          writing shared objects; got {actual:?} with status {}\n\
          git add permission diagnostic: {add_stderr}",
         out.status
+    );
+}
+
+#[test]
+fn source_object_store_and_descendants_are_rejected_before_git_writes() {
+    let fixture = scratch_dir();
+    let repo = fixture.path().join("repo");
+    std::fs::create_dir(&repo).expect("creating the repository");
+
+    assert_ok(&git(&repo, &["init", "-q", "-b", "main"]), "git init");
+    std::fs::write(repo.join("tracked"), "committed content\n")
+        .expect("writing the tracked fixture file");
+    assert_ok(&git(&repo, &["add", "tracked"]), "tracking the file");
+    assert_ok(
+        &git(
+            &repo,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "init",
+            ],
+        ),
+        "creating the initial commit",
+    );
+    std::fs::write(repo.join("tracked"), "dirty content requiring a new blob\n")
+        .expect("dirtying the tracked fixture file");
+
+    let source_objects = repo.join(".git").join("objects");
+    let nested_objects = source_objects.join("caller-owned");
+    let source_alias = fixture.path().join("source-objects-alias");
+    let external_objects = repo.join(".git").join("objects-caller");
+    std::fs::create_dir(&nested_objects).expect("creating the nested object directory");
+    std::os::unix::fs::symlink(&source_objects, &source_alias)
+        .expect("creating a symlink alias to source objects");
+    std::fs::create_dir(&external_objects).expect("creating the external object directory");
+
+    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("scripts")
+        .join("tracked-tree.sh");
+    for (description, unsafe_objects) in [
+        ("a nested object directory", nested_objects.as_path()),
+        ("the source object directory", source_objects.as_path()),
+        ("a symlink alias to source objects", source_alias.as_path()),
+    ] {
+        let before = object_database_state(&source_objects);
+        let out = Command::new("bash")
+            .arg(&script)
+            .arg(unsafe_objects)
+            .current_dir(&repo)
+            .output()
+            .unwrap_or_else(|error| panic!("running tracked-tree.sh with {description}: {error}"));
+        let after = object_database_state(&source_objects);
+
+        assert!(
+            !out.status.success(),
+            "tracked-tree.sh must reject {description}\nstdout: {}\nstderr: {}",
+            trimmed_stdout(&out),
+            trimmed_stderr(&out)
+        );
+        assert!(
+            out.stdout.is_empty(),
+            "a refusal for {description} must not emit a tree identity: {:?}",
+            trimmed_stdout(&out)
+        );
+        assert!(
+            trimmed_stderr(&out).contains("outside the source object store"),
+            "a refusal for {description} must explain the ownership boundary: {:?}",
+            trimmed_stderr(&out)
+        );
+        assert_eq!(
+            before, after,
+            "a refusal for {description} must happen before Git writes source objects"
+        );
+    }
+
+    let source_before = object_database_state(&source_objects);
+    let accepted = Command::new("bash")
+        .arg(&script)
+        .arg(&external_objects)
+        .current_dir(&repo)
+        .output()
+        .expect("running tracked-tree.sh with an external object directory");
+    let source_after = object_database_state(&source_objects);
+
+    assert_ok(
+        &accepted,
+        "a similarly named object directory outside source objects",
+    );
+    assert_eq!(
+        trimmed_stdout(&accepted).len(),
+        40,
+        "the accepted caller-owned directory must produce a full tree oid"
+    );
+    assert_eq!(
+        source_before, source_after,
+        "the accepted caller-owned directory must not mutate source objects"
+    );
+    assert!(
+        std::fs::read_dir(&external_objects)
+            .expect("reading the accepted caller-owned directory")
+            .next()
+            .is_some(),
+        "the accepted caller-owned directory must retain generated objects"
     );
 }
 

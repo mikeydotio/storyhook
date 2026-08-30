@@ -31,11 +31,12 @@
 # reads a nonzero exit as "no stamp available," not as an error to propagate.
 #
 # A caller that needs to resolve a generated dirty-tree oid after this process
-# exits may pass one absolute, existing object directory. The caller owns that
-# directory and its lifetime. With no argument this script owns a temporary
-# object directory and removes it before returning. In both forms the source
-# repository's canonical object database is a read-only alternate: identity
-# generation never inserts objects into the checkout it is inspecting.
+# exits may pass one absolute, existing object directory that physically
+# resides outside the source repository's object database. The caller owns
+# that directory and its lifetime. With no argument this script owns a
+# temporary object directory and removes it before returning. In both forms
+# the source repository's canonical object database is a read-only alternate:
+# identity generation never inserts objects into the checkout it is inspecting.
 #
 # Measured cost on this repo (2026-08-18, warm, this checkout's tree size):
 # ~130ms per invocation -- three git subprocess spawns plus a full
@@ -97,7 +98,14 @@ case "$#" in
     esac
     [ -d "$1" ] || exit 1
     objects="$(cd "$1" && pwd -P)" || exit 1
-    [ "$objects" != "$source_objects" ] || exit 1
+    case "$objects/" in
+    "$source_objects/"*)
+        printf '%s\n' \
+            'tracked-tree.sh: caller-owned object directory must be outside the source object store' \
+            >&2
+        exit 1
+        ;;
+    esac
     ;;
 *)
     exit 1
