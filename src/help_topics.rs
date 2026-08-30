@@ -2521,6 +2521,49 @@ Use `story delete <id> [--force]` for permanent story removal.
         );
 
         m.insert(
+            "engine",
+            r#"story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex]
+story engine status [--run <id>]
+story engine pause [--run <id>]
+story engine resume [--run <id>]
+story engine stop [--run <id>] [--now]
+story engine ack [--run <id>]
+
+Control one Full Auto run for the selected project.
+
+start
+  Starts a project-wide run, or narrows it to an epic's descendant
+  subtree with --epic. --lanes defaults to 1 and accepts 1 through 255.
+  --agent defaults to claude; codex selects a Codex lane instead. A
+  project may have only one live run.
+
+status / pause / resume / stop / ack
+  With no --run, these select the project's sole live running, paused,
+  or draining run. If there is none, name a halted or finished run with
+  --run. Run ids are shown by start and status and are not story ids.
+
+  pause stops new claims but keeps the run resumable. resume returns a
+  paused run to running. stop drains occupied lanes and finishes once
+  they are idle; --now releases active claims and closes their windows
+  while preserving worktrees and branches. ack clears the persistent
+  stop notification and is idempotent.
+
+  Human output shows the run and its lanes as a table. --json returns
+  the same facts under one structured run object, including elapsed
+  seconds and no-auto stories that need a person.
+
+Examples:
+  story engine start
+  story engine start --epic SH-40 --lanes 2 --agent codex
+  story engine status
+  story engine pause
+  story engine resume --run 7d8f
+  story engine stop --now
+  story engine ack --run 7d8f
+"#,
+        );
+
+        m.insert(
             "web",
             r#"story web start [--port <PORT>]
 story web stop

@@ -218,6 +218,10 @@ fn build_corpus() -> Project<'static> {
     run(&["move", "SH-14", "done"]);
     run(&["close", "SH-13", "superseded by the global store"]);
 
+    // One live run for the engine status golden. Engine state is operational
+    // and does not alter any story read surface in this shared corpus.
+    run(&["engine", "start", "--lanes", "2"]);
+
     project
 }
 
@@ -266,6 +270,8 @@ fn filters() -> Vec<(String, &'static str)> {
         // pattern also matches ordinary words, and over-redaction silently
         // weakens the contract.
         (r"\b[0-9a-f]{40}\b".to_string(), "[sha]"),
+        // Full Auto run ids are UUID simple strings, intentionally random.
+        (r"\b[0-9a-f]{32}\b".to_string(), "[run-id]"),
     ]
 }
 
@@ -300,6 +306,7 @@ macro_rules! assert_json_golden {
             ".**.at" => "[timestamp]",
             ".**.last_activity_at" => "[timestamp]",
             ".**.days_stale" => "[days]",
+            ".**.run.id" => "[run-id]",
         })
     };
 }
@@ -538,6 +545,18 @@ fn summary_human() {
 #[test]
 fn summary_json() {
     snapshot_json("summary_json", SUMMARY);
+}
+
+const ENGINE_STATUS: &[&[&str]] = &[&["engine", "status"]];
+
+#[test]
+fn engine_status_human() {
+    snapshot_human("engine_status_human", ENGINE_STATUS);
+}
+
+#[test]
+fn engine_status_json() {
+    snapshot_json("engine_status_json", ENGINE_STATUS);
 }
 
 /// `report --html` is a whole HTML document. Human form only — see the module
