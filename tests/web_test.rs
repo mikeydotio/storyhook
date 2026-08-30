@@ -1073,12 +1073,14 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"execCommand("copy")"#));
     assert!(body.contains("\"Copy Description\""));
 
-    // SH-197: the context menu's Dispatch action -- gated identically to the
-    // drawer footer's own Dispatch button (dashboard-dispatch.md's As-built
-    // section names the shared expression).
+    // SH-197/SH-512: the context menu's Dispatch action. It is deliberately
+    // narrower than the drawer footer: only literal `todo` stories with a
+    // checkout receive the menu item.
     assert!(body.contains("\"Dispatch\""));
     assert!(!body.contains("\"Dispatch Auto\""));
-    assert!(body.contains("dispatchHidden"));
+    assert!(
+        body.contains(r#"var dispatchHidden = st.state !== "todo" || !currentRepoHasCheckout();"#)
+    );
 
     // SH-197: the context menu's Set Status submenu.
     assert!(body.contains("\"Set Status\""));
