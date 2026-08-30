@@ -633,6 +633,91 @@ fn corrupt_preflight_state_never_deletes_an_unscoped_directory() {
 }
 
 #[test]
+fn a_symlink_substituted_for_a_persisted_lease_is_rejected_before_git_writes() {
+    let repo = GateRepo::new();
+    repo.write("f", "dirty content whose objects must stay private\n");
+    assert_ok(&repo.gate("preflight"), "recording the dirty preflight");
+    let lease = repo.preflight_lease();
+    fs::remove_dir_all(&lease).expect("removing the caller-owned lease");
+
+    let external = repo.path().join("must-survive-lease-substitution");
+    fs::create_dir(&external).expect("creating the external object target");
+    fs::write(external.join("sentinel"), "untouched\n")
+        .expect("seeding the external object target");
+    std::os::unix::fs::symlink(&external, &lease)
+        .expect("substituting a symlink for the persisted lease");
+
+    let out = repo.gate("postlude");
+
+    assert!(
+        !out.status.success(),
+        "a substituted lease must fail closed"
+    );
+    assert!(
+        stderr(&out).contains("preflight state is invalid"),
+        "the ownership failure must be named, got: {}",
+        stderr(&out)
+    );
+    assert_eq!(
+        fs::read_dir(&external)
+            .expect("reading the external target")
+            .map(|entry| entry.expect("reading an external entry").file_name())
+            .collect::<Vec<_>>(),
+        vec!["sentinel"],
+        "Git must not write any object beneath the substituted target"
+    );
+    assert_eq!(
+        fs::read_to_string(external.join("sentinel")).expect("reading the sentinel"),
+        "untouched\n",
+        "the external target must remain byte-for-byte unchanged"
+    );
+    assert!(
+        !repo.preflight_state().exists(),
+        "invalid state must be removed so the next run can recover"
+    );
+    assert!(
+        !repo.path().join(".git/storyhook/gate-receipts").exists(),
+        "a substituted lease must never produce a receipt"
+    );
+    assert!(
+        lease.is_symlink(),
+        "cleanup must leave the unproven filesystem entry untouched"
+    );
+}
+
+#[test]
+fn a_same_path_directory_replacement_is_not_treated_as_the_owned_lease() {
+    let repo = GateRepo::new();
+    repo.write("f", "dirty content whose objects must stay private\n");
+    assert_ok(&repo.gate("preflight"), "recording the dirty preflight");
+    let lease = repo.preflight_lease();
+    fs::remove_dir_all(&lease).expect("removing the caller-owned lease");
+    fs::create_dir(&lease).expect("replacing the lease at the same path");
+    fs::write(lease.join("sentinel"), "untouched\n").expect("seeding the replacement directory");
+
+    let out = repo.gate("postlude");
+
+    assert!(
+        !out.status.success(),
+        "a same-path directory replacement must fail closed"
+    );
+    assert!(
+        stderr(&out).contains("preflight state is invalid"),
+        "the ownership failure must be named, got: {}",
+        stderr(&out)
+    );
+    assert_eq!(
+        fs::read_to_string(lease.join("sentinel")).expect("reading the replacement sentinel"),
+        "untouched\n",
+        "cleanup must not recursively delete an identity-mismatched directory"
+    );
+    assert!(
+        !repo.path().join(".git/storyhook/gate-receipts").exists(),
+        "an identity-mismatched lease must never produce a receipt"
+    );
+}
+
+#[test]
 fn a_failed_drift_diff_fails_closed_and_cleans_gate_state() {
     let repo = GateRepo::new();
     repo.write("f", "dirty before preflight\n");
