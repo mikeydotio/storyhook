@@ -69,6 +69,18 @@ grep -qF -- "--force" "$SKILL" \
 grep -qF "STORY_AUTO_PROMPT" "${docs[@]}" \
   || fail_test "router skill documents STORY_PROMPT but not its --auto counterpart, STORY_AUTO_PROMPT"
 
+# --- SH-469: epic Auto is an engine start in the router and both adapters ---
+for doc in "$SKILL" "$PLUGIN_ROOT/adapters/claude-code.md" "$PLUGIN_ROOT/adapters/codex.md"; do
+  grep -qF 'kind:"engine-run"' "$doc" \
+    || fail_test "$(basename "$doc"): epic Auto result kind is undocumented"
+  grep -qF -- '--full-auto' "$doc" \
+    || fail_test "$(basename "$doc"): engine-private lane marker boundary is undocumented"
+done
+grep -qF 'typed epic' "$SKILL" \
+  || fail_test "router skill does not distinguish typed epics from actionable stories"
+grep -qF 'without `--auto`' "$SKILL" \
+  || fail_test "router skill does not document bare-epic refusal"
+
 # --- reference files must not tell the agent to drive the CLI directly ---
 # The whole contract is that side effects go through bin/story.sh; a reference
 # that says otherwise reintroduces the duplication the router exists to avoid.
