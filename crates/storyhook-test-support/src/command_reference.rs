@@ -150,6 +150,7 @@ fn tokenize_top(s: &str) -> Vec<Piece> {
 fn placeholder(token: &str) -> Option<&'static str> {
     Some(match token {
         "<id>" | "<a>" | "<b>" | "<story-id>" | "<epic-id>" | "<expected>" | "<blocker>" => "SH-1",
+        "<run-id>" => "run-1",
         "<n>" | "<N>" => "1",
         "<PORT>" => "3456",
         "<PREFIX>" => "SH",
