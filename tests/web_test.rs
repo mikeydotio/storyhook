@@ -2214,6 +2214,7 @@ fn web_serve_root_html_keeps_text_controls_above_the_ios_zoom_threshold() {
     // size, which is what makes the coarse-pointer override below total.
     for selector in [
         ".search-input",
+        ".engine-lanes-input",
         ".settings-form input",
         ".status-row select, .status-row input[type=text]",
         ".status-add input[type=text], .status-add select",
@@ -2264,7 +2265,7 @@ fn web_serve_root_html_keeps_text_controls_above_the_ios_zoom_threshold() {
     // Double-tap-to-zoom, on the tap targets only -- never on `body`, where
     // double-tapping to zoom the board's own text is a gesture the reader
     // is entitled to.
-    let touch_action_selector = "button, select, .card, .repo-card, tbody tr, .ctxmenu-item, \
+    let touch_action_selector = "button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, \
          .projsel-item, .fdd-option, .filter-toggle, .pref-toggle";
     assert!(
         declarations(css, touch_action_selector).contains("touch-action: manipulation"),
@@ -2476,6 +2477,7 @@ fn web_serve_root_html_meets_wcag_tap_target_size() {
         ".fdd-option",
         ".filter-toggle",
         ".filter-clear",
+        ".engine-lanes-input",
         ".column-archive-btn",
         ".section-toggle",
         ".field select, .field input[type=text], .field textarea",
@@ -3051,9 +3053,9 @@ fn web_serve_root_html_styles_the_description_read_edit_swap_and_rendered_markdo
 /// SH-235: the filter bar's dropdowns, checkboxes and sort buttons collapse
 /// behind a "Filters" disclosure, at every viewport size -- the filter bar
 /// alone measured 145px tall at a 390px width, on top of the topbar's own
-/// 108px. `#filter-summary` (the toggle, `#filter-count`, `#filter-clear`)
-/// stays outside `#filter-panel`'s `hidden` so a reader always sees whether
-/// a filter is active and can clear it without opening anything.
+/// 108px. `#filter-summary` (the toggle, count, clear action, and Full Auto
+/// control) stays outside `#filter-panel`'s `hidden` so a reader always sees
+/// whether a filter is active and can clear it without opening anything.
 ///
 /// The interaction itself (default collapsed, opens on click, ARIA/chevron
 /// sync, survives a reload, the active-class heuristic) is
@@ -3080,14 +3082,15 @@ fn web_serve_root_html_has_a_collapsible_filter_panel() {
     // JS-applied class, so a reader whose JS is still loading (or fails)
     // never sees the panel flash open before script runs.
     assert!(body.contains(r#"id="filter-panel" hidden>"#));
-    // #filter-count and #filter-clear moved into the always-visible summary
-    // row -- pinned by each still appearing before filter-panel's own
+    // The count, clear action, and Full Auto control live in the always-visible
+    // summary row -- pinned by each still appearing before filter-panel's own
     // opening tag, i.e. outside it, not merely present somewhere in the file.
     let panel_start = body
         .find(r#"id="filter-panel""#)
         .expect("the filter panel exists");
     assert!(body[..panel_start].contains(r#"id="filter-count""#));
     assert!(body[..panel_start].contains(r#"id="filter-clear""#));
+    assert!(body[..panel_start].contains(r#"id="engine-control""#));
 
     // The generic aria-expanded reset in closeAllPopovers() must exclude
     // this disclosure (and the drawer's own SH-169 section toggles) -- see
