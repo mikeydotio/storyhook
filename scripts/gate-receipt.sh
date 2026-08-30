@@ -99,6 +99,11 @@ receipts="$common_dir/storyhook/gate-receipts"
 preflight_state="$git_dir/storyhook-gate-preflight"
 source_objects="$(cd "$common_dir/objects" && pwd -P)" \
     || die "cannot resolve the shared object directory"
+inherited_alternates="${GIT_ALTERNATE_OBJECT_DIRECTORIES:-}"
+source_alternates="$source_objects"
+if [ -n "$inherited_alternates" ]; then
+    source_alternates="$source_alternates:$inherited_alternates"
+fi
 lease_prefix="$git_dir/storyhook-gate-objects."
 
 lease=""
@@ -201,7 +206,7 @@ identity $state_identity"
 git_with_lease() {
     lease_is_owned "$lease" "$lease_identity_value" || return 1
     GIT_OBJECT_DIRECTORY="$lease" \
-        GIT_ALTERNATE_OBJECT_DIRECTORIES="$source_objects" \
+        GIT_ALTERNATE_OBJECT_DIRECTORIES="$source_alternates" \
         git "$@" || return $?
     lease_is_owned "$lease" "$lease_identity_value"
 }

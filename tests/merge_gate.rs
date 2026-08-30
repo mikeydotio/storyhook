@@ -50,19 +50,23 @@
 //!   → **1 of 7 red**, `a_textual_conflict_is_reported_distinctly_and_prints_no_tree`
 //!   — the only test asserting on the conflict path specifically.
 //!
-//! # What this suite deliberately does not claim
+//! # The merge-watch boundary
 //!
-//! `scripts/merge-watch.sh` — the reconcile pass that calls this script per
-//! open PR and posts the result to GitHub — has no automated test here. Its
-//! own header explains why: it is thin orchestration over already-tested
-//! primitives (this script, and `gate-receipt.sh` via a plain `make test`)
-//! plus real GitHub API calls, and mocking `gh`'s behaviour would validate
-//! the mock rather than the integration — this project has twice paid for
-//! exactly that gap (SH-263, SH-345). Verified by hand against this repo's
-//! own live PRs instead.
+//! `scripts/merge-watch.sh` keeps its GitHub polling and comment orchestration
+//! outside this suite: mocking `gh` would validate the mock rather than the
+//! integration. SH-514 extracted its private `--speculative-run` core for the
+//! opposite reason: object ownership, the detached checkout, the gate-command
+//! environment, poller restoration, and signal cleanup are all real local Git
+//! behaviour. Those are provoked below without a GitHub imitation, following
+//! the same private-core pattern as `land-pr.sh --certified-run`.
 
-use std::path::Path;
-use std::process::{Command, Output};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Output};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 
 use storyhook_test_support::scratch_dir;
 use tempfile::TempDir;
@@ -120,6 +124,10 @@ impl MergeRepo {
         self.rev_parse(&format!("{rev}^{{tree}}"))
     }
 
+    fn common_dir(&self) -> PathBuf {
+        self.path().join(".git")
+    }
+
     /// A new branch off `from`, with one commit writing `name`/`body`.
     fn branch(&self, name: &str, from: &str, file: &str, body: &str) -> String {
         assert_ok(
@@ -150,6 +158,126 @@ impl MergeRepo {
                 head,
             ],
         )
+    }
+
+    fn preflight_with_objects(&self, objects: &Path, base: &str, head: &str) -> Output {
+        run(
+            self.path(),
+            "bash",
+            &[
+                &checkout()
+                    .join("scripts/merge-preflight.sh")
+                    .display()
+                    .to_string(),
+                "--object-dir",
+                &objects.display().to_string(),
+                base,
+                head,
+            ],
+        )
+    }
+
+    fn poller(&self, base: &str) -> TempDir {
+        let container = scratch_dir();
+        let poller = container.path().join("poller");
+        let out = self.git(&[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            &poller.display().to_string(),
+            base,
+        ]);
+        assert_ok(&out, "creating the speculative poller worktree");
+        container
+    }
+
+    fn speculative_run(
+        &self,
+        expected_tree: &str,
+        base: &str,
+        head: &str,
+        poller: &Path,
+        command: &[&str],
+    ) -> Output {
+        let mut args = vec![
+            checkout()
+                .join("scripts/merge-watch.sh")
+                .display()
+                .to_string(),
+            "--speculative-run".to_string(),
+            expected_tree.to_string(),
+            base.to_string(),
+            head.to_string(),
+            poller.display().to_string(),
+            "--".to_string(),
+        ];
+        args.extend(command.iter().map(|arg| (*arg).to_string()));
+        let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+        run(self.path(), "bash", &arg_refs)
+    }
+
+    fn spawn_speculative_run(
+        &self,
+        expected_tree: &str,
+        base: &str,
+        head: &str,
+        poller: &Path,
+        marker: &Path,
+    ) -> Child {
+        let mut command = Command::new("bash");
+        command
+            .arg(checkout().join("scripts/merge-watch.sh"))
+            .args([
+                "--speculative-run",
+                expected_tree,
+                base,
+                head,
+                &poller.display().to_string(),
+                "--",
+                "bash",
+                "-c",
+                "trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; printf ready > \"$1\"; while :; do :; done",
+                "merge-watch-signal-probe",
+                &marker.display().to_string(),
+            ])
+            .current_dir(self.path())
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES");
+        // The Rust test harness may itself carry ignored terminal signals.
+        // Reset them before exec so merge-watch starts from the ordinary
+        // process contract and can install the traps this test exercises.
+        unsafe {
+            command.pre_exec(|| {
+                libc::signal(libc::SIGHUP, libc::SIG_DFL);
+                libc::signal(libc::SIGINT, libc::SIG_DFL);
+                libc::signal(libc::SIGTERM, libc::SIG_DFL);
+                Ok(())
+            });
+        }
+        command
+            .spawn()
+            .expect("spawning the speculative-run signal probe")
+    }
+
+    fn merge_object_artifacts(&self) -> Vec<PathBuf> {
+        let root = self.common_dir().join("storyhook");
+        let Ok(entries) = fs::read_dir(root) else {
+            return Vec::new();
+        };
+        let mut paths = entries
+            .map(|entry| entry.expect("reading merge state").path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("merge-watch-objects."))
+            })
+            .collect::<Vec<_>>();
+        paths.sort();
+        paths
     }
 
     fn gate(&self, phase: &str) -> Output {
@@ -202,6 +330,8 @@ fn run(cwd: &Path, program: &str, args: &[&str]) -> Output {
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
         .output()
         .unwrap_or_else(|e| panic!("running {program}: {e}"))
 }
@@ -223,9 +353,332 @@ fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).to_string()
 }
 
+fn git_with_objects(cwd: &Path, primary: &Path, alternate: &Path, args: &[&str]) -> Output {
+    Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .env("GIT_OBJECT_DIRECTORY", primary)
+        .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", alternate)
+        .output()
+        .expect("running git with private objects")
+}
+
+fn wait_for(path: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !path.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(path.exists(), "timed out waiting for {}", path.display());
+}
+
+#[cfg(target_os = "macos")]
+struct ImmutableObjects {
+    path: PathBuf,
+    armed: bool,
+}
+
+#[cfg(target_os = "macos")]
+impl ImmutableObjects {
+    fn freeze(path: PathBuf) -> Self {
+        let out = Command::new("chflags")
+            .args(["-R", "uchg"])
+            .arg(&path)
+            .output()
+            .expect("freezing source objects");
+        assert_ok(&out, "freezing source objects");
+        Self { path, armed: true }
+    }
+
+    fn restore(&mut self) {
+        let out = Command::new("chflags")
+            .args(["-R", "nouchg"])
+            .arg(&self.path)
+            .output()
+            .expect("restoring source objects");
+        if out.status.success() {
+            self.armed = false;
+        }
+        assert_ok(&out, "restoring source objects");
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for ImmutableObjects {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = Command::new("chflags")
+                .args(["-R", "nouchg"])
+                .arg(&self.path)
+                .output();
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The provocation
 // ---------------------------------------------------------------------------
+
+/// `merge-tree --write-tree` really creates a new tree for two diverged
+/// branches. The ordinary two-argument interface must keep that object out of
+/// the source repository and remove every temporary artifact it owns.
+#[test]
+fn preflight_owns_and_cleans_speculative_objects_without_inserting_them_in_source() {
+    let repo = MergeRepo::new();
+    let fork = repo.rev_parse("main");
+    let head = repo.branch("feature", &fork, "g", "feature\n");
+    assert_ok(&repo.git(&["checkout", "-q", "main"]), "returning to main");
+    repo.write("h", "main\n");
+    assert_ok(&repo.git(&["add", "h"]), "staging main's change");
+    assert_ok(
+        &repo.git(&["commit", "-qm", "main diverges"]),
+        "advancing main",
+    );
+    let base = repo.rev_parse("main");
+    let private_tmp = scratch_dir();
+
+    let out = Command::new("bash")
+        .arg(checkout().join("scripts/merge-preflight.sh"))
+        .args([&base, &head])
+        .current_dir(repo.path())
+        .env("TMPDIR", private_tmp.path())
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+        .output()
+        .expect("running isolated merge preflight");
+
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "the merge is clean but uncertified"
+    );
+    let predicted = stdout(&out);
+    let source_lookup = repo.git(&["cat-file", "-e", &format!("{predicted}^{{tree}}")]);
+    assert!(
+        !source_lookup.status.success(),
+        "the speculative tree must not be inserted into source objects"
+    );
+    let leftovers = fs::read_dir(private_tmp.path())
+        .expect("reading isolated temporary storage")
+        .map(|entry| entry.expect("reading a temporary artifact").path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("storyhook-merge-"))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        leftovers.is_empty(),
+        "preflight left private artifacts: {leftovers:?}"
+    );
+}
+
+#[test]
+fn caller_owned_objects_remain_resolvable_and_source_owned_paths_are_refused() {
+    let repo = MergeRepo::new();
+    let fork = repo.rev_parse("main");
+    let head = repo.branch("feature", &fork, "g", "feature\n");
+    assert_ok(&repo.git(&["checkout", "-q", "main"]), "returning to main");
+    repo.write("h", "main\n");
+    assert_ok(&repo.git(&["add", "h"]), "staging main's change");
+    assert_ok(
+        &repo.git(&["commit", "-qm", "main diverges"]),
+        "advancing main",
+    );
+    let base = repo.rev_parse("main");
+    let lease = scratch_dir();
+
+    let out = repo.preflight_with_objects(lease.path(), &base, &head);
+    assert_eq!(out.status.code(), Some(1));
+    let predicted = stdout(&out);
+    assert!(
+        lease
+            .path()
+            .read_dir()
+            .expect("reading caller lease")
+            .next()
+            .is_some()
+    );
+    assert!(
+        !repo
+            .git(&["cat-file", "-e", &format!("{predicted}^{{tree}}")])
+            .status
+            .success(),
+        "source alone must not resolve the generated tree"
+    );
+    assert_ok(
+        &git_with_objects(
+            repo.path(),
+            lease.path(),
+            &repo.common_dir().join("objects"),
+            &["cat-file", "-e", &format!("{predicted}^{{tree}}")],
+        ),
+        "resolving the caller-owned predicted tree",
+    );
+
+    let refused = repo.preflight_with_objects(&repo.common_dir().join("objects"), &base, &head);
+    assert!(!refused.status.success());
+    assert_eq!(stdout(&refused), "");
+    assert!(stderr(&refused).contains("outside the source object database"));
+}
+
+#[test]
+fn speculative_run_uses_the_exact_tree_and_restores_after_success_or_failure() {
+    let repo = MergeRepo::new();
+    let fork = repo.rev_parse("main");
+    let head = repo.branch("feature", &fork, "g", "feature\n");
+    assert_ok(&repo.git(&["checkout", "-q", "main"]), "returning to main");
+    repo.write("h", "main\n");
+    assert_ok(&repo.git(&["add", "h"]), "staging main's change");
+    assert_ok(
+        &repo.git(&["commit", "-qm", "main diverges"]),
+        "advancing main",
+    );
+    let base = repo.rev_parse("main");
+    let expected_tree = stdout(&repo.preflight(&base, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+
+    let success = repo.speculative_run(
+        &expected_tree,
+        &base,
+        &head,
+        &poller,
+        &["bash", "-c", "git rev-parse HEAD HEAD^{tree}"],
+    );
+    assert_ok(&success, "successful speculative run");
+    let identities = stdout(&success)
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        identities.len(),
+        2,
+        "command must report commit and tree, got {identities:?}"
+    );
+    assert_eq!(
+        identities[1], expected_tree,
+        "speculative identities were {identities:?}"
+    );
+    assert!(
+        !repo
+            .git(&["cat-file", "-e", &format!("{}^{{commit}}", identities[0])])
+            .status
+            .success(),
+        "the speculative commit must not enter source objects"
+    );
+    assert_eq!(
+        stdout(&run(&poller, "git", &["rev-parse", "HEAD"])),
+        base,
+        "the poller must return to canonical history"
+    );
+    assert!(repo.merge_object_artifacts().is_empty());
+
+    let failure = repo.speculative_run(
+        &expected_tree,
+        &base,
+        &head,
+        &poller,
+        &["bash", "-c", "exit 42"],
+    );
+    assert_eq!(failure.status.code(), Some(42));
+    assert_eq!(stdout(&run(&poller, "git", &["rev-parse", "HEAD"])), base);
+    assert!(repo.merge_object_artifacts().is_empty());
+}
+
+#[test]
+fn speculative_run_forwards_hup_and_term_and_cleans_before_reraising() {
+    let repo = MergeRepo::new();
+    let fork = repo.rev_parse("main");
+    let head = repo.branch("feature", &fork, "g", "feature\n");
+    assert_ok(&repo.git(&["checkout", "-q", "main"]), "returning to main");
+    repo.write("h", "main\n");
+    assert_ok(&repo.git(&["add", "h"]), "staging main's change");
+    assert_ok(
+        &repo.git(&["commit", "-qm", "main diverges"]),
+        "advancing main",
+    );
+    let base = repo.rev_parse("main");
+    let expected_tree = stdout(&repo.preflight(&base, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+
+    // An asynchronously launched noninteractive Bash ignores SIGINT on the
+    // supported macOS runner as a job-control property; HUP and TERM are the
+    // two deterministically deliverable entries into the shared handler.
+    for (name, number) in [("HUP", 1), ("TERM", 15)] {
+        let marker_root = scratch_dir();
+        let marker = marker_root.path().join("ready");
+        let mut child = repo.spawn_speculative_run(&expected_tree, &base, &head, &poller, &marker);
+        wait_for(&marker);
+        let signal = Command::new("kill")
+            .args(["-s", name, &child.id().to_string()])
+            .output()
+            .expect("signalling speculative-run");
+        assert_ok(&signal, "signalling speculative-run");
+        let status = child.wait().expect("waiting for signalled speculative-run");
+        assert_eq!(status.signal(), Some(number), "{name} must be re-raised");
+        assert_eq!(stdout(&run(&poller, "git", &["rev-parse", "HEAD"])), base);
+        assert!(
+            repo.merge_object_artifacts().is_empty(),
+            "{name} left private merge objects"
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn preflight_and_speculative_run_succeed_with_immutable_source_objects() {
+    let repo = MergeRepo::new();
+    let fork = repo.rev_parse("main");
+    let head = repo.branch("feature", &fork, "g", "feature\n");
+    assert_ok(&repo.git(&["checkout", "-q", "main"]), "returning to main");
+    repo.write("h", "main\n");
+    assert_ok(&repo.git(&["add", "h"]), "staging main's change");
+    assert_ok(
+        &repo.git(&["commit", "-qm", "main diverges"]),
+        "advancing main",
+    );
+    let base = repo.rev_parse("main");
+    let expected_tree = stdout(&repo.preflight(&base, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+    std::os::unix::fs::symlink(checkout().join(".githooks"), poller.join(".githooks"))
+        .expect("linking the production hooks into the poller fixture");
+    let mut immutable = ImmutableObjects::freeze(repo.common_dir().join("objects"));
+
+    let preflight = repo.preflight(&base, &head);
+    assert_eq!(preflight.status.code(), Some(1));
+    assert_eq!(stdout(&preflight), expected_tree);
+    let gate = checkout()
+        .join("scripts/gate-receipt.sh")
+        .display()
+        .to_string();
+    let outcome = repo.speculative_run(
+        &expected_tree,
+        &base,
+        &head,
+        &poller,
+        &[
+            "bash",
+            "-c",
+            "git cat-file -e HEAD^{commit} && bash \"$1\" preflight && bash \"$1\" postlude",
+            "merge-gate-probe",
+            &gate,
+        ],
+    );
+
+    immutable.restore();
+    assert_ok(&outcome, "speculative run with immutable source objects");
+    assert_eq!(stdout(&run(&poller, "git", &["rev-parse", "HEAD"])), base);
+    assert!(repo.merge_object_artifacts().is_empty());
+    assert!(
+        repo.common_dir()
+            .join("storyhook/gate-receipts")
+            .join(expected_tree)
+            .is_file(),
+        "the production receipt writer must certify the private speculative tree"
+    );
+}
 
 /// The ordinary case: two branches that merge cleanly, neither ever tested
 /// together. This is the SH-396 shape exactly — no textual conflict, so
