@@ -459,12 +459,15 @@ fn an_empty_committed_repo_receives_the_empty_tree_build_id() {
 }
 
 #[test]
-fn build_rs_removes_inherited_git_object_redirection_before_running_the_script() {
+fn build_rs_removes_an_inherited_writable_primary_but_preserves_read_only_alternates() {
     let fixture = ManifestFixture::with_git_and_script();
     fixture.replace_tracked_tree_script(
         r#"#!/usr/bin/env bash
-if [ "${GIT_OBJECT_DIRECTORY+x}" = x ] || [ "${GIT_ALTERNATE_OBJECT_DIRECTORIES+x}" = x ]; then
+if [ "${GIT_OBJECT_DIRECTORY+x}" = x ]; then
     exit 41
+fi
+if [ "${GIT_ALTERNATE_OBJECT_DIRECTORIES:-}" != /inherited/alternate/directory ]; then
+    exit 42
 fi
 printf '%s\n' 0123456789abcdef0123456789abcdef01234567
 "#,
@@ -482,11 +485,11 @@ printf '%s\n' 0123456789abcdef0123456789abcdef01234567
     assert_eq!(
         emitted_build_id(&out).as_deref(),
         Some("0123456789ab"),
-        "the child script must see neither inherited object-redirection variable"
+        "the child script must lose writable redirection but retain the read-only alternate"
     );
     assert!(
         !emitted_warning(&out),
-        "a scrubbed environment must not warn"
+        "the deliberately narrowed environment must not warn"
     );
 }
 
