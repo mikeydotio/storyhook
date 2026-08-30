@@ -50,16 +50,13 @@
 //! in `docs/spec/dashboard-dispatch.md`.
 
 use std::collections::{HashMap, VecDeque};
-use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::daemon::http1::{Header, Method};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use wait_timeout::ChildExt;
 
 use crate::api::admission::named_token_ok;
 use crate::api::http::{Reply, TrustedHosts, mutation_guard_ok, text_reply};
@@ -67,17 +64,13 @@ use crate::api::rpc::token_ok;
 use crate::api::tokens::TokenRegistry;
 use crate::daemon::bus::{Change, ChangeBus};
 use crate::env::Environment;
-use crate::env::spawn_env::apply_dispatch_allowlist;
-
-/// How long a dispatch may run before its whole process group is killed.
-///
-/// `story.sh`'s own documented worst case for the readiness gate and prompt
-/// submission is under 35 seconds; the genuinely unbounded part is `git
-/// fetch`, which the child's `GIT_TERMINAL_PROMPT=0` keeps off an
-/// interactive credential prompt but not off a slow or unreachable remote.
-/// 180 seconds is generous headroom over the documented worst case without
-/// being unbounded.
-const DISPATCH_TIMEOUT: Duration = Duration::from_secs(180);
+#[cfg(test)]
+use crate::service::engine::{
+    CHARTER_INERT_BANNED, charter_inert_violation, classify_dispatch_files,
+    prompt_override_violation,
+};
+use crate::service::engine::{DispatchOutcome, DispatchOutcomeState, run_shell_dispatch};
+use crate::store::EngineAgent;
 
 /// At most this many dispatches may be running at once.
 ///
@@ -131,13 +124,6 @@ impl DispatchAgent {
         }
     }
 }
-
-/// The most stdout or stderr this module reads back from a dispatch child.
-///
-/// Bounds memory against a runaway script within the timeout window above;
-/// `story.sh`'s own JSON result and diagnostic tail are a few hundred bytes
-/// at most; a hard `set -e` abort's stderr is rarely more than a few lines.
-const MAX_CAPTURE_BYTES: u64 = 64 * 1024;
 
 /// The taxonomy behind a non-[`Ok`](DispatchState::Ok) terminal
 /// [`DispatchRecord`] (SH-232) — read by [`classify`] from `story.sh`'s own
@@ -297,8 +283,8 @@ pub enum DispatchState {
     /// (not ready, already in-progress, a claim conflict, a worktree
     /// collision, ...), relayed exactly as the CLI itself would report it.
     Refused,
-    /// The script could not be found or run, was killed for overrunning
-    /// [`DISPATCH_TIMEOUT`], or exited without printing a result.
+    /// The script could not be found or run, was killed for overrunning the
+    /// shared dispatcher timeout, or exited without printing a result.
     Failed,
 }
 
@@ -1150,120 +1136,6 @@ fn spawn_dispatch(
     });
 }
 
-/// I4 CHARTER-INERT's banned set (`.rca/dispatch-types-the-agent-charter/
-/// REMEDIATION.md` item 4): none of these, nor a newline, may appear in text
-/// a dispatch pastes into a shell-backed pane. `story.sh`'s own Part A lint
-/// covers the *shipped* templates; this is the runtime-enforcement rider
-/// (SH-232) over a *user override* of them, which that lint cannot see.
-const CHARTER_INERT_BANNED: [char; 8] = ['`', '$', ';', '&', '|', '<', '>', '!'];
-
-/// `story.sh`'s `render_template` (`lib/session.sh`) substitutes exactly
-/// these four literal tokens, and only these, before a template ever
-/// reaches a pane. A *template* — as opposed to the text it renders to —
-/// legitimately contains `<`/`>` as part of one of them: the shipped
-/// default `PROMPT_TPL` itself reads "...for story <n> in this repo.", and
-/// a user override is expected to use the same placeholder syntax to
-/// reference the story id, window name, checkout dir or reap command.
-/// [`charter_inert_violation`] must not flag that legitimate usage while
-/// still catching a stray `<`/`>` anywhere else in the value.
-const TEMPLATE_PLACEHOLDERS: [&str; 4] = ["<name>", "<dir>", "<reap>", "<n>"];
-
-/// Whether `value` — a raw *template* string, not yet substituted — would
-/// violate I4 CHARTER-INERT once `render_template` finishes with it.
-///
-/// Checks the banned set against `value` with every
-/// [`TEMPLATE_PLACEHOLDERS`] occurrence first removed, since those four
-/// tokens are consumed by substitution rather than surviving into the
-/// rendered text, and each legitimately contains `<`/`>`. The values they
-/// are replaced BY (a story id, a window name, a checkout path, a
-/// `reap` command) are internally constructed rather than free user text,
-/// so they are out of scope for this check — the same boundary
-/// REMEDIATION.md's own item 4 draws around `render_template`'s inputs.
-fn charter_inert_violation(value: &str) -> bool {
-    let mut stripped = value.to_string();
-    for token in TEMPLATE_PLACEHOLDERS {
-        stripped = stripped.replace(token, "");
-    }
-    stripped.contains(CHARTER_INERT_BANNED) || stripped.contains('\n')
-}
-
-/// The four env vars `story.sh` reads as user overrides of the rendered
-/// handoff text (`render_template`'s `PROMPT_TPL`/`AUTO_PROMPT_TPL`/
-/// `AUTO_PROMPT_SOLO_TPL`/`PROMPT_EXTRA`) — the names
-/// [`prompt_override_violation`] checks and [`run_child`] reads from this
-/// daemon's own inherited environment. `STORY_AUTO_PROMPT_SOLO` joined this
-/// set in SH-219, alongside `story.sh` growing a second `--auto` charter for
-/// a machine with no `/council-vote` skill installed.
-const PROMPT_OVERRIDE_ENV_VARS: [&str; 4] = [
-    "STORY_PROMPT",
-    "STORY_AUTO_PROMPT",
-    "STORY_AUTO_PROMPT_SOLO",
-    "STORY_PROMPT_EXTRA",
-];
-
-/// Checks whichever of `story_prompt` / `story_auto_prompt` /
-/// `story_auto_prompt_solo` / `story_prompt_extra` this dispatch's mode
-/// could actually feed to `story.sh` against I4 CHARTER-INERT — a pure
-/// function of the four already-read values, deliberately, rather than one
-/// that reads `std::env::var` itself: process environment is global state,
-/// and reading it directly here would make every caller either mutate the
-/// real process environment to test this (racing every other test in the
-/// same binary, since `cargo test` runs them in parallel within one process)
-/// or not test it at all. [`run_child`] is the one real caller and does the
-/// actual reads.
-///
-/// `run_child`'s `Command` clears its environment and restores only
-/// [`crate::env::spawn_env`]'s dispatch allowlist (SH-193), but all four of
-/// these names are `STORY_`-prefixed and so are on it: any of them, if set
-/// anywhere in the daemon's own process environment, still flows straight
-/// through to the child (SH-232's own finding, which SH-193 did not close for
-/// these by design — they are storyhook's own configuration surface,
-/// not a third-party credential). `story.sh`'s
-/// `render_template` does pure literal substring substitution — no shell
-/// interpretation of its own — so a template and `PROMPT_EXTRA` that are
-/// each individually free of the banned set produce a rendered result that
-/// is too; checking the raw override values here, before the child is ever
-/// spawned, is therefore sufficient to enforce I4 over them without
-/// duplicating `render_template`'s substitution logic in Rust.
-///
-/// `story_prompt` is checked only for an attended dispatch, matching
-/// `story.sh`'s own `prompt_tpl` selection, so a bad override in it never
-/// refuses an `--auto` run that would never have read it. For `--auto`,
-/// BOTH `story_auto_prompt` and `story_auto_prompt_solo` are checked, not
-/// just one — SH-219's `council_vote_available` probe that picks between
-/// them runs inside `story.sh`, entirely below this daemon, which has no way
-/// to predict its answer; the safe reading of "before `story.sh` is ever
-/// run" is to refuse if EITHER could be the one pasted, never to guess and
-/// risk approving the one the probe was about to pick. `story_prompt_extra`
-/// applies to every mode, since `story.sh` appends it to whichever template
-/// it selected unconditionally.
-///
-/// Returns the violating env var's name (one of
-/// [`PROMPT_OVERRIDE_ENV_VARS`]) on a hit, `None` when the relevant values
-/// are absent or clean.
-fn prompt_override_violation(
-    auto: bool,
-    story_prompt: Option<&str>,
-    story_auto_prompt: Option<&str>,
-    story_auto_prompt_solo: Option<&str>,
-    story_prompt_extra: Option<&str>,
-) -> Option<&'static str> {
-    let mut candidates: Vec<(&'static str, Option<&str>)> = Vec::with_capacity(3);
-    if auto {
-        candidates.push(("STORY_AUTO_PROMPT", story_auto_prompt));
-        candidates.push(("STORY_AUTO_PROMPT_SOLO", story_auto_prompt_solo));
-    } else {
-        candidates.push(("STORY_PROMPT", story_prompt));
-    }
-    candidates.push(("STORY_PROMPT_EXTRA", story_prompt_extra));
-    candidates
-        .into_iter()
-        .find(|(_, value)| value.is_some_and(charter_inert_violation))
-        .map(|(name, _)| name)
-}
-
-/// Runs one dispatch child to completion (or to [`DISPATCH_TIMEOUT`]) and
-/// classifies its outcome. Never returns [`DispatchState::Running`].
 fn run_child(
     script: &Path,
     project: &str,
@@ -1272,224 +1144,41 @@ fn run_child(
     auto: bool,
     env: &Environment,
 ) -> Classification {
-    let [
-        story_prompt,
-        story_auto_prompt,
-        story_auto_prompt_solo,
-        story_prompt_extra,
-    ] = PROMPT_OVERRIDE_ENV_VARS.map(|name| std::env::var(name).ok());
-    let violation = prompt_override_violation(
+    let engine_agent = match agent {
+        DispatchAgent::Claude => EngineAgent::Claude,
+        DispatchAgent::Codex => EngineAgent::Codex,
+    };
+    classify_outcome(run_shell_dispatch(
+        script,
+        project,
+        story,
+        engine_agent,
         auto,
-        story_prompt.as_deref(),
-        story_auto_prompt.as_deref(),
-        story_auto_prompt_solo.as_deref(),
-        story_prompt_extra.as_deref(),
-    );
-    if let Some(name) = violation {
-        // Refused before `story.sh` is ever run: nothing was typed into any
-        // pane, no worktree or claim exists to roll back. Synthesized in
-        // the same {ok, reason, display} shape `refuse_with` itself emits,
-        // so a dashboard reading `record.payload.display` cannot tell this
-        // refusal from one `story.sh` produced.
-        let display = format!(
-            "[story] refused to dispatch {story} — this daemon's own ${name} \
-             environment value contains a character CHARTER-INERT bans (one \
-             of ` $ ; & | < > ! or a newline) and would be pasted into a \
-             live shell-backed pane verbatim. Fix ${name} in the daemon's \
-             own environment and restart it, then retry."
-        );
-        return (
-            DispatchState::Refused,
-            Some(serde_json::json!({
-                "ok": false,
-                "reason": DispatchReason::UnsafePromptOverride.as_str(),
-                "display": display,
-                "env_var": name,
-            })),
-            None,
-            Some(DispatchReason::UnsafePromptOverride),
-        );
-    }
-
-    let stdout_file = match tempfile::tempfile() {
-        Ok(file) => file,
-        Err(e) => {
-            return (
-                DispatchState::Failed,
-                None,
-                Some(format!("could not stage dispatch output: {e}")),
-                None,
-            );
-        }
-    };
-    let stderr_file = match tempfile::tempfile() {
-        Ok(file) => file,
-        Err(e) => {
-            return (
-                DispatchState::Failed,
-                None,
-                Some(format!("could not stage dispatch output: {e}")),
-                None,
-            );
-        }
-    };
-    let (child_stdout, child_stderr) = match (stdout_file.try_clone(), stderr_file.try_clone()) {
-        (Ok(out), Ok(err)) => (out, err),
-        (Err(e), _) | (_, Err(e)) => {
-            return (
-                DispatchState::Failed,
-                None,
-                Some(format!("could not stage dispatch output: {e}")),
-                None,
-            );
-        }
-    };
-
-    // The daemon's own binary, so the child's `story` calls run the exact
-    // build serving this request rather than whatever `story` PATH
-    // resolves to — the same reasoning `daemon::lifecycle::spawn_child`
-    // already applies to itself.
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("story"));
-
-    let mut command = Command::new("bash");
-    command
-        .arg(script)
-        .arg("--project")
-        .arg(project)
-        .arg("dispatch")
-        .arg(story)
-        .arg(format!("--agent={}", agent.as_str()));
-    if auto {
-        // `story.sh` itself swaps the handoff prompt for the autonomous
-        // charter on seeing this flag; provider selection above is
-        // independent, so all four agent/mode combinations share this path.
-        command.arg("--auto");
-    }
-    // Clears whatever this daemon inherited from whoever spawned it and
-    // restores exactly `story.sh`'s own allowlist (SH-193) — before any of
-    // the explicit `.env(...)` calls below, since `env_clear` would otherwise
-    // wipe them out too.
-    apply_dispatch_allowlist(&mut command);
-    command
-        // Never inherited from the daemon's own cwd, which a daemon spawned
-        // from a since-deleted directory (a build's temp dir, a cleaned-up
-        // worktree) can hold indefinitely — bash's own startup calls
-        // `getcwd()` before the script's first line runs, and fails loudly
-        // on stderr if that directory is gone. `story.sh`'s own
-        // `enter_checkout` immediately `cd`s away from whatever this is, so
-        // its only job is to always exist.
-        .current_dir(env.home())
-        .env("STORY_BIN", &exe)
-        .env("STORYHOOK_STORE_PATH", env.store_path())
-        // A dashboard caller has no tmux session of its own to name ahead
-        // of time (SH-50) — one session per project, created if it is not
-        // there yet.
-        .env("STORY_TARGET_SESSION", project)
-        .env("STORY_CREATE_SESSION", "1")
-        // `story.sh` does not set this itself; the daemon must, since a
-        // blocked credential prompt has nobody to answer it.
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::null())
-        .stdout(child_stdout)
-        .stderr(child_stderr);
-    // Its own process group, so a timeout kills whatever the script started
-    // (git, tmux, a claude probe) along with the script itself — killing
-    // only the leader would orphan the rest, still running.
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut command, 0);
-
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(e) => {
-            return (
-                DispatchState::Failed,
-                None,
-                Some(format!("failed to start the dispatch script: {e}")),
-                None,
-            );
-        }
-    };
-    let pid = child.id();
-
-    match child.wait_timeout(DISPATCH_TIMEOUT) {
-        Ok(Some(_status)) => classify(stdout_file, stderr_file),
-        Ok(None) => {
-            // Negative pid = the whole process group established above, so
-            // nothing the script spawned survives it.
-            #[cfg(unix)]
-            // SAFETY: the group id of a process this thread just spawned
-            // and has not yet reaped, so it cannot have been recycled onto
-            // an unrelated group.
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGKILL);
-            }
-            let _ = child.wait();
-            (
-                DispatchState::Failed,
-                None,
-                Some(format!(
-                    "dispatch did not finish within {}s and was terminated",
-                    DISPATCH_TIMEOUT.as_secs()
-                )),
-                None,
-            )
-        }
-        Err(e) => (
-            DispatchState::Failed,
-            None,
-            Some(format!("could not wait for the dispatch process: {e}")),
-            None,
-        ),
-    }
+        env,
+    ))
 }
 
-/// Classifies a finished child's captured stdout/stderr. `story.sh` always
-/// emits exactly one JSON object on stdout on any deliberate exit path
-/// (`fail`/`refuse`/success alike); a `set -e` abort before that point is
-/// the one case with nothing parseable, which is what distinguishes
-/// [`DispatchState::Failed`] from a business [`DispatchState::Refused`]. The
-/// `reason` element is [`DispatchReason::parse`] of the JSON's own `reason`
-/// field (SH-232) when present — absent for a `fail()`-shaped refusal, which
-/// carries no such field, and always absent for [`DispatchState::Failed`]
-/// since there is no parsed object to read one from.
-fn classify(stdout_file: std::fs::File, stderr_file: std::fs::File) -> Classification {
-    let stdout = read_capture(stdout_file);
-    match serde_json::from_str::<serde_json::Value>(stdout.trim()) {
-        Ok(value) => {
-            let ok = value.get("ok").and_then(serde_json::Value::as_bool);
-            let state = if ok == Some(true) {
-                DispatchState::Ok
-            } else {
-                DispatchState::Refused
+fn classify_outcome(result: Result<DispatchOutcome, crate::error::AppError>) -> Classification {
+    match result {
+        Ok(outcome) => {
+            let state = match outcome.state {
+                DispatchOutcomeState::Ok => DispatchState::Ok,
+                DispatchOutcomeState::Refused => DispatchState::Refused,
             };
-            let reason = value
+            let reason = outcome
+                .payload
                 .get("reason")
                 .and_then(serde_json::Value::as_str)
                 .map(DispatchReason::parse);
-            (state, Some(value), None, reason)
+            (state, Some(outcome.payload), None, reason)
         }
-        Err(_) => {
-            let stderr = read_capture(stderr_file);
-            let message = if stderr.trim().is_empty() {
-                "the dispatch script exited without printing a result".to_string()
-            } else {
-                stderr.trim().to_string()
-            };
-            (DispatchState::Failed, None, Some(message), None)
-        }
+        Err(error) => (DispatchState::Failed, None, Some(error.to_string()), None),
     }
 }
 
-/// Rewinds and reads up to [`MAX_CAPTURE_BYTES`] of `file`, lossily —
-/// diagnostic text, never data this module acts on, so a stray non-UTF-8
-/// byte must not turn "the script said something" into "nothing was read
-/// at all".
-fn read_capture(mut file: std::fs::File) -> String {
-    let mut buf = Vec::new();
-    if file.seek(SeekFrom::Start(0)).is_ok() {
-        let _ = file.take(MAX_CAPTURE_BYTES).read_to_end(&mut buf);
-    }
-    String::from_utf8_lossy(&buf).into_owned()
+#[cfg(test)]
+fn classify(stdout: std::fs::File, stderr: std::fs::File) -> Classification {
+    classify_outcome(classify_dispatch_files(stdout, stderr))
 }
 
 /// The daemon<->script argv contract [`resolve_dispatch_script`] requires of
@@ -2731,9 +2420,8 @@ mod tests {
     ///
     /// Skips a `$` immediately followed by `{`: `AUTO_PROMPT_TPL`'s own line
     /// opens with `${STORY_AUTO_PROMPT:-...}`, which names an *override* env
-    /// var, not a shipped charter piece — the same distinction
-    /// [`PROMPT_OVERRIDE_ENV_VARS`] and the charter constants draw elsewhere
-    /// in this file. A bare `$AUTO_PROMPT_HEAD` inside that default value,
+    /// var, not a shipped charter piece — the same distinction the prompt
+    /// override check draws. A bare `$AUTO_PROMPT_HEAD` inside that default value,
     /// by contrast, names a piece this test must check.
     fn charter_vars_referenced(composition_line: &str) -> Vec<String> {
         let mut vars = Vec::new();
