@@ -139,7 +139,7 @@ custom=$(new_story "$repo" "Custom completion state")
 wcustom=$(mk_dispatched "$repo" "$custom")
 (cd "$repo" \
   && story state add shipped --super CLOSED >/dev/null \
-  && story state reorder todo,in-progress,blocked,shipped,done,closed >/dev/null \
+  && story state reorder todo,in-progress,verifying,blocked,shipped,done,closed >/dev/null \
   && story move "$custom" shipped >/dev/null)
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" reap "$custom" 2>&1)
 assert_eq "$(jqf "$out" .ok)" "true" "custom completion: ok:true"
