@@ -211,6 +211,14 @@ assert_contains() {
   esac
 }
 
+# router_verbs <story.sh> — derive the helper's accepted verb vocabulary from
+# its top-level router. Keep every structural inventory on this one parser so
+# a new arm cannot require several hand-list edits to remain covered.
+router_verbs() {
+  awk '/^case "\$\{1:-\}" in$/,/^esac$/' "$1" \
+    | sed -n 's/^  \([a-z][a-z-]*\)).*/\1/p'
+}
+
 # jqf <json> <filter> — run a jq filter, echo the raw result.
 jqf() { printf '%s' "$1" | jq -r "$2"; }
 
