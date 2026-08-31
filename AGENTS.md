@@ -1,5 +1,7 @@
 # AGENTS.md — Project Task Management
 
+> Project standards, environment, and git policy live in [CLAUDE.md](./CLAUDE.md) — read it alongside this file.
+
 This project uses **storyhook** (the `story` CLI) for work tracking. All agents must
 follow the workflow below.
 
