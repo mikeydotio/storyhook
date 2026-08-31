@@ -1647,8 +1647,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     <div class="field-grid">
       <div class="field"><label for="dispatch-client">Client</label>
         <select id="dispatch-client"><option value="localhost">localhost</option></select></div>
-      <div class="field"><label for="dispatch-agent">Model</label>
+      <div class="field"><label for="dispatch-agent">Provider</label>
         <select id="dispatch-agent"><option value="claude">Claude</option><option value="codex">Codex</option></select></div>
+      <div class="field"><label for="dispatch-model">Model</label>
+        <select id="dispatch-model"><option value="">Default</option></select></div>
+      <div class="field"><label for="dispatch-effort">Effort</label>
+        <select id="dispatch-effort"><option value="">Default</option></select></div>
+      <div class="field"><label for="dispatch-speed">Speed</label>
+        <select id="dispatch-speed"><option value="">Default</option></select></div>
     </div>
     <label class="dispatch-auto-option" for="dispatch-auto">
       <input type="checkbox" id="dispatch-auto">
@@ -4464,12 +4470,29 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   var DISPATCH_MAX_POLLS = 40; // ~200s -- comfortably past the daemon's own 180s dispatch timeout
   var DISPATCH_DEFAULTS_STORAGE_KEY = "storyhook.dispatch.defaults";
 
+  /** SH-517: model/effort/speed are provider-scoped -- a Claude model is
+   * meaningless once Codex is selected -- so they are stored per-provider
+   * rather than as one flat field, under `byAgent`. Each of the three is
+   * validated independently for the same reason `agent`/`auto` already
+   * were: an unrelated obsolete value must not discard a still-valid one. */
+  function sanitizeDispatchAgentDefaults(raw) {
+    var out = { model: "", effort: "", speed: "" };
+    if (raw && typeof raw.model === "string") out.model = raw.model;
+    if (raw && typeof raw.effort === "string") out.effort = raw.effort;
+    if (raw && (raw.speed === "" || raw.speed === "fast")) out.speed = raw.speed;
+    return out;
+  }
+
   /** The last configuration the user actually submitted, or the historical
    * defaults when this browser has never dispatched (or its stored record is
    * missing/malformed). Fields are validated independently so one obsolete
    * value cannot discard the other still-valid preference. */
   function loadDispatchDefaults() {
-    var defaults = { agent: "claude", auto: false };
+    var defaults = {
+      agent: "claude",
+      auto: false,
+      byAgent: { claude: sanitizeDispatchAgentDefaults(null), codex: sanitizeDispatchAgentDefaults(null) }
+    };
     try {
       var raw = localStorage.getItem(DISPATCH_DEFAULTS_STORAGE_KEY);
       if (!raw) return defaults;
@@ -4478,6 +4501,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         defaults.agent = stored.agent;
       }
       if (stored && typeof stored.auto === "boolean") defaults.auto = stored.auto;
+      if (stored && stored.byAgent) {
+        defaults.byAgent.claude = sanitizeDispatchAgentDefaults(stored.byAgent.claude);
+        defaults.byAgent.codex = sanitizeDispatchAgentDefaults(stored.byAgent.codex);
+      }
     } catch (e) { /* storage unavailable or malformed -- use the safe defaults */ }
     return defaults;
   }
@@ -4487,11 +4514,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * browser refuses durable storage; a later page load simply returns to the
    * historical defaults in that case. */
   var dispatchDefaults = loadDispatchDefaults();
-  function saveDispatchDefaults(agent, auto) {
-    dispatchDefaults = {
-      agent: agent === "codex" ? "codex" : "claude",
-      auto: auto === true
-    };
+  function saveDispatchDefaults(agent, auto, model, effort, speed) {
+    var normalizedAgent = agent === "codex" ? "codex" : "claude";
+    dispatchDefaults.agent = normalizedAgent;
+    dispatchDefaults.auto = auto === true;
+    dispatchDefaults.byAgent[normalizedAgent] = sanitizeDispatchAgentDefaults({
+      model: model, effort: effort, speed: speed
+    });
     try {
       localStorage.setItem(DISPATCH_DEFAULTS_STORAGE_KEY, JSON.stringify(dispatchDefaults));
     } catch (e) { /* the in-memory preference above remains authoritative */ }
@@ -4785,15 +4814,82 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   var dispatchModalStoryId = null;
 
+  /** SH-517: `GET /api/dispatch-options`'s per-provider catalog, fetched at
+   * most once per page load -- the daemon already caches it server-side
+   * (60s), so this is purely about not re-issuing the request on every
+   * modal open. `null` until the first fetch resolves; a failed fetch
+   * leaves it `null` so a later modal open retries rather than caching a
+   * permanent failure for the rest of the page's life. */
+  var dispatchOptionsCache = null;
+  var dispatchOptionsPromise = null;
+  function fetchDispatchOptions() {
+    if (dispatchOptionsCache) return Promise.resolve(dispatchOptionsCache);
+    if (dispatchOptionsPromise) return dispatchOptionsPromise;
+    dispatchOptionsPromise = api("GET", "/api/dispatch-options")
+      .then(function(resp) {
+        dispatchOptionsCache = resp;
+        dispatchOptionsPromise = null;
+        return resp;
+      })
+      .catch(function(err) {
+        dispatchOptionsPromise = null;
+        throw err;
+      });
+    return dispatchOptionsPromise;
+  }
+
+  /** Repopulates one dispatch selector from `entries` (an array of
+   * `{id, label?, default?}`, or absent -- a stale helper's degraded slot).
+   * `preferred` is restored only when it still names a real entry; a
+   * selection valid under yesterday's plugin version that a newer one
+   * dropped falls back to the placeholder rather than submitting silently
+   * as something the caller never chose. */
+  function populateDispatchSelector(selectId, entries, preferred) {
+    var select = $(selectId);
+    clear(select);
+    select.appendChild(el("option", { value: "" }, ["Default"]));
+    (entries || []).forEach(function(entry) {
+      select.appendChild(el("option", { value: entry.id }, [entry.label || entry.id]));
+    });
+    var stillValid = (entries || []).some(function(entry) { return entry.id === preferred; });
+    select.value = stillValid ? preferred : "";
+  }
+
+  /** Rebuilds Model/Effort/Speed for `agent` from the cached catalog,
+   * restoring that provider's own last-submitted selection. Called on
+   * modal open and whenever Provider changes -- a Claude selection has no
+   * meaning once Codex is chosen, and vice versa. */
+  function applyDispatchProviderOptions(agent, caps) {
+    var providerCaps = (caps && caps[agent]) || {};
+    var remembered = dispatchDefaults.byAgent[agent] || sanitizeDispatchAgentDefaults(null);
+    populateDispatchSelector("dispatch-model", providerCaps.models, remembered.model);
+    populateDispatchSelector("dispatch-effort", providerCaps.efforts, remembered.effort);
+    populateDispatchSelector("dispatch-speed", providerCaps.speeds, remembered.speed);
+  }
+
   /** Opens with the last submitted configuration. Localhost remains the only
-   * client; Model and Auto are durable user preferences, committed only by
-   * Submit so dismissing a draft cannot silently replace them. */
+   * client; Provider, Model, Effort, Speed, and Auto are durable user
+   * preferences, committed only by Submit so dismissing a draft cannot
+   * silently replace them. Model/Effort/Speed start as bare "Default"
+   * placeholders and are filled in once the catalog fetch resolves --
+   * usually well before a person finishes reading the dialog, and a slow
+   * or failed fetch still leaves a fully usable "Default" selection rather
+   * than blocking the dialog open. */
   function openDispatchModal(storyId, returnFocus) {
     if (state.dispatches[storyId]) return;
     dispatchModalStoryId = storyId;
     $("dispatch-client").value = "localhost";
     $("dispatch-agent").value = dispatchDefaults.agent;
     $("dispatch-auto").checked = dispatchDefaults.auto;
+    populateDispatchSelector("dispatch-model", null, "");
+    populateDispatchSelector("dispatch-effort", null, "");
+    populateDispatchSelector("dispatch-speed", null, "");
+    fetchDispatchOptions().then(function(caps) {
+      // The modal may have closed, reopened for a different story, or
+      // switched provider while this was in flight -- reapply against
+      // whichever provider is showing NOW, not the one at fetch time.
+      if (dispatchModalStoryId === storyId) applyDispatchProviderOptions($("dispatch-agent").value, caps);
+    }).catch(function() { /* selects stay at "Default" -- dispatch still works */ });
     showBackdrop("dispatch-modal-backdrop");
     activateOverlay("dispatch-modal", "dispatch-agent");
     // Preserve the invoker explicitly so Cancel/Escape does not return focus
@@ -4805,6 +4901,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // around notice timing) can still open and operate the dialog.
     $("dispatch-modal").classList.add("open");
     $("dispatch-modal").setAttribute("aria-hidden", "false");
+  }
+
+  /** Provider changed mid-draft: Model/Effort/Speed belong to the PREVIOUS
+   * provider and must be rebuilt for the new one, restoring that provider's
+   * own remembered selection rather than leaving stale options selected. */
+  function onDispatchAgentChange() {
+    applyDispatchProviderOptions($("dispatch-agent").value, dispatchOptionsCache);
   }
 
   function closeDispatchModal() {
@@ -4820,21 +4923,33 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (!storyId || state.dispatches[storyId]) return;
     var agent = $("dispatch-agent").value;
     var auto = $("dispatch-auto").checked;
-    saveDispatchDefaults(agent, auto);
+    var model = $("dispatch-model").value;
+    var effort = $("dispatch-effort").value;
+    var speed = $("dispatch-speed").value;
+    saveDispatchDefaults(agent, auto, model, effort, speed);
     closeDispatchModal();
-    startDispatch(storyId, agent, auto);
+    startDispatch(storyId, agent, auto, model, effort, speed);
   }
 
   /** Starts a dispatch for `storyId`. `auto` requests the autonomous
-   * charter via `?auto=1` (SH-208). Keyed per-story in `state.dispatches`
+   * charter via `?auto=1` (SH-208); `model`/`effort`/`speed` (SH-517) are
+   * each "" for "the provider's own default" and otherwise appended as
+   * their own query parameter, so an unconfigured dispatch's request is
+   * byte-identical to before SH-517. Keyed per-story in `state.dispatches`
    * rather than one global slot, so dispatching a second story while the
    * first is still running is just another entry, matching the daemon's
    * own support for several concurrent dispatches. No token handling here
    * -- `api()` prompts for one on a 401 and retries transparently. */
-  function startDispatch(storyId, agent, auto) {
-    state.dispatches[storyId] = { handle: null, timer: null, agent: agent, auto: auto };
+  function startDispatch(storyId, agent, auto, model, effort, speed) {
+    state.dispatches[storyId] = {
+      handle: null, timer: null, agent: agent, auto: auto,
+      model: model || "", effort: effort || "", speed: speed || ""
+    };
     if (state.drawerId === storyId) renderDrawer();
     var query = "?agent=" + encodeURIComponent(agent) + (auto ? "&auto=1" : "");
+    if (model) query += "&model=" + encodeURIComponent(model);
+    if (effort) query += "&effort=" + encodeURIComponent(effort);
+    if (speed === "fast") query += "&speed=fast";
     var path = apiBase() + "/story/" + encodeURIComponent(storyId) + "/dispatch" + query;
     api("POST", path, null)
       .then(function(resp) {
@@ -4846,13 +4961,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         // dispatching can be answered with a DIFFERENT mode than this call
         // asked for (the idempotency wrinkle DispatchRegistry::try_start
         // documents), and the button labels must reflect what is really
-        // happening, not what this click hoped for.
+        // happening, not what this click hoped for. The same wrinkle
+        // applies to model/effort/speed (SH-517).
         if (resp.dispatch && typeof resp.dispatch.auto === "boolean") {
           entry.auto = resp.dispatch.auto;
         }
         if (resp.dispatch && (resp.dispatch.agent === "claude" || resp.dispatch.agent === "codex")) {
           entry.agent = resp.dispatch.agent;
         }
+        entry.model = (resp.dispatch && typeof resp.dispatch.model === "string") ? resp.dispatch.model : "";
+        entry.effort = (resp.dispatch && typeof resp.dispatch.effort === "string") ? resp.dispatch.effort : "";
+        entry.speed = (resp.dispatch && resp.dispatch.fast === true) ? "fast" : "";
         if (state.drawerId === storyId) renderDrawer();
         pollDispatch(storyId, entry.handle, 0);
       })
@@ -12747,6 +12866,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("dispatch-modal-cancel").addEventListener("click", closeDispatchModal);
     $("dispatch-modal-backdrop").addEventListener("click", closeDispatchModal);
     $("dispatch-modal-submit").addEventListener("click", submitDispatchModal);
+    $("dispatch-agent").addEventListener("change", onDispatchAgentChange);
     $("drop-blocked-reason-skip").addEventListener("click", skipDropBlockedReasonModal);
     $("drop-blocked-reason-backdrop").addEventListener("click", skipDropBlockedReasonModal);
     $("drop-blocked-reason-submit").addEventListener("click", submitDropBlockedReasonModal);

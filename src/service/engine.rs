@@ -57,6 +57,26 @@ const PROMPT_OVERRIDE_ENV_VARS: [&str; 4] = [
 const TEMPLATE_PLACEHOLDERS: [&str; 5] = ["<name>", "<dir>", "<reap>", "<n>", "<done-state>"];
 pub(crate) const CHARTER_INERT_BANNED: [char; 8] = ['`', '$', ';', '&', '|', '<', '>', '!'];
 
+/// Optional model/effort/speed refinements for one dispatch (SH-517).
+///
+/// Each field is already validated by its caller before it reaches here —
+/// the charset-gated `OptionToken` at the HTTP boundary
+/// (`crate::api::dispatch`), or `story.sh`'s own catalog check for a
+/// CLI-driven call. This type carries plain, already-safe strings purely to
+/// keep [`run_shell_dispatch`]'s parameter list from growing without bound
+/// as SH-517 adds more of them; it is not itself a validation boundary.
+///
+/// `Default` is "no selection" — [`run_shell_dispatch`] then appends none of
+/// `--model`/`--effort`/`--speed` to the helper's argv, reproducing today's
+/// argv byte for byte. An engine (Full Auto) lane always passes this default:
+/// SH-517 does not extend model/effort/speed selection to engine lanes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DispatchOptions {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub fast: bool,
+}
+
 /// Everything the shell actuator needs to dispatch one already-selected story.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DispatchRequest {
@@ -173,6 +193,7 @@ impl Dispatcher for ShellDispatcher {
             request.agent,
             true,
             true,
+            &DispatchOptions::default(),
             &self.env,
         )
     }
@@ -691,7 +712,9 @@ fn helper_diagnosis(payload: &serde_json::Value) -> String {
 /// Runs one helper invocation. The dashboard uses `auto` from its request and
 /// never supplies `full_auto`; [`ShellDispatcher`] supplies both flags for an
 /// engine lane so that only the engine receives that identity and isolation
-/// boundary.
+/// boundary. `options` is [`DispatchOptions::default`] for every engine lane
+/// (SH-517 does not extend selection there).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_shell_dispatch(
     script: &Path,
     project: &str,
@@ -699,6 +722,7 @@ pub(crate) fn run_shell_dispatch(
     agent: EngineAgent,
     auto: bool,
     full_auto: bool,
+    options: &DispatchOptions,
     env: &Environment,
 ) -> Result<DispatchOutcome, AppError> {
     let [
@@ -743,6 +767,15 @@ pub(crate) fn run_shell_dispatch(
     if full_auto {
         debug_assert!(auto, "Full Auto is a modifier of autonomous dispatch");
         command.arg("--full-auto");
+    }
+    if let Some(model) = &options.model {
+        command.arg(format!("--model={model}"));
+    }
+    if let Some(effort) = &options.effort {
+        command.arg(format!("--effort={effort}"));
+    }
+    if options.fast {
+        command.arg("--speed=fast");
     }
     apply_dispatch_allowlist(&mut command);
     command
@@ -809,6 +842,50 @@ fn run_shell_unclaim(
         CaptureError::Timeout => AppError::Storage(format!(
             "unclaim did not finish within {}s and was terminated",
             DISPATCH_TIMEOUT.as_secs()
+        )),
+    })?;
+    classify_dispatch_bytes(&captured.stdout, &captured.stderr)
+}
+
+/// A much shorter bound than [`DISPATCH_TIMEOUT`]: `story.sh capabilities`
+/// spawns no worktree, tmux window, or provider CLI — it only prints a
+/// static per-provider catalog (SH-517).
+const CAPABILITIES_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Runs `story.sh capabilities --agent=<agent>` through the same helper
+/// boundary [`run_shell_dispatch`] uses, for
+/// `crate::api::dispatch`'s `GET /api/dispatch-options` (SH-517). No
+/// `--project`: capabilities never looks up a story or project.
+pub(crate) fn run_shell_capabilities(
+    script: &Path,
+    agent: EngineAgent,
+    env: &Environment,
+) -> Result<DispatchOutcome, AppError> {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("story"));
+    let mut command = Command::new("bash");
+    command
+        .arg(script)
+        .arg("capabilities")
+        .arg(format!("--agent={}", agent.as_str()));
+    apply_dispatch_allowlist(&mut command);
+    command
+        .current_dir(env.home())
+        .env("STORY_BIN", exe)
+        .env("GIT_TERMINAL_PROMPT", "0");
+
+    let captured = run_captured(command, CAPABILITIES_TIMEOUT).map_err(|error| match error {
+        CaptureError::Stage(detail) => {
+            AppError::Storage(format!("could not stage capabilities output: {detail}"))
+        }
+        CaptureError::Spawn(detail) => {
+            AppError::Storage(format!("failed to start the capabilities helper: {detail}"))
+        }
+        CaptureError::Wait(detail) => AppError::Storage(format!(
+            "could not wait for the capabilities helper: {detail}"
+        )),
+        CaptureError::Timeout => AppError::Storage(format!(
+            "capabilities did not finish within {}s and was terminated",
+            CAPABILITIES_TIMEOUT.as_secs()
         )),
     })?;
     classify_dispatch_bytes(&captured.stdout, &captured.stderr)
