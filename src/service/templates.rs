@@ -38,11 +38,14 @@ follow the workflow below.
    ```
 3. **Claim it**: `story move {prefix}-<n> in-progress`
 4. **Record progress as you go**: `story comment {prefix}-<n> "what changed and why"`
-5. **Finish**: `story move {prefix}-<n> {done_state} "summary of what was delivered"`
-6. **End of session** — generate a handoff summary:
+5. **Submit**: run new and directly impacted tests, push one PR, then link it:
    ```
-   story handoff --since 2h
+   story link-pr {prefix}-<n> <pr-url>
    ```
+6. **Hand off to verification**: record all final context, then make
+   `story move {prefix}-<n> verifying` your last action and stop. The daemon
+   runs the full suite, merges a green PR, moves the story to `{done_state}`,
+   and reaps the lane.
 
 ## Planning
 
@@ -134,7 +137,9 @@ story graph --blocked-by {prefix}-1   # trace why a story is blocked
   use it only when the blocker genuinely isn't a story.
 - When unblocked: `story unblock {prefix}-<n>` (or `--on {prefix}-<blocker>`
   to clear just that edge)
-- When done: `story move {prefix}-<n> {done_state} "what was delivered"`
+- When submitted: link exactly one open close-on-merge PR, then move the story
+  to `verifying` as your final action. Do not run the full suite, merge, close,
+  or reap from an agent worktree.
 - What is ready: `story next --count 5`
 - What is blocked: `story list --blocked`
 
@@ -163,6 +168,7 @@ what still gets filed.
 | Create a story | `story new "<title>"` |
 | Move to a state | `story move {prefix}-<n> <state>` |
 | Add a comment | `story comment {prefix}-<n> "comment text"` |
+| Link the submitted PR | `story link-pr {prefix}-<n> <pr-url>` |
 | Set priority | `story prioritize {prefix}-<n> high` |
 | What a level means | `story help priority-rubric` |
 | Adopt or file a mid-work find | `story help scope-rubric` |
@@ -194,6 +200,15 @@ The one file that does belong to the repository is `.storyhook.toml`: it names
 which project this checkout is, and it is where this repository's own storyhook
 configuration lives. **Commit it.** A clone without it does not know which
 project it is looking at.
+
+## Mini-roadmap
+
+- Current: centralize exact-merge-tree testing, PR landing, story completion,
+  and lane cleanup behind the required `verifying` state.
+- Next: reconcile Full Auto lane accounting so `verifying` is an intentional
+  handoff, not a stall or dead-window failure.
+- Later: expose queue health and verification diagnostics in engine/dashboard
+  surfaces after the core protocol is proven.
 "#,
         done_state = done_state,
         prefix = prefix,
@@ -226,7 +241,9 @@ to manage tasks.
 
 - Run `story load-context` at the start of each session to understand project state.
 - Run `story next` to find the highest-priority ready task.
-- After completing work, mark the story done: `story move <id> done`.
+- After targeted tests, push one PR, link it with `story link-pr`, then make
+  `story move <id> verifying` your last action. The verifier owns the full
+  suite, merge, completion, and cleanup.
 - Use `story handoff --since 2h` to summarize work at session end.
 - Found a second problem while working? Prefer adopting it into the story you
   are on over filing a new one — run `story help scope-rubric` before you file.

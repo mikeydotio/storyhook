@@ -59,7 +59,7 @@ use crate::domain::github_remote::{GithubRepo, parse_github_url};
 use crate::domain::pr_url::parse_pr_url;
 use crate::domain::{StoryEvent, StorySnapshot};
 use crate::error::AppError;
-use crate::store::{ExpectedSeq, ReadOps, Store};
+use crate::store::{ExpectedSeq, ProjectRemoteRecord, ReadOps, Store};
 
 use super::{Ctx, append_and_fold, project_prefix, resolve_open_story};
 
@@ -224,11 +224,16 @@ pub(crate) fn configured_github_repos<S: Store>(
 ) -> Result<Vec<GithubRepo>, AppError> {
     let project = ctx.project();
     let remotes = ctx.store().read(|tx| tx.project_remotes(project))?;
+    Ok(github_repos_from_remotes(&remotes))
+}
+
+/// Parses, sorts, and deduplicates the GitHub repositories in stored remotes.
+pub(crate) fn github_repos_from_remotes(remotes: &[ProjectRemoteRecord]) -> Vec<GithubRepo> {
     let mut repos: Vec<GithubRepo> = remotes
         .iter()
         .filter_map(|remote| parse_github_url(&remote.raw))
         .collect();
     repos.sort();
     repos.dedup();
-    Ok(repos)
+    repos
 }

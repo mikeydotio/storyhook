@@ -35,7 +35,7 @@
 //! story that linked without moving, whatever the reason: "no claim word".
 //! That is right for a mention, and wrong for the other four causes —
 //! `sync.auto_transition` being off, the project having no active state (the
-//! common shape since SH-125: three required OPEN states means the old
+//! common shape: four required OPEN states means the old
 //! two-open-state guess never fires), an earlier commit in the same run
 //! already having claimed the story, and a story already moved past the
 //! default open state. Each told the same lie: that the user's commit
@@ -162,7 +162,7 @@ struct Transition {
 /// Before this type existed, every one of these collapsed into one printed
 /// sentence — "no claim word" — because [`GitService::record_commit`] threw the
 /// reason away and the printer had to guess. That told a user whose project
-/// has no active state (the common shape since SH-125: three required OPEN
+/// has no active state (the common shape: four required OPEN
 /// states means the old two-open-state guess never fires) that their commit
 /// *grammar* was wrong, when the true cause was a configuration fact. The
 /// reason now travels with the decision that produced it.

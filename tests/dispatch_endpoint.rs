@@ -658,3 +658,133 @@ fn a_script_below_the_required_protocol_is_refused_before_any_handle_exists() {
         .expect_err("no handle exists to have been minted");
     assert_eq!(status_of(&poll_err), 404);
 }
+
+/// SH-517: an unselected dispatch's argv must be byte-identical to what
+/// `the_project_and_story_reach_the_script_verbatim` already pinned before
+/// this story touched anything -- no `--model`, `--effort`, or `--speed`
+/// flag appears merely because the feature now exists.
+#[test]
+fn an_unselected_dispatch_carries_no_model_effort_or_speed_flag() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let stub = write_stub("echo-args");
+    let info = start_with_stub(&env, stub.path());
+
+    let resp = post_dispatch(&info, &info.token, "proj", "SH-1").expect("dispatch accepted");
+    let handle = body_json(resp)["dispatch"]["handle"]
+        .as_str()
+        .expect("a handle")
+        .to_string();
+    let record = poll_until_finished(&info, &info.token, "proj", "SH-1", &handle);
+    let argv = record["payload"]["argv"]
+        .as_str()
+        .expect("argv echoed back");
+    assert_eq!(
+        argv.trim(),
+        "--project proj dispatch SH-1 --agent=claude",
+        "an unselected dispatch's argv must not change shape"
+    );
+    assert!(!record.as_object().unwrap().contains_key("model"));
+    assert!(!record.as_object().unwrap().contains_key("effort"));
+    assert_eq!(record["fast"], false);
+}
+
+/// `?model=`/`?effort=`/`?speed=fast` each append their own flag to the
+/// script's argv, in that order, and are relayed on the record (SH-517).
+#[test]
+fn model_effort_and_speed_append_their_own_flags_and_are_relayed_in_the_record() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let stub = write_stub("echo-args");
+    let info = start_with_stub(&env, stub.path());
+
+    let accepted = body_json(
+        post_dispatch_query(
+            &info,
+            &info.token,
+            "proj",
+            "SH-1",
+            "model=haiku&effort=max&speed=fast",
+        )
+        .expect("dispatch accepted"),
+    );
+    assert_eq!(accepted["dispatch"]["model"], "haiku");
+    assert_eq!(accepted["dispatch"]["effort"], "max");
+    assert_eq!(accepted["dispatch"]["fast"], true);
+    let handle = accepted["dispatch"]["handle"].as_str().unwrap();
+
+    let record = poll_until_finished(&info, &info.token, "proj", "SH-1", handle);
+    assert_eq!(record["model"], "haiku");
+    assert_eq!(record["effort"], "max");
+    assert_eq!(record["fast"], true);
+    let argv = record["payload"]["argv"]
+        .as_str()
+        .expect("argv echoed back");
+    assert!(
+        argv.contains("dispatch SH-1 --agent=claude --model=haiku --effort=max --speed=fast"),
+        "argv: {argv}"
+    );
+}
+
+/// `speed=standard` is the explicit spelling of "no selection" — it must
+/// behave exactly like an absent `speed` (no `--speed` flag at all), never
+/// pass `--speed=standard` through to the helper.
+#[test]
+fn speed_equals_standard_appends_no_flag() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let stub = write_stub("echo-args");
+    let info = start_with_stub(&env, stub.path());
+
+    let accepted = body_json(
+        post_dispatch_query(&info, &info.token, "proj", "SH-1", "speed=standard")
+            .expect("dispatch accepted"),
+    );
+    assert_eq!(accepted["dispatch"]["fast"], false);
+    let handle = accepted["dispatch"]["handle"].as_str().unwrap();
+    let record = poll_until_finished(&info, &info.token, "proj", "SH-1", handle);
+    let argv = record["payload"]["argv"]
+        .as_str()
+        .expect("argv echoed back");
+    assert!(!argv.contains("--speed"), "argv: {argv}");
+}
+
+/// Every rejection [`parse_option_token`]/`parse_speed` can produce: a
+/// duplicate key, an empty value, a value over 64 characters, and every
+/// hazard class `OptionToken`'s charset gate exists to keep out of a shell
+/// command line a real tmux pane later execs verbatim.
+#[test]
+fn invalid_model_effort_or_speed_values_are_400() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let stub = write_stub("ok");
+    let info = start_with_stub(&env, stub.path());
+
+    let sixty_five = "a".repeat(65);
+    for query in [
+        "model=",
+        "model=a;rm-rf",
+        "model=$(id)",
+        "model=a%20b",
+        "model=a%0ab",
+        &format!("model={sixty_five}"),
+        "model=haiku&model=opus",
+        "effort=",
+        "effort=max&effort=low",
+        "speed=warp",
+        "speed=",
+        "speed=fast&speed=standard",
+    ] {
+        // A raw shell metacharacter can make the value invalid URI syntax
+        // before the request is even sent (ureq's client-side URI parser
+        // refuses it) rather than reaching the server to be answered with a
+        // 400 — an even stronger outcome for a value the charset gate exists
+        // to keep out of a shell command line, since it never left this
+        // process as bytes at all. Both count as "rejected".
+        match post_dispatch_query(&info, &info.token, "proj", "SH-1", query) {
+            Err(ureq::Error::StatusCode(code)) => assert_eq!(code, 400, "query={query}"),
+            Err(ureq::Error::Http(_)) => {} // rejected before it could be sent
+            other => panic!("query={query}: expected a rejection, got {other:?}"),
+        }
+    }
+}

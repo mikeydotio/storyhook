@@ -288,8 +288,16 @@ pub const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 25,
+        name: "verifying_state",
+        sql: include_str!("schema/0025_verifying_state.sql"),
+        // Adds one catalog row per project without rebuilding a table or
+        // touching the append-only event log.
+        foreign_keys_off: false,
+    },
+    Migration {
+        version: 26,
         name: "engine_lane_progress",
-        sql: include_str!("schema/0025_engine_lane_progress.sql"),
+        sql: include_str!("schema/0026_engine_lane_progress.sql"),
         // Two nullable columns added in place to one operational table. No
         // rebuild, no referenced table touched, no event appended.
         foreign_keys_off: false,

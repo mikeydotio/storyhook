@@ -29,6 +29,15 @@ assert_contains "$(jqf "$forced" .display)" "Full Auto engine" "forced bare epic
 state=$(cd "$repo" && story show "$epic" --json | jq -r '.story.story.state')
 assert_eq "$state" "todo" "epic: refused dispatch leaves effective state untouched"
 
+# --- SH-517: a model/effort/speed selector does not reach the engine run ---
+# LAUNCH_TPL, which --model/--effort/--speed compose into, is never consulted
+# by an epic's engine-run path -- without this refusal the selector would
+# validate cleanly and then be silently discarded rather than doing anything.
+selector=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$epic" --auto --model=opus 2>&1)
+assert_eq "$(jqf "$selector" .ok)" "false" "epic + --model: ok:false"
+assert_contains "$(jqf "$selector" .display)" "is an epic" "epic + --model: names the structure"
+assert_contains "$(jqf "$selector" .display)" "not yet supported" "epic + --model: names why"
+
 # --- SH-469: --auto starts an epic-scoped run -------------------------------
 # Dry-run is a distinct result variant and does no write. It also proves the
 # adapter default reaches the engine request without requiring curl or tmux.

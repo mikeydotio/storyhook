@@ -1081,7 +1081,14 @@ fn reordering_statuses_reorders_the_board_columns() {
         .collect();
     assert_eq!(
         before,
-        vec!["todo", "in-progress", "blocked", "done", "closed"]
+        vec![
+            "todo",
+            "in-progress",
+            "verifying",
+            "blocked",
+            "done",
+            "closed"
+        ]
     );
 
     run(
@@ -1091,6 +1098,7 @@ fn reordering_statuses_reorders_the_board_columns() {
                 order: vec![
                     "in-progress".to_string(),
                     "todo".to_string(),
+                    "verifying".to_string(),
                     "blocked".to_string(),
                     "done".to_string(),
                     "closed".to_string(),
@@ -1108,7 +1116,7 @@ fn reordering_statuses_reorders_the_board_columns() {
         .collect();
     assert_eq!(
         columns,
-        vec!["in-progress", "todo", "blocked"],
+        vec!["in-progress", "todo", "verifying", "blocked"],
         "OPEN states, in order"
     );
 }

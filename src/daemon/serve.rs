@@ -338,6 +338,14 @@ where
             let env = env.clone();
             scope.spawn(move || crate::daemon::github_poll::poll_github(store, &env, &stop));
         }
+        {
+            let stop = Arc::clone(&stop);
+            let env = env.clone();
+            let bus = bus.clone();
+            scope.spawn(move || {
+                crate::daemon::verification::poll_verification(store, &env, &bus, &stop)
+            });
+        }
         if !has_tailnet && let Some(loopback_addr) = loopback_addr {
             let stop = Arc::clone(&stop);
             let serving = &serving;

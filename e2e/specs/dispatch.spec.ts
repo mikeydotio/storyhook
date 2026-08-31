@@ -138,15 +138,51 @@ test("Dispatch opens with defaults and does not remember cancelled edits", async
     "Auto-approves the implementation plan, handles questions autonomously, merges PRs, and cleans up its workspace when done.",
   );
 
+  // SH-517: Model/Effort/Speed are fetched from GET /api/dispatch-options
+  // and start on "Default" -- real story.sh's own `capabilities` catalog,
+  // not a fixture, since this spec (unlike dispatch_endpoint.rs's stubbed
+  // suite) runs against the real helper.
+  await expect(page.locator("#dispatch-model option")).toHaveText([
+    "Default", "Opus+Sonnet", "Opus", "Fable", "Sonnet", "Haiku",
+  ]);
+  await expect(page.locator("#dispatch-effort option")).toHaveText([
+    "Default", "low", "medium", "high", "xhigh", "max",
+  ]);
+  await expect(page.locator("#dispatch-speed option")).toHaveText(["Default", "Fast"]);
+  await expect(page.locator("#dispatch-model")).toHaveValue("");
+  await expect(page.locator("#dispatch-effort")).toHaveValue("");
+  await expect(page.locator("#dispatch-speed")).toHaveValue("");
+
+  // Switching Provider rebuilds Model/Effort/Speed for the NEWLY selected
+  // one -- a Claude model has no meaning once Codex is chosen, and Codex's
+  // own catalog is a materially different shape (an extra "none" effort,
+  // no forced default model).
   await page.locator("#dispatch-agent").selectOption("codex");
+  await expect(page.locator("#dispatch-model option")).toHaveText([
+    "Default", "GPT-5.6 Sol", "GPT-5.6 Terra", "GPT-5.6 Luna",
+  ]);
+  await expect(page.locator("#dispatch-effort option")).toHaveText([
+    "Default", "none", "low", "medium", "high", "xhigh", "max",
+  ]);
+  await expect(page.locator("#dispatch-speed option")).toHaveText(["Default", "Fast"]);
+
+  await page.locator("#dispatch-model").selectOption("gpt-5.6-sol");
+  await page.locator("#dispatch-effort").selectOption("low");
+  await page.locator("#dispatch-speed").selectOption("fast");
   await page.locator("#dispatch-auto").check();
   await page.locator("#dispatch-modal-cancel").click();
   await expect(modal).not.toHaveClass(/open/);
   await expect(page.locator("#dispatch-btn")).toBeFocused();
   await expect(backdrop).toBeHidden();
 
+  // Cancel discards the whole draft, model/effort/speed included -- the
+  // reopened modal is exactly the pre-edit state above, not a mix of the
+  // last submission (there has been none yet) and the cancelled edits.
   await page.locator("#dispatch-btn").click();
   await expect(page.locator("#dispatch-agent")).toHaveValue("claude");
+  await expect(page.locator("#dispatch-model")).toHaveValue("");
+  await expect(page.locator("#dispatch-effort")).toHaveValue("");
+  await expect(page.locator("#dispatch-speed")).toHaveValue("");
   await expect(page.locator("#dispatch-auto")).not.toBeChecked();
   await backdrop.click({ position: { x: 2, y: 2 } });
   await expect(modal).not.toHaveClass(/open/);
@@ -255,7 +291,7 @@ test("a tab authenticates once on load, and dispatch needs no second prompt (AC2
   await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
 });
 
-test("Auto mode sends agent=claude&auto=1 and runs a real autonomous dispatch (SH-208)", async ({
+test("Auto mode sends agent=claude&auto=1, plus model/effort/speed when selected, and runs a real autonomous dispatch (SH-208, SH-517)", async ({
   page,
 }) => {
   test.setTimeout(DISPATCH_COMPLETION_TIMEOUT + 30_000);
@@ -271,10 +307,17 @@ test("Auto mode sends agent=claude&auto=1 and runs a real autonomous dispatch (S
     .click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
 
+  // SH-517: a real end-to-end proof that startDispatch's query-string
+  // construction reaches the wire correctly -- the endpoint's own contract
+  // (tests/dispatch_endpoint.rs) and the modal's own state management
+  // (this file's "opens with defaults" test) are each covered on their own,
+  // but neither alone proves the two actually agree on the wire.
   const dispatchRequest = page.waitForRequest(
-    (req) => req.method() === "POST" && req.url().includes("/dispatch?agent=claude&auto=1"),
+    (req) =>
+      req.method() === "POST" &&
+      req.url().includes("/dispatch?agent=claude&auto=1&model=haiku&effort=max&speed=fast"),
   );
-  await dispatchStory(page, { auto: true });
+  await dispatchStory(page, { auto: true, model: "haiku", effort: "max", speed: "fast" });
   await dispatchRequest;
 
   await expect(page.locator("#dispatch-btn")).toBeDisabled();
