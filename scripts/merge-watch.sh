@@ -1,71 +1,18 @@
 #!/usr/bin/env bash
 #
-# The merge gate's reconcile pass — SH-396.
+# Exact merge-tree execution primitive retained from the SH-396 poller.
 #
-# `scripts/merge-preflight.sh` answers "has this PR's merge tree gone green
-# before" in milliseconds. This script is what makes that answer true: one
-# pass over every open PR, testing whichever merge trees are still
-# uncertified and reporting the result where the merge decision actually
-# gets made — the PR itself.
+# SH-521 retires the public every-open-PR sweep. The daemon's store-backed
+# `verifying` queue selects exactly one linked candidate and calls
+# `verify-pr.sh`; that runner invokes this file only through the private
+# `--speculative-run` entry below. The entry owns private merge objects,
+# detached checkout, gate-command environment, restoration, and signal
+# cleanup. `tests/merge_gate.rs` provokes that boundary against real Git.
 #
-# Meant to be run every 1-3 minutes (via `/loop` or a per-machine launchd
-# job — installing that timer is a bootstrap step for whoever runs this, not
-# something this script does itself). `make test` is 36.4s median warm on
-# this machine (docs/rearch/baseline/timings.md), so running the real gate
-# on every uncertified PR, every pass, is affordable; this is never a
-# compile-only proxy.
-#
-# WHY POLLING, NOT A HOOK. A PR merged with `gh pr merge --merge` is a
-# server-side merge — no push happens, so `.githooks/pre-push` never fires,
-# and a merge from the GitHub web UI, another machine, or a session that
-# never read CLAUDE.md is invisible to any local hook by construction. A
-# poller has no such blind spot: it reaches every open PR regardless of
-# where or how it will eventually be merged.
-#
-# WHY A PERSISTENT WORKTREE. Sharing CARGO_TARGET_DIR across worktrees is
-# already ruled out (docs/spec/test-tiers.md — it breaks
-# check-no-orphan-servers.sh's per-worktree scoping and non_temporary_dir's
-# "beside the running test binary" rung, SH-258), so this script owns one
-# dedicated worktree instead: a fresh `git worktree add` per pass would mean
-# a cold `cargo build` every single poll.
-#
-# WHY THE COMMENT IS UPSERTED, NOT POSTED FRESH. A PR comment is what
-# actually sits in the maintainer's path at the moment of the risky action
-# (clicking merge) — a status file nothing reads yet, or a story filed per
-# red poll, do not. But posting fresh every pass would mean a new
-# notification every 1-3 minutes for a PR that is simply still broken — the
-# exact self-inflicted-noise shape this project has already paid for three
-# times (SH-306, SH-345, SH-263: a gate or fixture that fires repeatedly for
-# one unchanged fact). So the comment is looked up by a fixed marker and
-# edited in place — GitHub does not notify on an edit the way it does on a
-# new comment, so a still-red PR produces exactly one notification, not one
-# per poll. The comment always carries a "last checked" timestamp so the
-# poller going silent (crashed, `gh` auth expired) is legible as staleness
-# rather than reading as a silent all-clear — SH-306's own lesson about a
-# gate that fails without saying so, one layer up.
-#
-# WHY EACH COMMENT ALSO CARRIES `main`'s BROWSER-TIER DISTANCE (SH-418).
-# `make test` -- what this script runs -- is the merge gate, and it
-# deliberately skips the browser suite (SH-394). So a CERTIFIED verdict here
-# says nothing whatever about the dashboard, and until SH-418 nothing else
-# said anything about it either between releases. One extra line, rendered by
-# `scripts/browser-status.sh`, states how far `main` is from the last tree the
-# browser suite certified -- so the reader about to click merge is told what
-# this gate does NOT cover, at the moment it matters, rather than inferring
-# full coverage from a green line. It is a distance, never a boolean: a dead
-# browser poller and a red `main` both read as a number that grows, which is
-# the SH-306 rule (silence is never a pass) applied to the tier this script
-# does not run.
-#
-# WHY THE GITHUB SHELL HAS NO AUTOMATED TEST. The polling and comment layer is
-# thin orchestration over `gh`; this project's testing tenets are explicit
-# that mocking behaviour validates the mock, not the integration (SH-263,
-# SH-345). The local correctness boundary is different and is tested:
-# `merge-preflight.sh` decides the tree, while this script's private
-# `--speculative-run` mode owns the object lease, checkout, gate-command
-# environment, restoration, and cleanup. tests/merge_gate.rs drives both
-# against real Git and leaves only the live GitHub API shell for hand
-# verification against this repository's own PRs.
+# A bare invocation fails with migration guidance after the private entry.
+# The legacy polling body remains unreachable for one compatibility cycle so
+# an installed caller gets an explicit retirement error instead of a partial
+# or silently changed sweep.
 
 set -uo pipefail
 
@@ -228,6 +175,10 @@ if [ "${1:-}" = "--speculative-run" ]; then
         trap - HUP INT TERM
         cd "$poller_wt" || exit 1
         exec env -u GIT_OBJECT_DIRECTORY \
+            -u STORYHOOK_STORE_PATH \
+            -u STORYHOOK_PROJECT \
+            -u GH_TOKEN \
+            -u GITHUB_TOKEN \
             GIT_ALTERNATE_OBJECT_DIRECTORIES="$candidate_alternates" \
             "$@"
     ) <&3 &
@@ -245,6 +196,8 @@ if [ "${1:-}" = "--speculative-run" ]; then
     trap - EXIT HUP INT TERM
     exit "$command_status"
 fi
+
+die "the broad open-PR sweep is retired; move one linked story to verifying and the StoryHook daemon will invoke scripts/verify-pr.sh. The private --speculative-run core remains for exact merge-tree verification."
 
 command -v gh >/dev/null 2>&1 || die "the gh CLI is required and was not found"
 

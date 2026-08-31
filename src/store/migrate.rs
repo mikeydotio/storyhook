@@ -286,6 +286,14 @@ pub const MIGRATIONS: &[Migration] = &[
         // append-only event log is untouched.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 25,
+        name: "verifying_state",
+        sql: include_str!("schema/0025_verifying_state.sql"),
+        // Adds one catalog row per project without rebuilding a table or
+        // touching the append-only event log.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

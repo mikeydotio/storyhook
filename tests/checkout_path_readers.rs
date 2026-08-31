@@ -75,6 +75,10 @@ const ALLOWED: &[(&str, &str)] = &[
         "src/service/engine.rs",
         "engine start refuses repo-side work when the already-selected project has no checkout",
     ),
+    (
+        "src/service/verification.rs",
+        "the verifier chooses the registered checkout only after selecting a project from the store",
+    ),
 ];
 
 /// Walks `src/`, skipping the store layer, and returns every `.rs` file whose

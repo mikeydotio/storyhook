@@ -113,6 +113,17 @@ const DISPATCH_EXTRA_MAY_SEE: [&str; 2] = ["TMUX", "TMUX_PANE"];
 /// under either prefix, and both prefixes are unique to it.
 const DISPATCH_MAY_SEE_PREFIXES: [&str; 2] = ["STORY_", "STORYHOOK_"];
 
+/// Configuration the centralized verifier needs in addition to the common
+/// executable/user environment. GitHub tokens stop at its orchestration
+/// process; the shell boundary removes them before the repository test runs.
+const VERIFICATION_EXTRA_MAY_SEE: [&str; 5] = [
+    "XDG_CONFIG_HOME",
+    "GH_CONFIG_DIR",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "STORYHOOK_LOCK_DIR",
+];
+
 /// True if `name` is one `story.sh`'s dispatch child is allowed to see.
 fn dispatch_permits(name: &str) -> bool {
     COMMON_MAY_SEE.contains(&name)
@@ -127,6 +138,11 @@ fn dispatch_permits(name: &str) -> bool {
 /// Narrower than [`dispatch_permits`] on purpose — see this module's header.
 fn plugin_cli_permits(name: &str) -> bool {
     COMMON_MAY_SEE.contains(&name)
+}
+
+/// True if `name` is needed by the centralized GitHub/gate subprocess.
+fn verification_permits(name: &str) -> bool {
+    COMMON_MAY_SEE.contains(&name) || VERIFICATION_EXTRA_MAY_SEE.contains(&name)
 }
 
 /// Clears `command`'s environment, then restores every currently-set variable
@@ -157,6 +173,12 @@ pub fn apply_dispatch_allowlist(command: &mut Command) {
 /// plugin-management child may see.
 pub fn apply_plugin_cli_allowlist(command: &mut Command) {
     apply_allowlist(command, plugin_cli_permits);
+}
+
+/// Clears `command`'s environment and restores only execution, GitHub auth,
+/// and machine-lock configuration needed by centralized verification.
+pub fn apply_verification_allowlist(command: &mut Command) {
+    apply_allowlist(command, verification_permits);
 }
 
 #[cfg(test)]
@@ -223,6 +245,18 @@ mod tests {
             apply_plugin_cli_allowlist,
             plugin_cli_permits,
         );
+    }
+
+    #[test]
+    fn the_verification_allowlist_is_the_childs_whole_environment() {
+        assert_allowlist_is_the_childs_whole_environment(
+            apply_verification_allowlist,
+            verification_permits,
+        );
+        assert!(verification_permits("GH_TOKEN"));
+        assert!(verification_permits("STORYHOOK_LOCK_DIR"));
+        assert!(!verification_permits("STORYHOOK_STORE_PATH"));
+        assert!(!verification_permits("OPENAI_API_KEY"));
     }
 
     /// `story.sh`'s own tuning surface must survive by prefix, not just by

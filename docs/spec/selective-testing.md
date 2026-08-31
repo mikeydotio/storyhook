@@ -113,8 +113,8 @@ branch's own history-relative diff could ever have accounted for, since a
 merge combines two independently-authored diffs. `select-tests.sh`'s
 soundness argument (diff against one branch's own nearest green ancestor)
 has no established argument for how it behaves across that combination, and
-`merge-watch.sh` already runs the real `make test` against every
-uncertified merge tree regardless — landing costs nothing extra by requiring
+the centralized `verifying` worker runs the real `make test` against each
+submitted uncertified merge tree — landing costs nothing extra by requiring
 `gate`/`full` there. The practical shape: `test-changed` speeds up the
 developer loop and what a push reports; it does not, by itself, speed up
 what actually reaches `main`.
@@ -160,12 +160,12 @@ locked worktree (`coverage-watch-worktree`, kept separate from
 `target-coverage/`, so sharing a worktree would mean the two pollers evict
 each other's warm build on alternating runs), keyed to whether `origin/
 main`'s tip already has a map. If the tip has no `gate`/`full` receipt yet
-either (the ordinary case is that it does, since `merge-watch.sh` already
+either (the ordinary case is that it does, since the centralized verifier
 certified it on the way to landing), it runs `make test` there first.
 
-Neither poller installs its own recurring timer — the same posture
-`make browser-watch`, `make merge-watch` and `make e2e-install` already
-take; bootstrapping the recurrence is a per-machine choice.
+Neither remaining poller installs its own recurring timer — the same posture
+`make browser-watch` and `make e2e-install` already take; bootstrapping the
+recurrence is a per-machine choice. `make merge-watch` is retired by SH-521.
 
 ## What this does NOT change
 

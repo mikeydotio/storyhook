@@ -960,11 +960,11 @@ fn the_custom_config_tree_brings_its_whole_configuration_surface() {
         })
         .expect("reading");
 
-    // `blocked` and `closed` are not in the legacy tree. Both are added by the
+    // `verifying`, `blocked`, and `closed` are not in the legacy tree. All are added by the
     // migration, which repairs a catalog below the required floor rather than
     // refusing it (SH-125) — a tree written before the floor existed must still
-    // be movable, and the floor has grown since (SH-505). `blocked` lands at
-    // the end of the OPEN run, so `todo` keeps position 0 and the state new
+    // be movable, and the floor has grown since (SH-505, SH-521). The new OPEN
+    // states land after `review`, so `todo` keeps position 0 and the state new
     // stories open in does not change; `closed` lands at the very end, after
     // the tree's own CLOSED states.
     assert_eq!(
@@ -973,6 +973,7 @@ fn the_custom_config_tree_brings_its_whole_configuration_surface() {
             "todo",
             "in-progress",
             "review",
+            "verifying",
             "blocked",
             "done",
             "wont-fix",

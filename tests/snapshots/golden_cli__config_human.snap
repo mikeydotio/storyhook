@@ -4,6 +4,7 @@ source: tests/golden_cli.rs
 $ story state list
 todo (OPEN) — 8 open
 in-progress (OPEN, active) — 2 open
+verifying (OPEN)
 blocked (OPEN)
 done (CLOSED) — 2 archived
 closed (CLOSED) — 1 archived

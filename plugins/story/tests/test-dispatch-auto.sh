@@ -33,7 +33,7 @@ dry() {
 # treats as special -- see tests/test-charter-inert.sh for the invariant and
 # why it has to be structural. The pin itself is unchanged in kind: it still
 # asserts the attended prompt byte-for-byte, which is what catches drift.
-expected_attended_prompt="Investigate and plan a fix for story $id in this repo. Begin by reading it with ‘story show $id --json’ -- its comments carry the discussion history. When your plan is finalized and approved, post it as a comment on $id via ‘story comment $id your-plan’ before you start implementing. Push your commits and open the pull request referencing story $id in its body before you run the local test suite, so the work is preserved even if testing turns something up -- comment a link to the PR on $id once it is open, then run the suite and merge only once it passes. Do not bump the version or deploy from this worktree: do not run semver bump, deployit deploy, or any release/version step, and do not plan for them -- versioning and deployment happen later from the main branch, not here."
+expected_attended_prompt="Investigate and plan a fix for story $id in this repo. Begin by reading it with ‘story show $id --json’ -- its comments carry the discussion history. When your plan is finalized and approved, post it as a comment on $id via ‘story comment $id your-plan’ before you start implementing. Implement the approved work and run only its new and directly impacted tests. Commit and push the work, open one pull request whose body references story $id, link it with ‘story link-pr $id PR-URL’, and comment the PR link on $id. Then move the story with ‘story move $id verifying’ as your absolute last action and stop: the centralized verifier owns the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair the existing PR without rewriting published history, run the new and impacted tests, push, move $id back to verifying, and stop again. Do not run make test, land-pr.sh, story move $id done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them."
 
 out=$(dry)
 assert_eq "$(jqf "$out" .ok)" "true" "attended: ok:true"
@@ -45,7 +45,7 @@ assert_contains "$(jqf "$out" '.commands|join(" ")')" \
   "-e STORYHOOK_AUTO= -e STORYHOOK_FULL_AUTO=" \
   "attended: both autonomous markers are explicitly contained"
 assert_eq "$(jqf "$out" .prompt)" "$expected_attended_prompt" "attended: prompt is byte-identical to today's"
-for marker in "AUTONOMOUS" "council-vote" "land-pr.sh" "story block" "story move $id" "reap" "genuinely defensible answers" "do not stall"; do
+for marker in "AUTONOMOUS" "council-vote" "story block" "genuinely defensible answers" "do not stall"; do
   case "$(jqf "$out" .prompt)" in
     *"$marker"*) fail_test "attended: prompt leaked auto-charter marker [$marker]" ;;
   esac
@@ -75,10 +75,11 @@ prompt=$(jqf "$out" .prompt)
 for marker in \
   "AUTONOMOUS" \
   "council-vote" \
-  "make test" \
-  "bash scripts/land-pr.sh PR-NUMBER" \
+  "new and directly impacted tests" \
+  "story link-pr $id PR-URL" \
   "story block $id" \
-  "story move $id done" \
+  "story move $id verifying" \
+  "centralized verifier owns the full suite" \
   "semver bump" \
   "prefer adopting it into" \
   "context window is still unused"; do
@@ -101,11 +102,8 @@ assert_contains "$prompt" "the moment the council concludes" \
   "auto+council-on: the verdict is recorded when the council concludes"
 assert_contains "$prompt" "before you resume the work" \
   "auto+council-on: recording the verdict precedes resuming the work"
-assert_contains "$prompt" "Another CLOSED-superstate state may mean abandoned work" \
-  "auto+council-on: the charter distinguishes completion from abandonment"
-case "$prompt" in
-  *"<done-state>"*) fail_test "auto+council-on: the completion-state placeholder was not rendered" ;;
-esac
+assert_contains "$prompt" "Do not run make test, land-pr.sh" \
+  "auto+council-on: the child is forbidden from taking the centralized gate"
 
 # --- SH-219: with no council reachable, the SOLO charter renders instead —
 #     every shared obligation still present, council-vote named nowhere. ---
@@ -116,10 +114,11 @@ assert_eq "$(jqf "$solo_out" .council)" "false" "auto+council-off: council:false
 solo_prompt=$(jqf "$solo_out" .prompt)
 for marker in \
   "AUTONOMOUS" \
-  "make test" \
-  "bash scripts/land-pr.sh PR-NUMBER" \
+  "new and directly impacted tests" \
+  "story link-pr $id PR-URL" \
   "story block $id" \
-  "story move $id done" \
+  "story move $id verifying" \
+  "centralized verifier owns the full suite" \
   "semver bump" \
   "do not stall" \
   "prefer adopting it into" \
@@ -140,49 +139,20 @@ assert_contains "$solo_prompt" "the moment you decide" \
   "auto+council-off: the solo decision is recorded when it is made"
 assert_contains "$solo_prompt" "before you resume the work" \
   "auto+council-off: recording the decision precedes resuming the work"
-assert_contains "$solo_prompt" "Another CLOSED-superstate state may mean abandoned work" \
-  "auto+council-off: the charter distinguishes completion from abandonment"
+assert_contains "$solo_prompt" "Do not run make test, land-pr.sh" \
+  "auto+council-off: the child is forbidden from taking the centralized gate"
 case "$solo_prompt" in
   *"council-vote"*) fail_test "auto+council-off: solo prompt still names council-vote" ;;
 esac
 
-# The environment override is the helper's existing custom-project seam. It
-# must drive the rendered instruction too; hard-coding `done` here would make
-# the charter and reap disagree on the very projects the seam exists for.
-custom_done_out=$(STORY_COUNCIL=off STORY_DONE_STATE=shipped dry --auto)
-custom_done_prompt=$(jqf "$custom_done_out" .prompt)
-assert_contains "$custom_done_prompt" "story move $id shipped" \
-  "auto+custom-state: the charter names the resolved completion state"
-
-# A project's catalog order is the source of truth when no override is set.
-# Put a custom CLOSED state ahead of `done` and ask the real render path again;
-# this catches an implementation that substitutes the default after correctly
-# delegating STORY_DONE_STATE above.
-(cd "$repo" \
-  && story state add shipped --super CLOSED >/dev/null \
-  && story state reorder todo,in-progress,blocked,shipped,done,closed >/dev/null)
-reordered_out=$(STORY_COUNCIL=off dry --auto)
-reordered_prompt=$(jqf "$reordered_out" .prompt)
-assert_contains "$reordered_prompt" "story move $id shipped" \
-  "auto+reordered-state: the charter follows the project's first CLOSED state"
-
-# SH-208: the charter's own last act is a fully-resolved `reap` command, not
-# instructions the child must reconstruct -- this project's own slug, this
-# script's own path, and the story id are all templated in.
-reap_slug=$(slug_for "$repo")
-expected_reap="bash \"$SCRIPT\" --project \"$reap_slug\" reap \"$id\""
-assert_contains "$prompt" "$expected_reap" "auto: prompt carries the exact reap command"
-assert_contains "$prompt" "run ‘${expected_reap}’ as your absolute last action" \
-  "auto: reap is framed as the session's final act"
-assert_contains "$prompt" "never run ‘${expected_reap}’ after a hard stop" \
-  "auto: reap is explicitly forbidden past a hard stop"
-# The SOLO charter shares the same tail, so it carries the identical reap
-# framing — the two charters must never drift on this obligation.
-assert_contains "$solo_prompt" "$expected_reap" "auto+council-off: solo prompt carries the exact reap command"
-assert_contains "$solo_prompt" "run ‘${expected_reap}’ as your absolute last action" \
-  "auto+council-off: solo reap is framed as the session's final act"
-assert_contains "$solo_prompt" "never run ‘${expected_reap}’ after a hard stop" \
-  "auto+council-off: solo reap is explicitly forbidden past a hard stop"
+# The verifier, not the child, owns completion and teardown in both charters.
+for variant in "auto:$prompt" "solo:$solo_prompt"; do
+  label="${variant%%:*}"; text="${variant#*:}"
+  assert_contains "$text" "move $id back to verifying, and stop again" \
+    "$label: repair resubmits the existing PR"
+  assert_contains "$text" "Do not run make test, land-pr.sh, story move $id done, reap" \
+    "$label: completion and teardown remain verifier-owned"
+done
 
 # The charter used to require every `story` write to be made from the main
 # checkout, and templated its absolute path in to say where that was. It said
@@ -272,7 +242,7 @@ esac
 out=$(cd "$repo" && STORY_DRY_RUN=1 STORY_PROMPT_EXTRA="EXTRA-CLAUSE" \
   bash "$SCRIPT" dispatch "$id" --auto 2>&1)
 case "$(jqf "$out" .prompt)" in
-  *"never run ‘${expected_reap}’ after a hard stop. EXTRA-CLAUSE") : ;;
+  *"leave the worktree intact, and stop. EXTRA-CLAUSE") : ;;
   *) fail_test "STORY_PROMPT_EXTRA did not append after the auto charter" ;;
 esac
 

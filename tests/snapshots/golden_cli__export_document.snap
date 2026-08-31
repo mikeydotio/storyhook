@@ -29,6 +29,10 @@ source: tests/golden_cli.rs
       "super": "OPEN"
     },
     {
+      "slug": "verifying",
+      "super": "OPEN"
+    },
+    {
       "slug": "blocked",
       "super": "OPEN"
     },

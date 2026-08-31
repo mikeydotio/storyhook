@@ -146,6 +146,15 @@ claim, worktree, tmux window, prompt, or direct agent handoff. Show that result'
 stop. A bare epic is refused with the `--auto` remedy. Never add the engine-private
 `--full-auto` lane marker to an epic start.
 
+### Central verifier callback
+
+`bash "<story-helper>" notify <story-id> "<message>"` is the daemon-owned callback for
+returning a failed verification attempt to its exact dispatched agent. It verifies the tmux
+window's recorded provider and live process before pasting the literal message and submitting
+it. This is not a user route: never invoke it for an ordinary request or use it instead of a
+durable story comment. A refusal means the verifier must leave the diagnostics on the story
+and block it for manual recovery.
+
 ## Shared notes
 
 - Every helper-backed verb requires the `story` CLI on `PATH`; provider dispatch may also
