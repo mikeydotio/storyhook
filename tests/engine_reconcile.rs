@@ -38,11 +38,13 @@ use storyhook_test_support::{
 fn progressing() -> LaneObservation {
     LaneObservation {
         story_closed: false,
+        story_verifying: false,
         agent_blocked: false,
         window_alive: true,
         head_global_seq: Some(200),
         last_progress_seq: Some(100),
         seconds_since_progress: Some(5),
+        awaiting_reason: None,
     }
 }
 
@@ -176,6 +178,46 @@ fn an_unresolvable_story_is_not_a_stall() {
     );
 }
 
+/// Row 5: the story reached the required `verifying` handoff (SH-521). The
+/// agent's last action for a successful story execs `story move <n>
+/// verifying` and stops, and the dispatch launch execs the agent process
+/// directly rather than typing into a persistent shell
+/// (`plugins/story/bin/story.sh`'s `remain-on-exit` rationale) — so the pane
+/// is normally already dead the instant the story reaches this handoff,
+/// exactly like an ordinary completion. That must read as `Verifying`, never
+/// `WindowGone`.
+#[test]
+fn a_verifying_story_with_a_dead_window_is_held_not_window_gone() {
+    let observation = LaneObservation {
+        story_verifying: true,
+        window_alive: false,
+        ..progressing()
+    };
+    assert_eq!(
+        classify(&observation, STALL_CEILING_SECS),
+        LaneClassification::Verifying
+    );
+}
+
+/// D4's verification worker serializes `make test` machine-wide, so a
+/// candidate can legitimately queue past any one lane's own
+/// [`STALL_CEILING_SECS`]. That must read as `Verifying`, never `Stalled`.
+#[test]
+fn a_verifying_story_past_the_ceiling_is_held_not_stalled() {
+    let observation = LaneObservation {
+        story_verifying: true,
+        head_global_seq: Some(100),
+        last_progress_seq: Some(100),
+        seconds_since_progress: Some(STALL_CEILING_SECS + 1),
+        ..progressing()
+    };
+    assert_eq!(
+        classify(&observation, STALL_CEILING_SECS),
+        LaneClassification::Verifying,
+        "the machine-wide verification queue can legitimately outrun one lane's own ceiling"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Precedence — the rule that decides the design
 // ---------------------------------------------------------------------------
@@ -203,18 +245,20 @@ fn a_closed_story_wins_over_a_closed_window() {
     );
 }
 
-/// Completion also outranks the agent-blocked signal and the stall clock: a
-/// story that reached a CLOSED superstate is done regardless of what its
-/// metadata or its clock say.
+/// Completion also outranks the agent-blocked signal, the verifying handoff
+/// and the stall clock: a story that reached a CLOSED superstate is done
+/// regardless of what its metadata or its clock say.
 #[test]
 fn a_closed_story_wins_over_every_other_signal() {
     let observation = LaneObservation {
         story_closed: true,
+        story_verifying: true,
         agent_blocked: true,
         window_alive: false,
         head_global_seq: Some(100),
         last_progress_seq: Some(100),
         seconds_since_progress: Some(STALL_CEILING_SECS * 10),
+        awaiting_reason: Some("the agent said why".to_string()),
     };
     assert_eq!(
         classify(&observation, STALL_CEILING_SECS),
@@ -230,6 +274,39 @@ fn an_agent_block_wins_over_a_closed_window() {
     let observation = LaneObservation {
         agent_blocked: true,
         window_alive: false,
+        ..progressing()
+    };
+    assert_eq!(
+        classify(&observation, STALL_CEILING_SECS),
+        LaneClassification::HardStop(HardStopKind::AgentBlocked)
+    );
+}
+
+/// A closed story still wins over the verifying handoff: it is not reachable
+/// in production (verifying is an OPEN state), but the precedence must not
+/// depend on that being true.
+#[test]
+fn a_closed_story_wins_over_the_verifying_handoff() {
+    let observation = LaneObservation {
+        story_closed: true,
+        story_verifying: true,
+        ..progressing()
+    };
+    assert_eq!(
+        classify(&observation, STALL_CEILING_SECS),
+        LaneClassification::Completed
+    );
+}
+
+/// An agent's own diagnosis still surfaces from the verifying handoff:
+/// centralized verification's `return_for_repair` falls back to
+/// `set_awaiting` when it cannot reach a dead pane (SH-521), and that must
+/// read as `AgentBlocked`, not be silently held as `Verifying`.
+#[test]
+fn an_agent_block_wins_over_the_verifying_handoff() {
+    let observation = LaneObservation {
+        agent_blocked: true,
+        story_verifying: true,
         ..progressing()
     };
     assert_eq!(
@@ -392,6 +469,7 @@ fn every_hard_stop_kind_has_a_distinct_stable_spelling() {
         HardStopKind::WindowGone,
         HardStopKind::Stalled,
         HardStopKind::Interrupted,
+        HardStopKind::DispatchRefused,
     ];
     let spellings: Vec<&str> = kinds.iter().map(|kind| kind.as_str()).collect();
     let mut unique = spellings.clone();
@@ -533,6 +611,13 @@ fn a_completed_story_frees_its_lane_and_drains_the_run() {
 
 /// Row 2, wired: the agent set `awaiting`, so the lane is quarantined and its
 /// evidence preserved.
+///
+/// This also covers the SH-120 relay rule for quarantine's own message:
+/// `quarantine_lane` must not overwrite the agent's own diagnosis with a
+/// generic lane/run/window sentence composed here — it must relay the
+/// original verbatim and append provenance. Without that fix, this assertion
+/// fails with the agent's own text replaced entirely by "Full Auto:
+/// agent-blocked on lane 0 of run ...".
 #[test]
 fn an_agent_blocked_story_quarantines_the_lane_and_preserves_its_evidence() {
     let fixture = ServiceFixture::new();
@@ -561,6 +646,21 @@ fn an_agent_blocked_story_quarantines_the_lane_and_preserves_its_evidence() {
     assert!(
         lane.window_name.is_some(),
         "the window name is diagnostic evidence and must survive quarantine"
+    );
+    let awaiting = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), storyhook::store::ids::StoryNo::new(1)))
+        .unwrap()
+        .unwrap()
+        .awaiting
+        .expect("a quarantined story carries a reason");
+    assert!(
+        awaiting.contains("the agent stopped and said why"),
+        "the agent's own diagnosis must be relayed verbatim, never replaced by a message composed here (SH-120): {awaiting}"
+    );
+    assert!(
+        awaiting.contains("agent-blocked") && awaiting.contains(&run_id),
+        "lane/run provenance is appended, not the whole story: {awaiting}"
     );
 }
 
@@ -625,6 +725,163 @@ fn a_closed_story_with_a_dead_window_completes_rather_than_quarantining() {
             .consecutive_hard_stops,
         0
     );
+}
+
+// ---------------------------------------------------------------------------
+// Row 5, wired: the verifying handoff (SH-521)
+// ---------------------------------------------------------------------------
+
+/// A story that reached `verifying` holds its lane rather than being freed,
+/// quarantined, or refilled: the story still owns a live worktree and window
+/// that only the verifier's own reap reclaims. The pane is already dead, just
+/// as it is for an ordinary completion — that must not read as a hard stop,
+/// and it must not count toward the breaker.
+#[test]
+fn a_verifying_story_holds_its_lane_without_quarantine_or_refill() {
+    let fixture = ServiceFixture::new();
+    let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
+        window: "story-SH-1".into(),
+        alive: false,
+    }]);
+    let story = new_story(&fixture, "lane work", &[]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &story);
+    StoryService::new(&fixture.ctx())
+        .set_state(&story, "verifying", None, None, None)
+        .unwrap();
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert_eq!(report.verifying, [0]);
+    assert!(report.completed.is_empty());
+    assert!(report.quarantined.is_empty());
+    assert!(report.filled.is_empty());
+    let lane = lane_at(&fixture, &run_id, 0);
+    assert_eq!(
+        lane.state,
+        EngineLaneState::Working,
+        "the lane stays occupied through verification"
+    );
+    assert_eq!(lane.story_id.as_deref(), Some(story.as_str()));
+    assert_eq!(
+        streak(&fixture, &run_id),
+        0,
+        "a held handoff is not a hard stop and must not feed the breaker"
+    );
+    assert_eq!(
+        report.run_state,
+        EngineRunState::Running,
+        "a run with a held lane has not drained"
+    );
+    assert!(
+        !fake
+            .calls()
+            .iter()
+            .any(|c| matches!(c, DispatcherCall::Dispatch(_))),
+        "a held lane must never be refilled"
+    );
+}
+
+/// A held lane does not block other lanes in the same run from filling.
+#[test]
+fn a_verifying_lane_does_not_block_other_lanes_from_filling() {
+    let fixture = ServiceFixture::new();
+    let held = new_story(&fixture, "in verification", &[]);
+    let ready = new_story(&fixture, "claim me", &[]);
+    let fake = FakeDispatcher::new([
+        DispatcherStep::WindowAlive {
+            window: format!("story-{held}"),
+            alive: false,
+        },
+        DispatcherStep::Dispatch(DispatchOutcome::from_payload(serde_json::json!({
+            "ok": true,
+            "window_name": "SH-2",
+            "worktree_path": "/tmp/wt/SH-2"
+        }))),
+    ]);
+    let run_id = started_run(&fixture, &fake, 2);
+    occupy(&fixture, &run_id, 0, &held);
+    StoryService::new(&fixture.ctx())
+        .set_state(&held, "verifying", None, None, None)
+        .unwrap();
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert_eq!(report.verifying, [0]);
+    assert_eq!(report.filled, [(1, ready.clone())]);
+    let held_lane = lane_at(&fixture, &run_id, 0);
+    assert_eq!(held_lane.state, EngineLaneState::Working);
+    assert_eq!(held_lane.story_id.as_deref(), Some(held.as_str()));
+}
+
+/// The handoff completes: once the verifier actually closes the story, the
+/// lane frees exactly like any other completion.
+#[test]
+fn a_verified_story_that_closes_frees_its_lane() {
+    let fixture = ServiceFixture::new();
+    let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
+        window: "story-SH-1".into(),
+        alive: false,
+    }]);
+    let story = new_story(&fixture, "lane work", &[]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &story);
+    StoryService::new(&fixture.ctx())
+        .set_state(&story, "verifying", None, None, None)
+        .unwrap();
+    let held = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+    assert_eq!(held.verifying, [0], "the handoff is held first");
+
+    // Central verification lands the PR and closes the story.
+    StoryService::new(&fixture.ctx())
+        .set_state(&story, "done", None, None, None)
+        .unwrap();
+    let fake2 = FakeDispatcher::new([DispatcherStep::WindowAlive {
+        window: "story-SH-1".into(),
+        alive: true, // irrelevant -- `story_closed` short-circuits before this matters
+    }]);
+    let report = reconcile_at(&fixture, &fake2, &run_id, FIXTURE_NOW);
+
+    assert_eq!(
+        report.completed,
+        [0],
+        "the handoff completes once the story actually closes"
+    );
+    let lane = lane_at(&fixture, &run_id, 0);
+    assert_eq!(lane.state, EngineLaneState::Idle);
+}
+
+// ---------------------------------------------------------------------------
+// A dispatch refusal is a refusal, not a dead window
+// ---------------------------------------------------------------------------
+
+/// `fill_idle_lanes` quarantines a claimed story the helper refused to
+/// dispatch. The report's own kind must name what actually happened, matching
+/// the lane's stored `outcome` — a refusal is not a dead window.
+#[test]
+fn a_refused_dispatch_is_reported_as_a_refusal_not_a_dead_window() {
+    let fixture = ServiceFixture::new();
+    let story = new_story(&fixture, "claim me", &[]);
+    let fake = FakeDispatcher::new([DispatcherStep::Dispatch(DispatchOutcome::from_payload(
+        serde_json::json!({"ok": false, "display": "worktree already exists"}),
+    ))]);
+    let run_id = started_run(&fixture, &fake, 1);
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert_eq!(
+        report.quarantined,
+        [(0, HardStopKind::DispatchRefused)],
+        "a dispatch refusal must not be reported as WindowGone"
+    );
+    let lane = lane_at(&fixture, &run_id, 0);
+    assert_eq!(lane.state, EngineLaneState::Quarantined);
+    assert_eq!(
+        lane.outcome.as_deref(),
+        Some("dispatch-refused"),
+        "the report and the lane's own stored outcome must spell the same event"
+    );
+    assert_eq!(lane.story_id.as_deref(), Some(story.as_str()));
 }
 
 // ---------------------------------------------------------------------------
