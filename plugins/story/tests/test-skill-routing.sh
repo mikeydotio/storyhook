@@ -33,6 +33,12 @@ verbs=$(router_verbs "$SCRIPT")
 verb_count=$(printf '%s\n' "$verbs" | awk 'NF { count++ } END { print count + 0 }')
 [ "$verb_count" -ge 18 ] \
   || fail_test "router verb extraction is implausibly small: expected at least 18, found $verb_count"
+
+# The helper's command table is generated conceptually from the router above;
+# a prose count drifted to "seventeen" while the router already exposed twenty.
+# Keep the README count-free so adding a verb has one source of truth.
+grep -qF '`bin/story.sh` accepts' "$PLUGIN_ROOT/README.md" \
+  && fail_test "plugin README hard-codes a subcommand count instead of listing the router"
 for v in $(undocumented_router_verbs "$SCRIPT"); do
   fail_test "no documented helper invocation for subcommand \`$v\`"
 done

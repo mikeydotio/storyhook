@@ -74,7 +74,7 @@ indirection is a sandbox boundary: command rules match exact prefixes, while Cod
 cache paths include the version. The launcher dynamically resolves the enabled cache entry
 and then runs the same packaged helper, preserving the one-JSON-object contract.
 
-`bin/story.sh` accepts seventeen subcommands:
+`bin/story.sh` subcommands:
 
 | Subcommand | Verb it backs |
 |---|---|
