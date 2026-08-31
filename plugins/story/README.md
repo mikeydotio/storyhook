@@ -287,6 +287,7 @@ All knobs are `STORY_*`. The commonly useful ones:
 | Variable | Effect |
 |---|---|
 | `STORY_AGENT` | provider contract: `claude` (default) or `codex`; `claude-code` is a deprecated compatibility alias |
+| `STORY_MODEL` / `STORY_EFFORT` / `STORY_SPEED` | dispatch's model/effort/speed selectors (ranked beneath an explicit `--model`/`--effort`/`--speed`, same as `STORY_AGENT` beneath `--agent`); each validated against the resolved provider's own catalog (`capabilities --agent=<p>`) before any claim or worktree side effect; combining any of the three with `STORY_LAUNCH_CMD`/`STORY_FULL_AUTO_LAUNCH_CMD` refuses, since those wholesale overrides have no seam for a selector |
 | `STORY_DRY_RUN=1` | preview any side-effecting verb; changes nothing |
 | `STORY_LAUNCH_CMD` | wholesale attended/ordinary-Auto launch override (must **not** include `-w`); ordinary autonomous results warn because it may weaken unattendedness; Full Auto reports and ignores it |
 | `STORY_FULL_AUTO_LAUNCH_CMD` | engine-only wholesale launch override; when unset, Full Auto reuses the provider's built-in Auto command |

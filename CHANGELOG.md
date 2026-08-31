@@ -7,6 +7,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- Model, effort, and speed selectors for dispatch: `story.sh dispatch` gains
+  `--model=<id>`, `--effort=<id>`, and `--speed=standard|fast` (with
+  `STORY_MODEL`/`STORY_EFFORT`/`STORY_SPEED` env fallbacks, ranked beneath an
+  explicit flag the same way `STORY_AGENT` sits beneath `--agent`), each
+  validated against the selected provider's own catalog before any claim or
+  worktree side effect. A new `capabilities --agent=claude|codex` verb reports
+  that catalog; the daemon relays it at `GET /api/dispatch-options`, and the
+  web dashboard's dispatch dialog now offers Model/Effort/Speed selects
+  (`?agent=claude|codex` — relabelled **Provider** — no longer doubles as
+  "Model") built from it, remembered per-provider alongside the existing
+  agent/auto preference. An unselected dispatch's argv, query string, and
+  `DispatchRecord` are all unchanged from before this story. Design of record
+  is `docs/spec/dashboard-dispatch.md`'s "As built — SH-517" section (SH-517)
 - `--epic <id>` and `--exclude-label <csv>` on both `story next` and
   `story claim --next`. Epic scope includes the complete descendant subtree,
   nested epics included, while label exclusion drops any candidate carrying

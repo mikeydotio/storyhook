@@ -69,7 +69,10 @@ use crate::service::engine::{
     CHARTER_INERT_BANNED, charter_inert_violation, classify_dispatch_files,
     prompt_override_violation,
 };
-use crate::service::engine::{DispatchOutcome, DispatchOutcomeState, run_shell_dispatch};
+use crate::service::engine::{
+    DispatchOptions, DispatchOutcome, DispatchOutcomeState, run_shell_capabilities,
+    run_shell_dispatch,
+};
 use crate::store::EngineAgent;
 
 /// At most this many dispatches may be running at once.
@@ -108,7 +111,7 @@ pub const RETAIN_FOR: Duration = Duration::from_secs(30 * 60);
 /// longer `claude-code` name. The helper preserves that older spelling only
 /// on its pre-existing environment compatibility seam; new HTTP and argv
 /// contracts accept and emit the canonical values here.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DispatchAgent {
     #[default]
@@ -122,6 +125,57 @@ impl DispatchAgent {
             Self::Claude => "claude",
             Self::Codex => "codex",
         }
+    }
+}
+
+/// A validated `model` or `effort` dispatch option (SH-517).
+///
+/// `story.sh` interpolates this string into its launch command line, which a
+/// tmux pane later execs verbatim (`tmux new-window ... "$launch_cmd"`) —
+/// this charset gate is what keeps a malformed or malicious query value from
+/// ever reaching a shell metacharacter, the same class of protection
+/// [`crate::service::engine::prompt_override_violation`] gives a prompt
+/// override. `story.sh`'s own per-provider catalog is the SECOND gate
+/// (a value that passes this one but names no real model/effort still
+/// refuses there, naming the valid set) — this type only bounds the alphabet
+/// and length, not membership, since the daemon has no independent copy of
+/// either provider's catalog to check membership against.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct OptionToken(String);
+
+impl OptionToken {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// `Err` names what was wrong, for the 400 body — never the value's
+    /// hazard class, since a query caller has already seen the raw value.
+    fn parse(raw: &str) -> Result<Self, String> {
+        let len = raw.chars().count();
+        if !(1..=64).contains(&len) {
+            return Err(format!("must be 1-64 characters (got {len})"));
+        }
+        if !raw
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        {
+            return Err("must contain only letters, digits, `.`, `_`, or `-`".to_string());
+        }
+        Ok(Self(raw.to_string()))
+    }
+}
+
+/// The inverse of the derived [`Serialize`] above — round-trips
+/// [`DispatchRecord`] through [`persist_dispatch_history`] /
+/// [`load_dispatch_history`] with the same validation a fresh query value
+/// gets, so a hand-edited history file cannot smuggle an unvalidated string
+/// back into a future launch command.
+impl<'de> Deserialize<'de> for OptionToken {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw).map_err(serde::de::Error::custom)
     }
 }
 
@@ -240,6 +294,20 @@ pub struct DispatchRecord {
     /// Claude — the only provider those daemons could have launched.
     #[serde(default)]
     pub agent: DispatchAgent,
+    /// The provider model this dispatch requested (SH-517), or `None` for
+    /// the provider's own built-in default. `#[serde(default)]` so a record
+    /// persisted before SH-517 deserializes as "no selection".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<OptionToken>,
+    /// The reasoning effort this dispatch requested (SH-517), or `None` for
+    /// the provider's own built-in default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<OptionToken>,
+    /// Whether this dispatch requested the provider's fast tier (SH-517).
+    /// Never `skip_serializing_if`, matching `auto`: always meaningfully
+    /// true or false, never absent.
+    #[serde(default)]
+    pub fast: bool,
     /// Whether this dispatch runs `story.sh`'s autonomous charter (SH-208,
     /// SH-511): Plan mode is retained but approved automatically, and
     /// everything after it — deciding open questions, merging its own PR,
@@ -406,6 +474,10 @@ pub struct DispatchRegistry {
     /// this is `None`, so a plain `new()` stays exactly as pure and
     /// in-memory as it always was.
     persist_env: Option<Environment>,
+    /// [`Self::capabilities_for`]'s cache (SH-517) — separate from `inner`'s
+    /// lock since a capabilities poll and a dispatch's own bookkeeping are
+    /// unrelated concerns and need not contend for the same mutex.
+    capabilities: Mutex<HashMap<DispatchAgent, (Instant, serde_json::Value)>>,
 }
 
 impl DispatchRegistry {
@@ -413,6 +485,7 @@ impl DispatchRegistry {
         DispatchRegistry {
             inner: Mutex::new(Inner::default()),
             persist_env: None,
+            capabilities: Mutex::new(HashMap::new()),
         }
     }
 
@@ -474,11 +547,15 @@ impl DispatchRegistry {
     /// later, deduped `POST` asked for — a caller that cares must poll
     /// `auto` on the handle it gets back, not assume it matches its own
     /// request.
+    #[allow(clippy::too_many_arguments)]
     fn try_start_for_agent(
         &self,
         project: &str,
         story: &str,
         agent: DispatchAgent,
+        model: Option<OptionToken>,
+        effort: Option<OptionToken>,
+        fast: bool,
         auto: bool,
         started_at: String,
     ) -> StartOutcome {
@@ -498,6 +575,9 @@ impl DispatchRegistry {
                     project: project.to_string(),
                     story: story.to_string(),
                     agent,
+                    model,
+                    effort,
+                    fast,
                     auto,
                     state: DispatchState::Running,
                     started_at,
@@ -523,7 +603,16 @@ impl DispatchRegistry {
         auto: bool,
         started_at: String,
     ) -> StartOutcome {
-        self.try_start_for_agent(project, story, DispatchAgent::Claude, auto, started_at)
+        self.try_start_for_agent(
+            project,
+            story,
+            DispatchAgent::Claude,
+            None,
+            None,
+            false,
+            auto,
+            started_at,
+        )
     }
 
     /// A copy of `handle`'s record, or `None` if it never existed or has
@@ -691,6 +780,55 @@ impl DispatchRegistry {
             },
         }
     }
+
+    /// `agent`'s model/effort/speed catalog (SH-517), cached for
+    /// [`CAPABILITIES_CACHE_TTL`] so a dispatch dialog reopened repeatedly
+    /// does not spawn a helper process on every open. A provider whose
+    /// resolved helper cannot be found, or whose `capabilities` call fails
+    /// or times out, answers `{"ok": false, "agent": ..., "reason": ...}`
+    /// rather than propagating an error — a stale installed plugin must
+    /// degrade the selector, never break dispatch itself.
+    fn capabilities_for(&self, agent: DispatchAgent, env: &Environment) -> serde_json::Value {
+        {
+            let cache = self.capabilities.lock().expect("capabilities cache lock");
+            if let Some((fetched_at, value)) = cache.get(&agent)
+                && fetched_at.elapsed() < CAPABILITIES_CACHE_TTL
+            {
+                return value.clone();
+            }
+        }
+        let value = fetch_capabilities(agent, env);
+        let mut cache = self.capabilities.lock().expect("capabilities cache lock");
+        cache.insert(agent, (Instant::now(), value.clone()));
+        value
+    }
+}
+
+/// How long [`DispatchRegistry::capabilities_for`] trusts a cached catalog
+/// before asking the helper again.
+const CAPABILITIES_CACHE_TTL: Duration = Duration::from_secs(60);
+
+/// Resolves `agent`'s dispatch script and runs its `capabilities` verb,
+/// folding every failure mode into the same `{"ok": false, ...}` shape the
+/// helper's own refusals already use, so [`handle_options`] never has to
+/// special-case "the script could not be found" from "the script refused".
+fn fetch_capabilities(agent: DispatchAgent, env: &Environment) -> serde_json::Value {
+    let script = match resolve_dispatch_script(agent) {
+        Ok(script) => script,
+        Err(message) => {
+            return serde_json::json!({"ok": false, "agent": agent, "reason": message});
+        }
+    };
+    let engine_agent = match agent {
+        DispatchAgent::Claude => EngineAgent::Claude,
+        DispatchAgent::Codex => EngineAgent::Codex,
+    };
+    match run_shell_capabilities(&script, engine_agent, env) {
+        Ok(outcome) => outcome.payload,
+        Err(error) => {
+            serde_json::json!({"ok": false, "agent": agent, "reason": error.to_string()})
+        }
+    }
 }
 
 impl Default for DispatchRegistry {
@@ -821,6 +959,19 @@ pub(crate) fn is_dispatch_log_path(segments: &[&str]) -> bool {
     segments == ["api", "dispatch-log"]
 }
 
+/// Whether `segments` addresses the dispatch options catalog —
+/// `GET /api/dispatch-options` (SH-517).
+///
+/// Daemon-scoped like [`is_dispatch_log_path`], for the same reason: a
+/// provider's model/effort/speed catalog is a property of which helper this
+/// daemon resolves, not of any one project. A separate predicate rather
+/// than widening [`is_dispatch_path`] or [`is_dispatch_log_path`], so
+/// `src/api/routes.rs`'s cross-check can keep asserting each predicate
+/// means exactly one `Route` variant.
+pub(crate) fn is_dispatch_options_path(segments: &[&str]) -> bool {
+    segments == ["api", "dispatch-options"]
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn intercept(
     segments: &[&str],
@@ -845,6 +996,19 @@ pub fn intercept(
             cookie_name,
             wall_now,
             registry,
+        ));
+    }
+
+    if is_dispatch_options_path(segments) {
+        return Some(handle_options(
+            method,
+            headers,
+            token,
+            tokens,
+            cookie_name,
+            wall_now,
+            registry,
+            env,
         ));
     }
 
@@ -892,7 +1056,21 @@ pub fn intercept(
                 Ok(agent) => agent,
                 Err(reply) => return Some(reply),
             };
-            Some(handle_post(project, story, agent, auto, env, bus, registry))
+            let model = match parse_model(query) {
+                Ok(model) => model,
+                Err(reply) => return Some(reply),
+            };
+            let effort = match parse_effort(query) {
+                Ok(effort) => effort,
+                Err(reply) => return Some(reply),
+            };
+            let fast = match parse_speed(query) {
+                Ok(fast) => fast,
+                Err(reply) => return Some(reply),
+            };
+            Some(handle_post(
+                project, story, agent, model, effort, fast, auto, env, bus, registry,
+            ))
         }
         (Method::Get, 7) => Some(handle_get(segments[6], registry)),
         _ => Some(text_reply(405, "Method Not Allowed")),
@@ -963,6 +1141,48 @@ fn handle_log(
     Reply::new(200, "application/json", body).no_cache()
 }
 
+/// `GET /api/dispatch-options` — the per-provider model/effort/speed
+/// catalog the web dispatch dialog's Model/Effort/Speed selects are built
+/// from (SH-517). Gated exactly like [`handle_log`]: a `GET`, daemon-scoped,
+/// the same token check, no [`mutation_guard_ok`] — nothing here writes.
+///
+/// `.no_cache()`: a browser must not pin a stale catalog across an installed
+/// plugin upgrade any longer than [`CAPABILITIES_CACHE_TTL`] already does
+/// server-side.
+#[allow(clippy::too_many_arguments)]
+fn handle_options(
+    method: &Method,
+    headers: &[Header],
+    token: &str,
+    tokens: &TokenRegistry,
+    cookie_name: &str,
+    wall_now: DateTime<Utc>,
+    registry: &DispatchRegistry,
+    env: &Environment,
+) -> Reply {
+    if !matches!(method, Method::Get) {
+        return text_reply(405, "Method Not Allowed");
+    }
+    if !token_ok(headers, token)
+        && !named_token_ok(
+            headers,
+            method,
+            cookie_name,
+            tokens,
+            wall_now,
+            Instant::now(),
+        )
+    {
+        return text_reply(401, "storyhook daemon: missing or invalid token");
+    }
+    let body = serde_json::json!({
+        "claude": registry.capabilities_for(DispatchAgent::Claude, env),
+        "codex": registry.capabilities_for(DispatchAgent::Codex, env),
+    })
+    .to_string();
+    Reply::new(200, "application/json", body).no_cache()
+}
+
 /// Parses the dispatch endpoint's `auto` query parameter (SH-208).
 ///
 /// Absent is `false`, not a refusal — a caller that has never heard of
@@ -1027,6 +1247,79 @@ fn parse_agent(query: Option<&str>) -> Result<DispatchAgent, Reply> {
     }
 }
 
+/// Parses a single-valued, [`OptionToken`]-shaped dispatch query parameter
+/// (`model` or `effort`, SH-517). Absent is `None` — "the provider's own
+/// default" — matching `agent`'s and `auto`'s own absent-is-default
+/// contract. A repeated key or a value that fails `OptionToken`'s charset
+/// gate is a 400 naming the offending value, mirroring [`parse_agent`]'s
+/// shape exactly.
+fn parse_option_token(query: Option<&str>, key: &str) -> Result<Option<OptionToken>, Reply> {
+    let values = query
+        .into_iter()
+        .flat_map(|query| query.split('&'))
+        .filter_map(|pair| {
+            let (k, value) = pair.split_once('=')?;
+            (k == key).then_some(value)
+        })
+        .collect::<Vec<_>>();
+    if values.len() > 1 {
+        return Err(text_reply(
+            400,
+            format!("dispatch: `{key}` may be specified only once"),
+        ));
+    }
+    match values.first().copied() {
+        None => Ok(None),
+        Some(value) => OptionToken::parse(value).map(Some).map_err(|reason| {
+            text_reply(
+                400,
+                format!("dispatch: invalid `{key}` value `{value}` — {reason}"),
+            )
+        }),
+    }
+}
+
+fn parse_model(query: Option<&str>) -> Result<Option<OptionToken>, Reply> {
+    parse_option_token(query, "model")
+}
+
+fn parse_effort(query: Option<&str>) -> Result<Option<OptionToken>, Reply> {
+    parse_option_token(query, "effort")
+}
+
+/// Parses the dispatch endpoint's `speed` query parameter (SH-517).
+///
+/// Absent or `speed=standard` is `false` — today's behavior, unchanged.
+/// `speed=fast` is `true`. Mirrors [`parse_auto`]'s contract exactly: a
+/// repeated key, or any other value, is a 400 rather than a silently
+/// accepted default.
+fn parse_speed(query: Option<&str>) -> Result<bool, Reply> {
+    let values = query
+        .into_iter()
+        .flat_map(|query| query.split('&'))
+        .filter_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            (key == "speed").then_some(value)
+        })
+        .collect::<Vec<_>>();
+    if values.len() > 1 {
+        return Err(text_reply(
+            400,
+            "dispatch: `speed` may be specified only once",
+        ));
+    }
+    match values.first().copied() {
+        None | Some("standard") => Ok(false),
+        Some("fast") => Ok(true),
+        Some(value) => Err(text_reply(
+            400,
+            format!(
+                "dispatch: unrecognized `speed` value `{value}` — use `speed=standard` or `speed=fast`"
+            ),
+        )),
+    }
+}
+
 /// `POST /api/repos/{project}/story/{id}/dispatch`.
 ///
 /// Resolving the dispatch script is the one check made synchronously,
@@ -1044,6 +1337,9 @@ fn handle_post(
     project: &str,
     story: &str,
     agent: DispatchAgent,
+    model: Option<OptionToken>,
+    effort: Option<OptionToken>,
+    fast: bool,
     auto: bool,
     env: &Environment,
     bus: &ChangeBus,
@@ -1056,7 +1352,16 @@ fn handle_post(
         Ok(script) => script,
         Err(message) => return text_reply(500, message),
     };
-    match registry.try_start_for_agent(project, story, agent, auto, env.now()) {
+    match registry.try_start_for_agent(
+        project,
+        story,
+        agent,
+        model.clone(),
+        effort.clone(),
+        fast,
+        auto,
+        env.now(),
+    ) {
         StartOutcome::AtCapacity => text_reply(
             429,
             format!("{MAX_RUNNING} dispatches are already running — wait for one to finish"),
@@ -1070,6 +1375,9 @@ fn handle_post(
                 project.to_string(),
                 story.to_string(),
                 agent,
+                model,
+                effort,
+                fast,
                 auto,
                 env.clone(),
                 bus.clone(),
@@ -1111,7 +1419,7 @@ type Classification = (
 );
 
 /// Spawns `script --project <project> dispatch <story> --agent=<agent>
-/// [--auto]` on a
+/// [--auto] [--model=<id>] [--effort=<id>] [--speed=fast]` on a
 /// detached thread and records its outcome when it finishes. Never touches
 /// the store: everything this needs travels in its arguments.
 #[allow(clippy::too_many_arguments)]
@@ -1122,12 +1430,17 @@ fn spawn_dispatch(
     project: String,
     story: String,
     agent: DispatchAgent,
+    model: Option<OptionToken>,
+    effort: Option<OptionToken>,
+    fast: bool,
     auto: bool,
     env: Environment,
     bus: ChangeBus,
 ) {
     std::thread::spawn(move || {
-        let classification = run_child(&script, &project, &story, agent, auto, &env);
+        let classification = run_child(
+            &script, &project, &story, agent, &model, &effort, fast, auto, &env,
+        );
         registry.finish(&handle, &story, env.now(), classification);
         // Lets an open dashboard tab refresh without polling this endpoint
         // itself — the story moved to in-progress (or didn't), and the
@@ -1136,17 +1449,26 @@ fn spawn_dispatch(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_child(
     script: &Path,
     project: &str,
     story: &str,
     agent: DispatchAgent,
+    model: &Option<OptionToken>,
+    effort: &Option<OptionToken>,
+    fast: bool,
     auto: bool,
     env: &Environment,
 ) -> Classification {
     let engine_agent = match agent {
         DispatchAgent::Claude => EngineAgent::Claude,
         DispatchAgent::Codex => EngineAgent::Codex,
+    };
+    let options = DispatchOptions {
+        model: model.as_ref().map(|m| m.as_str().to_string()),
+        effort: effort.as_ref().map(|e| e.as_str().to_string()),
+        fast,
     };
     classify_outcome(run_shell_dispatch(
         script,
@@ -1155,6 +1477,7 @@ fn run_child(
         engine_agent,
         auto,
         false,
+        &options,
         env,
     ))
 }
@@ -1706,6 +2029,9 @@ mod tests {
             "proj",
             "SH-1",
             DispatchAgent::Codex,
+            None,
+            None,
+            false,
             false,
             "t0".to_string(),
         ) {
@@ -1716,6 +2042,9 @@ mod tests {
             "proj",
             "SH-1",
             DispatchAgent::Claude,
+            None,
+            None,
+            false,
             false,
             "t1".to_string(),
         ) {
@@ -1738,6 +2067,46 @@ mod tests {
         }))
         .expect("pre-agent persisted record");
         assert_eq!(record.agent, DispatchAgent::Claude);
+    }
+
+    /// The SH-517 sibling of the test above: a record persisted before
+    /// model/effort/speed selection existed must still deserialize, as "no
+    /// selection was made" rather than a parse error.
+    #[test]
+    fn a_record_without_model_effort_or_speed_deserializes_as_no_selection() {
+        let record: DispatchRecord = serde_json::from_value(serde_json::json!({
+            "handle": "old",
+            "project": "proj",
+            "story": "SH-1",
+            "agent": "codex",
+            "auto": false,
+            "state": "ok",
+            "started_at": "t0"
+        }))
+        .expect("pre-SH-517 persisted record");
+        assert_eq!(record.model, None);
+        assert_eq!(record.effort, None);
+        assert!(!record.fast);
+    }
+
+    #[test]
+    fn option_token_rejects_an_empty_value_a_shell_metacharacter_and_an_overlong_value() {
+        assert!(OptionToken::parse("").is_err(), "empty");
+        assert!(OptionToken::parse("opusplan").is_ok(), "a real model id");
+        assert!(
+            OptionToken::parse("gpt-5.6-sol").is_ok(),
+            "dots and hyphens"
+        );
+        for hazard in ["a;rm -rf /", "$(id)", "a b", "a\nb", "a\"b", "a'b", "a|b"] {
+            assert!(
+                OptionToken::parse(hazard).is_err(),
+                "must reject {hazard:?}"
+            );
+        }
+        let sixty_five = "a".repeat(65);
+        assert!(OptionToken::parse(&sixty_five).is_err(), "over length");
+        let sixty_four = "a".repeat(64);
+        assert!(OptionToken::parse(&sixty_four).is_ok(), "at the boundary");
     }
 
     impl std::fmt::Debug for StartOutcome {
@@ -2177,6 +2546,9 @@ mod tests {
             project: "proj".to_string(),
             story: "SH-9".to_string(),
             agent: DispatchAgent::Claude,
+            model: None,
+            effort: None,
+            fast: false,
             auto: false,
             state: DispatchState::Running,
             started_at: "t0".to_string(),
