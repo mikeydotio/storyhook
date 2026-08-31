@@ -799,7 +799,7 @@ fn a_no_auto_story_is_never_dispatched_though_story_next_still_returns_it() {
         .store()
         .read(|tx| {
             Ok(
-                storyhook::service::QueryService::new(&*tx, fixture.project(), FIXTURE_NOW)
+                storyhook::service::QueryService::new(tx, fixture.project(), FIXTURE_NOW)
                     .next_filtered(5, storyhook::service::ReadyQueueFilters::default())
                     .expect("the ready queue must answer"),
             )
