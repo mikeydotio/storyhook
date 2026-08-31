@@ -6039,13 +6039,20 @@ fn web_states_patch_reorders_the_collection() {
         patch_json(
             &fixture,
             &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states"),
-            r#"{"order":["done","todo","blocked","in-progress","closed"]}"#,
+            r#"{"order":["done","todo","verifying","blocked","in-progress","closed"]}"#,
         )
         .unwrap(),
     );
     assert_eq!(
         slugs(&json),
-        vec!["done", "todo", "blocked", "in-progress", "closed"]
+        vec![
+            "done",
+            "todo",
+            "verifying",
+            "blocked",
+            "in-progress",
+            "closed"
+        ]
     );
     assert_eq!(slugs(&get_states(&fixture, port, repo_id)), slugs(&json));
 }
