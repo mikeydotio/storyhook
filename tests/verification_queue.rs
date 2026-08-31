@@ -501,7 +501,10 @@ fn a_restart_reaps_a_landed_story_without_repeating_completed_cleanup() {
         tick_with(fixture.store(), &env, &actuator).unwrap(),
         TickResult::Completed
     );
-    assert_eq!(actuator.reaped.lock().unwrap().as_slice(), [id.clone()]);
+    assert_eq!(
+        actuator.reaped.lock().unwrap().as_slice(),
+        std::slice::from_ref(&id)
+    );
     assert_eq!(
         tick_with(fixture.store(), &env, &actuator).unwrap(),
         TickResult::Idle

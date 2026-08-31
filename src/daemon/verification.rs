@@ -425,8 +425,7 @@ fn comment_once(
             .project(candidate.project)?
             .map(|project| project.prefix)
             .unwrap_or_default();
-        let number = crate::store::StoryNo::parse_id(&prefix, &candidate.story_id)
-            .map_err(crate::store::StoreError::from)?;
+        let number = crate::store::StoryNo::parse_id(&prefix, &candidate.story_id)?;
         Ok(tx.story(candidate.project, number)?.is_some_and(|row| {
             row.snapshot
                 .comments
