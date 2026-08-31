@@ -1811,7 +1811,11 @@ fn crashes_ledger_message(ledger: &[crate::daemon::crash::CrashRecord]) -> Strin
 /// `AppError::GithubApi` — nothing behind the `github-pr` feature. It was
 /// gated on that feature purely by accident of history.
 fn update(check: bool, force: bool) -> Result<Response, AppError> {
-    crate::update::run(check, force).map(Response::Message)
+    match crate::update::run(check, force)? {
+        crate::update::Outcome::Replaced(message) | crate::update::Outcome::Unchanged(message) => {
+            Ok(Response::Message(message))
+        }
+    }
 }
 
 /// The `story phase …` family.
