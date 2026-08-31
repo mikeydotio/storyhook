@@ -8,10 +8,10 @@ import {
 } from "./support";
 
 /**
- * Exercises SH-197's context menu Dispatch action. SH-512 deliberately
- * narrows this surface to literal `todo` stories while the drawer footer
- * retains its broader OPEN-state gate; `docs/spec/dashboard-dispatch.md`'s
- * As-built section records the split. Every dispatch request here is stubbed
+ * Exercises SH-197's context menu Dispatch action. SH-523 aligns this surface
+ * with the drawer footer: every open ordinary story with a checkout can open
+ * the dispatch modal, including an active story that the helper will resume.
+ * Every dispatch request here is stubbed
  * via `page.route` -- that the endpoint really runs `story.sh` end to end is
  * already proven by `dispatch.spec.ts` against Alpha's real story; stubbing
  * here means this file never claims that story out from under it and never
@@ -89,11 +89,11 @@ test("Dispatch is present for a todo story with a checkout", async ({
   await deleteStory(page, title);
 });
 
-test("Dispatch is absent after a todo story moves to in-progress, with no stray separator", async ({
+test("Dispatch remains available after a story moves to in-progress", async ({
   page,
 }) => {
   await openProject(page, "Alpha Project");
-  const title = "SH-512 context menu — dispatch only from todo";
+  const title = "SH-523 context menu — resume active work";
   const card = await createStory(page, title);
 
   await card.click();
@@ -108,19 +108,18 @@ test("Dispatch is absent after a todo story moves to in-progress, with no stray 
   await movedCard.click({ button: "right" });
   const menu = page.locator(".ctxmenu");
   await expect(menu).toBeVisible();
-  await expect(
-    menu.locator(".ctxmenu-item", { hasText: /^Dispatch$/ }),
-  ).toHaveCount(0);
+  const dispatch = menu.locator(".ctxmenu-item", { hasText: /^Dispatch$/ });
+  await expect(dispatch).toBeVisible();
   await expect(
     menu.locator(".ctxmenu-item", { hasText: "Dispatch Auto" }),
   ).toHaveCount(0);
-  // Copy ID/URL/Description, Set Status, Set Priority, Close and Delete
-  // survive. compactSeparators() collapses the now-empty dispatch group, so
-  // only the copy/status and priority/close boundaries remain.
-  await expect(menu.locator(".ctxmenu-item")).toHaveCount(7);
-  await expect(menu.locator(".ctxmenu-sep")).toHaveCount(2);
+  // The dispatch group and its separator remain present for active work.
+  await expect(menu.locator(".ctxmenu-item")).toHaveCount(8);
+  await expect(menu.locator(".ctxmenu-sep")).toHaveCount(3);
 
-  await page.keyboard.press("Escape");
+  await dispatch.click();
+  await expect(page.locator("#dispatch-modal")).toHaveClass(/open/);
+  await page.locator("#dispatch-modal-cancel").click();
   // deleteStory deliberately finds its target in the todo column. Restore
   // this fixture the same way story-context-menu-status.spec.ts restores its
   // moved stories before handing cleanup to that shared helper.

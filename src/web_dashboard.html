@@ -5454,12 +5454,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var st = v.story;
     var description = (st.description || "").trim();
     var isClosed = stateSuperstate(st.state) === "CLOSED";
-    // Narrower than renderDrawerFooter's gate by design (SH-512): the
-    // dashboard does not expose dispatch's explicit --force path, so its
-    // context menu must not offer an ordinary dispatch for an already-claimed
-    // in-progress story (or any other non-todo state). No checkout remains the
-    // second hard hide gate, exactly as it is for the footer.
-    var dispatchHidden = st.state !== "todo" || !currentRepoHasCheckout();
+    // SH-523 aligns this with renderDrawerFooter: dashboard dispatch always
+    // carries --resume, so an open ordinary story can reconstruct surviving
+    // work instead of needing the helper's narrower --force escape hatch.
+    var dispatchHidden = isClosed || st.story_type === "epic" || !currentRepoHasCheckout();
     var dispatchInFlight = !!state.dispatches[st.id];
     return compactSeparators([
       { label: "Copy ID", onSelect: function() { copyText(st.id, "ID"); } },

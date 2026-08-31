@@ -57,7 +57,7 @@ const PROMPT_OVERRIDE_ENV_VARS: [&str; 4] = [
 const TEMPLATE_PLACEHOLDERS: [&str; 5] = ["<name>", "<dir>", "<reap>", "<n>", "<done-state>"];
 pub(crate) const CHARTER_INERT_BANNED: [char; 8] = ['`', '$', ';', '&', '|', '<', '>', '!'];
 
-/// Optional model/effort/speed refinements for one dispatch (SH-517).
+/// Optional refinements for one dispatch (SH-517, SH-523).
 ///
 /// Each field is already validated by its caller before it reaches here —
 /// the charset-gated `OptionToken` at the HTTP boundary
@@ -69,12 +69,14 @@ pub(crate) const CHARTER_INERT_BANNED: [char; 8] = ['`', '$', ';', '&', '|', '<'
 /// `Default` is "no selection" — [`run_shell_dispatch`] then appends none of
 /// `--model`/`--effort`/`--speed` to the helper's argv, reproducing today's
 /// argv byte for byte. An engine (Full Auto) lane always passes this default:
-/// SH-517 does not extend model/effort/speed selection to engine lanes.
+/// SH-517 does not extend model/effort/speed selection to engine lanes, and
+/// SH-466 keeps interrupted-lane recovery separate from attended resume.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DispatchOptions {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub fast: bool,
+    pub resume: bool,
 }
 
 /// Everything the shell actuator needs to dispatch one already-selected story.
@@ -761,6 +763,9 @@ pub(crate) fn run_shell_dispatch(
         .arg("dispatch")
         .arg(story)
         .arg(format!("--agent={}", agent.as_str()));
+    if options.resume {
+        command.arg("--resume");
+    }
     if auto {
         command.arg("--auto");
     }

@@ -464,20 +464,44 @@ and forgot the other), which is the literal reason `claude plugin update` answer
 
 ## As built — SH-197 (a second entry point: the story context menu)
 
-**Dispatch is reachable from two places, with deliberately different state gates.** SH-197
+**Dispatch is reachable from two places with one state gate.** SH-197
 originally added parallel Dispatch and Dispatch Auto actions; SH-436 consolidated their
 configuration into one modal-backed Dispatch action in both the right-click context menu
 (`storyMenuModel`, `src/web_dashboard.html`) and drawer footer
-(`renderDrawerFooter`/`dispatchButton`). SH-512 narrowed the context-menu item to
-`st.state === "todo" && currentRepoHasCheckout()` because the dashboard does not expose
-dispatch's explicit `--force` path and therefore must not offer an ordinary dispatch for an
-already-claimed `in-progress` story. The drawer footer retains its original
-OPEN-state-plus-checkout gate. Both surfaces still call the same
+(`renderDrawerFooter`/`dispatchButton`). SH-523 aligns both surfaces on open ordinary stories
+with a checkout because the daemon now always passes `--resume`: an active story is a safe
+recovery entry point, not an implicit `--force`. Both surfaces call the same
 configuration modal and then `startDispatch(id, agent, auto)`, and disable while
 `state.dispatches[id]` holds an entry,
 matching `DispatchRegistry::try_start`'s per-story (not per-mode) dedupe on the daemon
 side. The context menu HIDES the item rather than disabling it when its gate fails; an
-eligible `todo` story remains visible-but-disabled only while its own dispatch is in flight.
+eligible story remains visible-but-disabled only while its own dispatch is in flight.
+
+## As built — SH-523 (resume abandoned work)
+
+**Dashboard dispatch is automatic permission to reconstruct, not permission to reset.**
+`DispatchOptions.resume` defaults to false so Full Auto engine lanes preserve SH-466's
+separate interrupted-lane policy. The HTTP path sets it true and
+`run_shell_dispatch` appends `--resume`; no query field, checkbox, or browser preference is
+added. This required dispatch protocol 2: a protocol-1 installed helper is rejected before a
+handle exists because it cannot understand the argv the daemon now always sends.
+
+**The helper classifies before it mutates.** For a named ordinary story it inventories the
+active-role claim, deterministic branch, exact registered worktree, and named tmux pane.
+Without permission, recoverable finds return `reason:"resume-available"` and the inventory;
+the attended adapters ask once and rerun the identical call only after yes. With permission,
+the helper preserves dirty files and commits, reattaches a branch-only worktree, creates a
+missing window, or uses documented `tmux respawn-pane -k -c ... -e ... -t ...` to replace the
+abandoned occupant while preserving pane identity. It removes the generated readiness
+sentinel before respawn, so the replacement process must publish its own witness. The
+current pane, a wrong/protected branch, and an unregistered path are `resume-unsafe` and
+untouched. Failure cleanup owns only resources created by that attempt.
+
+The replacement agent receives the ordinary attended or autonomous charter plus a recovery
+clause: inspect status/log/diff, comments, existing tests, and prior work before changing it;
+the previous agent may have stopped on an error. Result JSON separates permission
+(`resume_requested`) from actual recovery (`resumed`) and reports claim/branch/worktree/pane
+reuse and creation facts.
 
 ## As built — SH-436/SH-510 (dispatch configuration and remembered defaults)
 

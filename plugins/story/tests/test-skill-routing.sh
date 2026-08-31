@@ -92,6 +92,10 @@ grep -qF -- 'STORY_AGENT=claude-code' "$PLUGIN_ROOT/adapters/claude-code.md" \
   && fail_test "Claude adapter still emits the legacy provider token"
 grep -qF -- "--force" "$SKILL" \
   || fail_test "router skill never mentions --force (dispatch's forced-redispatch flag)"
+grep -qF -- "--resume" "$SKILL" \
+  || fail_test "router skill never mentions --resume (dispatch recovery permission)"
+grep -qF -- 'resume-available' "$SKILL" \
+  || fail_test "router skill never routes the interactive resume confirmation"
 grep -qF "STORY_AUTO_PROMPT" "${docs[@]}" \
   || fail_test "router skill documents STORY_PROMPT but not its --auto counterpart, STORY_AUTO_PROMPT"
 
