@@ -12,17 +12,22 @@ assert_contains "$(cat "$resolver")" 'Never fall back to the versioned plugin-ca
 assert_contains "$(cat "$resolver")" 'never pass a literal `~` or `$HOME`' \
   "Codex resolver requires an absolute path that can match an exact rule"
 
-for skill in \
-  "$PLUGIN_ROOT/skills/story/SKILL.md" \
-  "$PLUGIN_ROOT/skills/story-context/SKILL.md" \
-  "$PLUGIN_ROOT/skills/story-handoff/SKILL.md" \
-  "$PLUGIN_ROOT/skills/story-plan/SKILL.md" \
-  "$PLUGIN_ROOT/skills/story-setup/SKILL.md" \
-  "$PLUGIN_ROOT/skills/story-sync/SKILL.md" \
-  "$PLUGIN_ROOT/skills/story-triage/SKILL.md"
-do
+for skill in "$PLUGIN_ROOT"/skills/*/SKILL.md; do
+  name=$(basename "$(dirname "$skill")")
+  case "$name" in
+  story-install)
+    # This skill bootstraps the CLI and stable launcher, so the resolver's
+    # requirement that both already exist cannot apply to it.
+    continue
+    ;;
+  story-update)
+    # The CLI owns its atomic self-update directly; no helper orchestration is
+    # involved, so resolving the helper would add a dependency with no use.
+    continue
+    ;;
+  esac
   assert_contains "$(cat "$skill")" 'references/helper-command.md' \
-    "$(basename "$(dirname "$skill")") loads the provider-aware resolver"
+    "$name loads the provider-aware resolver"
 done
 
 assert_contains "$(cat "$PLUGIN_ROOT/skills/story-install/SKILL.md")" \

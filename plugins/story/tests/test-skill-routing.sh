@@ -22,13 +22,39 @@ SKILL="$PLUGIN_ROOT/skills/story/SKILL.md"
 # subcommand deliberately differ in places such as `do`/`dispatch`, so
 # matching bare prose would be noisier and weaker than matching the call site.
 docs=("$PLUGIN_ROOT"/skills/*/SKILL.md "$PLUGIN_ROOT"/references/*.md "$PLUGIN_ROOT"/adapters/*.md)
-verbs=$(awk '/^case "\$\{1:-\}" in$/,/^esac$/' "$SCRIPT" \
-        | sed -n 's/^  \([a-z][a-z]*\)).*/\1/p')
-[ -n "$verbs" ] || fail_test "could not extract any subcommands from $SCRIPT's router"
-for v in $verbs; do
-  grep -Eq "(story\\.sh|<story-helper>\\\") $v" "${docs[@]}" \
-    || fail_test "no documented helper invocation for subcommand \`$v\`"
+undocumented_router_verbs() {
+  local script="$1" v
+  for v in $(router_verbs "$script"); do
+    grep -Eq "(story\\.sh|<story-helper>\\\") $v" "${docs[@]}" || printf '%s\n' "$v"
+  done
+}
+
+verbs=$(router_verbs "$SCRIPT")
+verb_count=$(printf '%s\n' "$verbs" | awk 'NF { count++ } END { print count + 0 }')
+[ "$verb_count" -ge 18 ] \
+  || fail_test "router verb extraction is implausibly small: expected at least 18, found $verb_count"
+for v in $(undocumented_router_verbs "$SCRIPT"); do
+  fail_test "no documented helper invocation for subcommand \`$v\`"
 done
+
+# Mutation controls: an undocumented arm of either accepted spelling shape
+# must be extracted and named. A parser that silently drops one shape cannot
+# make the real-tree assertion above look clean by accident.
+mutant=$(mktemp /tmp/story-router-mutation.XXXXXX)
+_TMP_REPOS+=("$mutant")
+awk '
+  $0 == "case \"${1:-}\" in" { in_router = 1 }
+  in_router && /^  \*\)/ && !inserted {
+    print "  freshverb) : ;;"
+    print "  fresh-verb) : ;;"
+    inserted = 1
+  }
+  { print }
+  END { if (!inserted) exit 1 }
+' "$SCRIPT" >"$mutant" || fail_test "could not insert router mutation controls"
+missing=$(undocumented_router_verbs "$mutant")
+assert_contains "$missing" "freshverb" "router scan names a fresh undocumented plain verb"
+assert_contains "$missing" "fresh-verb" "router scan names a fresh undocumented hyphenated verb"
 
 # --- every skill the router delegates to exists ---
 for target in $(grep -o 'skills/story-[a-z]*/SKILL\.md' "$SKILL" | sort -u); do
