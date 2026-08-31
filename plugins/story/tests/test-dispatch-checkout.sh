@@ -84,8 +84,10 @@ probe_id=$(new_story "$repo_a" "Already has a worktree in A")
 (cd "$repo_a" && git branch "worktree-$probe_id" >/dev/null 2>&1)
 out=$(dispatch_real "$repo_b" --project "$slug_a" dispatch "$probe_id")
 assert_eq "$(jqf "$out" .ok)" "false" "probe: the collision guard sees A's branch from B"
-assert_contains "$(jqf "$out" .display)" "already exists" "probe: the refusal names the collision"
-assert_contains "$(jqf "$out" .display)" "Rolled the claim back" "probe: the claim was rolled back"
+assert_eq "$(jqf "$out" .reason)" "resume-available" "probe: the refusal classifies recovery"
+assert_eq "$(jqf "$out" .resources.branch)" "present" "probe: the inventory sees A's branch"
+probe_state=$(cd "$repo_a" && story show "$probe_id" --json | jq -r '.story.story.state')
+assert_eq "$probe_state" "todo" "probe: resource discovery ran before any claim"
 
 # --- AC2: a project with no linked checkout refuses, naming link checkout ---
 

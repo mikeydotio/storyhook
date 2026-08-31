@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # A story dispatched twice in a row (its worktree/branch already exists from
-# the first dispatch) must refuse the second attempt with no further side
-# effects, and roll the claim back so the story isn't left stranded at
-# in-progress with nothing to show for it (claim_rollback_note).
+# the first dispatch) must classify the second attempt as resume-available
+# before claiming or touching those resources.
 source "$(dirname "$0")/lib.sh"
 
 FAKE_TMUX_DIR="$TESTS_DIR/fakes"
@@ -33,12 +32,15 @@ assert_eq "$(jqf "$first" .ok)" "true" "first dispatch: ok:true"
 
 second=$(dispatch_real "$repo" "$id")
 assert_eq "$(jqf "$second" .ok)" "false" "second dispatch: ok:false (worktree/branch collision)"
-assert_contains "$(jqf "$second" .display)" "already exists" "second dispatch: reason names the collision"
-assert_contains "$(jqf "$second" .display)" "Rolled the claim back" "second dispatch: claim was rolled back"
+assert_eq "$(jqf "$second" .reason)" "resume-available" \
+  "second dispatch: collision is an interactive recovery boundary"
+assert_eq "$(jqf "$second" .resources.worktree)" "present" \
+  "second dispatch: existing worktree is inventoried"
+assert_eq "$(jqf "$second" .resources.branch)" "present" \
+  "second dispatch: existing branch is inventoried"
 
-# Confirm the rollback actually happened: state is really back to "todo",
-# not silently stranded at in-progress with no worktree to show for it.
+# Confirm discovery preceded the claim: state never left "todo".
 rolled_state=$(cd "$repo" && story show "$id" --json | jq -r '.story.story.state')
-assert_eq "$rolled_state" "todo" "second dispatch: story state rolled back to todo, not stranded"
+assert_eq "$rolled_state" "todo" "second dispatch: story was never claimed"
 
 finish

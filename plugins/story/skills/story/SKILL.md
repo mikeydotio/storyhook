@@ -32,7 +32,7 @@ authority, so do not guess a displayed name or re-derive the workflow from memor
 |---|---|
 | No operation supplied | Run **List → Pick** below. |
 | A story id such as `SH-45` | Run **View + Offer** below. A bare token is an id only if it matches `^[A-Za-z0-9]+-[0-9]+$`. |
-| `do <id> [--auto] [--force] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]` | Run **Provider dispatch** below. For a typed epic, `--auto` starts a Full Auto engine run scoped to its descendants (`--model`/`--effort`/`--speed` are not yet supported there and refuse); without `--auto` the helper refuses because the epic has no actionable steps. `--force` is only for a named non-epic story already in the project's active-role state (`in-progress` unless the project moved the role); it reuses that claim without writing another transition. |
+| `do <id> [--auto] [--force] [--resume] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]` | Run **Provider dispatch** below. For a typed epic, `--auto` starts a Full Auto engine run scoped to its descendants (`--model`/`--effort`/`--speed`/`--resume` are not supported there and refuse); without `--auto` the helper refuses because the epic has no actionable steps. `--force` only reuses an active claim; `--resume` reconstructs a named non-epic dispatch from surviving resources. |
 | `view <id>` | Run `bash "<story-helper>" view <id>`, show `display`, stop. |
 | `new <description>` | Load `<plugin-root>/references/story-new.md` and follow it. |
 | `complete <id>` | Load `<plugin-root>/references/story-complete.md` and follow it. |
@@ -155,6 +155,14 @@ speed. An unrecognized value refuses before any claim or worktree side effect, n
 provider's own valid set. None of the three apply to an epic's engine run above — passing one
 refuses rather than being silently dropped.
 
+`--resume` is explicit permission to preserve and inherit an abandoned named story's claim,
+branch, worktree, and pane. Pass it when the user requested it. Without it, a helper result
+whose `reason` is `resume-available` is the interactive boundary: show `display` and its
+`resources`, then ask exactly once whether to resume the preserved work or leave it untouched.
+An affirmative answer reruns the identical dispatch with `--resume`; a negative answer stops
+without changing anything. No other refusal is retried or turned into a question. `--resume`
+cannot be combined with `--next`, `--force`, or an epic.
+
 ### Central verifier callback
 
 `bash "<story-helper>" notify <story-id> "<message>"` is the daemon-owned callback for
@@ -175,5 +183,7 @@ and block it for manual recovery.
 - `do <id> --force` bypasses only the already-claimed refusal. It does not bypass
   worktree, branch, tmux, provider-readiness, or prompt-delivery safety checks, and it cannot
   be combined with the helper-only `dispatch --next` mode.
+- `do <id> --resume` preserves valid existing work, rebuilds only missing resources, and
+  replaces an existing story-pane occupant only after that explicit permission.
 - Storyhook stories are not GitHub issues. Do not invent issue-label or `Closes #N`
   conventions; use story ids and Storyhook relationships.

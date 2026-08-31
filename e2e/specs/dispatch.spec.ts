@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test, expect } from "./support";
 import { dispatchStory, openProject, requiredEnv, seedToken } from "./support";
@@ -251,44 +251,19 @@ test("a tab authenticates once on load, and dispatch needs no second prompt (AC2
     `expected a real worktree at ${worktreePath}`,
   ).toBe(true);
 
-  // A refused dispatch, for free: the dispatch above claimed this exact
-  // story (now in-progress), so a second click hits story.sh's own
-  // already-in-progress guard for real -- a well-formed business refusal,
-  // not a daemon or script failure. Before SH-196's dashboard half, this
-  // and an actual script failure rendered as the identical red toast,
-  // distinguishable only by a 3px border color.
+  // Leave evidence that belongs to the first agent, then dispatch the active
+  // story again. Dashboard dispatch intentionally opts into story.sh's resume
+  // path: the same worktree survives and the replacement agent receives the
+  // resume charter instead of a fresh checkout.
+  const proofPath = join(worktreePath, "resume-proof.txt");
+  writeFileSync(proofPath, "preserve the abandoned agent's work\n");
   await dispatchStory(page);
-  const refusedToast = page.locator("#toast-stack .toast.error", {
-    hasText: `${ALPHA_STORY_ID} refused`,
-  });
-  await expect(refusedToast).toBeVisible({ timeout: DISPATCH_COMPLETION_TIMEOUT });
-  // SH-304: the headline is composed from typed fields and the script's own
-  // prose is demoted to the detail line -- still on screen, still in the
-  // aria-live region, no longer the whole notice.
-  //
-  // SH-495: anchored on "not redispatching", NOT on the state slug. This
-  // assertion used to read "already in-progress" and broke when SH-481 stopped
-  // cmd_dispatch hardcoding `in-progress` and started interpolating the
-  // project's active-role slug -- which arrives backticked, so the substring no
-  // longer matched. Re-pinning it as "already `in-progress`" would compile and
-  // pass and would be the same defect on the assertion side: a second
-  // hardcoding of exactly the literal SH-481 removed, which a project that
-  // moves the `active` role would break again. The invariant phrase is the one
-  // that carries no slug.
-  //
-  // This is the ONLY spec that asserts against story.sh's real message. The six
-  // sibling files matching this text seed their own `payload: { display: ... }`
-  // and assert against their own fixture, so they are self-consistent by
-  // construction and were never affected -- measured, because SH-495 was filed
-  // suspecting all seven.
-  await expect(refusedToast.locator(".notice-detail")).toContainText("not redispatching");
-  // And a refusal is durable now: it outlives the 9s lifetime SH-196 gave it
-  // and the 3s one a success gets, because nothing else in this UI records
-  // that the dispatch didn't happen. Dismissed only by its own button.
-  await page.waitForTimeout(5_000);
-  await expect(refusedToast).toBeVisible();
-  await refusedToast.locator(".toast-dismiss").click();
-  await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
+  const resumedToast = page.locator("#toast-stack .toast.success");
+  await expect(resumedToast).toBeVisible({ timeout: DISPATCH_COMPLETION_TIMEOUT });
+  await expect(resumedToast).toHaveText(`${ALPHA_STORY_ID} dispatched`);
+  expect(readFileSync(proofPath, "utf8")).toBe(
+    "preserve the abandoned agent's work\n",
+  );
 });
 
 test("Auto mode sends agent=claude&auto=1, plus model/effort/speed when selected, and runs a real autonomous dispatch (SH-208, SH-517)", async ({

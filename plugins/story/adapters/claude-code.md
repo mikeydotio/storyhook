@@ -6,13 +6,20 @@ has already resolved the installed plugin root and its absolute `<story-helper>`
 Claude exposes the main skill as the `/story` slash command. Infer the operation and arguments
 from that invocation; do not rely on a magic environment variable.
 
-## Dispatch (`do <id> [--auto] [--force] [--agent=claude|codex]`)
+## Dispatch (`do <id> [--auto] [--force] [--resume] [--agent=claude|codex]`)
 
-Run `bash "<story-helper>" dispatch <id> --agent=<agent>`, adding `--auto` and/or `--force`
-only when the user requested them. Use the user's explicit agent when present; otherwise use
+Run `bash "<story-helper>" dispatch <id> --agent=<agent>`, adding `--auto`, `--force`, or
+`--resume` only when the user requested them. Use the user's explicit agent when present; otherwise use
 `--agent=claude`. Never pass the compatibility-only `claude-code` token through this
 interface. `--force` reuses a named story's existing claim without another
 state transition; it does not override any worktree, branch, tmux, or provider safety gate.
+
+When the first result is `ok:false` with `reason:"resume-available"` and the user did not
+already pass `--resume`, show `display` and `resources`, then ask exactly once whether to
+resume the preserved work or leave it untouched. Yes reruns the identical command with
+`--resume`; no stops. Never ask for any other refusal. Resume preserves the existing branch,
+dirty worktree, and commits while rebuilding only missing resources; it can replace an
+abandoned story-pane occupant but refuses the current pane and inconsistent identities.
 
 For a typed epic, the same helper invocation has a separate boundary: `--auto` starts a
 daemon-owned Full Auto run scoped to the epic and returns `kind:"engine-run"`; it does not
@@ -20,7 +27,7 @@ claim the epic or launch a Claude pane directly. Show `display` and stop. Withou
 the helper refuses and names the engine remedy. Never add the engine-private `--full-auto`
 lane marker here.
 
-- `ok:false`: show `display` and stop. Common causes include a missing or closed story, an
+- `ok:false`: except for the one `resume-available` interaction above, show `display` and stop. Common causes include a missing or closed story, an
   existing claim without `--force`, an unready state, or extra arguments.
 - `ok:true`: show `display` verbatim. Surface `warning` and a fenced `pane_tail` when present.
 

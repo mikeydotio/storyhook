@@ -182,6 +182,8 @@ project it is looking at.
 
 ## Mini-roadmap
 
+- Completed: reconstruct abandoned ordinary dispatches from surviving claims,
+  branches, dirty worktrees, and tmux panes without discarding work.
 - Current: surface Full Auto halt and drain outcomes as durable dashboard
   alerts that remain until the operator acknowledges each run.
 - Next: reconcile Full Auto lane accounting so `verifying` is an intentional
