@@ -1149,3 +1149,88 @@ autonomous charter still prohibits version, release, and deployment actions,
 and it may merge only through the certified path. The dedicated override can
 widen that provider posture, so it is reported in JSON and display; a daemon's
 general expert override cannot widen it accidentally.
+
+### SH-465 — the reconcile pass
+
+`EngineService::reconcile` runs one pass over one run: observe, classify,
+quarantine, break, fill, terminate. Each phase is its own short transaction,
+with dispatcher calls **between** them and never inside one — the shape
+`stop_now` already uses, for the deadlock reason
+`docs/spec/dashboard-dispatch.md` documents.
+
+**Migration 25 adds `last_progress_seq` and `last_progress_at` to
+`engine_lanes`, because `last_observed_at` could not answer the stall
+question.** That column records when the reconciler *looked*, and it advances
+on every pass — so a lane whose agent died an hour ago reads as freshly
+observed forever. It answers "did we look", never "did it move".
+`stories.head_global_seq` is the change-feed position of the event a row was
+folded from, allocated inside the write transaction and therefore total, where
+a one-second RFC3339 timestamp is blind to a burst of agent writes inside one
+second (SH-336: a timestamp is not an ordering key). The seq answers *did it
+move*; the timestamp answers *how long since it last did*. Neither alone is a
+stall detector. Both are nullable and seeded on first observation rather than
+read as a stall — absence states nothing (SH-372), and the other reading would
+quarantine every lane alive at upgrade time and every lane on its first pass
+forever.
+
+**The classification order is the design, not an implementation detail.**
+`Completed` is tested before `WindowGone` because completion is a *store* fact
+while a closed window is only evidence about a window (D3, SH-226). Every
+successful lane ends exactly that way — the agent finishes and its pane exits —
+so reading the window first would report finished work as a failure, quarantine
+it, and count it toward the breaker that halts the run. It is one `if` away
+from being wrong in a way no other case would notice, so it carries its own
+test on both the pure and the wired side.
+
+**Both new budgets derive rather than being picked** (SH-394).
+`ENGINE_LANE_BUDGET` **is** `api::dispatch::MAX_RUNNING` — a filled lane is
+exactly one `story.sh dispatch` subprocess and that bound already exists, so a
+second literal would be a second opinion about one machine (SH-136).
+`STALL_CEILING_SECS` is the budget times the measured suite median times a
+named margin, because a lane's longest *legitimate* silence is queuing on the
+machine-wide `gate` lock while other lanes run the suite. **SH-457's
+serialization is precisely why the median is the right input** rather than the
+873s measured under concurrent worktree suites — the lock removed the
+contention that produced that figure. That dependency is stated in the
+constant's own doc: if a lane's suite ever runs unserialized again, the ceiling
+is too tight and must be re-derived rather than merely raised.
+
+Both derivation fences assert on the **source text**, not on the values, and
+that distinction is the whole point: a runtime `assert_eq!(ENGINE_LANE_BUDGET,
+MAX_RUNNING)` is vacuous, because re-typing the budget as the literal `4`
+leaves the two equal and the test green while the derivation it protects is
+already broken. Only the spelling distinguishes a derived constant from a copy
+of its digits — the same reason `tests/machine_lock.rs` compares
+`WAIT_REPORT_SECS=$GATE_MEDIAN_SECS` textually.
+
+**Two invariants live at compile time**, beside the constants rather than in a
+test: a margin below 1 would put the ceiling under the worst legitimate silence
+it derives from, and a tick of zero is the busy loop the design forbids. Both
+were runtime assertions until clippy pointed out that an assertion over a
+`const` folds and proves nothing. Verified by mutation: setting the margin to 0
+now fails `cargo check` with its own message.
+
+**Quarantine writes free text to `awaiting`, never a `blocked-by` edge.**
+SH-398's rule is about blockers that *are* stories, and a dead window is not
+one. The lane keeps its `window_name` and `worktree_path`, because D11
+preserves a crashed agent's work for a human rather than reclaiming it.
+
+**`HardStopKind::Interrupted` is declared here but produced only by SH-466**,
+so that story adds a *producer* rather than widening a shipped enum every
+reader already matches on. `ReconcileReport` is data rather than rendered text,
+because SH-467's CLI and SH-468's HTTP both render it and neither should have
+to parse a sentence back apart.
+
+**What this deliberately does not do:** own its own trigger. There is no busy
+loop; a caller wakes it on a project change, on a coarse tick derived from
+`STALL_CEILING_SECS`, or on a control command. The daemon wiring is SH-468's,
+and daemon-start reconciliation is SH-466's.
+
+**One mutation survived the first attempt and is recorded rather than quietly
+fixed.** Deleting the breaker's reset changed no observable: the reset test ran
+one pass with a hard stop and a completion and asserted the streak read 1 —
+which is also what it reads with the reset gone, because the streak was already
+0. It agreed with the code for the wrong reason and had nothing to reset, the
+SH-364 shape, found by mutation where review had not. Rewritten to build a real
+streak of two before completing anything; it now fails that mutation with
+`left: 2, right: 0`.
