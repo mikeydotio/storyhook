@@ -178,7 +178,7 @@ skills unchanged.
 | `/story <id>` | Shows the story, then offers to start work on it |
 | `/story new <description>` | Interrogates you, drafts the story, files it after you confirm |
 | `/story view <id>` | Prints the story and its comments, then stops |
-| `/story do <id> [--auto] [--force] [--agent=claude\|codex]` | Claims a **ready** story and dispatches it to a fresh provider Plan-mode session in a new tmux window rooted in a per-story git worktree; `--force` reuses an existing `in-progress` claim without weakening worktree/tmux safety |
+| `/story do <id> [--auto] [--force] [--agent=claude\|codex] [--model=<id>] [--effort=<id>] [--speed=standard\|fast]` | Claims a **ready** story and dispatches it to a fresh provider Plan-mode session in a new tmux window rooted in a per-story git worktree; `--force` reuses an existing `in-progress` claim without weakening worktree/tmux safety |
 | `/story complete <id>` | Closes the story and reclaims its worktree and merged branch, after showing you a plan and asking |
 | `/story capture <id>` | Dumps the recent output of a dispatched session's window (read-only) |
 | `/story doctor` | Checks project data integrity and the selected provider's readiness, Plan-mode, and paste behavior |
@@ -195,6 +195,17 @@ compatibility alias. Claude keeps its existing
 `codex --no-alt-screen`, confirms the interactive screen, enters Plan mode with
 Shift+Tab, and submits the bracketed-pasted charter with Tab. A failed readiness or
 Plan-mode check rolls back the claim and worktree before any charter is submitted.
+
+`--model=<id>`, `--effort=<id>`, and `--speed=standard|fast` (or the
+`STORY_MODEL`/`STORY_EFFORT`/`STORY_SPEED` env vars, ranked beneath an explicit
+flag the same way `STORY_AGENT` sits beneath `--agent`) each narrow the dispatched
+session, defaulting to the selected provider's own built-in choice when omitted.
+Every id is provider-scoped — a Claude model is not a valid Codex one and vice
+versa — and validated against that provider's own catalog before any claim or
+worktree side effect. `story.sh capabilities --agent=claude|codex` reports the
+current valid set (models, efforts, speeds, each with a display label and at
+most one marked as the default), the same catalog the web dashboard's dispatch
+dialog builds its selects from.
 
 `--auto` is fully unattended while retaining Plan mode. Storyhook allows Claude's
 plan exit through its packaged hook, then uses Claude's exact `PermissionRequest`
@@ -394,6 +405,12 @@ story next [--count <n>] [--phase <N>] [--epic <id>] [--exclude-label <csv>]
 story claim <id> [--comment <text> | --no-comment] [--dry-run]
 story claim --next [--phase <N>] [--epic <id>] [--exclude-label <csv>] [--comment <text> | --no-comment] [--dry-run]
 story unclaim <id> [--comment <text> | --no-comment] [--dry-run]
+story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex]
+story engine status [--run <run-id>]
+story engine pause [--run <run-id>]
+story engine resume [--run <run-id>]
+story engine stop [--run <run-id>] [--now]
+story engine ack [--run <run-id>]
 story summary
 story report [--html]
 story search <query>

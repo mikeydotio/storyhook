@@ -1,5 +1,7 @@
 # AGENTS.md — Project Task Management
 
+> Project standards, environment, and git policy live in [CLAUDE.md](./CLAUDE.md) — read it alongside this file.
+
 This project uses **storyhook** (the `story` CLI) for work tracking. All agents must
 follow the workflow below.
 
@@ -15,11 +17,14 @@ follow the workflow below.
    ```
 3. **Claim it**: `story move SH-<n> in-progress`
 4. **Record progress as you go**: `story comment SH-<n> "what changed and why"`
-5. **Finish**: `story move SH-<n> done "summary of what was delivered"`
-6. **End of session** — generate a handoff summary:
+5. **Submit**: run new and directly impacted tests, push one PR, then link it:
    ```
-   story handoff --since 2h
+   story link-pr SH-<n> <pr-url>
    ```
+6. **Hand off to verification**: record all final context, then make
+   `story move SH-<n> verifying` your last action and stop. The daemon
+   runs the full suite, merges a green PR, moves the story to `done`,
+   and reaps the lane.
 
 ## Planning
 
@@ -111,7 +116,9 @@ story graph --blocked-by SH-1   # trace why a story is blocked
   use it only when the blocker genuinely isn't a story.
 - When unblocked: `story unblock SH-<n>` (or `--on SH-<blocker>`
   to clear just that edge)
-- When done: `story move SH-<n> done "what was delivered"`
+- When submitted: link exactly one open close-on-merge PR, then move the story
+  to `verifying` as your final action. Do not run the full suite, merge, close,
+  or reap from an agent worktree.
 - What is ready: `story next --count 5`
 - What is blocked: `story list --blocked`
 
@@ -140,6 +147,7 @@ what still gets filed.
 | Create a story | `story new "<title>"` |
 | Move to a state | `story move SH-<n> <state>` |
 | Add a comment | `story comment SH-<n> "comment text"` |
+| Link the submitted PR | `story link-pr SH-<n> <pr-url>` |
 | Set priority | `story prioritize SH-<n> high` |
 | What a level means | `story help priority-rubric` |
 | Adopt or file a mid-work find | `story help scope-rubric` |
@@ -171,3 +179,12 @@ The one file that does belong to the repository is `.storyhook.toml`: it names
 which project this checkout is, and it is where this repository's own storyhook
 configuration lives. **Commit it.** A clone without it does not know which
 project it is looking at.
+
+## Mini-roadmap
+
+- Current: surface Full Auto halt and drain outcomes as durable dashboard
+  alerts that remain until the operator acknowledges each run.
+- Next: reconcile Full Auto lane accounting so `verifying` is an intentional
+  handoff, not a stall or dead-window failure.
+- Later: expose queue health and verification diagnostics in engine/dashboard
+  surfaces after the core protocol is proven.

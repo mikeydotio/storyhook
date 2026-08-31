@@ -229,6 +229,15 @@ pub enum Route<'a> {
     /// this table is a complete statement about the surface this daemon
     /// serves rather than a statement about the part somebody remembered.
     DispatchLog,
+    /// `GET /api/dispatch-options` — the per-provider model/effort/speed
+    /// catalog the web dispatch dialog's selects are built from (SH-517).
+    ///
+    /// Daemon-scoped for the same reason [`Self::DispatchLog`] is: see
+    /// [`crate::api::dispatch::is_dispatch_options_path`], cross-checked
+    /// against this variant below. Claimed by
+    /// [`crate::api::dispatch::intercept`] before the router, exactly like
+    /// [`Self::DispatchLog`]; named here for the same completeness reason.
+    DispatchOptions,
     /// Anything under `/api/v1/…` — the daemon's control surface.
     ///
     /// [`crate::api::rpc::admission`] owns it entirely and
@@ -258,6 +267,10 @@ pub fn classify<'a>(segments: &[&'a str], method: &Method) -> Route<'a> {
         ["api", "v1", ..] => Route::ControlSurface,
         ["api", "dispatch-log"] => match method {
             Method::Get => Route::DispatchLog,
+            _ => Route::MethodNotAllowed,
+        },
+        ["api", "dispatch-options"] => match method {
+            Method::Get => Route::DispatchOptions,
             _ => Route::MethodNotAllowed,
         },
         ["api", "events"] => match method {
@@ -367,6 +380,7 @@ impl Route<'_> {
             Route::Project { .. } => "Project",
             Route::Events => "Events",
             Route::DispatchLog => "DispatchLog",
+            Route::DispatchOptions => "DispatchOptions",
             Route::ControlSurface => "ControlSurface",
             Route::MethodNotAllowed => "MethodNotAllowed",
             Route::NotFound => "NotFound",
@@ -642,6 +656,30 @@ mod tests {
                 crate::api::dispatch::is_dispatch_log_path(&parts),
                 at(path, &Method::Get) == Route::DispatchLog,
                 "{path}: the dispatch log's two spellings disagree"
+            );
+        }
+    }
+
+    #[test]
+    fn the_dispatch_options_route_is_spelled_the_same_here_as_in_the_gate_that_claims_it() {
+        // SH-517's own copy of the two tests above, for the third
+        // interception predicate.
+        for path in [
+            "/api/dispatch-options",
+            "/api/dispatch-options/extra",
+            "/api/dispatch-option",
+            "/api/dispatch-log",
+            "/api/repos/p/dispatch-options",
+            "/api/repos/p/story/SH-1/dispatch",
+            "/api/events",
+            "/api/repos",
+            "/",
+        ] {
+            let parts = segments(path);
+            assert_eq!(
+                crate::api::dispatch::is_dispatch_options_path(&parts),
+                at(path, &Method::Get) == Route::DispatchOptions,
+                "{path}: the dispatch options route's two spellings disagree"
             );
         }
     }

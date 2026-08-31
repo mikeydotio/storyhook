@@ -49,6 +49,10 @@ out=$(bash "$SCRIPT" reap SH-1 junk 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "reap with a trailing token: ok:false"
 assert_contains "$(jqf "$out" .display)" "usage" "reap with a trailing token: usage message"
 
+out=$(bash "$SCRIPT" notify SH-1 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "notify with no message: ok:false"
+assert_contains "$(jqf "$out" .display)" "usage" "notify with no message: usage message"
+
 out=$(bash "$SCRIPT" bogus-subcommand 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "unknown subcommand: ok:false"
 
@@ -56,7 +60,7 @@ assert_eq "$(jqf "$out" .ok)" "false" "unknown subcommand: ok:false"
 # wrong, so it must name every verb the router actually accepts. Pins the two
 # from drifting apart as verbs are added.
 usage=$(jqf "$(bash "$SCRIPT" bogus-subcommand 2>&1)" .display)
-for verb in list view dispatch create complete reap doctor capture ensure-cli context sync handoff triage scaffold-claude-md; do
+for verb in $(router_verbs "$SCRIPT"); do
   assert_contains "$usage" "$verb" "usage: names the \`$verb\` verb"
 done
 

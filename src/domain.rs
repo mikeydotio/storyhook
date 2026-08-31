@@ -1262,13 +1262,20 @@ pub struct RequiredState {
 /// is the same pattern for the same reason.
 pub const CLOSED_STATE_SLUG: &str = "closed";
 
-pub static REQUIRED_STATES: [RequiredState; 5] = [
+/// The reserved OPEN handoff state owned by centralized verification.
+pub const VERIFYING_STATE_SLUG: &str = "verifying";
+
+pub static REQUIRED_STATES: [RequiredState; 6] = [
     RequiredState {
         slug: "todo",
         super_state: SuperState::Open,
     },
     RequiredState {
         slug: "in-progress",
+        super_state: SuperState::Open,
+    },
+    RequiredState {
+        slug: VERIFYING_STATE_SLUG,
         super_state: SuperState::Open,
     },
     RequiredState {
@@ -1426,7 +1433,7 @@ pub fn undefined_state_error(slug: &str, states: &BTreeMap<String, StateDef>) ->
 /// is what makes it safe on a path that runs on every import.
 pub fn with_required_states(states: &[StateDef]) -> Result<Vec<StateDef>, AppError> {
     let mut repaired = states.to_vec();
-    for required in &REQUIRED_STATES {
+    for (required_index, required) in REQUIRED_STATES.iter().enumerate() {
         if let Some(found) = repaired.iter().find(|state| state.slug == required.slug) {
             if found.super_state != required.super_state {
                 return Err(AppError::Validation(format!(
@@ -1451,11 +1458,17 @@ pub fn with_required_states(states: &[StateDef]) -> Result<Vec<StateDef>, AppErr
         };
         match required.super_state {
             SuperState::Open => {
-                let after_last_open = repaired
+                let before_next_required_open = REQUIRED_STATES[required_index + 1..]
                     .iter()
-                    .rposition(|state| state.super_state == SuperState::Open)
-                    .map_or(0, |index| index + 1);
-                repaired.insert(after_last_open, addition);
+                    .filter(|later| later.super_state == SuperState::Open)
+                    .find_map(|later| repaired.iter().position(|state| state.slug == later.slug));
+                let position = before_next_required_open.unwrap_or_else(|| {
+                    repaired
+                        .iter()
+                        .rposition(|state| state.super_state == SuperState::Open)
+                        .map_or(0, |index| index + 1)
+                });
+                repaired.insert(position, addition);
             }
             SuperState::Closed => repaired.push(addition),
         }
@@ -1463,7 +1476,7 @@ pub fn with_required_states(states: &[StateDef]) -> Result<Vec<StateDef>, AppErr
     Ok(repaired)
 }
 
-/// `` `todo`, `in-progress`, `blocked`, `done` and `closed` `` — for error
+/// `` `todo`, `in-progress`, `verifying`, `blocked`, `done` and `closed` `` — for error
 /// messages.
 fn required_state_list() -> String {
     let slugs: Vec<String> = REQUIRED_STATES
@@ -2682,7 +2695,7 @@ pub fn is_ready(story: &StorySnapshot, all_stories: &impl StoryIndex) -> bool {
     if story.draft {
         return false;
     }
-    // `"blocked"` is one of the four `REQUIRED_STATES` (SH-125), pinned to
+    // `"blocked"` is one of the `REQUIRED_STATES`, pinned to
     // `SuperState::Open` in every project by construction, so this is a safe
     // check against a guaranteed reserved slug rather than a fragile string
     // match against project-configurable state names. Without it, a story
@@ -2758,9 +2771,10 @@ pub fn is_human_only(story: &StorySnapshot) -> bool {
     story.labels.iter().any(|label| label == LABEL_HUMAN_ONLY)
 }
 
-/// Whether `story` is an actionable leaf that is [`is_ready`] *and* nobody
-/// has claimed it yet. Structural epics are planning containers and therefore
-/// never claimable even when their recursively computed state is open.
+/// Whether `story` is an actionable leaf that is [`is_ready`], has not entered
+/// the daemon-owned verification handoff, and nobody has claimed it yet.
+/// Structural epics are planning containers and therefore never claimable even
+/// when their recursively computed state is open.
 ///
 /// `active` is the state [`active_state`] resolves to: the one a claim
 /// (`story move <id> in-progress`, or a first commit mention) puts a story
@@ -2779,14 +2793,14 @@ pub fn is_human_only(story: &StorySnapshot) -> bool {
 /// story someone is actively working on as blocked in those views.
 ///
 /// `active: None` — a legacy project with no role configured and other than
-/// exactly two OPEN states — leaves this identical to `is_ready`: with no
-/// reliable slug to treat as "claimed", nothing new is excluded.
+/// exactly two OPEN states — cannot identify a claimed state. The reserved
+/// `verifying` handoff remains excluded independently.
 pub fn is_claimable(
     story: &StorySnapshot,
     all_stories: &impl StoryIndex,
     active: Option<&StateDef>,
 ) -> bool {
-    if is_epic(story) || !is_ready(story, all_stories) {
+    if is_epic(story) || story.state == VERIFYING_STATE_SLUG || !is_ready(story, all_stories) {
         return false;
     }
     active.is_none_or(|state| story.state != state.slug)
@@ -3987,7 +4001,7 @@ mod tests {
     use super::{
         CLOSED_STATE_SLUG, FieldEdit, Priority, REQUIRED_STATES, STATE_ROLE_ACTIVE, StateChanges,
         StateDef, StateUsage, StoryEvent, StoryRelation, StorySnapshot, SuperState, TypeDef,
-        active_state, compute_display_state, compute_progress, default_type,
+        VERIFYING_STATE_SLUG, active_state, compute_display_state, compute_progress, default_type,
         derive_family_relationships, fold_story, has_children, is_claimable, is_ready,
         last_activity_type, needs_intervention, normalize_labels, ready_order, story_number,
         validate_event_for_append, validate_required_states, validate_state_defs,
@@ -4223,9 +4237,19 @@ mod tests {
     }
 
     #[test]
-    fn the_required_floor_is_todo_in_progress_blocked_done_and_closed() {
+    fn the_required_floor_includes_the_central_verification_handoff() {
         let slugs: Vec<&str> = REQUIRED_STATES.iter().map(|r| r.slug).collect();
-        assert_eq!(slugs, ["todo", "in-progress", "blocked", "done", "closed"]);
+        assert_eq!(
+            slugs,
+            [
+                "todo",
+                "in-progress",
+                "verifying",
+                "blocked",
+                "done",
+                "closed"
+            ]
+        );
         // Order is load-bearing, not cosmetic: `closed` comes AFTER `done` so
         // that `service::project::closed_state` and `service::pr_check`, which
         // both take the first CLOSED state they find, keep answering `done`
@@ -4246,6 +4270,7 @@ mod tests {
         let states = vec![
             state("todo", SuperState::Open, None),
             state("in-progress", SuperState::Open, Some("active")),
+            state("verifying", SuperState::Open, None),
             state("blocked", SuperState::Open, None),
             state("done", SuperState::Closed, None),
             state(CLOSED_STATE_SLUG, SuperState::Closed, None),
@@ -4295,7 +4320,7 @@ mod tests {
         let repaired = with_required_states(&states).unwrap();
         assert_eq!(
             board(&repaired),
-            "todo|in-progress|review*|blocked|done|wont-fix|closed"
+            "todo|in-progress|review*|verifying|blocked|done|wont-fix|closed"
         );
         validate_required_states(&repaired).unwrap();
     }
@@ -4309,7 +4334,10 @@ mod tests {
             state("done", SuperState::Closed, None),
         ];
         let repaired = with_required_states(&states).unwrap();
-        assert_eq!(board(&repaired), "todo|in-progress|blocked|done|closed");
+        assert_eq!(
+            board(&repaired),
+            "todo|in-progress|verifying|blocked|done|closed"
+        );
         validate_required_states(&repaired).unwrap();
     }
 
@@ -5425,6 +5453,13 @@ mod tests {
         // guessing at a slug.
         story.state = "in-progress".to_string();
         assert!(is_claimable(&story, &empty_index(), None));
+
+        // Central verification owns this OPEN state. It is not blocked, but
+        // neither a person nor Full Auto may allocate it a second time.
+        story.state = VERIFYING_STATE_SLUG.to_string();
+        assert!(is_ready(&story, &empty_index()));
+        assert!(!is_claimable(&story, &empty_index(), Some(&active)));
+        assert!(!is_claimable(&story, &empty_index(), None));
     }
 
     #[test]
@@ -6582,7 +6617,7 @@ mod tests {
     ///
     /// It answers only for a project with exactly two OPEN states and no role,
     /// and the required-state floor (SH-125) obliges every project to hold
-    /// `todo`, `in-progress` **and** `blocked` as OPEN — three. So the input
+    /// `todo`, `in-progress`, `verifying` **and** `blocked` as OPEN. So the input
     /// below is a catalog a conforming project cannot have: it survives for
     /// data written before the floor, which reaches this code through a read
     /// rather than through `story state`.

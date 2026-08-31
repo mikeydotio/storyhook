@@ -252,8 +252,8 @@ This project uses **storyhook** (`story` CLI) for work tracking.
 2. Run `story next` to find the highest-priority ready task.
 3. Update story status as you work: `story move {prefix}-<n> in-progress`
 4. Add progress notes: `story comment {prefix}-<n> "what changed and why"`
-5. Mark complete: `story move {prefix}-<n> {done_state} "summary of what was delivered"`
-6. Run `story handoff --since 2h` at end of session.
+5. Run new and impacted tests, push one PR, and link it with `story link-pr {prefix}-<n> <pr-url>`.
+6. Record final context, then make `story move {prefix}-<n> verifying` your last action. The verifier runs the full suite, lands green work, and moves the story to `{done_state}`.
 
 ## Planning mode
 

@@ -91,6 +91,7 @@ fn the_agents_template_follows_the_projects_own_closed_state() {
         .reorder_states(&[
             "todo".to_string(),
             "in-progress".to_string(),
+            "verifying".to_string(),
             "blocked".to_string(),
             "shipped".to_string(),
             "done".to_string(),
@@ -108,8 +109,14 @@ fn the_agents_template_follows_the_projects_own_closed_state() {
     let rendered = SystemService::new(&ctx)
         .scaffold("agents-md")
         .expect("scaffolding");
-    assert!(rendered.contains("story move SH-<n> shipped"), "{rendered}");
-    assert!(!rendered.contains("story move SH-<n> done"), "{rendered}");
+    assert!(
+        rendered.contains("moves the story to `shipped`"),
+        "{rendered}"
+    );
+    assert!(
+        !rendered.contains("moves the story to `done`"),
+        "{rendered}"
+    );
 }
 
 /// The consequence of where `closed` sits in the floor, asserted where an agent
@@ -126,9 +133,9 @@ fn a_default_project_tells_agents_to_finish_their_work_not_abandon_it() {
     let rendered = SystemService::new(&fixture.ctx())
         .scaffold("agents-md")
         .expect("scaffolding");
-    assert!(rendered.contains("story move SH-<n> done"), "{rendered}");
+    assert!(rendered.contains("moves the story to `done`"), "{rendered}");
     assert!(
-        !rendered.contains("story move SH-<n> closed"),
+        !rendered.contains("moves the story to `closed`"),
         "the abandoned state must never be the one the template names: {rendered}"
     );
 }

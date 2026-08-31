@@ -165,53 +165,26 @@ keyed receipt store `.githooks/pre-push` already reads — a merge tree and a
 pushed tree are the same kind of claim (content that passed `make test`), so
 one store serves both rather than teaching every reader about a second one.
 
-**Reached by polling, not a hook, because nothing local fires for a server-
-side merge.** `scripts/merge-watch.sh` (`make merge-watch`) is one reconcile
-pass over every open PR: for each, it asks `merge-preflight.sh`, and for any
-merge tree with no receipt yet, checks it out in a persistent worktree (kept
-so `target/` stays warm — a fresh `git worktree add` per pass would mean a
-cold compile every 1-3 minutes, and sharing `CARGO_TARGET_DIR` across
-worktrees is already ruled out below) and runs `make test` against it for
-real — `make test` is 36.4s median warm on this machine
-(`docs/rearch/baseline/timings.md`), so this is never a compile-only proxy.
-A green run certifies the tree through the same `gate-receipt.sh` postlude
-every ordinary push uses. Meant to be re-run every 1-3 minutes by something
-that already exists on the machine (`/loop`, a launchd job); installing that
-recurrence is a per-machine bootstrap step this spec documents rather than
-performs, the same posture `make e2e-install` already takes for the browser
-suite's toolchain. Polling reaches what a hook structurally cannot: a merge
-made from the GitHub web UI, another machine, or a session that never
-enrolled this clone.
+**Reached through the store-backed `verifying` queue, not a broad PR poll
+(SH-521).** Agents run targeted tests, link exactly one close-on-merge PR,
+move their story to required OPEN state `verifying`, and stop. The daemon
+selects one candidate globally by priority then age, refreshes its current
+base and head, and runs the exact merge tree in one persistent verifier
+worktree. A green run writes the same `gate-receipt.sh` receipt, lands through
+`land-pr.sh`, records `done`, and reaps. Conflict or red returns the story to
+its provider-tagged pane; infrastructure leaves it `verifying` for bounded
+retry. The public every-open-PR mode of `merge-watch.sh` is retired; only its
+private real-Git speculative-run primitive remains.
 
-**Status is reported on the PR itself, upserted rather than posted fresh.**
-A comment sits in the maintainer's path at the exact moment of the risky
-action — clicking merge — which a status file nothing reads yet, or a story
-filed per red poll, do not. But posting a fresh comment every pass would mean
-a new notification every 1-3 minutes for a PR that is simply still broken —
-the self-noise shape this project has already paid for three times (SH-306,
-SH-345, SH-263: a gate or fixture that fires repeatedly for one unchanged
-fact, rather than once for the fact itself). So the comment is found by a
-fixed marker and edited in place; GitHub does not notify on an edit the way
-it does on a new comment, so a still-red PR produces one notification total,
-not one per poll. The comment always carries a last-checked timestamp, for
-the same reason SH-306 named one layer down: a gate that goes silent (the
-poller dies, `gh` auth expires) must read as stale, not as a quiet all-clear.
-
-**Why `merge-watch.sh` itself carries no automated test.**
-`scripts/merge-preflight.sh` — the part that decides correctness — has the
-exhaustive treatment: `tests/merge_gate.rs` drives it against real git the
-way `tests/push_gate.rs` drives the push gate, with receipts written by the
-production `gate-receipt.sh`, never hand-forged, and mutation-checked
-(SH-295). `merge-watch.sh` is thin orchestration on top of that already-
-tested primitive plus real `gh` API calls; this project's testing tenets are
-explicit that mocking *behaviour* validates the mock rather than the
-integration, and SH-263 and SH-345 are the recorded cost of exactly that gap.
-Verified by hand against this repo's own live PRs instead, each time the
-script changes.
+`tests/merge_gate.rs` still drives the correctness boundary against real Git,
+including exact-tree equality, conflicts, receipts, persistent-worktree
+restoration, and recovery after a merge/restart. `tests/verification_queue.rs`
+drives durable selection and outcome handling. Live GitHub orchestration is
+not replaced by a behavioral fake.
 
 ## The push gate narrowed to `main`/`master`, so work ships before it is tested (SH-429)
 
-Once the SH-396 section above was true — `merge-preflight.sh`/`merge-watch.sh`
+Once the SH-396 section above was true — `merge-preflight.sh` and its verifier
 are what actually decide whether content reaches `main`, unconditionally,
 regardless of what any push carried — a second fact followed that this
 project had not yet acted on: `.githooks/pre-push` refusing an *ordinary
@@ -1076,12 +1049,10 @@ than the literal `18` that did not notice when the worst case moved.
   this repo, and an Actions job that ran tests would collide with the
   standing "no test CI in Actions" policy this doc's own mechanism already
   depends on.
-- **Installing `merge-watch.sh`'s own recurring timer (SH-396).** Documented
-  as a per-machine bootstrap step (`/loop`, launchd), not performed by any
-  target here — the same posture `make e2e-install` takes for the browser
-  suite's toolchain, and for the same reason: a background job on the
-  machine is something to opt into, not something a merge should install.
+- **Installing `merge-watch.sh`'s own recurring timer (SH-396).** Superseded by
+  SH-521's daemon-owned event-driven `verifying` queue; the broad poller is
+  retired.
 - **Retro-certifying the 13 other merge trees the 14-of-30 measurement
   found untested (SH-396).** `main`'s current tip is what matters, and the
-  first `merge-watch.sh` pass after this lands covers every PR open at the
-  time; historical merges that already landed are not re-examined.
+  verifier covers submitted stories from this point forward; historical
+  merges that already landed are not re-examined.

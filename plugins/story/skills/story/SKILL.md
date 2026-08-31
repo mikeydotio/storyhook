@@ -32,7 +32,7 @@ authority, so do not guess a displayed name or re-derive the workflow from memor
 |---|---|
 | No operation supplied | Run **List → Pick** below. |
 | A story id such as `SH-45` | Run **View + Offer** below. A bare token is an id only if it matches `^[A-Za-z0-9]+-[0-9]+$`. |
-| `do <id> [--auto] [--force] [--agent=claude|codex]` | Run **Provider dispatch** below. For a typed epic, `--auto` starts a Full Auto engine run scoped to its descendants; without `--auto` the helper refuses because the epic has no actionable steps. `--force` is only for a named non-epic story already in the project's active-role state (`in-progress` unless the project moved the role); it reuses that claim without writing another transition. |
+| `do <id> [--auto] [--force] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]` | Run **Provider dispatch** below. For a typed epic, `--auto` starts a Full Auto engine run scoped to its descendants (`--model`/`--effort`/`--speed` are not yet supported there and refuse); without `--auto` the helper refuses because the epic has no actionable steps. `--force` is only for a named non-epic story already in the project's active-role state (`in-progress` unless the project moved the role); it reuses that claim without writing another transition. |
 | `view <id>` | Run `bash "<story-helper>" view <id>`, show `display`, stop. |
 | `new <description>` | Load `<plugin-root>/references/story-new.md` and follow it. |
 | `complete <id>` | Load `<plugin-root>/references/story-complete.md` and follow it. |
@@ -145,6 +145,24 @@ The helper, not the adapter, distinguishes an actionable story from a typed epic
 claim, worktree, tmux window, prompt, or direct agent handoff. Show that result's `display` and
 stop. A bare epic is refused with the `--auto` remedy. Never add the engine-private
 `--full-auto` lane marker to an epic start.
+
+`--model=<id>`, `--effort=<id>`, and `--speed=standard|fast` narrow the dispatched session
+further, each defaulting to the selected provider's own built-in choice when omitted. Every
+id is provider-scoped — a Claude model is not a valid Codex one and vice versa. Run
+`bash "<story-helper>" capabilities --agent=<provider>` to read the current valid set rather
+than guessing or reusing a value from memory; it also names each provider's default model and
+speed. An unrecognized value refuses before any claim or worktree side effect, naming the
+provider's own valid set. None of the three apply to an epic's engine run above — passing one
+refuses rather than being silently dropped.
+
+### Central verifier callback
+
+`bash "<story-helper>" notify <story-id> "<message>"` is the daemon-owned callback for
+returning a failed verification attempt to its exact dispatched agent. It verifies the tmux
+window's recorded provider and live process before pasting the literal message and submitting
+it. This is not a user route: never invoke it for an ordinary request or use it instead of a
+durable story comment. A refusal means the verifier must leave the diagnostics on the story
+and block it for manual recovery.
 
 ## Shared notes
 

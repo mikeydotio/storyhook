@@ -569,6 +569,34 @@ svg.disclosure-icon { width: 0.875rem; height: 0.875rem; display: block; flex: n
 .engine-lane-story { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-weight: 700; }
 .engine-lane-elapsed { color: var(--fg-muted); white-space: nowrap; }
 
+/* ---- Persistent Full Auto alerts (SH-471) ----
+   This is intentionally not a toast. The engine owns its lifetime through
+   `acknowledged_at`; no notice clock, bulk-dismiss control or preference can
+   make an uncollected halt look like an all-clear. */
+.engine-banner-region {
+  display: flex; flex-direction: column; gap: 0.5rem; padding: 0.75rem 1.25rem 0;
+  flex-shrink: 0;
+}
+.engine-banner {
+  display: flex; flex-direction: column; gap: 0.5rem; padding: 0.75rem;
+  border: 1px solid var(--warn); border-radius: var(--radius);
+  background: var(--warn-soft); color: var(--fg); box-shadow: var(--shadow-sm);
+}
+.engine-banner-head { display: flex; align-items: center; gap: 0.75rem; }
+.engine-banner-title { font-weight: 800; color: var(--warn); }
+.engine-banner-ack { margin-left: auto; flex: none; }
+.engine-banner-meta { display: flex; flex-wrap: wrap; gap: 0.375rem 1rem; color: var(--fg-muted); }
+.engine-banner-meta code, .engine-quarantine-item code { font-family: var(--mono); color: var(--fg); }
+.engine-banner-quarantines { display: flex; flex-direction: column; gap: 0.25rem; }
+.engine-banner-quarantines-title { font-size: 0.75rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); }
+.engine-quarantine-list { display: flex; flex-direction: column; gap: 0.25rem; margin: 0; padding-left: 1.25rem; }
+.engine-quarantine-item { padding-left: 0.125rem; overflow-wrap: anywhere; }
+.engine-quarantine-empty { color: var(--fg-muted); }
+.engine-banner-stale {
+  padding: 0.5rem 0.75rem; border-left: 3px solid var(--warn);
+  background: var(--warn-soft); color: var(--warn); font-size: 0.8125rem;
+}
+
 /* ---- Board ---- */
 .board {
   flex: 1; display: flex; gap: 0.875rem; padding: 1rem 1.25rem; overflow-x: auto; overflow-y: hidden;
@@ -1422,6 +1450,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   .filter-clear-short { display: inline; }
   .engine-lanes-input { width: 3rem; }
   .engine-lane-strip { max-width: min(13rem, 42vw); }
+  .engine-banner-region { padding: 0.5rem 0.75rem 0; }
+  .engine-banner-head { align-items: stretch; flex-direction: column; }
+  .engine-banner-ack { align-self: flex-start; margin-left: 0; }
   /* The "STORYHOOK" wordmark (`.brand h1`) is what's redundant, not the
      project selector next to it -- the wordmark orients a reader arriving
      fresh; once a project is open, its name is what matters and the
@@ -1511,6 +1542,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       <label class="filter-toggle"><input type="checkbox" id="toggle-hide-empty-columns"> Hide empty columns</label>
     </div>
   </div>
+
+  <section class="engine-banner-region" id="engine-banner-region" aria-label="Full Auto alerts" aria-live="polite" hidden></section>
 
   <span class="sr-only" id="board-kbd-hint">Arrow keys move between stories, Enter opens the selected one, and Shift+F10 or the Menu key opens its actions.</span>
   <main class="board" id="board-view" aria-describedby="board-kbd-hint"></main>
@@ -1647,8 +1680,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     <div class="field-grid">
       <div class="field"><label for="dispatch-client">Client</label>
         <select id="dispatch-client"><option value="localhost">localhost</option></select></div>
-      <div class="field"><label for="dispatch-agent">Model</label>
+      <div class="field"><label for="dispatch-agent">Provider</label>
         <select id="dispatch-agent"><option value="claude">Claude</option><option value="codex">Codex</option></select></div>
+      <div class="field"><label for="dispatch-model">Model</label>
+        <select id="dispatch-model"><option value="">Default</option></select></div>
+      <div class="field"><label for="dispatch-effort">Effort</label>
+        <select id="dispatch-effort"><option value="">Default</option></select></div>
+      <div class="field"><label for="dispatch-speed">Speed</label>
+        <select id="dispatch-speed"><option value="">Default</option></select></div>
     </div>
     <label class="dispatch-auto-option" for="dispatch-auto">
       <input type="checkbox" id="dispatch-auto">
@@ -2356,10 +2395,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     engineProject: null,
     engineReadiness: "unasked", // "unasked" | "loading" | "loaded" | "failed"
     engineRun: null,
+    engineRuns: [],
     engineFetchTicket: 0,
     // Project -> true while its start has no reply. A map keeps the claim
     // held even if the reader switches away and back before that reply.
     engineStarts: Object.create(null),
+    // Run id -> project while an acknowledgement has no reply. Kept apart
+    // from launch claims because historical runs remain actionable while a
+    // newer run is live.
+    engineAcknowledgements: Object.create(null),
     engineLanes: 1,
     // Story id -> {handle, timer, agent, auto} for a dispatch this tab is polling
     // (SH-50). Keyed per-story rather than one global slot, matching the
@@ -3382,7 +3426,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * Containers, deliberately, not controls: anything added inside `.topbar` or
    * `.drawer-footer` later is covered for free, where a list of buttons would
    * have to be remembered. What this cannot cover is a control that floats
-   * outside all five, and no test catches that — only noticing does.
+   * outside all registered containers, and no test catches that — only
+   * noticing does.
    *
    * `.drawer-header` and `#drawer-footer` are measured whether or not the drawer
    * is open. `.drawer` translates in X only, so their vertical extent is
@@ -3390,7 +3435,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * dock height permanently and removes a whole class of bug — a dock that has
    * to be re-measured on open, re-measured on close, and is wrong for the 200ms
    * the drawer spends in between. */
-  var NOTICE_BAND_TOP = [".topbar", "#filter-bar", ".drawer-header"];
+  var NOTICE_BAND_TOP = [".topbar", "#filter-bar", "#engine-banner-region", ".drawer-header"];
   var NOTICE_BAND_BOTTOM = ["#footer", "#drawer-footer"];
 
   /** Publishes one band edge, skipping the write when the value has not moved.
@@ -4464,12 +4509,29 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   var DISPATCH_MAX_POLLS = 40; // ~200s -- comfortably past the daemon's own 180s dispatch timeout
   var DISPATCH_DEFAULTS_STORAGE_KEY = "storyhook.dispatch.defaults";
 
+  /** SH-517: model/effort/speed are provider-scoped -- a Claude model is
+   * meaningless once Codex is selected -- so they are stored per-provider
+   * rather than as one flat field, under `byAgent`. Each of the three is
+   * validated independently for the same reason `agent`/`auto` already
+   * were: an unrelated obsolete value must not discard a still-valid one. */
+  function sanitizeDispatchAgentDefaults(raw) {
+    var out = { model: "", effort: "", speed: "" };
+    if (raw && typeof raw.model === "string") out.model = raw.model;
+    if (raw && typeof raw.effort === "string") out.effort = raw.effort;
+    if (raw && (raw.speed === "" || raw.speed === "fast")) out.speed = raw.speed;
+    return out;
+  }
+
   /** The last configuration the user actually submitted, or the historical
    * defaults when this browser has never dispatched (or its stored record is
    * missing/malformed). Fields are validated independently so one obsolete
    * value cannot discard the other still-valid preference. */
   function loadDispatchDefaults() {
-    var defaults = { agent: "claude", auto: false };
+    var defaults = {
+      agent: "claude",
+      auto: false,
+      byAgent: { claude: sanitizeDispatchAgentDefaults(null), codex: sanitizeDispatchAgentDefaults(null) }
+    };
     try {
       var raw = localStorage.getItem(DISPATCH_DEFAULTS_STORAGE_KEY);
       if (!raw) return defaults;
@@ -4478,6 +4540,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         defaults.agent = stored.agent;
       }
       if (stored && typeof stored.auto === "boolean") defaults.auto = stored.auto;
+      if (stored && stored.byAgent) {
+        defaults.byAgent.claude = sanitizeDispatchAgentDefaults(stored.byAgent.claude);
+        defaults.byAgent.codex = sanitizeDispatchAgentDefaults(stored.byAgent.codex);
+      }
     } catch (e) { /* storage unavailable or malformed -- use the safe defaults */ }
     return defaults;
   }
@@ -4487,11 +4553,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * browser refuses durable storage; a later page load simply returns to the
    * historical defaults in that case. */
   var dispatchDefaults = loadDispatchDefaults();
-  function saveDispatchDefaults(agent, auto) {
-    dispatchDefaults = {
-      agent: agent === "codex" ? "codex" : "claude",
-      auto: auto === true
-    };
+  function saveDispatchDefaults(agent, auto, model, effort, speed) {
+    var normalizedAgent = agent === "codex" ? "codex" : "claude";
+    dispatchDefaults.agent = normalizedAgent;
+    dispatchDefaults.auto = auto === true;
+    dispatchDefaults.byAgent[normalizedAgent] = sanitizeDispatchAgentDefaults({
+      model: model, effort: effort, speed: speed
+    });
     try {
       localStorage.setItem(DISPATCH_DEFAULTS_STORAGE_KEY, JSON.stringify(dispatchDefaults));
     } catch (e) { /* the in-memory preference above remains authoritative */ }
@@ -4506,13 +4574,147 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   // ============================================================
-  // FULL AUTO (SH-470): project header + epic drawer
+  // FULL AUTO (SH-470/SH-471): controls + persistent alerts
   // ============================================================
 
   var engineFetchDebounceTimer = null;
+  var ENGINE_QUARANTINE_OUTCOMES = {
+    "agent-blocked": true,
+    "dispatch-refused": true,
+    interrupted: true,
+    stalled: true,
+    "window-gone": true
+  };
 
   function isLiveEngineRun(run) {
     return !!run && (run.state === "running" || run.state === "paused" || run.state === "draining");
+  }
+
+  function applyEngineRuns(runs) {
+    state.engineRuns = runs;
+    state.engineRun = runs.filter(isLiveEngineRun)[0] || null;
+  }
+
+  /** Every durable engine alert, newest first. A run's notification is data,
+   * not the current-run slot: starting a later run cannot supersede an older
+   * stop nobody acknowledged. */
+  function unacknowledgedEngineRuns() {
+    return state.engineRuns.filter(function(run) {
+      return !!run.stop_reason && !run.acknowledged_at;
+    }).slice().sort(function(a, b) {
+      var byCreated = String(b.created_at || "").localeCompare(String(a.created_at || ""));
+      return byCreated || String(b.id).localeCompare(String(a.id));
+    });
+  }
+
+  function engineAcknowledgementPending(runId) {
+    return !!state.engineAcknowledgements[runId];
+  }
+
+  function engineQuarantineStory(lane) {
+    if (lane.story) return lane.story;
+    var detail = lane.outcome_detail;
+    return typeof detail === "string" && /^[A-Za-z][A-Za-z0-9]*-\d+$/.test(detail)
+      ? detail
+      : null;
+  }
+
+  /** The lane table preserves the last outcome for a cleared quarantine, so
+   * state alone is not the classifier. Sort by the recorded observation and
+   * then lane index: simultaneous observations still have one stable order. */
+  function lastEngineQuarantines(run) {
+    return (run.lanes || []).filter(function(lane) {
+      return !!ENGINE_QUARANTINE_OUTCOMES[lane.outcome];
+    }).slice().sort(function(a, b) {
+      var byObserved = String(b.last_observed_at || "").localeCompare(String(a.last_observed_at || ""));
+      return byObserved || Number(b.index) - Number(a.index);
+    }).slice(0, 3);
+  }
+
+  function engineBannerFingerprint(runs) {
+    return JSON.stringify({
+      stale: state.engineReadiness === "failed",
+      runs: runs.map(function(run) {
+        return {
+          id: run.id,
+          state: run.state,
+          stop_reason: run.stop_reason,
+          acknowledged_at: run.acknowledged_at,
+          consecutive_hard_stops: run.consecutive_hard_stops,
+          pending: engineAcknowledgementPending(run.id),
+          lanes: (run.lanes || []).map(function(lane) {
+            return [lane.index, lane.state, lane.story, lane.last_observed_at, lane.outcome, lane.outcome_detail];
+          })
+        };
+      })
+    });
+  }
+
+  function buildEngineQuarantineItem(lane) {
+    var story = engineQuarantineStory(lane);
+    var children = story ? [storyRef(story), ": "] : [];
+    children.push(el("code", {}, [lane.outcome]));
+    if (lane.outcome_detail && lane.outcome_detail !== story) {
+      children.push(" — " + lane.outcome_detail);
+    }
+    return el("li", { class: "engine-quarantine-item" }, children);
+  }
+
+  function buildEngineBanner(run) {
+    var quarantines = lastEngineQuarantines(run);
+    var streak = Number(run.consecutive_hard_stops) || 0;
+    var streakText = streak + " consecutive hard stop" + (streak === 1 ? "" : "s");
+    var pending = engineAcknowledgementPending(run.id);
+    var quarantineBody = quarantines.length
+      ? el("ol", { class: "engine-quarantine-list" }, quarantines.map(buildEngineQuarantineItem))
+      : el("div", { class: "engine-quarantine-empty" }, ["No quarantined stories"]);
+    return el("article", { class: "engine-banner", dataset: { runId: run.id } }, [
+      el("div", { class: "engine-banner-head" }, [
+        el("div", { class: "engine-banner-title" }, ["Full Auto run needs acknowledgement"]),
+        el("button", {
+          type: "button", class: "btn btn-warn engine-banner-ack", disabled: pending,
+          onClick: function() { acknowledgeEngineRun(run.id); }
+        }, [pending ? "Acknowledging…" : "Acknowledge"])
+      ]),
+      el("div", { class: "engine-banner-meta" }, [
+        el("span", {}, ["Run ", el("code", {}, [run.id])]),
+        el("span", {}, ["State ", el("code", {}, [run.state])]),
+        el("span", {}, ["Stop reason ", el("code", {}, [run.stop_reason])]),
+        el("span", {}, [streakText])
+      ]),
+      el("div", { class: "engine-banner-quarantines" }, [
+        el("div", { class: "engine-banner-quarantines-title" }, ["Last quarantines"]),
+        quarantineBody
+      ])
+    ]);
+  }
+
+  /** Paints outside the notice dock because only the durable engine
+   * acknowledgement may remove this surface. A stable fingerprint avoids
+   * re-announcing output-identical alerts through the live region. */
+  function renderEngineBanners() {
+    if (pressDefer("engine-banner", renderEngineBanners)) return;
+    var mount = $("engine-banner-region");
+    var runs = state.screen === "repo" && state.repoId ? unacknowledgedEngineRuns() : [];
+    var visible = runs.length > 0;
+    mount.hidden = !visible;
+    if (!visible) {
+      if (mount.firstChild) clear(mount);
+      delete mount.dataset.fingerprint;
+      measureNoticeBands();
+      return;
+    }
+    var fingerprint = engineBannerFingerprint(runs);
+    if (mount.dataset.fingerprint === fingerprint) return;
+    clear(mount);
+    if (state.engineReadiness === "failed") {
+      mount.appendChild(el("div", { class: "engine-banner-stale" }, [
+        "Status refresh failed; showing the last confirmed alert."
+      ]));
+    }
+    runs.forEach(function(run) { mount.appendChild(buildEngineBanner(run)); });
+    mount.dataset.fingerprint = fingerprint;
+    measureNoticeBands();
   }
 
   function currentEngineStartPending() {
@@ -4699,19 +4901,22 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // to a disabled "Checking…" state on every poll.
     if (state.engineReadiness === "unasked") state.engineReadiness = "loading";
     renderEngineControl();
+    renderEngineBanners();
     api("GET", apiBase() + "/engine", null)
       .then(function(response) {
         if (ticket !== state.engineFetchTicket || state.screen !== "repo" || state.repoId !== project) return;
         var runs = response.runs || [];
-        state.engineRun = runs.filter(isLiveEngineRun)[0] || null;
+        applyEngineRuns(runs);
         state.engineReadiness = "loaded";
         renderEngineControl();
+        renderEngineBanners();
         if (state.drawerId) renderDrawer();
       })
       .catch(function() {
         if (ticket !== state.engineFetchTicket || state.screen !== "repo" || state.repoId !== project) return;
         state.engineReadiness = "failed";
         renderEngineControl();
+        renderEngineBanners();
         if (state.drawerId) renderDrawer();
       });
   }
@@ -4768,6 +4973,37 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     fetchEngineRuns();
   }
 
+  /** Acknowledges exactly one historical run. Transport ambiguity cannot
+   * clear the alert: the follow-up GET is the only second source allowed to
+   * confirm what happened after a missing response. */
+  function acknowledgeEngineRun(runId) {
+    var project = state.repoId;
+    if (!project || engineAcknowledgementPending(runId)) return;
+    state.engineAcknowledgements[runId] = project;
+    renderEngineBanners();
+    api("POST", apiBase() + "/engine/ack", { run: runId }).then(function(response) {
+      delete state.engineAcknowledgements[runId];
+      if (state.screen !== "repo" || state.repoId !== project) return;
+      // No GET that began before this confirmed write may reintroduce the
+      // alert. The reconciliation below takes the next ticket.
+      state.engineFetchTicket++;
+      if (response.run) {
+        applyEngineRuns(state.engineRuns.map(function(run) {
+          return run.id === response.run.id ? response.run : run;
+        }));
+      }
+      renderEngineControl();
+      renderEngineBanners();
+      fetchEngineRuns();
+    }).catch(function(err) {
+      delete state.engineAcknowledgements[runId];
+      if (state.screen !== "repo" || state.repoId !== project) return;
+      toastError(err);
+      renderEngineBanners();
+      fetchEngineRuns();
+    });
+  }
+
   /** The drawer footer's one dispatch action. Configuration now belongs to
    * the modal rather than to parallel buttons, but the in-flight gate remains
    * per story: the daemon dedupes by story regardless of agent or auto mode. */
@@ -4785,15 +5021,82 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   var dispatchModalStoryId = null;
 
+  /** SH-517: `GET /api/dispatch-options`'s per-provider catalog, fetched at
+   * most once per page load -- the daemon already caches it server-side
+   * (60s), so this is purely about not re-issuing the request on every
+   * modal open. `null` until the first fetch resolves; a failed fetch
+   * leaves it `null` so a later modal open retries rather than caching a
+   * permanent failure for the rest of the page's life. */
+  var dispatchOptionsCache = null;
+  var dispatchOptionsPromise = null;
+  function fetchDispatchOptions() {
+    if (dispatchOptionsCache) return Promise.resolve(dispatchOptionsCache);
+    if (dispatchOptionsPromise) return dispatchOptionsPromise;
+    dispatchOptionsPromise = api("GET", "/api/dispatch-options")
+      .then(function(resp) {
+        dispatchOptionsCache = resp;
+        dispatchOptionsPromise = null;
+        return resp;
+      })
+      .catch(function(err) {
+        dispatchOptionsPromise = null;
+        throw err;
+      });
+    return dispatchOptionsPromise;
+  }
+
+  /** Repopulates one dispatch selector from `entries` (an array of
+   * `{id, label?, default?}`, or absent -- a stale helper's degraded slot).
+   * `preferred` is restored only when it still names a real entry; a
+   * selection valid under yesterday's plugin version that a newer one
+   * dropped falls back to the placeholder rather than submitting silently
+   * as something the caller never chose. */
+  function populateDispatchSelector(selectId, entries, preferred) {
+    var select = $(selectId);
+    clear(select);
+    select.appendChild(el("option", { value: "" }, ["Default"]));
+    (entries || []).forEach(function(entry) {
+      select.appendChild(el("option", { value: entry.id }, [entry.label || entry.id]));
+    });
+    var stillValid = (entries || []).some(function(entry) { return entry.id === preferred; });
+    select.value = stillValid ? preferred : "";
+  }
+
+  /** Rebuilds Model/Effort/Speed for `agent` from the cached catalog,
+   * restoring that provider's own last-submitted selection. Called on
+   * modal open and whenever Provider changes -- a Claude selection has no
+   * meaning once Codex is chosen, and vice versa. */
+  function applyDispatchProviderOptions(agent, caps) {
+    var providerCaps = (caps && caps[agent]) || {};
+    var remembered = dispatchDefaults.byAgent[agent] || sanitizeDispatchAgentDefaults(null);
+    populateDispatchSelector("dispatch-model", providerCaps.models, remembered.model);
+    populateDispatchSelector("dispatch-effort", providerCaps.efforts, remembered.effort);
+    populateDispatchSelector("dispatch-speed", providerCaps.speeds, remembered.speed);
+  }
+
   /** Opens with the last submitted configuration. Localhost remains the only
-   * client; Model and Auto are durable user preferences, committed only by
-   * Submit so dismissing a draft cannot silently replace them. */
+   * client; Provider, Model, Effort, Speed, and Auto are durable user
+   * preferences, committed only by Submit so dismissing a draft cannot
+   * silently replace them. Model/Effort/Speed start as bare "Default"
+   * placeholders and are filled in once the catalog fetch resolves --
+   * usually well before a person finishes reading the dialog, and a slow
+   * or failed fetch still leaves a fully usable "Default" selection rather
+   * than blocking the dialog open. */
   function openDispatchModal(storyId, returnFocus) {
     if (state.dispatches[storyId]) return;
     dispatchModalStoryId = storyId;
     $("dispatch-client").value = "localhost";
     $("dispatch-agent").value = dispatchDefaults.agent;
     $("dispatch-auto").checked = dispatchDefaults.auto;
+    populateDispatchSelector("dispatch-model", null, "");
+    populateDispatchSelector("dispatch-effort", null, "");
+    populateDispatchSelector("dispatch-speed", null, "");
+    fetchDispatchOptions().then(function(caps) {
+      // The modal may have closed, reopened for a different story, or
+      // switched provider while this was in flight -- reapply against
+      // whichever provider is showing NOW, not the one at fetch time.
+      if (dispatchModalStoryId === storyId) applyDispatchProviderOptions($("dispatch-agent").value, caps);
+    }).catch(function() { /* selects stay at "Default" -- dispatch still works */ });
     showBackdrop("dispatch-modal-backdrop");
     activateOverlay("dispatch-modal", "dispatch-agent");
     // Preserve the invoker explicitly so Cancel/Escape does not return focus
@@ -4805,6 +5108,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // around notice timing) can still open and operate the dialog.
     $("dispatch-modal").classList.add("open");
     $("dispatch-modal").setAttribute("aria-hidden", "false");
+  }
+
+  /** Provider changed mid-draft: Model/Effort/Speed belong to the PREVIOUS
+   * provider and must be rebuilt for the new one, restoring that provider's
+   * own remembered selection rather than leaving stale options selected. */
+  function onDispatchAgentChange() {
+    applyDispatchProviderOptions($("dispatch-agent").value, dispatchOptionsCache);
   }
 
   function closeDispatchModal() {
@@ -4820,21 +5130,33 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (!storyId || state.dispatches[storyId]) return;
     var agent = $("dispatch-agent").value;
     var auto = $("dispatch-auto").checked;
-    saveDispatchDefaults(agent, auto);
+    var model = $("dispatch-model").value;
+    var effort = $("dispatch-effort").value;
+    var speed = $("dispatch-speed").value;
+    saveDispatchDefaults(agent, auto, model, effort, speed);
     closeDispatchModal();
-    startDispatch(storyId, agent, auto);
+    startDispatch(storyId, agent, auto, model, effort, speed);
   }
 
   /** Starts a dispatch for `storyId`. `auto` requests the autonomous
-   * charter via `?auto=1` (SH-208). Keyed per-story in `state.dispatches`
+   * charter via `?auto=1` (SH-208); `model`/`effort`/`speed` (SH-517) are
+   * each "" for "the provider's own default" and otherwise appended as
+   * their own query parameter, so an unconfigured dispatch's request is
+   * byte-identical to before SH-517. Keyed per-story in `state.dispatches`
    * rather than one global slot, so dispatching a second story while the
    * first is still running is just another entry, matching the daemon's
    * own support for several concurrent dispatches. No token handling here
    * -- `api()` prompts for one on a 401 and retries transparently. */
-  function startDispatch(storyId, agent, auto) {
-    state.dispatches[storyId] = { handle: null, timer: null, agent: agent, auto: auto };
+  function startDispatch(storyId, agent, auto, model, effort, speed) {
+    state.dispatches[storyId] = {
+      handle: null, timer: null, agent: agent, auto: auto,
+      model: model || "", effort: effort || "", speed: speed || ""
+    };
     if (state.drawerId === storyId) renderDrawer();
     var query = "?agent=" + encodeURIComponent(agent) + (auto ? "&auto=1" : "");
+    if (model) query += "&model=" + encodeURIComponent(model);
+    if (effort) query += "&effort=" + encodeURIComponent(effort);
+    if (speed === "fast") query += "&speed=fast";
     var path = apiBase() + "/story/" + encodeURIComponent(storyId) + "/dispatch" + query;
     api("POST", path, null)
       .then(function(resp) {
@@ -4846,13 +5168,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         // dispatching can be answered with a DIFFERENT mode than this call
         // asked for (the idempotency wrinkle DispatchRegistry::try_start
         // documents), and the button labels must reflect what is really
-        // happening, not what this click hoped for.
+        // happening, not what this click hoped for. The same wrinkle
+        // applies to model/effort/speed (SH-517).
         if (resp.dispatch && typeof resp.dispatch.auto === "boolean") {
           entry.auto = resp.dispatch.auto;
         }
         if (resp.dispatch && (resp.dispatch.agent === "claude" || resp.dispatch.agent === "codex")) {
           entry.agent = resp.dispatch.agent;
         }
+        entry.model = (resp.dispatch && typeof resp.dispatch.model === "string") ? resp.dispatch.model : "";
+        entry.effort = (resp.dispatch && typeof resp.dispatch.effort === "string") ? resp.dispatch.effort : "";
+        entry.speed = (resp.dispatch && resp.dispatch.fast === true) ? "fast" : "";
         if (state.drawerId === storyId) renderDrawer();
         pollDispatch(storyId, entry.handle, 0);
       })
@@ -6238,6 +6564,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     renderFilterOptions();
     renderView();
     renderEngineControl();
+    renderEngineBanners();
     updateSubtitle();
     updateDraftsButton();
     syncCreateAvailability();
@@ -6395,6 +6722,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("new-story-btn").hidden = !isRepo;
     $("drafts-btn").hidden = false;
     renderEngineControl();
+    renderEngineBanners();
     // The chrome band just changed shape: `#filter-bar` is in it, and hiding it
     // is a `display: none` transition, which a `ResizeObserver` does not
     // reliably report (SH-323). The observer is the safety net for everything
@@ -8028,7 +8356,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   /** The colour a status light or column dot uses for `slug`.
    *
    * SH-203: was a pure positional lookup into STATE_PALETTE -- with the
-   * default four-state catalog (todo, in-progress, blocked, done, in that
+   * required catalog (todo, in-progress, verifying, blocked, done, closed, in that
    * configured order) that put `done` at index 3, painting every
    * completed story red. A status light that colours by column has to
    * mean something, so the REQUIRED_STATES slugs every project's catalog
@@ -10346,6 +10674,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     state.engineProject = null;
     state.engineReadiness = "loading";
     state.engineRun = null;
+    state.engineRuns = [];
     $("search-input").value = state.filter.text;
     $("toggle-closed").checked = state.filter.showClosed;
     $("toggle-epics").checked = !!state.filter.showEpics;
@@ -12747,6 +13076,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("dispatch-modal-cancel").addEventListener("click", closeDispatchModal);
     $("dispatch-modal-backdrop").addEventListener("click", closeDispatchModal);
     $("dispatch-modal-submit").addEventListener("click", submitDispatchModal);
+    $("dispatch-agent").addEventListener("change", onDispatchAgentChange);
     $("drop-blocked-reason-skip").addEventListener("click", skipDropBlockedReasonModal);
     $("drop-blocked-reason-backdrop").addEventListener("click", skipDropBlockedReasonModal);
     $("drop-blocked-reason-submit").addEventListener("click", submitDropBlockedReasonModal);

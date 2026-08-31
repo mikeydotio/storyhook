@@ -79,7 +79,7 @@ on a CLOSED target.
 
 ## Placement: why `closed` goes after `done`
 
-`closed` is a fifth entry in `domain::REQUIRED_STATES`, placed **after** `done`. Three
+`closed` is the final entry in `domain::REQUIRED_STATES`, placed **after** `done`. Four
 functions answer "the CLOSED state" with a bare `.find()` that today can only return
 `done`:
 
