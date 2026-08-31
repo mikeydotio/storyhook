@@ -3887,6 +3887,7 @@ fn web_serve_api_data_meta_states_are_ordered() {
         vec![
             "todo",
             "in-progress",
+            "verifying",
             "blocked",
             "done",
             "closed",
