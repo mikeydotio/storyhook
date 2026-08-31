@@ -42,12 +42,25 @@ enum Decision {
     Incomparable,
 }
 
+/// What a completed `story update` invocation did to the installed binary.
+///
+/// The distinction is part of the result rather than inferred from its prose:
+/// callers may report post-replacement diagnostics only for [`Self::Replaced`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// The latest release replaced the running executable, including a forced
+    /// reinstall or downgrade.
+    Replaced(String),
+    /// The command only reported status; no executable was replaced.
+    Unchanged(String),
+}
+
 /// Entry point for `story update`.
 ///
 /// * `check` — report availability only; never download or replace anything.
 /// * `force` — download and (re)install the latest release even when the
 ///   installed version is already current or newer (reinstall / downgrade).
-pub fn run(check: bool, force: bool) -> Result<String, AppError> {
+pub fn run(check: bool, force: bool) -> Result<Outcome, AppError> {
     let current = env!("CARGO_PKG_VERSION");
     let agent = build_agent();
 
@@ -57,7 +70,9 @@ pub fn run(check: bool, force: bool) -> Result<String, AppError> {
 
     // `--check` never mutates and never errors on an odd tag — it just reports.
     if check {
-        return Ok(check_message(&decision, current, &latest));
+        return Ok(Outcome::Unchanged(check_message(
+            &decision, current, &latest,
+        )));
     }
 
     let proceed = match decision {
@@ -75,10 +90,12 @@ pub fn run(check: bool, force: bool) -> Result<String, AppError> {
     };
 
     if !proceed {
-        return Ok(up_to_date_message(&decision, current, &latest));
+        return Ok(Outcome::Unchanged(up_to_date_message(
+            &decision, current, &latest,
+        )));
     }
 
-    install_release(&agent, &tag, &latest, current)
+    install_release(&agent, &tag, &latest, current).map(Outcome::Replaced)
 }
 
 /// Build an HTTP agent for update downloads.
@@ -411,6 +428,15 @@ impl Drop for TempDir {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outcome_distinguishes_a_replaced_binary_from_an_unchanged_one() {
+        let replaced = Outcome::Replaced("updated".to_string());
+        let unchanged = Outcome::Unchanged("already current".to_string());
+
+        assert!(matches!(replaced, Outcome::Replaced(_)));
+        assert!(matches!(unchanged, Outcome::Unchanged(_)));
+    }
 
     #[test]
     fn parse_semver_variants() {
