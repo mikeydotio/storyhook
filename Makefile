@@ -60,9 +60,9 @@
 # exists to prevent — one tier up. It is now followed by
 # `scripts/browser-status.sh`, which names how far `main` is from the last
 # tree the browser suite certified. This is the one place that fact is
-# collected with NO bootstrap at all: `make browser-watch` and
-# `make merge-watch` both want a per-machine timer nobody has installed yet,
-# whereas every session runs `make test` before every push. It never gates —
+# collected with NO bootstrap at all: `make browser-watch` needs a per-machine
+# timer nobody has installed yet, whereas the daemon-owned verifying queue
+# runs the merge gate. It never gates —
 # `|| true`, because a merge gate that failed on the release tier's staleness
 # would undo the split SH-394 measured — and it is deliberately absent from
 # the `test-full` branch, where the suite is about to actually run.
@@ -265,19 +265,10 @@ e2e-install:
 e2e:
 	bash scripts/run-e2e.sh $(ARGS)
 
-# One reconcile pass over every open PR (SH-396): computes each PR's merge
-# tree against origin/main, and for any tree with no `make test` receipt yet,
-# tests it in a persistent worktree and certifies it for real on green --
-# so a PR that has gone green here needs no further work at merge time, and
-# `.githooks/pre-push` already recognizes the resulting tree once it lands.
-# Reports on the PR itself (an upserted comment, never a fresh one per pass --
-# see scripts/merge-watch.sh's own header for why). This target runs ONE
-# pass and exits; it installs no timer of its own. Meant to be re-run every
-# 1-3 minutes by something that already exists on this machine (`/loop`, a
-# launchd job) -- bootstrapping that recurrence is a per-machine choice, not
-# something this target does for you.
+# Retained as a migration aid after SH-521 retired the every-open-PR sweep.
+# Verification now begins when one linked story moves to `verifying`.
 merge-watch:
-	bash scripts/merge-watch.sh
+	@echo "merge-watch is retired; link one PR and move its story to verifying"
 
 # The browser tier's detection layer (SH-418).
 #
@@ -290,9 +281,9 @@ merge-watch:
 # `browser-watch` is ONE pass — if `origin/main`'s tip tree has no `tier full`
 # receipt, it runs `make test-full` against that tip in its own persistent
 # worktree, under a lock, and the ordinary `gate-receipt.sh` postlude
-# certifies it. Like `merge-watch`, it installs no timer of its own; the
-# recurrence is a per-machine bootstrap step. Unlike `merge-watch`, it wants a
-# COARSE one: the browser leg measured 1454s (24.2 minutes) here, so a pass
+# certifies it. It installs no timer of its own; the recurrence is a per-machine
+# bootstrap step. It wants a COARSE one: the browser leg measured 1454s
+# (24.2 minutes) here, so a pass
 # is the wrong shape for a 1-3 minute cadence and has its own lock to prove
 # it. Its worktree needs `make e2e-install` run in it once; the script refuses
 # with that command rather than running it, and refuses BEFORE spending the
@@ -303,8 +294,7 @@ merge-watch:
 # millisecond-cheap, no cached marker anywhere: distance is computed from the
 # receipt store per read, so a poller that has died, a `main` that is red, and
 # a machine that has never run the suite are three readings on one scale that
-# only grows. `scripts/merge-watch.sh` quotes it into every PR comment, so the
-# fact sits in front of whoever is about to merge.
+# only grows. The dashboard and explicit status command remain its consumers.
 browser-watch:
 	bash scripts/browser-watch.sh
 
@@ -326,8 +316,7 @@ browser-status:
 # build lives in a separate `target-coverage/`, so sharing a worktree would
 # mean the two pollers evict each other's warm build on every alternating
 # run). Meant to be re-run every few minutes by something that already exists
-# on the machine, the same bootstrap posture `make browser-watch` and `make
-# merge-watch` already take.
+# on the machine, the same bootstrap posture `make browser-watch` takes.
 #
 # `make coverage-status` reports the distance — commits-behind or `never` —
 # with no bootstrap needed at all, the same reason `make browser-status`

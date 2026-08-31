@@ -214,7 +214,20 @@ impl MergeRepo {
         ];
         args.extend(command.iter().map(|arg| (*arg).to_string()));
         let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-        run(self.path(), "bash", &arg_refs)
+        Command::new("bash")
+            .args(&arg_refs)
+            .current_dir(self.path())
+            .env("STORYHOOK_STORE_PATH", "/live/storyhook/store.db")
+            .env("STORYHOOK_PROJECT", "live-project")
+            .env("GH_TOKEN", "github-secret")
+            .env("GITHUB_TOKEN", "github-fallback-secret")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+            .output()
+            .expect("running speculative merge command")
     }
 
     fn spawn_speculative_run(
@@ -537,6 +550,22 @@ fn speculative_run_uses_the_exact_tree_and_restores_after_success_or_failure() {
     let expected_tree = stdout(&repo.preflight(&base, &head));
     let poller_container = repo.poller(&base);
     let poller = poller_container.path().join("poller");
+
+    let isolated = repo.speculative_run(
+        &expected_tree,
+        &base,
+        &head,
+        &poller,
+        &[
+            "bash",
+            "-c",
+            "test -z \"${STORYHOOK_STORE_PATH+x}\" && test -z \"${STORYHOOK_PROJECT+x}\" && test -z \"${GH_TOKEN+x}\" && test -z \"${GITHUB_TOKEN+x}\"",
+        ],
+    );
+    assert_ok(
+        &isolated,
+        "speculative run with live StoryHook selectors removed",
+    );
 
     let success = repo.speculative_run(
         &expected_tree,
@@ -972,6 +1001,139 @@ fn a_changed_tier_receipt_does_not_certify_a_merge_even_for_the_exact_tree() {
         "the refusal must name the insufficient tier, got: {}",
         stderr(&out)
     );
+}
+
+#[test]
+fn verifier_restart_recovers_only_a_certified_merge_on_the_current_base() {
+    let repo = MergeRepo::new();
+    let original_base = repo.rev_parse("main");
+    let head = repo.branch("feature", "main", "g", "new\n");
+    assert_ok(
+        &repo.git(&["checkout", "-q", "-b", "merged", &original_base]),
+        "branching for the landed merge",
+    );
+    assert_ok(
+        &repo.git(&["merge", "-q", "--no-edit", &head]),
+        "creating the landed merge",
+    );
+    let merge_oid = repo.rev_parse("HEAD");
+    let merge_tree = repo.tree_of("HEAD");
+    let script = checkout().join("scripts/verify-pr.sh");
+    let script = script.to_string_lossy().to_string();
+    let before_uncertified = repo.git(&["status", "--porcelain"]).stdout;
+
+    let uncertified = run(
+        repo.path(),
+        "bash",
+        &[&script, "--recover-merged", "HEAD", &merge_oid, "42"],
+    );
+    assert_ok(
+        &uncertified,
+        "the verifier protocol reports refusals as JSON",
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&uncertified.stdout).unwrap();
+    assert_eq!(payload["result"], "infrastructure-failure");
+    assert!(
+        payload["detail"]
+            .as_str()
+            .unwrap()
+            .contains("without a release-gate receipt")
+    );
+    assert_eq!(
+        repo.git(&["status", "--porcelain"]).stdout,
+        before_uncertified
+    );
+
+    repo.enroll_and_certify();
+    repo.write("later", "base advanced\n");
+    assert_ok(&repo.git(&["add", "later"]), "staging base advancement");
+    assert_ok(
+        &repo.git(&["commit", "-qm", "base advanced"]),
+        "advancing base",
+    );
+    let before_recovery = repo.git(&["status", "--porcelain"]).stdout;
+
+    let recovered = run(
+        repo.path(),
+        "bash",
+        &[&script, "--recover-merged", "HEAD", &merge_oid, "42"],
+    );
+    assert_ok(&recovered, "recovering a certified landed merge");
+    let payload: serde_json::Value = serde_json::from_slice(&recovered.stdout).unwrap();
+    assert_eq!(payload["result"], "merged");
+    assert_eq!(payload["tree"], merge_tree);
+    assert!(
+        payload["detail"]
+            .as_str()
+            .unwrap()
+            .contains("after verifier restart")
+    );
+
+    let wrong_base = run(
+        repo.path(),
+        "bash",
+        &[
+            &script,
+            "--recover-merged",
+            &original_base,
+            &merge_oid,
+            "42",
+        ],
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&wrong_base.stdout).unwrap();
+    assert_eq!(payload["result"], "infrastructure-failure");
+    assert!(
+        payload["detail"]
+            .as_str()
+            .unwrap()
+            .contains("not on the refreshed base")
+    );
+    assert_eq!(repo.git(&["status", "--porcelain"]).stdout, before_recovery);
+}
+
+#[test]
+fn verifier_preserves_the_landing_scripts_conflict_classification() {
+    let repo = MergeRepo::new();
+    let script = checkout().join("scripts/verify-pr.sh");
+    let script = script.to_string_lossy().to_string();
+
+    let conflicted = run(
+        repo.path(),
+        "bash",
+        &[
+            &script,
+            "--classify-land",
+            "2",
+            "merge-preflight found a textual conflict",
+            "42",
+            "deadbeef",
+        ],
+    );
+    assert_ok(&conflicted, "classifying a landing conflict");
+    let payload: serde_json::Value = serde_json::from_slice(&conflicted.stdout).unwrap();
+    assert_eq!(payload["result"], "conflict");
+    assert!(
+        payload["detail"]
+            .as_str()
+            .unwrap()
+            .contains("textual conflict")
+    );
+
+    let infrastructure = run(
+        repo.path(),
+        "bash",
+        &[
+            &script,
+            "--classify-land",
+            "1",
+            "GitHub unavailable",
+            "42",
+            "deadbeef",
+        ],
+    );
+    assert_ok(&infrastructure, "classifying a landing refusal");
+    let payload: serde_json::Value = serde_json::from_slice(&infrastructure.stdout).unwrap();
+    assert_eq!(payload["result"], "infrastructure-failure");
 }
 
 /// Missing arguments are refused with a message naming correct usage, in

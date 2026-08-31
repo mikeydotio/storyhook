@@ -55,6 +55,7 @@ pub mod story;
 pub mod system;
 pub mod templates;
 pub mod transfer;
+pub mod verification;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -94,6 +95,10 @@ pub use settings::{SettingSpec, SettingsService, registry as settings_registry};
 pub use story::{FieldEdits, NewStoryInput, StoryService, default_unclaim_comment};
 pub use system::SystemService;
 pub use transfer::{ImportBatch, TransferService};
+pub use verification::{
+    VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX, VERIFYING_STATE,
+    VerificationCandidate, VerificationProblem, VerificationQueue,
+};
 
 /// Where a service reads "now" from.
 ///

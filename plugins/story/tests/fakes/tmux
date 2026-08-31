@@ -361,6 +361,7 @@ case "${1:-}" in
     rm -f "$STATE/input" "$STATE/launched" "$STATE/absorb" "$STATE/pastes.log" \
           "$STATE/submitted" "$STATE/prompt_submits" "$STATE/pane_pid" \
           "$STATE/pane_command" "$STATE/launch_mangled" "$STATE/window_options.log" \
+          "$STATE/storyhook_agent" \
           "$STATE/plan_mode" "$STATE/submit_keys.log" "$STATE/codex_loading" \
           "$STATE/plan_keys_remaining" "$STATE/plan_key_ignored.log" \
           2>/dev/null || true
@@ -438,6 +439,11 @@ case "${1:-}" in
       if [ "${#seg[@]}" -gt 0 ]; then
         printf '%s\n' "${seg[*]}" >> "$STATE/window_options.log" 2>/dev/null || true
       fi
+      while IFS= read -r option; do
+        case "$option" in
+          *" @storyhook-agent "*) printf '%s' "${option##* @storyhook-agent }" > "$STATE/storyhook_agent" ;;
+        esac
+      done < "$STATE/window_options.log"
     fi
     printf '%%1\n'
     ;;
@@ -511,6 +517,10 @@ case "${1:-}" in
       ''|*'#{window_id}'*) printf '@1\n' ;;
       *) printf '\n' ;;
     esac
+    ;;
+  show-options)
+    [ -f "$STATE/storyhook_agent" ] || exit 1
+    cat "$STATE/storyhook_agent"
     ;;
   set-window-option) : ;;
   send-keys)
