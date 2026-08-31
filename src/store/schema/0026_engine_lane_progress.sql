@@ -1,4 +1,4 @@
--- storyhook store — schema version 25: a lane records when its story last
+-- storyhook store — schema version 26: a lane records when its story last
 -- actually MOVED, not merely when the reconciler last looked at it (SH-465).
 --
 -- # Why `last_observed_at` could not answer the stall question
