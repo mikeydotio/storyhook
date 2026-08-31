@@ -945,6 +945,67 @@ every Settings visit is SH-333's defect on a new surface.
 Refers to SH-361, which relates to SH-339 (whose council required this filed and split)
 and SH-367 (the half deliberately not shipped here).
 
+## As built — SH-517 (model, effort, and speed selectors)
+
+Dispatch's provider select was labelled "Model" while actually choosing the agent
+host — SH-517 gives it its correct label, **Provider**, and adds three real
+selectors: **Model**, **Effort**, **Speed**. Each defaults to the selected
+provider's own built-in choice when left at "Default"; an explicit selection is
+validated against that provider's own catalog (a Claude model is not a valid
+Codex one) before any claim or worktree side effect, the same fail-fast contract
+`--agent` already had.
+
+**The catalog has one owner.** `story.sh`'s `configure_agent` block already held
+every fact about a provider's launch behavior; a `capabilities --agent=claude|codex`
+verb reports that same knowledge as one JSON object (models, efforts, speeds, each
+with a display label and at most one marked `default:true`) rather than a second,
+driftable copy living in Rust or the dashboard. The daemon relays it at
+`GET /api/dispatch-options`, cached 60 seconds per provider
+(`DispatchRegistry::capabilities_for`) so a reopened dispatch dialog does not spawn
+a helper process on every open. A provider whose helper cannot be resolved, times
+out, or predates the `capabilities` verb degrades that provider's slot to
+`{"ok": false, "reason": ...}` rather than breaking the endpoint or the other
+provider's slot — a stale installed plugin must never turn off dispatch entirely.
+Speed's own catalog lists only `fast`: it is a plain toggle with no wire-level
+"explicit standard" distinct from omitting `--speed`, so a `standard` entry would
+have been a second, redundant way to say "Default" in the dropdown.
+
+**The launch-command assembly is now composed, not four static strings.**
+`compose_claude_launch_tpl`/`compose_codex_launch_tpl` build the command line from
+parts (`--model`, `--effort`, and — for Claude only — a merged `--settings` JSON
+object) instead of `DEFAULT_LAUNCH_TPL`/`DEFAULT_AUTO_LAUNCH_TPL` being hardcoded
+strings. The load-bearing case: Claude's `--settings` flag is not repeatable, and
+the `--auto` template already carries one (`{"permissions":{"defaultMode":
+"acceptEdits"}}`). A `fast` selection under `--auto` merges `fastMode:true` into
+that SAME object rather than appending a second `--settings` flag, which the CLI
+would reject. Called with no selection at all, both compose functions reproduce
+the pre-SH-517 strings byte for byte — verified directly in
+`tests/dispatch_endpoint.rs`'s `an_unselected_dispatch_carries_no_model_effort_or_speed_flag`.
+
+**`$STORY_LAUNCH_CMD` and `$STORY_FULL_AUTO_LAUNCH_CMD` have no seam for a
+selector.** Both are wholesale operator overrides — an exact command line with
+nowhere to splice `--model`/`--effort`/`--speed` in without guessing at its shape.
+Combining either with a selector refuses by name (naming the environment variable
+responsible) rather than silently ignoring the selector or corrupting the
+operator's own command, the same posture SH-511's header comment already commits
+to for a launch override that could weaken unattendedness.
+
+**The wire boundary.** `OptionToken` (`src/api/dispatch.rs`) gates every
+`model`/`effort` value to 1–64 characters of `[A-Za-z0-9._-]` before it becomes
+part of a `DispatchRecord` or reaches `story.sh`'s argv — these strings are
+interpolated into a command line a live tmux pane execs verbatim
+(`story.sh:1583`'s `tmux new-window ... "$launch_cmd"`), so this charset gate is
+the same class of protection `prompt_override_violation` already gives a prompt
+override. `speed` is a plain `fast`/absent boolean, needing no such gate. An
+unselected dispatch's query string, `DispatchRecord`, and helper argv are all
+unchanged from before this story — every new field is additive and
+`#[serde(default)]`, so a `dispatch-history.json` record written by a pre-SH-517
+daemon still deserializes.
+
+Refers to SH-436/SH-510 (the agent selector and remembered-defaults precedent this
+story extends) and SH-361 (`GET /api/dispatch-log`, the sibling daemon-scoped route
+`GET /api/dispatch-options` is modelled on).
+
 ## Verification
 
 `make test` is the gate. Coverage, by layer:
