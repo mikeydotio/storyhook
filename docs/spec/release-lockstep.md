@@ -105,8 +105,7 @@ to try … work that needs its own design review":
 | an incompatible store degrades to read-only, loudly | a prerelease (`vX.Y.Z-beta.N`) channel, and `story update --channel` |
 | one version across the binary and every plugin manifest | `release.sh` installing the CI-built asset instead of rebuilding locally |
 | a `PreToolUse` hook refusing edits to the *installed* copy | the plugin payload travelling inside the binary |
-| | `story doctor install` — reporting the installed set and what is pending release |
-| — | tightening `migration_guard` once a beta channel exists to recover through |
+| `story doctor install` — the installed set, and what is pending | tightening `migration_guard` once a beta channel exists to recover through |
 
 ## Rules this establishes
 

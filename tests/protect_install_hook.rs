@@ -123,7 +123,7 @@ fn an_edit_to_an_installed_file_is_refused_and_names_the_checkout() {
         "the refusal must redirect, not merely refuse: {reason}"
     );
     assert!(
-        reason.contains("Nothing you have written is lost"),
+        reason.contains("is lost by this refusal"),
         "the refusal must say the work survives — it is aimed at the wrong file, \
          not wrong in itself: {reason}"
     );
