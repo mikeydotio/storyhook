@@ -1138,6 +1138,52 @@ Standing rules for every wave:
   empty stderr, having proved nothing — one run in three once that file went from 7 tests to
   12. A test's own population is a deadline like any other: derive how long it must hold from
   the window it has to cover.
+- **A fixture may not wait on a corpse for ever, and a diagnosis on the failure path is
+  worth nothing if the defect it names has no failure path** (SH-528). A crash fixture
+  blocked in an unbounded `ChildGuard::wait()` wedged `make test` for **10h21m** holding
+  the machine-wide `gate` lock, with every later verification queued behind it — nothing
+  above a test bounds one, since `run-tests.sh`, `run-rust-battery.sh`, `leg.sh` and
+  `verify-pr.sh` carry no `timeout` between them, and `machine-lock.sh` correctly bounds
+  *waiters* by holder liveness rather than by a clock (SH-394). The filed hypothesis, a
+  missed-`SIGKILL` race, is **refuted by construction**: `process_env_fault` posts the
+  signal, then sleeps `DELIVERY_BACKSTOP` and `abort()`s, so a fault that fires is fatal
+  within that bound and an indefinite hang *proves the fault never fired*. It had not: the
+  `story` binary carried no `fault-injection` feature, which makes `store::fault::fire` an
+  inlined `Ok(())`, so the armed daemon served its command and then served for ever.
+  Reproduced by toggle, same test binary throughout — `cargo test --no-run` (marker present)
+  green in 1.77s, `cargo build --bin story` (marker absent) **hung**, rebuild with the
+  feature green again. The feature reaches `story` only through the test-support
+  dev-dependency, so `cargo test` and `cargo build` write a capable and an incapable binary
+  **to one path**, from six sites plus any hand-run build, none under the `gate` lock.
+  `crash.rs::diagnose` had named this exact cause in these exact words since long before the
+  incident and could never say so, because with the feature off there is no corpse to
+  diagnose. **The fix asks the binary rather than inspecting it**:
+  `storyhook::env::is_test_build` *is* `cfg!(feature = "fault-injection")`, and a build
+  carrying it refuses to guess where the store lives, so `assert_the_binary_can_fire_faults`
+  runs it once per test binary and reads `TEST_BUILD_REFUSAL` — an existing mechanism
+  `tests/test_build_guard.rs` already pins, no second thing to keep true (SH-136). Scanning
+  the binary for the `STORYHOOK_FAULT` literal was rejected as SH-226/SH-239's doctrine one
+  axis over and as **self-defeating in combination** — ship a refusal naming that variable
+  and its message puts the literal into the incapable binary, so the scan certifies it as
+  capable (SH-263, SH-364); `story --version` cannot answer either, since SH-406 makes it the
+  tracked-tree oid, identical for both builds of one tree. `ChildGuard::wait()` is **deleted**
+  rather than deprecated, so the compiler is the fence and a caller must state what it waits
+  for and for how long; the scope is stated at its true width — *"no `ChildGuard` wait is
+  unbounded"*, never *"no unbounded wait on a child"* — with ~30 raw `Child` waits filed
+  (SH-535), because until they are migrated the residual fact is not yet **lexical**, and a
+  text scan cannot separate `barrier.wait()`, the bounded `Pty::wait()` and the `kill(); wait()`
+  reaps from the real hazard without the hand-kept allowlist this project has paid for five
+  times. That is the general rule the council settled: **the type system when the fact is
+  structural, a derived scan when it is lexical** — SH-365 versus SH-198/SH-360/SH-364/SH-493.
+  Every deadline derives from the bound it disproves *and is deliberately larger than it*, so
+  the mechanism underneath reports itself first and names its own cause; a harness that wins
+  that race trades a real diagnosis for an anonymous timeout. Two waits stay unbounded on
+  purpose and say so: `ChildGuard::Drop`'s and `wait_within`'s own timeout path, both
+  following an uncatchable `SIGKILL`, so what they wait on is the kernel. And the armed
+  daemon's stderr, previously sent to `Stdio::null()`, now goes to a **file** (never a pipe —
+  SH-94) so a failure carries what the process it was about actually said. Design of record:
+  `docs/spec/test-tiers.md`'s "A fixture may not wait on a corpse for ever" section; the
+  council's verdict is on the story (`story show SH-528`, never its own directory — SH-363).
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
