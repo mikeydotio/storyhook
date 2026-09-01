@@ -1,0 +1,34 @@
+-- storyhook store — schema version 26: a lane records when its story last
+-- actually MOVED, not merely when the reconciler last looked at it (SH-465).
+--
+-- # Why `last_observed_at` could not answer the stall question
+--
+-- The failure taxonomy's fourth row is "no observable change past the stall
+-- ceiling". `engine_lanes.last_observed_at` records when the reconciler ran,
+-- and it advances on every pass — so a lane whose agent died an hour ago looks
+-- freshly observed forever. It answers "did we look", never "did it move".
+--
+-- # Why a global seq and not a second timestamp
+--
+-- `stories.head_global_seq` is the change-feed position of the event a story
+-- row was folded from, allocated inside the write transaction and therefore
+-- total. A timestamp is not an ordering key (SH-336): every storyhook timestamp
+-- is RFC3339 at one-second precision, and this tracker's normal workload is
+-- agents writing in bursts, so a clock is blind inside a second — exactly the
+-- resolution at which "is this lane still working" has to be decided.
+--
+-- The two columns are the honest minimum and answer different halves:
+-- `last_progress_seq` answers *did it move*, `last_progress_at` answers *how
+-- long since it last did*. Neither alone is a stall detector.
+--
+-- # Nullable on purpose
+--
+-- Both are NULL for an idle lane, which holds no story to have progressed, and
+-- for every lane that existed before this migration. A NULL seq means "no
+-- progress has been observed yet", which the reconciler seeds on its first
+-- observation rather than treating as a stall — absence states nothing
+-- (SH-372), and promoting it to "stalled" would quarantine every lane alive at
+-- upgrade time.
+
+ALTER TABLE engine_lanes ADD COLUMN last_progress_seq INTEGER;
+ALTER TABLE engine_lanes ADD COLUMN last_progress_at  TEXT;
