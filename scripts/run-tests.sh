@@ -3,17 +3,19 @@
 # `cargo test --workspace`, with an isolated storyhook data directory.
 #
 # **This wrapper is load-bearing, not tidy.** Story data lives in one global
-# database per machine. Roughly 45 integration-test files still build their
-# fixtures with `tempfile::tempdir()` and run the `story` binary with this
-# process's environment inherited, so without an override every one of them
-# writes into the developer's real `~/.local/share/storyhook/store.db` — real
-# projects, real stories, in the database the developer's own `story` commands
-# read. `storyhook_test_support::TestEnv` isolates the tests that use it and
-# sets this variable again with its own value; this covers everything else.
+# database per machine, so a run that names no store writes into the
+# developer's real `~/.local/share/storyhook/store.db` — real projects, real
+# stories, in the database their own `story` commands read.
 #
-# `/private/tmp` rather than `$TMPDIR`: the latter is Spotlight-indexed on
-# macOS, and a full run creates a database plus a write-ahead log per test
-# binary (SH-53).
+# It used to be the ONLY thing standing between this suite and that store:
+# ~45 integration-test files built fixtures with `tempfile::tempdir()` and ran
+# the binary with this process's environment inherited. They are all on
+# `storyhook_test_support::TestEnv` now, which isolates each `story` child
+# itself, and `tests/fixture_isolation.rs` refuses the forty-fourth. So this
+# block is defence in depth rather than the whole defence — which is the
+# correct amount of defence for the thing it protects, not a reason to remove
+# it: it also covers the daemon, the state home and anything a future fixture
+# does before it reaches the harness.
 #
 # `INSTA_UPDATE=no` makes the golden CLI corpus a real gate: insta's default is
 # to write a `.snap.new` beside any snapshot that no longer matches, and a

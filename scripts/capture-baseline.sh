@@ -141,11 +141,12 @@ median() {
 # ---------------------------------------------------------------------------
 
 # This script runs test binaries **directly**, outside the Makefile, so it does
-# not inherit the wrapper's isolated data directory — and dozens of test files
-# build a fixture with `tempfile::tempdir()` and run `story` with whatever
-# environment they were handed. Without this block a baseline capture writes
-# projects into the developer's real store, which is exactly how the junk
-# project W7 found got there.
+# not inherit the wrapper's isolated data directory. Without this block a
+# baseline capture writes projects into the developer's real store, which is
+# exactly how the junk project W7 found got there. Every test file builds its
+# fixtures through the shared harness now (SH-531), which is a second layer and
+# not a replacement: this script also runs the golden corpus and `story` itself
+# outside any test binary.
 #
 # Not hypothetical here either: the binary's own test-build guard
 # (`storyhook::env::is_test_build`) failed five tests in `cli_error_streams`

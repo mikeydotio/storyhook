@@ -221,9 +221,50 @@ Standing rules for every wave:
   (`board-readiness.spec.ts`'s three quarantines stayed quarantined for exactly this reason,
   once a real full-suite run measured abort delivery itself as unreliable under contention).
   Design of record: `docs/spec/test-tiers.md`.
-- **`make test` must keep its isolated `STORYHOOK_DATA_DIR`** (`scripts/run-tests.sh`).
-  ~45 test files still build fixtures with `tempfile::tempdir()` and inherit the process
-  environment; without the override a test run writes into the developer's real store.
+- **What a test environment IS is stated once, in the binary** (SH-531).
+  `storyhook::env::test_environment::TEST_ENVIRONMENT` is the parameter set — every
+  variable that stops a storyhook process reaching the developer's own store, daemon or
+  credentials — and `story help test-environment` ships it, for the reason
+  `priority-rubric` ships: a suite driving `story` from a stranger's repository has to be
+  able to ask the tool how to isolate itself. `scripts/test-env.sh`'s `storyhook_isolate`
+  is the shell rendering, and **every** isolating harness sources it; the two are proven
+  equal *behaviourally* by `tests/test_environment.rs`, which poisons every parameter in
+  the parent, runs both, and compares the environments a real child receives — in both
+  scopes and both directions. Seven hand-copied copies preceded it and had already
+  drifted: three carried a disposable-root guard and three did not, one used a sentinel
+  pid, only two redirected `HOME`, and only the Rust one cleared the developer's real
+  `STORYHOOK_GITHUB_TOKEN` — SH-153 fixed where it was found and nowhere else.
+  **One parameter is not like the others and the table says so in a field**: `HOME` may
+  only be redirected on a storyhook process, never exported around a run that also
+  invokes `cargo` or `npm`, because `CARGO_HOME`/`RUSTUP_HOME` are unset on an ordinary
+  machine and a fake `HOME` costs cargo its registry and playwright its browsers —
+  silently, as a slowdown rather than an error. `TestEnv` may because it isolates each
+  child; a shell wrapper around cargo may not. Two variables every harness also sets stay
+  deliberately OUT of the table, so it means exactly one thing: `INSTA_UPDATE`, which says
+  nothing about which store is reached, and `STORYHOOK_GATE_PROGRESS(_PATH)`, which a
+  harness legitimately *sets* and strips per-child with `env -u`.
+  **`make scratch`** (`scripts/scratch-env.sh`) is the same isolation with a person in
+  front of it: this checkout's binary, a throwaway store, a daemon that dies with the
+  shell — `--test-build` for a build carrying the store's crash points. It exists because
+  `./target/debug/story list`, typed in a worktree, resolves the REAL store and port 3456
+  (`is_test_build`'s sentinel is the `fault-injection` feature, which `cargo build` does
+  not set) beside a committed `.storyhook.toml` naming this project, and the only prior
+  way to exercise a change by hand was `make install`. Design of record:
+  `docs/spec/test-environments.md`.
+- **A test file reaches the binary through the harness, or through `story_binary()`, and
+  never `cargo_bin("story")`** (`tests/fixture_isolation.rs`, SH-531). The 43 files that
+  did the last thing were protected only by a wrapper script and by `is_test_build`'s
+  refusal — and a developer with `$STORYHOOK_STORE_PATH` exported, which is exactly what
+  somebody debugging a second store has, defeats both: the wrapper is bypassed and the
+  refusal does not fire, because something *did* name a store. The acceptance check that
+  distinguishes a migrated file from an unmigrated one is `env -u STORYHOOK_DATA_DIR
+  -u STORYHOOK_STORE_PATH -u XDG_DATA_HOME cargo test --test <name>`; none of the 43 could
+  pass it before and all of them do now. The fence needs no allowlist because every
+  legitimate raw invocation already goes through `story_binary()`, which is the correct
+  door rather than a tolerated one.
+- **`make test` keeps its isolated `STORYHOOK_DATA_DIR`** (`scripts/run-tests.sh`), as
+  defence in depth rather than as the whole defence — it covers the daemon, the state home
+  and anything a fixture does before it reaches the harness.
 - **`app::run`, `lock.rs` and `registry.rs` are gone** (W6, 10,849 lines). `storage.rs`
   survives on purpose as the **rollback path** — `store -> export -> a legacy tree`, which
   `tests/migrate_round_trip.rs` runs end to end and the W4 revert policy is conditional on.
