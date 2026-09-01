@@ -26,22 +26,6 @@ follow the workflow below.
    runs the full suite, merges a green PR, moves the story to `done`,
    and reaps the lane.
 
-## Trying something out
-
-`story` writes to one store shared by everything on this machine — including the
-project you are working in. To exercise a change without touching it:
-
-```
-make scratch                        # a shell with a throwaway store
-make scratch ARGS="-- story list"   # one command in one
-make scratch-clean                  # delete every scratch environment
-```
-
-Running `./target/debug/story` directly does **not** do this: it resolves the
-real store and the real daemon. `story help test-environment` explains what the
-scratch environment sets and why, and is what to follow if you are isolating a
-suite of your own.
-
 ## Planning
 
 When creating an implementation plan, create a story for each discrete work item,
