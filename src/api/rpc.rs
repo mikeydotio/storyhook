@@ -173,12 +173,12 @@ fn invoke<S: Store>(store: &S, env: &Environment, entry: &Entry<'_>, body: &str)
         // Answered inside the envelope rather than as a bare HTTP error: the
         // client is storyhook, and it should reconstruct this the same way it
         // reconstructs any other failure.
-        return answer(&request.request_id, Err(mismatch));
+        return answer(&request.request_id, Err(mismatch), degraded_notice(store));
     }
 
     let command = crate::invoke::invocation_name(&request.invocation);
     if let Some(conflict) = concurrency_conflict(env, command, &request.cwd) {
-        return answer(&request.request_id, Err(conflict));
+        return answer(&request.request_id, Err(conflict), degraded_notice(store));
     }
 
     entry.name(lifecycle::CurrentRequest {
@@ -212,7 +212,7 @@ fn invoke<S: Store>(store: &S, env: &Environment, entry: &Entry<'_>, body: &str)
         ))
     });
 
-    answer(&request.request_id, result)
+    answer(&request.request_id, result, degraded_notice(store))
 }
 
 /// Refuses a second concurrent `migrate` of the same directory — the
@@ -255,14 +255,42 @@ fn concurrency_conflict(env: &Environment, command: &str, cwd: &Path) -> Option<
     )))
 }
 
+/// What the client must be told about the store this request was answered from.
+///
+/// Read from the store that actually served the request, rather than collected
+/// where the condition was detected, and that placement is the whole of it: the
+/// daemon opens its store **once, at startup**, so nothing is detected during a
+/// request at all — an approach that buffered notices at open time reported
+/// nothing on every command after the first, which is to say on every command a
+/// user ever runs. This asks the object doing the serving.
+///
+/// It travels over the wire because this process is the daemon: its stderr is
+/// the daemon log, not the terminal the command was typed into, and a warning
+/// nobody can see is the SH-306 shape (SH-530).
+fn degraded_notice<S: Store>(store: &S) -> Vec<String> {
+    match store.access() {
+        crate::store::Access::ReadWrite => Vec::new(),
+        crate::store::Access::ReadOnly { found, supported } => vec![format!(
+            "this store is at schema version {found} and this storyhook understands up to \
+             {supported}, so it is open READ-ONLY: reads are being served, every write will be \
+             refused. Install a build that understands version {found} — `story update` for the \
+             newest release."
+        )],
+    }
+}
+
 /// Renders a result as the wire envelope.
 ///
 /// Always HTTP 200: the *transport* succeeded, and the command's own success or
 /// failure is inside the envelope where a client can reconstruct the variant.
 /// Mapping an `AppError` onto a status code as the REST surface does would make
 /// a client parse two error channels to learn one thing.
-fn answer(request_id: &str, result: Result<crate::output::Response, AppError>) -> Reply {
-    let envelope = WireResponse::new(request_id.to_string(), result);
+fn answer(
+    request_id: &str,
+    result: Result<crate::output::Response, AppError>,
+    notices: Vec<String>,
+) -> Reply {
+    let envelope = WireResponse::with_notices(request_id.to_string(), result, notices);
     match to_json(&envelope) {
         Ok(body) => json_reply(200, body).no_cache(),
         Err(e) => error_reply(&e),

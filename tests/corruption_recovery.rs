@@ -194,47 +194,90 @@ fn a_damaged_write_ahead_log_is_discarded_and_the_committed_data_survives() {
 // The cases that are failures, and have to say so usefully
 // ---------------------------------------------------------------------------
 
-/// The SH-54 gate, in the situation it was written for: a store carried forward
-/// by a newer storyhook and then opened by an older one.
+/// A store carried forward by a newer storyhook and then opened by an older
+/// one — the SH-54 situation, answered the SH-530 way.
 ///
-/// The message must contain both version numbers and the remedy, because
-/// "something is wrong with your database" and "you are running last month's
-/// binary" call for very different next actions.
+/// This used to assert a refusal: exit 5 and "install a newer storyhook", for
+/// every command including the ones that only wanted to read. SH-530 changed
+/// that deliberately. A store whose read model this build can still see now
+/// opens READ-ONLY, because a tracker you can read is worth a great deal more
+/// than a refusal — and on the machine that filed SH-530 that refusal was one
+/// `story update` away from being the tracker's whole experience.
+///
+/// **The degrade is only defensible because it is loud**, which is why the
+/// stderr assertion below is not decoration. `open_store` runs inside the
+/// DAEMON, so a warning printed where it is detected goes to the daemon log and
+/// never reaches the person typing; this test is what proves the notice
+/// actually completes the trip back over `/api/v1/invoke` and onto the client's
+/// own stderr.
 #[test]
-fn a_database_from_a_newer_storyhook_names_both_versions_and_the_remedy() {
+fn a_store_from_a_newer_storyhook_still_reads_and_says_so_loudly() {
     let env = TestEnv::isolated();
     let project = project_in(&env, "CO");
-    // The daemon the fixture started has already opened this store and passed
-    // the gate, so it would go on serving happily whatever the pragma says.
+    // The daemon the fixture started has already opened this store, so it would
+    // go on serving happily whatever the pragma says.
     env.stop_daemon();
     // Written through rusqlite rather than by hand: the pragma is what the gate
     // reads, and a fabricated file would be testing the fabrication.
+    let future = storyhook::store::current_schema_version() + 1;
     rusqlite::Connection::open(env.store_path())
         .expect("opening the store")
-        .execute_batch("PRAGMA user_version = 99")
+        .execute_batch(&format!("PRAGMA user_version = {future}"))
         .expect("claiming a future schema");
 
     let out = story_in(&env, project.path(), &["list"]);
-    let message = failure_message(&out, "story list");
 
-    assert!(message.contains("99"), "the found version: {message}");
     assert!(
-        message.contains("newer storyhook"),
-        "what it means: {message}"
+        out.status.success(),
+        "a readable store must still be readable: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&future.to_string()),
+        "the warning must name the version found: {stderr}"
     );
     assert!(
-        message.contains("`story update` if a newer release is available"),
-        "the released-build remedy: {message}"
+        stderr.contains("READ-ONLY"),
+        "the warning must name the mode: {stderr}"
     );
     assert!(
-        message.contains("otherwise check out the source revision")
-            && message.contains("`make install`"),
-        "the unreleased-build remedy: {message}"
+        stderr.contains("`story update`"),
+        "the warning must name a way out: {stderr}"
+    );
+}
+
+/// The other half of the same contract: reading is served, writing is refused.
+///
+/// Exit 11 is its own code rather than the generic storage 5, so a script can
+/// tell "this build may not write to this store" from "this store is broken"
+/// without parsing prose.
+#[test]
+fn a_write_against_a_store_from_a_newer_storyhook_is_refused_by_its_own_code() {
+    let env = TestEnv::isolated();
+    let project = project_in(&env, "CO");
+    env.stop_daemon();
+    let future = storyhook::store::current_schema_version() + 1;
+    rusqlite::Connection::open(env.store_path())
+        .expect("opening the store")
+        .execute_batch(&format!("PRAGMA user_version = {future}"))
+        .expect("claiming a future schema");
+
+    let out = story_in(
+        &env,
+        project.path(),
+        &["new", "a story the store must not take"],
+    );
+    let message = failure_message(&out, "story new");
+
+    assert!(
+        message.contains("READ-ONLY"),
+        "the refusal must say why: {message}"
     );
     assert_eq!(
         out.status.code(),
-        Some(5),
-        "a store this binary cannot read is an integrity failure: {message}"
+        Some(11),
+        "a refused write is its own condition, not a storage failure: {message}"
     );
 }
 

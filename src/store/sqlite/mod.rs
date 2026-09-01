@@ -147,6 +147,46 @@ impl StoreConfig {
     }
 }
 
+/// How a [`SqliteStore`] may be used.
+///
+/// SH-530. Before this, a store written by a newer storyhook was refused
+/// outright ([`StoreError::SchemaTooNew`]) and the whole tool went down over a
+/// database whose stories were sitting right there, fully readable. The
+/// asymmetry that makes a better answer possible: a newer schema's *additions*
+/// do not stop this build reading the columns it already knows, but a newer
+/// schema's *invariants* are ones this build has never heard of and therefore
+/// cannot maintain. So reading degrades and writing refuses.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Access {
+    /// The normal case: this build understands the schema it found.
+    ReadWrite,
+    /// The store is newer than this build understands, but its read model is
+    /// still shaped the way this build expects. Reads are served; every write
+    /// is refused with [`StoreError::SchemaReadOnly`].
+    ReadOnly {
+        /// The version recorded in the database.
+        found: u32,
+        /// The newest version this binary can apply.
+        supported: u32,
+    },
+}
+
+impl Access {
+    /// The refusal a write earns under this access mode, if any.
+    const fn refuse_write(self) -> Option<StoreError> {
+        match self {
+            Self::ReadWrite => None,
+            Self::ReadOnly { found, supported } => {
+                Some(StoreError::SchemaReadOnly { found, supported })
+            }
+        }
+    }
+
+    const fn is_read_only(self) -> bool {
+        matches!(self, Self::ReadOnly { .. })
+    }
+}
+
 /// A [`Store`] backed by one SQLite database file.
 pub struct SqliteStore {
     config: StoreConfig,
@@ -162,6 +202,9 @@ pub struct SqliteStore {
     /// counters — so the token has to come from one connection that lives as
     /// long as the store.
     change_conn: Mutex<Connection>,
+    /// Resolved once at open, by [`Self::resolve_access`]. Every connection
+    /// this store hands out and every write it accepts is decided by it.
+    access: Access,
 }
 
 impl SqliteStore {
@@ -187,16 +230,75 @@ impl SqliteStore {
         // database written by a newer storyhook is refused here, once, with a
         // sentence — rather than later, repeatedly, as a serde error. It then
         // becomes the change-token connection rather than joining the pool.
+        let access = Self::resolve_access(&config)?;
         let mut store = Self {
             config,
             pool: Mutex::new(Vec::new()),
             write_lock: Mutex::new(()),
             change_conn: Mutex::new(Connection::open_in_memory()?),
+            access,
         };
         let conn = store.explain_corruption(store.new_connection())?;
-        store.explain_corruption(migrate::ensure_readable(&conn, current_schema_version()))?;
+        // Skipped under `ReadOnly`: `resolve_access` has already asked and
+        // answered this question, and the whole point of that answer is that
+        // this gate no longer ends the process.
+        if !access.is_read_only() {
+            store.explain_corruption(migrate::ensure_readable(&conn, current_schema_version()))?;
+        }
         store.change_conn = Mutex::new(conn);
         Ok(store)
+    }
+
+    /// Decides whether this store opens read-write or read-only (SH-530).
+    ///
+    /// The probe is deliberately a **capability** test rather than a
+    /// version-distance one. "More than N versions newer is too far" would be
+    /// exactly the unfounded constant this project forbids elsewhere — the
+    /// question that actually matters is not how far ahead the store is but
+    /// whether this build can still read it, and that is answerable directly:
+    /// prepare a `SELECT` over [`read::STORY_COLUMNS`], production's own column
+    /// list. A newer storyhook that only *added* to the schema leaves that
+    /// statement valid and the store degrades to read-only; one that
+    /// restructured what this build reads fails to prepare, and earns the
+    /// honest [`StoreError::SchemaTooNew`] refusal that predates this.
+    ///
+    /// Everything here is read-only by construction: the connection carries
+    /// `SQLITE_OPEN_READ_ONLY`, so a probe can never be the thing that writes
+    /// to a store this build has just decided it must not write to.
+    ///
+    /// A store that does not exist yet, or that cannot be opened read-only at
+    /// all, resolves to [`Access::ReadWrite`] — not because it is known good,
+    /// but because diagnosing it is [`Self::open_with`]'s job and this function
+    /// must not pre-empt a real error with a guess.
+    fn resolve_access(config: &StoreConfig) -> Result<Access, StoreError> {
+        if !config.db_path.exists() {
+            return Ok(Access::ReadWrite);
+        }
+        let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY;
+        let Ok(conn) = Connection::open_with_flags(&config.db_path, flags) else {
+            return Ok(Access::ReadWrite);
+        };
+        let Ok(found) = migrate::schema_version(&conn) else {
+            return Ok(Access::ReadWrite);
+        };
+        let supported = current_schema_version();
+        if found <= supported {
+            return Ok(Access::ReadWrite);
+        }
+        // `LIMIT 0` so preparation is the whole test: this asks SQLite whether
+        // the columns still exist and never reads a row.
+        let probe = format!("SELECT {} FROM stories LIMIT 0", read::STORY_COLUMNS);
+        if conn.prepare(&probe).is_err() {
+            return Err(StoreError::SchemaTooNew { found, supported });
+        }
+        Ok(Access::ReadOnly { found, supported })
+    }
+
+    /// How this store may be used — [`Access::ReadOnly`] when it was written by
+    /// a newer storyhook whose read model this build can still see.
+    #[must_use]
+    pub const fn access(&self) -> Access {
+        self.access
     }
 
     /// The database file this store is backed by.
@@ -232,7 +334,7 @@ impl SqliteStore {
     /// fails and the database is left at version 1" while there is only one
     /// migration in the tree.
     pub fn migrate_with(&self, migrations: &[Migration]) -> Result<MigrationReport, StoreError> {
-        let _guard = self.write_guard();
+        let _guard = self.write_guard()?;
         let conn = self.explain_corruption(self.checkout())?;
         self.explain_corruption(migrate::run(&conn, migrations, &self.config.backup_dir))
     }
@@ -256,10 +358,19 @@ impl SqliteStore {
     /// drops — so the invariant a poisoned mutex exists to protect was never
     /// broken. Propagating the poison would instead turn one panicking request
     /// into a permanently unusable store.
-    fn write_guard(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.write_lock
+    fn write_guard(&self) -> Result<std::sync::MutexGuard<'_, ()>, StoreError> {
+        // SH-530: the one gate over every write this store can perform. It
+        // returns a `Result` rather than consulting `self.access` at each call
+        // site precisely so that the compiler, not a reviewer, is what keeps
+        // the set complete — a future mutating method cannot forget to ask,
+        // because it cannot take the lock without handling the refusal.
+        if let Some(refusal) = self.access.refuse_write() {
+            return Err(refusal);
+        }
+        Ok(self
+            .write_lock
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner))
     }
 
     /// Rewrites a corruption error into a diagnosis and a way back.
@@ -313,6 +424,9 @@ impl SqliteStore {
     }
 
     fn new_connection(&self) -> Result<Connection, StoreError> {
+        if self.access.is_read_only() {
+            return self.new_read_only_connection();
+        }
         let conn = Connection::open(&self.config.db_path)
             .map_err(|e| StoreError::from_sqlite(e, "opening the store"))?;
         conn.busy_timeout(self.config.busy_timeout)
@@ -342,6 +456,36 @@ impl SqliteStore {
                 self.config.db_path.display()
             )));
         }
+        Ok(conn)
+    }
+
+    /// A connection to a store this build must not write to (SH-530).
+    ///
+    /// Two mechanisms, because neither is sufficient alone.
+    /// `SQLITE_OPEN_READ_ONLY` is the one that actually holds — it is enforced
+    /// by SQLite below any statement this process can issue — and
+    /// `PRAGMA query_only` is the belt to its braces, refusing a write at
+    /// statement-preparation time with a clearer error than a file-permission
+    /// one.
+    ///
+    /// The read-write path's `journal_mode = WAL` is deliberately **not**
+    /// applied here: it is itself a write, taking an exclusive lock to make a
+    /// change it usually is not going to make. Reading a WAL database on a
+    /// read-only connection needs no such statement. The remaining pragmas are
+    /// per-connection settings rather than file changes, so they are safe and
+    /// keep a degraded connection behaving like a healthy one.
+    fn new_read_only_connection(&self) -> Result<Connection, StoreError> {
+        let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY;
+        let conn = Connection::open_with_flags(&self.config.db_path, flags)
+            .map_err(|e| StoreError::from_sqlite(e, "opening the store read-only"))?;
+        conn.busy_timeout(self.config.busy_timeout)
+            .map_err(|e| StoreError::from_sqlite(e, "setting the busy timeout"))?;
+        conn.pragma_update(None, "foreign_keys", true)
+            .map_err(|e| StoreError::from_sqlite(e, "enabling foreign keys"))?;
+        conn.pragma_update(None, "recursive_triggers", false)
+            .map_err(|e| StoreError::from_sqlite(e, "disabling recursive triggers"))?;
+        conn.pragma_update(None, "query_only", true)
+            .map_err(|e| StoreError::from_sqlite(e, "marking the connection read-only"))?;
         Ok(conn)
     }
 
@@ -496,6 +640,9 @@ impl Drop for SqliteWriteTx<'_> {
 // ---------------------------------------------------------------------------
 
 impl Store for SqliteStore {
+    fn access(&self) -> Access {
+        self.access
+    }
     type ReadTx<'a>
         = SqliteReadTx<'a>
     where
@@ -521,7 +668,7 @@ impl Store for SqliteStore {
         &self,
         f: impl FnOnce(&mut Self::WriteTx<'_>) -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {
-        let _guard = self.write_guard();
+        let _guard = self.write_guard()?;
         self.explain_corruption((|| {
             let mut tx = SqliteWriteTx::begin(self.checkout()?)?;
             // On the error path `tx` drops here and rolls back — the whole
@@ -580,7 +727,7 @@ impl Store for SqliteStore {
         label: &str,
         f: impl FnOnce(&mut Self::WriteTx<'_>) -> Result<T, StoreError>,
     ) -> Result<WriteWithSnapshot<T>, StoreError> {
-        let _guard = self.write_guard();
+        let _guard = self.write_guard()?;
         self.explain_corruption((|| {
             let mut tx = SqliteWriteTx::begin(self.checkout()?)?;
             let snapshot = {

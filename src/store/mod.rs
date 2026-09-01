@@ -87,7 +87,7 @@ pub use rebuild::{
     Divergence, ReadModelDiff, RebuiltStory, RepairReport, diff, diff_read_model,
     rebuild_read_model, repair_read_model,
 };
-pub use sqlite::{SqliteReadTx, SqliteStore, SqliteWriteTx, StoreConfig};
+pub use sqlite::{Access, SqliteReadTx, SqliteStore, SqliteWriteTx, StoreConfig};
 pub use types::{
     AttachmentBlobRow, DeletedProject, EngineAgent, EngineLaneRecord, EngineLaneState,
     EngineRunRecord, EngineRunState, EngineScope, FeedEvent, LinkSource, MigrationReport,
@@ -104,6 +104,16 @@ pub use types::{
 /// call — and so that commit and rollback are decided by this trait rather than
 /// by whether every path through a caller remembered.
 pub trait Store: Send + Sync + 'static {
+    /// How this store may be used (SH-530).
+    ///
+    /// Defaulted to [`Access::ReadWrite`] so that an implementation with no
+    /// notion of a schema version — a test double, an in-memory fake — is
+    /// unaffected. [`crate::store::SqliteStore`] overrides it, and it is the
+    /// only implementation that can be degraded, because it is the only one
+    /// that has a schema to be newer than this build.
+    fn access(&self) -> Access {
+        Access::ReadWrite
+    }
     /// The read transaction this store hands out.
     type ReadTx<'a>: ReadOps
     where
