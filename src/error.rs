@@ -138,6 +138,16 @@ pub enum AppError {
     GithubApi(String),
     #[error("state conflict: expected `{0}`, was `{1}`")]
     StateConflict(String, String), // (expected, actual)
+    /// A write refused because the store is open read-only (SH-530).
+    ///
+    /// Its own variant, and its own exit code, rather than folding into
+    /// [`Self::Storage`]: "this store is readable but not writable by this
+    /// build" is a condition a caller can act on — retry after upgrading —
+    /// where a generic storage failure is not. A script that reads stories
+    /// from a degraded store must be able to tell that apart from a broken
+    /// one without parsing prose.
+    #[error("{0}")]
+    ReadOnlyStore(String),
 }
 
 impl AppError {
@@ -155,6 +165,8 @@ impl AppError {
             Self::GithubAuth(_) => 6,
             Self::GithubApi(_) => 7,
             Self::StateConflict(..) => 9,
+            // 11, not 8: 8 and 10 are retired above, and 9 is taken.
+            Self::ReadOnlyStore(_) => 11,
         }
     }
 
@@ -201,6 +213,7 @@ impl AppError {
                 Self::Integrity(detail)
             }
             Self::Storage(detail) => Self::Storage(joined(detail)),
+            Self::ReadOnlyStore(detail) => Self::ReadOnlyStore(joined(detail)),
             Self::GithubAuth(detail) => Self::GithubAuth(joined(detail)),
             Self::GithubApi(detail) => Self::GithubApi(joined(detail)),
             conflict @ Self::StateConflict(..) => conflict,
@@ -278,6 +291,9 @@ pub enum WireError {
         expected: String,
         actual: String,
     },
+    ReadOnlyStore {
+        detail: String,
+    },
 }
 
 impl From<&AppError> for WireError {
@@ -301,6 +317,9 @@ impl From<&AppError> for WireError {
                 advice: detail.advice.clone(),
             },
             AppError::Storage(detail) => Self::Storage {
+                detail: detail.clone(),
+            },
+            AppError::ReadOnlyStore(detail) => Self::ReadOnlyStore {
                 detail: detail.clone(),
             },
             AppError::GithubAuth(detail) => Self::GithubAuth {
@@ -343,6 +362,7 @@ impl From<WireError> for AppError {
             WireError::GithubAuth { detail } => Self::GithubAuth(detail),
             WireError::GithubApi { detail } => Self::GithubApi(detail),
             WireError::StateConflict { expected, actual } => Self::StateConflict(expected, actual),
+            WireError::ReadOnlyStore { detail } => Self::ReadOnlyStore(detail),
         }
     }
 }

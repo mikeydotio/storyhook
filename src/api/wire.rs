@@ -240,6 +240,14 @@ pub struct WireResponse {
     pub server_version: String,
     /// The request this answers.
     pub request_id: String,
+    /// Conditions the daemon met while answering, for the client to print
+    /// (SH-530).
+    ///
+    /// `default` + `skip_serializing_if` so the field is invisible on every
+    /// ordinary response and absent envelopes still decode — the SH-372 rule
+    /// that an absent field states nothing rather than asserting a negative.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notices: Vec<String>,
     /// The answer.
     #[serde(flatten)]
     pub outcome: WireOutcome,
@@ -272,9 +280,19 @@ pub enum WireOutcome {
 impl WireResponse {
     /// An answer carrying `result` for `request_id`.
     pub fn new(request_id: String, result: Result<Response, AppError>) -> Self {
+        Self::with_notices(request_id, result, Vec::new())
+    }
+
+    /// [`Self::new`], carrying notices the daemon collected while answering.
+    pub fn with_notices(
+        request_id: String,
+        result: Result<Response, AppError>,
+        notices: Vec<String>,
+    ) -> Self {
         Self {
             protocol: crate::daemon::lifecycle::PROTOCOL,
             server_version: env!("CARGO_PKG_VERSION").to_string(),
+            notices,
             request_id,
             outcome: match result {
                 Ok(response) => WireOutcome::Ok { response },

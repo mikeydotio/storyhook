@@ -257,6 +257,22 @@ pub fn open_store(env: &Environment) -> Result<crate::store::SqliteStore, AppErr
     // `create_store` below needs no such check — it refuses the default path
     // and refuses an existing file, so it only ever opens a store at version
     // 0, which `migration_guard::decide` always permits.
+    // SH-530: a store written by a newer storyhook opens read-only rather than
+    // not at all. There is nothing to migrate — this build does not have the
+    // migrations it would need — and nothing for the SH-404 write-side guard to
+    // decide, since no write is going to happen. What there IS is an obligation
+    // to say so: a degraded store that reads normally and never mentions it is
+    // strictly worse than the refusal it replaced, because the reader acts on
+    // answers from a schema this build does not fully understand.
+    if let crate::store::Access::ReadOnly { found, supported } = store.access() {
+        crate::store_notice::push(format!(
+            "this store is at schema version {found} and this storyhook understands up to \
+             {supported}, so it is open READ-ONLY: reads are being served, every write will be \
+             refused. Install a build that understands version {found} — `story update` for the \
+             newest release."
+        ));
+        return Ok(store);
+    }
     let from_version = store.schema_version()?;
     let to_version = crate::store::current_schema_version();
     let inputs = crate::migration_guard::gather(
@@ -3156,6 +3172,12 @@ impl HttpInvoker {
             .into_body()
             .read_json()
             .map_err(|e| Transport::Sent(format!("the daemon's answer was unreadable: {e}")))?;
+        // Recorded on THIS side of the hop, so `main` can print them to the
+        // terminal the command was typed into. The daemon collected them; only
+        // the client can show them (SH-530).
+        for notice in &envelope.notices {
+            crate::store_notice::push(notice.clone());
+        }
         Ok(envelope.into_result())
     }
 }

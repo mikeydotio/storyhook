@@ -25,6 +25,7 @@ pub mod plugin;
 pub mod service;
 pub mod storage;
 pub mod store;
+pub mod store_notice;
 pub mod token;
 pub mod tui;
 pub mod update;

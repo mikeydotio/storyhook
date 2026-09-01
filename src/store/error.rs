@@ -69,6 +69,29 @@ pub enum StoreError {
         supported: u32,
     },
 
+    /// A write was refused because the store is open read-only.
+    ///
+    /// SH-530. The database was written by a newer storyhook, but its read
+    /// model is still shaped the way this binary expects, so it opens
+    /// read-only rather than not at all: a tracker you can read is worth more
+    /// than a refusal, and the alternative — [`StoreError::SchemaTooNew`] —
+    /// takes the whole tool down over a store whose stories are sitting right
+    /// there. Writing is the part that cannot be made safe, because a newer
+    /// schema's invariants are invariants this binary has never heard of.
+    #[error(
+        "this store is at schema version {found} and this storyhook understands up to {supported}, \
+         so it is open READ-ONLY and this write was refused — reading is safe, writing is not, \
+         because a newer schema's invariants are ones this build cannot maintain. Install a build \
+         that understands version {found}: `story update` for the newest release, or cut and \
+         install a build from the revision that introduced it"
+    )]
+    SchemaReadOnly {
+        /// The version recorded in the database.
+        found: u32,
+        /// The newest version this binary can apply.
+        supported: u32,
+    },
+
     /// A migration failed. The database is unchanged: migrations run one
     /// transaction each, and a pre-migration backup was taken first.
     #[error("migration {version} ({name}) failed: {detail}")]
@@ -215,6 +238,7 @@ impl From<StoreError> for AppError {
                 Self::Integrity(detail.into())
             }
             StoreError::Validation(detail) => Self::Validation(detail),
+            error @ StoreError::SchemaReadOnly { .. } => Self::ReadOnlyStore(error.to_string()),
             other @ (StoreError::SchemaTooNew { .. }
             | StoreError::Migration { .. }
             | StoreError::Backup(_)
