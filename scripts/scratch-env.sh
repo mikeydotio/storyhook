@@ -183,6 +183,12 @@ binary_dir="$(cd "$(dirname "$binary")" && pwd)"
 
 # --- the environment -------------------------------------------------------
 
+# An ambient SH-524 gate-progress journal must not reach a scratch environment.
+# Not a test-environment parameter -- a harness legitimately SETS that one -- so
+# it is neutralized here rather than in the shared table. It matters because
+# running `make test` from inside a scratch shell is a reasonable thing to do,
+# and a nested run that inherited an outer verification run's journal path would
+# write its own counts into it.
 if [ "$print_only" -eq 1 ]; then
     if [ -n "$isolate_home" ]; then
         storyhook_isolate_print "$isolate_home" "$root"
@@ -190,6 +196,7 @@ if [ "$print_only" -eq 1 ]; then
         storyhook_isolate_print "$root"
     fi
     printf "export PATH='%s':\"\$PATH\"\n" "$binary_dir"
+    printf 'unset STORYHOOK_GATE_PROGRESS\n'
     exit 0
 fi
 
@@ -199,6 +206,7 @@ else
     storyhook_isolate "$root"
 fi
 export PATH="$binary_dir:$PATH"
+unset STORYHOOK_GATE_PROGRESS
 
 # WHICH BUILD AND WHICH STORE, both stated rather than inferred. `--version`
 # carries a build id derived from the tracked tree it was built from, so two

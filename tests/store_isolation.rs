@@ -1036,59 +1036,11 @@ fn every_harness_that_isolates_a_run_neutralizes_the_gate_progress_journal() {
     );
 }
 
-/// `text` with Rust comments removed, so a rule is read from code rather than
-/// from prose *about* code.
-///
-/// Load-bearing rather than tidy: [`daemon_containment`]'s own doc comment
-/// spells `env_clear()` while explaining who needs it, and
-/// `src/env/git_env.rs` discusses that call at length in four separate doc
-/// comments. A scan over raw text reads every one of those as a call site and
-/// so reports a file that has none. This is the lesson
-/// `tests/dashboard_focus_coverage.rs` already paid for one language over,
-/// where two real selectors were swallowed into the prose of the comment
-/// sitting above them.
+/// `text` with Rust comments removed — [`storyhook_test_support::without_rust_comments`],
+/// which is where this used to live before `tests/fixture_isolation.rs` needed
+/// the same thing for the same reason.
 fn without_comments(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    let mut in_line_comment = false;
-    let mut block_depth = 0usize;
-    while let Some(c) = chars.next() {
-        if in_line_comment {
-            if c == '\n' {
-                in_line_comment = false;
-                out.push(c);
-            }
-            continue;
-        }
-        if block_depth > 0 {
-            if c == '*' && chars.peek() == Some(&'/') {
-                chars.next();
-                block_depth -= 1;
-            } else if c == '/' && chars.peek() == Some(&'*') {
-                chars.next();
-                block_depth += 1;
-            } else if c == '\n' {
-                out.push(c);
-            }
-            continue;
-        }
-        if c == '/' {
-            match chars.peek() {
-                Some('/') => {
-                    in_line_comment = true;
-                    continue;
-                }
-                Some('*') => {
-                    chars.next();
-                    block_depth = 1;
-                    continue;
-                }
-                _ => {}
-            }
-        }
-        out.push(c);
-    }
-    out
+    storyhook_test_support::without_rust_comments(text)
 }
 
 /// Whether `text` takes over a child's whole environment.

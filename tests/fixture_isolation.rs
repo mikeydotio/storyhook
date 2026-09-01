@@ -37,10 +37,17 @@ use std::path::Path;
 
 /// The marker, assembled at run time.
 ///
-/// Never written as a literal, because this file is itself a tracked
-/// `tests/*.rs` and the scan below reads every one of them — a literal here
-/// would make this file its own first violation. The same trick
+/// Never written as a literal in *code*, because this file is itself a tracked
+/// `tests/*.rs` and the scan below reads every one of them — the same trick
 /// `tests/council_citations.rs` uses for the same structural reason.
+///
+/// The module doc above names it anyway, in prose, because a rule that cannot
+/// state what it forbids is a rule nobody can follow. That is safe only because
+/// the scan strips comments first, and it was not safe until it did: this test
+/// flagged **itself** the first time it ran against a tree that had it
+/// committed. Which is the second lesson — a scan derived over `git ls-files`
+/// cannot see its own file until that file is tracked, so it passes while it is
+/// being written and fails on the commit that adds it.
 fn marker() -> String {
     format!("cargo_bin(\"{}\")", "story")
 }
@@ -76,7 +83,7 @@ fn no_test_file_reaches_the_binary_outside_the_harness() {
     let marker = marker();
     let offenders: Vec<String> = tracked_test_files()
         .into_iter()
-        .filter(|(_, text)| text.contains(&marker))
+        .filter(|(_, text)| storyhook_test_support::without_rust_comments(text).contains(&marker))
         .map(|(relative, _)| relative)
         .collect();
     assert!(
