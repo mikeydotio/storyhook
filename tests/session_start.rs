@@ -8,12 +8,18 @@
 /// into the model's context (it is NOT rendered to the user, unlike the
 /// previously-used `systemMessage` field).
 use assert_cmd::Command;
-use storyhook_test_support::scratch_dir;
+use storyhook_test_support::{TestEnv, scratch_dir};
 
+/// Every `story` this file runs is the one THIS build produced, in the shared
+/// test environment.
+///
+/// `shared()`, deliberately, and NOT for the two tests in
+/// `degrades_under_contention` below: those hold an exclusive flock on the
+/// daemon spawn lock, and holding it from a shared environment would block every
+/// other test in this binary behind `SPAWN_LOCK_DEADLINE`. They keep
+/// `TestEnv::isolated()`, which is what makes holding that lock safe at all.
 fn story(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+    TestEnv::shared().story(dir)
 }
 
 /// The plugin-config file's path, with its parent directory created.
