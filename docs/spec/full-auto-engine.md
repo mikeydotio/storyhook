@@ -1396,11 +1396,17 @@ disagree about when to show the extra detail.
    SH-465's, SH-466's and SH-467's own As-built notes each point at SH-468 as
    the story that would wire the daemon side, but SH-468's actual approved
    scope was the HTTP control surface only
-   (start/status/pause/resume/stop/ack) — nobody has yet built the automatic
+   (start/status/pause/resume/stop/ack) — nobody had yet built the automatic
    trigger described in this spec's own "The reconcile loop" section. This
    means `engine_run_halted`/`engine_run_drained`/`engine_lane_quarantined`
    are correctly wired and covered end to end by `tests/engine_reconcile.rs`,
-   but will not fire in a running daemon until a future story wires
-   `reconcile()` into it — and that same gap means Full Auto cannot currently
-   run unattended at all. Filed separately as a follow-on story under
-   SH-452, blocking SH-473's own real-run acceptance criterion.
+   but will not fire in a running daemon until the trigger lands — and that
+   same gap means Full Auto cannot currently run unattended at all.
+   **Adopted by SH-466** rather than filed as a separate story: that story's
+   own approved plan (recorded on SH-466, 2026-09-01) wires
+   `RECONCILE_TICK_SECS` into a new `src/daemon/engine.rs` poller alongside
+   its own `HardStopKind::Interrupted` producer, on the reasoning that a
+   restart pass with nothing to hand off to afterward is D11 with no D1
+   underneath it — the trigger belongs with the story that makes restart
+   reconciliation meaningful. SH-466's own As-built section is the record for
+   that work; this bullet is left in place as the finding that prompted it.
