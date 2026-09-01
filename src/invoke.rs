@@ -1811,7 +1811,118 @@ fn crashes_ledger_message(ledger: &[crate::daemon::crash::CrashRecord]) -> Strin
 /// `AppError::GithubApi` — nothing behind the `github-pr` feature. It was
 /// gated on that feature purely by accident of history.
 fn update(check: bool, force: bool) -> Result<Response, AppError> {
-    crate::update::run(check, force).map(Response::Message)
+    use std::io::IsTerminal;
+
+    let outcome = crate::update::run(check, force)?;
+    let is_terminal = std::io::stderr().is_terminal();
+    let health = if is_terminal && matches!(&outcome, crate::update::Outcome::Replaced(_)) {
+        // `main` has already published a global `--store-path` into the
+        // process environment, so resolving here inspects that store's own
+        // agent without opening the store. This diagnostic is best-effort: an
+        // update that replaced the binary remains successful even when its
+        // environment cannot be resolved for a follow-up warning.
+        Environment::from_process(None)
+            .ok()
+            .map(|env| crate::daemon::agent::health(&env))
+    } else {
+        None
+    };
+    Ok(update_response(outcome, is_terminal, health.as_ref()))
+}
+
+fn update_response(
+    outcome: crate::update::Outcome,
+    is_terminal: bool,
+    health: Option<&crate::daemon::agent::Health>,
+) -> Response {
+    match outcome {
+        crate::update::Outcome::Unchanged(message) => Response::Message(message),
+        crate::update::Outcome::Replaced(message) => {
+            let warning = if is_terminal {
+                health.and_then(crate::daemon::agent::warning)
+            } else {
+                None
+            };
+            match warning {
+                Some(warning) => Response::MessageWithWarnings(message, vec![warning]),
+                None => Response::Message(message),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod update_response_tests {
+    use super::*;
+    use crate::daemon::agent::Health;
+
+    fn stale() -> Health {
+        Health::Missing {
+            plist: PathBuf::from("/home/test/Library/LaunchAgents/story.plist"),
+            exe: PathBuf::from("/old/story"),
+        }
+    }
+
+    fn assert_message_only(response: Response) {
+        assert!(
+            matches!(response, Response::Message(_)),
+            "expected a warning-free message, got {response:?}"
+        );
+    }
+
+    #[test]
+    fn a_successful_replacement_at_a_terminal_reports_a_stale_agent() {
+        let response = update_response(
+            crate::update::Outcome::Replaced("updated".to_string()),
+            true,
+            Some(&stale()),
+        );
+
+        let Response::MessageWithWarnings(message, warnings) = response else {
+            panic!("a stale agent must travel as a structured warning")
+        };
+        assert_eq!(message, "updated");
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("/old/story"));
+    }
+
+    #[test]
+    fn an_unchanged_update_never_reports_the_agent() {
+        assert_message_only(update_response(
+            crate::update::Outcome::Unchanged("already current".to_string()),
+            true,
+            Some(&stale()),
+        ));
+    }
+
+    #[test]
+    fn a_non_terminal_update_never_reports_the_agent() {
+        assert_message_only(update_response(
+            crate::update::Outcome::Replaced("updated".to_string()),
+            false,
+            Some(&stale()),
+        ));
+    }
+
+    #[test]
+    fn a_healthy_or_unconfirmable_agent_produces_no_warning() {
+        for health in [
+            Health::Agrees {
+                plist: PathBuf::from("/home/test/Library/LaunchAgents/story.plist"),
+                exe: PathBuf::from("/installed/story"),
+            },
+            Health::Unconfirmable {
+                plist: PathBuf::from("/home/test/Library/LaunchAgents/story.plist"),
+                exe: PathBuf::from("/installed/story"),
+            },
+        ] {
+            assert_message_only(update_response(
+                crate::update::Outcome::Replaced("updated".to_string()),
+                true,
+                Some(&health),
+            ));
+        }
+    }
 }
 
 /// The `story phase …` family.
