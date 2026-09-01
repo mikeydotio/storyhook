@@ -1687,3 +1687,31 @@ atomic against another thread's own restore, not to arbitrate between
 differing values. `daemon::engine`'s functions never execute the resolved
 script — only `tmux` is spawned — so the fixture's content only has to pass
 the protocol check, never run.
+
+**A real, deterministic defect surfaced the moment the trigger went live, in
+code this story never touched.** `finish_if_drained` (SH-465) treated
+"nothing claimable" and "nothing left, ever" as one fact. A project whose
+entire backlog was a single `no-auto` story had its run finish the instant
+`story engine start` created it — `ChangeWatcher::notice` (SH-202) fires
+synchronously inside the request that creates the run, before the CLI even
+sees the response, so `poll_engine`'s wake routinely completed before the
+operator's own next command reached the daemon. `tests/cli_grammar.rs`'s
+own `engine_cli_runs_the_lifecycle_and_reports_no_auto_work` (SH-467) went
+red under `make test`, reproducibly (3/3, not a flake) — confirmed by
+timing the mechanism directly rather than assumed from the symptom. Put to
+the user rather than fixed unilaterally, given the design implication
+reaches past this story's own remit: should a run auto-finish out from
+under `needs_human` work nobody has looked at yet? Decided: no.
+`finish_if_drained` now checks the identical no-auto query `status()`
+already uses for its own `needs_human` reporting — extracted into a shared
+`needs_human_stories()` so the two can never disagree about what "needs a
+human" means (SH-136) — and does not finish a `Running` run while any such
+story remains in its scope. A `Draining` run is deliberately unaffected: an
+operator's own graceful `stop` is an explicit decision to end the run once
+its lanes clear, proven through reconcile's own draining branch rather than
+through `stop` itself, which has a separate, unaffected finish check and
+never calls `finish_if_drained` at all — the first version of this fix's own
+regression test called `stop` directly and would have passed unchanged with
+the guard deleted entirely, catching nothing; rewritten to occupy a lane,
+stop gracefully into `draining`, then let reconcile observe the freed lane,
+which is the only path that actually reaches this function in that state.
