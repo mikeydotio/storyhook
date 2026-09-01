@@ -703,6 +703,11 @@ directions.
 | `plugins/story/tests/test-full-auto-hook.sh` | hook decisions against real payloads |
 | `plugins/story/tests/test-full-auto-inert.sh` | the hook is inert with the marker unset |
 | `e2e/specs/engine.spec.ts` | header control, lanes stepper, live lane panel, banner + ack |
+| `src/service/gate_progress.rs` (unit tests) | the SH-524 journal fold and render: truncated lines, unknown kinds, estimated-vs-explicit denominators, derived parent status, the stale-gate header |
+| `src/daemon/verification_progress.rs` (unit tests) | `PublishBackoff`'s exact 1→2→5→10 minute ladder and its reset-on-any-move |
+| `tests/verification_queue.rs` | the running candidate's live checklist, a queued candidate's position, rewrite-not-append, an unchanged body writing nothing, a story leaving `verifying` freezing its checklist |
+| `tests/store_isolation.rs` | every data-dir-isolating harness also neutralizes `$STORYHOOK_GATE_PROGRESS`, `scripts/run-e2e.sh` named as the one exception |
+| `tests/invoker_seam.rs` | the `Intent::Append` set is exactly three, named |
 
 The engine's own subprocess spawning stays outside the Rust suite the way
 `merge-watch.sh`'s `gh` orchestration does: mocking `gh` or `tmux` validates the
@@ -1410,3 +1415,128 @@ disagree about when to show the extra detail.
    underneath it — the trigger belongs with the story that makes restart
    reconciliation meaningful. SH-466's own As-built section is the record for
    that work; this bullet is left in place as the finding that prompted it.
+
+### SH-524 — the verification progress checklist
+
+Between a story reaching `verifying` and the daemon's verdict landing, the
+worker (`src/daemon/verification.rs`) wrote nothing at all: `verify()` is one
+blocking `Command::output()` with no timeout, so a nine-minute-nominal gate,
+a story queued behind higher-priority candidates, and a genuinely wedged run
+were all indistinguishable from outside. This story adds a self-updating
+`CENTRAL VERIFICATION PROGRESS —` comment, on every story presently in
+`verifying`, rewritten in place rather than appended.
+
+**The seam is a journal file, not a new RPC.** SH-521 deliberately sanitizes
+the gate's own subprocess — `apply_verification_allowlist` never hands it
+`STORYHOOK_STORE_PATH` — so the gate structurally cannot write progress to
+the store, and must not be given a second way to reach it. Instead, the
+daemon sets `$STORYHOOK_GATE_PROGRESS` to a path (`daemon::verification::
+journal_path`, store-scoped via `Environment::daemon_state_dir`, SH-113) on
+`scripts/verify-pr.sh`'s child; every gate script downstream
+(`scripts/leg.sh`, `scripts/run-tests.sh`, `plugins/story/tests/run-tests.sh`,
+`scripts/run-e2e.sh`, `e2e/gate-progress-reporter.ts`) appends one JSON line
+per event when the variable is set, and is a byte-for-byte no-op — verified
+by diffing stderr with and without it — when it is not. `src/service/
+gate_progress.rs`'s own module doc has the wire shape and the fold's
+tree-building rules; `docs/spec/test-tiers.md` does not need updating, since
+nothing about which tier runs which leg changed.
+
+**Containment is the hazard this design creates, and it is real, not
+theoretical.** The gate runs storyhook's own suite, which contains tests
+(`tests/gate_leg_reuse.rs` among them) that themselves shell into
+`scripts/leg.sh` against disposable fixture repositories. Left alone, those
+nested invocations would inherit the outer run's `$STORYHOOK_GATE_PROGRESS`
+and interleave their own fixture's events into the real journal.
+`scripts/run-tests.sh` strips it (`env -u`) from `cargo test`'s own
+environment specifically, so every test binary and everything it shells out
+to sees none of it; `scripts/capture-baseline.sh` and `scripts/coverage-
+map.sh` (both of which invoke `make test` or a compiled test binary directly,
+outside this repository's own gate) neutralize it the same unconditional way
+SH-113 already established for `$STORYHOOK_STORE_PATH`.
+`tests/store_isolation.rs::every_harness_that_isolates_the_data_dir_
+neutralizes_the_gate_progress_journal` derives the harness set the same way
+its `STORYHOOK_STORE_PATH` sibling does, over `git ls-files`, and names
+`scripts/run-e2e.sh` as the one deliberate exception: its own child, the
+Playwright reporter, is a declared producer, not a hazard, since it is meant
+to read the variable and write its own case events. **The scan found a sixth
+harness the CLAUDE.md prose enumerating five had not caught up to
+(`scripts/coverage-map.sh`)** — the same drift shape SH-136 already named for
+its own pair of variables, now repeating for a third one, which is the
+argument for a derived fence over a maintained list rather than evidence the
+fence is unnecessary.
+
+**Two kinds of leaf, rolled up uniformly.** A leg like `fmt`/`clippy`/`build`
+never receives a `case` line — it is a single pass/fail unit. A suite like
+`rust-suite`/`plugin`/an `e2e` project does, one per test.
+`ProgressItem::contribution` treats both the same way: a leaf with no
+recorded cases and no explicit total contributes `(1, 1)` once it reaches a
+passing terminal status and `(0, 1)` otherwise, so a parent's rolled-up
+fraction (`release gate`'s own "N/7 legs", the top-level header's overall
+count) is a sum over whichever kind each child happens to be, and a parent
+never explicitly named in the journal (`release gate` itself, most of the
+time) derives its status from its children rather than needing its own
+emission.
+
+**A denominator is estimated exactly until it cannot be.** `plugins/story/
+tests/run-tests.sh` and `scripts/run-e2e.sh` both know their own test count
+synchronously, before the run starts, and report it as an explicit `total` —
+never estimated, even mid-run. `scripts/run-tests.sh`'s own rust batteries
+have no such upfront count; their denominator is however many cases have
+been *seen so far*, marked `~` (estimated) until the item reaches a terminal
+status, at which point the seen count **is** the total, definitionally.
+
+**Publishing needs no coordination with the verifier thread.** The obvious
+design — a shared `Arc<Mutex<Option<ActiveRun>>>` the verifier writes and the
+publisher reads — was considered and dropped: verification is strictly
+serial and queue membership is already a store fact
+(`crate::service::verification`'s own module doc says so for `next()`
+itself), so the publisher independently asks the identical
+`VerificationQueue::ordered()` the verifier drains from. Its first element is
+always the candidate whose journal the actuator is currently writing;
+everything after it is queued, and its position and "ahead of it" breakdown
+(higher priority vs. equal priority and older) fall out of the same sorted
+list with no second query that could race the one `next()` used. A story
+that leaves `verifying` — landed, or returned to its agent for repair —
+simply stops appearing in `ordered()`, so its checklist freezes at its last
+state with no special-case code.
+
+**The cadence is a backoff, not a fixed interval, by binding operator
+determination (2026-08-31).** Comments are append-only events and every
+write re-folds a story's whole history; a strict once-a-minute rewrite on an
+eight-hour wedge — the case this story's own title names — is on the order
+of 480 rewrites on one story. `PublishBackoff` (`src/daemon/
+verification_progress.rs`) publishes every 60 seconds while a tick actually
+writes something, and stretches through 1→2→5→10 minutes across consecutive
+ticks that write nothing, resetting to 60 seconds the instant one does. The
+cap is asserted in its own test against the figure it derives from
+(`scripts/gate-receipt.sh`'s own "nine minutes nominal"), never a bare `10`,
+per this project's own SH-394 rule.
+
+**`verifying_since` cannot be `updated_at`.** The obvious source for "how
+long has this story been queued" is the story's own `updated_at` — except
+the publisher's own rewrite bumps that field every time it runs, which would
+make a story's queue wait reset itself every 60 seconds. `VerificationQueue::
+ordered` instead reads the story's own `StoryStateChanged` history for the
+most recent transition into `verifying`, a fact the progress comment cannot
+disturb no matter how often it rewrites.
+
+**A third `Intent::Append` grant, argued the same way the first two were.**
+`StoryService::upsert_marked_comment` — the retract-and-add pair that makes
+the rewrite possible at all, since comments carry no id and the only inverse
+event is keyed by the exact `(comment_at, text)` pair — reaches nothing but
+the comment list and `updated_at`, the identical argument SH-261 and SH-279
+made for `story comment` and commit-sync's commit link. It must additionally
+be permitted concurrently with the verifier itself moving the same story to
+`done`, which an edit-refusing intent could not allow. `tests/
+invoker_seam.rs::only_comment_commit_link_and_progress_publish_append_to_a_
+closed_story` is the exact set, re-derived and renamed rather than widened
+silently.
+
+**What shipped narrower than first drafted, and why.** A rendered "note"
+field per checklist item (e.g. "merge preflight — tree `abc1234` needs the
+gate") was in the original design but is not wired: `scripts/gate-progress.
+sh`'s extra `key=value` fields are bare JSON tokens (numerals, unquoted
+words), with no string-escaping support, and a free-text note needs one. The
+checklist ships with pass/fail/status words and elapsed time only; a quoted
+note is a follow-up, not a defect, since nothing in the story's own
+acceptance example required it.
