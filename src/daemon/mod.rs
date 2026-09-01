@@ -14,6 +14,9 @@
 //! * [`crash`] — the panic hook and the crash ledger: what the daemon leaves
 //!   behind when it does not exit cleanly, and what the next one does about
 //!   it (SH-287).
+//! * [`engine`] — wakes the Full Auto reconcile loop: a restart sweep once at
+//!   startup (D11), then the ordinary pass on every project-change bus event
+//!   or a coarse tick (SH-466).
 //! * [`github_poll`] — the unattended background poll for merged pull
 //!   requests (SH-212), spending the credential `story github-auth login`
 //!   stored in the OS keychain. `github-pr`-gated: absent entirely from a
@@ -38,6 +41,7 @@ pub mod backup;
 pub mod bus;
 pub mod commands;
 pub mod crash;
+pub mod engine;
 #[cfg(feature = "github-pr")]
 pub mod github_poll;
 pub mod http1;
