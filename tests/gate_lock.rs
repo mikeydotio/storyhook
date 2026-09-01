@@ -273,7 +273,7 @@ impl Fixture {
             std::fs::create_dir_all(path.join(dir))
                 .unwrap_or_else(|e| panic!("fixture: creating {dir}/: {e}"));
         }
-        for script in ["run-tests.sh", "machine-lock.sh"] {
+        for script in ["run-tests.sh", "machine-lock.sh", "gate-progress.sh"] {
             std::os::unix::fs::symlink(
                 checkout().join("scripts").join(script),
                 path.join("scripts").join(script),
