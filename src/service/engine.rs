@@ -695,25 +695,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 .map(|run| {
                     let lanes = tx.engine_lanes(&run.id)?;
                     let skipped_no_auto = if run.state.is_live() {
-                        QueryService::new(tx, project, &now)
-                            .next_filtered(
-                                usize::MAX,
-                                ReadyQueueFilters {
-                                    phase: None,
-                                    epic: run.scope.story_id(),
-                                    exclude_label: None,
-                                },
-                            )
-                            .map_err(StoreError::from)?
-                            .into_iter()
-                            .filter(|view| {
-                                view.story.labels.iter().any(|label| label == LABEL_NO_AUTO)
-                            })
-                            .map(|view| SkippedNoAutoStory {
-                                id: view.story.id,
-                                title: view.story.title,
-                            })
-                            .collect()
+                        needs_human_stories(tx, project, &now, &run.scope)?
                     } else {
                         Vec::new()
                     };
@@ -1329,6 +1311,22 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
 
     /// Ends a run whose lanes are all idle.
     ///
+    /// **A `Running` run does not auto-finish while a `no-auto` story still
+    /// sits in its scope.** "Nothing claimable" and "nothing left, ever" are
+    /// different facts: the engine deliberately skips `no-auto` for a human
+    /// to act on (D12), and reporting it via [`RunView::skipped_no_auto`]
+    /// only means something if the run is still there to look at when a
+    /// human checks. Without this guard a project whose entire backlog is
+    /// `no-auto` finished the instant `start` created it — often before the
+    /// operator's own next command reached the daemon, since a store write
+    /// wakes this loop synchronously at the request boundary that made it
+    /// (SH-202) — leaving `engine status` reporting "no live engine run"
+    /// with no trace of what happened beyond `start`'s own JSON.
+    ///
+    /// A `Draining` run is unaffected: `stop` (graceful) is an explicit
+    /// operator decision to end the run once its existing lanes clear, and
+    /// that decision does not wait on a `no-auto` item nobody has claimed.
+    ///
     /// Fires `engine_run_drained` (SH-472) only when the queue organically
     /// ran dry — `stop_reason` was `None` going in and `reason` is
     /// [`QUEUE_DRAINED`] specifically. An operator-initiated stop
@@ -1337,10 +1335,23 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     /// keeps this call from overwriting it — and from firing a notification
     /// about something the operator just did themselves.
     fn finish_if_drained(&self, run_id: &RunId, reason: &str) -> Result<RunView, AppError> {
+        let project = self.ctx.project();
+        let now = self.ctx.now();
+        let needs_human = !self
+            .ctx
+            .store()
+            .read(|tx| {
+                let slug = project_slug(tx, project)?;
+                let run = run_for_project(tx, &slug, run_id)?;
+                needs_human_stories(tx, project, &now, &run.scope)
+            })?
+            .is_empty();
         let just_drained = std::cell::Cell::new(false);
         let view = self.transition(run_id, |run, lanes| {
             let all_idle = lanes.iter().all(|lane| lane.state == EngineLaneState::Idle);
+            let waiting_on_a_human = run.state == EngineRunState::Running && needs_human;
             if all_idle
+                && !waiting_on_a_human
                 && matches!(
                     run.state,
                     EngineRunState::Running | EngineRunState::Draining
@@ -1574,6 +1585,36 @@ fn quarantine_reason_line(lane: &EngineLaneRecord) -> String {
         }
         _ => format!("lane {} ({story}): {kind}", lane.lane_index),
     }
+}
+
+/// Every ready story in `scope` still carrying `no-auto` — the engine skips
+/// these deliberately (D12), and a human might still relabel or claim one by
+/// hand. Shared by [`EngineService::status`]'s reporting and
+/// [`EngineService::finish_if_drained`]'s termination guard, so the two can
+/// never disagree about what "needs a human" means (SH-136).
+fn needs_human_stories(
+    tx: &impl ReadOps,
+    project: crate::store::ProjectId,
+    now: &str,
+    scope: &EngineScope,
+) -> Result<Vec<SkippedNoAutoStory>, StoreError> {
+    Ok(QueryService::new(tx, project, now)
+        .next_filtered(
+            usize::MAX,
+            ReadyQueueFilters {
+                phase: None,
+                epic: scope.story_id(),
+                exclude_label: None,
+            },
+        )
+        .map_err(StoreError::from)?
+        .into_iter()
+        .filter(|view| view.story.labels.iter().any(|label| label == LABEL_NO_AUTO))
+        .map(|view| SkippedNoAutoStory {
+            id: view.story.id,
+            title: view.story.title,
+        })
+        .collect())
 }
 
 fn project_slug(tx: &impl ReadOps, project: crate::store::ProjectId) -> Result<String, StoreError> {
