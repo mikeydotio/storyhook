@@ -64,6 +64,42 @@ if [ -z "${STORYHOOK_TEST_HOME:-}" ]; then
   unset STORYHOOK_GATE_PROGRESS
 fi
 
+# --- the binary under test -------------------------------------------------
+#
+# THIS SUITE RUNS `story` BY NAME, so without this block it runs whichever one
+# `$PATH` happens to reach -- and off `make test`, that is the developer's
+# INSTALLED build. The store is isolated either way, so nothing is damaged and
+# nothing is reported: the wrong binary is simply exercised, and its failures
+# read as product bugs.
+#
+# Not hypothetical. Found while SH-531 was being written: `bash
+# plugins/story/tests/run-tests.sh`, typed by hand, failed test-reap.sh and
+# test-dispatch-epic.sh against an installed v2.2.0 whose `default_states()`
+# predates the `verifying` state. The error was `state \`verifying\` not found`,
+# which names a state, a project and a store -- and not the one thing that was
+# actually wrong.
+#
+# `make test` has always supplied this (`Makefile`'s plugin leg prepends
+# `target/debug`), which is exactly why it went unnoticed: the gate was right
+# and the standalone path was silently testing something else. This is the
+# SH-226 shape one layer over -- what a process IS, rather than what a `$PATH`
+# happens to resolve.
+#
+# Prepended rather than replacing `$PATH`: the suite needs `git`, `jq` and the
+# fake tmux, and a test file's own `PATH="$TESTS_DIR/fakes:$PATH"` still wins
+# over this for the names it provides.
+_STORY_TARGET_DIR="${CARGO_TARGET_DIR:-$(cd "$TESTS_DIR/../../.." && pwd)/target}"
+if [ ! -x "$_STORY_TARGET_DIR/debug/story" ]; then
+  echo "refusing to run: $_STORY_TARGET_DIR/debug/story does not exist." >&2
+  echo "  This suite tests the \`story\` THIS checkout builds, never the one" >&2
+  echo "  installed on the machine -- an installed binary is a different" >&2
+  echo "  version whose failures read as product bugs. Run \`cargo build\`" >&2
+  echo "  first, or \`make test\`, which does." >&2
+  exit 1
+fi
+export PATH="$_STORY_TARGET_DIR/debug:$PATH"
+unset _STORY_TARGET_DIR
+
 # --- fake-tmux state isolation ---------------------------------------------
 #
 # fakes/tmux keeps its whole model -- the input buffer, the `launched` flag, the
