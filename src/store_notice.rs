@@ -55,11 +55,3 @@ pub fn push(notice: String) {
 pub fn take() -> Vec<String> {
     std::mem::take(&mut *buffer())
 }
-
-/// Empties the buffer without reading it.
-///
-/// For a caller that is about to start work it does not want a previous
-/// command's leftovers attributed to.
-pub fn clear() {
-    let _ = take();
-}
