@@ -57,7 +57,10 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: 0,
   workers: 1,
-  reporter: [["list"]],
+  // The second reporter is the SH-524 gate progress journal's Playwright
+  // side (./gate-progress-reporter.ts) — inert by construction whenever
+  // $STORYHOOK_GATE_PROGRESS is unset, so an ordinary run is unaffected.
+  reporter: [["list"], ["./gate-progress-reporter.ts"]],
   // Half Playwright's own 30s default, and measured rather than inherited
   // (SH-222). Three full runs of the suite, the machine loaded by spinners
   // to the range the reported failures were seen in:

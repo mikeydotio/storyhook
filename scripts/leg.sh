@@ -22,13 +22,24 @@
 # than a reader assumes is the SH-306 shape — a green run that answers a
 # question nobody asked. `make test` skips the browser suite on purpose; this
 # is what says so, every time, naming the command that runs it.
+#
+# Every leg boundary below also emits a "release gate/<label>" item to the
+# SH-524 gate progress journal (scripts/gate-progress.sh), a no-op unless
+# $STORYHOOK_GATE_PROGRESS is set. leg.sh is the single choke point every one
+# of the seven legs in Makefile's `_test-body`/`_test-changed-body` passes
+# through, so it is the one place that boundary needs stating.
 
 set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=gate-progress.sh
+. "$script_dir/gate-progress.sh"
 
 if [ "${1:-}" = "--skipped" ]; then
     label="${2:-}"
     [ -n "$label" ] || { echo "leg.sh: --skipped needs a label" >&2; exit 1; }
     echo "leg $label: SKIPPED — not part of this tier. Run \`make test-full\` to include it." >&2
+    gate_progress_emit_item "release gate/$label" skipped
     exit 0
 fi
 
@@ -76,16 +87,20 @@ if [ "$reuse" = 1 ]; then
     if [ -f "$receipt" ] \
         && grep -q "^fingerprint $fingerprint$" "$receipt" 2>/dev/null; then
         echo "leg $label: REUSED — relevant tracked inputs and command are unchanged" >&2
+        gate_progress_emit_item "release gate/$label" reused
         exit 0
     fi
 fi
 
+gate_progress_emit_item "release gate/$label" running
 start=$(date +%s)
 status=0
 "$@" || status=$?
 end=$(date +%s)
+elapsed=$((end - start))
 
-echo "leg $label: $((end - start))s" >&2
+echo "leg $label: ${elapsed}s" >&2
+gate_progress_emit_item "release gate/$label" "$([ "$status" = 0 ] && echo passed || echo failed)" "seconds=$elapsed"
 
 if [ "$reuse" = 1 ] && [ "$status" = 0 ]; then
     after="$("$root/scripts/gate-leg-fingerprint.sh" "$label" "$@")" || {

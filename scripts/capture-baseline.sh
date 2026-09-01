@@ -164,6 +164,10 @@ export XDG_STATE_HOME="$CAPTURE_DATA_ROOT/state"
 # their real store and say nothing about it, because the guard that would
 # complain inspects the variable that lost.
 unset STORYHOOK_STORE_PATH
+# The flake census below runs `make test` N times in a row (SH-524); an
+# ambient journal path from some other daemon-owned verification run must
+# not be inherited, or these unrelated repeated runs would all write into it.
+unset STORYHOOK_GATE_PROGRESS
 export INSTA_UPDATE=no
 export STORYHOOK_DAEMON_ADDR="${STORYHOOK_DAEMON_ADDR:-127.0.0.1:0}"
 export STORYHOOK_PARENT_PID="$$"
