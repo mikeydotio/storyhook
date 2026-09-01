@@ -20,7 +20,9 @@ source: tests/golden_cli.rs
             "SH-9",
             "SH-10",
             "SH-11",
-            "SH-12"
+            "SH-12",
+            "SH-15",
+            "SH-16"
           ],
           "roots": [
             "SH-1",
@@ -31,10 +33,12 @@ source: tests/golden_cli.rs
             "SH-7",
             "SH-10",
             "SH-11",
-            "SH-12"
+            "SH-12",
+            "SH-15",
+            "SH-16"
           ],
           "total_edges": 4,
-          "total_open": 11
+          "total_open": 13
         },
         "parallel_groups": [
           [
@@ -65,6 +69,12 @@ source: tests/golden_cli.rs
           ],
           [
             "SH-12"
+          ],
+          [
+            "SH-15"
+          ],
+          [
+            "SH-16"
           ]
         ]
       },
@@ -142,6 +152,12 @@ source: tests/golden_cli.rs
           ],
           [
             "SH-12"
+          ],
+          [
+            "SH-15"
+          ],
+          [
+            "SH-16"
           ]
         ]
       },

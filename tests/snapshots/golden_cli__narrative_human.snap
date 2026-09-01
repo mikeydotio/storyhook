@@ -4,7 +4,7 @@ source: tests/golden_cli.rs
 $ story context
 # Project Status
 
-Stories: 14 (11 open, 3 closed)
+Stories: 16 (13 open, 3 closed)
 
 ## State Distribution
 
@@ -12,17 +12,17 @@ Stories: 14 (11 open, 3 closed)
 - done: 2
 - in-progress: 2
 - review: 1
-- todo: 8
+- todo: 10
 
 ## Type Distribution
 
 - bug: 1
 - chore: 3
-- epic: 1
-- normal: 7
+- epic: 2
+- normal: 8
 - spike: 2
 
-## Ready to Work (7 total)
+## Ready to Work (8 total)
 
 - SH-5 Fix the id collision across worktrees (critical)
 - SH-2 Define the Store trait (high)
@@ -50,18 +50,18 @@ $ story context --format json
     "done": 2,
     "in-progress": 2,
     "review": 1,
-    "todo": 8
+    "todo": 10
   },
   "by_type": {
     "bug": 1,
     "chore": 3,
-    "epic": 1,
-    "normal": 7,
+    "epic": 2,
+    "normal": 8,
     "spike": 2
   },
   "closed": 3,
-  "open": 11,
-  "ready_count": 7,
+  "open": 13,
+  "ready_count": 8,
   "ready_stories": [
     {
       "id": "SH-5",
@@ -94,13 +94,13 @@ $ story context --format json
       "title": "Ship the CLI shim"
     }
   ],
-  "total_stories": 14
+  "total_stories": 16
 }
 
 $ story load-context
 # Project Status
 
-Stories: 14 (11 open, 3 closed)
+Stories: 16 (13 open, 3 closed)
 
 ## State Distribution
 
@@ -108,17 +108,17 @@ Stories: 14 (11 open, 3 closed)
 - done: 2
 - in-progress: 2
 - review: 1
-- todo: 8
+- todo: 10
 
 ## Type Distribution
 
 - bug: 1
 - chore: 3
-- epic: 1
-- normal: 7
+- epic: 2
+- normal: 8
 - spike: 2
 
-## Ready to Work (7 total)
+## Ready to Work (8 total)
 
 - SH-5 Fix the id collision across worktrees (critical)
 - SH-2 Define the Store trait (high)
@@ -141,7 +141,7 @@ Stories: 14 (11 open, 3 closed)
 $ story handoff
 # Session Handoff
 
-## Created (11)
+## Created (13)
 
 - SH-1 Design the storage engine [in-progress]
 - SH-2 Define the Store trait [todo]
@@ -154,6 +154,8 @@ $ story handoff
 - SH-10 Ship the CLI shim [todo]
 - SH-11 Audit error codes [todo]
 - SH-12 Harden concurrent writes [todo]
+- SH-15 Track engine adoption [todo]
+- SH-16 Approve the rollout [todo]
 
 ## Closed (3)
 
@@ -166,7 +168,7 @@ $ story handoff
 $ story handoff --since 7d
 # Session Handoff
 
-## Created (11)
+## Created (13)
 
 - SH-1 Design the storage engine [in-progress]
 - SH-2 Define the Store trait [todo]
@@ -179,6 +181,8 @@ $ story handoff --since 7d
 - SH-10 Ship the CLI shim [todo]
 - SH-11 Audit error codes [todo]
 - SH-12 Harden concurrent writes [todo]
+- SH-15 Track engine adoption [todo]
+- SH-16 Approve the rollout [todo]
 
 ## Closed (3)
 
@@ -191,7 +195,7 @@ $ story handoff --since 7d
 $ story handoff --since 2h
 # Session Handoff
 
-## Created (11)
+## Created (13)
 
 - SH-1 Design the storage engine [in-progress]
 - SH-2 Define the Store trait [todo]
@@ -204,6 +208,8 @@ $ story handoff --since 2h
 - SH-10 Ship the CLI shim [todo]
 - SH-11 Audit error codes [todo]
 - SH-12 Harden concurrent writes [todo]
+- SH-15 Track engine adoption [todo]
+- SH-16 Approve the rollout [todo]
 
 ## Closed (3)
 

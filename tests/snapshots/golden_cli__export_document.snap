@@ -168,6 +168,73 @@ source: tests/golden_cli.rs
           "at": "[timestamp]",
           "kind": "StoryCreated",
           "state": "todo",
+          "title": "Track engine adoption"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryPrioritySet",
+          "priority": "low"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryTypeSet",
+          "story_type": "epic"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryRelationshipAdded",
+          "other_id": "SH-16",
+          "relation": "parent-of"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryStateCleared"
+        }
+      ],
+      "id": "SH-15"
+    },
+    {
+      "archived": false,
+      "events": [
+        {
+          "at": "[timestamp]",
+          "kind": "StoryCreated",
+          "state": "todo",
+          "title": "Approve the rollout"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryPrioritySet",
+          "priority": "low"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryLabelsSet",
+          "labels": [
+            "no-auto"
+          ]
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryTypeSet",
+          "story_type": "normal"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryRelationshipAdded",
+          "other_id": "SH-15",
+          "relation": "child-of"
+        }
+      ],
+      "id": "SH-16"
+    },
+    {
+      "archived": false,
+      "events": [
+        {
+          "at": "[timestamp]",
+          "kind": "StoryCreated",
+          "state": "todo",
           "title": "Define the Store trait"
         },
         {

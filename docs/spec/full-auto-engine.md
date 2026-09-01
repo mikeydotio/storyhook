@@ -256,6 +256,8 @@ stateDiagram-v2
     Working --> Quarantined: story blocked / awaiting set by the agent
     Working --> Quarantined: window gone, story still OPEN
     Working --> Quarantined: no observable change past the stall ceiling
+    Dispatching --> Quarantined: daemon restart, lane interrupted (D11, SH-466)
+    Working --> Quarantined: daemon restart, lane interrupted (D11, SH-466)
     Quarantined --> Idle: quarantine applied, lane released
 ```
 
@@ -348,13 +350,15 @@ fixture can lie about needs a test; a column with a CHECK does not):
 
 ## The reconcile loop
 
-The engine has no busy loop. `reconcile` runs when woken by:
+The engine has no busy loop. `reconcile` runs when woken by
+`crate::daemon::engine::poll_engine` (SH-466), on:
 
 - `Change::Project(slug)` on the daemon's bus, for a slug some live run names —
   which is how a lane's own `story move` reaches the engine;
 - a coarse liveness tick, whose period derives from the stall ceiling rather
   than being picked (SH-394's rule, one axis over from wall clocks);
-- any control command (`start`, `pause`, `resume`, `stop`, `ack`).
+- any control command (`start`, `pause`, `resume`, `stop`, `ack`), each of
+  which already publishes `Change::Project` on success.
 
 One pass, per live run:
 
@@ -390,6 +394,40 @@ Exactly where `api::dispatch` already puts it: **not on a store-pool thread**.
 `docs/spec/dashboard-dispatch.md` documents. The engine reuses that module's
 detached-thread pattern and its `MAX_RUNNING` accounting rather than opening a
 second, differently-behaved door onto the same script.
+
+### The restart pass (D11, SH-466)
+
+Before any run resumes claiming, one extra pass runs once per live run, over
+every project the store knows about (`ReadOps::live_engine_runs`, deliberately
+machine-wide for exactly this). It differs from the ordinary pass in only two
+places:
+
+- a dead window is `HardStop(Interrupted)`, never `WindowGone` — nobody
+  watched it close, the daemon that would have watched just restarted;
+- the stall clock is **re-seeded, never read**: a lane whose window survived
+  a daemon-only restart has no observation from anywhere inside the outage,
+  so an unmoved seq states nothing about whether it stalled during it
+  (SH-372) rather than being misread as a stall the instant the daemon comes
+  back.
+
+Completion, the agent-blocked signal and the verifying handoff are tested
+identically to the ordinary pass and in the same order — a story that closed,
+was blocked, or reached `verifying` while the daemon was down is exactly what
+it would have been had the daemon stayed up. The restart pass never fills an
+idle lane and never terminates a run: `story.sh` calls back into this same
+daemon over `/api/v1/invoke`, which is not yet answering this early in
+startup, and "the run then continues with fresh lanes" (D11) is the *next*,
+ordinary pass's job. The breaker still runs: three lanes interrupted by one
+reboot is three consecutive hard stops and halts the run exactly as three
+ordinary hard stops would, deliberately — a machine that just rebooted
+mid-run deserves a human look before it starts merging again.
+
+`crate::daemon::engine::poll_engine` is what runs this pass once at daemon
+startup, then wakes the ordinary pass on a project-change bus event or a
+coarse tick derived from `STALL_CEILING_SECS` — the trigger this document
+originally assigned to "the daemon wiring" without naming which story owned
+it. `EngineService::reconcile` had zero production callers before SH-466; see
+the As-built section below.
 
 ## Enforcing unattendedness
 
@@ -695,6 +733,7 @@ directions.
 | `tests/engine_run_model.rs` | run/lane state transitions, breaker arithmetic, the schema CHECKs |
 | `tests/engine_reconcile.rs` | every row of the failure taxonomy, through `FakeDispatcher`; the four engine event hooks (SH-472), including both `EngineLaneQuarantined` producers and the `no_hooks` suppression |
 | `tests/engine_restart.rs` | interrupted lanes quarantine on restart, worktrees preserved |
+| `tests/daemon_engine.rs` | `poll_engine`'s own glue: run selection across every project, a real `ShellDispatcher`, the checkout fallback |
 | `tests/engine_labels.rs` | `human-only` never in `next` or `claim --next`; `no-auto` still in `next` and never dispatched |
 | `tests/epic_computed_state.rs` | every rule and edge case above, table-driven |
 | `tests/epic_priority_tiebreak.rs` | `ready_order` with epic priority, including the no-parent rule; totality preserved |
@@ -1540,3 +1579,139 @@ words), with no string-escaping support, and a free-text note needs one. The
 checklist ships with pass/fail/status words and elapsed time only; a quoted
 note is a follow-up, not a defect, since nothing in the story's own
 acceptance example required it.
+
+### SH-466 — restart reconciliation
+
+**What shipped.** `HardStopKind::Interrupted` finally has a producer.
+`classify` gained a `ReconcilePass` parameter (`Steady` | `Restart`) that
+changes exactly two of its rows: a dead window is `Interrupted` rather than
+`WindowGone` under `Restart`, and the stall check is skipped entirely —
+`EngineService::record_progress` forces a reseed under `Restart` regardless of
+whether the seq moved, because a lane whose window survived the outage has no
+observation from anywhere inside it, and reading the pre-outage clock would
+misreport an untouched, healthy lane as `Stalled` the instant the daemon came
+back (SH-372: absence states nothing). Completion, the agent-blocked signal
+and the verifying handoff are unchanged and tested in the same order under
+both passes — none of D3, SH-120's relay rule, or SH-521's handoff needed to
+know a restart happened. `EngineService::reconcile_after_restart` is the new
+public entry point; `reconcile` itself is now a one-line call into a shared
+private `reconcile_pass`, unchanged in every observable way. A restart pass
+never fills an idle lane and never terminates the run — both early-returned
+before those two phases — because `story.sh`'s callback door
+(`/api/v1/invoke`) is not yet answering this early in startup, and D11's "the
+run continues with fresh lanes" is the *next*, ordinary pass's job. The
+breaker runs unchanged: three lanes interrupted by one reboot halts the run
+exactly as three ordinary hard stops would, which is the story's own stated
+intent, not an accident of sharing the counter.
+
+**The scope widened before implementation, not after.** SH-465's own As-built
+and this document both assigned "the daemon wiring" to SH-468; SH-468's
+actual approved scope was the HTTP control surface only, and closed without
+ever subscribing anything to `Change::Project` or a tick.
+`EngineService::reconcile` had zero production callers on `origin/main` before
+this story — a started run claimed nothing, ever, and a restart pass with
+nothing to hand off to afterward would have been D11 with no D1 underneath
+it. Adopted into SH-466 rather than filed separately, per this project's own
+scope-adopt rubric, and recorded on the story before implementation began.
+`src/daemon/engine.rs` is the result: `reconcile_tick`/`reconcile_restart_tick`
+(`pub fn`, store-backed, directly testable — the same split
+`daemon::verification::tick_with`/`poll_verification` and
+`daemon::github_poll::tick`/`poll_github` already use) iterate
+`ReadOps::live_engine_runs()` and, per run, resolve a `Ctx` and a real
+`ShellDispatcher` the same way `api::engine::EngineController::context` and
+`stop --now` already do — project-by-slug, its linked checkout or
+`env.home()` as a fallback, `resolve_engine_dispatch_script(run.agent)`.
+`poll_engine` runs the restart sweep once, on its own thread, before entering
+its steady loop — never a separate one-shot spawned elsewhere, because two
+threads racing to reconcile the same lane rows on their first pass is a
+correctness risk a sequential single thread removes by construction rather
+than by coordinating around it. Its wait is a computed `Instant` deadline
+re-derived from the remaining time on every wake, not `poll_verification`'s
+own "restart the budget on every `Ping`" idiom — correct for that worker's
+bare 30-second constant, but wrong for a 72-second tick riding a 20-second
+heartbeat, which would almost never land on schedule under that shape.
+`RECONCILE_TICK_SECS`'s own doc comment and this document's "reconcile loop"
+section are corrected to name SH-466 rather than SH-468.
+
+**Two things this story deliberately does not do.** `StopReason::
+DaemonRestart`, named in the original type-system proposal, stays
+unproduced: a run halted after a restart was halted by the breaker, and it
+reports `breaker-tripped` — a second reason would hide which mechanism
+actually acted, and the story's own text calls the breaker halt "the correct
+outcome" for this case, not a distinct one needing its own label.
+`quarantine_lane` gained no `Interrupted`-specific prose: `HardStopKind::
+as_str()` is the vocabulary, and the shared template it already writes —
+naming the kind, the lane, the run, the window and the worktree, and
+promising all three are preserved for inspection — is D11's whole message
+regardless of which kind triggered it.
+
+**Testing.** `tests/engine_restart.rs` is the file this document has named
+since before this story existed — pure cases table-driven over `classify`
+under both passes (the four precedence rows re-proven under `Restart`, the
+stall-versus-reseed divergence proven in both directions so the test cannot
+pass by coincidence), then the same two-mechanism shape wired through a real
+store and `FakeDispatcher`: worktree and window survive quarantine and no
+`Unclaim`/`KillWindow` call is ever made (D11's "never resume, never reset",
+proven as an absence of destructive calls rather than argued), a surviving
+lane's stall clock is provably re-seeded to the restart's own clock rather
+than left at its pre-outage value, a restart pass never fills or terminates
+even with ready work queued, the breaker trips at three and not two, and a
+second restart pass over an already-quarantined lane is idempotent.
+`tests/daemon_engine.rs` proves only the glue `reconcile_tick`/
+`reconcile_restart_tick` add on top: a real dispatch script resolves and is
+used, a project whose checkout was unlinked after its run started still
+reconciles via the `env.home()` fallback, and one tick reconciles two live
+runs on two independent real projects — proving `live_engine_runs()` is
+actually iterated rather than one run being hard-coded. A resolution-failure
+isolation test was considered and dropped: `create_engine_run` refuses a
+`project_slug` naming no project, and `delete_project` cascades a project's
+own engine runs away with it, so a live run whose project cannot resolve is
+not a state the store's own writers can produce — fabricating one to test
+against would be exactly the "the gate was right, the fixture lied to it"
+shape this project has already paid for (SH-263, SH-345, SH-364), asking a
+real question no production code path can ever raise.
+
+**One environment hazard found and fenced, not worked around.**
+`tests/daemon_engine.rs`'s first run resolved a real, stale Codex plugin
+installed on the development machine (protocol 1) ahead of this checkout's
+own dev `plugins/story/bin/story.sh` (protocol 2), failing every test on
+`check_dispatch_protocol` — the exact ambiguity `resolve_dispatch_script`'s
+own precedence order exists to have a rule for, just not one this file could
+rely on holding on every machine that runs the suite. Every test in the file
+pins `STORYHOOK_DISPATCH_SCRIPT`, the override every other source cannot
+outrank, at a fixture script written fresh per call — serialized by an
+in-file mutex around the necessarily-`unsafe` `std::env::set_var`/
+`remove_var` pair (Rust 2024), since every test in the file wants the
+identical value and the lock exists to make the get-set-run-restore sequence
+atomic against another thread's own restore, not to arbitrate between
+differing values. `daemon::engine`'s functions never execute the resolved
+script — only `tmux` is spawned — so the fixture's content only has to pass
+the protocol check, never run.
+
+**A real, deterministic defect surfaced the moment the trigger went live, in
+code this story never touched.** `finish_if_drained` (SH-465) treated
+"nothing claimable" and "nothing left, ever" as one fact. A project whose
+entire backlog was a single `no-auto` story had its run finish the instant
+`story engine start` created it — `ChangeWatcher::notice` (SH-202) fires
+synchronously inside the request that creates the run, before the CLI even
+sees the response, so `poll_engine`'s wake routinely completed before the
+operator's own next command reached the daemon. `tests/cli_grammar.rs`'s
+own `engine_cli_runs_the_lifecycle_and_reports_no_auto_work` (SH-467) went
+red under `make test`, reproducibly (3/3, not a flake) — confirmed by
+timing the mechanism directly rather than assumed from the symptom. Put to
+the user rather than fixed unilaterally, given the design implication
+reaches past this story's own remit: should a run auto-finish out from
+under `needs_human` work nobody has looked at yet? Decided: no.
+`finish_if_drained` now checks the identical no-auto query `status()`
+already uses for its own `needs_human` reporting — extracted into a shared
+`needs_human_stories()` so the two can never disagree about what "needs a
+human" means (SH-136) — and does not finish a `Running` run while any such
+story remains in its scope. A `Draining` run is deliberately unaffected: an
+operator's own graceful `stop` is an explicit decision to end the run once
+its lanes clear, proven through reconcile's own draining branch rather than
+through `stop` itself, which has a separate, unaffected finish check and
+never calls `finish_if_drained` at all — the first version of this fix's own
+regression test called `stop` directly and would have passed unchanged with
+the guard deleted entirely, catching nothing; rewritten to occupy a lane,
+stop gracefully into `draining`, then let reconcile observe the freed lane,
+which is the only path that actually reaches this function in that state.

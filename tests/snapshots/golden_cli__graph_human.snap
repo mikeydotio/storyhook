@@ -2,13 +2,13 @@
 source: tests/golden_cli.rs
 ---
 $ story graph
-open stories: 11
+open stories: 13
 dependency edges: 4
-roots (no predecessors): SH-1, SH-2, SH-4, SH-5, SH-6, SH-7, SH-10, SH-11, SH-12
-leaves (no successors): SH-1, SH-3, SH-4, SH-6, SH-7, SH-9, SH-10, SH-11, SH-12
+roots (no predecessors): SH-1, SH-2, SH-4, SH-5, SH-6, SH-7, SH-10, SH-11, SH-12, SH-15, SH-16
+leaves (no successors): SH-1, SH-3, SH-4, SH-6, SH-7, SH-9, SH-10, SH-11, SH-12, SH-15, SH-16
 critical path (2 stories):
   SH-5 -> SH-9
-parallel groups: 9
+parallel groups: 11
   group 1: SH-1
   group 2: SH-2, SH-3
   group 3: SH-4
@@ -18,6 +18,8 @@ parallel groups: 9
   group 7: SH-10
   group 8: SH-11
   group 9: SH-12
+  group 10: SH-15
+  group 11: SH-16
 
 $ story graph --critical-path
 critical path (2 stories):
@@ -31,7 +33,7 @@ $ story graph --blocked-by SH-1
 nothing is blocked by SH-1
 
 $ story graph --parallel-groups
-parallel groups: 9
+parallel groups: 11
   group 1: SH-1
   group 2: SH-2, SH-3
   group 3: SH-4
@@ -41,3 +43,5 @@ parallel groups: 9
   group 7: SH-10
   group 8: SH-11
   group 9: SH-12
+  group 10: SH-15
+  group 11: SH-16

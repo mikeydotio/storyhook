@@ -280,6 +280,58 @@ source: tests/golden_cli.rs
             "title": "Harden concurrent writes",
             "updated_at": "[timestamp]"
           }
+        },
+        {
+          "head_global_seq": 85,
+          "progress": {
+            "children_done": 0,
+            "children_total": 1
+          },
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-15",
+            "priority": "low",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-16",
+                "relation": "parent-of"
+              }
+            ],
+            "state": "todo",
+            "state_computed": true,
+            "story_type": "epic",
+            "superstate": "OPEN",
+            "title": "Track engine adoption",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "head_global_seq": 83,
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-16",
+            "labels": [
+              "no-auto"
+            ],
+            "priority": "low",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-15",
+                "relation": "child-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "normal",
+            "superstate": "OPEN",
+            "title": "Approve the rollout",
+            "updated_at": "[timestamp]"
+          }
         }
       ]
     }
@@ -469,6 +521,58 @@ source: tests/golden_cli.rs
             "story_type": "normal",
             "superstate": "OPEN",
             "title": "Harden concurrent writes",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "head_global_seq": 85,
+          "progress": {
+            "children_done": 0,
+            "children_total": 1
+          },
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-15",
+            "priority": "low",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-16",
+                "relation": "parent-of"
+              }
+            ],
+            "state": "todo",
+            "state_computed": true,
+            "story_type": "epic",
+            "superstate": "OPEN",
+            "title": "Track engine adoption",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "head_global_seq": 83,
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-16",
+            "labels": [
+              "no-auto"
+            ],
+            "priority": "low",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-15",
+                "relation": "child-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "normal",
+            "superstate": "OPEN",
+            "title": "Approve the rollout",
             "updated_at": "[timestamp]"
           }
         }
@@ -1288,6 +1392,31 @@ source: tests/golden_cli.rs
             "title": "Harden concurrent writes",
             "updated_at": "[timestamp]"
           }
+        },
+        {
+          "head_global_seq": 83,
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-16",
+            "labels": [
+              "no-auto"
+            ],
+            "priority": "low",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-15",
+                "relation": "child-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "normal",
+            "superstate": "OPEN",
+            "title": "Approve the rollout",
+            "updated_at": "[timestamp]"
+          }
         }
       ]
     }
@@ -1659,6 +1788,58 @@ source: tests/golden_cli.rs
             "title": "Harden concurrent writes",
             "updated_at": "[timestamp]"
           }
+        },
+        {
+          "head_global_seq": 85,
+          "progress": {
+            "children_done": 0,
+            "children_total": 1
+          },
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-15",
+            "priority": "low",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-16",
+                "relation": "parent-of"
+              }
+            ],
+            "state": "todo",
+            "state_computed": true,
+            "story_type": "epic",
+            "superstate": "OPEN",
+            "title": "Track engine adoption",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "head_global_seq": 83,
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-16",
+            "labels": [
+              "no-auto"
+            ],
+            "priority": "low",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-15",
+                "relation": "child-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "normal",
+            "superstate": "OPEN",
+            "title": "Approve the rollout",
+            "updated_at": "[timestamp]"
+          }
         }
       ]
     }
@@ -1946,6 +2127,58 @@ source: tests/golden_cli.rs
             "story_type": "normal",
             "superstate": "OPEN",
             "title": "Harden concurrent writes",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "head_global_seq": 85,
+          "progress": {
+            "children_done": 0,
+            "children_total": 1
+          },
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-15",
+            "priority": "low",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-16",
+                "relation": "parent-of"
+              }
+            ],
+            "state": "todo",
+            "state_computed": true,
+            "story_type": "epic",
+            "superstate": "OPEN",
+            "title": "Track engine adoption",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "head_global_seq": 83,
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-16",
+            "labels": [
+              "no-auto"
+            ],
+            "priority": "low",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-15",
+                "relation": "child-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "normal",
+            "superstate": "OPEN",
+            "title": "Approve the rollout",
             "updated_at": "[timestamp]"
           }
         }
@@ -2431,6 +2664,58 @@ source: tests/golden_cli.rs
             "title": "Prototype the archive format",
             "updated_at": "[timestamp]"
           }
+        },
+        {
+          "head_global_seq": 85,
+          "progress": {
+            "children_done": 0,
+            "children_total": 1
+          },
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-15",
+            "priority": "low",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-16",
+                "relation": "parent-of"
+              }
+            ],
+            "state": "todo",
+            "state_computed": true,
+            "story_type": "epic",
+            "superstate": "OPEN",
+            "title": "Track engine adoption",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "head_global_seq": 83,
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-16",
+            "labels": [
+              "no-auto"
+            ],
+            "priority": "low",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-15",
+                "relation": "child-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "normal",
+            "superstate": "OPEN",
+            "title": "Approve the rollout",
+            "updated_at": "[timestamp]"
+          }
         }
       ]
     }
@@ -2771,6 +3056,58 @@ source: tests/golden_cli.rs
             "title": "Prototype the archive format",
             "updated_at": "[timestamp]"
           }
+        },
+        {
+          "head_global_seq": 85,
+          "progress": {
+            "children_done": 0,
+            "children_total": 1
+          },
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-15",
+            "priority": "low",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-16",
+                "relation": "parent-of"
+              }
+            ],
+            "state": "todo",
+            "state_computed": true,
+            "story_type": "epic",
+            "superstate": "OPEN",
+            "title": "Track engine adoption",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "head_global_seq": 83,
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-16",
+            "labels": [
+              "no-auto"
+            ],
+            "priority": "low",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-15",
+                "relation": "child-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "normal",
+            "superstate": "OPEN",
+            "title": "Approve the rollout",
+            "updated_at": "[timestamp]"
+          }
         }
       ]
     }
@@ -3109,6 +3446,58 @@ source: tests/golden_cli.rs
             "story_type": "spike",
             "superstate": "CLOSED",
             "title": "Prototype the archive format",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "head_global_seq": 85,
+          "progress": {
+            "children_done": 0,
+            "children_total": 1
+          },
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-15",
+            "priority": "low",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-16",
+                "relation": "parent-of"
+              }
+            ],
+            "state": "todo",
+            "state_computed": true,
+            "story_type": "epic",
+            "superstate": "OPEN",
+            "title": "Track engine adoption",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "head_global_seq": 83,
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-16",
+            "labels": [
+              "no-auto"
+            ],
+            "priority": "low",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-15",
+                "relation": "child-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "normal",
+            "superstate": "OPEN",
+            "title": "Approve the rollout",
             "updated_at": "[timestamp]"
           }
         }

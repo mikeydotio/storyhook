@@ -80,30 +80,30 @@ tbody tr:hover { background:var(--table-hover); }
 </head>
 <body>
 <h1>Storyhook Report</h1>
-<p class="subtitle">Generated [timestamp] &middot; 14 stories</p>
+<p class="subtitle">Generated [timestamp] &middot; 16 stories</p>
 
 <div class="stats">
-<div class="stat-card"><div class="stat-value">14</div><div class="stat-label">Total</div></div>
-<div class="stat-card"><div class="stat-value">11</div><div class="stat-label">Open</div></div>
+<div class="stat-card"><div class="stat-value">16</div><div class="stat-label">Total</div></div>
+<div class="stat-card"><div class="stat-value">13</div><div class="stat-label">Open</div></div>
 <div class="stat-card"><div class="stat-value">3</div><div class="stat-label">Closed</div></div>
 <div class="stat-card"><div class="stat-value">3</div><div class="stat-label">Blocked</div></div>
-<div class="stat-card"><div class="stat-value">7</div><div class="stat-label">Ready</div></div>
+<div class="stat-card"><div class="stat-value">8</div><div class="stat-label">Ready</div></div>
 </div>
 
 <div class="section">
 <div class="section-title">State Distribution</div>
-<div class="bar-chart"><div class="bar-segment" style="width:7.1%;background:#3b82f6" title="closed: 1 (7%)"></div><div class="bar-segment" style="width:14.3%;background:#10b981" title="done: 2 (14%)"></div><div class="bar-segment" style="width:14.3%;background:#f59e0b" title="in-progress: 2 (14%)"></div><div class="bar-segment" style="width:7.1%;background:#ef4444" title="review: 1 (7%)"></div><div class="bar-segment" style="width:57.1%;background:#8b5cf6" title="todo: 8 (57%)"></div></div>
-<div class="legend"><span class="legend-item"><span class="legend-dot" style="background:#3b82f6"></span>closed 1 (7%)</span><span class="legend-item"><span class="legend-dot" style="background:#10b981"></span>done 2 (14%)</span><span class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span>in-progress 2 (14%)</span><span class="legend-item"><span class="legend-dot" style="background:#ef4444"></span>review 1 (7%)</span><span class="legend-item"><span class="legend-dot" style="background:#8b5cf6"></span>todo 8 (57%)</span></div>
+<div class="bar-chart"><div class="bar-segment" style="width:6.2%;background:#3b82f6" title="closed: 1 (6%)"></div><div class="bar-segment" style="width:12.5%;background:#10b981" title="done: 2 (12%)"></div><div class="bar-segment" style="width:12.5%;background:#f59e0b" title="in-progress: 2 (12%)"></div><div class="bar-segment" style="width:6.2%;background:#ef4444" title="review: 1 (6%)"></div><div class="bar-segment" style="width:62.5%;background:#8b5cf6" title="todo: 10 (62%)"></div></div>
+<div class="legend"><span class="legend-item"><span class="legend-dot" style="background:#3b82f6"></span>closed 1 (6%)</span><span class="legend-item"><span class="legend-dot" style="background:#10b981"></span>done 2 (12%)</span><span class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span>in-progress 2 (12%)</span><span class="legend-item"><span class="legend-dot" style="background:#ef4444"></span>review 1 (6%)</span><span class="legend-item"><span class="legend-dot" style="background:#8b5cf6"></span>todo 10 (62%)</span></div>
 </div>
 
 <div class="section">
 <div class="section-title">Priority Breakdown</div>
-<div class="priorities"><span class="priority-badge priority-critical">critical: 2</span><span class="priority-badge priority-high">high: 3</span><span class="priority-badge priority-low">low: 5</span><span class="priority-badge priority-medium">medium: 4</span></div>
+<div class="priorities"><span class="priority-badge priority-critical">critical: 2</span><span class="priority-badge priority-high">high: 3</span><span class="priority-badge priority-low">low: 7</span><span class="priority-badge priority-medium">medium: 4</span></div>
 </div>
 
 <div class="section">
 <div class="section-title">Type Breakdown</div>
-<div class="priorities"><span class="priority-badge priority-none">bug: 1</span><span class="priority-badge priority-none">chore: 3</span><span class="priority-badge priority-none">epic: 1</span><span class="priority-badge priority-none">normal: 7</span><span class="priority-badge priority-none">spike: 2</span></div>
+<div class="priorities"><span class="priority-badge priority-none">bug: 1</span><span class="priority-badge priority-none">chore: 3</span><span class="priority-badge priority-none">epic: 2</span><span class="priority-badge priority-none">normal: 8</span><span class="priority-badge priority-none">spike: 2</span></div>
 </div>
 
 <div class="section">
@@ -122,9 +122,11 @@ tbody tr:hover { background:var(--table-hover); }
 <tr class="row-ready"><td class="col-id">SH-10</td><td>Ship the CLI shim</td><td>todo</td><td><span class="priority-badge priority-medium">medium</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
 <tr><td class="col-id">SH-13</td><td>Old approach: file-per-story</td><td>closed</td><td><span class="priority-badge priority-low">low</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
 <tr><td class="col-id">SH-8</td><td>Retire the JSONL reader</td><td>done</td><td><span class="priority-badge priority-low">low</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
+<tr class="row-ready"><td class="col-id">SH-16</td><td>Approve the rollout</td><td>todo</td><td><span class="priority-badge priority-low">low</span></td><td><span class="label">no-auto</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
 <tr class="row-ready"><td class="col-id">SH-11</td><td>Audit error codes</td><td>todo</td><td><span class="priority-badge priority-low">low</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
 <tr class="row-blocked"><td class="col-id">SH-6</td><td>Benchmark the rebuild path</td><td>todo</td><td><span class="priority-badge priority-low">low</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
 <tr class="row-ready"><td class="col-id">SH-7</td><td>Document the data layer</td><td>todo</td><td><span class="priority-badge priority-low">low</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
+<tr><td class="col-id">SH-15</td><td>Track engine adoption</td><td>todo</td><td><span class="priority-badge priority-low">low</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
 </tbody>
 </table>
 </div>

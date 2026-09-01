@@ -3,6 +3,7 @@ source: tests/golden_cli.rs
 ---
 $ story epic list
 SH-1 [in-progress] (critical) [epic] Design the storage engine (0/3)
+SH-15 [todo] (low) [epic] Track engine adoption (0/1)
 
 $ story epic show SH-1
 SH-1 Design the storage engine

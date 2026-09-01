@@ -357,6 +357,16 @@ where
                 crate::daemon::verification_progress::poll_verification_progress(store, &env, &stop)
             });
         }
+        // The Full Auto engine trigger (SH-466): a restart sweep once, then
+        // the ordinary reconcile pass on every bus wake or coarse tick. One
+        // thread, sequential, so nothing else can race the restart sweep
+        // over the same lane rows.
+        {
+            let stop = Arc::clone(&stop);
+            let env = env.clone();
+            let bus = bus.clone();
+            scope.spawn(move || crate::daemon::engine::poll_engine(store, &env, &bus, &stop));
+        }
         if !has_tailnet && let Some(loopback_addr) = loopback_addr {
             let stop = Arc::clone(&stop);
             let serving = &serving;

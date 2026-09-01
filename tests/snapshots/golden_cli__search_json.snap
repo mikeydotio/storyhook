@@ -65,6 +65,28 @@ source: tests/golden_cli.rs
             "title": "Implement the SQLite engine",
             "updated_at": "[timestamp]"
           }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-15",
+            "priority": "low",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-16",
+                "relation": "parent-of"
+              }
+            ],
+            "state": "todo",
+            "state_computed": true,
+            "story_type": "epic",
+            "superstate": "OPEN",
+            "title": "Track engine adoption",
+            "updated_at": "[timestamp]"
+          }
         }
       ]
     }
@@ -269,6 +291,28 @@ source: tests/golden_cli.rs
             "story_type": "normal",
             "superstate": "OPEN",
             "title": "Implement the SQLite engine",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-15",
+            "priority": "low",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-16",
+                "relation": "parent-of"
+              }
+            ],
+            "state": "todo",
+            "state_computed": true,
+            "story_type": "epic",
+            "superstate": "OPEN",
+            "title": "Track engine adoption",
             "updated_at": "[timestamp]"
           }
         }
