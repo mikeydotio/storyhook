@@ -8,13 +8,13 @@ use storyhook::domain::{Priority, SuperState};
 use storyhook::env::Environment;
 use storyhook::error::AppError;
 use storyhook::service::{
-    ConfigService, NewStoryInput, PrLinkService, StoryService,
+    Clock, ConfigService, NewStoryInput, PrLinkService, StoryService,
     VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX, VerificationCandidate,
     VerificationProblem, VerificationQueue,
 };
 use storyhook::store::{PrLink, ReadOps, Store, StoryNo, WriteOps};
 use storyhook_test_support::ServiceFixture;
-use storyhook_test_support::scratch_dir;
+use storyhook_test_support::{FIXTURE_NOW, scratch_dir};
 
 use std::process::Command;
 use std::sync::Mutex;
@@ -68,6 +68,48 @@ fn equal_priority_and_time_use_story_identity_as_a_stable_tie_break() {
         .unwrap()
         .unwrap();
     assert_eq!(selected.story_id, first);
+}
+
+/// `ordered()` (SH-524) is the whole queue `next()` itself drains from, in
+/// the same order — a queued candidate's position and wait are computed from
+/// this list, so it must actually agree with what `next()` selects first.
+#[test]
+fn ordered_lists_every_submitted_candidate_in_the_order_next_would_drain_them() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let low = submitted(&fixture, "older low", Priority::Low, PR_ONE);
+    let high = submitted(&fixture, "newer high", Priority::High, PR_TWO);
+
+    let queue = VerificationQueue::new(fixture.store());
+    let ordered = queue.ordered().unwrap();
+    let next = queue.next().unwrap().unwrap();
+
+    assert_eq!(ordered.len(), 2);
+    assert_eq!(ordered[0].story_id, high);
+    assert_eq!(ordered[1].story_id, low);
+    assert_eq!(next.story_id, ordered[0].story_id);
+}
+
+/// A story's own comment-driven `updated_at` moves on every publish of the
+/// SH-524 progress checklist. `verifying_since` must not be fooled by that: it
+/// answers "when did the state change", read from the story's
+/// `StoryStateChanged` history, not "when was this row last written".
+#[test]
+fn verifying_since_reads_the_state_change_event_not_a_later_comments_updated_at() {
+    let mut fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "queued", Priority::High, PR_ONE);
+    fixture.set_clock(Clock::Fixed("2026-01-01T00:10:00Z".into()));
+    StoryService::new(&fixture.ctx())
+        .comment(&id, "an unrelated later comment")
+        .unwrap();
+
+    let selected = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(selected.verifying_since.as_deref(), Some(FIXTURE_NOW));
 }
 
 #[test]
@@ -355,6 +397,7 @@ fn the_shell_actuator_refuses_a_different_checkout_origin_before_running_github(
         title: "wrong repository".into(),
         priority: Priority::High,
         created_at: "2026-01-01T00:00:00Z".into(),
+        verifying_since: Some("2026-01-01T00:00:00Z".into()),
         checkout: checkout.path().to_path_buf(),
         pull_request: Err(VerificationProblem::MissingPullRequest),
     };
