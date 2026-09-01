@@ -334,6 +334,31 @@ source: tests/golden_cli.rs
             "title": "Audit error codes",
             "updated_at": "[timestamp]"
           }
+        },
+        {
+          "head_global_seq": 83,
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-16",
+            "labels": [
+              "no-auto"
+            ],
+            "priority": "low",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-15",
+                "relation": "child-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "normal",
+            "superstate": "OPEN",
+            "title": "Approve the rollout",
+            "updated_at": "[timestamp]"
+          }
         }
       ]
     }

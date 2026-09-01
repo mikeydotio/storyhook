@@ -41,6 +41,33 @@ source: tests/golden_cli.rs
             "title": "Design the storage engine",
             "updated_at": "[timestamp]"
           }
+        },
+        {
+          "head_global_seq": 85,
+          "progress": {
+            "children_done": 0,
+            "children_total": 1
+          },
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-15",
+            "priority": "low",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-16",
+                "relation": "parent-of"
+              }
+            ],
+            "state": "todo",
+            "state_computed": true,
+            "story_type": "epic",
+            "superstate": "OPEN",
+            "title": "Track engine adoption",
+            "updated_at": "[timestamp]"
+          }
         }
       ]
     }
