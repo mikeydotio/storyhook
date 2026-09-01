@@ -338,8 +338,10 @@ fn every_declared_hook_script_exists_and_spells_deadline_as_a_flag() {
 /// file, so losing either plan-review path or one of the question matchers is a
 /// visible diff here -- the same property the hand-maintained list used to
 /// give, minus the failure mode where the list and the manifest could disagree.
+/// `protect-install.sh` is SH-530's, and is the only one of them that calls no
+/// `story` command at all.
 #[test]
-fn the_manifest_currently_declares_exactly_these_four_scripts() {
+fn the_manifest_currently_declares_exactly_these_five_scripts() {
     let mut scripts: Vec<String> = storyhook_test_support::all_declared_hooks()
         .into_iter()
         .map(|hook| hook.script)
@@ -353,6 +355,7 @@ fn the_manifest_currently_declares_exactly_these_four_scripts() {
             "full-auto.sh",
             "full-auto.sh",
             "post-git.sh",
+            "protect-install.sh",
             "session-start.sh",
             "stop-handoff.sh",
         ],
@@ -397,6 +400,18 @@ fn hook_manifest_has_the_shared_provider_contract() {
     // hook process on every tool call a lane makes.
     let expected = [
         ("SessionStart", "*", "session-start.sh", 5),
+        // SH-530. Matched on Bash as well as the structured editors, because
+        // `sed -i`, `tee`, `cp`, `install` and `rm` reach the same files, and a
+        // guard on the editors alone is bypassed by the shell it left open.
+        // 5s, and it calls no `story` at all: the inert path answers in shell
+        // with no interpreter start, which is what keeps a hook that FAILS OPEN
+        // at its timeout (SH-306) from silently doing so.
+        (
+            "PreToolUse",
+            "Write|Edit|NotebookEdit|Bash",
+            "protect-install.sh",
+            5,
+        ),
         ("PreToolUse", "ExitPlanMode", "full-auto.sh", 10),
         ("PreToolUse", "AskUserQuestion", "full-auto.sh", 10),
         ("PreToolUse", "request_user_input", "full-auto.sh", 10),
