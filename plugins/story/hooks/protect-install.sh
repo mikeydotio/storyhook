@@ -119,14 +119,14 @@ if target is None:
 
 reason = (
     f"storyhook: refusing to edit an installed release artifact.\n"
-    f"  {target} is written by `story plugin install`, so an edit there is\n"
-    f"  overwritten by the next install -- lost, unversioned and untested --\n"
+    f"  {target} is written by the storyhook plugin installer, so an edit there\n"
+    f"  is overwritten by the next install -- lost, unversioned and untested --\n"
     f"  and it drifts this machine away from the release it reports.\n"
     f"\n"
     f"  Make the change in the storyhook CHECKOUT instead (plugins/story/...),\n"
     f"  where it is reviewed, gated and shipped by the next release.\n"
-    f"  `story doctor install` shows what is pending; nothing you have written\n"
-    f"  is lost by this refusal.\n"
+    f"  Run: story doctor install -- it shows what is pending. Nothing you have\n"
+    f"  written is lost by this refusal.\n"
     f"\n"
     f"  If you genuinely mean to edit the installed copy, create\n"
     f"  {override_dir}/ALLOW_INSTALLED_EDITS."
