@@ -15,10 +15,13 @@ use std::time::Duration;
 use regex::Regex;
 use wait_timeout::ChildExt;
 
-use crate::domain::{LABEL_NO_AUTO, is_epic};
+use crate::domain::{
+    DISPLAY_PROMOTION_STATE, LABEL_NO_AUTO, SuperState, VERIFYING_STATE_SLUG, is_epic,
+};
 use crate::env::Environment;
 use crate::env::spawn_env::apply_dispatch_allowlist;
 use crate::error::AppError;
+use crate::store::ids::GlobalSeq;
 use crate::store::{
     EngineAgent, EngineLaneRecord, EngineLaneState, EngineRunRecord, EngineRunState, EngineScope,
     ReadOps, Store, StoreError, WriteOps,
@@ -39,6 +42,250 @@ pub const MAX_ENGINE_LANES: u32 = u8::MAX as u32;
 
 pub const OPERATOR_STOPPED: &str = "operator-stopped";
 pub const OPERATOR_STOPPED_NOW: &str = "operator-stopped-now";
+
+/// The run-level stop reason the breaker writes (D10).
+pub const BREAKER_TRIPPED: &str = "breaker-tripped";
+/// The run-level stop reason a drained queue writes.
+pub const QUEUE_DRAINED: &str = "queue-drained";
+
+/// The lane-level outcome recorded when a story reached a CLOSED superstate.
+pub const COMPLETED: &str = "completed";
+
+/// Consecutive hard stops that halt a run (D10). A completion zeroes the count.
+pub const HARD_STOP_BREAKER: u32 = 3;
+
+/// The machine-wide ceiling on lanes filled across every live run (D14).
+///
+/// **Derived, not picked.** A filled lane is exactly one `story.sh dispatch`
+/// subprocess, and this machine already bounds those:
+/// [`crate::api::dispatch::MAX_RUNNING`]. Restating that budget as its own
+/// literal would be a second opinion about one machine, which this project has
+/// paid for repeatedly (SH-136). `engine_lane_budget_matches_dispatch_capacity`
+/// fails if the two ever drift.
+pub const ENGINE_LANE_BUDGET: usize = crate::api::dispatch::MAX_RUNNING;
+
+/// `make test`'s measured warm median, in seconds, from
+/// `docs/rearch/baseline/timings.md`.
+///
+/// Kept beside the ceiling it feeds so the derivation is legible at the point
+/// of use; `stall_ceiling_derives_from_the_measured_suite_median` reads the
+/// same figure back out of that document and fails if the measurement moves,
+/// in the shape `tests/machine_lock.rs` already uses for `GATE_MEDIAN_SECS`.
+pub const GATE_MEDIAN_SECS: u64 = 36;
+
+/// How much slack the ceiling carries over the derived worst case.
+///
+/// Stated as its own named factor rather than folded into the product, so a
+/// reader can see what is measurement and what is judgement (SH-394).
+pub const STALL_MARGIN: u64 = 2;
+
+/// How long a lane may show no observable progress before it is a hard stop.
+///
+/// **Derived from the deadline it disproves, never a bare literal** (SH-394).
+/// This ceiling was first derived when a lane's longest *legitimate* silence
+/// was its own full `make test` run, queuing on the machine-wide `gate` lock
+/// behind up to [`ENGINE_LANE_BUDGET`] other lanes doing the same (SH-457
+/// takes that lock inside `scripts/run-tests.sh`).
+///
+/// **SH-521 moved that run out of the lane.** A lane now runs only its own
+/// new and directly impacted tests (D4); the full suite runs once, on one
+/// serialized daemon verification worker, for a story that has already
+/// reached `verifying` — which [`LaneClassification::Verifying`] holds
+/// outside this ceiling entirely, precisely because that queue can
+/// legitimately outrun it. What remains behind this ceiling is a lane's own
+/// much smaller test leg, so [`GATE_MEDIAN_SECS`] — the full suite's measured
+/// warm median — stays a generous, conservative bound on it rather than a
+/// tight one: SH-394's rule is to widen a fixture's own cost over tightening
+/// an assertion that sits too close to flake, and re-deriving down to a
+/// narrower, less-measured figure would be exactly that.
+///
+/// **If a lane's own test leg is ever folded back into a `make test` run
+/// serialized behind other lanes, this ceiling must be re-derived, not
+/// merely raised** — that was the original 873s-vs-median distinction this
+/// constant was built to make, and SH-521 changed which run is being bounded
+/// without changing that underlying rule.
+pub const STALL_CEILING_SECS: u64 = ENGINE_LANE_BUDGET as u64 * GATE_MEDIAN_SECS * STALL_MARGIN;
+
+/// How often a live run should be reconciled in the absence of any other wake.
+///
+/// A quarter of the ceiling, so a stall surfaces well inside it rather than up
+/// to a full ceiling late. Derived from [`STALL_CEILING_SECS`]; the timer that
+/// *uses* this belongs to the daemon wiring (SH-468), not to this module.
+pub const RECONCILE_TICK_SECS: u64 = STALL_CEILING_SECS / 4;
+
+// Compile-time, not a test: these are `const`, so a runtime assertion over them
+// folds to a constant and proves nothing (clippy says so). Stated here, beside
+// the constants, so editing one to an impossible value fails the BUILD rather
+// than a suite somebody might not run.
+const _: () = assert!(
+    STALL_MARGIN >= 1,
+    "a margin below 1 puts the stall ceiling under the worst legitimate silence it derives from"
+);
+const _: () = assert!(
+    RECONCILE_TICK_SECS > 0,
+    "a tick of zero is a busy loop, which the reconcile design forbids"
+);
+
+/// Why a lane stopped in a way that needs a human.
+///
+/// [`Self::Interrupted`] is declared here but produced only by daemon-start
+/// reconciliation (SH-466), so that story adds a *producer* rather than
+/// widening a shipped enum every reader already matches on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HardStopKind {
+    /// The agent blocked the story or set `awaiting` on it.
+    AgentBlocked,
+    /// The lane's window is gone while its story is still OPEN.
+    WindowGone,
+    /// Nothing observable changed for longer than [`STALL_CEILING_SECS`].
+    Stalled,
+    /// The daemon restarted while the lane was mid-story (SH-466).
+    Interrupted,
+    /// `story next` refused the claim the fill phase attempted (SH-120: the
+    /// refusal is relayed verbatim, never composed here).
+    DispatchRefused,
+}
+
+impl HardStopKind {
+    /// The stable machine-readable classification recorded on the lane.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AgentBlocked => "agent-blocked",
+            Self::WindowGone => "window-gone",
+            Self::Stalled => "stalled",
+            Self::Interrupted => "interrupted",
+            Self::DispatchRefused => "dispatch-refused",
+        }
+    }
+}
+
+/// What one reconcile pass decided about one occupied lane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LaneClassification {
+    /// The story is still OPEN and something moved, or the ceiling has not
+    /// been reached. Nothing to do but record the observation.
+    Progressing,
+    /// The story reached the required `verifying` handoff (SH-521): held,
+    /// not filled, not quarantined, not counted toward the breaker. The lane
+    /// stays occupied because the story still owns a live worktree and
+    /// window that only the verifier's own reap reclaims.
+    Verifying,
+    /// The story left the OPEN superstate. Free the lane, zero the streak.
+    Completed,
+    /// A hard stop. Quarantine the lane and increment the streak.
+    HardStop(HardStopKind),
+}
+
+/// One lane's facts as of one pass, gathered before anything is decided.
+///
+/// Separating observation from classification is what lets the taxonomy be
+/// table-tested without a store, a dispatcher, or a clock.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaneObservation {
+    /// Whether the lane's story has left the OPEN superstate.
+    pub story_closed: bool,
+    /// Whether the lane's story sits in the required `verifying` handoff
+    /// (SH-521) — still OPEN, so [`Self::story_closed`] is `false`.
+    pub story_verifying: bool,
+    /// Whether the agent blocked the story or set `awaiting` on it.
+    pub agent_blocked: bool,
+    /// Whether the lane's window still runs the agent it was launched with.
+    pub window_alive: bool,
+    /// The story's current change-feed position, or `None` if it could not be
+    /// resolved (a deleted story, say).
+    pub head_global_seq: Option<i64>,
+    /// The seq recorded the last time this lane was seen to move.
+    pub last_progress_seq: Option<i64>,
+    /// Seconds since [`Self::last_progress_seq`] last advanced, or `None` when
+    /// no progress has been observed yet.
+    pub seconds_since_progress: Option<u64>,
+    /// The story's own `awaiting` text, when it has one — the reason to
+    /// relay verbatim if this lane is quarantined, rather than overwriting it
+    /// with a message composed here (SH-120).
+    pub awaiting_reason: Option<String>,
+}
+
+/// What one reconcile pass did, as data rather than rendered text.
+///
+/// SH-467's CLI and SH-468's HTTP both render this; neither should have to
+/// parse a sentence back apart.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReconcileReport {
+    /// The run this pass reconciled.
+    pub run_id: RunId,
+    /// Lane indices freed because their story completed.
+    pub completed: Vec<u32>,
+    /// Lane indices held this pass because their story reached `verifying`.
+    pub verifying: Vec<u32>,
+    /// Lane indices quarantined this pass, with why.
+    pub quarantined: Vec<(u32, HardStopKind)>,
+    /// Lane indices filled this pass, with the story each claimed.
+    pub filled: Vec<(u32, String)>,
+    /// The run's state after the pass.
+    pub run_state: EngineRunState,
+    /// The run's stop reason after the pass, when it has one.
+    pub stop_reason: Option<String>,
+}
+
+/// Decides one lane's fate from what was observed. Pure, so the whole failure
+/// taxonomy is table-testable.
+///
+/// **Order is the design, not an implementation detail.**
+///
+/// `Completed` is tested first because completion is a *store* fact while a
+/// closed window is only evidence about a window (D3, SH-226): an agent that
+/// finished its story and let its pane exit must read as `Completed`, never
+/// `WindowGone`. Reading the window first would report success as failure and
+/// quarantine finished work.
+///
+/// `AgentBlocked` is tested next, ahead of `Verifying`: a story can sit in
+/// `verifying` with `awaiting` also set (centralized verification's own
+/// `return_for_repair` falls back to `set_awaiting` when it cannot reach the
+/// dispatched pane, SH-521), and that diagnosis must surface rather than be
+/// masked by the handoff.
+///
+/// `Verifying` is tested ahead of `WindowGone` and `Stalled`. The agent's
+/// last action for a successful story is `story move <n> verifying`, and the
+/// dispatch launch execs the agent process directly rather than typing into a
+/// persistent shell (`plugins/story/bin/story.sh`'s own `remain-on-exit`
+/// rationale) — so the pane is normally already dead the instant a story
+/// reaches this handoff, exactly like an ordinary completion. Reading the
+/// window next would report every successful lane as `WindowGone`, and D4's
+/// serial, machine-wide verification queue can legitimately outrun any one
+/// lane's own [`STALL_CEILING_SECS`] besides, so reading the clock next would
+/// eventually report the same success as `Stalled` instead. Neither is a
+/// failure; the story is exactly where it is supposed to be.
+#[must_use]
+pub fn classify(observation: &LaneObservation, stall_ceiling_secs: u64) -> LaneClassification {
+    if observation.story_closed {
+        return LaneClassification::Completed;
+    }
+    if observation.agent_blocked {
+        return LaneClassification::HardStop(HardStopKind::AgentBlocked);
+    }
+    if observation.story_verifying {
+        return LaneClassification::Verifying;
+    }
+    if !observation.window_alive {
+        return LaneClassification::HardStop(HardStopKind::WindowGone);
+    }
+    // A seq that moved is progress regardless of the clock; only a lane that
+    // has BOTH failed to move and outrun the ceiling has stalled. `None` on
+    // either side states nothing and is seeded rather than punished (SH-372).
+    let unmoved = match (observation.head_global_seq, observation.last_progress_seq) {
+        (Some(head), Some(recorded)) => head == recorded,
+        _ => false,
+    };
+    if unmoved
+        && observation
+            .seconds_since_progress
+            .is_some_and(|elapsed| elapsed > stall_ceiling_secs)
+    {
+        return LaneClassification::HardStop(HardStopKind::Stalled);
+    }
+    LaneClassification::Progressing
+}
 
 /// A tmux client normally answers in milliseconds. The shared machine-probe
 /// budget bounds a wedged server without inventing another patience value.
@@ -490,6 +737,402 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         self.set_acknowledged(run_id)
     }
 
+    /// One reconcile pass over one run: observe, classify, quarantine, break,
+    /// fill, terminate.
+    ///
+    /// # Why the phases are separate transactions
+    ///
+    /// A dispatcher call must never happen inside a store write. `story.sh`
+    /// makes its own `story` calls back into this daemon over
+    /// `/api/v1/invoke`, so holding a write transaction across one risks the
+    /// deadlock `docs/spec/dashboard-dispatch.md` documents. Each phase opens
+    /// its own short write and the subprocess work happens between them — the
+    /// shape [`Self::stop_now`] already uses.
+    ///
+    /// # What this deliberately does not do
+    ///
+    /// It never *starts* a pass on a schedule. The engine has no busy loop: a
+    /// caller wakes it on a project change, a coarse liveness tick derived from
+    /// [`STALL_CEILING_SECS`], or a control command. Owning that trigger is the
+    /// daemon wiring's job (SH-468), not this module's.
+    pub fn reconcile(&self, run_id: &RunId) -> Result<ReconcileReport, AppError> {
+        let slug = self.project_slug()?;
+        let mut report = ReconcileReport {
+            run_id: run_id.clone(),
+            completed: Vec::new(),
+            verifying: Vec::new(),
+            quarantined: Vec::new(),
+            filled: Vec::new(),
+            run_state: EngineRunState::Running,
+            stop_reason: None,
+        };
+
+        // ---- observe + classify -------------------------------------------
+        let observed = self.observe_lanes(&slug, run_id)?;
+
+        // ---- apply: free completions, hold handoffs, quarantine hard stops
+        for (lane, classification, observation) in observed {
+            match classification {
+                LaneClassification::Progressing => {
+                    self.record_progress(&lane, observation.head_global_seq)?;
+                }
+                LaneClassification::Verifying => {
+                    // Held, not freed: the story still owns a live worktree
+                    // and window that only the verifier's own reap reclaims
+                    // (SH-521). The story DID move to reach this handoff, so
+                    // the stall clock restarts the same way a Progressing
+                    // lane's does.
+                    report.verifying.push(lane.lane_index);
+                    self.record_progress(&lane, observation.head_global_seq)?;
+                }
+                LaneClassification::Completed => {
+                    report.completed.push(lane.lane_index);
+                    self.free_completed_lane(&lane)?;
+                }
+                LaneClassification::HardStop(kind) => {
+                    report.quarantined.push((lane.lane_index, kind));
+                    self.quarantine_lane(
+                        run_id,
+                        &lane,
+                        kind,
+                        observation.awaiting_reason.as_deref(),
+                    )?;
+                }
+            }
+        }
+
+        // ---- breaker ------------------------------------------------------
+        // A completion zeroes the streak; each hard stop increments it.
+        // Applied AFTER every lane is classified so one pass that both
+        // completes and fails is scored once, in a defined order, rather than
+        // depending on lane index.
+        let view = self.apply_breaker(run_id, &report)?;
+        report.run_state = view.run.state;
+        report.stop_reason = view.run.stop_reason.clone();
+        if view.run.state != EngineRunState::Running {
+            // Halted, paused, draining or finished: no new claims. A draining
+            // run whose last lane just freed still needs the terminal check
+            // below, so fall through to it rather than returning here.
+            if view.run.state == EngineRunState::Draining {
+                let view = self.finish_if_drained(run_id, QUEUE_DRAINED)?;
+                report.run_state = view.run.state;
+                report.stop_reason = view.run.stop_reason.clone();
+            }
+            return Ok(report);
+        }
+
+        // ---- fill ---------------------------------------------------------
+        self.fill_idle_lanes(&slug, run_id, &mut report)?;
+
+        // ---- terminate ----------------------------------------------------
+        // Nothing claimable and every lane idle. Checked after filling, so a
+        // run only ends once a claim attempt has actually come back empty.
+        if report.filled.is_empty() {
+            let view = self.finish_if_drained(run_id, QUEUE_DRAINED)?;
+            report.run_state = view.run.state;
+            report.stop_reason = view.run.stop_reason.clone();
+        }
+        Ok(report)
+    }
+
+    /// Reads every occupied lane and decides its fate. One read transaction
+    /// for the store facts, then the window probes outside it.
+    #[allow(clippy::type_complexity)]
+    fn observe_lanes(
+        &self,
+        slug: &str,
+        run_id: &RunId,
+    ) -> Result<Vec<(EngineLaneRecord, LaneClassification, LaneObservation)>, AppError> {
+        let project = self.ctx.project();
+        let now = self.ctx.now();
+        let facts = self.ctx.store().read(|tx| {
+            let _ = run_for_project(tx, slug, run_id)?;
+            let prefix = project_prefix(tx, project)?;
+            let mut facts = Vec::new();
+            for lane in tx.engine_lanes(run_id)? {
+                if lane.state == EngineLaneState::Idle || lane.state == EngineLaneState::Quarantined
+                {
+                    continue;
+                }
+                let story = lane
+                    .story_id
+                    .clone()
+                    .expect("a non-idle lane holds a story");
+                // A story that will not resolve states nothing about progress:
+                // `head_global_seq` stays `None` and `classify` declines to
+                // call that a stall (SH-372).
+                let row = resolve_story(tx, project, &prefix, &story)
+                    .ok()
+                    .map(|(_, row)| row);
+                facts.push((lane, row));
+            }
+            Ok(facts)
+        })?;
+
+        let mut observed = Vec::with_capacity(facts.len());
+        for (lane, row) in facts {
+            // The window probe is a subprocess, so it runs outside the read.
+            let window_alive = lane
+                .window_name
+                .as_deref()
+                .is_some_and(|window| self.dispatcher.window_alive(window));
+            let head_global_seq = row.as_ref().map(|row| row.head_global_seq.get());
+            let observation = LaneObservation {
+                story_closed: row
+                    .as_ref()
+                    .is_some_and(|row| row.superstate == SuperState::Closed),
+                story_verifying: row
+                    .as_ref()
+                    .is_some_and(|row| row.state == VERIFYING_STATE_SLUG),
+                agent_blocked: row.as_ref().is_some_and(|row| {
+                    row.awaiting.is_some() || row.state == DISPLAY_PROMOTION_STATE
+                }),
+                window_alive,
+                head_global_seq,
+                last_progress_seq: lane.last_progress_seq.map(GlobalSeq::get),
+                seconds_since_progress: lane
+                    .last_progress_at
+                    .as_deref()
+                    .and_then(|at| elapsed_secs(at, &now)),
+                awaiting_reason: row.as_ref().and_then(|row| row.awaiting.clone()),
+            };
+            let classification = classify(&observation, STALL_CEILING_SECS);
+            observed.push((lane, classification, observation));
+        }
+        Ok(observed)
+    }
+
+    /// Records that a lane's story moved, so the stall clock restarts from the
+    /// change rather than from the observation.
+    fn record_progress(
+        &self,
+        lane: &EngineLaneRecord,
+        head_global_seq: Option<i64>,
+    ) -> Result<(), AppError> {
+        let observed_at = self.ctx.now();
+        let mut updated = lane.clone();
+        updated.last_observed_at = observed_at.clone();
+        let moved = match (head_global_seq, lane.last_progress_seq.map(GlobalSeq::get)) {
+            (Some(head), Some(recorded)) => head != recorded,
+            (Some(_), None) => true,
+            _ => false,
+        };
+        if moved {
+            updated.last_progress_seq = head_global_seq.map(GlobalSeq::new);
+            updated.last_progress_at = Some(observed_at);
+        }
+        if &updated != lane {
+            self.ctx.store().write(|tx| tx.put_engine_lane(&updated))?;
+        }
+        Ok(())
+    }
+
+    /// Frees a lane whose story reached a CLOSED superstate.
+    fn free_completed_lane(&self, lane: &EngineLaneRecord) -> Result<(), AppError> {
+        let observed_at = self.ctx.now();
+        let mut idle = idle_lane(&lane.run_id, lane.lane_index, &observed_at);
+        idle.outcome = Some(COMPLETED.to_string());
+        idle.outcome_detail = lane.story_id.clone();
+        self.ctx.store().write(|tx| tx.put_engine_lane(&idle))?;
+        Ok(())
+    }
+
+    /// Records a hard stop on the story and preserves the lane's evidence.
+    ///
+    /// The reason is free text on the story's `awaiting`, not a `blocked-by`
+    /// edge: SH-398's rule is about blockers that ARE stories, and a dead
+    /// window is not one. Worktree, branch, PR and window are all left intact
+    /// — the lane keeps its `worktree_path` and `window_name` so a human can
+    /// see what the agent left behind (D11).
+    ///
+    /// `existing_reason` is whatever the story's own `awaiting` already said
+    /// at observation time — for [`HardStopKind::AgentBlocked`], the agent's
+    /// own diagnosis (its charter tells it to `story block <n> the-reason`
+    /// before stopping), or centralized verification's own message when
+    /// `return_for_repair` could not reach a dead pane (SH-521). SH-120's
+    /// relay rule applies here exactly as it does to a dispatch refusal: the
+    /// existing text is appended to, never replaced by, a message composed
+    /// here. Every other kind observes `existing_reason` as `None` by
+    /// construction of `classify`'s own precedence — a story cannot reach
+    /// `WindowGone`, `Stalled`, `Interrupted` or `DispatchRefused` while
+    /// `awaiting` is set, because `AgentBlocked` is tested first.
+    fn quarantine_lane(
+        &self,
+        run_id: &RunId,
+        lane: &EngineLaneRecord,
+        kind: HardStopKind,
+        existing_reason: Option<&str>,
+    ) -> Result<(), AppError> {
+        let observed_at = self.ctx.now();
+        if let Some(story) = lane.story_id.as_deref() {
+            let provenance = format!(
+                "Full Auto: {} on lane {} of run {run_id}{}{}. Worktree, branch and window are preserved for inspection; re-dispatch deliberately once you have looked.",
+                kind.as_str(),
+                lane.lane_index,
+                lane.window_name
+                    .as_deref()
+                    .map(|w| format!(" (window {w})"))
+                    .unwrap_or_default(),
+                lane.worktree_path
+                    .as_deref()
+                    .map(|p| format!(" (worktree {p})"))
+                    .unwrap_or_default(),
+            );
+            let reason = match existing_reason {
+                Some(existing) if !existing.is_empty() => format!("{existing} ({provenance})"),
+                _ => provenance,
+            };
+            super::StoryService::new(self.ctx).set_awaiting(story, &reason)?;
+        }
+        let mut quarantined = lane.clone();
+        quarantined.state = EngineLaneState::Quarantined;
+        quarantined.last_observed_at = observed_at;
+        quarantined.outcome = Some(kind.as_str().to_string());
+        quarantined.outcome_detail = lane.story_id.clone();
+        self.ctx
+            .store()
+            .write(|tx| tx.put_engine_lane(&quarantined))?;
+        Ok(())
+    }
+
+    /// Applies this pass's completions and hard stops to the breaker.
+    fn apply_breaker(&self, run_id: &RunId, report: &ReconcileReport) -> Result<RunView, AppError> {
+        let completions = report.completed.len();
+        let hard_stops = report.quarantined.len();
+        self.transition(run_id, |run, _| {
+            if completions > 0 {
+                run.consecutive_hard_stops = 0;
+            }
+            run.consecutive_hard_stops += u32::try_from(hard_stops).unwrap_or(u32::MAX);
+            if run.consecutive_hard_stops >= HARD_STOP_BREAKER
+                && run.state == EngineRunState::Running
+            {
+                run.state = EngineRunState::Halted;
+                run.stop_reason = Some(BREAKER_TRIPPED.to_string());
+                run.acknowledged_at = None;
+            }
+            Ok(())
+        })
+    }
+
+    /// Claims and dispatches into every idle lane the budget allows.
+    ///
+    /// Serial by construction (A4): `story claim --next` is the arbiter, a
+    /// claim is milliseconds, and the store is the only thing that can
+    /// adjudicate a race between two lanes wanting the same story.
+    fn fill_idle_lanes(
+        &self,
+        slug: &str,
+        run_id: &RunId,
+        report: &mut ReconcileReport,
+    ) -> Result<(), AppError> {
+        let view = self.one_view(run_id)?;
+        let scope_epic = match &view.run.scope {
+            EngineScope::Epic(id) => Some(id.clone()),
+            EngineScope::Project => None,
+        };
+        let occupied = view
+            .lanes
+            .iter()
+            .filter(|lane| lane.state != EngineLaneState::Idle)
+            .count();
+        let idle: Vec<EngineLaneRecord> = view
+            .lanes
+            .iter()
+            .filter(|lane| lane.state == EngineLaneState::Idle)
+            .cloned()
+            .collect();
+
+        for (n, lane) in idle.into_iter().enumerate() {
+            if occupied + n >= ENGINE_LANE_BUDGET {
+                break;
+            }
+            let filters = ReadyQueueFilters {
+                phase: None,
+                epic: scope_epic.as_deref(),
+                exclude_label: Some(LABEL_NO_AUTO),
+            };
+            let Some((before, claimed)) =
+                super::StoryService::new(self.ctx).claim_next_filtered(filters, None)?
+            else {
+                break;
+            };
+            let story = claimed.id.clone();
+            let dispatched_at = self.ctx.now();
+            let mut working = lane.clone();
+            working.state = EngineLaneState::Dispatching;
+            working.story_id = Some(story.clone());
+            working.dispatched_at = Some(dispatched_at.clone());
+            working.last_observed_at = dispatched_at.clone();
+            working.outcome = Some(before.state.clone());
+            self.ctx.store().write(|tx| tx.put_engine_lane(&working))?;
+
+            let outcome = self.dispatcher.dispatch(DispatchRequest {
+                project: slug.to_string(),
+                story: story.clone(),
+                agent: view.run.agent,
+            })?;
+            match outcome.state {
+                DispatchOutcomeState::Ok => {
+                    let mut live = working.clone();
+                    live.state = EngineLaneState::Working;
+                    live.window_name = outcome
+                        .payload
+                        .get("window_name")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
+                    live.worktree_path = outcome
+                        .payload
+                        .get("worktree_path")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
+                    live.outcome = None;
+                    live.outcome_detail = None;
+                    self.ctx.store().write(|tx| tx.put_engine_lane(&live))?;
+                    report.filled.push((lane.lane_index, story));
+                }
+                DispatchOutcomeState::Refused => {
+                    // The script's own refusal, relayed verbatim rather than
+                    // replaced by a list composed here (SH-120). The lane is
+                    // quarantined rather than freed, because the story is
+                    // claimed and something has to say why. The report's kind
+                    // and the lane's own stored `outcome` must spell the same
+                    // event: a refusal is not a dead window.
+                    let mut stuck = working.clone();
+                    stuck.state = EngineLaneState::Quarantined;
+                    stuck.outcome = Some(HardStopKind::DispatchRefused.as_str().to_string());
+                    stuck.outcome_detail = Some(helper_diagnosis(&outcome.payload));
+                    self.ctx.store().write(|tx| tx.put_engine_lane(&stuck))?;
+                    report
+                        .quarantined
+                        .push((lane.lane_index, HardStopKind::DispatchRefused));
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Ends a run whose lanes are all idle.
+    fn finish_if_drained(&self, run_id: &RunId, reason: &str) -> Result<RunView, AppError> {
+        self.transition(run_id, |run, lanes| {
+            let all_idle = lanes.iter().all(|lane| lane.state == EngineLaneState::Idle);
+            if all_idle
+                && matches!(
+                    run.state,
+                    EngineRunState::Running | EngineRunState::Draining
+                )
+            {
+                run.state = EngineRunState::Finished;
+                if run.stop_reason.is_none() {
+                    run.stop_reason = Some(reason.to_string());
+                    run.acknowledged_at = None;
+                }
+            }
+            Ok(())
+        })
+    }
+
     fn stop_now(&self, run_id: &RunId) -> Result<RunView, AppError> {
         let project = self.ctx.project();
         let transition_at = self.ctx.now();
@@ -643,6 +1286,24 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     }
 }
 
+/// Whole seconds from `earlier` to `later`, or `None` if either fails to parse
+/// or the clock went backwards.
+///
+/// `None` states nothing rather than zero: `classify` treats an unparseable or
+/// inverted interval as "no elapsed time is known", which cannot become a
+/// stall (SH-372). A stall must be positively demonstrated, never inferred
+/// from a timestamp nobody could read.
+fn elapsed_secs(earlier: &str, later: &str) -> Option<u64> {
+    let earlier = chrono::DateTime::parse_from_rfc3339(earlier).ok()?;
+    let later = chrono::DateTime::parse_from_rfc3339(later).ok()?;
+    u64::try_from((later - earlier).num_seconds()).ok()
+}
+
+/// An empty lane at `lane_index`, ready to be filled.
+///
+/// The progress pair is cleared along with the story: an idle lane holds no
+/// story to have progressed, and carrying the previous occupant's seq forward
+/// would let the next story inherit a stall clock it never started (SH-465).
 fn idle_lane(run_id: &str, lane_index: u32, at: &str) -> EngineLaneRecord {
     EngineLaneRecord {
         run_id: run_id.to_string(),
@@ -653,6 +1314,8 @@ fn idle_lane(run_id: &str, lane_index: u32, at: &str) -> EngineLaneRecord {
         worktree_path: None,
         dispatched_at: None,
         last_observed_at: at.to_string(),
+        last_progress_seq: None,
+        last_progress_at: None,
         outcome: None,
         outcome_detail: None,
     }

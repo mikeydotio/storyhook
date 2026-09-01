@@ -294,6 +294,14 @@ pub const MIGRATIONS: &[Migration] = &[
         // touching the append-only event log.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 26,
+        name: "engine_lane_progress",
+        sql: include_str!("schema/0026_engine_lane_progress.sql"),
+        // Two nullable columns added in place to one operational table. No
+        // rebuild, no referenced table touched, no event appended.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

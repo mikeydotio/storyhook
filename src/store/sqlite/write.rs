@@ -26,7 +26,7 @@ use crate::domain::{
 };
 use crate::store::error::StoreError;
 use crate::store::fault::{FaultPoint, fire};
-use crate::store::ids::{EventSeq, ExpectedSeq, ProjectId, StoryNo};
+use crate::store::ids::{EventSeq, ExpectedSeq, GlobalSeq, ProjectId, StoryNo};
 use crate::store::sqlite::read;
 use crate::store::types::{
     DeletedProject, EngineLaneRecord, EngineRunRecord, LinkSource, NewProject, ProjectSettings,
@@ -160,14 +160,17 @@ pub(super) fn put_engine_lane(
         conn.execute(
             "INSERT INTO engine_lanes \
                  (run_id, lane_index, state, story_id, window_name, worktree_path, \
-                  dispatched_at, last_observed_at, outcome, outcome_detail) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
+                  dispatched_at, last_observed_at, outcome, outcome_detail, \
+                  last_progress_seq, last_progress_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
              ON CONFLICT (run_id, lane_index) DO UPDATE SET \
                  state = excluded.state, story_id = excluded.story_id, \
                  window_name = excluded.window_name, worktree_path = excluded.worktree_path, \
                  dispatched_at = excluded.dispatched_at, \
                  last_observed_at = excluded.last_observed_at, \
-                 outcome = excluded.outcome, outcome_detail = excluded.outcome_detail",
+                 outcome = excluded.outcome, outcome_detail = excluded.outcome_detail, \
+                 last_progress_seq = excluded.last_progress_seq, \
+                 last_progress_at = excluded.last_progress_at",
             params![
                 lane.run_id,
                 lane.lane_index,
@@ -179,6 +182,8 @@ pub(super) fn put_engine_lane(
                 lane.last_observed_at,
                 lane.outcome,
                 lane.outcome_detail,
+                lane.last_progress_seq.map(GlobalSeq::get),
+                lane.last_progress_at,
             ],
         ),
         "writing an engine lane",

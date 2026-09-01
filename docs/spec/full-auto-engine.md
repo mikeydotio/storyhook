@@ -1158,3 +1158,179 @@ autonomous charter still prohibits version, release, and deployment actions,
 and it may merge only through the certified path. The dedicated override can
 widen that provider posture, so it is reported in JSON and display; a daemon's
 general expert override cannot widen it accidentally.
+
+### SH-465 — the reconcile pass
+
+`EngineService::reconcile` runs one pass over one run: observe, classify,
+quarantine, break, fill, terminate. Each phase is its own short transaction,
+with dispatcher calls **between** them and never inside one — the shape
+`stop_now` already uses, for the deadlock reason
+`docs/spec/dashboard-dispatch.md` documents.
+
+**Migration 26 adds `last_progress_seq` and `last_progress_at` to
+`engine_lanes`, because `last_observed_at` could not answer the stall
+question.** That column records when the reconciler *looked*, and it advances
+on every pass — so a lane whose agent died an hour ago reads as freshly
+observed forever. It answers "did we look", never "did it move".
+`stories.head_global_seq` is the change-feed position of the event a row was
+folded from, allocated inside the write transaction and therefore total, where
+a one-second RFC3339 timestamp is blind to a burst of agent writes inside one
+second (SH-336: a timestamp is not an ordering key). The seq answers *did it
+move*; the timestamp answers *how long since it last did*. Neither alone is a
+stall detector. Both are nullable and seeded on first observation rather than
+read as a stall — absence states nothing (SH-372), and the other reading would
+quarantine every lane alive at upgrade time and every lane on its first pass
+forever.
+
+**The classification order is the design, not an implementation detail.**
+`Completed` is tested before `WindowGone` because completion is a *store* fact
+while a closed window is only evidence about a window (D3, SH-226). Every
+successful lane ends exactly that way — the agent finishes and its pane exits —
+so reading the window first would report finished work as a failure, quarantine
+it, and count it toward the breaker that halts the run. It is one `if` away
+from being wrong in a way no other case would notice, so it carries its own
+test on both the pure and the wired side.
+
+**Both new budgets derive rather than being picked** (SH-394).
+`ENGINE_LANE_BUDGET` **is** `api::dispatch::MAX_RUNNING` — a filled lane is
+exactly one `story.sh dispatch` subprocess and that bound already exists, so a
+second literal would be a second opinion about one machine (SH-136).
+`STALL_CEILING_SECS` is the budget times the measured suite median times a
+named margin. That derivation was written when a lane's longest *legitimate*
+silence was its own full `make test` run, queuing on the machine-wide `gate`
+lock behind other lanes doing the same (SH-457's serialization, which is
+precisely why the median is the right input rather than the 873s measured
+under concurrent worktree suites — the lock removed the contention that
+produced that figure). **SH-521 landed on `main` between this branch's first
+commit and its merge, and moved that run out of the lane**: D4 now has a lane
+run only its own new and directly impacted tests, with the full suite
+running once, serialized, on one daemon verification worker for a story that
+has already reached `verifying` — a state this story's own reconciler now
+holds *outside* this ceiling entirely (below). The number and the derivation
+stay: the measured full-suite median is a generous, conservative bound on a
+lane's now-much-smaller test leg, and the dependency stated in the constant's
+own doc is unchanged in kind, only in which run it now describes — if a
+lane's own leg is ever folded back into a `make test` run serialized behind
+other lanes, the ceiling must be re-derived, not merely raised.
+
+Both derivation fences assert on the **source text**, not on the values, and
+that distinction is the whole point: a runtime `assert_eq!(ENGINE_LANE_BUDGET,
+MAX_RUNNING)` is vacuous, because re-typing the budget as the literal `4`
+leaves the two equal and the test green while the derivation it protects is
+already broken. Only the spelling distinguishes a derived constant from a copy
+of its digits — the same reason `tests/machine_lock.rs` compares
+`WAIT_REPORT_SECS=$GATE_MEDIAN_SECS` textually.
+
+**Two invariants live at compile time**, beside the constants rather than in a
+test: a margin below 1 would put the ceiling under the worst legitimate silence
+it derives from, and a tick of zero is the busy loop the design forbids. Both
+were runtime assertions until clippy pointed out that an assertion over a
+`const` folds and proves nothing. Verified by mutation: setting the margin to 0
+now fails `cargo check` with its own message.
+
+**Quarantine writes free text to `awaiting`, never a `blocked-by` edge.**
+SH-398's rule is about blockers that *are* stories, and a dead window is not
+one. The lane keeps its `window_name` and `worktree_path`, because D11
+preserves a crashed agent's work for a human rather than reclaiming it.
+
+**`HardStopKind::Interrupted` is declared here but produced only by SH-466**,
+so that story adds a *producer* rather than widening a shipped enum every
+reader already matches on. `ReconcileReport` is data rather than rendered text,
+because SH-467's CLI and SH-468's HTTP both render it and neither should have
+to parse a sentence back apart.
+
+**What this deliberately does not do:** own its own trigger. There is no busy
+loop; a caller wakes it on a project change, on a coarse tick derived from
+`STALL_CEILING_SECS`, or on a control command. The daemon wiring is SH-468's,
+and daemon-start reconciliation is SH-466's.
+
+### The verifying handoff (SH-521, reconciled during SH-465's own merge)
+
+SH-521 landed on `main` while this story's implementation sat unmerged in its
+own worktree, and made `verifying` a required OPEN state and the agent's own
+final action: the charter now ends a successful lane with `story move <n>
+verifying`, then stops. Left unhandled, that is a silent inversion of this
+story's own load-bearing rule: `story_closed` reads `false` for an OPEN
+handoff state, so every successful lane would fall through to `WindowGone`
+(the pane is normally already dead — see below) or eventually `Stalled` (D4's
+serial, machine-wide verification queue can legitimately outrun one lane's own
+ceiling), quarantining every success and tripping the breaker after three of
+them. Reconciled as part of this story rather than filed separately: it is
+`classify`'s own precedence rule, applied to what completion now looks like,
+and upstream's own scaffolded roadmap (`src/service/templates.rs`) already
+named it as the very next work — "reconcile Full Auto lane accounting so
+`verifying` is an intentional handoff, not a stall or dead-window failure."
+
+**The lane is held, not freed, at the handoff.** A story in `verifying` still
+owns a live worktree and tmux window; the verifier reaps only after merge
+(`ShellVerificationActuator::reap`). Freeing the lane would let the engine
+dispatch fresh work while the verification queue backs up, growing live
+worktrees and windows past `ENGINE_LANE_BUDGET` — exactly what D14's budget
+exists to bound. `LaneObservation` gained one more raw fact,
+`story_verifying`; `LaneClassification` gained `Verifying`, tested ahead of
+`WindowGone` and `Stalled` but behind `Completed` and `AgentBlocked` — a story
+can sit in `verifying` with `awaiting` also set (`return_for_repair` falls
+back to `set_awaiting` when it cannot reach the dispatched pane), and that
+diagnosis must surface rather than be masked by the handoff. No new lane
+state and no heavier migration: `engine_lanes.state` carries a schema `CHECK`,
+so adding a variant would rebuild the table, and the lane legitimately stays
+`working` — occupied by a story still in flight. `ReconcileReport` gained
+`verifying: Vec<u32>` so SH-467's CLI and SH-468's HTTP can render *why* a
+lane is held, additively (nothing on `main` consumes the report yet).
+Termination needed no change: `finish_if_drained` already requires every lane
+idle, so a run holding a verifying lane correctly does not drain.
+
+**Measured, not assumed: the pane is normally already dead at the handoff,
+the same as an ordinary completion.** `plugins/story/bin/story.sh` execs the
+agent's launch command directly into the tmux pane rather than typing it into
+a persistent shell, with `remain-on-exit on` — its own comment states the
+consequence plainly: "nothing survives in that pane once claude's process
+ends — crashed, refused, or simply finished without running `<reap>`." A
+one-shot dispatch launch therefore leaves a dead pane the instant the agent's
+process exits, `story move <n> verifying` included, which is exactly why
+`Verifying` needs its own precedence ahead of `WindowGone` rather than the
+window probe alone being sufficient. This also explains why centralized
+verification's own `notify()` (`plugins/story/bin/story.sh cmd_notify`)
+refuses with `pane-changed` whenever the pane it targets no longer runs the
+dispatched process — the common case, once the pane is already dead — and
+`return_for_repair` (`src/daemon/verification.rs`) falls back to
+`set_awaiting` on that refusal. No special-case code was needed for the
+return-for-repair path on this side: it reduces to the already-existing
+`AgentBlocked` classification once `awaiting` is set, which is what makes the
+next fix below load-bearing for it.
+
+**Two conformance repairs, found while re-verifying the branch's own
+committed work against the approved plan rather than newly discovered by the
+merge.**
+
+1. `quarantine_lane` used to *overwrite* the story's own `awaiting` with a
+   generic lane/run/window sentence composed here, even when the story
+   already carried one — the agent's own diagnosis from `story block <n>
+   the-reason` (the charter's own instruction on a hard stop), or centralized
+   verification's own remediation message. That is the SH-120 relay rule
+   ("relayed verbatim... rather than replaced by a list composed here") for a
+   dispatch refusal, applied nowhere to this sibling case. `LaneObservation`
+   carries the pre-existing `awaiting` text as `awaiting_reason`, gathered at
+   the same point every other raw fact is; `quarantine_lane` now appends its
+   own lane/run/window provenance to that text rather than discarding it. By
+   construction of `classify`'s own precedence, `existing_reason` is `Some`
+   only for `AgentBlocked` — every other kind reaches quarantine with
+   `awaiting` still `None`, since `AgentBlocked` is tested first.
+2. `fill_idle_lanes` wrote the refused lane's own stored `outcome` as
+   `"dispatch-refused"` but reported the kind on `ReconcileReport` as
+   `HardStopKind::WindowGone` — two names for one event, and the report is the
+   half a future CLI or HTTP surface renders. `HardStopKind::DispatchRefused`
+   (`as_str() == "dispatch-refused"`) makes the two agree exactly. The
+   branch's own deliberate, already-documented deviation from the approved
+   plan — quarantining a dispatch refusal rather than freeing the lane,
+   because the story is claimed and something has to say why — is unchanged;
+   only its *label* was wrong.
+
+**One mutation survived the first attempt and is recorded rather than quietly
+fixed.** Deleting the breaker's reset changed no observable: the reset test ran
+one pass with a hard stop and a completion and asserted the streak read 1 —
+which is also what it reads with the reset gone, because the streak was already
+0. It agreed with the code for the wrong reason and had nothing to reset, the
+SH-364 shape, found by mutation where review had not. Rewritten to build a real
+streak of two before completing anything; it now fails that mutation with
+`left: 2, right: 0`.
