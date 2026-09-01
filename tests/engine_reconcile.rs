@@ -578,10 +578,93 @@ fn reconcile_at(
         .unwrap()
 }
 
+// ---------------------------------------------------------------------------
+// Engine event hooks (SH-472)
+// ---------------------------------------------------------------------------
+
+/// Configures every engine hook to append its payload, one JSON line per
+/// event, into `hooks.log` — the engine-scoped sibling of
+/// `tests/service_story.rs`'s `record_all_hooks`.
+fn record_engine_hooks(fixture: &ServiceFixture) {
+    let events = [
+        "on_engine_run_started",
+        "on_engine_run_halted",
+        "on_engine_run_drained",
+        "on_engine_lane_quarantined",
+    ];
+    let body: String = events
+        .iter()
+        .map(|event| format!("{event} = {{ command = \"cat >> hooks.log; echo >> hooks.log\" }}\n"))
+        .collect();
+    fixture.write_hooks_toml(&body);
+}
+
+/// Every recorded payload whose `event_type` matches, in firing order.
+///
+/// Filtered by `event_type` rather than asserting the whole log, because one
+/// test's flow can legitimately fire more than one kind of engine hook (a
+/// `start()` followed by a `reconcile()` that drains, say) and each test
+/// should only have to state what it is actually checking.
+fn fired_engine_hooks(fixture: &ServiceFixture, event_type: &str) -> Vec<serde_json::Value> {
+    let path = fixture.cwd().join("hooks.log");
+    let Ok(contents) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    contents
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|value| value.get("event_type").and_then(|v| v.as_str()) == Some(event_type))
+        .collect()
+}
+
+/// `EngineService::start` fires `engine_run_started` once the run and its
+/// lanes have committed, naming the run, its scope, lane count and agent.
+#[test]
+fn starting_a_run_fires_the_engine_run_started_hook() {
+    let fixture = ServiceFixture::new();
+    record_engine_hooks(&fixture);
+    let fake = FakeDispatcher::new(Vec::<DispatcherStep>::new());
+    let run_id = started_run(&fixture, &fake, 2);
+
+    let fired = fired_engine_hooks(&fixture, "engine_run_started");
+    assert_eq!(fired.len(), 1);
+    let payload = &fired[0];
+    assert_eq!(payload["run_id"], run_id);
+    assert_eq!(payload["scope"], "project");
+    assert_eq!(payload["epic_id"], serde_json::Value::Null);
+    assert_eq!(payload["lanes"], 2);
+    assert_eq!(payload["agent"], "codex");
+}
+
+/// `no_hooks(true)` suppresses engine hooks exactly as it does every other
+/// hook (`Ctx::hooks_enabled`) — engine events are not a second, ungated
+/// notification path.
+#[test]
+fn no_hooks_suppresses_engine_hooks_too() {
+    let fixture = ServiceFixture::new();
+    record_engine_hooks(&fixture);
+    let ctx = fixture.ctx().no_hooks(true);
+    let fake = FakeDispatcher::new(Vec::<DispatcherStep>::new());
+    EngineService::new(&ctx, &fake)
+        .start(StartRequest {
+            scope: EngineScope::Project,
+            lanes: 1,
+            agent: EngineAgent::Codex,
+        })
+        .unwrap();
+
+    assert!(
+        fired_engine_hooks(&fixture, "engine_run_started").is_empty(),
+        "no_hooks(true) must suppress engine hooks exactly like every other hook"
+    );
+}
+
 /// Row 1, wired: the story closed, so the lane frees and the run drains.
 #[test]
 fn a_completed_story_frees_its_lane_and_drains_the_run() {
     let fixture = ServiceFixture::new();
+    record_engine_hooks(&fixture);
     let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
         window: "story-SH-1".into(),
         alive: true,
@@ -607,6 +690,18 @@ fn a_completed_story_frees_its_lane_and_drains_the_run() {
         "nothing claimable and every lane idle ends the run"
     );
     assert_eq!(report.stop_reason.as_deref(), Some(QUEUE_DRAINED));
+
+    let drained = fired_engine_hooks(&fixture, "engine_run_drained");
+    assert_eq!(
+        drained.len(),
+        1,
+        "the queue organically running dry must fire engine_run_drained"
+    );
+    assert_eq!(drained[0]["run_id"], run_id);
+    assert!(
+        fired_engine_hooks(&fixture, "engine_run_halted").is_empty(),
+        "a completion is never a hard stop, so the breaker never fires here"
+    );
 }
 
 /// Row 2, wired: the agent set `awaiting`, so the lane is quarantined and its
@@ -621,6 +716,7 @@ fn a_completed_story_frees_its_lane_and_drains_the_run() {
 #[test]
 fn an_agent_blocked_story_quarantines_the_lane_and_preserves_its_evidence() {
     let fixture = ServiceFixture::new();
+    record_engine_hooks(&fixture);
     let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
         window: "story-SH-1".into(),
         alive: true,
@@ -661,6 +757,20 @@ fn an_agent_blocked_story_quarantines_the_lane_and_preserves_its_evidence() {
     assert!(
         awaiting.contains("agent-blocked") && awaiting.contains(&run_id),
         "lane/run provenance is appended, not the whole story: {awaiting}"
+    );
+
+    let quarantined_hooks = fired_engine_hooks(&fixture, "engine_lane_quarantined");
+    assert_eq!(quarantined_hooks.len(), 1);
+    let payload = &quarantined_hooks[0];
+    assert_eq!(payload["run_id"], run_id);
+    assert_eq!(payload["lane_index"], 0);
+    assert_eq!(payload["story_id"], story);
+    assert_eq!(payload["kind"], "agent-blocked");
+    let reason = payload["reason"].as_str().expect("a reason string");
+    assert!(
+        reason.contains("the agent stopped and said why"),
+        "the hook's own reason must carry the same relayed text as the story's awaiting, \
+         never a message recomposed here: {reason}"
     );
 }
 
@@ -861,6 +971,7 @@ fn a_verified_story_that_closes_frees_its_lane() {
 #[test]
 fn a_refused_dispatch_is_reported_as_a_refusal_not_a_dead_window() {
     let fixture = ServiceFixture::new();
+    record_engine_hooks(&fixture);
     let story = new_story(&fixture, "claim me", &[]);
     let fake = FakeDispatcher::new([DispatcherStep::Dispatch(DispatchOutcome::from_payload(
         serde_json::json!({"ok": false, "display": "worktree already exists"}),
@@ -882,6 +993,20 @@ fn a_refused_dispatch_is_reported_as_a_refusal_not_a_dead_window() {
         "the report and the lane's own stored outcome must spell the same event"
     );
     assert_eq!(lane.story_id.as_deref(), Some(story.as_str()));
+
+    // `fill_idle_lanes` quarantines this inline rather than calling
+    // `quarantine_lane` — proving the hook fires from that second producer
+    // too, not just the taxonomy-driven path (SH-472).
+    let quarantined_hooks = fired_engine_hooks(&fixture, "engine_lane_quarantined");
+    assert_eq!(
+        quarantined_hooks.len(),
+        1,
+        "fill_idle_lanes' own inline quarantine must also fire the hook"
+    );
+    let payload = &quarantined_hooks[0];
+    assert_eq!(payload["kind"], "dispatch-refused");
+    assert_eq!(payload["story_id"], story);
+    assert_eq!(payload["reason"], "worktree already exists");
 }
 
 // ---------------------------------------------------------------------------
@@ -893,6 +1018,7 @@ fn a_refused_dispatch_is_reported_as_a_refusal_not_a_dead_window() {
 #[test]
 fn three_consecutive_hard_stops_halt_the_run_and_stop_it_claiming() {
     let fixture = ServiceFixture::new();
+    record_engine_hooks(&fixture);
     let fake = FakeDispatcher::new([
         DispatcherStep::WindowAlive {
             window: "story-SH-1".into(),
@@ -934,6 +1060,34 @@ fn three_consecutive_hard_stops_halt_the_run_and_stop_it_claiming() {
         None,
         "a fresh halt is unacknowledged, so D13's banner has something to raise"
     );
+
+    let quarantine_hooks = fired_engine_hooks(&fixture, "engine_lane_quarantined");
+    assert_eq!(
+        quarantine_hooks.len(),
+        3,
+        "each of the three hard stops fires its own lane hook"
+    );
+
+    let halted_hooks = fired_engine_hooks(&fixture, "engine_run_halted");
+    assert_eq!(halted_hooks.len(), 1);
+    let payload = &halted_hooks[0];
+    assert_eq!(payload["run_id"], run_id);
+    assert_eq!(payload["consecutive_hard_stops"], 3);
+    let reasons = payload["last_quarantine_reasons"]
+        .as_array()
+        .expect("a reasons array");
+    assert_eq!(
+        reasons.len(),
+        3,
+        "all three quarantined lanes fit inside the last-three window"
+    );
+    for reason in reasons {
+        let text = reason.as_str().expect("a reason line");
+        assert!(
+            text.contains("window-gone"),
+            "each reason names its kind: {text}"
+        );
+    }
 }
 
 /// Two hard stops do not halt, and the run keeps going.
