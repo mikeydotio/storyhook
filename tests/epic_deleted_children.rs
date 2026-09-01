@@ -11,15 +11,15 @@
 //! naming the type keeps these tests asserting the intended design rather than
 //! the accident they would otherwise depend on.
 
-#![allow(clippy::disallowed_methods)]
-
 use assert_cmd::Command;
-use tempfile::tempdir;
+use storyhook_test_support::{TestEnv, scratch_dir};
 
+/// Every `story` this file runs is the one THIS build produced, in the shared
+/// test environment's private `HOME`, XDG directories and store — so nothing
+/// here can reach the developer's own storyhook state, with or without a
+/// wrapper script supplying one.
 fn story(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+    TestEnv::shared().story(dir)
 }
 
 /// The `story show --json` document for `id`, parsed.
@@ -31,7 +31,7 @@ fn show(dir: &std::path::Path, id: &str) -> serde_json::Value {
 
 /// A project with one epic (`SH-1`) and `children` children, all related.
 fn epic_with_children(children: usize) -> tempfile::TempDir {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let p = dir.path();
     story(p)
         .args(["project", "new", "--prefix", "SH"])

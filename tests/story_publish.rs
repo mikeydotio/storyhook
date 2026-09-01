@@ -1,14 +1,13 @@
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
-
 use assert_cmd::Command;
 use predicates::prelude::*;
-use tempfile::tempdir;
+use storyhook_test_support::{TestEnv, scratch_dir};
 
+/// Every `story` this file runs is the one THIS build produced, in the shared
+/// test environment's private `HOME`, XDG directories and store — so nothing
+/// here can reach the developer's own storyhook state, with or without a
+/// wrapper script supplying one.
 fn story(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+    TestEnv::shared().story(dir)
 }
 
 // ============================================================
@@ -17,7 +16,7 @@ fn story(dir: &std::path::Path) -> Command {
 
 #[test]
 fn publish_makes_a_draft_live() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -42,7 +41,7 @@ fn publish_makes_a_draft_live() {
 
 #[test]
 fn publish_on_an_already_live_story_is_not_an_error() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -67,7 +66,7 @@ fn publish_on_an_already_live_story_is_not_an_error() {
 
 #[test]
 fn publish_a_bare_integer_id_resolves_against_the_single_registered_project() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -92,7 +91,7 @@ fn publish_a_bare_integer_id_resolves_against_the_single_registered_project() {
 
 #[test]
 fn publish_an_unknown_story_is_not_found() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -107,7 +106,7 @@ fn publish_an_unknown_story_is_not_found() {
 
 #[test]
 fn publish_takes_no_flags() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()

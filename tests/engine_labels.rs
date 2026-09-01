@@ -35,18 +35,19 @@
 //! `tests/` call site that keeps `tests/dead_public_surface.rs` from
 //! reporting the constants as unreachable public surface (SH-198).
 
-#![allow(clippy::disallowed_methods)]
-
 use assert_cmd::Command;
 use storyhook::domain::{LABEL_HUMAN_ONLY, LABEL_NO_AUTO, RESERVED_LABELS};
 use storyhook::help_topics::get_help_topic;
 use storyhook::service::templates;
-use tempfile::{TempDir, tempdir};
+use storyhook_test_support::{TestEnv, scratch_dir};
+use tempfile::TempDir;
 
+/// Every `story` this file runs is the one THIS build produced, in the shared
+/// test environment's private `HOME`, XDG directories and store — so nothing
+/// here can reach the developer's own storyhook state, with or without a
+/// wrapper script supplying one.
 fn story(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+    TestEnv::shared().story(dir)
 }
 
 /// Run `story <args>` and return its stdout, asserting it succeeded.
@@ -114,7 +115,7 @@ fn session_context(dir: &std::path::Path) -> String {
 /// A fresh project whose stories are created in the given order, each with an
 /// optional label. Story `n` (1-based) is `SH-n`.
 fn project(stories: &[(&str, Option<&str>)]) -> TempDir {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let path = dir.path();
     story(path)
         .args(["project", "new", "--prefix", "SH"])
@@ -309,7 +310,7 @@ fn a_human_only_story_is_still_ready_everywhere_a_person_looks() {
 /// parent. A `human-only` child must move neither.
 #[test]
 fn an_epic_whose_only_open_child_is_human_only_is_not_blocked() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let path = dir.path();
     story(path)
         .args(["project", "new", "--prefix", "SH"])
