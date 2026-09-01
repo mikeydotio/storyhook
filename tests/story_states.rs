@@ -1,17 +1,16 @@
 //! `story state list|add|set|remove|reorder` — the CLI half of per-repo
 //! status configuration (SH-41).
 
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
-
 use assert_cmd::Command;
 use predicates::prelude::*;
-use tempfile::tempdir;
+use storyhook_test_support::{TestEnv, scratch_dir};
 
+/// Every `story` this file runs is the one THIS build produced, in the shared
+/// test environment's private `HOME`, XDG directories and store — so nothing
+/// here can reach the developer's own storyhook state, with or without a
+/// wrapper script supplying one.
 fn story(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+    TestEnv::shared().story(dir)
 }
 
 fn init(dir: &std::path::Path) {
@@ -47,7 +46,7 @@ fn state_listing(dir: &std::path::Path) -> String {
 
 #[test]
 fn state_list_shows_defaults_with_superstates() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
 
     story(dir.path())
@@ -61,7 +60,7 @@ fn state_list_shows_defaults_with_superstates() {
 
 #[test]
 fn state_list_shows_descriptions_and_counts() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
     story(dir.path())
         .args([
@@ -92,7 +91,7 @@ fn state_list_shows_descriptions_and_counts() {
 
 #[test]
 fn state_list_reflects_order() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
     story(dir.path())
         .args([
@@ -120,7 +119,7 @@ fn state_list_reflects_order() {
 
 #[test]
 fn state_add_stores_description_and_role() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
 
     story(dir.path())
@@ -142,7 +141,7 @@ fn state_add_stores_description_and_role() {
 
 #[test]
 fn state_add_accepts_equals_form_flags() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
 
     story(dir.path())
@@ -161,7 +160,7 @@ fn state_add_accepts_equals_form_flags() {
 
 #[test]
 fn state_add_rejects_an_invalid_slug() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
 
     story(dir.path())
@@ -173,7 +172,7 @@ fn state_add_rejects_an_invalid_slug() {
 
 #[test]
 fn state_add_rejects_an_invalid_superstate() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
 
     story(dir.path())
@@ -185,7 +184,7 @@ fn state_add_rejects_an_invalid_superstate() {
 
 #[test]
 fn state_add_requires_a_superstate() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
 
     story(dir.path())
@@ -201,7 +200,7 @@ fn state_add_requires_a_superstate() {
 
 #[test]
 fn state_set_updates_description_then_clears_it() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
 
     story(dir.path())
@@ -220,7 +219,7 @@ fn state_set_updates_description_then_clears_it() {
 
 #[test]
 fn state_set_moves_and_clears_the_active_role() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
 
     story(dir.path())
@@ -241,7 +240,7 @@ fn state_set_moves_and_clears_the_active_role() {
 
 #[test]
 fn state_set_rejects_a_second_active_role() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
 
     story(dir.path())
@@ -253,7 +252,7 @@ fn state_set_rejects_a_second_active_role() {
 
 #[test]
 fn state_set_rejects_contradictory_description_flags() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
 
     story(dir.path())
@@ -272,7 +271,7 @@ fn state_set_rejects_contradictory_description_flags() {
 
 #[test]
 fn state_set_rejects_an_empty_change_set() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
 
     story(dir.path())
@@ -284,7 +283,7 @@ fn state_set_rejects_an_empty_change_set() {
 
 #[test]
 fn state_set_superstate_requires_a_destination_when_occupied() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
     story(dir.path())
         .args(["state", "add", "in-review", "--super", "OPEN"])
@@ -315,7 +314,7 @@ fn state_set_superstate_requires_a_destination_when_occupied() {
 
 #[test]
 fn state_set_superstate_migrates_with_a_destination() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
     story(dir.path())
         .args(["state", "add", "in-review", "--super", "OPEN"])
@@ -356,7 +355,7 @@ fn state_set_superstate_migrates_with_a_destination() {
 
 #[test]
 fn state_remove_drops_an_empty_state() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
     // A state beyond the required floor: required states cannot be removed at
     // all, so removal itself needs one custom state to remove.
@@ -375,7 +374,7 @@ fn state_remove_drops_an_empty_state() {
 
 #[test]
 fn state_remove_requires_a_destination_when_occupied() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
     story(dir.path())
         .args(["state", "add", "in-review", "--super", "OPEN"])
@@ -399,7 +398,7 @@ fn state_remove_requires_a_destination_when_occupied() {
 
 #[test]
 fn state_remove_migrates_with_a_destination() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
     story(dir.path())
         .args(["state", "add", "in-review", "--super", "OPEN"])
@@ -434,7 +433,7 @@ fn state_remove_migrates_with_a_destination() {
 
 #[test]
 fn state_remove_refuses_a_state_with_archived_history() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
     // `cancelled` rather than `done`, so the removal is blocked by the
     // archived story alone and not by the "keep one CLOSED state" rule.
@@ -463,7 +462,7 @@ fn state_remove_refuses_a_state_with_archived_history() {
 /// stories happen to be doing.
 #[test]
 fn state_remove_reports_the_structural_rule_before_story_counts() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
     story(dir.path())
         .args(["new", "A story"])
@@ -487,7 +486,7 @@ fn state_remove_reports_the_structural_rule_before_story_counts() {
 /// older "at least one CLOSED state" refusal on this path (SH-125).
 #[test]
 fn state_remove_refuses_every_required_state() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
 
     for slug in ["todo", "in-progress", "verifying", "blocked", "done"] {
@@ -511,7 +510,7 @@ fn state_remove_refuses_every_required_state() {
 
 #[test]
 fn state_reorder_accepts_csv_and_separate_arguments() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
 
     story(dir.path())
@@ -548,7 +547,7 @@ fn state_reorder_accepts_csv_and_separate_arguments() {
 /// not cosmetic.
 #[test]
 fn state_reorder_changes_where_new_stories_land() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
     story(dir.path())
         .args([
@@ -571,7 +570,7 @@ fn state_reorder_changes_where_new_stories_land() {
 
 #[test]
 fn state_reorder_rejects_a_partial_order() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
 
     story(dir.path())
@@ -583,7 +582,7 @@ fn state_reorder_rejects_a_partial_order() {
 
 #[test]
 fn state_reorder_rejects_unknown_slugs() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
 
     story(dir.path())
@@ -599,7 +598,7 @@ fn state_reorder_rejects_unknown_slugs() {
 
 #[test]
 fn state_reorder_requires_an_order() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
 
     story(dir.path())
@@ -615,7 +614,7 @@ fn state_reorder_requires_an_order() {
 
 #[test]
 fn state_without_a_subcommand_shows_usage() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
 
     story(dir.path())
@@ -627,7 +626,7 @@ fn state_without_a_subcommand_shows_usage() {
 
 #[test]
 fn state_help_topic_documents_every_verb() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     init(dir.path());
 
     story(dir.path())
