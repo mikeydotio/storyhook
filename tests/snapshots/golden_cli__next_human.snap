@@ -30,6 +30,7 @@ SH-9 [todo] (medium) [normal] Add the daemon transport [phase:2]
 SH-10 [todo] (medium) [normal] Ship the CLI shim
 SH-7 [todo] (low) [chore] Document the data layer
 SH-11 [todo] (low) [normal] Audit error codes
+SH-16 [todo] (low) [normal] Approve the rollout [no-auto]
 
 $ story next --phase 1
 SH-2 Define the Store trait

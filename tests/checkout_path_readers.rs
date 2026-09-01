@@ -79,6 +79,10 @@ const ALLOWED: &[(&str, &str)] = &[
         "src/service/verification.rs",
         "the verifier chooses the registered checkout only after selecting a project from the store",
     ),
+    (
+        "src/daemon/engine.rs",
+        "the reconcile tick chooses a working directory only after resolving the run's project by slug",
+    ),
 ];
 
 /// Walks `src/`, skipping the store layer, and returns every `.rs` file whose

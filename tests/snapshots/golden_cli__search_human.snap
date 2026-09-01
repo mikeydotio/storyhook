@@ -4,6 +4,7 @@ source: tests/golden_cli.rs
 $ story search engine
 SH-1 [in-progress] (critical) [epic] Design the storage engine
 SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1]
+SH-15 [todo] (low) [epic] Track engine adoption
 
 $ story search worktrees
 SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
@@ -16,6 +17,7 @@ SH-4 [review] (medium) [normal] Write the migration runner [backend]
 $ story search ENGINE
 SH-1 [in-progress] (critical) [epic] Design the storage engine
 SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1]
+SH-15 [todo] (low) [epic] Track engine adoption
 
 $ story search the storage engine
 SH-1 [in-progress] (critical) [epic] Design the storage engine

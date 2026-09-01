@@ -17,8 +17,9 @@ mod store_support;
 
 use storyhook::service::engine::{
     BREAKER_TRIPPED, COMPLETED, DispatchOutcome, ENGINE_LANE_BUDGET, EngineService,
-    GATE_MEDIAN_SECS, HardStopKind, LaneClassification, LaneObservation, QUEUE_DRAINED,
-    RECONCILE_TICK_SECS, STALL_CEILING_SECS, STALL_MARGIN, StartRequest, classify,
+    GATE_MEDIAN_SECS, HardStopKind, LaneClassification, LaneObservation, OPERATOR_STOPPED,
+    QUEUE_DRAINED, RECONCILE_TICK_SECS, ReconcilePass, STALL_CEILING_SECS, STALL_MARGIN,
+    StartRequest, classify,
 };
 use storyhook::service::{Clock, Ctx, NewStoryInput, StoryService};
 use storyhook::store::{
@@ -56,7 +57,7 @@ fn a_closed_story_is_a_completion() {
         ..progressing()
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::Completed
     );
 }
@@ -69,7 +70,7 @@ fn an_agent_blocked_story_is_a_hard_stop() {
         ..progressing()
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::HardStop(HardStopKind::AgentBlocked)
     );
 }
@@ -82,7 +83,7 @@ fn a_missing_window_on_an_open_story_is_a_hard_stop() {
         ..progressing()
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::HardStop(HardStopKind::WindowGone)
     );
 }
@@ -97,7 +98,7 @@ fn an_unmoved_seq_past_the_ceiling_is_a_stall() {
         ..progressing()
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::HardStop(HardStopKind::Stalled)
     );
 }
@@ -115,7 +116,7 @@ fn a_moved_seq_is_progress_however_long_the_clock_says() {
         ..progressing()
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::Progressing
     );
 }
@@ -131,7 +132,7 @@ fn an_unmoved_seq_inside_the_ceiling_is_not_yet_a_stall() {
         ..progressing()
     };
     assert_eq!(
-        classify(&at_ceiling, STALL_CEILING_SECS),
+        classify(&at_ceiling, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::Progressing,
         "a lane exactly at the ceiling has not passed it"
     );
@@ -154,7 +155,7 @@ fn a_lane_with_no_recorded_progress_is_never_stalled() {
             ..progressing()
         };
         assert_eq!(
-            classify(&observation, STALL_CEILING_SECS),
+            classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
             LaneClassification::Progressing,
             "seed the first observation, never punish it: recorded={recorded:?} elapsed={elapsed:?}"
         );
@@ -173,7 +174,7 @@ fn an_unresolvable_story_is_not_a_stall() {
         ..progressing()
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::Progressing
     );
 }
@@ -194,7 +195,7 @@ fn a_verifying_story_with_a_dead_window_is_held_not_window_gone() {
         ..progressing()
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::Verifying
     );
 }
@@ -212,7 +213,7 @@ fn a_verifying_story_past_the_ceiling_is_held_not_stalled() {
         ..progressing()
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::Verifying,
         "the machine-wide verification queue can legitimately outrun one lane's own ceiling"
     );
@@ -239,7 +240,7 @@ fn a_closed_story_wins_over_a_closed_window() {
         ..progressing()
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::Completed,
         "a finished agent whose pane exited is a completion, not a WindowGone hard stop"
     );
@@ -261,7 +262,7 @@ fn a_closed_story_wins_over_every_other_signal() {
         awaiting_reason: Some("the agent said why".to_string()),
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::Completed
     );
 }
@@ -277,7 +278,7 @@ fn an_agent_block_wins_over_a_closed_window() {
         ..progressing()
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::HardStop(HardStopKind::AgentBlocked)
     );
 }
@@ -293,7 +294,7 @@ fn a_closed_story_wins_over_the_verifying_handoff() {
         ..progressing()
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::Completed
     );
 }
@@ -310,7 +311,7 @@ fn an_agent_block_wins_over_the_verifying_handoff() {
         ..progressing()
     };
     assert_eq!(
-        classify(&observation, STALL_CEILING_SECS),
+        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::HardStop(HardStopKind::AgentBlocked)
     );
 }
@@ -1242,6 +1243,80 @@ fn a_no_auto_story_is_never_dispatched_though_story_next_still_returns_it() {
         "todo",
         "and must not have claimed it either"
     );
+}
+
+/// A run whose entire backlog is `no-auto` does not auto-finish. "Nothing
+/// claimable" and "nothing left, ever" are different facts: the engine
+/// skips `no-auto` deliberately for a human to act on (D12), and the run
+/// must still be there for `engine status` to report it against when they
+/// check.
+///
+/// This is the regression the CLI grammar suite found: before this fix, a
+/// project whose only story was `no-auto` had its run finish the instant
+/// `story engine start` created it — a store write wakes the reconcile
+/// loop synchronously at the SAME request boundary that made it (SH-202),
+/// so the run was routinely gone before even the operator's own next
+/// command reached the daemon, leaving `engine status` reporting "no live
+/// engine run" with no trace beyond `start`'s own JSON response.
+#[test]
+fn a_run_whose_only_backlog_is_no_auto_stays_running_rather_than_draining() {
+    let fixture = ServiceFixture::new();
+    let _parked = new_story(&fixture, "human work", &["no-auto"]);
+    let fake = FakeDispatcher::default();
+    let run_id = started_run(&fixture, &fake, 1);
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert!(report.filled.is_empty(), "the engine claimed nothing");
+    assert_eq!(
+        run_state(&fixture, &run_id),
+        EngineRunState::Running,
+        "a no-auto item is still actionable by a human, so the run must not finish out from under it"
+    );
+    assert_eq!(report.stop_reason, None);
+}
+
+/// The control for the fix above, exercising the OTHER caller of
+/// [`EngineService::finish_if_drained`]: a `draining` run (an operator's own
+/// graceful `stop` while a lane was still occupied) still finishes once
+/// that lane frees, even with a `no-auto` item still parked in the backlog.
+/// Graceful `stop` is an explicit decision to end the run; the guard this
+/// story adds must gate only the AUTOMATIC "nothing claimable" path
+/// (`Running`), never the operator's own wind-down (`Draining`) — proven
+/// here by reaching `finish_if_drained` through reconcile's own draining
+/// branch rather than through `stop` directly, since `stop(now: false)`
+/// has its own separate, unaffected finish check and never calls
+/// `finish_if_drained` at all.
+#[test]
+fn a_draining_run_still_finishes_once_its_lane_clears_despite_a_parked_no_auto_story() {
+    let fixture = ServiceFixture::new();
+    let _parked = new_story(&fixture, "human work", &["no-auto"]);
+    let working = new_story(&fixture, "in flight", &[]);
+    let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
+        window: format!("story-{working}"),
+        alive: true,
+    }]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &working);
+    // The occupied lane keeps `stop` from finishing directly; it drains.
+    let stopped = EngineService::new(&fixture.ctx(), &fake)
+        .stop(&run_id, false)
+        .unwrap();
+    assert_eq!(stopped.run.state, EngineRunState::Draining);
+
+    // The lane's story completes, freeing the only occupied lane.
+    StoryService::new(&fixture.ctx())
+        .set_state(&working, "done", None, None, None)
+        .unwrap();
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert_eq!(report.completed, [0]);
+    assert_eq!(
+        report.run_state,
+        EngineRunState::Finished,
+        "a draining run is not gated on unclaimed no-auto work"
+    );
+    assert_eq!(report.stop_reason.as_deref(), Some(OPERATOR_STOPPED));
 }
 
 // ---------------------------------------------------------------------------

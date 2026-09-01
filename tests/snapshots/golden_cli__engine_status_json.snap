@@ -27,9 +27,15 @@ source: tests/golden_cli.rs
             "story": null
           }
         ],
-        "needs_human": [],
+        "needs_human": [
+          {
+            "id": "SH-16",
+            "title": "Approve the rollout"
+          }
+        ],
         "scope": {
-          "kind": "project"
+          "epic": "SH-15",
+          "kind": "epic"
         },
         "state": "running",
         "stop_reason": null,
