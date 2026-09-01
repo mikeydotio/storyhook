@@ -3001,7 +3001,24 @@ Related:
   story migrate — Move a legacy .storyhook/ project into the store
   story doctor  — Integrity checks, and the rebuild diff
   story project new  — Create a project and write .storyhook.toml
+  story help test-environment — Running storyhook without touching this store
 "#,
+        );
+
+        // Rendered from `env::test_environment::TEST_ENVIRONMENT` rather than
+        // written out here, so the shipped text cannot drift from the parameter
+        // set the code actually uses. Shipped in the binary for the reason
+        // `priority-rubric` and `scope-rubric` are: a suite driving `story` from
+        // a stranger's repository has to be able to ask the tool how to isolate
+        // itself, and cannot read storyhook's own docs to find out.
+        //
+        // Named `test-environment`, not `test`: `story hooks test` already
+        // exists, and a topic key that reads like a verb somebody types is how
+        // `priority` became an alias for `prioritize` and stopped being
+        // available.
+        m.insert(
+            "test-environment",
+            crate::env::test_environment::HELP_TOPIC.as_str(),
         );
 
         m
